@@ -11,7 +11,7 @@ def list_sources():
         rows = db.execute("""
             SELECT s.*,
                    sp.status AS latest_status,
-                   sp.last_data_at AS latest_last_data_at,
+                   CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
             FROM sources s
             LEFT JOIN (
@@ -49,7 +49,7 @@ def get_source(source_id: int):
         r = db.execute("""
             SELECT s.*,
                    sp.status AS latest_status,
-                   sp.last_data_at AS latest_last_data_at,
+                   CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
             FROM sources s
             LEFT JOIN (
