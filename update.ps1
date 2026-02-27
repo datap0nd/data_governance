@@ -37,7 +37,10 @@ Set-Location "$ProjectDir\data_governance-main"
 pip install -r requirements.txt -q
 
 Write-Host ""
-Write-Host "Done! To start the app:" -ForegroundColor Green
-Write-Host '  cd "C:\Users\r.cunha\documents\Home\projects\data_governance\data_governance-main"'
-Write-Host '  $env:DG_TMDL_ROOT = "C:\Users\r.cunha\documents\Home\projects\data_governance\data_governance-main\test_data"'
-Write-Host '  python -m uvicorn app.main:app --host 0.0.0.0 --port 8000'
+Write-Host "Starting the app..." -ForegroundColor Green
+Write-Host "Open http://localhost:8000 in your browser" -ForegroundColor Cyan
+Write-Host "Press Ctrl+C to stop" -ForegroundColor Cyan
+Write-Host ""
+
+$env:DG_TMDL_ROOT = "$ProjectDir\data_governance-main\test_data"
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
