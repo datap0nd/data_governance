@@ -3,15 +3,26 @@ $Downloads = "$env:USERPROFILE\Downloads"
 $ZipUrl = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath = "$Downloads\data_governance-main.zip"
 
-# Download latest version from GitHub
-Write-Host "Downloading latest version..." -ForegroundColor Cyan
-try {
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
-    Write-Host "Download complete." -ForegroundColor Green
-} catch {
-    Write-Host "Download failed: $_" -ForegroundColor Red
-    exit 1
+# Download latest version via Chrome
+Write-Host "Opening Chrome to download latest version..." -ForegroundColor Cyan
+Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+Start-Process "chrome" $ZipUrl
+
+# Wait for the ZIP to appear in Downloads
+Write-Host "Waiting for download to finish..." -ForegroundColor Yellow
+$timeout = 120
+$elapsed = 0
+while (-not (Test-Path $ZipPath)) {
+    Start-Sleep -Seconds 2
+    $elapsed += 2
+    if ($elapsed -ge $timeout) {
+        Write-Host "Timed out waiting for download. Please download manually and re-run." -ForegroundColor Red
+        exit 1
+    }
 }
+# Wait a bit more to make sure the file is fully written
+Start-Sleep -Seconds 3
+Write-Host "Download complete." -ForegroundColor Green
 
 # Remove old folder (but keep governance.db so scan history is preserved)
 $OldFolder = "$ProjectDir\data_governance-main"
