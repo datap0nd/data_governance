@@ -15,7 +15,7 @@ from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
-CSV_PATH = BASE_DIR / "latest_upload_date.csv"
+CSV_PATH = BASE_DIR.parent / "latest_upload_date.csv"
 
 
 def run_probe() -> dict:
