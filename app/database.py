@@ -93,6 +93,19 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS actions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER REFERENCES sources(id),
+    report_id       INTEGER REFERENCES reports(id),
+    type            TEXT NOT NULL,
+    status          TEXT DEFAULT 'open',
+    assigned_to     TEXT,
+    notes           TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    resolved_at     DATETIME
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables

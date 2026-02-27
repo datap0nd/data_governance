@@ -12,6 +12,16 @@ async function apiPost(path) {
     return res.json();
 }
 
+async function apiPatch(path, body) {
+    const res = await fetch(path, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
@@ -25,6 +35,33 @@ function statusBadge(status) {
     if (s === "error" || s === "fail" || s === "failed" || s === "critical")
         return `<span class="badge badge-red">${status}</span>`;
     return `<span class="badge badge-muted">${status}</span>`;
+}
+
+function actionStatusBadge(status) {
+    const colors = {
+        open: "badge-red",
+        acknowledged: "badge-blue",
+        investigating: "badge-yellow",
+        expected: "badge-muted",
+        resolved: "badge-green",
+    };
+    return `<span class="badge ${colors[status] || "badge-muted"}">${status}</span>`;
+}
+
+function actionTypeBadge(type) {
+    const labels = {
+        stale_source: "Stale Source",
+        error_source: "Outdated Source",
+        broken_ref: "Broken Ref",
+        changed_query: "Query Changed",
+    };
+    const colors = {
+        stale_source: "badge-yellow",
+        error_source: "badge-red",
+        broken_ref: "badge-red",
+        changed_query: "badge-blue",
+    };
+    return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
 
 function typeBadge(type) {
@@ -157,9 +194,11 @@ function _renderDT(tableId) {
             : '<span class="sort-arrow">&#9660;</span>';
     };
 
-    const headerCells = columns.map(c =>
-        `<th class="sortable ${sortCol === c.key ? 'sort-' + sortDir : ''}" data-dt="${tableId}" data-col="${c.key}">${c.label}${arrow(c.key)}</th>`
-    ).join("");
+    const headerCells = columns.map(c => {
+        const resizable = c.resizable ? ' resizable' : '';
+        const resizer = c.resizable ? '<div class="col-resizer"></div>' : '';
+        return `<th class="sortable${resizable} ${sortCol === c.key ? 'sort-' + sortDir : ''}" data-dt="${tableId}" data-col="${c.key}">${c.label}${arrow(c.key)}${resizer}</th>`;
+    }).join("");
 
     const filterCells = columns.map(c =>
         `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`
@@ -188,7 +227,9 @@ function _renderDT(tableId) {
 
 function bindDataTables() {
     document.querySelectorAll("th.sortable[data-dt]").forEach(th => {
-        th.addEventListener("click", () => {
+        th.addEventListener("click", (e) => {
+            // Don't sort when clicking resizer
+            if (e.target.classList.contains("col-resizer")) return;
             const id = th.dataset.dt;
             const col = th.dataset.col;
             const dt = window._dt[id];
@@ -226,6 +267,52 @@ function bindDataTables() {
         el.addEventListener("dblclick", (e) => {
             e.stopPropagation();
             el.classList.toggle("expanded");
+        });
+    });
+
+    // Column resizers
+    document.querySelectorAll(".col-resizer").forEach(resizer => {
+        resizer.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const th = resizer.parentElement;
+            const table = th.closest("table");
+            const colIdx = Array.from(th.parentElement.children).indexOf(th);
+            const startX = e.pageX;
+            const startWidth = th.offsetWidth;
+
+            resizer.classList.add("dragging");
+
+            function onMouseMove(e) {
+                const newWidth = Math.max(60, startWidth + (e.pageX - startX));
+                th.style.width = newWidth + "px";
+                th.style.minWidth = newWidth + "px";
+                // Also set width on filter row th and all body cells in this column
+                const filterTh = table.querySelector("tr.filter-row")?.children[colIdx];
+                if (filterTh) {
+                    filterTh.style.width = newWidth + "px";
+                    filterTh.style.minWidth = newWidth + "px";
+                }
+                // Update expandable cells max-width in this column
+                table.querySelectorAll("tbody tr").forEach(row => {
+                    const cell = row.children[colIdx];
+                    if (cell) {
+                        const expandable = cell.querySelector(".cell-expandable");
+                        if (expandable) {
+                            expandable.style.maxWidth = (newWidth - 20) + "px";
+                        }
+                    }
+                });
+            }
+
+            function onMouseUp() {
+                resizer.classList.remove("dragging");
+                document.removeEventListener("mousemove", onMouseMove);
+                document.removeEventListener("mouseup", onMouseUp);
+            }
+
+            document.addEventListener("mousemove", onMouseMove);
+            document.addEventListener("mouseup", onMouseUp);
         });
     });
 }
@@ -476,7 +563,7 @@ async function renderSources() {
     const cols = [
         { key: "_shortName", label: "File / Table", render: s => `<strong>${s._shortName}</strong>`, sortVal: s => s._shortName || "" },
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
-        { key: "_fullLocation", label: "Full Location", render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
+        { key: "_fullLocation", label: "Full Location", resizable: true, render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
         { key: "status", label: "Status", render: s => statusBadge(s.status) },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
@@ -583,6 +670,120 @@ async function renderAlerts() {
     `;
 }
 
+async function renderActions() {
+    const actions = await api("/api/actions");
+
+    const open = actions.filter(a => a.status === "open").length;
+    const investigating = actions.filter(a => a.status === "investigating").length;
+    const acknowledged = actions.filter(a => a.status === "acknowledged").length;
+    const resolved = actions.filter(a => a.status === "resolved" || a.status === "expected").length;
+
+    const statusOptions = ["open", "acknowledged", "investigating", "expected", "resolved"];
+
+    function renderActionCards(filter) {
+        const filtered = filter === "all" ? actions : actions.filter(a => a.status === filter);
+
+        if (filtered.length === 0) {
+            return '<div class="empty-state">No actions match this filter</div>';
+        }
+
+        return `<div class="action-cards">${filtered.map(a => {
+            const indColor = a.type.includes("error") ? "ind-red"
+                           : a.type.includes("stale") ? "ind-yellow"
+                           : a.type.includes("broken") ? "ind-red"
+                           : "ind-blue";
+
+            const sourceName = a.source_name || "-";
+            const shortSource = sourceName.includes("/") ? sourceName.split("/").pop() : sourceName;
+
+            return `
+                <div class="action-card" data-action-id="${a.id}">
+                    <div class="action-indicator ${indColor}"></div>
+                    <div class="action-body">
+                        <div class="action-title">${shortSource}</div>
+                        <div class="action-meta">
+                            ${actionTypeBadge(a.type)}
+                            <span>Assigned: ${a.assigned_to || "unassigned"}</span>
+                            <span>${timeAgo(a.created_at)}</span>
+                        </div>
+                        ${a.notes ? `<div class="action-notes">${a.notes}</div>` : ""}
+                    </div>
+                    <div class="action-controls">
+                        <select class="action-status-select" data-action-id="${a.id}">
+                            ${statusOptions.map(s => `<option value="${s}" ${s === a.status ? 'selected' : ''}>${s}</option>`).join("")}
+                        </select>
+                    </div>
+                </div>
+            `;
+        }).join("")}</div>`;
+    }
+
+    // Store render function for re-rendering after filter change
+    window._actionsData = { actions, renderActionCards };
+
+    return `
+        <div class="page-header">
+            <h1>Actions</h1>
+            <span class="subtitle">Track and resolve data quality issues</span>
+        </div>
+
+        <div class="summary-counts">
+            <div class="summary-count"><span class="count-num" style="color:var(--red)">${open}</span><span class="count-label">open</span></div>
+            <div class="summary-count"><span class="count-num" style="color:var(--blue)">${acknowledged}</span><span class="count-label">ack</span></div>
+            <div class="summary-count"><span class="count-num" style="color:var(--yellow)">${investigating}</span><span class="count-label">investigating</span></div>
+            <div class="summary-count"><span class="count-num" style="color:var(--green)">${resolved}</span><span class="count-label">resolved</span></div>
+        </div>
+
+        <div class="action-filters">
+            <button class="action-filter-btn active" data-filter="all">All (${actions.length})</button>
+            <button class="action-filter-btn" data-filter="open">Open (${open})</button>
+            <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
+            <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
+            <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
+            <button class="action-filter-btn" data-filter="expected">Expected (${actions.filter(a => a.status === "expected").length})</button>
+        </div>
+
+        <div id="action-list">
+            ${renderActionCards("all")}
+        </div>
+    `;
+}
+
+function bindActionsPage() {
+    // Filter buttons
+    document.querySelectorAll(".action-filter-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".action-filter-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            const filter = btn.dataset.filter;
+            const container = $("#action-list");
+            if (container && window._actionsData) {
+                container.innerHTML = window._actionsData.renderActionCards(filter);
+                bindActionStatusSelects();
+            }
+        });
+    });
+
+    bindActionStatusSelects();
+}
+
+function bindActionStatusSelects() {
+    document.querySelectorAll(".action-status-select").forEach(select => {
+        select.addEventListener("change", async () => {
+            const actionId = select.dataset.actionId;
+            const newStatus = select.value;
+            try {
+                await apiPatch(`/api/actions/${actionId}`, { status: newStatus });
+                toast(`Action #${actionId} updated to ${newStatus}`);
+            } catch (err) {
+                toast("Failed to update: " + err.message);
+                // Reload to reset
+                navigate("actions");
+            }
+        });
+    });
+}
+
 
 // ── Router ──
 
@@ -592,6 +793,7 @@ const pages = {
     reports: renderReports,
     scanner: renderScanner,
     alerts: renderAlerts,
+    actions: renderActions,
 };
 
 let currentPage = "dashboard";
@@ -613,8 +815,9 @@ async function navigate(page) {
         bindDataTables();
         if (page === "dashboard") renderDashboardAlerts();
         if (page === "scanner") bindScannerButtons();
+        if (page === "actions") bindActionsPage();
     } catch (err) {
-        app.innerHTML = `<div class="loading" style="color:var(--red)">Error: ${err.message}</div>`;
+        app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }
 }
 

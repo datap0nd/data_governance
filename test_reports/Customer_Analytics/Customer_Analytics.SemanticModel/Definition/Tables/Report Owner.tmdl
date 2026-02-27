@@ -1,0 +1,9 @@
+table 'Report Owner'
+
+	partition 'Report Owner' = m
+		mode: import
+		source =
+			let
+			    Source = #table({"Report Owner"}, {{"Maria Santos"}})
+			in
+			    Source

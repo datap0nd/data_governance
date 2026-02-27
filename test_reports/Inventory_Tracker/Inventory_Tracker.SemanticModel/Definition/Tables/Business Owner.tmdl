@@ -1,0 +1,9 @@
+table 'Business Owner'
+
+	partition 'Business Owner' = m
+		mode: import
+		source =
+			let
+			    Source = #table({"Business Owner"}, {{"Lisa Thompson"}})
+			in
+			    Source

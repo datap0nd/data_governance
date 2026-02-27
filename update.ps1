@@ -1,15 +1,17 @@
 $ProjectDir = "C:\Users\r.cunha\documents\Home\projects\data_governance"
 $Downloads = "$env:USERPROFILE\Downloads"
+$ZipUrl = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
+$ZipPath = "$Downloads\data_governance-main.zip"
 
-# Find the latest data_governance ZIP in Downloads
-$Zip = Get-ChildItem "$Downloads\data_governance*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-
-if (-not $Zip) {
-    Write-Host "No data_governance ZIP found in Downloads folder." -ForegroundColor Red
+# Download latest version from GitHub
+Write-Host "Downloading latest version..." -ForegroundColor Cyan
+try {
+    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
+    Write-Host "Download complete." -ForegroundColor Green
+} catch {
+    Write-Host "Download failed: $_" -ForegroundColor Red
     exit 1
 }
-
-Write-Host "Found: $($Zip.Name)" -ForegroundColor Cyan
 
 # Remove old folder (but keep governance.db so scan history is preserved)
 $OldFolder = "$ProjectDir\data_governance-main"
@@ -27,7 +29,7 @@ if (Test-Path $OldFolder) {
 
 # Extract ZIP
 Write-Host "Extracting..." -ForegroundColor Yellow
-Expand-Archive -Path $Zip.FullName -DestinationPath $ProjectDir -Force
+Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
 
 # GitHub ZIPs extract as data_governance-main by default
 # But if it extracted with a different name, find and rename it
@@ -45,8 +47,10 @@ if ($DbBackup -and (Test-Path $DbBackup)) {
     Remove-Item $DbBackup -Force
 }
 
+# Clean up downloaded ZIP
+Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+
 # Install dependencies
-# Change this to your pip index URL (corporate proxy, Artifactory, etc.)
 $PipIndex = "https://pypi.org/simple/"
 
 Write-Host "Installing dependencies..." -ForegroundColor Yellow

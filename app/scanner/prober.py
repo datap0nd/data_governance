@@ -102,6 +102,31 @@ def run_probe() -> dict:
                    VALUES (?, ?, ?, ?)""",
                 (source["id"], now, last_activity_str, status),
             )
+
+            # Auto-create action for stale/error sources (if not already open)
+            if status in ("stale", "error"):
+                existing_action = db.execute(
+                    "SELECT id FROM actions WHERE source_id = ? AND type = ? AND status NOT IN ('resolved', 'expected')",
+                    (source["id"], f"{status}_source"),
+                ).fetchone()
+                if not existing_action:
+                    # Find an owner from linked reports
+                    owner_row = db.execute(
+                        """SELECT r.owner FROM report_tables rt
+                           JOIN reports r ON r.id = rt.report_id
+                           WHERE rt.source_id = ? AND r.owner IS NOT NULL
+                           LIMIT 1""",
+                        (source["id"],),
+                    ).fetchone()
+                    assigned = owner_row["owner"] if owner_row else None
+                    action_type = f"{status}_source"
+                    msg = f"Source data is {'older than 90 days' if status == 'error' else '31-90 days old'}"
+                    db.execute(
+                        """INSERT INTO actions (source_id, type, status, assigned_to, notes, created_at)
+                           VALUES (?, ?, 'open', ?, ?, ?)""",
+                        (source["id"], action_type, assigned, msg, now),
+                    )
+
             matched += 1
 
     summary = {

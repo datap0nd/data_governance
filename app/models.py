@@ -100,6 +100,29 @@ class AlertOut(BaseModel):
     created_at: str | None = None
 
 
+# --- Actions ---
+
+class ActionOut(BaseModel):
+    id: int
+    source_id: int | None = None
+    source_name: str | None = None
+    report_id: int | None = None
+    report_name: str | None = None
+    type: str  # stale_source, error_source, broken_ref, changed_query
+    status: str = "open"  # open, acknowledged, investigating, expected, resolved
+    assigned_to: str | None = None
+    notes: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    resolved_at: str | None = None
+
+
+class ActionUpdate(BaseModel):
+    status: str | None = None
+    assigned_to: str | None = None
+    notes: str | None = None
+
+
 # --- Dashboard ---
 
 class DashboardStats(BaseModel):
