@@ -29,31 +29,36 @@ class SourceInfo:
     @property
     def connection_key(self) -> str:
         """Unique key to identify this source for deduplication."""
-        if self.source_type == "csv" and self.file_path:
-            return f"csv::{self.file_path.lower()}"
-        elif self.source_type == "excel" and self.file_path:
-            return f"excel::{self.file_path.lower()}"
-        elif self.source_type == "sql" and self.server and self.database:
-            return f"sql::{self.server.lower()}::{self.database.lower()}"
+        if self.source_type in ("csv", "excel", "sharepoint", "web", "folder") and self.file_path:
+            return f"{self.source_type}::{self.file_path.lower()}"
+        elif self.server and self.database:
+            return f"{self.source_type}::{self.server.lower()}::{self.database.lower()}"
+        elif self.server:
+            return f"{self.source_type}::{self.server.lower()}"
         return f"unknown::{self.raw_expression[:100]}"
+
+    # Source types that are database connections
+    DB_TYPES = {"sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"}
+    # Source types that use file paths
+    FILE_TYPES = {"csv", "excel", "sharepoint", "web", "folder"}
 
     @property
     def display_name(self) -> str:
         """Human-readable name for this source."""
-        if self.source_type == "csv" and self.file_path:
+        if self.source_type in self.FILE_TYPES and self.file_path:
             return Path(self.file_path).name
-        elif self.source_type == "excel" and self.file_path:
-            return Path(self.file_path).name
-        elif self.source_type == "sql" and self.server and self.database:
-            return f"{self.server}/{self.database}"
+        elif self.source_type in self.DB_TYPES and self.server:
+            if self.database:
+                return f"{self.server}/{self.database}"
+            return self.server
         return "Unknown Source"
 
     @property
     def connection_info(self) -> str:
         """Connection string or path for storage."""
-        if self.source_type in ("csv", "excel") and self.file_path:
+        if self.source_type in self.FILE_TYPES and self.file_path:
             return self.file_path
-        elif self.source_type == "sql":
+        elif self.source_type in self.DB_TYPES:
             return f"{self.server or '?'}/{self.database or '?'}"
         return ""
 
@@ -278,8 +283,7 @@ def _parse_m_expression(expr: str) -> SourceInfo:
     source = SourceInfo(source_type="unknown", raw_expression=expr)
 
     # Detect CSV source: Csv.Document(File.Contents("path"), ...)
-    csv_match = re.search(r'Csv\.Document\s*\(', expr)
-    if csv_match:
+    if re.search(r'Csv\.Document\s*\(', expr):
         source.source_type = "csv"
         file_match = re.search(r'File\.Contents\s*\(\s*"([^"]+)"', expr)
         if file_match:
@@ -290,41 +294,101 @@ def _parse_m_expression(expr: str) -> SourceInfo:
         return source
 
     # Detect Excel source: Excel.Workbook(File.Contents("path"), ...)
-    excel_match = re.search(r'Excel\.Workbook\s*\(', expr)
-    if excel_match:
+    if re.search(r'Excel\.Workbook\s*\(', expr):
         source.source_type = "excel"
         file_match = re.search(r'File\.Contents\s*\(\s*"([^"]+)"', expr)
         if file_match:
             source.file_path = file_match.group(1)
-        # Try to find sheet or table navigation
         sheet_match = re.search(r'Item\s*=\s*"([^"]+)"', expr)
         if sheet_match:
             source.sheet_or_table = sheet_match.group(1)
         return source
 
-    # Detect SQL source: Sql.Database("server", "database", ...)
-    sql_match = re.search(r'Sql\.Database\s*\(', expr)
-    if sql_match:
-        source.source_type = "sql"
-        # Extract server and database - could be string literals or parameter refs
-        args = _extract_function_args(expr, "Sql.Database")
-        if args and len(args) >= 1:
-            source.server = _unquote(args[0])
-        if args and len(args) >= 2:
-            source.database = _unquote(args[1])
-        # Check for native query in options
-        query_match = re.search(r'Query\s*=\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
-        if query_match:
-            source.sql_query = query_match.group(1)
-        # Check for table navigation: Source{[Schema="dbo",Item="TableName"]}[Data]
-        nav_match = re.search(
-            r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr
-        )
-        if nav_match:
-            source.sql_table = f"{nav_match.group(1)}.{nav_match.group(2)}"
+    # Detect database sources — all follow the pattern: Function("server", "database", ...)
+    # Each connector has a different function name but same argument structure
+    DB_CONNECTORS = [
+        (r'Sql\.Database\s*\(', "Sql.Database", "sql"),
+        (r'Sql\.Databases\s*\(', "Sql.Databases", "sql"),
+        (r'PostgreSQL\.Database\s*\(', "PostgreSQL.Database", "postgresql"),
+        (r'MySQL\.Database\s*\(', "MySQL.Database", "mysql"),
+        (r'Oracle\.Database\s*\(', "Oracle.Database", "oracle"),
+        (r'Odbc\.DataSource\s*\(', "Odbc.DataSource", "odbc"),
+        (r'OleDb\.DataSource\s*\(', "OleDb.DataSource", "oledb"),
+        (r'AnalysisServices\.Database\s*\(', "AnalysisServices.Database", "ssas"),
+        (r'AmazonRedshift\.Database\s*\(', "AmazonRedshift.Database", "redshift"),
+        (r'Snowflake\.Databases\s*\(', "Snowflake.Databases", "snowflake"),
+        (r'GoogleBigQuery\.Database\s*\(', "GoogleBigQuery.Database", "bigquery"),
+    ]
+
+    for pattern, func_name, source_type in DB_CONNECTORS:
+        if re.search(pattern, expr):
+            source.source_type = source_type
+            args = _extract_function_args(expr, func_name)
+            if args and len(args) >= 1:
+                source.server = _unquote(args[0])
+            if args and len(args) >= 2:
+                source.database = _unquote(args[1])
+            # Check for native query in options
+            query_match = re.search(r'Query\s*=\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
+            if query_match:
+                source.sql_query = query_match.group(1)
+            # Also check Value.NativeQuery pattern
+            native_match = re.search(r'Value\.NativeQuery\s*\([^,]+,\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
+            if native_match:
+                source.sql_query = native_match.group(1)
+            # Check for table navigation: Source{[Schema="dbo",Item="TableName"]}[Data]
+            nav_match = re.search(
+                r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr
+            )
+            if nav_match:
+                source.sql_table = f"{nav_match.group(1)}.{nav_match.group(2)}"
+            # Also try simpler navigation: Source{[Name="TableName"]}[Data]
+            if not nav_match:
+                name_nav = re.search(r'Name\s*=\s*"([^"]+)"', expr)
+                if name_nav:
+                    source.sql_table = name_nav.group(1)
+            return source
+
+    # Detect SharePoint sources
+    if re.search(r'SharePoint\.Files\s*\(', expr) or re.search(r'SharePoint\.Tables\s*\(', expr):
+        source.source_type = "sharepoint"
+        url_match = re.search(r'SharePoint\.\w+\s*\(\s*"([^"]+)"', expr)
+        if url_match:
+            source.file_path = url_match.group(1)
         return source
 
+    # Detect Web sources
+    if re.search(r'Web\.Contents\s*\(', expr) or re.search(r'Web\.Page\s*\(', expr):
+        source.source_type = "web"
+        url_match = re.search(r'Web\.\w+\s*\(\s*"([^"]+)"', expr)
+        if url_match:
+            source.file_path = url_match.group(1)
+        return source
+
+    # Detect folder sources
+    if re.search(r'Folder\.Files\s*\(', expr):
+        source.source_type = "folder"
+        path_match = re.search(r'Folder\.Files\s*\(\s*"([^"]+)"', expr)
+        if path_match:
+            source.file_path = path_match.group(1)
+        return source
+
+    # If we still can't identify it, log the first 200 chars for debugging
+    _log_unknown_expression(expr)
+
     return source
+
+
+def _log_unknown_expression(expr: str):
+    """Log unrecognized M expressions for debugging."""
+    import logging
+    logger = logging.getLogger(__name__)
+    # Find the first function call pattern to help identify what it is
+    func_match = re.search(r'(\w+\.\w+)\s*\(', expr)
+    if func_match:
+        logger.warning("Unknown source type — function: %s | expression: %.200s", func_match.group(1), expr)
+    else:
+        logger.warning("Unknown source type — no function found | expression: %.200s", expr)
 
 
 def _extract_function_args(expr: str, func_name: str) -> list[str]:

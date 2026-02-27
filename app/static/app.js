@@ -26,7 +26,13 @@ function statusBadge(status) {
 }
 
 function typeBadge(type) {
-    const colors = { csv: "badge-blue", excel: "badge-green", sql: "badge-yellow" };
+    const colors = {
+        csv: "badge-blue", excel: "badge-green", sql: "badge-yellow",
+        postgresql: "badge-yellow", mysql: "badge-yellow", oracle: "badge-yellow",
+        odbc: "badge-yellow", oledb: "badge-yellow", ssas: "badge-yellow",
+        redshift: "badge-yellow", snowflake: "badge-yellow", bigquery: "badge-yellow",
+        sharepoint: "badge-blue", web: "badge-blue", folder: "badge-blue",
+    };
     return `<span class="badge ${colors[type] || "badge-muted"}">${type}</span>`;
 }
 

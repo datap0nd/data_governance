@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -5,6 +6,9 @@ from pathlib import Path
 
 from app.database import init_db
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard
+
+# Show scanner logs in the console
+logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
 app = FastAPI(title="Data Governance Panel", version="0.1.0")
 

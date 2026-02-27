@@ -115,6 +115,10 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
                 metadata_value = _extract_hashtable_value(expr)
             else:
                 source = _parse_m_expression(expr)
+                if source and source.source_type == "unknown":
+                    logger.info("  [%s] table '%s': unknown source — expr: %.150s", report_name, tname, expr.replace("\n", " "))
+                elif source:
+                    logger.info("  [%s] table '%s': %s (%s)", report_name, tname, source.source_type, source.display_name)
 
         tables.append(PbixTable(
             table_name=tname,
