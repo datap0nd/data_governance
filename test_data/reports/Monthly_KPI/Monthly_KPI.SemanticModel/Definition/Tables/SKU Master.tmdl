@@ -1,0 +1,20 @@
+table 'SKU Master'
+	lineageTag: f6a7b8c9-6666-7777-8888-999900001111
+
+	column SKU
+		dataType: string
+		lineageTag: 33334444-aaaa-bbbb-cccc-ddddeeee9999
+		summarizeBy: none
+		sourceColumn: SKU
+
+	partition 'SKU Master' = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\SKU_Master.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

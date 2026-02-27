@@ -1,0 +1,31 @@
+table 'SKU Master'
+	lineageTag: b2c3d4e5-2222-3333-4444-555566667777
+
+	column SKU
+		dataType: string
+		lineageTag: 55555555-aaaa-bbbb-cccc-ddddeeee1111
+		summarizeBy: none
+		sourceColumn: SKU
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Marketing Name'
+		dataType: string
+		lineageTag: 66666666-aaaa-bbbb-cccc-ddddeeee2222
+		summarizeBy: none
+		sourceColumn: Marketing Name
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'SKU Master' = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\SKU_Master.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"SKU", type text}, {"Marketing Name", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table

@@ -1,0 +1,122 @@
+import sqlite3
+from contextlib import contextmanager
+from app.config import DB_PATH
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sources (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    type            TEXT NOT NULL,
+    connection_info TEXT,
+    source_query    TEXT,
+    owner           TEXT,
+    refresh_schedule TEXT,
+    tags            TEXT,
+    discovered_by   TEXT DEFAULT 'manual',
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_probes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER REFERENCES sources(id),
+    probed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_data_at    DATETIME,
+    row_count       INTEGER,
+    status          TEXT,
+    message         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    tmdl_path       TEXT,
+    owner           TEXT,
+    recipients      TEXT,
+    frequency       TEXT,
+    last_published  DATETIME,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS report_tables (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER REFERENCES reports(id),
+    table_name      TEXT NOT NULL,
+    source_id       INTEGER REFERENCES sources(id),
+    source_expression TEXT,
+    last_scanned    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(report_id, table_name)
+);
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at     DATETIME,
+    reports_scanned INTEGER,
+    sources_found   INTEGER,
+    new_sources     INTEGER,
+    changed_queries INTEGER,
+    broken_refs     INTEGER,
+    status          TEXT,
+    log             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS checks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER REFERENCES sources(id),
+    type            TEXT NOT NULL,
+    config          TEXT NOT NULL,
+    severity        TEXT DEFAULT 'critical',
+    enabled         INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS check_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_id        INTEGER REFERENCES checks(id),
+    ran_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status          TEXT NOT NULL,
+    value           REAL,
+    message         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_result_id     INTEGER REFERENCES check_results(id),
+    source_id           INTEGER REFERENCES sources(id),
+    scan_run_id         INTEGER REFERENCES scan_runs(id),
+    severity            TEXT NOT NULL,
+    message             TEXT NOT NULL,
+    acknowledged        INTEGER DEFAULT 0,
+    acknowledged_by     TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE VIEW IF NOT EXISTS lineage AS
+    SELECT DISTINCT source_id, report_id
+    FROM report_tables
+    WHERE source_id IS NOT NULL;
+"""
+
+
+def init_db():
+    """Create all tables if they don't exist."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(SCHEMA)
+    conn.close()
+
+
+@contextmanager
+def get_db():
+    """Yield a database connection with row_factory set for dict-like access."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

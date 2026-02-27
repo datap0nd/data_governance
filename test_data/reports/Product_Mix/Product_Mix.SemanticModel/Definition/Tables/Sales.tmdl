@@ -1,0 +1,25 @@
+table Sales
+	lineageTag: a7b8c9d0-7777-8888-9999-000011112222
+
+	column product_id
+		dataType: string
+		lineageTag: 44445555-aaaa-bbbb-cccc-ddddeeeeffff
+		summarizeBy: none
+		sourceColumn: product_id
+
+	column revenue
+		dataType: decimal
+		lineageTag: 55556666-aaaa-bbbb-cccc-ddddeeee0000
+		summarizeBy: sum
+		sourceColumn: revenue
+
+	partition Sales = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("sqlserver01.company.local", "SalesDB"),
+				    dbo_ProductSales = Source{[Schema="dbo",Item="ProductSales"]}[Data]
+				in
+				    dbo_ProductSales
+
+	annotation PBI_ResultType = Table
