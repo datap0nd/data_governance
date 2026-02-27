@@ -1,0 +1,26 @@
+table Warehouse
+
+	column WarehouseID
+		dataType: int64
+		sourceColumn: WarehouseID
+
+	column WarehouseName
+		dataType: string
+		sourceColumn: WarehouseName
+
+	column Location
+		dataType: string
+		sourceColumn: Location
+
+	column Capacity
+		dataType: int64
+		sourceColumn: Capacity
+
+	partition 'warehouse-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    inventory_warehouses = Source{[Schema="inventory",Item="warehouses"]}[Data]
+			in
+			    inventory_warehouses

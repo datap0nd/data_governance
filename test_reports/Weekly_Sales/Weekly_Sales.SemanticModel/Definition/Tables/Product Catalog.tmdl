@@ -1,0 +1,30 @@
+table 'Product Catalog'
+
+	column ProductID
+		dataType: int64
+		sourceColumn: ProductID
+
+	column ProductName
+		dataType: string
+		sourceColumn: ProductName
+
+	column Category
+		dataType: string
+		sourceColumn: Category
+
+	column UnitPrice
+		dataType: decimal
+		sourceColumn: UnitPrice
+
+	column SKU
+		dataType: string
+		sourceColumn: SKU
+
+	partition 'product-catalog-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    products_catalog = Source{[Schema="products",Item="catalog"]}[Data]
+			in
+			    products_catalog

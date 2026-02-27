@@ -1,0 +1,34 @@
+table 'Sales Orders'
+
+	column OrderID
+		dataType: int64
+		sourceColumn: OrderID
+
+	column CustomerID
+		dataType: int64
+		sourceColumn: CustomerID
+
+	column OrderDate
+		dataType: dateTime
+		sourceColumn: OrderDate
+
+	column TotalAmount
+		dataType: decimal
+		sourceColumn: TotalAmount
+
+	column Currency
+		dataType: string
+		sourceColumn: Currency
+
+	column Status
+		dataType: string
+		sourceColumn: Status
+
+	partition 'sales-orders-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    sales_orders = Source{[Schema="sales",Item="orders"]}[Data]
+			in
+			    sales_orders

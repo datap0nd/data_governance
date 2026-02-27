@@ -1,0 +1,22 @@
+table Regions
+
+	column RegionID
+		dataType: int64
+		sourceColumn: RegionID
+
+	column RegionName
+		dataType: string
+		sourceColumn: RegionName
+
+	column Country
+		dataType: string
+		sourceColumn: Country
+
+	partition 'regions-partition' = m
+		mode: import
+		source =
+			let
+			    Source = Csv.Document(File.Contents("\\fileserver\shared\Reference\regions.csv"), [Delimiter=",", Encoding=1252, QuoteStyle=QuoteStyle.None]),
+			    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+			in
+			    #"Promoted Headers"

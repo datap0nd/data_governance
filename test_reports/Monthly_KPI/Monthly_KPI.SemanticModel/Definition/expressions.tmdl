@@ -1,0 +1,3 @@
+expression Server = "192.168.1.50" meta [IsParameterQuery=true, Type="Text"]
+
+expression Database = "analytics_db" meta [IsParameterQuery=true, Type="Text"]

@@ -1,0 +1,30 @@
+table 'Stock Levels'
+
+	column ProductID
+		dataType: int64
+		sourceColumn: ProductID
+
+	column WarehouseID
+		dataType: int64
+		sourceColumn: WarehouseID
+
+	column QuantityOnHand
+		dataType: int64
+		sourceColumn: QuantityOnHand
+
+	column ReorderPoint
+		dataType: int64
+		sourceColumn: ReorderPoint
+
+	column LastUpdated
+		dataType: dateTime
+		sourceColumn: LastUpdated
+
+	partition 'stock-levels-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    inventory_stock_levels = Source{[Schema="inventory",Item="stock_levels"]}[Data]
+			in
+			    inventory_stock_levels

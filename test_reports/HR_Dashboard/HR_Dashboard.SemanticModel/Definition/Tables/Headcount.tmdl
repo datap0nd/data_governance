@@ -1,0 +1,34 @@
+table Headcount
+
+	column EmployeeID
+		dataType: int64
+		sourceColumn: EmployeeID
+
+	column FullName
+		dataType: string
+		sourceColumn: FullName
+
+	column DepartmentID
+		dataType: int64
+		sourceColumn: DepartmentID
+
+	column HireDate
+		dataType: dateTime
+		sourceColumn: HireDate
+
+	column Salary
+		dataType: decimal
+		sourceColumn: Salary
+
+	column IsActive
+		dataType: boolean
+		sourceColumn: IsActive
+
+	partition 'headcount-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("10.0.0.5", "hr_db"),
+			    hr_headcount = Source{[Schema="hr",Item="headcount"]}[Data]
+			in
+			    hr_headcount

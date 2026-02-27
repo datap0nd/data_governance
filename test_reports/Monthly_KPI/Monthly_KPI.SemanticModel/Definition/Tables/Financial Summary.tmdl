@@ -1,0 +1,34 @@
+table 'Financial Summary'
+
+	column FiscalMonth
+		dataType: dateTime
+		sourceColumn: FiscalMonth
+
+	column Revenue
+		dataType: decimal
+		sourceColumn: Revenue
+
+	column COGS
+		dataType: decimal
+		sourceColumn: COGS
+
+	column GrossProfit
+		dataType: decimal
+		sourceColumn: GrossProfit
+
+	column NetIncome
+		dataType: decimal
+		sourceColumn: NetIncome
+
+	column Department
+		dataType: string
+		sourceColumn: Department
+
+	partition 'financial-summary-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    finance_monthly_summary = Source{[Schema="finance",Item="monthly_summary"]}[Data]
+			in
+			    finance_monthly_summary

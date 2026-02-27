@@ -1,0 +1,22 @@
+table Departments
+
+	column DepartmentID
+		dataType: int64
+		sourceColumn: DepartmentID
+
+	column DepartmentName
+		dataType: string
+		sourceColumn: DepartmentName
+
+	column CostCenter
+		dataType: string
+		sourceColumn: CostCenter
+
+	partition 'departments-partition' = m
+		mode: import
+		source =
+			let
+			    Source = Csv.Document(File.Contents("\\fileserver\shared\HR\departments.csv"), [Delimiter=",", Encoding=1252, QuoteStyle=QuoteStyle.None]),
+			    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+			in
+			    #"Promoted Headers"

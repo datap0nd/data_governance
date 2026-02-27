@@ -1,0 +1,31 @@
+table 'Supplier List'
+
+	column SupplierID
+		dataType: int64
+		sourceColumn: SupplierID
+
+	column SupplierName
+		dataType: string
+		sourceColumn: SupplierName
+
+	column ContactEmail
+		dataType: string
+		sourceColumn: ContactEmail
+
+	column Country
+		dataType: string
+		sourceColumn: Country
+
+	column Rating
+		dataType: decimal
+		sourceColumn: Rating
+
+	partition 'supplier-list-partition' = m
+		mode: import
+		source =
+			let
+			    Source = Excel.Workbook(File.Contents("\\fileserver\shared\Procurement\suppliers.xlsx"), null, true),
+			    Sheet1 = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+			    #"Promoted Headers" = Table.PromoteHeaders(Sheet1, [PromoteAllScalars=true])
+			in
+			    #"Promoted Headers"

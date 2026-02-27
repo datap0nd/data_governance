@@ -1,0 +1,27 @@
+table 'Exchange Rates'
+
+	column CurrencyCode
+		dataType: string
+		sourceColumn: CurrencyCode
+
+	column Month
+		dataType: dateTime
+		sourceColumn: Month
+
+	column RateToUSD
+		dataType: decimal
+		sourceColumn: RateToUSD
+
+	column RateToEUR
+		dataType: decimal
+		sourceColumn: RateToEUR
+
+	partition 'exchange-rates-partition' = m
+		mode: import
+		source =
+			let
+			    Source = Excel.Workbook(File.Contents("\\fileserver\shared\Finance\exchange_rates.xlsx"), null, true),
+			    Monthly_Sheet = Source{[Item="Monthly",Kind="Sheet"]}[Data],
+			    #"Promoted Headers" = Table.PromoteHeaders(Monthly_Sheet, [PromoteAllScalars=true])
+			in
+			    #"Promoted Headers"

@@ -1,0 +1,30 @@
+table Transactions
+
+	column TransactionID
+		dataType: int64
+		sourceColumn: TransactionID
+
+	column CustomerID
+		dataType: int64
+		sourceColumn: CustomerID
+
+	column TransactionDate
+		dataType: dateTime
+		sourceColumn: TransactionDate
+
+	column Amount
+		dataType: decimal
+		sourceColumn: Amount
+
+	column PaymentMethod
+		dataType: string
+		sourceColumn: PaymentMethod
+
+	partition 'transactions-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    sales_transactions = Source{[Schema="sales",Item="transactions"]}[Data]
+			in
+			    sales_transactions

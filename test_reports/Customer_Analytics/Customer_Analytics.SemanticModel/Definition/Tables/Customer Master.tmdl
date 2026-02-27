@@ -1,0 +1,34 @@
+table 'Customer Master'
+
+	column CustomerID
+		dataType: int64
+		sourceColumn: CustomerID
+
+	column CustomerName
+		dataType: string
+		sourceColumn: CustomerName
+
+	column Email
+		dataType: string
+		sourceColumn: Email
+
+	column Segment
+		dataType: string
+		sourceColumn: Segment
+
+	column JoinDate
+		dataType: dateTime
+		sourceColumn: JoinDate
+
+	column RegionID
+		dataType: int64
+		sourceColumn: RegionID
+
+	partition 'customer-master-partition' = m
+		mode: import
+		source =
+			let
+			    Source = PostgreSQL.Database("192.168.1.50", "analytics_db"),
+			    customers_master = Source{[Schema="customers",Item="master"]}[Data]
+			in
+			    customers_master
