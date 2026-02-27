@@ -43,4 +43,5 @@ Write-Host "Press Ctrl+C to stop" -ForegroundColor Cyan
 Write-Host ""
 
 $env:DG_TMDL_ROOT = "$ProjectDir\data_governance-main\test_data"
+Start-Process "chrome" "http://localhost:8000"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
