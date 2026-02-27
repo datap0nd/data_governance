@@ -76,7 +76,8 @@ def run_scan(reports_path: str | None = None) -> dict:
                         ),
                     )
                     new_sources += 1
-                    log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type})")
+                    table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
+                    log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
 
             # Upsert reports and their tables
             for report in reports:

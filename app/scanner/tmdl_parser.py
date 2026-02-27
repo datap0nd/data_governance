@@ -26,21 +26,28 @@ class SourceInfo:
     delimiter: str | None = None       # for csv
     raw_expression: str = ""           # the full M expression
 
-    @property
-    def connection_key(self) -> str:
-        """Unique key to identify this source for deduplication."""
-        if self.source_type in ("csv", "excel", "sharepoint", "web", "folder") and self.file_path:
-            return f"{self.source_type}::{self.file_path.lower()}"
-        elif self.server and self.database:
-            return f"{self.source_type}::{self.server.lower()}::{self.database.lower()}"
-        elif self.server:
-            return f"{self.source_type}::{self.server.lower()}"
-        return f"unknown::{self.raw_expression[:100]}"
-
     # Source types that are database connections
     DB_TYPES = {"sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"}
     # Source types that use file paths
     FILE_TYPES = {"csv", "excel", "sharepoint", "web", "folder"}
+
+    @property
+    def connection_key(self) -> str:
+        """Unique key to identify this source for deduplication.
+
+        Database sources are deduplicated at the table level
+        (same server + database + table = same source).
+        """
+        if self.source_type in self.FILE_TYPES and self.file_path:
+            return f"{self.source_type}::{self.file_path.lower()}"
+        elif self.source_type in self.DB_TYPES and self.server:
+            parts = [self.source_type, self.server.lower()]
+            if self.database:
+                parts.append(self.database.lower())
+            if self.sql_table:
+                parts.append(self.sql_table.lower())
+            return "::".join(parts)
+        return f"unknown::{self.raw_expression[:100]}"
 
     @property
     def display_name(self) -> str:
@@ -48,8 +55,13 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return Path(self.file_path).name
         elif self.source_type in self.DB_TYPES and self.server:
+            parts = []
             if self.database:
-                return f"{self.server}/{self.database}"
+                parts.append(self.database)
+            if self.sql_table:
+                parts.append(self.sql_table)
+            if parts:
+                return f"{self.server}/{'/'.join(parts)}"
             return self.server
         return "Unknown Source"
 
@@ -59,7 +71,12 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return self.file_path
         elif self.source_type in self.DB_TYPES:
-            return f"{self.server or '?'}/{self.database or '?'}"
+            parts = [self.server or "?"]
+            if self.database:
+                parts.append(self.database)
+            if self.sql_table:
+                parts.append(self.sql_table)
+            return "/".join(parts)
         return ""
 
 
@@ -336,17 +353,8 @@ def _parse_m_expression(expr: str) -> SourceInfo:
             native_match = re.search(r'Value\.NativeQuery\s*\([^,]+,\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
             if native_match:
                 source.sql_query = native_match.group(1)
-            # Check for table navigation: Source{[Schema="dbo",Item="TableName"]}[Data]
-            nav_match = re.search(
-                r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr
-            )
-            if nav_match:
-                source.sql_table = f"{nav_match.group(1)}.{nav_match.group(2)}"
-            # Also try simpler navigation: Source{[Name="TableName"]}[Data]
-            if not nav_match:
-                name_nav = re.search(r'Name\s*=\s*"([^"]+)"', expr)
-                if name_nav:
-                    source.sql_table = name_nav.group(1)
+            # Extract the specific table being accessed
+            source.sql_table = _extract_table_navigation(expr)
             return source
 
     # Detect SharePoint sources
@@ -389,6 +397,50 @@ def _log_unknown_expression(expr: str):
         logger.warning("Unknown source type — function: %s | expression: %.200s", func_match.group(1), expr)
     else:
         logger.warning("Unknown source type — no function found | expression: %.200s", expr)
+
+
+def _extract_table_navigation(expr: str) -> str | None:
+    """Extract the schema and table name from M navigation patterns.
+
+    Handles multiple patterns used by different connectors:
+      Source{[Schema="public",Item="orders"]}[Data]
+      Source{[Name="orders",Kind="Table"]}[Data]
+      Source{[Name="orders"]}[Data]
+      Source{[Schema="public", Item="orders"]}[Data]  (with spaces)
+
+    For native queries, tries to extract the table from the SQL.
+    """
+    # Pattern 1: Schema + Item (most common for SQL Server, PostgreSQL)
+    match = re.search(r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr)
+    if match:
+        return f"{match.group(1)}.{match.group(2)}"
+
+    # Pattern 2: Item + Schema (reversed order)
+    match = re.search(r'Item\s*=\s*"([^"]+)"\s*,\s*Schema\s*=\s*"([^"]+)"', expr)
+    if match:
+        return f"{match.group(2)}.{match.group(1)}"
+
+    # Pattern 3: Name + Kind (PostgreSQL often uses this)
+    match = re.search(r'Name\s*=\s*"([^"]+)"\s*,\s*Kind\s*=\s*"Table"', expr)
+    if match:
+        return match.group(1)
+
+    # Pattern 4: Just Name= (simpler navigation)
+    match = re.search(r'Name\s*=\s*"([^"]+)"', expr)
+    if match:
+        return match.group(1)
+
+    # Pattern 5: Try to get table from native query (SELECT ... FROM schema.table)
+    match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s*\.\s*["\[]?(\w+)["\]]?', expr, re.IGNORECASE)
+    if match:
+        return f"{match.group(1)}.{match.group(2)}"
+
+    # Pattern 6: Simple FROM table
+    match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s', expr, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    return None
 
 
 def _extract_function_args(expr: str, func_name: str) -> list[str]:
