@@ -19,22 +19,20 @@ You should see something like `Python 3.12.x`.
 - Go to https://github.com/datap0nd/data_governance
 - Click the green **"<> Code"** button
 - Click **"Download ZIP"**
-- Extract the ZIP somewhere (e.g., `C:\Users\YourName\documents\projects\`)
+- Extract the ZIP to `C:\Users\YourName\documents\projects\data_governance\`
 
-This creates a folder called `data_governance-main` inside wherever you extracted it.
-
-Your project path will be something like:
+This creates the project at:
 ```
-C:\Users\YourName\documents\projects\data_governance-main
+C:\Users\YourName\documents\projects\data_governance\data_governance-main\
 ```
 
-**Note:** In all commands below, replace `YourName` with your actual Windows username, and adjust the path if you extracted the ZIP somewhere else.
+**Note:** In all commands below, replace `YourName` with your actual Windows username.
 
 ## 3. Install dependencies
 
 Open PowerShell and run:
 ```
-cd C:\Users\YourName\documents\projects\data_governance-main
+cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
 pip install -r requirements.txt
 ```
 
@@ -43,7 +41,7 @@ You only need to do this once (or again if `requirements.txt` changes).
 ## 4. Run the tests
 
 ```
-cd C:\Users\YourName\documents\projects\data_governance-main
+cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
 python tests/test_scanner.py
 ```
 
@@ -52,8 +50,8 @@ You should see 6 tests pass. This confirms the TMDL scanner works.
 ## 5. Start the app
 
 ```
-cd C:\Users\YourName\documents\projects\data_governance-main
-$env:DG_TMDL_ROOT = "C:\Users\YourName\documents\projects\data_governance-main\test_data"
+cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
+$env:DG_TMDL_ROOT = "C:\Users\YourName\documents\projects\data_governance\data_governance-main\test_data"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -96,7 +94,7 @@ To find your IP, run `ipconfig` in PowerShell and look for your IPv4 address.
 When there's a new version:
 1. Delete the old `data_governance-main` folder
 2. Download the new ZIP from GitHub
-3. Extract to the same location
+3. Extract to the same `data_governance\` folder
 4. Run `pip install -r requirements.txt` again (in case dependencies changed)
 5. Start the app as in step 5
 
@@ -104,7 +102,7 @@ When there's a new version:
 
 Once testing works, point the app at your real TMDL exports:
 ```
-cd C:\Users\YourName\documents\projects\data_governance-main
+cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
 $env:DG_TMDL_ROOT = "C:\Users\YourName\documents\projects\data_governance"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
