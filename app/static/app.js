@@ -160,9 +160,9 @@ async function renderReports() {
                     <th>Name</th>
                     <th>Status</th>
                     <th>Sources</th>
-                    <th>Owner</th>
+                    <th>Report Owner</th>
+                    <th>Business Owner</th>
                     <th>Frequency</th>
-                    <th>Recipients</th>
                 </tr>
             </thead>
             <tbody>
@@ -172,8 +172,8 @@ async function renderReports() {
                         <td>${statusBadge(r.status)}</td>
                         <td>${r.source_count}</td>
                         <td style="color:var(--text-muted)">${r.owner || "-"}</td>
+                        <td style="color:var(--text-muted)">${r.business_owner || "-"}</td>
                         <td style="color:var(--text-muted)">${r.frequency || "-"}</td>
-                        <td style="color:var(--text-muted)">${r.recipients || "-"}</td>
                     </tr>
                 `).join("")}
             </tbody>

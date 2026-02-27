@@ -68,6 +68,12 @@ class ParsedTable:
     m_expression: str | None = None
     source: SourceInfo | None = None
     file_path: str = ""  # path to the .tmdl file
+    is_metadata: bool = False  # True for Business Owner / Report Owner tables
+    metadata_value: str | None = None  # The extracted owner name
+
+
+# Tables that contain report metadata (not data sources)
+METADATA_TABLES = {"Business Owner", "Report Owner"}
 
 
 def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
@@ -89,9 +95,16 @@ def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
     columns = _extract_columns(lines)
     partition_name, mode, m_expression = _extract_partition(lines)
 
+    # Check if this is a metadata table (Business Owner / Report Owner)
+    is_metadata = table_name in METADATA_TABLES
+    metadata_value = None
     source = None
+
     if m_expression:
-        source = _parse_m_expression(m_expression)
+        if is_metadata:
+            metadata_value = _extract_hashtable_value(m_expression)
+        else:
+            source = _parse_m_expression(m_expression)
 
     return ParsedTable(
         table_name=table_name,
@@ -101,6 +114,8 @@ def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
         m_expression=m_expression,
         source=source,
         file_path=str(file_path),
+        is_metadata=is_metadata,
+        metadata_value=metadata_value,
     )
 
 
@@ -248,6 +263,14 @@ def _extract_partition(lines: list[str]) -> tuple[str | None, str | None, str | 
         m_expression = "\n".join(source_lines)
 
     return partition_name, mode, m_expression
+
+
+def _extract_hashtable_value(expr: str) -> str | None:
+    """Extract the value from a #table expression like #table({"Col"}, {{"Value"}})."""
+    match = re.search(r'#table\s*\(\s*\{[^}]*\}\s*,\s*\{\s*\{\s*"([^"]+)"', expr)
+    if match:
+        return match.group(1)
+    return None
 
 
 def _parse_m_expression(expr: str) -> SourceInfo:

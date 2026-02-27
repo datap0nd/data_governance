@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS reports (
     name            TEXT UNIQUE NOT NULL,
     tmdl_path       TEXT,
     owner           TEXT,
+    business_owner  TEXT,
     recipients      TEXT,
     frequency       TEXT,
     last_published  DATETIME,
@@ -99,10 +100,21 @@ CREATE VIEW IF NOT EXISTS lineage AS
 """
 
 
+MIGRATIONS = [
+    "ALTER TABLE reports ADD COLUMN business_owner TEXT",
+]
+
+
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    for migration in MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
     conn.close()
 
 

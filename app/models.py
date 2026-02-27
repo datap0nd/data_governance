@@ -33,7 +33,8 @@ class ReportOut(BaseModel):
     id: int
     name: str
     tmdl_path: str | None = None
-    owner: str | None = None
+    owner: str | None = None          # Report Owner (from TMDL)
+    business_owner: str | None = None  # Business Owner (from TMDL)
     recipients: str | None = None
     frequency: str | None = None
     last_published: str | None = None

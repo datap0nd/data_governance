@@ -66,6 +66,32 @@ def test_parse_measures_table():
     print("  Measures table: correctly identified as no-source")
 
 
+def test_parse_business_owner():
+    """Test parsing a Business Owner metadata table."""
+    tmdl = Path(__file__).parent.parent / "test_data" / "reports" / "Weekly_Sales" / "Weekly_Sales.SemanticModel" / "Definition" / "Tables" / "Business Owner.tmdl"
+    result = parse_tmdl_file(tmdl)
+
+    assert result is not None
+    assert result.table_name == "Business Owner"
+    assert result.is_metadata is True
+    assert result.metadata_value == "Maria Silva"
+    assert result.source is None  # metadata tables don't have a data source
+    print(f"  Business Owner: {result.metadata_value}")
+
+
+def test_parse_report_owner():
+    """Test parsing a Report Owner metadata table."""
+    tmdl = Path(__file__).parent.parent / "test_data" / "reports" / "Weekly_Sales" / "Weekly_Sales.SemanticModel" / "Definition" / "Tables" / "Report Owner.tmdl"
+    result = parse_tmdl_file(tmdl)
+
+    assert result is not None
+    assert result.table_name == "Report Owner"
+    assert result.is_metadata is True
+    assert result.metadata_value == "Rafael Cunha"
+    assert result.source is None
+    print(f"  Report Owner: {result.metadata_value}")
+
+
 def test_walk_tmdl_root():
     """Test walking the full test_data folder structure."""
     root = Path(__file__).parent.parent / "test_data"
@@ -81,6 +107,28 @@ def test_walk_tmdl_root():
     tables_with_source = [t for t in weekly.tables if t.source is not None]
     assert len(tables_with_source) == 3  # Main (SQL), SKU Master (Excel), MP Plan (CSV)
     print(f"  Found {len(reports)} reports, Weekly_Sales has {len(tables_with_source)} sourced tables")
+
+
+def test_walk_extracts_owners():
+    """Test that walker extracts Business Owner and Report Owner from TMDL."""
+    root = Path(__file__).parent.parent / "test_data"
+    reports = walk_tmdl_root(root)
+
+    weekly = next(r for r in reports if r.name == "Weekly_Sales")
+    assert weekly.business_owner == "Maria Silva"
+    assert weekly.report_owner == "Rafael Cunha"
+
+    monthly = next(r for r in reports if r.name == "Monthly_KPI")
+    assert monthly.business_owner == "Joao Santos"
+    assert monthly.report_owner == "Rafael Cunha"
+
+    product = next(r for r in reports if r.name == "Product_Mix")
+    assert product.business_owner == "Ana Costa"
+    assert product.report_owner == "Pedro Lima"
+
+    print(f"  Weekly_Sales: report={weekly.report_owner}, business={weekly.business_owner}")
+    print(f"  Monthly_KPI: report={monthly.report_owner}, business={monthly.business_owner}")
+    print(f"  Product_Mix: report={product.report_owner}, business={product.business_owner}")
 
 
 def test_deduplicate_sources():
@@ -109,7 +157,10 @@ if __name__ == "__main__":
         test_parse_excel_source,
         test_parse_csv_source,
         test_parse_measures_table,
+        test_parse_business_owner,
+        test_parse_report_owner,
         test_walk_tmdl_root,
+        test_walk_extracts_owners,
         test_deduplicate_sources,
     ]
 

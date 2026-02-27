@@ -20,6 +20,8 @@ class DiscoveredReport:
     tmdl_path: str  # path to the report's root folder
     tables: list[ParsedTable] = field(default_factory=list)
     expressions: dict[str, str] = field(default_factory=dict)  # parameters from expressions.tmdl
+    business_owner: str | None = None
+    report_owner: str | None = None
 
 
 def walk_tmdl_root(root_path: str | Path) -> list[DiscoveredReport]:
@@ -97,9 +99,21 @@ def _scan_report_folder(report_dir: Path) -> DiscoveredReport | None:
     if not tables:
         return None
 
+    # Extract owners from metadata tables
+    business_owner = None
+    report_owner = None
+    for t in tables:
+        if t.is_metadata and t.metadata_value:
+            if t.table_name == "Business Owner":
+                business_owner = t.metadata_value
+            elif t.table_name == "Report Owner":
+                report_owner = t.metadata_value
+
     return DiscoveredReport(
         name=report_name,
         tmdl_path=str(report_dir),
         tables=tables,
         expressions=expressions,
+        business_owner=business_owner,
+        report_owner=report_owner,
     )

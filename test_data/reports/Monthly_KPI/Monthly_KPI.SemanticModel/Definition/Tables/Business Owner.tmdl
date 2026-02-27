@@ -1,0 +1,20 @@
+table 'Business Owner'
+	lineageTag: cc330033-1111-2222-3333-444455556666
+
+	column 'Business Owner'
+		dataType: string
+		lineageTag: cc330033-aaaa-bbbb-cccc-ddddeeee1111
+		summarizeBy: none
+		sourceColumn: Business Owner
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Business Owner' = m
+		mode: import
+		source =
+				let
+				    Source = #table({"Business Owner"}, {{"Joao Santos"}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

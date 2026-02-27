@@ -91,13 +91,13 @@ def run_scan(tmdl_root: str | None = None) -> dict:
                 if existing_report:
                     report_id = existing_report["id"]
                     db.execute(
-                        "UPDATE reports SET tmdl_path = ?, updated_at = ? WHERE id = ?",
-                        (report.tmdl_path, now, report_id),
+                        "UPDATE reports SET tmdl_path = ?, owner = ?, business_owner = ?, updated_at = ? WHERE id = ?",
+                        (report.tmdl_path, report.report_owner, report.business_owner, now, report_id),
                     )
                 else:
                     cursor = db.execute(
-                        "INSERT INTO reports (name, tmdl_path, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                        (report.name, report.tmdl_path, now, now),
+                        "INSERT INTO reports (name, tmdl_path, owner, business_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (report.name, report.tmdl_path, report.report_owner, report.business_owner, now, now),
                     )
                     report_id = cursor.lastrowid
 
