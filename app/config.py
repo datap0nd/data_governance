@@ -11,7 +11,7 @@ DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 # Expected structure: {TMDL_ROOT}/reports/{report_name}/{report_name}.SemanticModel/Definition/Tables/*.tmdl
 TMDL_ROOT = os.environ.get(
     "DG_TMDL_ROOT",
-    os.path.expanduser(os.path.join("~", "documents", "projects", "data_governance")),
+    os.path.expanduser(os.path.join("~", "documents", "Home", "projects", "data_governance")),
 )
 
 # How often to run scheduled scans and checks (in hours)
