@@ -19,20 +19,20 @@ You should see something like `Python 3.12.x`.
 - Go to https://github.com/datap0nd/data_governance
 - Click the green **"<> Code"** button
 - Click **"Download ZIP"**
-- Extract the ZIP to `C:\Users\YourName\documents\projects\data_governance\`
+- Extract the ZIP to `C:\Users\r.cunha\documents\projects\data_governance\`
 
 This creates the project at:
 ```
-C:\Users\YourName\documents\projects\data_governance\data_governance-main\
+C:\Users\r.cunha\documents\projects\data_governance\data_governance-main\
 ```
 
-**Note:** In all commands below, replace `YourName` with your actual Windows username.
+**Note:** In all commands below, replace `r.cunha` with your actual Windows username.
 
 ## 3. Install dependencies
 
 Open PowerShell and run:
 ```
-cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
+cd C:\Users\r.cunha\documents\projects\data_governance\data_governance-main
 pip install -r requirements.txt
 ```
 
@@ -41,7 +41,7 @@ You only need to do this once (or again if `requirements.txt` changes).
 ## 4. Run the tests
 
 ```
-cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
+cd C:\Users\r.cunha\documents\projects\data_governance\data_governance-main
 python tests/test_scanner.py
 ```
 
@@ -50,8 +50,8 @@ You should see 6 tests pass. This confirms the TMDL scanner works.
 ## 5. Start the app
 
 ```
-cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
-$env:DG_TMDL_ROOT = "C:\Users\YourName\documents\projects\data_governance\data_governance-main\test_data"
+cd C:\Users\r.cunha\documents\projects\data_governance\data_governance-main
+$env:DG_TMDL_ROOT = "C:\Users\r.cunha\documents\projects\data_governance\data_governance-main\test_data"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -102,14 +102,14 @@ When there's a new version:
 
 Once testing works, point the app at your real TMDL exports:
 ```
-cd C:\Users\YourName\documents\projects\data_governance\data_governance-main
-$env:DG_TMDL_ROOT = "C:\Users\YourName\documents\projects\data_governance"
+cd C:\Users\r.cunha\documents\projects\data_governance\data_governance-main
+$env:DG_TMDL_ROOT = "C:\Users\r.cunha\documents\projects\data_governance"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Your reports should be in:
 ```
-C:\Users\YourName\documents\projects\data_governance\reports\
+C:\Users\r.cunha\documents\projects\data_governance\reports\
 ├── Report_Name_1\
 │   └── Report_Name_1.SemanticModel\
 │       └── Definition\
