@@ -28,18 +28,26 @@ A **web-based panel** (hosted on your local server) where you and your team can 
 └──────┬───────────┬──────────────┬───────────────────────┘
        │           │              │
 ┌──────┴──────┐  ┌─┴────────┐  ┌─┴───────┐  ┌───────────┐
-│ PostgreSQL  │  │Scheduler │  │ Checks  │  │   TMDL    │
-│ (metadata)  │  │(APSched) │  │ Engine  │  │  Scanner  │
-└─────────────┘  └──────────┘  └─────────┘  └───────────┘
+│   SQLite    │  │Scheduler │  │ Checks  │  │   TMDL    │
+│ (app data)  │  │(APSched) │  │ Engine  │  │  Scanner  │
+└─────────────┘  └──────────┘  └────┬────┘  └───────────┘
+                                    │ READ-ONLY
+                              ┌─────┴──────┐
+                              │ Production │
+                              │ PostgreSQL │
+                              └────────────┘
 ```
 
 **Stack:**
 - **Backend:** Python + FastAPI
-- **App database:** PostgreSQL (you already run it — no reason to add SQLite)
+- **App database:** SQLite (its own file, completely separate from your production data)
+- **Production database access:** Read-only connections to your PostgreSQL (SELECT only, never writes)
 - **Scheduler:** APScheduler (runs checks and scans on a cron)
 - **Frontend:** Lightweight — HTML + vanilla JS + a CSS framework (Pico CSS or similar), no build step
 - **Deployment:** Runs on your local server; single `docker compose up` to start
 - **All reports are Power BI** — the system is built around this assumption
+
+**Important: This app never writes to your production database.** It has its own SQLite file for storing metadata (source registry, check results, alerts, etc.). When it connects to your PostgreSQL, it only runs read-only SELECT queries for freshness probes and data quality checks.
 
 ---
 
@@ -210,7 +218,7 @@ checks:
 
 Checks are YAML files — you don't need to write code to add new checks. Just add a YAML entry.
 
-**Checks that run against your PostgreSQL directly** — the engine connects to your actual data sources to validate the data, not just metadata.
+**Checks run read-only queries against your PostgreSQL** — the engine connects with a read-only user to validate data. It only runs SELECT statements, never writes anything to your production database.
 
 ---
 
@@ -273,12 +281,14 @@ TMDL scan status: last run, results summary, changelog (what changed since last 
 
 ---
 
-## Data Model (PostgreSQL)
+## Data Model (SQLite — the app's own database)
+
+This is a self-contained SQLite file (e.g., `governance.db`). It stores only governance metadata. It never touches your production PostgreSQL.
 
 ```sql
 -- Data sources (auto-populated by TMDL scanner, enriched manually)
 CREATE TABLE sources (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT UNIQUE NOT NULL,
     type            TEXT NOT NULL,               -- postgresql, sql_server, excel, csv, sharepoint
     connection_info TEXT,                         -- encrypted connection string / path
@@ -287,42 +297,42 @@ CREATE TABLE sources (
     refresh_schedule TEXT,                        -- cron or human-readable
     tags            TEXT,                         -- comma-separated
     discovered_by   TEXT DEFAULT 'manual',        -- 'tmdl_scan' or 'manual'
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Source freshness probes
 CREATE TABLE source_probes (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id       INTEGER REFERENCES sources(id),
-    probed_at       TIMESTAMPTZ DEFAULT NOW(),
-    last_data_at    TIMESTAMPTZ,                 -- when the data was last updated
-    row_count       BIGINT,
+    probed_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_data_at    DATETIME,                    -- when the data was last updated
+    row_count       INTEGER,
     status          TEXT,                         -- fresh, stale, error
     message         TEXT
 );
 
 -- Power BI reports (auto-populated by TMDL scanner)
 CREATE TABLE reports (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT UNIQUE NOT NULL,
     tmdl_path       TEXT,                         -- path to TMDL export folder
     owner           TEXT,
     recipients      TEXT,
     frequency       TEXT,
-    last_published  TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
+    last_published  DATETIME,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Tables within reports (from TMDL scan)
 CREATE TABLE report_tables (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id       INTEGER REFERENCES reports(id),
     table_name      TEXT NOT NULL,
     source_id       INTEGER REFERENCES sources(id),     -- which source feeds this table
     source_expression TEXT,                              -- the M/Power Query expression
-    last_scanned    TIMESTAMPTZ DEFAULT NOW(),
+    last_scanned    DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(report_id, table_name)
 );
 
@@ -333,9 +343,9 @@ CREATE TABLE report_tables (
 
 -- TMDL scan history
 CREATE TABLE scan_runs (
-    id              SERIAL PRIMARY KEY,
-    started_at      TIMESTAMPTZ DEFAULT NOW(),
-    finished_at     TIMESTAMPTZ,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at     DATETIME,
     reports_scanned INTEGER,
     sources_found   INTEGER,
     new_sources     INTEGER,
@@ -347,35 +357,35 @@ CREATE TABLE scan_runs (
 
 -- Check definitions
 CREATE TABLE checks (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id       INTEGER REFERENCES sources(id),
     type            TEXT NOT NULL,
-    config          JSONB NOT NULL,               -- check parameters
+    config          TEXT NOT NULL,                -- JSON string with check parameters
     severity        TEXT DEFAULT 'critical',       -- critical, warning, info
-    enabled         BOOLEAN DEFAULT TRUE
+    enabled         INTEGER DEFAULT 1
 );
 
 -- Check results
 CREATE TABLE check_results (
-    id              SERIAL PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     check_id        INTEGER REFERENCES checks(id),
-    ran_at          TIMESTAMPTZ DEFAULT NOW(),
+    ran_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
     status          TEXT NOT NULL,                 -- pass, fail, warn, error
-    value           DOUBLE PRECISION,
+    value           REAL,
     message         TEXT
 );
 
 -- Alerts
 CREATE TABLE alerts (
-    id                  SERIAL PRIMARY KEY,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     check_result_id     INTEGER REFERENCES check_results(id),
     source_id           INTEGER REFERENCES sources(id),
     scan_run_id         INTEGER REFERENCES scan_runs(id),
     severity            TEXT NOT NULL,
     message             TEXT NOT NULL,
-    acknowledged        BOOLEAN DEFAULT FALSE,
+    acknowledged        INTEGER DEFAULT 0,
     acknowledged_by     TEXT,
-    created_at          TIMESTAMPTZ DEFAULT NOW()
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -387,13 +397,13 @@ CREATE TABLE alerts (
 data_governance/
 ├── plan.md
 ├── README.md
-├── docker-compose.yml          # FastAPI app + PostgreSQL
+├── docker-compose.yml          # FastAPI app (SQLite bundled inside)
 ├── Dockerfile
 ├── requirements.txt
 ├── app/
 │   ├── main.py                 # FastAPI app, startup, scheduler
 │   ├── config.py               # Settings (DB connection, TMDL root path, etc.)
-│   ├── database.py             # PostgreSQL connection (asyncpg or psycopg)
+│   ├── database.py             # SQLite (app data) + read-only PostgreSQL connector
 │   ├── models.py               # Pydantic models (request/response)
 │   ├── routers/
 │   │   ├── sources.py          # /sources endpoints
@@ -432,11 +442,11 @@ data_governance/
 ### Phase 1 — TMDL Scanner + Foundation
 **Goal:** Scan all 60 reports, auto-build source registry and lineage, show it in the panel.
 
-1. Set up FastAPI app with PostgreSQL (docker-compose with both services)
+1. Set up FastAPI app with SQLite (single file, zero config)
 2. Build the TMDL parser — parse table definitions, extract source expressions
 3. Build the folder walker — find all report TMDL exports under a root folder
 4. Build the source matcher — deduplicate sources across reports (same DB table used by 10 reports = 1 source)
-5. Store everything in PostgreSQL (sources, reports, report_tables, scan_runs)
+5. Store everything in SQLite (sources, reports, report_tables, scan_runs)
 6. Build the web panel: dashboard, sources list, reports list, scanner status
 7. Build the lineage graph view
 8. Script to bulk-export your 60 reports' datasets to TMDL (using Tabular Editor CLI)
@@ -484,7 +494,7 @@ data_governance/
 
 | Decision | Choice | Why |
 |---|---|---|
-| App database | PostgreSQL | You already run it, no reason to add another DB |
+| App database | SQLite | Own file, zero setup, never touches production DB |
 | Lineage detection | TMDL file scanning | 60 reports can't be mapped manually; TMDL files contain all source info |
 | Frontend | No framework (HTML + JS) | No build step, you don't need to learn React/npm |
 | Check definitions | YAML files | Easy to read and edit without writing code |
@@ -497,8 +507,7 @@ data_governance/
 ## Prerequisites / What You Need to Provide
 
 1. **TMDL exports of your 60 reports** — we'll write a script to help with this, but you need Tabular Editor or pbi-tools installed on a machine with access to your Power BI datasets
-2. **PostgreSQL connection details** — for the governance app's own database (a new database on your existing server)
-3. **PostgreSQL connection details** — for your actual data sources (read-only access for probes and checks)
+2. **PostgreSQL connection details** — read-only access to your production database (for freshness probes and data quality checks). The app never writes to it.
 4. **A folder on the server** — to store TMDL exports (the scanner reads from here)
 5. **Your local server details** — OS, Docker availability, network access (so the team can reach the panel)
 
