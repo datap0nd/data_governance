@@ -57,7 +57,7 @@ nav a:hover, nav a.active {
 
 /* Main */
 main {
-    max-width: 1200px;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 1.5rem 2rem;
 }
@@ -123,14 +123,19 @@ h2 {
 .badge-blue   { background: var(--blue-bg);   color: var(--blue);   }
 .badge-muted  { background: var(--surface-hover); color: var(--text-muted); }
 
+/* Table wrapper — enables sticky headers with scroll */
+.table-wrapper {
+    max-height: 75vh;
+    overflow: auto;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
 /* Tables */
 table {
     width: 100%;
     border-collapse: collapse;
     background: var(--surface);
-    border-radius: 8px;
-    overflow: hidden;
-    border: 1px solid var(--border);
 }
 
 th, td {
@@ -147,11 +152,43 @@ th {
     text-transform: uppercase;
     letter-spacing: 0.03em;
     color: var(--text-muted);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+/* Second header row (filters) sticks below the first */
+tr.filter-row th {
+    position: sticky;
+    top: 31px;
+    z-index: 2;
 }
 
 tr:last-child td { border-bottom: none; }
 
+/* Clickable rows */
+tr[data-clickable] { cursor: pointer; }
+tr[data-clickable]:hover td { background: var(--surface-hover); }
 tr:hover td { background: var(--surface-hover); }
+
+/* Expandable cell (Full Location) */
+.cell-expandable {
+    display: inline-block;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.cell-expandable.expanded {
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+}
 
 /* Alerts list */
 .alert-item {
@@ -220,14 +257,6 @@ button.btn-outline:hover {
     overflow-y: auto;
 }
 
-/* Lineage graph */
-#lineage-graph {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    min-height: 400px;
-}
-
 /* Loading */
 .loading {
     text-align: center;
@@ -251,6 +280,38 @@ button.btn-outline:hover {
 .detail-row .detail-label {
     color: var(--text-muted);
     min-width: 120px;
+}
+
+/* Source detail panel */
+.source-detail-panel {
+    margin-top: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    animation: fadeIn 0.2s;
+}
+
+.source-detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.source-detail-header h2 {
+    margin-bottom: 0;
+    word-break: break-all;
+}
+
+.detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.5rem;
+}
+
+.detail-table th {
+    position: static;
 }
 
 /* Toast */
@@ -277,7 +338,6 @@ button.btn-outline:hover {
 th.sortable {
     cursor: pointer;
     user-select: none;
-    position: relative;
     padding-right: 1.5rem;
 }
 

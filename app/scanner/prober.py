@@ -17,6 +17,45 @@ logger = logging.getLogger(__name__)
 
 CSV_PATH = BASE_DIR.parent / "latest_upload_date.csv"
 
+# Staleness thresholds (in days)
+FRESH_MAX_DAYS = 31
+STALE_MAX_DAYS = 90
+
+
+def _compute_status(last_activity_str: str | None) -> str:
+    """Compute freshness status based on age of last_activity.
+
+    <= 31 days: fresh
+    31-90 days: stale
+    > 90 days: error
+    Unparseable or missing: unknown
+    """
+    if not last_activity_str:
+        return "unknown"
+
+    try:
+        # Try common date formats
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                dt = datetime.strptime(last_activity_str, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                break
+            except ValueError:
+                continue
+        else:
+            return "unknown"
+
+        age_days = (datetime.now(timezone.utc) - dt).days
+        if age_days <= FRESH_MAX_DAYS:
+            return "fresh"
+        elif age_days <= STALE_MAX_DAYS:
+            return "stale"
+        else:
+            return "error"
+    except Exception:
+        return "unknown"
+
 
 def run_probe() -> dict:
     """Read last-activity timestamps from CSV and store as probe results.
@@ -56,11 +95,12 @@ def run_probe() -> dict:
                 continue
 
             last_activity_str = last_activity if last_activity else None
+            status = _compute_status(last_activity_str)
 
             db.execute(
                 """INSERT INTO source_probes (source_id, probed_at, last_data_at, status)
-                   VALUES (?, ?, ?, 'fresh')""",
-                (source["id"], now, last_activity_str),
+                   VALUES (?, ?, ?, ?)""",
+                (source["id"], now, last_activity_str, status),
             )
             matched += 1
 

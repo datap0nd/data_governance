@@ -59,6 +59,45 @@ function toast(msg) {
 }
 
 
+// ── Source name parsing ──
+
+const DB_TYPES = new Set(["sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"]);
+
+function parseSourceName(s) {
+    const name = s.name || "";
+    const type = s.type || "";
+
+    if (DB_TYPES.has(type)) {
+        // DB format: "server/database/schema.table" or "server/schema.table"
+        const lastSlash = name.lastIndexOf("/");
+        const afterSlash = lastSlash >= 0 ? name.substring(lastSlash + 1) : name;
+        const dotIdx = afterSlash.indexOf(".");
+        if (dotIdx >= 0) {
+            return {
+                shortName: afterSlash.substring(dotIdx + 1),
+                folderSchema: afterSlash.substring(0, dotIdx),
+                fullLocation: name
+            };
+        }
+        return { shortName: afterSlash, folderSchema: "-", fullLocation: name };
+    }
+
+    // File format: "filename.ext" or full path
+    const fileName = name.includes("/") ? name.substring(name.lastIndexOf("/") + 1)
+                   : name.includes("\\") ? name.substring(name.lastIndexOf("\\") + 1)
+                   : name;
+    const dotIdx = fileName.lastIndexOf(".");
+    const shortName = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+
+    // Folder from connection_info or from name path
+    const connInfo = s.connection_info || name;
+    const lastSep = Math.max(connInfo.lastIndexOf("/"), connInfo.lastIndexOf("\\"));
+    const folder = lastSep >= 0 ? connInfo.substring(0, lastSep) : "-";
+
+    return { shortName, folderSchema: folder, fullLocation: connInfo || name };
+}
+
+
 // ── DataTable (sortable + filterable) ──
 
 /**
@@ -71,12 +110,13 @@ function toast(msg) {
  *   - render(row): returns HTML string for the cell (defaults to row[key])
  *   - sortVal(row): returns a sortable primitive (defaults to row[key])
  * @param {Array<Object>} rows - data array
+ * @param {Object} opts - optional config: { onRowClick: function(row) }
  * @returns {string} HTML string
  */
-function dataTable(tableId, columns, rows) {
+function dataTable(tableId, columns, rows, opts) {
     // Store data on a global so post-render can bind events
     window._dt = window._dt || {};
-    window._dt[tableId] = { columns, rows, sortCol: null, sortDir: "asc", filters: {} };
+    window._dt[tableId] = { columns, rows, sortCol: null, sortDir: "asc", filters: {}, opts: opts || {} };
 
     return _renderDT(tableId);
 }
@@ -126,18 +166,24 @@ function _renderDT(tableId) {
         `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`
     ).join("");
 
-    const bodyRows = rows.map(r =>
-        `<tr>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
+    const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
+    const bodyRows = rows.map((r, i) =>
+        `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
     ).join("");
 
+    // Store filtered/sorted rows for click lookup
+    dt._displayRows = rows;
+
     return `
-        <table id="${tableId}">
-            <thead>
-                <tr>${headerCells}</tr>
-                <tr class="filter-row">${filterCells}</tr>
-            </thead>
-            <tbody>${bodyRows}</tbody>
-        </table>
+        <div class="table-wrapper">
+            <table id="${tableId}">
+                <thead>
+                    <tr>${headerCells}</tr>
+                    <tr class="filter-row">${filterCells}</tr>
+                </thead>
+                <tbody>${bodyRows}</tbody>
+            </table>
+        </div>
         <div class="table-count">${rows.length} of ${dt.rows.length} rows</div>
     `;
 }
@@ -168,22 +214,87 @@ function bindDataTables() {
             _refreshDT(id);
         });
     });
+
+    // Row click
+    document.querySelectorAll("tr[data-clickable]").forEach(tr => {
+        tr.addEventListener("click", () => {
+            const id = tr.dataset.dt;
+            const idx = parseInt(tr.dataset.rowIdx);
+            const dt = window._dt[id];
+            if (dt.opts && dt.opts.onRowClick && dt._displayRows) {
+                dt.opts.onRowClick(dt._displayRows[idx]);
+            }
+        });
+    });
+
+    // Double-click to expand/collapse full-location cells
+    document.querySelectorAll("td .cell-expandable").forEach(el => {
+        el.addEventListener("dblclick", () => {
+            el.classList.toggle("expanded");
+        });
+    });
 }
 
 function _refreshDT(tableId) {
     const html = _renderDT(tableId);
-    const old = document.getElementById(tableId);
-    if (!old) return;
-    // Replace the table and the count div after it
-    const wrapper = document.createElement("div");
-    wrapper.innerHTML = html;
-    const parent = old.parentNode;
-    const countDiv = old.nextElementSibling;
-    parent.replaceChild(wrapper.querySelector("table"), old);
+    const oldWrapper = document.getElementById(tableId)?.closest(".table-wrapper");
+    if (!oldWrapper) return;
+    const temp = document.createElement("div");
+    temp.innerHTML = html;
+    const parent = oldWrapper.parentNode;
+    const countDiv = oldWrapper.nextElementSibling;
+    parent.replaceChild(temp.querySelector(".table-wrapper"), oldWrapper);
     if (countDiv && countDiv.classList.contains("table-count")) {
-        parent.replaceChild(wrapper.querySelector(".table-count"), countDiv);
+        parent.replaceChild(temp.querySelector(".table-count"), countDiv);
     }
     bindDataTables();
+}
+
+
+// ── Source detail panel ──
+
+async function showSourceDetail(source) {
+    // Remove existing detail panel
+    const existing = $("#source-detail");
+    if (existing) existing.remove();
+
+    const reports = await api(`/api/sources/${source.id}/reports`);
+
+    const panel = document.createElement("div");
+    panel.id = "source-detail";
+    panel.className = "source-detail-panel";
+
+    const reportRows = reports.length > 0
+        ? reports.map(r => `
+            <tr>
+                <td><strong>${r.name}</strong></td>
+                <td style="color:var(--text-muted)">${r.table_name || "-"}</td>
+                <td style="color:var(--text-muted)">${r.owner || "-"}</td>
+            </tr>
+        `).join("")
+        : '<tr><td colspan="3" style="color:var(--text-muted)">No reports use this source.</td></tr>';
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${source.name}</h2>
+            <button class="btn-outline" id="btn-close-detail">&times; Close</button>
+        </div>
+        <div class="detail-row"><span class="detail-label">Type</span> ${typeBadge(source.type)}</div>
+        <div class="detail-row"><span class="detail-label">Status</span> ${statusBadge(source.status)}</div>
+        <div class="detail-row"><span class="detail-label">Last Updated</span> <span style="color:var(--text-muted)">${source.last_updated || "-"}</span></div>
+        <div class="detail-row"><span class="detail-label">Owner</span> <span style="color:var(--text-muted)">${source.owner || "-"}</span></div>
+        <div class="detail-row"><span class="detail-label">Connection</span> <span style="color:var(--text-muted);word-break:break-all">${source.connection_info || "-"}</span></div>
+
+        <h3 style="margin-top:1rem;margin-bottom:0.5rem">Reports fed by this source (${reports.length})</h3>
+        <table class="detail-table">
+            <thead><tr><th>Report</th><th>Table</th><th>Owner</th></tr></thead>
+            <tbody>${reportRows}</tbody>
+        </table>
+    `;
+
+    $("#app").appendChild(panel);
+
+    $("#btn-close-detail").addEventListener("click", () => panel.remove());
 }
 
 
@@ -250,12 +361,21 @@ async function renderDashboardAlerts() {
 async function renderSources() {
     const sources = await api("/api/sources");
 
+    // Pre-parse names
+    sources.forEach(s => {
+        const parsed = parseSourceName(s);
+        s._shortName = parsed.shortName;
+        s._folderSchema = parsed.folderSchema;
+        s._fullLocation = parsed.fullLocation;
+    });
+
     const cols = [
-        { key: "name", label: "Name", render: s => `<strong>${s.name}</strong>` },
+        { key: "_shortName", label: "File / Table", render: s => `<strong>${s._shortName}</strong>`, sortVal: s => s._shortName || "" },
+        { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
+        { key: "_fullLocation", label: "Full Location", render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
-        { key: "connection_info", label: "Connection", render: s => `<span style="color:var(--text-muted);font-size:0.8rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block">${s.connection_info || "-"}</span>` },
         { key: "status", label: "Status", render: s => statusBadge(s.status) },
-        { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)">${timeAgo(s.last_updated)}</span>`, sortVal: s => s.last_updated || "" },
+        { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)">${s.last_updated || "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
     ];
@@ -263,7 +383,7 @@ async function renderSources() {
     return `
         <h1>Sources</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">${sources.length} data sources tracked</p>
-        ${dataTable("dt-sources", cols, sources)}
+        ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
 }
 
@@ -283,46 +403,6 @@ async function renderReports() {
         <h1>Reports</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">${reports.length} Power BI reports tracked</p>
         ${dataTable("dt-reports", cols, reports)}
-    `;
-}
-
-async function renderLineage() {
-    const edges = await api("/api/lineage");
-
-    if (edges.length === 0) {
-        return `
-            <h1>Lineage</h1>
-            <p style="color:var(--text-muted)">No lineage data yet. Run a scan first.</p>
-        `;
-    }
-
-    // Build a simple text-based lineage view (visual graph can be added later)
-    const bySource = {};
-    for (const e of edges) {
-        if (!bySource[e.source_name]) {
-            bySource[e.source_name] = { type: e.source_type, reports: [] };
-        }
-        bySource[e.source_name].reports.push(e.report_name);
-    }
-
-    const lineageRows = Object.entries(bySource).map(([name, info]) => ({
-        source_name: name,
-        type: info.type,
-        reports_list: info.reports.join(", "),
-        report_count: info.reports.length,
-    }));
-
-    const cols = [
-        { key: "source_name", label: "Source", render: r => `<strong>${r.source_name}</strong>` },
-        { key: "type", label: "Type", render: r => typeBadge(r.type) },
-        { key: "reports_list", label: "Feeds Reports" },
-        { key: "report_count", label: "# Reports", sortVal: r => r.report_count },
-    ];
-
-    return `
-        <h1>Lineage</h1>
-        <p style="color:var(--text-muted);margin-bottom:1rem">Source to report dependencies</p>
-        ${dataTable("dt-lineage", cols, lineageRows)}
     `;
 }
 
@@ -386,7 +466,6 @@ const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
     reports: renderReports,
-    lineage: renderLineage,
     scanner: renderScanner,
     alerts: renderAlerts,
 };
