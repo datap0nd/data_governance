@@ -1,8 +1,8 @@
 """
-Scan runner — orchestrates a full TMDL scan.
+Scan runner — orchestrates a full scan.
 
-1. Walk the folder structure
-2. Parse all tables
+1. Walk the reports folder (finds .pbix files or TMDL exports)
+2. Parse all tables and extract sources
 3. Deduplicate sources
 4. Store everything in SQLite
 5. Record the scan run
@@ -11,25 +11,23 @@ Scan runner — orchestrates a full TMDL scan.
 import logging
 from datetime import datetime, timezone
 
-from app.config import TMDL_ROOT
+from app.config import REPORTS_PATH
 from app.database import get_db
-from app.scanner.walker import walk_tmdl_root
+from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
-from app.scanner.tmdl_parser import resolve_parameters
 
 logger = logging.getLogger(__name__)
 
 
-def run_scan(tmdl_root: str | None = None) -> dict:
-    """Run a full TMDL scan and store results.
+def run_scan(reports_path: str | None = None) -> dict:
+    """Run a full scan and store results.
 
     Returns a summary dict with scan statistics.
     """
-    root = tmdl_root or TMDL_ROOT
+    root = reports_path or REPORTS_PATH
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
-        # Record scan start
         cursor = db.execute(
             "INSERT INTO scan_runs (started_at, status) VALUES (?, 'running')",
             (now,),
@@ -37,8 +35,7 @@ def run_scan(tmdl_root: str | None = None) -> dict:
         scan_id = cursor.lastrowid
 
     try:
-        # Walk and parse
-        reports = walk_tmdl_root(root)
+        reports = walk_reports_root(root)
         all_sources = deduplicate_sources(reports)
 
         new_sources = 0
@@ -66,9 +63,9 @@ def run_scan(tmdl_root: str | None = None) -> dict:
                         )
                         log_lines.append(f"CHANGED: {source_info.display_name} query updated")
                 else:
-                    cursor = db.execute(
+                    db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, 'tmdl_scan', ?, ?)""",
+                           VALUES (?, ?, ?, ?, 'scan', ?, ?)""",
                         (
                             source_info.display_name,
                             source_info.source_type,
@@ -104,38 +101,42 @@ def run_scan(tmdl_root: str | None = None) -> dict:
                 # Upsert report tables
                 for table in report.tables:
                     source_id = None
-                    if table.source:
-                        resolved = resolve_parameters(table.source, report.expressions)
+                    source = getattr(table, "source", None)
+                    m_expression = getattr(table, "m_expression", None)
+                    is_metadata = getattr(table, "is_metadata", False)
+
+                    if source and not is_metadata:
                         # Find matching source in DB
                         source_row = db.execute(
                             "SELECT id FROM sources WHERE name = ?",
-                            (resolved.display_name,),
+                            (source.display_name,),
                         ).fetchone()
                         if source_row:
                             source_id = source_row["id"]
-                        elif table.source.source_type != "unknown":
+                        elif source.source_type != "unknown":
                             broken_refs += 1
                             log_lines.append(
                                 f"BROKEN: {report.name}/{table.table_name} "
-                                f"references unknown source: {resolved.display_name}"
+                                f"references unknown source: {source.display_name}"
                             )
 
-                    db.execute(
-                        """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
-                           VALUES (?, ?, ?, ?, ?)
-                           ON CONFLICT(report_id, table_name)
-                           DO UPDATE SET source_id = ?, source_expression = ?, last_scanned = ?""",
-                        (
-                            report_id,
-                            table.table_name,
-                            source_id,
-                            table.m_expression,
-                            now,
-                            source_id,
-                            table.m_expression,
-                            now,
-                        ),
-                    )
+                    if not is_metadata:
+                        db.execute(
+                            """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
+                               VALUES (?, ?, ?, ?, ?)
+                               ON CONFLICT(report_id, table_name)
+                               DO UPDATE SET source_id = ?, source_expression = ?, last_scanned = ?""",
+                            (
+                                report_id,
+                                table.table_name,
+                                source_id,
+                                m_expression,
+                                now,
+                                source_id,
+                                m_expression,
+                                now,
+                            ),
+                        )
 
             # Update scan run record
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."

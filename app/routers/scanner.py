@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 @router.post("/run")
 def trigger_scan():
-    """Trigger a full TMDL scan."""
+    """Trigger a full scan (reads .pbix files or TMDL exports)."""
     result = run_scan()
     return result
 

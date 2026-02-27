@@ -1,8 +1,8 @@
 """
 Source matcher — deduplicates sources across reports.
 
-When 10 reports all pull from the same PostgreSQL database,
-that's 1 source, not 10. This module handles that deduplication.
+When 10 reports all pull from the same database,
+that's 1 source, not 10.
 """
 
 from app.scanner.tmdl_parser import SourceInfo, resolve_parameters
@@ -17,12 +17,20 @@ def deduplicate_sources(reports: list[DiscoveredReport]) -> dict[str, SourceInfo
     sources: dict[str, SourceInfo] = {}
 
     for report in reports:
+        expressions = getattr(report, "expressions", {})
+
         for table in report.tables:
-            if table.source is None:
+            source = getattr(table, "source", None)
+            is_metadata = getattr(table, "is_metadata", False)
+
+            if source is None or is_metadata:
                 continue
 
-            # Resolve parameters (e.g., Server → "localhost")
-            resolved = resolve_parameters(table.source, report.expressions)
+            # Resolve parameters for TMDL tables
+            if expressions:
+                resolved = resolve_parameters(source, expressions)
+            else:
+                resolved = source
 
             key = resolved.connection_key
             if key not in sources:
