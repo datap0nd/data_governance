@@ -59,6 +59,134 @@ function toast(msg) {
 }
 
 
+// ── DataTable (sortable + filterable) ──
+
+/**
+ * Renders a sortable, filterable table.
+ *
+ * @param {string} tableId - Unique id for the table element
+ * @param {Array<{key: string, label: string, render?: function, sortVal?: function}>} columns
+ *   - key: property name on row object (also used for filtering)
+ *   - label: column header text
+ *   - render(row): returns HTML string for the cell (defaults to row[key])
+ *   - sortVal(row): returns a sortable primitive (defaults to row[key])
+ * @param {Array<Object>} rows - data array
+ * @returns {string} HTML string
+ */
+function dataTable(tableId, columns, rows) {
+    // Store data on a global so post-render can bind events
+    window._dt = window._dt || {};
+    window._dt[tableId] = { columns, rows, sortCol: null, sortDir: "asc", filters: {} };
+
+    return _renderDT(tableId);
+}
+
+function _renderDT(tableId) {
+    const dt = window._dt[tableId];
+    const { columns, sortCol, sortDir, filters } = dt;
+    let rows = dt.rows;
+
+    // Filter
+    rows = rows.filter(r => {
+        for (const col of columns) {
+            const f = (filters[col.key] || "").toLowerCase();
+            if (!f) continue;
+            const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
+            if (!val.includes(f)) return false;
+        }
+        return true;
+    });
+
+    // Sort
+    if (sortCol) {
+        const col = columns.find(c => c.key === sortCol);
+        rows = [...rows].sort((a, b) => {
+            let va = col && col.sortVal ? col.sortVal(a) : (a[sortCol] ?? "");
+            let vb = col && col.sortVal ? col.sortVal(b) : (b[sortCol] ?? "");
+            if (typeof va === "string") va = va.toLowerCase();
+            if (typeof vb === "string") vb = vb.toLowerCase();
+            if (va < vb) return sortDir === "asc" ? -1 : 1;
+            if (va > vb) return sortDir === "asc" ? 1 : -1;
+            return 0;
+        });
+    }
+
+    const arrow = (key) => {
+        if (sortCol !== key) return '<span class="sort-arrow">&#9650;</span>';
+        return sortDir === "asc"
+            ? '<span class="sort-arrow">&#9650;</span>'
+            : '<span class="sort-arrow">&#9660;</span>';
+    };
+
+    const headerCells = columns.map(c =>
+        `<th class="sortable ${sortCol === c.key ? 'sort-' + sortDir : ''}" data-dt="${tableId}" data-col="${c.key}">${c.label}${arrow(c.key)}</th>`
+    ).join("");
+
+    const filterCells = columns.map(c =>
+        `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`
+    ).join("");
+
+    const bodyRows = rows.map(r =>
+        `<tr>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
+    ).join("");
+
+    return `
+        <table id="${tableId}">
+            <thead>
+                <tr>${headerCells}</tr>
+                <tr class="filter-row">${filterCells}</tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+        </table>
+        <div class="table-count">${rows.length} of ${dt.rows.length} rows</div>
+    `;
+}
+
+function bindDataTables() {
+    // Sort click
+    document.querySelectorAll("th.sortable[data-dt]").forEach(th => {
+        th.addEventListener("click", () => {
+            const id = th.dataset.dt;
+            const col = th.dataset.col;
+            const dt = window._dt[id];
+            if (dt.sortCol === col) {
+                dt.sortDir = dt.sortDir === "asc" ? "desc" : "asc";
+            } else {
+                dt.sortCol = col;
+                dt.sortDir = "asc";
+            }
+            _refreshDT(id);
+        });
+    });
+
+    // Filter input
+    document.querySelectorAll("tr.filter-row input[data-dt]").forEach(inp => {
+        inp.addEventListener("input", () => {
+            const id = inp.dataset.dt;
+            const col = inp.dataset.fcol;
+            window._dt[id].filters[col] = inp.value;
+            _refreshDT(id);
+        });
+    });
+}
+
+function _refreshDT(tableId) {
+    const html = _renderDT(tableId);
+    const old = document.getElementById(tableId);
+    if (!old) return;
+    // Replace the table and the count div after it
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    const parent = old.parentNode;
+    const countDiv = old.nextElementSibling;
+    parent.replaceChild(wrapper.querySelector("table"), old);
+    if (countDiv && countDiv.classList.contains("table-count")) {
+        parent.replaceChild(wrapper.querySelector(".table-count"), countDiv);
+    }
+    bindDataTables();
+}
+
+
 // ── Pages ──
 
 async function renderDashboard() {
@@ -122,68 +250,39 @@ async function renderDashboardAlerts() {
 async function renderSources() {
     const sources = await api("/api/sources");
 
+    const cols = [
+        { key: "name", label: "Name", render: s => `<strong>${s.name}</strong>` },
+        { key: "type", label: "Type", render: s => typeBadge(s.type) },
+        { key: "connection_info", label: "Connection", render: s => `<span style="color:var(--text-muted);font-size:0.8rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block">${s.connection_info || "-"}</span>` },
+        { key: "status", label: "Status", render: s => statusBadge(s.status) },
+        { key: "last_probe_at", label: "Last Probe", render: s => `<span style="color:var(--text-muted)">${timeAgo(s.last_probe_at)}</span>`, sortVal: s => s.last_probe_at || "" },
+        { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
+        { key: "owner", label: "Owner", render: s => `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
+    ];
+
     return `
         <h1>Sources</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">${sources.length} data sources tracked</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Connection</th>
-                    <th>Status</th>
-                    <th>Last Probe</th>
-                    <th>Reports</th>
-                    <th>Owner</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${sources.map(s => `
-                    <tr>
-                        <td><strong>${s.name}</strong></td>
-                        <td>${typeBadge(s.type)}</td>
-                        <td style="color:var(--text-muted);font-size:0.8rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.connection_info || "-"}</td>
-                        <td>${statusBadge(s.status)}</td>
-                        <td style="color:var(--text-muted)">${timeAgo(s.last_probe_at)}</td>
-                        <td>${s.report_count}</td>
-                        <td style="color:var(--text-muted)">${s.owner || "-"}</td>
-                    </tr>
-                `).join("")}
-            </tbody>
-        </table>
+        ${dataTable("dt-sources", cols, sources)}
     `;
 }
 
 async function renderReports() {
     const reports = await api("/api/reports");
 
+    const cols = [
+        { key: "name", label: "Name", render: r => `<strong>${r.name}</strong>` },
+        { key: "status", label: "Status", render: r => statusBadge(r.status) },
+        { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
+        { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
+        { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
+        { key: "frequency", label: "Frequency", render: r => `<span style="color:var(--text-muted)">${r.frequency || "-"}</span>` },
+    ];
+
     return `
         <h1>Reports</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">${reports.length} Power BI reports tracked</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Sources</th>
-                    <th>Report Owner</th>
-                    <th>Business Owner</th>
-                    <th>Frequency</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${reports.map(r => `
-                    <tr>
-                        <td><strong>${r.name}</strong></td>
-                        <td>${statusBadge(r.status)}</td>
-                        <td>${r.source_count}</td>
-                        <td style="color:var(--text-muted)">${r.owner || "-"}</td>
-                        <td style="color:var(--text-muted)">${r.business_owner || "-"}</td>
-                        <td style="color:var(--text-muted)">${r.frequency || "-"}</td>
-                    </tr>
-                `).join("")}
-            </tbody>
-        </table>
+        ${dataTable("dt-reports", cols, reports)}
     `;
 }
 
@@ -206,27 +305,24 @@ async function renderLineage() {
         bySource[e.source_name].reports.push(e.report_name);
     }
 
+    const lineageRows = Object.entries(bySource).map(([name, info]) => ({
+        source_name: name,
+        type: info.type,
+        reports_list: info.reports.join(", "),
+        report_count: info.reports.length,
+    }));
+
+    const cols = [
+        { key: "source_name", label: "Source", render: r => `<strong>${r.source_name}</strong>` },
+        { key: "type", label: "Type", render: r => typeBadge(r.type) },
+        { key: "reports_list", label: "Feeds Reports" },
+        { key: "report_count", label: "# Reports", sortVal: r => r.report_count },
+    ];
+
     return `
         <h1>Lineage</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">Source to report dependencies</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Source</th>
-                    <th>Type</th>
-                    <th>Feeds Reports</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${Object.entries(bySource).map(([name, info]) => `
-                    <tr>
-                        <td><strong>${name}</strong></td>
-                        <td>${typeBadge(info.type)}</td>
-                        <td>${info.reports.join(", ")}</td>
-                    </tr>
-                `).join("")}
-            </tbody>
-        </table>
+        ${dataTable("dt-lineage", cols, lineageRows)}
     `;
 }
 
@@ -252,32 +348,15 @@ async function renderScanner() {
 
         <div class="section">
             <h2>Scan History</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>When</th>
-                        <th>Status</th>
-                        <th>Reports</th>
-                        <th>Sources</th>
-                        <th>New</th>
-                        <th>Changed</th>
-                        <th>Broken</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${runs.map(r => `
-                        <tr>
-                            <td>${timeAgo(r.started_at)}</td>
-                            <td>${statusBadge(r.status)}</td>
-                            <td>${r.reports_scanned ?? "-"}</td>
-                            <td>${r.sources_found ?? "-"}</td>
-                            <td>${r.new_sources ?? "-"}</td>
-                            <td>${r.changed_queries ?? "-"}</td>
-                            <td>${r.broken_refs ?? "-"}</td>
-                        </tr>
-                    `).join("")}
-                </tbody>
-            </table>
+            ${dataTable("dt-scans", [
+                { key: "started_at", label: "When", render: r => timeAgo(r.started_at), sortVal: r => r.started_at || "" },
+                { key: "status", label: "Status", render: r => statusBadge(r.status) },
+                { key: "reports_scanned", label: "Reports", render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
+                { key: "sources_found", label: "Sources", render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
+                { key: "new_sources", label: "New", render: r => `${r.new_sources ?? "-"}`, sortVal: r => r.new_sources ?? 0 },
+                { key: "changed_queries", label: "Changed", render: r => `${r.changed_queries ?? "-"}`, sortVal: r => r.changed_queries ?? 0 },
+                { key: "broken_refs", label: "Broken", render: r => `${r.broken_refs ?? "-"}`, sortVal: r => r.broken_refs ?? 0 },
+            ], runs)}
         </div>
     `;
 }
@@ -285,31 +364,18 @@ async function renderScanner() {
 async function renderAlerts() {
     const alerts = await api("/api/alerts?active_only=false");
 
+    const cols = [
+        { key: "severity", label: "Severity", render: a => statusBadge(a.severity) },
+        { key: "message", label: "Message" },
+        { key: "source_name", label: "Source", render: a => `<span style="color:var(--text-muted)">${a.source_name || "-"}</span>` },
+        { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
+        { key: "acknowledged", label: "Status", render: a => a.acknowledged ? '<span class="badge badge-muted">ack</span>' : '<span class="badge badge-red">active</span>', sortVal: a => a.acknowledged ? 1 : 0 },
+    ];
+
     return `
         <h1>Alerts</h1>
         <p style="color:var(--text-muted);margin-bottom:1rem">${alerts.filter(a => !a.acknowledged).length} active alerts</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Severity</th>
-                    <th>Message</th>
-                    <th>Source</th>
-                    <th>When</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${alerts.map(a => `
-                    <tr>
-                        <td>${statusBadge(a.severity)}</td>
-                        <td>${a.message}</td>
-                        <td style="color:var(--text-muted)">${a.source_name || "-"}</td>
-                        <td style="color:var(--text-muted)">${timeAgo(a.created_at)}</td>
-                        <td>${a.acknowledged ? '<span class="badge badge-muted">ack</span>' : '<span class="badge badge-red">active</span>'}</td>
-                    </tr>
-                `).join("")}
-            </tbody>
-        </table>
+        ${dataTable("dt-alerts", cols, alerts)}
     `;
 }
 
@@ -344,6 +410,7 @@ async function navigate(page) {
         app.innerHTML = html;
 
         // Post-render hooks
+        bindDataTables();
         if (page === "dashboard") renderDashboardAlerts();
         if (page === "scanner") bindScanButton();
     } catch (err) {

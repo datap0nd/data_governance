@@ -272,3 +272,65 @@ button.btn-outline:hover {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* Sortable table headers */
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 1.5rem;
+}
+
+th.sortable:hover {
+    color: var(--text);
+}
+
+th.sortable .sort-arrow {
+    position: absolute;
+    right: 0.4rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    opacity: 0.3;
+}
+
+th.sortable.sort-asc .sort-arrow,
+th.sortable.sort-desc .sort-arrow {
+    opacity: 1;
+    color: var(--blue);
+}
+
+/* Filter row */
+tr.filter-row th {
+    padding: 0.3rem 0.5rem;
+    background: var(--surface);
+}
+
+tr.filter-row input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+tr.filter-row input:focus {
+    border-color: var(--blue);
+}
+
+tr.filter-row input::placeholder {
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+/* Table count */
+.table-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 0.4rem;
+}
