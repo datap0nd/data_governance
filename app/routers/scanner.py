@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter
 from app.database import get_db
 from app.scanner.runner import run_scan
-from app.scanner.prober import run_probe
+from app.scanner.prober import run_probe, probe_debug
 from app.models import ScanRunOut
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,12 @@ def trigger_probe():
     """Probe PostgreSQL sources for last-updated timestamps."""
     result = run_probe()
     return result
+
+
+@router.get("/probe/debug")
+def probe_diagnostics():
+    """Show CSV samples and PostgreSQL source names side-by-side for debugging."""
+    return probe_debug()
 
 
 @router.get("/runs", response_model=list[ScanRunOut])

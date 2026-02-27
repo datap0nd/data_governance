@@ -47,6 +47,34 @@ Click "Run Scan Now" on the Scanner page, or hit the API:
 curl -X POST http://localhost:8000/api/scanner/run
 ```
 
+## PostgreSQL "Last Updated" Probing
+
+To show when PostgreSQL tables were last updated:
+
+1. Export the query results from pgAdmin as a CSV named `latest_upload_date.csv`
+2. Place it in the `data_governance` project root (same level as `app/`)
+3. CSV must have columns: `schema_name, table_name, last_activity` (with a header row)
+4. Run a scan — the prober runs automatically after each scan
+
+You can also trigger a probe independently:
+```bash
+curl -X POST http://localhost:8000/api/scanner/probe
+```
+
+### Debugging probe matching
+
+If "Last Updated" shows empty, open this URL in your browser to see what the CSV contains vs what's stored:
+```
+http://localhost:8000/api/scanner/probe/debug
+```
+
+Or paste this into Chrome DevTools Console (F12 → Console):
+```js
+fetch("/api/scanner/probe/debug").then(r=>r.json()).then(d=>console.log(d))
+```
+
+This shows `csv_samples` (what the CSV has) and `postgresql_sources` (what's in the database) side-by-side so you can spot the mismatch.
+
 ## Running Tests
 
 ```bash

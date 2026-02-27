@@ -70,8 +70,38 @@ def run_probe() -> dict:
         "skipped": skipped,
         "total_rows": len(rows),
         "status": "completed",
+        "csv_header": header,
     }
     if skipped_names:
         summary["skipped_tables"] = skipped_names[:20]
     logger.info("Probe completed: %s", summary)
     return summary
+
+
+def probe_debug() -> dict:
+    """Return diagnostic info to help debug matching issues."""
+    if not CSV_PATH.exists():
+        return {"error": f"CSV not found: {CSV_PATH}"}
+
+    with open(CSV_PATH, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        csv_rows = [row for row in reader if len(row) >= 3]
+
+    csv_samples = [
+        {"schema": r[0].strip(), "table": r[1].strip(), "pattern": f"%{r[0].strip()}.{r[1].strip()}"}
+        for r in csv_rows[:10]
+    ]
+
+    with get_db() as db:
+        pg_sources = db.execute(
+            "SELECT id, name, type FROM sources WHERE type = 'postgresql' LIMIT 20"
+        ).fetchall()
+
+    return {
+        "csv_path": str(CSV_PATH),
+        "csv_header": header,
+        "csv_row_count": len(csv_rows),
+        "csv_samples": csv_samples,
+        "postgresql_sources": [{"id": s["id"], "name": s["name"]} for s in pg_sources],
+    }
