@@ -1,8 +1,12 @@
+import logging
+
 from fastapi import APIRouter
 from app.database import get_db
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.models import ScanRunOut
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
@@ -13,9 +17,11 @@ def trigger_scan():
     result = run_scan()
     # After scan, probe PostgreSQL sources for last-updated timestamps
     try:
-        run_probe()
-    except Exception:
-        pass  # probe is best-effort; don't fail the scan
+        probe_result = run_probe()
+        result["probe"] = probe_result
+    except Exception as e:
+        logger.exception("Probe failed after scan")
+        result["probe"] = {"status": "failed", "error": str(e)}
     return result
 
 

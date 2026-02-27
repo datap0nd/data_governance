@@ -4,7 +4,7 @@ last-activity timestamps, then matches them to stored sources.
 
 Config files (in project root, same level as app/):
   - SQL_Credentials.txt  — line 1 = username, line 2 = password
-  - PostgresDB.txt       — PostgreSQL host/connection string
+  - PostgresDB.txt       — PostgreSQL connection string (URL or DSN)
   - query.txt            — SQL query returning (schema_name, table_name, last_activity)
 """
 
@@ -31,9 +31,28 @@ def _get_connection():
     creds = _read_file("SQL_Credentials.txt").splitlines()
     username = creds[0].strip()
     password = creds[1].strip()
-    host = _read_file("PostgresDB.txt")
+    dsn = _read_file("PostgresDB.txt")
 
-    return psycopg2.connect(host=host, user=username, password=password)
+    # If it looks like a URL/DSN, use it directly with user/password injected
+    if dsn.startswith("postgresql://") or dsn.startswith("postgres://"):
+        # Insert credentials into the URL
+        # e.g. postgresql://host:port/dbname -> postgresql://user:pass@host:port/dbname
+        prefix, rest = dsn.split("://", 1)
+        # Strip any existing credentials
+        if "@" in rest:
+            rest = rest.split("@", 1)[1]
+        return psycopg2.connect(f"{prefix}://{username}:{password}@{rest}")
+
+    # Otherwise treat it as a host (possibly host:port/dbname)
+    parts = dsn.split("/")
+    host_port = parts[0]
+    dbname = parts[1] if len(parts) > 1 else "postgres"
+
+    host = host_port.split(":")[0]
+    port = host_port.split(":")[1] if ":" in host_port else "5432"
+
+    return psycopg2.connect(host=host, port=port, dbname=dbname,
+                            user=username, password=password)
 
 
 def run_probe() -> dict:
@@ -54,19 +73,22 @@ def run_probe() -> dict:
 
     matched = 0
     skipped = 0
+    skipped_names = []
 
     with get_db() as db:
         for row in rows:
             schema_name, table_name, last_activity = row[0], row[1], row[2]
+            match_pattern = f"%{schema_name}.{table_name}"
 
             # Find matching source: name ends with "schema.table" and type is postgresql
             source = db.execute(
-                "SELECT id FROM sources WHERE name LIKE ? AND type = 'postgresql'",
-                (f"%{schema_name}.{table_name}",),
+                "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                (match_pattern,),
             ).fetchone()
 
             if not source:
                 skipped += 1
+                skipped_names.append(f"{schema_name}.{table_name}")
                 continue
 
             # Convert last_activity to string if it's a datetime
@@ -89,5 +111,7 @@ def run_probe() -> dict:
         "total_rows": len(rows),
         "status": "completed",
     }
+    if skipped_names:
+        summary["skipped_tables"] = skipped_names[:20]
     logger.info("Probe completed: %s", summary)
     return summary
