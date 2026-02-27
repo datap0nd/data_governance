@@ -18,6 +18,9 @@ REPORTS_PATH = os.environ.get(
 # Legacy alias
 TMDL_ROOT = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
 
+# Directory where credential/config files live (project root)
+CREDENTIALS_DIR = BASE_DIR
+
 # How often to run scheduled scans and checks (in hours)
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
 CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))

@@ -255,7 +255,7 @@ async function renderSources() {
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
         { key: "connection_info", label: "Connection", render: s => `<span style="color:var(--text-muted);font-size:0.8rem;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block">${s.connection_info || "-"}</span>` },
         { key: "status", label: "Status", render: s => statusBadge(s.status) },
-        { key: "last_probe_at", label: "Last Probe", render: s => `<span style="color:var(--text-muted)">${timeAgo(s.last_probe_at)}</span>`, sortVal: s => s.last_probe_at || "" },
+        { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)">${timeAgo(s.last_updated)}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
     ];

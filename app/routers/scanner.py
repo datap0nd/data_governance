@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from app.database import get_db
 from app.scanner.runner import run_scan
+from app.scanner.prober import run_probe
 from app.models import ScanRunOut
 
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
@@ -10,6 +11,18 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 def trigger_scan():
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
     result = run_scan()
+    # After scan, probe PostgreSQL sources for last-updated timestamps
+    try:
+        run_probe()
+    except Exception:
+        pass  # probe is best-effort; don't fail the scan
+    return result
+
+
+@router.post("/probe")
+def trigger_probe():
+    """Probe PostgreSQL sources for last-updated timestamps."""
+    result = run_probe()
     return result
 
 

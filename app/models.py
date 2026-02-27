@@ -15,7 +15,7 @@ class SourceOut(BaseModel):
     tags: str | None = None
     discovered_by: str = "manual"
     status: str | None = None  # populated from latest probe
-    last_probe_at: str | None = None
+    last_updated: str | None = None
     report_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None

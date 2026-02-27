@@ -11,11 +11,11 @@ def list_sources():
         rows = db.execute("""
             SELECT s.*,
                    sp.status AS latest_status,
-                   sp.probed_at AS latest_probe_at,
+                   sp.last_data_at AS latest_last_data_at,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
             FROM sources s
             LEFT JOIN (
-                SELECT source_id, status, probed_at,
+                SELECT source_id, status, last_data_at,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -34,7 +34,7 @@ def list_sources():
             tags=r["tags"],
             discovered_by=r["discovered_by"],
             status=r["latest_status"],
-            last_probe_at=r["latest_probe_at"],
+            last_updated=r["latest_last_data_at"],
             report_count=r["report_count"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
@@ -49,11 +49,11 @@ def get_source(source_id: int):
         r = db.execute("""
             SELECT s.*,
                    sp.status AS latest_status,
-                   sp.probed_at AS latest_probe_at,
+                   sp.last_data_at AS latest_last_data_at,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
             FROM sources s
             LEFT JOIN (
-                SELECT source_id, status, probed_at,
+                SELECT source_id, status, last_data_at,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -74,7 +74,7 @@ def get_source(source_id: int):
         tags=r["tags"],
         discovered_by=r["discovered_by"],
         status=r["latest_status"],
-        last_probe_at=r["latest_probe_at"],
+        last_updated=r["latest_last_data_at"],
         report_count=r["report_count"],
         created_at=r["created_at"],
         updated_at=r["updated_at"],
