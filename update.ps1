@@ -4,24 +4,36 @@ $ZipUrl = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.z
 $ZipPath = "$Downloads\data_governance-main.zip"
 
 # Download latest version via Chrome
-Write-Host "Opening Chrome to download latest version..." -ForegroundColor Cyan
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+Write-Host "Opening download link in Chrome..." -ForegroundColor Cyan
 Start-Process "chrome" $ZipUrl
 
-# Wait for the ZIP to appear in Downloads
-Write-Host "Waiting for download to finish..." -ForegroundColor Yellow
-$timeout = 120
+# Wait for Chrome to finish downloading (checks for .crdownload partial file too)
+Write-Host "Waiting for download to complete (this may take a few minutes)..." -ForegroundColor Yellow
+$timeout = 300
 $elapsed = 0
-while (-not (Test-Path $ZipPath)) {
-    Start-Sleep -Seconds 2
-    $elapsed += 2
+while ($true) {
+    Start-Sleep -Seconds 3
+    $elapsed += 3
+
+    if (Test-Path $ZipPath) {
+        # File exists — make sure Chrome is done writing (no .crdownload alongside)
+        $partial = "$ZipPath.crdownload"
+        if (-not (Test-Path $partial)) {
+            Start-Sleep -Seconds 2
+            break
+        }
+    }
+
     if ($elapsed -ge $timeout) {
-        Write-Host "Timed out waiting for download. Please download manually and re-run." -ForegroundColor Red
+        Write-Host "Timed out after 5 minutes. Please download manually to $Downloads and re-run." -ForegroundColor Red
         exit 1
     }
+
+    if ($elapsed % 15 -eq 0) {
+        Write-Host "  Still waiting... ($elapsed seconds)" -ForegroundColor DarkGray
+    }
 }
-# Wait a bit more to make sure the file is fully written
-Start-Sleep -Seconds 3
 Write-Host "Download complete." -ForegroundColor Green
 
 # Remove old folder (but keep governance.db so scan history is preserved)
