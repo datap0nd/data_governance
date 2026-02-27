@@ -46,9 +46,12 @@ if ($DbBackup -and (Test-Path $DbBackup)) {
 }
 
 # Install dependencies
+# Change this to your pip index URL (corporate proxy, Artifactory, etc.)
+$PipIndex = "https://pypi.org/simple/"
+
 Write-Host "Installing dependencies..." -ForegroundColor Yellow
 Set-Location "$ProjectDir\data_governance-main"
-pip install -r requirements.txt -q
+pip install -r requirements.txt --index-url $PipIndex -q
 
 Write-Host ""
 Write-Host "Starting the app..." -ForegroundColor Green
