@@ -1,0 +1,43 @@
+table Activities_Log
+	lineageTag: 1f277113-e799-4bb7-ad11-c1d8606183e0
+
+	column activity_id
+		dataType: string
+		lineageTag: c1ae867f-e1c3-46c9-805f-a3e3c869707e
+		summarizeBy: none
+		sourceColumn: activity_id
+
+	column opp_id
+		dataType: string
+		lineageTag: 66eec4e2-8d07-4aa4-b184-304e3d1a8e4e
+		summarizeBy: none
+		sourceColumn: opp_id
+
+	column type
+		dataType: string
+		lineageTag: 10228c12-d29d-4c95-820d-a30c969c5c6a
+		summarizeBy: none
+		sourceColumn: type
+
+	column date
+		dataType: string
+		lineageTag: 617f0194-a5cb-4441-8476-c9891e099628
+		summarizeBy: none
+		sourceColumn: date
+
+	column notes
+		dataType: string
+		lineageTag: f85bf2c1-77e8-4c17-b271-e80d041433a2
+		summarizeBy: none
+		sourceColumn: notes
+
+	partition Activities_Log = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents("C:\Data\Sales\activities_log.csv"),[Delimiter=",", Columns=5, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

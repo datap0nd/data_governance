@@ -1,0 +1,37 @@
+table Supplier_Catalog
+	lineageTag: d9ca2838-ca64-4866-9658-97ac2c8b9613
+
+	column supplier_id
+		dataType: string
+		lineageTag: 02e44dcf-dd53-4064-8a54-3ebedc8934c6
+		summarizeBy: none
+		sourceColumn: supplier_id
+
+	column supplier_name
+		dataType: string
+		lineageTag: 7d8b2173-e075-4d83-a524-c9b6c3188af4
+		summarizeBy: none
+		sourceColumn: supplier_name
+
+	column lead_time_days
+		dataType: int64
+		lineageTag: 72d303b1-f892-46e0-92bb-769feebbc252
+		summarizeBy: sum
+		sourceColumn: lead_time_days
+
+	column rating
+		dataType: decimal
+		lineageTag: 9647b37c-168b-4700-99df-3de63e0a706b
+		summarizeBy: sum
+		sourceColumn: rating
+
+	partition Supplier_Catalog = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents("C:\Data\Supply\supplier_catalog.csv"),[Delimiter=",", Columns=4, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

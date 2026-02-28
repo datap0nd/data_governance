@@ -1,0 +1,20 @@
+table 'Business Owner'
+	lineageTag: 65030418-7ac9-4f95-8728-9271c4bf53e8
+
+	column 'Business Owner'
+		dataType: string
+		lineageTag: 2c9f8914-4195-428c-a122-1e41791f4f68
+		summarizeBy: none
+		sourceColumn: Business Owner
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Business Owner' = m
+		mode: import
+		source =
+				let
+				    Source = #table({"Business Owner"}, {{"Ana Costa"}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table

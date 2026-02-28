@@ -26,8 +26,12 @@ def get_dashboard():
         status_counts = {r["status"]: r["c"] for r in probe_statuses}
         sources_fresh = status_counts.get("fresh", 0)
         sources_stale = status_counts.get("stale", 0)
-        sources_error = status_counts.get("error", 0)
-        sources_unknown = status_counts.get(None, 0)
+        sources_outdated = status_counts.get("outdated", 0) + status_counts.get("error", 0)
+        sources_unknown = (
+            status_counts.get(None, 0)
+            + status_counts.get("unknown", 0)
+            + status_counts.get("no_connection", 0)
+        )
 
         # Report counts
         reports_total = db.execute("SELECT COUNT(*) AS c FROM reports").fetchone()["c"]
@@ -47,7 +51,7 @@ def get_dashboard():
         sources_total=sources_total,
         sources_fresh=sources_fresh,
         sources_stale=sources_stale,
-        sources_error=sources_error,
+        sources_outdated=sources_outdated,
         sources_unknown=sources_unknown,
         reports_total=reports_total,
         alerts_active=alerts_active,

@@ -1,0 +1,37 @@
+table Revenue_Data
+	lineageTag: f42563b1-8d02-44c5-93bb-b6e8b6957c4e
+
+	column month
+		dataType: string
+		lineageTag: f87ee0bd-fcca-4377-91e9-91292a094333
+		summarizeBy: none
+		sourceColumn: month
+
+	column region
+		dataType: string
+		lineageTag: 7fab1bd1-e8f2-41e7-97be-72642293c4da
+		summarizeBy: none
+		sourceColumn: region
+
+	column revenue
+		dataType: decimal
+		lineageTag: 3709f72e-cac5-4414-8715-a15d1aac05b5
+		summarizeBy: sum
+		sourceColumn: revenue
+
+	column target
+		dataType: decimal
+		lineageTag: be92d2c8-d590-48fc-89df-e5e7f4484ed8
+		summarizeBy: sum
+		sourceColumn: target
+
+	partition Revenue_Data = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("sqlserver01.company.local", "FinanceDB"),
+				    dbo_MonthlyRevenue = Source{[Schema="dbo",Item="MonthlyRevenue"]}[Data]
+				in
+				    dbo_MonthlyRevenue
+
+	annotation PBI_ResultType = Table

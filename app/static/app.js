@@ -26,14 +26,20 @@ function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
 function statusBadge(status) {
-    if (!status) return '<span class="badge badge-muted">unknown</span>';
+    if (!status) return '<span class="badge badge-muted">not probed</span>';
     const s = status.toLowerCase();
     if (s === "fresh" || s === "current" || s === "pass" || s === "completed")
         return `<span class="badge badge-green">${status}</span>`;
     if (s === "stale" || s === "stale sources" || s === "warn" || s === "warning")
-        return `<span class="badge badge-yellow">${status}</span>`;
+        return `<span class="badge badge-yellow">${s === "stale sources" ? "at risk" : status}</span>`;
+    if (s === "outdated" || s === "outdated sources")
+        return `<span class="badge badge-red">${s === "outdated sources" ? "degraded" : status}</span>`;
     if (s === "error" || s === "fail" || s === "failed" || s === "critical")
         return `<span class="badge badge-red">${status}</span>`;
+    if (s === "no_connection")
+        return '<span class="badge badge-muted">no connection</span>';
+    if (s === "unknown")
+        return '<span class="badge badge-muted">not probed</span>';
     return `<span class="badge badge-muted">${status}</span>`;
 }
 
@@ -50,13 +56,15 @@ function actionStatusBadge(status) {
 
 function actionTypeBadge(type) {
     const labels = {
-        stale_source: "Stale Source",
-        error_source: "Outdated Source",
+        stale_source: "Stale",
+        outdated_source: "Outdated",
+        error_source: "Outdated",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
     };
     const colors = {
         stale_source: "badge-yellow",
+        outdated_source: "badge-red",
         error_source: "badge-red",
         broken_ref: "badge-red",
         changed_query: "badge-blue",
@@ -318,18 +326,77 @@ function bindDataTables() {
 }
 
 function _refreshDT(tableId) {
-    const html = _renderDT(tableId);
-    const oldWrapper = document.getElementById(tableId)?.closest(".table-wrapper");
-    if (!oldWrapper) return;
-    const temp = document.createElement("div");
-    temp.innerHTML = html;
-    const parent = oldWrapper.parentNode;
-    const countDiv = oldWrapper.nextElementSibling;
-    parent.replaceChild(temp.querySelector(".table-wrapper"), oldWrapper);
-    if (countDiv && countDiv.classList.contains("table-count")) {
-        parent.replaceChild(temp.querySelector(".table-count"), countDiv);
+    const dt = window._dt[tableId];
+    const table = document.getElementById(tableId);
+    if (!table) return;
+
+    // Filter and sort rows
+    const { columns, sortCol, sortDir, filters } = dt;
+    let rows = dt.rows.filter(r => {
+        for (const col of columns) {
+            const f = (filters[col.key] || "").toLowerCase();
+            if (!f) continue;
+            const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
+            if (!val.includes(f)) return false;
+        }
+        return true;
+    });
+
+    if (sortCol) {
+        const col = columns.find(c => c.key === sortCol);
+        rows = [...rows].sort((a, b) => {
+            let va = col && col.sortVal ? col.sortVal(a) : (a[sortCol] ?? "");
+            let vb = col && col.sortVal ? col.sortVal(b) : (b[sortCol] ?? "");
+            if (typeof va === "string") va = va.toLowerCase();
+            if (typeof vb === "string") vb = vb.toLowerCase();
+            if (va < vb) return sortDir === "asc" ? -1 : 1;
+            if (va > vb) return sortDir === "asc" ? 1 : -1;
+            return 0;
+        });
     }
-    bindDataTables();
+    dt._displayRows = rows;
+
+    // Only replace tbody (preserves thead/filter inputs/focus)
+    const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
+    const bodyHTML = rows.map((r, i) =>
+        `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
+    ).join("") || `<tr><td colspan="${columns.length}" style="text-align:center;color:var(--text-dim);padding:2rem">No data</td></tr>`;
+
+    const tbody = table.querySelector("tbody");
+    if (tbody) tbody.innerHTML = bodyHTML;
+
+    // Update sort arrows in header (without replacing elements)
+    table.querySelectorAll("thead tr:first-child th.sortable").forEach(th => {
+        const col = th.dataset.col;
+        th.className = `sortable${columns.find(c => c.key === col)?.resizable ? ' resizable' : ''} ${sortCol === col ? 'sort-' + sortDir : ''}`;
+        const arrow = th.querySelector(".sort-arrow");
+        if (arrow) arrow.innerHTML = sortCol === col && sortDir === "desc" ? "&#9660;" : "&#9650;";
+    });
+
+    // Update count
+    const wrapper = table.closest(".table-wrapper");
+    if (wrapper) {
+        const countDiv = wrapper.nextElementSibling;
+        if (countDiv && countDiv.classList.contains("table-count")) {
+            countDiv.textContent = `${rows.length} of ${dt.rows.length} rows`;
+        }
+    }
+
+    // Re-bind only tbody row clicks and expandable cells (not filter inputs or sort headers)
+    table.querySelectorAll("tr[data-clickable]").forEach(tr => {
+        tr.addEventListener("click", () => {
+            const idx = parseInt(tr.dataset.rowIdx);
+            if (dt.opts && dt.opts.onRowClick && dt._displayRows) {
+                dt.opts.onRowClick(dt._displayRows[idx]);
+            }
+        });
+    });
+    table.querySelectorAll("td .cell-expandable").forEach(el => {
+        el.addEventListener("dblclick", (e) => {
+            e.stopPropagation();
+            el.classList.toggle("expanded");
+        });
+    });
 }
 
 
@@ -439,15 +506,31 @@ async function renderDashboard() {
     ]);
     const scan = data.last_scan;
 
-    const total = data.sources_total || 1;
-    const freshPct = pct(data.sources_fresh, total);
-    const stalePct = pct(data.sources_stale, total);
-    const errorPct = pct(data.sources_error, total);
-    const unknownPct = 100 - freshPct - stalePct - errorPct;
+    const total = data.sources_total;
+    const hasSources = total > 0;
+    const allUnknown = hasSources && data.sources_fresh === 0 && data.sources_stale === 0 && data.sources_outdated === 0;
+    const freshPct = hasSources ? pct(data.sources_fresh, total) : 0;
+    const stalePct = hasSources ? pct(data.sources_stale, total) : 0;
+    const outdatedPct = hasSources ? pct(data.sources_outdated, total) : 0;
+    const unknownPct = hasSources ? 100 - freshPct - stalePct - outdatedPct : 0;
 
-    // Find problematic sources/reports
-    const problemSources = sources.filter(s => s.status === "stale" || s.status === "error");
-    const problemReports = reports.filter(r => r.status === "error" || r.status === "stale sources");
+    // Health label
+    let healthLabel;
+    if (!hasSources) healthLabel = "No sources yet";
+    else if (allUnknown) healthLabel = "Not yet probed";
+    else healthLabel = freshPct + "% fresh";
+
+    // Find problematic sources/reports, sorted by severity (outdated first, then stale)
+    const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated")
+        .sort((a, b) => (a.status === "outdated" ? 0 : 1) - (b.status === "outdated" ? 0 : 1));
+    const problemReports = reports.filter(r => r.status === "outdated sources" || r.status === "stale sources")
+        .sort((a, b) => (a.status === "outdated sources" ? 0 : 1) - (b.status === "outdated sources" ? 0 : 1));
+    const allProblems = [...problemSources.map(s => ({ kind: "source", item: s })), ...problemReports.map(r => ({ kind: "report", item: r }))];
+    const ATTENTION_LIMIT = 6;
+
+    // Store for click-through navigation
+    window._dashboardSources = sources;
+    window._dashboardReports = reports;
 
     return `
         <div class="page-header">
@@ -462,7 +545,7 @@ async function renderDashboard() {
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green">${data.sources_fresh} fresh</span>
                     <span class="stat-dot dot-yellow">${data.sources_stale} stale</span>
-                    <span class="stat-dot dot-red">${data.sources_error} outdated</span>
+                    <span class="stat-dot dot-red">${data.sources_outdated} outdated</span>
                     ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} unknown</span>` : ""}
                 </div>
             </div>
@@ -472,7 +555,8 @@ async function renderDashboard() {
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green">${reports.filter(r => r.status === "current").length} healthy</span>
                     <span class="stat-dot dot-yellow">${reports.filter(r => r.status === "stale sources").length} at risk</span>
-                    <span class="stat-dot dot-red">${reports.filter(r => r.status === "error").length} degraded</span>
+                    <span class="stat-dot dot-red">${reports.filter(r => r.status === "outdated sources").length} degraded</span>
+                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
             </div>
             <div class="stat-card ${data.alerts_active > 0 ? 'card-red' : 'card-green'}">
@@ -489,37 +573,79 @@ async function renderDashboard() {
         <div class="health-bar-container">
             <div style="display:flex;justify-content:space-between;align-items:center">
                 <h2 style="margin-bottom:0">Source Health</h2>
-                <span style="color:var(--text-dim);font-size:0.72rem">${freshPct}% fresh</span>
+                <span style="color:var(--text-dim);font-size:0.72rem">${healthLabel}</span>
             </div>
+            ${!hasSources ? `
             <div class="health-bar">
-                <div class="segment segment-green" style="width:${freshPct}%"></div>
-                <div class="segment segment-yellow" style="width:${stalePct}%"></div>
-                <div class="segment segment-red" style="width:${errorPct}%"></div>
-                <div class="segment segment-muted" style="width:${unknownPct}%"></div>
+                <div class="segment segment-muted" style="width:100%"></div>
             </div>
+            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">Run a scan to discover data sources</div>
+            ` : allUnknown ? `
+            <div class="health-bar">
+                <div class="segment segment-muted" style="width:100%"></div>
+            </div>
+            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered &mdash; probe to check freshness</div>
+            ` : `
+            <div class="health-bar">
+                ${freshPct > 0 ? `<div class="segment segment-green" style="width:${freshPct}%"></div>` : ""}
+                ${stalePct > 0 ? `<div class="segment segment-yellow" style="width:${stalePct}%"></div>` : ""}
+                ${outdatedPct > 0 ? `<div class="segment segment-red" style="width:${outdatedPct}%"></div>` : ""}
+                ${unknownPct > 0 ? `<div class="segment segment-muted" style="width:${unknownPct}%"></div>` : ""}
+            </div>
+            `}
         </div>
 
         <div class="section-grid">
             <div class="section">
-                <h2>Attention Needed</h2>
-                ${problemSources.length > 0 || problemReports.length > 0 ? `
-                    <div class="alert-list">
-                        ${problemSources.map(s => {
-                            const parsed = parseSourceName(s);
-                            return `<div class="alert-item">
-                                <div class="dot ${s.status === 'error' ? 'dot-red' : 'dot-yellow'}"></div>
-                                <span><strong>${parsed.shortName}</strong> &mdash; ${s.status === 'error' ? 'data older than 90 days' : 'data is 31-90 days old'}</span>
-                                <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${s.last_updated ? timeAgo(s.last_updated) : ""}</span>
-                            </div>`;
+                <h2>Attention Needed${allProblems.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${allProblems.length})</span>` : ""}</h2>
+                ${allProblems.length > 0 ? `
+                    <div class="alert-list" id="attention-list">
+                        ${allProblems.slice(0, ATTENTION_LIMIT).map(p => {
+                            if (p.kind === "source") {
+                                const s = p.item;
+                                const parsed = parseSourceName(s);
+                                return `<div class="alert-item attention-clickable" data-kind="source" data-id="${s.id}">
+                                    <div class="dot ${s.status === 'outdated' ? 'dot-red' : 'dot-yellow'}"></div>
+                                    <span><strong>${parsed.shortName}</strong> &mdash; ${s.status === 'outdated' ? 'data older than 90 days' : 'data is 31-90 days old'}</span>
+                                    <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${s.last_updated ? timeAgo(s.last_updated) : ""}</span>
+                                </div>`;
+                            } else {
+                                const r = p.item;
+                                return `<div class="alert-item attention-clickable" data-kind="report" data-id="${r.id}">
+                                    <div class="dot ${r.status === 'outdated sources' ? 'dot-red' : 'dot-yellow'}"></div>
+                                    <span><strong>${r.name}</strong> &mdash; has ${r.status === 'outdated sources' ? 'outdated' : 'stale'} sources</span>
+                                    <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${r.worst_source_updated ? timeAgo(r.worst_source_updated) : ""}</span>
+                                </div>`;
+                            }
                         }).join("")}
-                        ${problemReports.map(r => `
-                            <div class="alert-item">
-                                <div class="dot ${r.status === 'error' ? 'dot-red' : 'dot-yellow'}"></div>
-                                <span><strong>${r.name}</strong> &mdash; has ${r.status === 'error' ? 'outdated' : 'stale'} sources</span>
-                            </div>
-                        `).join("")}
                     </div>
-                ` : '<div class="empty-state">All sources and reports are healthy</div>'}
+                    ${allProblems.length > ATTENTION_LIMIT ? `
+                        <div id="attention-overflow" style="display:none" class="alert-list">
+                            ${allProblems.slice(ATTENTION_LIMIT).map(p => {
+                                if (p.kind === "source") {
+                                    const s = p.item;
+                                    const parsed = parseSourceName(s);
+                                    return `<div class="alert-item attention-clickable" data-kind="source" data-id="${s.id}">
+                                        <div class="dot ${s.status === 'outdated' ? 'dot-red' : 'dot-yellow'}"></div>
+                                        <span><strong>${parsed.shortName}</strong> &mdash; ${s.status === 'outdated' ? 'data older than 90 days' : 'data is 31-90 days old'}</span>
+                                        <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${s.last_updated ? timeAgo(s.last_updated) : ""}</span>
+                                    </div>`;
+                                } else {
+                                    const r = p.item;
+                                    return `<div class="alert-item attention-clickable" data-kind="report" data-id="${r.id}">
+                                        <div class="dot ${r.status === 'outdated sources' ? 'dot-red' : 'dot-yellow'}"></div>
+                                        <span><strong>${r.name}</strong> &mdash; has ${r.status === 'outdated sources' ? 'outdated' : 'stale'} sources</span>
+                                        <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${r.worst_source_updated ? timeAgo(r.worst_source_updated) : ""}</span>
+                                    </div>`;
+                                }
+                            }).join("")}
+                        </div>
+                        <button class="btn-outline btn-sm" id="btn-show-all-attention" style="margin-top:0.5rem;font-size:0.72rem">Show all ${allProblems.length} items</button>
+                    ` : ""}
+                ` : allUnknown
+                    ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
+                    : '<div class="empty-state">All sources and reports are healthy</div>'
+                }
             </div>
             <div class="section" id="alerts-preview"></div>
         </div>
@@ -539,13 +665,14 @@ async function renderDashboardAlerts() {
     container.innerHTML = `
         <h2>Recent Alerts</h2>
         <div class="alert-list">
-            ${alerts.slice(0, 8).map(a => `
-                <div class="alert-item">
+            ${alerts.slice(0, 8).map(a => {
+                const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
+                return `<div class="alert-item">
                     <div class="dot ${a.severity === 'critical' ? 'dot-red' : 'dot-yellow'}"></div>
-                    <span>${a.message}</span>
+                    <span>${srcShort ? `<strong>${srcShort}</strong> &mdash; ` : ""}${a.message}</span>
                     <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${timeAgo(a.created_at)}</span>
-                </div>
-            `).join("")}
+                </div>`;
+            }).join("")}
         </div>
     `;
 }
@@ -568,24 +695,30 @@ async function renderSources() {
         { key: "status", label: "Status", render: s => statusBadge(s.status) },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
-        { key: "owner", label: "Owner", render: s => `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
+        { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
+            ? `<span style="color:var(--text-muted);cursor:help;border-bottom:1px dotted var(--text-dim)" title="Source is used by multiple report owners">${s.owner}</span>`
+            : `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
     ];
 
     const fresh = sources.filter(s => s.status === "fresh").length;
     const stale = sources.filter(s => s.status === "stale").length;
-    const err = sources.filter(s => s.status === "error").length;
+    const outdated = sources.filter(s => s.status === "outdated").length;
 
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${sources.length} data sources tracked &mdash; ${fresh} fresh, ${stale} stale, ${err} outdated</span>
+            <span class="subtitle">${sources.length} data sources tracked &mdash; ${fresh} fresh, ${stale} stale, ${outdated} outdated</span>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
 }
 
 async function renderReports() {
-    const reports = await api("/api/reports");
+    const [reports, edges, sources] = await Promise.all([
+        api("/api/reports"),
+        api("/api/lineage"),
+        api("/api/sources"),
+    ]);
 
     const cols = [
         { key: "name", label: "Report", render: r => `<strong>${r.name}</strong>` },
@@ -593,24 +726,144 @@ async function renderReports() {
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
         { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
-        { key: "frequency", label: "Frequency", render: r => `<span style="color:var(--text-muted)">${r.frequency || "-"}</span>` },
+        { key: "frequency", label: "Frequency", render: r => r.frequency
+            ? `<span style="color:var(--text-muted)">${r.frequency}</span>`
+            : `<span class="freq-inline" data-report-id="${r.id}"><button class="btn-outline btn-sm btn-set-freq" data-report-id="${r.id}" style="font-size:0.68rem">Set</button></span>` },
     ];
 
     const healthy = reports.filter(r => r.status === "current").length;
     const atRisk = reports.filter(r => r.status !== "current" && r.status !== "unknown").length;
+
+    // Build lineage data for dependency view
+    const sourceMap = new Map();
+    sources.forEach(s => sourceMap.set(s.id, s));
+    const reportSources = new Map();
+    edges.forEach(e => {
+        if (!reportSources.has(e.report_id)) reportSources.set(e.report_id, new Set());
+        reportSources.get(e.report_id).add(e.source_id);
+    });
+    function sourceFolder(name) {
+        if (!name) return "Other";
+        const n = name.replace(/\\/g, "/");
+        const parts = n.split("/").filter(Boolean);
+        if (parts.length >= 3) return parts[parts.length - 2];
+        if (parts.length === 2) return parts[0];
+        return "Other";
+    }
+    const statusOrder = { "outdated sources": 0, "stale sources": 1, "unknown": 2, "current": 3 };
+    const sortedReports = [...reports].sort((a, b) => {
+        const sa = statusOrder[a.status] ?? 2;
+        const sb = statusOrder[b.status] ?? 2;
+        if (sa !== sb) return sa - sb;
+        return a.name.localeCompare(b.name);
+    });
+    window._lineageData = { sortedReports, reportSources, sourceMap, edges, sourceFolder };
 
     return `
         <div class="page-header">
             <h1>Reports</h1>
             <span class="subtitle">${reports.length} Power BI reports &mdash; ${healthy} healthy, ${atRisk} need attention</span>
         </div>
-        ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
+
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="tab-reports-table">Table</button>
+            <button class="tab-btn" data-tab="tab-reports-deps">Dependencies</button>
+        </div>
+
+        <div id="tab-reports-table" class="tab-panel active">
+            ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
+        </div>
+        <div id="tab-reports-deps" class="tab-panel" style="display:none">
+            <div class="lineage-layout">
+                <div class="lineage-sidebar">
+                    <div class="lineage-sidebar-header">
+                        <input id="lineage-report-search" type="text" placeholder="Filter reports..." class="lineage-search-input">
+                        <div class="lineage-filter-row">
+                            <button class="lineage-filter-btn active" data-filter="all">All</button>
+                            <button class="lineage-filter-btn" data-filter="unhealthy">Unhealthy</button>
+                        </div>
+                    </div>
+                    <div id="lineage-report-list" class="lineage-report-list">
+                        ${sortedReports.map(r => _lineageReportItem(r, reportSources)).join("")}
+                    </div>
+                </div>
+                <div class="lineage-detail" id="lineage-detail">
+                    <div class="lineage-placeholder">
+                        <div class="lineage-placeholder-icon">&#8594;</div>
+                        <div class="lineage-placeholder-text">Select a report to view its data sources</div>
+                        <div class="lineage-placeholder-hint">Reports with issues are listed first</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     `;
 }
 
+function bindReportsPage() {
+    // Tab switching (Table / Dependencies)
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            document.querySelectorAll(".tab-panel").forEach(p => {
+                p.style.display = p.id === btn.dataset.tab ? "" : "none";
+                p.classList.toggle("active", p.id === btn.dataset.tab);
+            });
+            // Lazy-init lineage on first switch to Dependencies tab
+            if (btn.dataset.tab === "tab-reports-deps" && !window._lineageBound) {
+                window._lineageBound = true;
+                bindLineagePage();
+            }
+        });
+    });
+
+    // Frequency set buttons
+    document.querySelectorAll(".btn-set-freq").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const reportId = btn.dataset.reportId;
+            const container = btn.closest(".freq-inline");
+            if (!container) return;
+
+            container.innerHTML = `
+                <span style="display:inline-flex;gap:0.3rem;align-items:center" onclick="event.stopPropagation()">
+                    <select class="freq-select" data-report-id="${reportId}" style="font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)">
+                        <option value="">Choose...</option>
+                        <option value="Daily">Daily</option>
+                        <option value="Weekly">Weekly</option>
+                        <option value="Monthly">Monthly</option>
+                        <option value="Quarterly">Quarterly</option>
+                    </select>
+                    <button class="btn-sm freq-save" data-report-id="${reportId}" style="font-size:0.68rem;padding:0.15rem 0.4rem">Save</button>
+                </span>
+            `;
+
+            const saveBtn = container.querySelector(".freq-save");
+            const select = container.querySelector(".freq-select");
+            saveBtn.addEventListener("click", async (ev) => {
+                ev.stopPropagation();
+                const freq = select.value;
+                if (!freq) { toast("Select a frequency"); return; }
+                try {
+                    await apiPatch(`/api/reports/${reportId}`, { frequency: freq });
+                    toast("Frequency updated");
+                    navigate("reports");
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+            });
+            select.addEventListener("click", (ev) => ev.stopPropagation());
+        });
+    });
+}
+
 async function renderScanner() {
-    const runs = await api("/api/scanner/runs");
+    const [runs, probeRuns] = await Promise.all([
+        api("/api/scanner/runs"),
+        api("/api/scanner/probe/runs"),
+    ]);
     const lastRun = runs.length > 0 ? runs[0] : null;
+    const lastProbe = probeRuns.length > 0 ? probeRuns[0] : null;
 
     return `
         <div class="page-header">
@@ -622,28 +875,47 @@ async function renderScanner() {
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
-                ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)} (${lastRun.status})` : "No scans yet"}
+                ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
+                ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
             </span>
         </div>
 
         ${lastRun && lastRun.log ? `
             <div class="section">
-                <h2>Last Scan Log</h2>
-                <div class="scan-log">${lastRun.log}</div>
+                <h2 class="log-toggle" data-target="scan-log-body" style="cursor:pointer;user-select:none">Last Scan Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span></h2>
+                <div id="scan-log-body" class="scan-log" style="display:none">${lastRun.log}</div>
             </div>
         ` : ""}
 
-        <div class="section">
-            <h2>Scan History</h2>
-            ${dataTable("dt-scans", [
-                { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
-                { key: "status", label: "Status", render: r => statusBadge(r.status) },
-                { key: "reports_scanned", label: "Reports", render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
-                { key: "sources_found", label: "Sources", render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
-                { key: "new_sources", label: "New", render: r => r.new_sources ? `<span style="color:var(--green)">+${r.new_sources}</span>` : '-', sortVal: r => r.new_sources ?? 0 },
-                { key: "changed_queries", label: "Changed", render: r => r.changed_queries ? `<span style="color:var(--yellow)">${r.changed_queries}</span>` : '-', sortVal: r => r.changed_queries ?? 0 },
-                { key: "broken_refs", label: "Broken", render: r => r.broken_refs ? `<span style="color:var(--red)">${r.broken_refs}</span>` : '-', sortVal: r => r.broken_refs ?? 0 },
-            ], runs)}
+        ${lastProbe && lastProbe.log ? `
+            <div class="section">
+                <h2 class="log-toggle" data-target="probe-log-body" style="cursor:pointer;user-select:none">Last Probe Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span></h2>
+                <div id="probe-log-body" class="scan-log" style="display:none">${lastProbe.log}</div>
+            </div>
+        ` : ""}
+
+        <div class="section-grid">
+            <div class="section">
+                <h2>Scan History</h2>
+                ${dataTable("dt-scans", [
+                    { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
+                    { key: "status", label: "Status", render: r => statusBadge(r.status) },
+                    { key: "reports_scanned", label: "Reports", render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
+                    { key: "sources_found", label: "Sources", render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
+                    { key: "new_sources", label: "New", render: r => r.new_sources ? `<span style="color:var(--green)">+${r.new_sources}</span>` : '-', sortVal: r => r.new_sources ?? 0 },
+                ], runs)}
+            </div>
+            <div class="section">
+                <h2>Probe History</h2>
+                ${probeRuns.length > 0 ? dataTable("dt-probes", [
+                    { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
+                    { key: "status", label: "Status", render: r => statusBadge(r.status) },
+                    { key: "sources_probed", label: "Probed", render: r => `${r.sources_probed ?? "-"}` },
+                    { key: "fresh", label: "Fresh", render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
+                    { key: "stale", label: "Stale", render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
+                    { key: "outdated", label: "Outdated", render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
+                ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
+            </div>
         </div>
     `;
 }
@@ -653,24 +925,40 @@ async function renderAlerts() {
 
     const cols = [
         { key: "severity", label: "Severity", render: a => statusBadge(a.severity) },
-        { key: "message", label: "Message" },
-        { key: "source_name", label: "Source", render: a => `<span style="color:var(--text-muted)">${a.source_name || "-"}</span>` },
+        { key: "message", label: "Message", render: a => {
+            const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
+            return srcShort ? `<strong>${srcShort}</strong> &mdash; ${a.message}` : a.message;
+        }},
         { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
-        { key: "acknowledged", label: "Status", render: a => a.acknowledged ? '<span class="badge badge-muted">ack</span>' : '<span class="badge badge-red">active</span>', sortVal: a => a.acknowledged ? 1 : 0 },
+        { key: "acknowledged", label: "Status", render: a => a.acknowledged
+            ? `<span class="badge badge-muted">acknowledged</span>`
+            : `<button class="btn-sm btn-red btn-ack-alert" data-alert-id="${a.id}">Acknowledge</button>`,
+            sortVal: a => a.acknowledged ? 1 : 0 },
     ];
 
     const active = alerts.filter(a => !a.acknowledged).length;
+    const acked = alerts.length - active;
 
-    return `
-        <div class="page-header">
-            <h1>Alerts</h1>
-            <span class="subtitle">${active} active alert${active !== 1 ? 's' : ''}</span>
-        </div>
-        ${dataTable("dt-alerts", cols, alerts)}
-    `;
+    return { html: dataTable("dt-alerts", cols, alerts), active, acked, total: alerts.length };
 }
 
-async function renderActions() {
+function bindAlertsTab() {
+    document.querySelectorAll(".btn-ack-alert").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const alertId = btn.dataset.alertId;
+            try {
+                await fetch(`/api/alerts/${alertId}/acknowledge`, { method: "POST" });
+                toast("Alert acknowledged");
+                navigate("issues");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    });
+}
+
+async function renderActionsContent() {
     const actions = await api("/api/actions");
 
     const open = actions.filter(a => a.status === "open").length;
@@ -688,13 +976,13 @@ async function renderActions() {
         }
 
         return `<div class="action-cards">${filtered.map(a => {
-            const indColor = a.type.includes("error") ? "ind-red"
+            const indColor = a.type.includes("outdated") || a.type.includes("error") ? "ind-red"
                            : a.type.includes("stale") ? "ind-yellow"
                            : a.type.includes("broken") ? "ind-red"
                            : "ind-blue";
 
             const sourceName = a.source_name || "-";
-            const shortSource = sourceName.includes("/") ? sourceName.split("/").pop() : sourceName;
+            const shortSource = shortNameFromPath(sourceName) || sourceName;
 
             return `
                 <div class="action-card" data-action-id="${a.id}">
@@ -709,9 +997,12 @@ async function renderActions() {
                         ${a.notes ? `<div class="action-notes">${a.notes}</div>` : ""}
                     </div>
                     <div class="action-controls">
-                        <select class="action-status-select" data-action-id="${a.id}">
-                            ${statusOptions.map(s => `<option value="${s}" ${s === a.status ? 'selected' : ''}>${s}</option>`).join("")}
-                        </select>
+                        <div class="status-pill-wrapper">
+                            <button class="status-pill status-${a.status}" data-action-id="${a.id}" data-current="${a.status}">${a.status} <span class="pill-chevron">&#9662;</span></button>
+                            <div class="status-dropdown" data-action-id="${a.id}">
+                                ${statusOptions.map(s => `<div class="status-option status-${s}${s === a.status ? ' active' : ''}" data-value="${s}">${s}</div>`).join("")}
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -721,12 +1012,7 @@ async function renderActions() {
     // Store render function for re-rendering after filter change
     window._actionsData = { actions, renderActionCards };
 
-    return `
-        <div class="page-header">
-            <h1>Actions</h1>
-            <span class="subtitle">Track and resolve data quality issues</span>
-        </div>
-
+    const html = `
         <div class="summary-counts">
             <div class="summary-count"><span class="count-num" style="color:var(--red)">${open}</span><span class="count-label">open</span></div>
             <div class="summary-count"><span class="count-num" style="color:var(--blue)">${acknowledged}</span><span class="count-label">ack</span></div>
@@ -740,16 +1026,45 @@ async function renderActions() {
             <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
             <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
             <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
-            <button class="action-filter-btn" data-filter="expected">Expected (${actions.filter(a => a.status === "expected").length})</button>
+            <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally stale/outdated (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
         </div>
 
         <div id="action-list">
             ${renderActionCards("all")}
         </div>
     `;
+    return { html, open, total: actions.length };
 }
 
-function bindActionsPage() {
+async function renderIssues() {
+    const [actionsData, alertsData] = await Promise.all([
+        renderActionsContent(),
+        renderAlerts(),
+    ]);
+
+    const totalOpen = actionsData.open + alertsData.active;
+
+    return `
+        <div class="page-header">
+            <h1>Issues</h1>
+            <span class="subtitle">${totalOpen} open issue${totalOpen !== 1 ? 's' : ''} across actions and alerts</span>
+        </div>
+
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="tab-actions">Actions <span class="tab-count">${actionsData.total}</span></button>
+            <button class="tab-btn" data-tab="tab-alerts">Alerts <span class="tab-count">${alertsData.total}</span></button>
+        </div>
+
+        <div id="tab-actions" class="tab-panel active">
+            ${actionsData.html}
+        </div>
+        <div id="tab-alerts" class="tab-panel" style="display:none">
+            ${alertsData.html}
+        </div>
+    `;
+}
+
+function bindActionsTab() {
     // Filter buttons
     document.querySelectorAll(".action-filter-btn").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -767,21 +1082,301 @@ function bindActionsPage() {
     bindActionStatusSelects();
 }
 
+function bindIssuesPage() {
+    // Tab switching
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            document.querySelectorAll(".tab-panel").forEach(p => {
+                p.style.display = p.id === btn.dataset.tab ? "" : "none";
+                p.classList.toggle("active", p.id === btn.dataset.tab);
+            });
+        });
+    });
+
+    bindActionsTab();
+    bindAlertsTab();
+    bindDataTables();
+}
+
 function bindActionStatusSelects() {
-    document.querySelectorAll(".action-status-select").forEach(select => {
-        select.addEventListener("change", async () => {
-            const actionId = select.dataset.actionId;
-            const newStatus = select.value;
+    // Close any open dropdown when clicking outside (register once)
+    if (!window._statusDropdownOutsideClick) {
+        window._statusDropdownOutsideClick = true;
+        document.addEventListener("click", (e) => {
+            if (!e.target.closest(".status-pill-wrapper")) {
+                document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+                document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+            }
+        });
+    }
+
+    // Pill click → toggle dropdown
+    document.querySelectorAll(".status-pill").forEach(pill => {
+        pill.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const wrapper = pill.closest(".status-pill-wrapper");
+            const dropdown = wrapper.querySelector(".status-dropdown");
+            const wasOpen = dropdown.classList.contains("visible");
+
+            // Close all other dropdowns first
+            document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+            document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+
+            if (!wasOpen) {
+                dropdown.classList.add("visible");
+                pill.classList.add("open");
+            }
+        });
+    });
+
+    // Option click → update status
+    document.querySelectorAll(".status-option").forEach(option => {
+        option.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const dropdown = option.closest(".status-dropdown");
+            const actionId = dropdown.dataset.actionId;
+            const newStatus = option.dataset.value;
+            const wrapper = option.closest(".status-pill-wrapper");
+            const pill = wrapper.querySelector(".status-pill");
+
+            // Close dropdown
+            dropdown.classList.remove("visible");
+            pill.classList.remove("open");
+
+            // Optimistic UI update
+            pill.className = `status-pill status-${newStatus}`;
+            pill.innerHTML = `${newStatus} <span class="pill-chevron">&#9662;</span>`;
+            pill.dataset.current = newStatus;
+
+            // Mark active option
+            dropdown.querySelectorAll(".status-option").forEach(o => o.classList.remove("active"));
+            option.classList.add("active");
+
             try {
                 await apiPatch(`/api/actions/${actionId}`, { status: newStatus });
                 toast(`Action #${actionId} updated to ${newStatus}`);
             } catch (err) {
                 toast("Failed to update: " + err.message);
-                // Reload to reset
-                navigate("actions");
+                navigate("issues");
             }
         });
     });
+}
+
+
+function shortSourceLabel(name, type) {
+    const DB_TYPES = new Set(["sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"]);
+    if (DB_TYPES.has(type)) {
+        // "sqlserver01.company.local/SalesDB/dbo.Orders" → "dbo.Orders"
+        const lastSlash = name.lastIndexOf("/");
+        return lastSlash >= 0 ? name.substring(lastSlash + 1) : name;
+    }
+    // File-based: "C:\Data\SKU_Master.xlsx" → "SKU_Master"
+    const sep = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+    const withExt = sep >= 0 ? name.substring(sep + 1) : name;
+    const dot = withExt.lastIndexOf(".");
+    return dot > 0 ? withExt.substring(0, dot) : withExt;
+}
+
+/** Extract a short display name from a source name string (no extension for files). */
+function shortNameFromPath(fullName) {
+    if (!fullName) return "";
+    // Handle both forward slashes and backslashes
+    const normalized = fullName.replace(/\\/g, "/");
+    const lastSlash = normalized.lastIndexOf("/");
+    const base = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+    // For DB-style names like "dbo.Orders", keep as-is
+    if (base.includes(".") && !/\.(csv|xlsx|xls|json|parquet|txt)$/i.test(base)) return base;
+    // Strip file extension
+    const dot = base.lastIndexOf(".");
+    return dot > 0 ? base.substring(0, dot) : base;
+}
+
+function _lineageReportItem(r, reportSources) {
+    const srcCount = reportSources.get(r.id)?.size || 0;
+    const statusClass = r.status === "current" ? "dot-green"
+        : r.status === "stale sources" ? "dot-yellow"
+        : r.status === "outdated sources" ? "dot-red"
+        : "dot-muted";
+    return `
+        <div class="lineage-report-item" data-report-id="${r.id}">
+            <span class="dot ${statusClass}" style="width:8px;height:8px;flex-shrink:0"></span>
+            <div class="lineage-report-info">
+                <span class="lineage-report-name">${shortNameFromPath(r.name) || r.name}</span>
+                <span class="lineage-report-meta">${srcCount} source${srcCount !== 1 ? "s" : ""}${r.owner ? " &middot; " + r.owner : ""}</span>
+            </div>
+            ${statusBadge(r.status)}
+        </div>
+    `;
+}
+
+function _renderLineageDetail(reportId) {
+    const data = window._lineageData;
+    if (!data) return;
+
+    const report = data.sortedReports.find(r => r.id === reportId);
+    if (!report) return;
+
+    const srcIds = data.reportSources.get(reportId) || new Set();
+    const reportSources = [];
+    srcIds.forEach(sid => {
+        const s = data.sourceMap.get(sid);
+        if (s) reportSources.push(s);
+    });
+
+    // Group sources by folder
+    const grouped = new Map();
+    reportSources.forEach(s => {
+        const folder = data.sourceFolder(s.name);
+        if (!grouped.has(folder)) grouped.set(folder, []);
+        grouped.get(folder).push(s);
+    });
+
+    // Sort folders: folders with issues first
+    const folderOrder = (sources) => {
+        if (sources.some(s => s.status === "outdated" || s.status === "error")) return 0;
+        if (sources.some(s => s.status === "stale")) return 1;
+        return 2;
+    };
+    const sortedFolders = [...grouped.entries()].sort((a, b) => {
+        const oa = folderOrder(a[1]);
+        const ob = folderOrder(b[1]);
+        if (oa !== ob) return oa - ob;
+        return a[0].localeCompare(b[0]);
+    });
+
+    // Find which other reports share sources with this one
+    const sharedReports = new Map(); // sourceId → [report names]
+    data.edges.forEach(e => {
+        if (srcIds.has(e.source_id) && e.report_id !== reportId) {
+            if (!sharedReports.has(e.source_id)) sharedReports.set(e.source_id, []);
+            sharedReports.get(e.source_id).push(e.report_name);
+        }
+    });
+
+    const statusSummary = { fresh: 0, stale: 0, outdated: 0, unknown: 0 };
+    reportSources.forEach(s => {
+        if (s.status === "fresh") statusSummary.fresh++;
+        else if (s.status === "stale") statusSummary.stale++;
+        else if (s.status === "outdated" || s.status === "error") statusSummary.outdated++;
+        else statusSummary.unknown++;
+    });
+
+    const detailEl = document.getElementById("lineage-detail");
+    if (!detailEl) return;
+
+    detailEl.innerHTML = `
+        <div class="lineage-detail-header">
+            <div>
+                <h2 style="margin-bottom:0.15rem">${shortNameFromPath(report.name) || report.name}</h2>
+                <div class="lineage-detail-meta">
+                    ${statusBadge(report.status)}
+                    <span>${reportSources.length} source${reportSources.length !== 1 ? "s" : ""}</span>
+                    ${report.owner ? `<span>Owner: ${report.owner}</span>` : ""}
+                    ${report.frequency ? `<span>Frequency: ${report.frequency}</span>` : ""}
+                    ${report.worst_source_updated ? `<span>Oldest data: ${timeAgo(report.worst_source_updated)}</span>` : ""}
+                </div>
+            </div>
+            <div class="lineage-health-pills">
+                ${statusSummary.fresh ? `<span class="health-pill pill-green">${statusSummary.fresh} fresh</span>` : ""}
+                ${statusSummary.stale ? `<span class="health-pill pill-yellow">${statusSummary.stale} stale</span>` : ""}
+                ${statusSummary.outdated ? `<span class="health-pill pill-red">${statusSummary.outdated} outdated</span>` : ""}
+                ${statusSummary.unknown ? `<span class="health-pill pill-muted">${statusSummary.unknown} unknown</span>` : ""}
+            </div>
+        </div>
+
+        <div class="lineage-source-tree">
+            ${sortedFolders.map(([folder, folderSources]) => `
+                <div class="lineage-folder-group">
+                    <div class="lineage-folder-label">${folder}</div>
+                    ${folderSources.map(s => {
+                        const shared = sharedReports.get(s.id) || [];
+                        return `
+                        <div class="lineage-source-row">
+                            <div class="lineage-source-indicator status-dot-${s.status}"></div>
+                            <div class="lineage-source-info">
+                                <div class="lineage-source-name">${shortNameFromPath(s.name) || s.name}</div>
+                                <div class="lineage-source-path">${s.name}</div>
+                                <div class="lineage-source-details">
+                                    ${typeBadge(s.type)}
+                                    ${statusBadge(s.status)}
+                                    ${s.last_updated ? `<span class="lineage-source-date">${timeAgo(s.last_updated)}</span>` : '<span class="lineage-source-date">never probed</span>'}
+                                    ${s.owner ? `<span class="lineage-source-owner">${s.owner}</span>` : ""}
+                                </div>
+                                ${shared.length ? `<div class="lineage-shared">Also used by: ${shared.map(n => shortNameFromPath(n) || n).join(", ")}</div>` : ""}
+                            </div>
+                        </div>`;
+                    }).join("")}
+                </div>
+            `).join("")}
+        </div>
+    `;
+}
+
+function bindLineagePage() {
+    const data = window._lineageData;
+    if (!data) return;
+
+    const listEl = document.getElementById("lineage-report-list");
+    const searchInput = document.getElementById("lineage-report-search");
+
+    // Report item click → show detail
+    function bindReportClicks() {
+        document.querySelectorAll(".lineage-report-item").forEach(item => {
+            item.addEventListener("click", () => {
+                document.querySelectorAll(".lineage-report-item.selected").forEach(i => i.classList.remove("selected"));
+                item.classList.add("selected");
+                _renderLineageDetail(parseInt(item.dataset.reportId));
+            });
+        });
+    }
+    bindReportClicks();
+
+    // Filter + search
+    function filterList() {
+        const query = (searchInput?.value || "").toLowerCase().trim();
+        const activeFilter = document.querySelector(".lineage-filter-btn.active")?.dataset.filter || "all";
+
+        const filtered = data.sortedReports.filter(r => {
+            if (activeFilter === "unhealthy" && r.status === "current") return false;
+            if (query) {
+                const name = (r.name || "").toLowerCase();
+                const owner = (r.owner || "").toLowerCase();
+                if (!name.includes(query) && !owner.includes(query)) return false;
+            }
+            return true;
+        });
+
+        listEl.innerHTML = filtered.length
+            ? filtered.map(r => _lineageReportItem(r, data.reportSources)).join("")
+            : '<div class="lineage-empty-list">No reports match</div>';
+        bindReportClicks();
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener("input", () => filterList());
+    }
+
+    document.querySelectorAll(".lineage-filter-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".lineage-filter-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            filterList();
+        });
+    });
+
+    // Auto-select first unhealthy report, or first report
+    const firstUnhealthy = data.sortedReports.find(r => r.status !== "current");
+    const autoSelect = firstUnhealthy || data.sortedReports[0];
+    if (autoSelect) {
+        const item = document.querySelector(`.lineage-report-item[data-report-id="${autoSelect.id}"]`);
+        if (item) {
+            item.classList.add("selected");
+            _renderLineageDetail(autoSelect.id);
+        }
+    }
 }
 
 
@@ -792,14 +1387,26 @@ const pages = {
     sources: renderSources,
     reports: renderReports,
     scanner: renderScanner,
-    alerts: renderAlerts,
-    actions: renderActions,
+    issues: renderIssues,
 };
+
+// Map old hash routes to new pages for backwards compat
+const pageAliases = { alerts: "issues", actions: "issues", lineage: "reports" };
 
 let currentPage = "dashboard";
 
 async function navigate(page) {
+    // Resolve aliases for old routes
+    if (pageAliases[page]) page = pageAliases[page];
+    if (!pages[page]) page = "dashboard";
     currentPage = page;
+
+    // Update URL hash without triggering hashchange
+    window._skipHash = true;
+    location.hash = page === "dashboard" ? "" : page;
+
+    // Reset lazy-init flags
+    window._lineageBound = false;
 
     $$("nav a").forEach(a => {
         a.classList.toggle("active", a.dataset.page === page);
@@ -813,15 +1420,56 @@ async function navigate(page) {
         app.innerHTML = html;
 
         bindDataTables();
-        if (page === "dashboard") renderDashboardAlerts();
+        if (page === "dashboard") {
+            renderDashboardAlerts();
+            const btnShowAll = document.getElementById("btn-show-all-attention");
+            if (btnShowAll) {
+                btnShowAll.addEventListener("click", () => {
+                    const overflow = document.getElementById("attention-overflow");
+                    if (overflow) {
+                        const showing = overflow.style.display !== "none";
+                        overflow.style.display = showing ? "none" : "";
+                        btnShowAll.textContent = showing ? btnShowAll.textContent.replace("Show less", "Show all") : "Show less";
+                    }
+                });
+            }
+            // Clickable attention items — drill down to source/report detail
+            document.querySelectorAll(".attention-clickable").forEach(el => {
+                el.addEventListener("click", async () => {
+                    const kind = el.dataset.kind;
+                    const id = parseInt(el.dataset.id);
+                    if (kind === "source") {
+                        const src = (window._dashboardSources || []).find(s => s.id === id);
+                        if (src) { await navigate("sources"); showSourceDetail(src); }
+                    } else {
+                        const rpt = (window._dashboardReports || []).find(r => r.id === id);
+                        if (rpt) { await navigate("reports"); showReportDetail(rpt); }
+                    }
+                });
+            });
+        }
         if (page === "scanner") bindScannerButtons();
-        if (page === "actions") bindActionsPage();
+        if (page === "issues") bindIssuesPage();
+        if (page === "reports") bindReportsPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }
 }
 
 function bindScannerButtons() {
+    // Log toggle
+    document.querySelectorAll(".log-toggle").forEach(h2 => {
+        h2.addEventListener("click", () => {
+            const target = document.getElementById(h2.dataset.target);
+            if (target) {
+                const showing = target.style.display !== "none";
+                target.style.display = showing ? "none" : "";
+                const hint = h2.querySelector("span");
+                if (hint) hint.textContent = showing ? "— click to expand" : "— click to collapse";
+            }
+        });
+    });
+
     const btnScan = $("#btn-scan");
     if (btnScan) {
         btnScan.addEventListener("click", async () => {
@@ -861,6 +1509,20 @@ function bindScannerButtons() {
 
 // ── Init ──
 
+function getInitialPage() {
+    // Support hash-based routing: /#sources, /#reports, etc.
+    if (location.hash && location.hash.length > 1) {
+        let page = location.hash.substring(1);
+        if (pageAliases[page]) page = pageAliases[page];
+        if (pages[page]) return page;
+    }
+    // Support path-based routing: /sources, /reports, etc.
+    let path = location.pathname.replace(/^\/+/, "");
+    if (pageAliases[path]) path = pageAliases[path];
+    if (path && pages[path]) return path;
+    return "dashboard";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     $$("nav a[data-page]").forEach(a => {
         a.addEventListener("click", (e) => {
@@ -869,5 +1531,11 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    navigate("dashboard");
+    window.addEventListener("hashchange", () => {
+        if (window._skipHash) { window._skipHash = false; return; }
+        const page = location.hash.length > 1 ? location.hash.substring(1) : "dashboard";
+        if (pages[page] && page !== currentPage) navigate(page);
+    });
+
+    navigate(getInitialPage());
 });

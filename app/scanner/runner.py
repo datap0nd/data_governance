@@ -11,7 +11,7 @@ Scan runner — orchestrates a full scan.
 import logging
 from datetime import datetime, timezone
 
-from app.config import REPORTS_PATH
+from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
@@ -24,7 +24,7 @@ def run_scan(reports_path: str | None = None) -> dict:
 
     Returns a summary dict with scan statistics.
     """
-    root = reports_path or REPORTS_PATH
+    root = reports_path or TMDL_ROOT
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
@@ -138,6 +138,40 @@ def run_scan(reports_path: str | None = None) -> dict:
                                 now,
                             ),
                         )
+
+            # Set initial "unknown" status for any source without a probe
+            sourceless = db.execute("""
+                SELECT s.id FROM sources s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM source_probes sp WHERE sp.source_id = s.id
+                )
+            """).fetchall()
+            for row in sourceless:
+                db.execute(
+                    "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', 'Initial scan — no probe data yet')",
+                    (row["id"], now),
+                )
+
+            # Propagate ownership: if a source is used by exactly one report, inherit its owner
+            db.execute("""
+                UPDATE sources SET owner = (
+                    SELECT r.owner FROM report_tables rt
+                    JOIN reports r ON r.id = rt.report_id
+                    WHERE rt.source_id = sources.id AND r.owner IS NOT NULL
+                    GROUP BY rt.source_id
+                    HAVING COUNT(DISTINCT r.id) = 1
+                    LIMIT 1
+                )
+                WHERE owner IS NULL
+            """)
+            # For sources used by multiple reports, mark as "Multiple"
+            db.execute("""
+                UPDATE sources SET owner = 'Multiple' WHERE owner IS NULL AND (
+                    SELECT COUNT(DISTINCT r.id) FROM report_tables rt
+                    JOIN reports r ON r.id = rt.report_id
+                    WHERE rt.source_id = sources.id AND r.owner IS NOT NULL
+                ) > 1
+            """)
 
             # Update scan run record
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."

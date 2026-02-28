@@ -39,7 +39,8 @@ def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
 
     First looks for .pbix files, then falls back to TMDL folder structure.
     """
-    root = Path(root_path)
+    root = Path(root_path).resolve()
+    logger.info("walk_reports_root: root_path=%s resolved=%s exists=%s", root_path, root, root.exists())
     if not root.exists():
         logger.error("Reports root not found: %s", root)
         return []
@@ -85,16 +86,24 @@ def _walk_tmdl(root: Path) -> list[DiscoveredReport]:
     """Walk TMDL folder structure (fallback mode)."""
     reports_dir = root / "reports"
     if not reports_dir.exists():
+        logger.info("_walk_tmdl: %s not found, using root directly", reports_dir)
         reports_dir = root  # try root directly
+    else:
+        logger.info("_walk_tmdl: scanning reports_dir=%s", reports_dir)
 
     discovered = []
     for report_dir in sorted(reports_dir.iterdir()):
         if not report_dir.is_dir():
             continue
+        logger.info("_walk_tmdl: checking dir=%s", report_dir.name)
         report = _scan_tmdl_report_folder(report_dir)
         if report:
+            logger.info("_walk_tmdl: discovered report '%s' with %d tables", report.name, len(report.tables))
             discovered.append(report)
+        else:
+            logger.info("_walk_tmdl: skipped %s (no semantic model found)", report_dir.name)
 
+    logger.info("_walk_tmdl: total discovered=%d", len(discovered))
     return discovered
 
 

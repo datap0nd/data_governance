@@ -19,7 +19,7 @@ def list_reports():
 
     results = []
     for r in rows:
-        status = _derive_report_status(r["id"])
+        status, worst_date = _derive_report_status(r["id"])
         results.append(ReportOut(
             id=r["id"],
             name=r["name"],
@@ -31,6 +31,7 @@ def list_reports():
             last_published=r["last_published"],
             status=status,
             source_count=r["source_count"],
+            worst_source_updated=worst_date,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         ))
@@ -52,6 +53,7 @@ def get_report(report_id: int):
     if not r:
         raise HTTPException(status_code=404, detail="Report not found")
 
+    status, worst_date = _derive_report_status(r["id"])
     return ReportOut(
         id=r["id"],
         name=r["name"],
@@ -61,8 +63,9 @@ def get_report(report_id: int):
         recipients=r["recipients"],
         frequency=r["frequency"],
         last_published=r["last_published"],
-        status=_derive_report_status(r["id"]),
+        status=status,
         source_count=r["source_count"],
+        worst_source_updated=worst_date,
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -116,11 +119,14 @@ def get_report_tables(report_id: int):
     ]
 
 
-def _derive_report_status(report_id: int) -> str:
-    """Derive report status from its sources' latest probe statuses."""
+def _derive_report_status(report_id: int) -> tuple[str, str | None]:
+    """Derive report status and worst source date from its sources' latest probe statuses.
+
+    Returns (status, worst_source_updated) tuple.
+    """
     with get_db() as db:
         rows = db.execute("""
-            SELECT sp.status
+            SELECT sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
             FROM report_tables rt
             JOIN source_probes sp ON sp.source_id = rt.source_id
             WHERE rt.report_id = ?
@@ -132,11 +138,16 @@ def _derive_report_status(report_id: int) -> str:
         """, (report_id,)).fetchall()
 
     if not rows:
-        return "unknown"
+        return "unknown", None
 
     statuses = [r["status"] for r in rows]
-    if "error" in statuses:
-        return "error"
+    dates = [r["last_data_at"] for r in rows if r["last_data_at"]]
+    worst_date = min(dates) if dates else None
+
+    if "outdated" in statuses or "error" in statuses:
+        return "outdated sources", worst_date
     if "stale" in statuses:
-        return "stale sources"
-    return "current"
+        return "stale sources", worst_date
+    if all(s == "unknown" for s in statuses):
+        return "unknown", None
+    return "current", worst_date

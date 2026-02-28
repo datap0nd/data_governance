@@ -1,0 +1,43 @@
+table Campaign_Metrics
+	lineageTag: 57d1e16e-cc65-4ec4-a2d4-456857cd975a
+
+	column campaign_id
+		dataType: string
+		lineageTag: 6cd9944c-f150-4595-a95c-244172615f5e
+		summarizeBy: none
+		sourceColumn: campaign_id
+
+	column channel
+		dataType: string
+		lineageTag: 024d8b9d-aa65-47a2-8b02-67eeac127db0
+		summarizeBy: none
+		sourceColumn: channel
+
+	column impressions
+		dataType: int64
+		lineageTag: 5a7f94fa-c975-4ac3-919b-e76ac8900ecb
+		summarizeBy: sum
+		sourceColumn: impressions
+
+	column clicks
+		dataType: int64
+		lineageTag: 52f412bb-804e-4e1c-95c4-c788e1df485b
+		summarizeBy: sum
+		sourceColumn: clicks
+
+	column conversions
+		dataType: int64
+		lineageTag: 2f4b4168-757b-445b-bbd5-5d95bd04b712
+		summarizeBy: sum
+		sourceColumn: conversions
+
+	partition Campaign_Metrics = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents("C:\Data\Marketing\campaign_metrics.csv"),[Delimiter=",", Columns=5, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

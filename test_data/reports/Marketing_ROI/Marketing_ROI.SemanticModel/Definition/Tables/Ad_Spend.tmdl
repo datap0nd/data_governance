@@ -1,0 +1,38 @@
+table Ad_Spend
+	lineageTag: 151f1bc0-3532-4992-86b5-4b5425151ce3
+
+	column month
+		dataType: string
+		lineageTag: aa1496ee-2a48-4822-80c1-4ff1688d4161
+		summarizeBy: none
+		sourceColumn: month
+
+	column channel
+		dataType: string
+		lineageTag: 06ede83a-8361-4301-9c82-455ca1261a92
+		summarizeBy: none
+		sourceColumn: channel
+
+	column budget
+		dataType: decimal
+		lineageTag: 6b0d0a11-3e4b-4440-8fbb-7f5cd87ad72e
+		summarizeBy: sum
+		sourceColumn: budget
+
+	column actual_spend
+		dataType: decimal
+		lineageTag: 7c7c33c3-eaaf-41d2-a084-fd9de3dd1677
+		summarizeBy: sum
+		sourceColumn: actual_spend
+
+	partition Ad_Spend = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\Marketing\ad_spend.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

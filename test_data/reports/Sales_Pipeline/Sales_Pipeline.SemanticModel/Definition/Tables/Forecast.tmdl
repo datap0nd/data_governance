@@ -1,0 +1,38 @@
+table Forecast
+	lineageTag: a1747bbd-56c8-446b-94ea-fac88d226459
+
+	column quarter
+		dataType: string
+		lineageTag: 3b161c32-34b8-4f30-b5cf-578b80815c4e
+		summarizeBy: none
+		sourceColumn: quarter
+
+	column rep
+		dataType: string
+		lineageTag: 8f002a83-ad09-48bb-90ed-25ada5afe186
+		summarizeBy: none
+		sourceColumn: rep
+
+	column pipeline
+		dataType: decimal
+		lineageTag: 987ea6be-0e2f-4ca8-91d8-6a4e18070b6f
+		summarizeBy: sum
+		sourceColumn: pipeline
+
+	column weighted
+		dataType: decimal
+		lineageTag: 6a13a33e-314e-44d4-91dd-9298cb613325
+		summarizeBy: sum
+		sourceColumn: weighted
+
+	partition Forecast = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\Sales\forecast.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

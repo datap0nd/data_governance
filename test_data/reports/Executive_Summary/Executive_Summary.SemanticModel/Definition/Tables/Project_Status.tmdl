@@ -1,0 +1,38 @@
+table Project_Status
+	lineageTag: 1bff06e9-0cbc-484c-b406-0f704241e325
+
+	column project
+		dataType: string
+		lineageTag: aeead6a5-6eed-4d8a-88df-8c1a98c22b40
+		summarizeBy: none
+		sourceColumn: project
+
+	column owner
+		dataType: string
+		lineageTag: 617a44ae-c5e1-405b-9cae-ba7494c4d35b
+		summarizeBy: none
+		sourceColumn: owner
+
+	column status
+		dataType: string
+		lineageTag: a116f7a5-ef8a-4b92-8b4c-9934fcb79268
+		summarizeBy: none
+		sourceColumn: status
+
+	column pct_complete
+		dataType: decimal
+		lineageTag: bbb0c0f2-7bfa-41fa-8bb7-e1c3a45dcca4
+		summarizeBy: sum
+		sourceColumn: pct_complete
+
+	partition Project_Status = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\Executive\project_status.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

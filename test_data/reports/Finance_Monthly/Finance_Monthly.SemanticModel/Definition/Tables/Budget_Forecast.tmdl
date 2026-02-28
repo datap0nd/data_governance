@@ -1,0 +1,44 @@
+table Budget_Forecast
+	lineageTag: c5b57044-4cdf-4ed3-8eb8-488dd1583542
+
+	column department
+		dataType: string
+		lineageTag: 4463b8df-73e4-4bbb-826c-e92e32d7220f
+		summarizeBy: none
+		sourceColumn: department
+
+	column q1
+		dataType: decimal
+		lineageTag: 5a235413-31b9-4d5d-bedb-e7a53c1852df
+		summarizeBy: sum
+		sourceColumn: q1
+
+	column q2
+		dataType: decimal
+		lineageTag: 28715f6e-0af1-4034-8389-83e52d66e9cf
+		summarizeBy: sum
+		sourceColumn: q2
+
+	column q3
+		dataType: decimal
+		lineageTag: daf7714f-0d62-4fc0-adba-468f5d6a2c92
+		summarizeBy: sum
+		sourceColumn: q3
+
+	column q4
+		dataType: decimal
+		lineageTag: c3edf06a-8658-4bfa-b87f-ba6a5fd2d504
+		summarizeBy: sum
+		sourceColumn: q4
+
+	partition Budget_Forecast = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\Finance\budget_forecast.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

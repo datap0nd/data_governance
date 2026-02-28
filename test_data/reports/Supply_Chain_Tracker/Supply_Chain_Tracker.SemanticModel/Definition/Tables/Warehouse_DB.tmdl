@@ -1,0 +1,37 @@
+table Warehouse_DB
+	lineageTag: 682fea6d-21cd-4067-aafd-5b8e3f17bee4
+
+	column movement_id
+		dataType: string
+		lineageTag: d6772d80-bf25-4f2a-a383-2b972a8c2306
+		summarizeBy: none
+		sourceColumn: movement_id
+
+	column sku
+		dataType: string
+		lineageTag: bb6eb734-97c4-4243-a950-ef0484761b63
+		summarizeBy: none
+		sourceColumn: sku
+
+	column qty
+		dataType: int64
+		lineageTag: 28af542a-3dbc-45e8-a558-87df7e6937dd
+		summarizeBy: sum
+		sourceColumn: qty
+
+	column movement_date
+		dataType: string
+		lineageTag: 770ad25b-9d14-4acd-abd1-021150779219
+		summarizeBy: none
+		sourceColumn: movement_date
+
+	partition Warehouse_DB = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("sqlserver01.company.local", "WarehouseDB"),
+				    dbo_StockMovements = Source{[Schema="dbo",Item="StockMovements"]}[Data]
+				in
+				    dbo_StockMovements
+
+	annotation PBI_ResultType = Table

@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     log             TEXT
 );
 
+CREATE TABLE IF NOT EXISTS probe_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at     DATETIME,
+    sources_probed  INTEGER,
+    fresh           INTEGER DEFAULT 0,
+    stale           INTEGER DEFAULT 0,
+    outdated        INTEGER DEFAULT 0,
+    unknown         INTEGER DEFAULT 0,
+    status          TEXT,
+    log             TEXT
+);
+
 CREATE TABLE IF NOT EXISTS checks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id       INTEGER REFERENCES sources(id),

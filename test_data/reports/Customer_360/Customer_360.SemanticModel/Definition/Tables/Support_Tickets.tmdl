@@ -1,0 +1,43 @@
+table Support_Tickets
+	lineageTag: ba49daec-6f3d-42b4-adbb-65e65d3c085e
+
+	column ticket_id
+		dataType: string
+		lineageTag: 3fcd9a42-c850-4f5c-a792-cc603b435a1e
+		summarizeBy: none
+		sourceColumn: ticket_id
+
+	column customer_id
+		dataType: string
+		lineageTag: eb71fe62-f3a5-47f6-a4e6-0ff3aacdd496
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column priority
+		dataType: string
+		lineageTag: 7724b7c4-d38d-4e5f-bd8f-0082c76fae38
+		summarizeBy: none
+		sourceColumn: priority
+
+	column status
+		dataType: string
+		lineageTag: 8321a18a-9990-4e82-abd9-eac68d73e9e0
+		summarizeBy: none
+		sourceColumn: status
+
+	column created
+		dataType: string
+		lineageTag: 2b62b902-9dec-4c98-98c4-db64d7a43c6b
+		summarizeBy: none
+		sourceColumn: created
+
+	partition Support_Tickets = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents("C:\Data\CRM\support_tickets.csv"),[Delimiter=",", Columns=5, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

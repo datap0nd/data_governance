@@ -40,6 +40,7 @@ class ReportOut(BaseModel):
     last_published: str | None = None
     status: str | None = None  # derived from source statuses
     source_count: int = 0
+    worst_source_updated: str | None = None  # oldest source last_data_at
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -68,6 +69,7 @@ class LineageEdge(BaseModel):
     source_id: int
     source_name: str
     source_type: str
+    source_status: str = "unknown"
     report_id: int
     report_name: str
 
@@ -129,7 +131,7 @@ class DashboardStats(BaseModel):
     sources_total: int = 0
     sources_fresh: int = 0
     sources_stale: int = 0
-    sources_error: int = 0
+    sources_outdated: int = 0
     sources_unknown: int = 0
     reports_total: int = 0
     reports_ok: int = 0

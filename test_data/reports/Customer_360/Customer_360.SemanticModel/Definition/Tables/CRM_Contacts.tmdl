@@ -1,0 +1,37 @@
+table CRM_Contacts
+	lineageTag: fdd705de-7915-482c-991c-c03cff39409c
+
+	column contact_id
+		dataType: string
+		lineageTag: 53a59d34-26e5-4e67-ada9-75aa655e8bbc
+		summarizeBy: none
+		sourceColumn: contact_id
+
+	column company
+		dataType: string
+		lineageTag: 85c283f4-85c7-4212-8126-0e459d2c68a9
+		summarizeBy: none
+		sourceColumn: company
+
+	column email
+		dataType: string
+		lineageTag: f4d698e0-cbcc-44a7-a54e-e40155e355ee
+		summarizeBy: none
+		sourceColumn: email
+
+	column segment
+		dataType: string
+		lineageTag: b9db66e0-5ba3-4a57-b33f-9fa56a56025a
+		summarizeBy: none
+		sourceColumn: segment
+
+	partition CRM_Contacts = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("sqlserver01.company.local", "CRM_DB"),
+				    dbo_Contacts = Source{[Schema="dbo",Item="Contacts"]}[Data]
+				in
+				    dbo_Contacts
+
+	annotation PBI_ResultType = Table

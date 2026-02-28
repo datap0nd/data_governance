@@ -1,0 +1,43 @@
+table Shipping_Log
+	lineageTag: 48e8376f-bef0-476e-a39e-a8f03150a363
+
+	column shipment_id
+		dataType: string
+		lineageTag: 69637d9e-9ef0-4619-866a-25ffb12ad09a
+		summarizeBy: none
+		sourceColumn: shipment_id
+
+	column origin
+		dataType: string
+		lineageTag: 28b15f3e-f884-4dd5-9545-1eb9f33159a9
+		summarizeBy: none
+		sourceColumn: origin
+
+	column destination
+		dataType: string
+		lineageTag: ffac86fe-7a4e-4aa5-b2d9-8566da4fee23
+		summarizeBy: none
+		sourceColumn: destination
+
+	column status
+		dataType: string
+		lineageTag: 720f6ed5-9fb1-4130-bb5f-ab128fec98a1
+		summarizeBy: none
+		sourceColumn: status
+
+	column ship_date
+		dataType: string
+		lineageTag: e9dd3fa7-e32a-4b54-aecc-a8261f830759
+		summarizeBy: none
+		sourceColumn: ship_date
+
+	partition Shipping_Log = m
+		mode: import
+		source =
+				let
+				    Source = Csv.Document(File.Contents("C:\Data\Supply\shipping_log.csv"),[Delimiter=",", Columns=5, Encoding=65001, QuoteStyle=QuoteStyle.None]),
+				    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

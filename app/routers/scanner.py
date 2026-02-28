@@ -27,7 +27,7 @@ def trigger_scan():
 
 @router.post("/probe")
 def trigger_probe():
-    """Probe PostgreSQL sources for last-updated timestamps."""
+    """Probe all sources for freshness (file mod times, PostgreSQL CSV, etc.)."""
     result = run_probe()
     return result
 
@@ -36,6 +36,16 @@ def trigger_probe():
 def probe_diagnostics():
     """Show CSV samples and PostgreSQL source names side-by-side for debugging."""
     return probe_debug()
+
+
+@router.get("/probe/runs")
+def list_probe_runs():
+    """List all probe runs, most recent first."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM probe_runs ORDER BY started_at DESC LIMIT 20"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @router.get("/runs", response_model=list[ScanRunOut])

@@ -1,0 +1,38 @@
+table Payroll_Export
+	lineageTag: fe4cf7e8-0cf6-45b8-a0fa-0f689d41eb14
+
+	column employee_id
+		dataType: string
+		lineageTag: fff588ef-7333-4626-8a27-8fca508cc888
+		summarizeBy: none
+		sourceColumn: employee_id
+
+	column month
+		dataType: string
+		lineageTag: d83c6f90-1bc6-450d-a5c1-0d64c55e2ac0
+		summarizeBy: none
+		sourceColumn: month
+
+	column gross_pay
+		dataType: decimal
+		lineageTag: d38e39b7-a3b6-48cb-b4df-42f3fb5e5a53
+		summarizeBy: sum
+		sourceColumn: gross_pay
+
+	column net_pay
+		dataType: decimal
+		lineageTag: 7649e992-826a-4666-89f7-2fae2e6279c8
+		summarizeBy: sum
+		sourceColumn: net_pay
+
+	partition Payroll_Export = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("C:\Data\HR\payroll_export.xlsx"), null, true),
+				    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true])
+				in
+				    #"Promoted Headers"
+
+	annotation PBI_ResultType = Table

@@ -1,0 +1,37 @@
+table Financial_KPIs
+	lineageTag: 5ca34ec5-7008-4a5c-b162-f15eb3afe660
+
+	column kpi_name
+		dataType: string
+		lineageTag: 007a1526-9a0a-4fc8-a0d3-eb1ea4403554
+		summarizeBy: none
+		sourceColumn: kpi_name
+
+	column value
+		dataType: decimal
+		lineageTag: 798e00d8-d01d-4187-817f-daf213c7a9cd
+		summarizeBy: sum
+		sourceColumn: value
+
+	column target
+		dataType: decimal
+		lineageTag: b5dc1b6f-c970-42bd-855d-6e972ecd612f
+		summarizeBy: sum
+		sourceColumn: target
+
+	column period
+		dataType: string
+		lineageTag: 9600b96f-15a1-49f3-948d-3473fd517342
+		summarizeBy: none
+		sourceColumn: period
+
+	partition Financial_KPIs = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("sqlserver01.company.local", "FinanceDB"),
+				    dbo_KPI_Dashboard = Source{[Schema="dbo",Item="KPI_Dashboard"]}[Data]
+				in
+				    dbo_KPI_Dashboard
+
+	annotation PBI_ResultType = Table

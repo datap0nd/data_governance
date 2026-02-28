@@ -1,0 +1,20 @@
+table 'Report Owner'
+	lineageTag: 033e982b-2f2f-44e9-8f88-4654fa0062cf
+
+	column 'Report Owner'
+		dataType: string
+		lineageTag: 872ac557-b905-49f4-82fc-4761802b7ff2
+		summarizeBy: none
+		sourceColumn: Report Owner
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Report Owner' = m
+		mode: import
+		source =
+				let
+				    Source = #table({"Report Owner"}, {{"Rafael Cunha"}})
+				in
+				    Source
+
+	annotation PBI_ResultType = Table
