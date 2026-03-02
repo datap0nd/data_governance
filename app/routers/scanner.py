@@ -15,9 +15,14 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 def trigger_scan():
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
     result = run_scan()
-    # After scan, probe PostgreSQL sources for last-updated timestamps
+    # After scan, probe sources for freshness (respects SIMULATE_FRESHNESS)
     try:
-        probe_result = run_probe()
+        from app.config import SIMULATE_FRESHNESS
+        if SIMULATE_FRESHNESS:
+            from app.scanner.prober import simulate_probe
+            probe_result = simulate_probe()
+        else:
+            probe_result = run_probe()
         result["probe"] = probe_result
     except Exception as e:
         logger.exception("Probe failed after scan")

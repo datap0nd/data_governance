@@ -900,7 +900,6 @@ async function renderScanner() {
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
-            <button id="btn-ai-briefing" class="btn-outline" style="border-color:var(--purple-bg);color:var(--purple)">AI Briefing</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -920,8 +919,6 @@ async function renderScanner() {
                 <div id="probe-log-body" class="scan-log" style="display:none">${lastProbe.log}</div>
             </div>
         ` : ""}
-
-        <div id="scanner-ai-briefing-slot"></div>
 
         <div class="section-grid">
             <div class="section">
@@ -1571,37 +1568,6 @@ function bindScannerButtons() {
         });
     }
 
-    const btnAIBriefing = $("#btn-ai-briefing");
-    if (btnAIBriefing) {
-        btnAIBriefing.addEventListener("click", async () => {
-            btnAIBriefing.disabled = true;
-            btnAIBriefing.textContent = "Generating...";
-            const slot = document.getElementById("scanner-ai-briefing-slot");
-            if (slot) slot.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
-            try {
-                const data = await api("/api/ai/briefing");
-                if (slot) {
-                    slot.innerHTML = `
-                        <div class="ai-briefing-card" style="margin-bottom:1.25rem">
-                            <div class="ai-briefing-header">
-                                <span class="ai-briefing-label">AI Briefing</span>
-                                <span class="risk-dot risk-${data.risk_level}"></span>
-                            </div>
-                            <div class="ai-briefing-text">${renderMd(data.summary)}</div>
-                            <div class="ai-briefing-footer">
-                                <span class="ai-briefing-meta">AI-generated &middot; ${data.risk_level} risk &middot; ${timeAgo(data.generated_at)}</span>
-                            </div>
-                        </div>
-                    `;
-                }
-            } catch (err) {
-                toast("Briefing failed: " + err.message);
-                if (slot) slot.innerHTML = "";
-            }
-            btnAIBriefing.disabled = false;
-            btnAIBriefing.innerHTML = "AI Briefing";
-        });
-    }
 }
 
 
@@ -1748,85 +1714,6 @@ async function sendAIChat() {
 
     sendBtn.disabled = false;
     messages.scrollTop = messages.scrollHeight;
-}
-
-
-// ── AI Briefing (Dashboard) ──
-
-async function renderAIBriefing() {
-    const container = document.getElementById("ai-briefing-slot");
-    if (!container) return;
-
-    // Show loading shimmer if regenerating (card already exists), else show spinner
-    const existing = container.querySelector(".ai-briefing-card");
-    if (existing) {
-        const textArea = existing.querySelector(".ai-briefing-text, .briefing-facts, .briefing-metrics");
-        if (textArea) textArea.classList.add("shimmer");
-        const regenBtn = document.getElementById("ai-briefing-regen");
-        if (regenBtn) { regenBtn.textContent = "Regenerating..."; regenBtn.disabled = true; }
-    } else {
-        container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
-    }
-
-    try {
-        const briefing = await api("/api/ai/briefing");
-        const d = window._dashboardData || {};
-        const scan = d.last_scan;
-        const riskColors = { high: "red", medium: "yellow", low: "green" };
-        const riskColor = riskColors[briefing.risk_level] || "muted";
-
-        // Extract first sentence as summary
-        const fullText = briefing.summary || "";
-        const firstSentence = fullText.split(/(?<=\.)\s/)[0] || fullText;
-
-        container.innerHTML = `
-            <div class="ai-briefing-card">
-                <div class="ai-briefing-header">
-                    <span class="ai-briefing-label">AI Briefing</span>
-                    <span class="briefing-risk-badge badge-${riskColor}">${briefing.risk_level} risk</span>
-                </div>
-                <div class="ai-briefing-summary">${firstSentence}</div>
-                <div class="briefing-metrics">
-                    <div class="briefing-metric"><span class="briefing-metric-value">${d.sources_fresh || 0}</span><span class="briefing-metric-label">Fresh</span></div>
-                    <div class="briefing-metric"><span class="briefing-metric-value" style="color:var(--yellow)">${d.sources_stale || 0}</span><span class="briefing-metric-label">Stale</span></div>
-                    <div class="briefing-metric"><span class="briefing-metric-value" style="color:var(--red)">${d.sources_outdated || 0}</span><span class="briefing-metric-label">Outdated</span></div>
-                    <div class="briefing-metric"><span class="briefing-metric-value">${d.alerts_active || 0}</span><span class="briefing-metric-label">Alerts</span></div>
-                </div>
-                <div class="briefing-detail-toggle" id="briefing-toggle">
-                    <span class="briefing-toggle-text">Expand full briefing</span>
-                    <span class="briefing-toggle-chevron">&#9660;</span>
-                </div>
-                <div class="briefing-detail-body" id="briefing-detail" style="display:none">
-                    <div class="ai-briefing-text">${renderMd(fullText)}</div>
-                </div>
-                <div class="ai-briefing-footer">
-                    <span class="ai-briefing-meta">AI-generated &middot; ${timeAgo(briefing.generated_at)}</span>
-                    <div class="ai-briefing-actions">
-                        <button class="ai-briefing-regen" id="ai-briefing-copy">Copy</button>
-                        <button class="ai-briefing-regen" id="ai-briefing-regen">&#8635; Regenerate</button>
-                    </div>
-                </div>
-            </div>
-        `;
-        document.getElementById("ai-briefing-regen").addEventListener("click", () => renderAIBriefing());
-        document.getElementById("ai-briefing-copy").addEventListener("click", () => {
-            navigator.clipboard.writeText(fullText).then(() => {
-                const btn = document.getElementById("ai-briefing-copy");
-                btn.textContent = "Copied";
-                setTimeout(() => { btn.textContent = "Copy"; }, 1500);
-            });
-        });
-        document.getElementById("briefing-toggle").addEventListener("click", () => {
-            const detail = document.getElementById("briefing-detail");
-            const toggle = document.getElementById("briefing-toggle");
-            const showing = detail.style.display !== "none";
-            detail.style.display = showing ? "none" : "";
-            toggle.querySelector(".briefing-toggle-text").textContent = showing ? "Expand full briefing" : "Collapse";
-            toggle.querySelector(".briefing-toggle-chevron").style.transform = showing ? "" : "rotate(180deg)";
-        });
-    } catch (err) {
-        container.innerHTML = "";
-    }
 }
 
 
