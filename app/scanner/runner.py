@@ -14,7 +14,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import TMDL_ROOT
+from app.config import BASE_DIR, TMDL_ROOT
 from app.database import get_db
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
@@ -28,8 +28,8 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
     Returns two lists: (report_owners, business_owners).
     Falls back to empty lists if file not found.
     """
-    # Same directory as latest_upload_date.csv (project root)
-    csv_path = Path(__file__).resolve().parent.parent.parent / "owners.csv"
+    # Same directory as latest_upload_date.csv (one level above the project)
+    csv_path = BASE_DIR.parent / "owners.csv"
     if not csv_path.exists():
         return [], []
 
