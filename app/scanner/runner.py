@@ -8,8 +8,11 @@ Scan runner — orchestrates a full scan.
 5. Record the scan run
 """
 
+import csv
 import logging
+import random
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.config import TMDL_ROOT
 from app.database import get_db
@@ -17,6 +20,33 @@ from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 
 logger = logging.getLogger(__name__)
+
+
+def _load_owners_csv() -> tuple[list[str], list[str]]:
+    """Load report_owner and business_owner names from owners.csv.
+
+    Returns two lists: (report_owners, business_owners).
+    Falls back to empty lists if file not found.
+    """
+    csv_path = Path(TMDL_ROOT) / "sample_files" / "owners.csv"
+    if not csv_path.exists():
+        # Also check parent directory
+        csv_path = Path(TMDL_ROOT).parent / "test_data" / "sample_files" / "owners.csv"
+    if not csv_path.exists():
+        return [], []
+
+    report_owners = []
+    business_owners = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ro = row.get("report_owner", "").strip()
+            bo = row.get("business_owner", "").strip()
+            if ro:
+                report_owners.append(ro)
+            if bo:
+                business_owners.append(bo)
+    return report_owners, business_owners
 
 
 def run_scan(reports_path: str | None = None) -> dict:
@@ -79,8 +109,15 @@ def run_scan(reports_path: str | None = None) -> dict:
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
 
+            # Load owner names from CSV for random assignment
+            csv_report_owners, csv_business_owners = _load_owners_csv()
+
             # Upsert reports and their tables
             for report in reports:
+                # Assign owners from CSV if available, otherwise keep report metadata
+                report_owner = random.choice(csv_report_owners) if csv_report_owners else report.report_owner
+                business_owner = random.choice(csv_business_owners) if csv_business_owners else report.business_owner
+
                 existing_report = db.execute(
                     "SELECT id FROM reports WHERE name = ?",
                     (report.name,),
@@ -90,12 +127,12 @@ def run_scan(reports_path: str | None = None) -> dict:
                     report_id = existing_report["id"]
                     db.execute(
                         "UPDATE reports SET tmdl_path = ?, owner = ?, business_owner = ?, updated_at = ? WHERE id = ?",
-                        (report.tmdl_path, report.report_owner, report.business_owner, now, report_id),
+                        (report.tmdl_path, report_owner, business_owner, now, report_id),
                     )
                 else:
                     cursor = db.execute(
                         "INSERT INTO reports (name, tmdl_path, owner, business_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (report.name, report.tmdl_path, report.report_owner, report.business_owner, now, now),
+                        (report.name, report.tmdl_path, report_owner, business_owner, now, now),
                     )
                     report_id = cursor.lastrowid
 
