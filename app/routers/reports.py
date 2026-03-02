@@ -138,16 +138,19 @@ def _derive_report_status(report_id: int) -> tuple[str, str | None]:
         """, (report_id,)).fetchall()
 
     if not rows:
-        return "unknown", None
+        return "current", None
 
-    statuses = [r["status"] for r in rows]
-    dates = [r["last_data_at"] for r in rows if r["last_data_at"]]
+    # Ignore unknown/no_connection sources — they shouldn't affect report status
+    known_rows = [r for r in rows if r["status"] not in ("unknown", "no_connection", None)]
+    if not known_rows:
+        return "current", None
+
+    statuses = [r["status"] for r in known_rows]
+    dates = [r["last_data_at"] for r in known_rows if r["last_data_at"]]
     worst_date = min(dates) if dates else None
 
     if "outdated" in statuses or "error" in statuses:
         return "outdated sources", worst_date
     if "stale" in statuses:
         return "stale sources", worst_date
-    if all(s == "unknown" for s in statuses):
-        return "unknown", None
     return "current", worst_date

@@ -950,7 +950,7 @@ async function renderAlerts() {
     const alerts = await api("/api/alerts?active_only=false");
 
     const cols = [
-        { key: "severity", label: "Severity", render: a => statusBadge(a.severity) },
+        { key: "severity", label: "Severity", render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
         { key: "message", label: "Message", render: a => {
             const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
             return srcShort ? `<strong>${srcShort}</strong> &mdash; ${a.message}` : a.message;
@@ -959,7 +959,7 @@ async function renderAlerts() {
         { key: "acknowledged", label: "Status", render: a => a.acknowledged
             ? `<span class="badge badge-muted">acknowledged</span>`
             : `<button class="btn-sm btn-red btn-ack-alert" data-alert-id="${a.id}">Acknowledge</button>`,
-            sortVal: a => a.acknowledged ? 1 : 0 },
+            sortVal: a => a.acknowledged ? "1_acknowledged" : "0_active" },
     ];
 
     const active = alerts.filter(a => !a.acknowledged).length;

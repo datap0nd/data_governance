@@ -40,6 +40,7 @@ def list_sources():
             updated_at=r["updated_at"],
         )
         for r in rows
+        if (r["latest_status"] or "unknown") not in ("unknown", "no_connection")
     ]
 
 
