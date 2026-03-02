@@ -35,7 +35,7 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
 
     report_owners = []
     business_owners = []
-    with open(csv_path, newline="", encoding="utf-8", errors="replace") as f:
+    with open(csv_path, newline="", encoding="cp1252") as f:
         reader = csv.reader(f)
         for row in reader:
             if not row:
