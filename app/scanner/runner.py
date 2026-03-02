@@ -36,10 +36,12 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
     report_owners = []
     business_owners = []
     with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+        reader = csv.reader(f)
         for row in reader:
-            ro = row.get("report_owner", "").strip()
-            bo = row.get("business_owner", "").strip()
+            if not row:
+                continue
+            ro = row[0].strip() if len(row) > 0 else ""
+            bo = row[1].strip() if len(row) > 1 else ""
             if ro:
                 report_owners.append(ro)
             if bo:
