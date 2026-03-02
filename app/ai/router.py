@@ -1,6 +1,8 @@
 """FastAPI router for AI-powered insights endpoints."""
 
 import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.config import AI_MOCK
@@ -55,6 +57,12 @@ class AISettingsResponse(BaseModel):
     has_api_key: bool
 
 
+def _llm_call(system_prompt: str, user_prompt: str) -> str:
+    """Call the real LLM via LiteLLM. Returns response text or fallback."""
+    from app.ai.client import call_llm
+    return call_llm(system_prompt, user_prompt)
+
+
 @router.post("/chat", response_model=ChatResponse)
 def ai_chat(req: ChatRequest):
     """Chat with the AI assistant about your data ecosystem."""
@@ -64,10 +72,10 @@ def ai_chat(req: ChatRequest):
             result = mock_chat(req.message, ctx)
             return ChatResponse(**result)
         else:
-            # Future: call real LLM
-            ctx = get_full_context()
-            result = mock_chat(req.message, ctx)
-            return ChatResponse(**result)
+            from app.ai.prompts import CHAT_SYSTEM, build_chat_prompt
+            prompt = build_chat_prompt(req.message)
+            response = _llm_call(CHAT_SYSTEM, prompt)
+            return ChatResponse(response=response)
     except Exception as e:
         logger.exception("AI chat error")
         raise HTTPException(status_code=500, detail=str(e))
@@ -80,9 +88,24 @@ def ai_briefing():
         summary = get_dashboard_summary()
         if AI_MOCK:
             result = mock_briefing(summary)
+            return BriefingResponse(**result)
         else:
-            result = mock_briefing(summary)
-        return BriefingResponse(**result)
+            from app.ai.prompts import BRIEFING_SYSTEM, build_briefing_prompt
+            prompt = build_briefing_prompt()
+            response = _llm_call(BRIEFING_SYSTEM, prompt)
+            # Compute risk level from actual data
+            sc = summary["status_counts"]
+            if sc.get("stale", 0) or sc.get("outdated", 0):
+                risk = "high"
+            elif sc.get("no_connection", 0):
+                risk = "medium"
+            else:
+                risk = "low"
+            return BriefingResponse(
+                summary=response,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                risk_level=risk,
+            )
     except Exception as e:
         logger.exception("AI briefing error")
         raise HTTPException(status_code=500, detail=str(e))
@@ -97,9 +120,22 @@ def ai_report_risk(report_id: int):
             raise HTTPException(status_code=404, detail="Report not found")
         if AI_MOCK:
             result = mock_report_risk(ctx)
+            return ReportRiskResponse(**result)
         else:
-            result = mock_report_risk(ctx)
-        return ReportRiskResponse(**result)
+            from app.ai.prompts import RISK_SYSTEM, build_risk_prompt
+            prompt = build_risk_prompt(report_id)
+            response = _llm_call(RISK_SYSTEM, prompt)
+            # Compute risk from data
+            tables = ctx.get("tables", [])
+            no_conn = [t for t in tables if t.get("probe_status") == "no_connection"]
+            stale = [t for t in tables if t.get("probe_status") in ("stale", "outdated")]
+            if no_conn or stale:
+                risk = "high"
+            elif any(t.get("probe_status") in (None, "unknown") for t in tables):
+                risk = "medium"
+            else:
+                risk = "low"
+            return ReportRiskResponse(risk_level=risk, assessment=response)
     except HTTPException:
         raise
     except Exception as e:
@@ -112,10 +148,8 @@ def ai_suggestions():
     """Get AI-powered action suggestions."""
     try:
         summary = get_dashboard_summary()
-        if AI_MOCK:
-            result = mock_suggestions(summary)
-        else:
-            result = mock_suggestions(summary)
+        # Suggestions always use mock logic (structured data, not free-text)
+        result = mock_suggestions(summary)
         return SuggestionsResponse(**result)
     except Exception as e:
         logger.exception("AI suggestions error")
@@ -160,10 +194,10 @@ def ai_audit_all():
 @router.get("/settings", response_model=AISettingsResponse)
 def ai_settings():
     """Get current AI configuration."""
-    from app.config import AI_API_URL, AI_API_KEY, AI_MODEL
+    from app.config import AI_BASE_URL, AI_API_KEY, AI_MODEL
     return AISettingsResponse(
         mock_mode=AI_MOCK,
-        api_url=AI_API_URL,
+        api_url=AI_BASE_URL,
         model=AI_MODEL,
         has_api_key=bool(AI_API_KEY),
     )

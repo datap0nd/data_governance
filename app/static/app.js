@@ -799,11 +799,12 @@ async function renderSources() {
     const fresh = sources.filter(s => s.status === "fresh").length;
     const stale = sources.filter(s => s.status === "stale").length;
     const outdated = sources.filter(s => s.status === "outdated").length;
+    const unknown = sources.filter(s => !s.status || s.status === "unknown" || s.status === "no_connection").length;
 
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${sources.length} data sources tracked &mdash; ${fresh} fresh, ${stale} stale, ${outdated} outdated</span>
+            <span class="subtitle">${sources.length} data sources tracked &mdash; ${outdated} outdated, ${stale} stale, ${fresh} fresh${unknown ? ', ' + unknown + ' unknown' : ''}</span>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
