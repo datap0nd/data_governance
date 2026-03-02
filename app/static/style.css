@@ -708,17 +708,20 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
 
 .attention-kind-badge.kind-source {
     color: var(--blue);
-    background: var(--blue-bg);
+    background: transparent;
+    border: 1px solid var(--blue-border);
 }
 
 .attention-kind-badge.kind-report {
     color: var(--purple);
-    background: var(--purple-bg);
+    background: transparent;
+    border: 1px solid var(--purple-border);
 }
 
 .attention-kind-badge.kind-alert {
     color: var(--red);
-    background: var(--red-bg);
+    background: transparent;
+    border: 1px solid var(--red-border);
 }
 
 /* ── Report inline expansion ── */
