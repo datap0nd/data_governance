@@ -495,98 +495,84 @@ async function showSourceDetail(source) {
 // ── Report detail panel ──
 
 async function showReportDetail(report) {
-    const existing = $("#report-detail");
-    if (existing) existing.remove();
+    // Toggle: if already expanded for this report, collapse it
+    const existing = document.querySelector(`.report-expand-row[data-report-id="${report.id}"]`);
+    if (existing) { existing.remove(); return; }
+
+    // Collapse any other expanded report
+    document.querySelectorAll(".report-expand-row").forEach(r => r.remove());
+
+    // Find the clicked row in the table
+    const clickedRow = document.querySelector(`tr[data-clickable][data-row-idx]`);
+    const allRows = document.querySelectorAll("#dt-reports tbody tr[data-clickable]");
+    let targetRow = null;
+    allRows.forEach(tr => {
+        const idx = parseInt(tr.dataset.rowIdx);
+        const dt = window._dt["dt-reports"];
+        if (dt && dt._displayRows && dt._displayRows[idx] && dt._displayRows[idx].id === report.id) {
+            targetRow = tr;
+        }
+    });
 
     const tables = await api(`/api/reports/${report.id}/tables`);
 
-    const panel = document.createElement("div");
-    panel.id = "report-detail";
-    panel.className = "source-detail-panel";
+    // Look up full source objects from the sources we fetched
+    const allSources = window._reportPageSources || [];
+    const sourceMap = new Map();
+    allSources.forEach(s => sourceMap.set(s.id, s));
 
-    const tableRows = tables.length > 0
-        ? tables.map(t => `
-            <tr>
-                <td><strong>${t.table_name}</strong></td>
-                <td>${t.source_name ? typeBadge(t.source_name.includes('/') ? 'postgresql' : 'file') : ''} <span style="color:var(--text-muted)">${t.source_name || "no linked source"}</span></td>
-            </tr>
-        `).join("")
-        : '<tr><td colspan="2" class="empty-state" style="border:none">No tables found</td></tr>';
+    const colCount = targetRow ? targetRow.children.length : 6;
+    const expandRow = document.createElement("tr");
+    expandRow.className = "report-expand-row";
+    expandRow.dataset.reportId = report.id;
 
-    panel.innerHTML = `
-        <div class="source-detail-header">
-            <h2>${report.name}</h2>
-            <button class="btn-outline" id="btn-close-report-detail">&times; Close</button>
-        </div>
-        <div class="detail-grid">
-            <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(report.status)}</div>
-            <div class="detail-item"><div class="detail-label">Sources</div><span style="color:var(--text)">${report.source_count}</span></div>
-            <div class="detail-item"><div class="detail-label">Report Owner</div><span style="color:var(--text)">${report.owner || "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
-        </div>
+    const sourceRows = tables.length > 0
+        ? tables.map(t => {
+            const src = t.source_id ? sourceMap.get(t.source_id) : null;
+            const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
+            const srcStatus = src ? src.status : "unknown";
+            return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
+                <span class="dot dot-${srcStatus === 'fresh' ? 'green' : srcStatus === 'stale' ? 'yellow' : srcStatus === 'outdated' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
+                <span class="report-source-table">${t.table_name}</span>
+                <span class="report-source-arrow">&rarr;</span>
+                <span class="report-source-name">${srcName}</span>
+                ${src ? statusBadge(src.status) : ''}
+                ${src && src.last_updated ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:auto">${timeAgo(src.last_updated)}</span>` : ''}
+            </div>`;
+        }).join("")
+        : '<div class="empty-state" style="padding:0.5rem">No tables found</div>';
 
-        <div id="ai-report-risk-slot"></div>
-
-        <h2>Data tables in this report (${tables.length})</h2>
-        <table class="detail-table">
-            <thead><tr><th>Table</th><th>Source</th></tr></thead>
-            <tbody>${tableRows}</tbody>
-        </table>
-    `;
-
-    $("#app").appendChild(panel);
-    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    $("#btn-close-report-detail").addEventListener("click", () => panel.remove());
-
-    // Load AI risk assessment
-    const riskSlot = document.getElementById("ai-report-risk-slot");
-    if (riskSlot) {
-        riskSlot.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Assessing risk...</div>';
-        try {
-            const data = await api(`/api/ai/report-risk/${report.id}`);
-            riskSlot.innerHTML = `
-                <div class="ai-risk-card">
-                    <div class="ai-risk-header">
-                        <span class="risk-dot risk-${data.risk_level}"></span>
-                        <h3>AI Risk Assessment</h3>
-                    </div>
-                    <div class="ai-risk-text ai-content">${renderMd(data.assessment)}</div>
-                    <div style="margin-top:0.75rem">
-                        <button class="btn-outline" id="btn-audit-queries" style="border-color:var(--purple-bg);color:var(--purple);font-size:0.75rem">Audit Queries</button>
-                    </div>
-                    <div id="ai-audit-result"></div>
+    expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
+        <div class="report-expand-content">
+            <div class="report-expand-header">
+                <div class="detail-grid" style="margin-bottom:0.5rem">
+                    <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(report.status)}</div>
+                    <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${report.owner || "-"}</span></div>
+                    <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
+                    <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${report.frequency || "-"}</span></div>
                 </div>
-            `;
-            document.getElementById("btn-audit-queries").addEventListener("click", async () => {
-                const btn = document.getElementById("btn-audit-queries");
-                const resultDiv = document.getElementById("ai-audit-result");
-                btn.disabled = true;
-                btn.textContent = "Auditing...";
-                resultDiv.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Auditing M expressions...</div>';
-                try {
-                    const audit = await apiPost(`/api/ai/audit/${report.id}`);
-                    const sevDot = (s) => '<span class="risk-dot risk-' + s + '"></span>';
-                    resultDiv.innerHTML = '<div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border)">' +
-                        '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem" class="ai-content">' + renderMd(audit.summary) + '</div>' +
-                        (audit.findings.length > 0 ? audit.findings.map(f =>
-                            '<div class="ai-suggestion-item">' +
-                            '<div class="ai-suggestion-priority">' + sevDot(f.severity) + '</div>' +
-                            '<div class="ai-suggestion-body">' +
-                            '<h4>' + f.category + ' — ' + f.table + '</h4>' +
-                            '<p>' + f.detail + '</p>' +
-                            '</div></div>'
-                        ).join("") : '') +
-                        '</div>';
-                } catch (err) {
-                    resultDiv.innerHTML = '<p style="color:var(--red);font-size:0.78rem;margin-top:0.5rem">Audit failed: ' + err.message + '</p>';
-                }
-                btn.disabled = false;
-                btn.innerHTML = "Audit Queries";
-            });
-        } catch (err) {
-            riskSlot.innerHTML = "";
-        }
+            </div>
+            <div class="report-expand-label">Data Sources (${tables.length})</div>
+            <div class="report-source-list">${sourceRows}</div>
+        </div>
+    </td>`;
+
+    if (targetRow) {
+        targetRow.after(expandRow);
+    } else {
+        const tbody = document.querySelector("#dt-reports tbody");
+        if (tbody) tbody.appendChild(expandRow);
     }
+
+    // Bind clickable sources
+    expandRow.querySelectorAll(".report-source-clickable").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const srcId = parseInt(el.dataset.sourceId);
+            const src = sourceMap.get(srcId);
+            if (src) { await navigate("sources"); showSourceDetail(src); }
+        });
+    });
 }
 
 
@@ -659,8 +645,6 @@ async function renderDashboard() {
     window._dashboardReports = reports;
 
     return `
-        <div id="ai-briefing-slot"></div>
-
         <div class="stat-grid">
             <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources">
                 <div class="stat-label">Total Sources</div>
@@ -845,30 +829,8 @@ async function renderReports() {
     const healthy = reports.filter(r => r.status === "current").length;
     const atRisk = reports.filter(r => r.status !== "current" && r.status !== "unknown").length;
 
-    // Build lineage data for dependency view
-    const sourceMap = new Map();
-    sources.forEach(s => sourceMap.set(s.id, s));
-    const reportSources = new Map();
-    edges.forEach(e => {
-        if (!reportSources.has(e.report_id)) reportSources.set(e.report_id, new Set());
-        reportSources.get(e.report_id).add(e.source_id);
-    });
-    function sourceFolder(name) {
-        if (!name) return "Other";
-        const n = name.replace(/\\/g, "/");
-        const parts = n.split("/").filter(Boolean);
-        if (parts.length >= 3) return parts[parts.length - 2];
-        if (parts.length === 2) return parts[0];
-        return "Other";
-    }
-    const statusOrder = { "outdated sources": 0, "stale sources": 1, "unknown": 2, "current": 3 };
-    const sortedReports = [...reports].sort((a, b) => {
-        const sa = statusOrder[a.status] ?? 2;
-        const sb = statusOrder[b.status] ?? 2;
-        if (sa !== sb) return sa - sb;
-        return a.name.localeCompare(b.name);
-    });
-    window._lineageData = { sortedReports, reportSources, sourceMap, edges, sourceFolder };
+    // Store sources for inline expansion lookups
+    window._reportPageSources = sources;
 
     return `
         <div class="page-header">
@@ -876,58 +838,11 @@ async function renderReports() {
             <span class="subtitle">${reports.length} Power BI reports &mdash; ${healthy} healthy, ${atRisk} need attention</span>
         </div>
 
-        <div class="tab-bar">
-            <button class="tab-btn active" data-tab="tab-reports-table">Table</button>
-            <button class="tab-btn" data-tab="tab-reports-deps">Dependencies</button>
-        </div>
-
-        <div id="tab-reports-table" class="tab-panel active">
-            ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
-        </div>
-        <div id="tab-reports-deps" class="tab-panel" style="display:none">
-            <div class="lineage-layout">
-                <div class="lineage-sidebar">
-                    <div class="lineage-sidebar-header">
-                        <input id="lineage-report-search" type="text" placeholder="Filter reports..." class="lineage-search-input">
-                        <div class="lineage-filter-row">
-                            <button class="lineage-filter-btn active" data-filter="all">All</button>
-                            <button class="lineage-filter-btn" data-filter="unhealthy">Unhealthy</button>
-                        </div>
-                    </div>
-                    <div id="lineage-report-list" class="lineage-report-list">
-                        ${sortedReports.map(r => _lineageReportItem(r, reportSources)).join("")}
-                    </div>
-                </div>
-                <div class="lineage-detail" id="lineage-detail">
-                    <div class="lineage-placeholder">
-                        <div class="lineage-placeholder-icon">&#8594;</div>
-                        <div class="lineage-placeholder-text">Select a report to view its data sources</div>
-                        <div class="lineage-placeholder-hint">Reports with issues are listed first</div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
     `;
 }
 
 function bindReportsPage() {
-    // Tab switching (Table / Dependencies)
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            document.querySelectorAll(".tab-panel").forEach(p => {
-                p.style.display = p.id === btn.dataset.tab ? "" : "none";
-                p.classList.toggle("active", p.id === btn.dataset.tab);
-            });
-            // Lazy-init lineage on first switch to Dependencies tab
-            if (btn.dataset.tab === "tab-reports-deps" && !window._lineageBound) {
-                window._lineageBound = true;
-                bindLineagePage();
-            }
-        });
-    });
-
     // Frequency set buttons
     document.querySelectorAll(".btn-set-freq").forEach(btn => {
         btn.addEventListener("click", (e) => {
@@ -1063,8 +978,10 @@ function bindAlertsTab() {
             const alertId = btn.dataset.alertId;
             try {
                 await fetch(`/api/alerts/${alertId}/acknowledge`, { method: "POST" });
+                // Immediate UI update without page refresh
+                const cell = btn.closest("td");
+                if (cell) cell.innerHTML = '<span class="badge badge-muted">acknowledged</span>';
                 toast("Alert acknowledged");
-                navigate("issues");
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -1151,32 +1068,15 @@ async function renderActionsContent() {
 }
 
 async function renderIssues() {
-    const [actionsData, alertsData] = await Promise.all([
-        renderActionsContent(),
-        renderAlerts(),
-    ]);
-
-    const totalOpen = actionsData.open + alertsData.active;
+    const alertsData = await renderAlerts();
 
     return `
         <div class="page-header">
             <h1>Issues</h1>
-            <span class="subtitle">${totalOpen} open issue${totalOpen !== 1 ? 's' : ''} across actions and alerts</span>
+            <span class="subtitle">${alertsData.active} active alert${alertsData.active !== 1 ? 's' : ''} &middot; ${alertsData.acked} acknowledged</span>
         </div>
 
-        <div id="ai-suggestions-slot"></div>
-
-        <div class="tab-bar">
-            <button class="tab-btn active" data-tab="tab-actions">Actions <span class="tab-count">${actionsData.total}</span></button>
-            <button class="tab-btn" data-tab="tab-alerts">Alerts <span class="tab-count">${alertsData.total}</span></button>
-        </div>
-
-        <div id="tab-actions" class="tab-panel active">
-            ${actionsData.html}
-        </div>
-        <div id="tab-alerts" class="tab-panel" style="display:none">
-            ${alertsData.html}
-        </div>
+        ${alertsData.html}
     `;
 }
 
@@ -1199,19 +1099,6 @@ function bindActionsTab() {
 }
 
 function bindIssuesPage() {
-    // Tab switching
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            document.querySelectorAll(".tab-panel").forEach(p => {
-                p.style.display = p.id === btn.dataset.tab ? "" : "none";
-                p.classList.toggle("active", p.id === btn.dataset.tab);
-            });
-        });
-    });
-
-    bindActionsTab();
     bindAlertsTab();
     bindDataTables();
 }
@@ -1542,7 +1429,6 @@ async function navigate(page) {
 
         bindDataTables();
         if (page === "dashboard") {
-            renderAIBriefing();
             // Update nav health dot
             const navDot = document.getElementById("nav-health-dot");
             const dd = window._dashboardData;
@@ -1629,7 +1515,7 @@ async function navigate(page) {
             });
         }
         if (page === "scanner") bindScannerButtons();
-        if (page === "issues") { bindIssuesPage(); renderAISuggestions(); }
+        if (page === "issues") { bindIssuesPage(); }
         if (page === "reports") bindReportsPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
