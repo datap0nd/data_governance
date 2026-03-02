@@ -787,7 +787,7 @@ async function renderSources() {
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "_fullLocation", label: "Full Location", resizable: true, render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
-        { key: "status", label: "Status", render: s => statusBadge(s.status), sortVal: s => ({ fresh: 0, stale: 1, outdated: 2, unknown: 3 })[s.status] ?? 4 },
+        { key: "status", label: "Status", render: s => statusBadge(s.status), sortVal: s => ({ fresh: "0_fresh", stale: "1_stale", outdated: "2_outdated", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
@@ -817,7 +817,7 @@ async function renderReports() {
 
     const cols = [
         { key: "name", label: "Report", render: r => `<strong>${r.name}</strong>` },
-        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ current: 0, "at risk": 1, degraded: 2 })[r.status] ?? 3 },
+        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ current: "0_current", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
         { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
