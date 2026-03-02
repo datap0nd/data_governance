@@ -33,19 +33,10 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
     if not csv_path.exists():
         return [], []
 
+    from app.scanner import read_csv_rows
     report_owners = []
     business_owners = []
-    raw = csv_path.read_bytes()
-    # Detect encoding: try UTF-8, UTF-16, then fall back to latin-1 (accepts any byte)
-    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
-        try:
-            text = raw.decode(enc)
-            break
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    else:
-        return [], []
-    for row in csv.reader(text.splitlines()):
+    for row in read_csv_rows(csv_path):
         if not row:
             continue
         ro = row[0].strip() if len(row) > 0 else ""

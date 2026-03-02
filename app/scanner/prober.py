@@ -193,10 +193,9 @@ def run_probe() -> dict:
 
         # 2. Probe PostgreSQL sources from CSV
         if CSV_PATH.exists():
-            with open(CSV_PATH, newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                _header = next(reader, None)
-                csv_rows = list(reader)
+            from app.scanner import read_csv_rows
+            all_rows = read_csv_rows(CSV_PATH)
+            csv_rows = all_rows[1:] if all_rows else []  # skip header row
 
             for row in csv_rows:
                 if len(row) < 3:
@@ -364,10 +363,10 @@ def probe_debug() -> dict:
     if not CSV_PATH.exists():
         return {"error": f"CSV not found: {CSV_PATH}"}
 
-    with open(CSV_PATH, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader, None)
-        csv_rows = [row for row in reader if len(row) >= 3]
+    from app.scanner import read_csv_rows
+    all_rows = read_csv_rows(CSV_PATH)
+    header = all_rows[0] if all_rows else None
+    csv_rows = [row for row in all_rows[1:] if len(row) >= 3]
 
     csv_samples = [
         {"schema": r[0].strip(), "table": r[1].strip(), "pattern": f"%{r[0].strip()}.{r[1].strip()}"}
