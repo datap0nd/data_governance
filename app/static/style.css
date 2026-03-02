@@ -692,8 +692,8 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
     flex-shrink: 0;
 }
 
-.dot-red    { background: var(--red); }
-.dot-yellow { background: var(--yellow); }
+.alert-item .dot-red    { background: var(--red); }
+.alert-item .dot-yellow { background: var(--yellow); }
 
 /* Kind badge for attention items */
 .attention-kind-badge {
