@@ -28,10 +28,8 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
     Returns two lists: (report_owners, business_owners).
     Falls back to empty lists if file not found.
     """
-    csv_path = Path(TMDL_ROOT) / "sample_files" / "owners.csv"
-    if not csv_path.exists():
-        # Also check parent directory
-        csv_path = Path(TMDL_ROOT).parent / "test_data" / "sample_files" / "owners.csv"
+    # Same directory as latest_upload_date.csv (project root)
+    csv_path = Path(__file__).resolve().parent.parent.parent / "owners.csv"
     if not csv_path.exists():
         return [], []
 
