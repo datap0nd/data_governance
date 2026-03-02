@@ -73,7 +73,7 @@ nav {
     padding: 0 1.5rem;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    height: 52px;
+    height: 44px;
 }
 
 nav .logo {
@@ -94,14 +94,31 @@ nav a {
     text-decoration: none;
     font-size: 0.8rem;
     font-weight: 500;
-    padding: 0.5rem 0.85rem;
+    padding: 0.4rem 0.85rem;
     border-radius: 6px;
     transition: all 0.15s;
+    position: relative;
 }
 
 nav a:hover {
     color: var(--text);
-    background: var(--surface-hover);
+}
+
+nav a::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    right: 50%;
+    height: 2px;
+    background: var(--blue);
+    transition: left 0.2s, right 0.2s;
+    border-radius: 1px;
+}
+
+nav a:hover::after {
+    left: 0.5rem;
+    right: 0.5rem;
 }
 
 nav a.active {
@@ -109,11 +126,24 @@ nav a.active {
     background: var(--blue-bg);
 }
 
-nav a.nav-icon {
+nav a.active::after {
+    left: 0.5rem;
+    right: 0.5rem;
+}
+
+nav a:last-child {
     margin-left: auto;
-    font-size: 1.1rem;
-    padding: 0.4rem 0.65rem;
-    line-height: 1;
+}
+
+/* Health status dot in nav */
+.nav-health-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 0.35rem;
+    background: var(--green);
+    vertical-align: middle;
 }
 
 /* ── Main ── */
@@ -225,9 +255,68 @@ h2 {
 .stat-dot.dot-red::before { background: var(--red); }
 .stat-dot.dot-muted::before { background: var(--text-dim); }
 
+/* Clickable stat cards */
+.stat-card.stat-card-clickable {
+    cursor: pointer;
+    transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.stat-card.stat-card-clickable:hover {
+    transform: translateY(-2px);
+    border-color: var(--border-light, #3a3f55);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.stat-card-link {
+    margin-top: 0.6rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    transition: color 0.15s;
+}
+
+.stat-card.stat-card-clickable:hover .stat-card-link {
+    color: var(--blue);
+}
+
+/* Clickable sub-labels in stat cards */
+.stat-filter {
+    cursor: pointer;
+    padding: 0.1rem 0.25rem;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+
+.stat-filter:hover {
+    background: var(--surface-2);
+    text-decoration: underline;
+}
+
+/* Pulse animation for critical stat cards */
+@keyframes pulseBorderRed {
+    0%, 100% {
+        border-color: var(--border);
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+    }
+    50% {
+        border-color: var(--red-border);
+        box-shadow: 0 0 8px 0 rgba(239, 68, 68, 0.15);
+    }
+}
+
+.stat-card.pulse-border-red {
+    animation: pulseBorderRed 2.5s ease-in-out infinite;
+}
+
+.stat-card.pulse-border-red:hover {
+    animation-play-state: paused;
+    border-color: var(--red-border);
+}
+
 /* ── Health bar ── */
 .health-bar-container {
     margin-bottom: 1.5rem;
+    position: relative;
 }
 
 .health-bar {
@@ -247,6 +336,78 @@ h2 {
 .health-bar .segment-yellow { background: var(--yellow); }
 .health-bar .segment-red { background: var(--red); }
 .health-bar .segment-muted { background: var(--text-dim); }
+
+/* Clickable health bar segments */
+.segment.segment-clickable {
+    cursor: pointer;
+    position: relative;
+    transition: opacity 0.15s, filter 0.15s;
+}
+
+.segment.segment-clickable:hover {
+    filter: brightness(1.25);
+}
+
+/* Custom tooltip for health bar */
+.health-tooltip {
+    position: absolute;
+    top: -28px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 0.25rem 0.6rem;
+    border-radius: 5px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+    transition: opacity 0.15s, transform 0.15s;
+    z-index: 10;
+}
+
+.health-tooltip.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* Health bar legend */
+.health-legend {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.4rem;
+    font-size: 0.72rem;
+}
+
+/* Segment hover expand */
+.segment.segment-clickable:hover {
+    margin-top: -2px;
+    height: calc(100% + 2px);
+}
+
+/* Scan line sweep animation */
+.health-bar {
+    position: relative;
+}
+
+.health-bar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -20%;
+    width: 20%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+    animation: healthSweep 4s ease-in-out infinite;
+    pointer-events: none;
+}
+
+@keyframes healthSweep {
+    0% { left: -20%; }
+    50% { left: 100%; }
+    100% { left: 100%; }
+}
 
 /* ── Status badges ── */
 .badge {
@@ -534,6 +695,32 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
 
 .dot-red    { background: var(--red); }
 .dot-yellow { background: var(--yellow); }
+
+/* Kind badge for attention items */
+.attention-kind-badge {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.attention-kind-badge.kind-source {
+    color: var(--blue);
+    background: var(--blue-bg);
+}
+
+.attention-kind-badge.kind-report {
+    color: var(--purple);
+    background: var(--purple-bg);
+}
+
+.attention-kind-badge.kind-alert {
+    color: var(--red);
+    background: var(--red-bg);
+}
 
 /* ── Buttons ── */
 button, .btn {
@@ -1608,6 +1795,115 @@ body.ai-panel-open main {
     color: var(--purple);
     transform: none;
     opacity: 1;
+}
+
+/* Briefing risk badge */
+.briefing-risk-badge {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+}
+
+.briefing-risk-badge.badge-red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+.briefing-risk-badge.badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+.briefing-risk-badge.badge-green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+
+/* Briefing summary sentence */
+.ai-briefing-summary {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 0.6rem;
+}
+
+/* Briefing metrics grid */
+.briefing-metrics {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.briefing-metric {
+    flex: 1;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem;
+    text-align: center;
+}
+
+.briefing-metric-value {
+    display: block;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.briefing-metric-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+}
+
+/* Briefing actions */
+.ai-briefing-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
+/* Shimmer loading animation */
+.shimmer {
+    position: relative;
+    overflow: hidden;
+    opacity: 0.5;
+}
+
+.shimmer::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent);
+    animation: shimmerSweep 1.5s infinite;
+}
+
+@keyframes shimmerSweep {
+    0% { left: -100%; }
+    100% { left: 100%; }
+}
+
+/* Expand/collapse toggle */
+.briefing-detail-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    padding: 0.3rem 0;
+    transition: color 0.15s;
+    user-select: none;
+}
+
+.briefing-detail-toggle:hover {
+    color: var(--text-muted);
+}
+
+.briefing-toggle-chevron {
+    font-size: 0.55rem;
+    transition: transform 0.2s;
+}
+
+.briefing-detail-body {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.3rem;
 }
 
 /* Risk level dots */

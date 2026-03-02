@@ -552,7 +552,7 @@ async function showReportDetail(report) {
                     </div>
                     <div class="ai-risk-text ai-content">${renderMd(data.assessment)}</div>
                     <div style="margin-top:0.75rem">
-                        <button class="btn-outline" id="btn-audit-queries" style="border-color:var(--purple-bg);color:var(--purple);font-size:0.75rem">&#10024; Audit Queries</button>
+                        <button class="btn-outline" id="btn-audit-queries" style="border-color:var(--purple-bg);color:var(--purple);font-size:0.75rem">Audit Queries</button>
                     </div>
                     <div id="ai-audit-result"></div>
                 </div>
@@ -581,7 +581,7 @@ async function showReportDetail(report) {
                     resultDiv.innerHTML = '<p style="color:var(--red);font-size:0.78rem;margin-top:0.5rem">Audit failed: ' + err.message + '</p>';
                 }
                 btn.disabled = false;
-                btn.innerHTML = "&#10024; Audit Queries";
+                btn.innerHTML = "Audit Queries";
             });
         } catch (err) {
             riskSlot.innerHTML = "";
@@ -593,12 +593,14 @@ async function showReportDetail(report) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports] = await Promise.all([
+    const [data, sources, reports, alerts] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
+        api("/api/alerts?active_only=true"),
     ]);
     const scan = data.last_scan;
+    window._dashboardData = data;
 
     const total = data.sources_total;
     const hasSources = total > 0;
@@ -614,38 +616,64 @@ async function renderDashboard() {
     else if (allUnknown) healthLabel = "Not yet probed";
     else healthLabel = freshPct + "% fresh";
 
-    // Find problematic sources/reports, sorted by severity (outdated first, then stale)
-    const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated")
-        .sort((a, b) => (a.status === "outdated" ? 0 : 1) - (b.status === "outdated" ? 0 : 1));
-    const problemReports = reports.filter(r => r.status === "outdated sources" || r.status === "stale sources")
-        .sort((a, b) => (a.status === "outdated sources" ? 0 : 1) - (b.status === "outdated sources" ? 0 : 1));
-    const allProblems = [...problemSources.map(s => ({ kind: "source", item: s })), ...problemReports.map(r => ({ kind: "report", item: r }))];
-    const ATTENTION_LIMIT = 6;
+    // Build unified "Needs Attention" list from problem sources, reports, and alerts
+    const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated");
+    const problemReports = reports.filter(r => r.status === "outdated sources" || r.status === "stale sources");
+    const needsAttention = [];
+    problemSources.forEach(s => {
+        const parsed = parseSourceName(s);
+        needsAttention.push({
+            severity: s.status === "outdated" ? "red" : "yellow",
+            kind: "source", name: parsed.shortName,
+            description: s.status === "outdated" ? "data older than 90 days" : "data is 31\u201390 days old",
+            timestamp: s.last_updated, id: s.id, data: s,
+        });
+    });
+    problemReports.forEach(r => {
+        needsAttention.push({
+            severity: r.status === "outdated sources" ? "red" : "yellow",
+            kind: "report", name: r.name,
+            description: "has " + (r.status === "outdated sources" ? "outdated" : "stale") + " sources",
+            timestamp: r.worst_source_updated, id: r.id, data: r,
+        });
+    });
+    alerts.forEach(a => {
+        const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
+        needsAttention.push({
+            severity: a.severity === "critical" ? "red" : "yellow",
+            kind: "alert", name: srcShort || "Alert",
+            description: a.message, timestamp: a.created_at, id: a.id, data: a,
+        });
+    });
+    needsAttention.sort((a, b) => {
+        const sev = { red: 0, yellow: 1 };
+        if (sev[a.severity] !== sev[b.severity]) return sev[a.severity] - sev[b.severity];
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return tb - ta;
+    });
+    const ATTENTION_LIMIT = 8;
 
     // Store for click-through navigation
     window._dashboardSources = sources;
     window._dashboardReports = reports;
 
     return `
-        <div class="page-header">
-            <h1>Data Governance Dashboard</h1>
-            <span class="subtitle">Real-time health monitoring for your BI ecosystem</span>
-        </div>
-
         <div id="ai-briefing-slot"></div>
 
         <div class="stat-grid">
-            <div class="stat-card card-blue">
+            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources">
                 <div class="stat-label">Total Sources</div>
                 <div class="stat-value">${data.sources_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green">${data.sources_fresh} fresh</span>
-                    <span class="stat-dot dot-yellow">${data.sources_stale} stale</span>
-                    <span class="stat-dot dot-red">${data.sources_outdated} outdated</span>
-                    ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} unknown</span>` : ""}
+                    <span class="stat-dot dot-green stat-filter" data-filter="fresh">${data.sources_fresh} fresh</span>
+                    <span class="stat-dot dot-yellow stat-filter" data-filter="stale">${data.sources_stale} stale</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="outdated">${data.sources_outdated} outdated</span>
+                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown">${data.sources_unknown} unknown</span>` : ""}
                 </div>
+                <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card card-purple">
+            <div class="stat-card card-purple stat-card-clickable" data-navigate="reports">
                 <div class="stat-label">Reports</div>
                 <div class="stat-value">${data.reports_total}</div>
                 <div class="stat-breakdown">
@@ -654,15 +682,18 @@ async function renderDashboard() {
                     <span class="stat-dot dot-red">${reports.filter(r => r.status === "outdated sources").length} degraded</span>
                     ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
+                <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card ${data.alerts_active > 0 ? 'card-red' : 'card-green'}">
+            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="issues">
                 <div class="stat-label">Active Alerts</div>
                 <div class="stat-value">${data.alerts_active}</div>
+                <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card card-green">
+            <div class="stat-card card-green stat-card-clickable" data-navigate="scanner">
                 <div class="stat-label">Last Scan</div>
                 <div class="stat-value" style="font-size:1.1rem">${scan ? timeAgo(scan.started_at) : "never"}</div>
                 ${scan ? `<div class="stat-breakdown">${scan.reports_scanned} reports &middot; ${scan.sources_found} sources</div>` : ""}
+                <div class="stat-card-link">View &rarr;</div>
             </div>
         </div>
 
@@ -683,67 +714,51 @@ async function renderDashboard() {
             <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered &mdash; probe to check freshness</div>
             ` : `
             <div class="health-bar">
-                ${freshPct > 0 ? `<div class="segment segment-green" style="width:${freshPct}%"></div>` : ""}
-                ${stalePct > 0 ? `<div class="segment segment-yellow" style="width:${stalePct}%"></div>` : ""}
-                ${outdatedPct > 0 ? `<div class="segment segment-red" style="width:${outdatedPct}%"></div>` : ""}
-                ${unknownPct > 0 ? `<div class="segment segment-muted" style="width:${unknownPct}%"></div>` : ""}
+                ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} fresh sources (${freshPct}%)" data-filter="fresh" style="width:${freshPct}%"></div>` : ""}
+                ${stalePct > 0 ? `<div class="segment segment-yellow segment-clickable" data-tooltip="${data.sources_stale} stale (${stalePct}%)" data-filter="stale" style="width:${stalePct}%"></div>` : ""}
+                ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} outdated (${outdatedPct}%)" data-filter="outdated" style="width:${outdatedPct}%"></div>` : ""}
+                ${unknownPct > 0 ? `<div class="segment segment-muted" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
+            </div>
+            <div class="health-tooltip" id="health-tooltip"></div>
+            <div class="health-legend">
+                <span class="stat-dot dot-green">${data.sources_fresh} Fresh</span>
+                <span class="stat-dot dot-yellow">${data.sources_stale} Stale</span>
+                <span class="stat-dot dot-red">${data.sources_outdated} Outdated</span>
+                ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} Unknown</span>` : ""}
             </div>
             `}
         </div>
 
-        <div class="section-grid">
-            <div class="section">
-                <h2>Attention Needed${allProblems.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${allProblems.length})</span>` : ""}</h2>
-                ${allProblems.length > 0 ? `
-                    <div class="alert-list" id="attention-list">
-                        ${allProblems.slice(0, ATTENTION_LIMIT).map(p => {
-                            if (p.kind === "source") {
-                                const s = p.item;
-                                const parsed = parseSourceName(s);
-                                return `<div class="alert-item attention-clickable" data-kind="source" data-id="${s.id}">
-                                    <div class="dot ${s.status === 'outdated' ? 'dot-red' : 'dot-yellow'}"></div>
-                                    <span><strong>${parsed.shortName}</strong> &mdash; ${s.status === 'outdated' ? 'data older than 90 days' : 'data is 31-90 days old'}</span>
-                                    <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${s.last_updated ? timeAgo(s.last_updated) : ""}</span>
-                                </div>`;
-                            } else {
-                                const r = p.item;
-                                return `<div class="alert-item attention-clickable" data-kind="report" data-id="${r.id}">
-                                    <div class="dot ${r.status === 'outdated sources' ? 'dot-red' : 'dot-yellow'}"></div>
-                                    <span><strong>${r.name}</strong> &mdash; has ${r.status === 'outdated sources' ? 'outdated' : 'stale'} sources</span>
-                                    <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${r.worst_source_updated ? timeAgo(r.worst_source_updated) : ""}</span>
-                                </div>`;
-                            }
-                        }).join("")}
-                    </div>
-                    ${allProblems.length > ATTENTION_LIMIT ? `
-                        <div id="attention-overflow" style="display:none" class="alert-list">
-                            ${allProblems.slice(ATTENTION_LIMIT).map(p => {
-                                if (p.kind === "source") {
-                                    const s = p.item;
-                                    const parsed = parseSourceName(s);
-                                    return `<div class="alert-item attention-clickable" data-kind="source" data-id="${s.id}">
-                                        <div class="dot ${s.status === 'outdated' ? 'dot-red' : 'dot-yellow'}"></div>
-                                        <span><strong>${parsed.shortName}</strong> &mdash; ${s.status === 'outdated' ? 'data older than 90 days' : 'data is 31-90 days old'}</span>
-                                        <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${s.last_updated ? timeAgo(s.last_updated) : ""}</span>
-                                    </div>`;
-                                } else {
-                                    const r = p.item;
-                                    return `<div class="alert-item attention-clickable" data-kind="report" data-id="${r.id}">
-                                        <div class="dot ${r.status === 'outdated sources' ? 'dot-red' : 'dot-yellow'}"></div>
-                                        <span><strong>${r.name}</strong> &mdash; has ${r.status === 'outdated sources' ? 'outdated' : 'stale'} sources</span>
-                                        <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${r.worst_source_updated ? timeAgo(r.worst_source_updated) : ""}</span>
-                                    </div>`;
-                                }
-                            }).join("")}
+        <div class="section">
+            <h2>Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
+            ${needsAttention.length > 0 ? `
+                <div class="alert-list" id="attention-list">
+                    ${needsAttention.slice(0, ATTENTION_LIMIT).map(item => `
+                        <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
+                            <div class="dot dot-${item.severity}"></div>
+                            <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
+                            <span><strong>${item.name}</strong> &mdash; ${item.description}</span>
+                            <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
                         </div>
-                        <button class="btn-outline btn-sm" id="btn-show-all-attention" style="margin-top:0.5rem;font-size:0.72rem">Show all ${allProblems.length} items</button>
-                    ` : ""}
-                ` : allUnknown
-                    ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
-                    : '<div class="empty-state">All sources and reports are healthy</div>'
-                }
-            </div>
-            <div class="section" id="alerts-preview"></div>
+                    `).join("")}
+                </div>
+                ${needsAttention.length > ATTENTION_LIMIT ? `
+                    <div id="attention-overflow" style="display:none" class="alert-list">
+                        ${needsAttention.slice(ATTENTION_LIMIT).map(item => `
+                            <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
+                                <div class="dot dot-${item.severity}"></div>
+                                <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
+                                <span><strong>${item.name}</strong> &mdash; ${item.description}</span>
+                                <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
+                            </div>
+                        `).join("")}
+                    </div>
+                    <button class="btn-outline btn-sm" id="btn-show-all-attention" style="margin-top:0.5rem;font-size:0.72rem">Show all ${needsAttention.length} items</button>
+                ` : ""}
+            ` : allUnknown
+                ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
+                : '<div class="empty-state">All sources and reports are healthy</div>'
+            }
         </div>
     `;
 }
@@ -970,7 +985,7 @@ async function renderScanner() {
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
-            <button id="btn-ai-briefing" class="btn-outline" style="border-color:var(--purple-bg);color:var(--purple)">&#10024; AI Briefing</button>
+            <button id="btn-ai-briefing" class="btn-outline" style="border-color:var(--purple-bg);color:var(--purple)">AI Briefing</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -1528,7 +1543,14 @@ async function navigate(page) {
         bindDataTables();
         if (page === "dashboard") {
             renderAIBriefing();
-            renderDashboardAlerts();
+            // Update nav health dot
+            const navDot = document.getElementById("nav-health-dot");
+            const dd = window._dashboardData;
+            if (navDot && dd) {
+                if (dd.sources_outdated > 0 || dd.alerts_active > 5) navDot.style.background = "var(--red)";
+                else if (dd.sources_stale > 0) navDot.style.background = "var(--yellow)";
+                else navDot.style.background = "var(--green)";
+            }
             const btnShowAll = document.getElementById("btn-show-all-attention");
             if (btnShowAll) {
                 btnShowAll.addEventListener("click", () => {
@@ -1536,11 +1558,60 @@ async function navigate(page) {
                     if (overflow) {
                         const showing = overflow.style.display !== "none";
                         overflow.style.display = showing ? "none" : "";
-                        btnShowAll.textContent = showing ? btnShowAll.textContent.replace("Show less", "Show all") : "Show less";
+                        btnShowAll.textContent = showing ? `Show all ${document.querySelectorAll("#attention-list .attention-clickable, #attention-overflow .attention-clickable").length} items` : "Show less";
                     }
                 });
             }
-            // Clickable attention items — drill down to source/report detail
+            // Clickable stat card sub-labels — filter navigation
+            document.querySelectorAll(".stat-filter[data-filter]").forEach(dot => {
+                dot.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const filterVal = dot.dataset.filter;
+                    await navigate("sources");
+                    const dt = window._dt && window._dt["dt-sources"];
+                    if (dt) {
+                        dt.filters["status"] = filterVal;
+                        const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-sources"][data-fcol="status"]');
+                        if (filterInput) filterInput.value = filterVal;
+                        _refreshDT("dt-sources");
+                    }
+                });
+            });
+            // Clickable stat cards — navigate to target page
+            document.querySelectorAll(".stat-card-clickable[data-navigate]").forEach(card => {
+                card.addEventListener("click", () => navigate(card.dataset.navigate));
+            });
+            // Health bar tooltips
+            const healthTooltip = document.getElementById("health-tooltip");
+            if (healthTooltip) {
+                document.querySelectorAll(".health-bar .segment[data-tooltip]").forEach(seg => {
+                    seg.addEventListener("mouseenter", () => {
+                        healthTooltip.textContent = seg.dataset.tooltip;
+                        healthTooltip.classList.add("visible");
+                        const rect = seg.getBoundingClientRect();
+                        const containerRect = seg.closest(".health-bar-container").getBoundingClientRect();
+                        healthTooltip.style.left = (rect.left + rect.width / 2 - containerRect.left) + "px";
+                    });
+                    seg.addEventListener("mouseleave", () => {
+                        healthTooltip.classList.remove("visible");
+                    });
+                });
+            }
+            // Health bar click-to-filter navigation
+            document.querySelectorAll(".segment-clickable[data-filter]").forEach(seg => {
+                seg.addEventListener("click", async () => {
+                    const filterVal = seg.dataset.filter;
+                    await navigate("sources");
+                    const dt = window._dt && window._dt["dt-sources"];
+                    if (dt) {
+                        dt.filters["status"] = filterVal;
+                        const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-sources"][data-fcol="status"]');
+                        if (filterInput) filterInput.value = filterVal;
+                        _refreshDT("dt-sources");
+                    }
+                });
+            });
+            // Clickable attention items — drill down to source/report/alert detail
             document.querySelectorAll(".attention-clickable").forEach(el => {
                 el.addEventListener("click", async () => {
                     const kind = el.dataset.kind;
@@ -1548,9 +1619,11 @@ async function navigate(page) {
                     if (kind === "source") {
                         const src = (window._dashboardSources || []).find(s => s.id === id);
                         if (src) { await navigate("sources"); showSourceDetail(src); }
-                    } else {
+                    } else if (kind === "report") {
                         const rpt = (window._dashboardReports || []).find(r => r.id === id);
                         if (rpt) { await navigate("reports"); showReportDetail(rpt); }
+                    } else if (kind === "alert") {
+                        await navigate("issues");
                     }
                 });
             });
@@ -1625,7 +1698,7 @@ function bindScannerButtons() {
                     slot.innerHTML = `
                         <div class="ai-briefing-card" style="margin-bottom:1.25rem">
                             <div class="ai-briefing-header">
-                                <span class="ai-briefing-label">&#10024; AI Briefing</span>
+                                <span class="ai-briefing-label">AI Briefing</span>
                                 <span class="risk-dot risk-${data.risk_level}"></span>
                             </div>
                             <div class="ai-briefing-text">${renderMd(data.summary)}</div>
@@ -1640,7 +1713,7 @@ function bindScannerButtons() {
                 if (slot) slot.innerHTML = "";
             }
             btnAIBriefing.disabled = false;
-            btnAIBriefing.innerHTML = "&#10024; AI Briefing";
+            btnAIBriefing.innerHTML = "AI Briefing";
         });
     }
 }
@@ -1655,7 +1728,7 @@ function initAIChatPanel() {
     const fab = document.createElement("button");
     fab.className = "ai-fab";
     fab.id = "ai-fab";
-    fab.innerHTML = "&#10024;";
+    fab.innerHTML = "AI";
     fab.title = "AI Assistant";
     document.body.appendChild(fab);
 
@@ -1671,7 +1744,7 @@ function initAIChatPanel() {
     panel.id = "ai-chat-panel";
     panel.innerHTML = `
         <div class="ai-chat-header">
-            <h3><span class="ai-sparkle">&#10024;</span> AI Assistant</h3>
+            <h3>AI Assistant</h3>
             <button class="ai-chat-close" id="ai-chat-close">&times;</button>
         </div>
         <div class="ai-chat-messages" id="ai-chat-messages">
@@ -1797,23 +1870,74 @@ async function sendAIChat() {
 async function renderAIBriefing() {
     const container = document.getElementById("ai-briefing-slot");
     if (!container) return;
-    container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
+
+    // Show loading shimmer if regenerating (card already exists), else show spinner
+    const existing = container.querySelector(".ai-briefing-card");
+    if (existing) {
+        const textArea = existing.querySelector(".ai-briefing-text, .briefing-facts, .briefing-metrics");
+        if (textArea) textArea.classList.add("shimmer");
+        const regenBtn = document.getElementById("ai-briefing-regen");
+        if (regenBtn) { regenBtn.textContent = "Regenerating..."; regenBtn.disabled = true; }
+    } else {
+        container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
+    }
+
     try {
-        const data = await api("/api/ai/briefing");
+        const briefing = await api("/api/ai/briefing");
+        const d = window._dashboardData || {};
+        const scan = d.last_scan;
+        const riskColors = { high: "red", medium: "yellow", low: "green" };
+        const riskColor = riskColors[briefing.risk_level] || "muted";
+
+        // Extract first sentence as summary
+        const fullText = briefing.summary || "";
+        const firstSentence = fullText.split(/(?<=\.)\s/)[0] || fullText;
+
         container.innerHTML = `
             <div class="ai-briefing-card">
                 <div class="ai-briefing-header">
-                    <span class="ai-briefing-label">&#10024; AI Briefing</span>
-                    <span class="risk-dot risk-${data.risk_level}"></span>
+                    <span class="ai-briefing-label">AI Briefing</span>
+                    <span class="briefing-risk-badge badge-${riskColor}">${briefing.risk_level} risk</span>
                 </div>
-                <div class="ai-briefing-text">${renderMd(data.summary)}</div>
+                <div class="ai-briefing-summary">${firstSentence}</div>
+                <div class="briefing-metrics">
+                    <div class="briefing-metric"><span class="briefing-metric-value">${d.sources_fresh || 0}</span><span class="briefing-metric-label">Fresh</span></div>
+                    <div class="briefing-metric"><span class="briefing-metric-value" style="color:var(--yellow)">${d.sources_stale || 0}</span><span class="briefing-metric-label">Stale</span></div>
+                    <div class="briefing-metric"><span class="briefing-metric-value" style="color:var(--red)">${d.sources_outdated || 0}</span><span class="briefing-metric-label">Outdated</span></div>
+                    <div class="briefing-metric"><span class="briefing-metric-value">${d.alerts_active || 0}</span><span class="briefing-metric-label">Alerts</span></div>
+                </div>
+                <div class="briefing-detail-toggle" id="briefing-toggle">
+                    <span class="briefing-toggle-text">Expand full briefing</span>
+                    <span class="briefing-toggle-chevron">&#9660;</span>
+                </div>
+                <div class="briefing-detail-body" id="briefing-detail" style="display:none">
+                    <div class="ai-briefing-text">${renderMd(fullText)}</div>
+                </div>
                 <div class="ai-briefing-footer">
-                    <span class="ai-briefing-meta">AI-generated &middot; ${data.risk_level} risk &middot; Generated ${timeAgo(data.generated_at)}</span>
-                    <button class="ai-briefing-regen" id="ai-briefing-regen">&#8635; Regenerate</button>
+                    <span class="ai-briefing-meta">AI-generated &middot; ${timeAgo(briefing.generated_at)}</span>
+                    <div class="ai-briefing-actions">
+                        <button class="ai-briefing-regen" id="ai-briefing-copy">Copy</button>
+                        <button class="ai-briefing-regen" id="ai-briefing-regen">&#8635; Regenerate</button>
+                    </div>
                 </div>
             </div>
         `;
         document.getElementById("ai-briefing-regen").addEventListener("click", () => renderAIBriefing());
+        document.getElementById("ai-briefing-copy").addEventListener("click", () => {
+            navigator.clipboard.writeText(fullText).then(() => {
+                const btn = document.getElementById("ai-briefing-copy");
+                btn.textContent = "Copied";
+                setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+            });
+        });
+        document.getElementById("briefing-toggle").addEventListener("click", () => {
+            const detail = document.getElementById("briefing-detail");
+            const toggle = document.getElementById("briefing-toggle");
+            const showing = detail.style.display !== "none";
+            detail.style.display = showing ? "none" : "";
+            toggle.querySelector(".briefing-toggle-text").textContent = showing ? "Expand full briefing" : "Collapse";
+            toggle.querySelector(".briefing-toggle-chevron").style.transform = showing ? "" : "rotate(180deg)";
+        });
     } catch (err) {
         container.innerHTML = "";
     }
@@ -1854,7 +1978,7 @@ async function renderAISuggestions() {
         const priorityDot = (p) => `<span class="risk-dot risk-${p}"></span>`;
         container.innerHTML = `
             <div class="ai-suggestions-card">
-                <div class="ai-suggestions-header">&#10024; AI Suggestions</div>
+                <div class="ai-suggestions-header">AI Suggestions</div>
                 ${data.suggestions.map(s => `
                     <div class="ai-suggestion-item">
                         <div class="ai-suggestion-priority">${priorityDot(s.priority)}</div>
