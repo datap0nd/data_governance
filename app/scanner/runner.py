@@ -35,17 +35,25 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
 
     report_owners = []
     business_owners = []
-    with open(csv_path, newline="", encoding="cp1252") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if not row:
-                continue
-            ro = row[0].strip() if len(row) > 0 else ""
-            bo = row[1].strip() if len(row) > 1 else ""
-            if ro:
-                report_owners.append(ro)
-            if bo:
-                business_owners.append(bo)
+    raw = csv_path.read_bytes()
+    # Detect encoding: try UTF-8, UTF-16, then fall back to latin-1 (accepts any byte)
+    for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    else:
+        return [], []
+    for row in csv.reader(text.splitlines()):
+        if not row:
+            continue
+        ro = row[0].strip() if len(row) > 0 else ""
+        bo = row[1].strip() if len(row) > 1 else ""
+        if ro:
+            report_owners.append(ro)
+        if bo:
+            business_owners.append(bo)
     return report_owners, business_owners
 
 
