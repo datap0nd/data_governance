@@ -26,20 +26,11 @@ TMDL_ROOT = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
 CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))
 
-# AI / LLM settings
+# AI configuration
 AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
-AI_MODEL = os.environ.get("DG_AI_MODEL", "oss-120b")
+AI_API_URL = os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
 AI_API_KEY = os.environ.get("DG_AI_API_KEY", "")
-
-# LiteLLM endpoint: read from env var, or from endpoint_url.txt file, or fallback
-_endpoint_file = Path(os.environ.get("DG_ENDPOINT_FILE", str(BASE_DIR.parent / "endpoint_url.txt")))
-_default_url = "http://localhost:4000"
-if os.environ.get("DG_AI_URL"):
-    AI_BASE_URL = os.environ["DG_AI_URL"]
-elif _endpoint_file.exists():
-    AI_BASE_URL = _endpoint_file.read_text().strip()
-else:
-    AI_BASE_URL = _default_url
+AI_MODEL = os.environ.get("DG_AI_MODEL", "gpt-oss-120b")
 
 # Simulated freshness — generates realistic source_probes entries for demo mode
 SIMULATE_FRESHNESS = os.environ.get("DG_SIMULATE_FRESHNESS", "true").lower() in ("true", "1", "yes")

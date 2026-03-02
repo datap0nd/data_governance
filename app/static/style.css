@@ -260,11 +260,11 @@ h2 {
     text-transform: uppercase;
 }
 
-.badge-green  { background: #22c55e; color: #fff; border: none; }
-.badge-yellow { background: #f59e0b; color: #fff; border: none; }
-.badge-red    { background: #ef4444; color: #fff; border: none; }
-.badge-blue   { background: var(--blue); color: #fff; border: none; }
-.badge-muted  { background: #6b7280; color: #fff; border: none; }
+.badge-green  { background: transparent; color: var(--green);  border: 1px solid var(--green-border); }
+.badge-yellow { background: transparent; color: var(--yellow); border: 1px solid var(--yellow-border); }
+.badge-red    { background: transparent; color: var(--red);    border: 1px solid var(--red-border); }
+.badge-blue   { background: transparent; color: var(--blue);   border: 1px solid var(--blue-border); }
+.badge-muted  { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
 
 /* Dashboard attention badges — no background, just text color + dot */
 .badge-flat {
