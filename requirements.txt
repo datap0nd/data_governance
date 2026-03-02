@@ -5,4 +5,5 @@ apscheduler==3.10.4
 pbixray
 apsw
 kaitaistruct
+httpx
 

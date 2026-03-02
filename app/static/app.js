@@ -1,3 +1,45 @@
+// ── Simple markdown renderer ──
+
+function renderMd(text) {
+    if (!text) return "";
+    let html = text
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        // headers
+        .replace(/^### (.+)$/gm, "<h4>$1</h4>")
+        .replace(/^## (.+)$/gm, "<h3 style='font-size:0.88rem;margin:0.4rem 0 0.25rem;color:#fff'>$1</h3>")
+        // bold
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        // tables
+        .replace(/^\|(.+)\|$/gm, (m) => {
+            const cells = m.split("|").filter(c => c.trim() !== "");
+            if (cells.every(c => /^[\s-:]+$/.test(c))) return "<!--sep-->";
+            return cells.map(c => `<td>${c.trim()}</td>`).join("");
+        })
+        // list items
+        .replace(/^- (.+)$/gm, "<li>$1</li>")
+        .replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/((?:<li>.+<\/li>\n?)+)/g, "<ul>$1</ul>");
+    // Wrap table rows
+    html = html.replace(/((?:<td>.+<\/td>\n?)+)/g, (block) => {
+        const rows = block.trim().split("\n").filter(r => r.trim() && !r.includes("<!--sep-->"));
+        if (rows.length === 0) return "";
+        const thead = `<tr>${rows[0].replace(/<td>/g, "<th>").replace(/<\/td>/g, "</th>")}</tr>`;
+        const tbody = rows.slice(1).map(r => `<tr>${r}</tr>`).join("");
+        return `<table>${thead}${tbody}</table>`;
+    });
+    html = html.replace(/<!--sep-->\n?/g, "");
+    // Paragraphs
+    html = html.split("\n\n").map(p => {
+        p = p.trim();
+        if (!p || p.startsWith("<h") || p.startsWith("<ul") || p.startsWith("<table") || p.startsWith("<li")) return p;
+        return `<p>${p}</p>`;
+    }).join("\n");
+    html = html.replace(/\n/g, " ").replace(/  +/g, " ");
+    return html;
+}
+
+
 // ── Helpers ──
 
 async function api(path) {
@@ -483,6 +525,8 @@ async function showReportDetail(report) {
             <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
         </div>
 
+        <div id="ai-report-risk-slot"></div>
+
         <h2>Data tables in this report (${tables.length})</h2>
         <table class="detail-table">
             <thead><tr><th>Table</th><th>Source</th></tr></thead>
@@ -493,6 +537,56 @@ async function showReportDetail(report) {
     $("#app").appendChild(panel);
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
     $("#btn-close-report-detail").addEventListener("click", () => panel.remove());
+
+    // Load AI risk assessment
+    const riskSlot = document.getElementById("ai-report-risk-slot");
+    if (riskSlot) {
+        riskSlot.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Assessing risk...</div>';
+        try {
+            const data = await api(`/api/ai/report-risk/${report.id}`);
+            riskSlot.innerHTML = `
+                <div class="ai-risk-card">
+                    <div class="ai-risk-header">
+                        <span class="risk-dot risk-${data.risk_level}"></span>
+                        <h3>AI Risk Assessment</h3>
+                    </div>
+                    <div class="ai-risk-text ai-content">${renderMd(data.assessment)}</div>
+                    <div style="margin-top:0.75rem">
+                        <button class="btn-outline" id="btn-audit-queries" style="border-color:var(--purple-bg);color:var(--purple);font-size:0.75rem">&#10024; Audit Queries</button>
+                    </div>
+                    <div id="ai-audit-result"></div>
+                </div>
+            `;
+            document.getElementById("btn-audit-queries").addEventListener("click", async () => {
+                const btn = document.getElementById("btn-audit-queries");
+                const resultDiv = document.getElementById("ai-audit-result");
+                btn.disabled = true;
+                btn.textContent = "Auditing...";
+                resultDiv.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Auditing M expressions...</div>';
+                try {
+                    const audit = await apiPost(`/api/ai/audit/${report.id}`);
+                    const sevDot = (s) => '<span class="risk-dot risk-' + s + '"></span>';
+                    resultDiv.innerHTML = '<div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border)">' +
+                        '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem" class="ai-content">' + renderMd(audit.summary) + '</div>' +
+                        (audit.findings.length > 0 ? audit.findings.map(f =>
+                            '<div class="ai-suggestion-item">' +
+                            '<div class="ai-suggestion-priority">' + sevDot(f.severity) + '</div>' +
+                            '<div class="ai-suggestion-body">' +
+                            '<h4>' + f.category + ' — ' + f.table + '</h4>' +
+                            '<p>' + f.detail + '</p>' +
+                            '</div></div>'
+                        ).join("") : '') +
+                        '</div>';
+                } catch (err) {
+                    resultDiv.innerHTML = '<p style="color:var(--red);font-size:0.78rem;margin-top:0.5rem">Audit failed: ' + err.message + '</p>';
+                }
+                btn.disabled = false;
+                btn.innerHTML = "&#10024; Audit Queries";
+            });
+        } catch (err) {
+            riskSlot.innerHTML = "";
+        }
+    }
 }
 
 
@@ -537,6 +631,8 @@ async function renderDashboard() {
             <h1>Data Governance Dashboard</h1>
             <span class="subtitle">Real-time health monitoring for your BI ecosystem</span>
         </div>
+
+        <div id="ai-briefing-slot"></div>
 
         <div class="stat-grid">
             <div class="stat-card card-blue">
@@ -874,6 +970,7 @@ async function renderScanner() {
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
+            <button id="btn-ai-briefing" class="btn-outline" style="border-color:var(--purple-bg);color:var(--purple)">&#10024; AI Briefing</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -893,6 +990,8 @@ async function renderScanner() {
                 <div id="probe-log-body" class="scan-log" style="display:none">${lastProbe.log}</div>
             </div>
         ` : ""}
+
+        <div id="scanner-ai-briefing-slot"></div>
 
         <div class="section-grid">
             <div class="section">
@@ -1015,7 +1114,7 @@ async function renderActionsContent() {
     const html = `
         <div class="summary-counts">
             <div class="summary-count"><span class="count-num" style="color:var(--red)">${open}</span><span class="count-label">open</span></div>
-            <div class="summary-count"><span class="count-num" style="color:var(--blue)">${acknowledged}</span><span class="count-label">ack</span></div>
+            <div class="summary-count"><span class="count-num" style="color:var(--blue)">${acknowledged}</span><span class="count-label">acknowledged</span></div>
             <div class="summary-count"><span class="count-num" style="color:var(--yellow)">${investigating}</span><span class="count-label">investigating</span></div>
             <div class="summary-count"><span class="count-num" style="color:var(--green)">${resolved}</span><span class="count-label">resolved</span></div>
         </div>
@@ -1049,6 +1148,8 @@ async function renderIssues() {
             <h1>Issues</h1>
             <span class="subtitle">${totalOpen} open issue${totalOpen !== 1 ? 's' : ''} across actions and alerts</span>
         </div>
+
+        <div id="ai-suggestions-slot"></div>
 
         <div class="tab-bar">
             <button class="tab-btn active" data-tab="tab-actions">Actions <span class="tab-count">${actionsData.total}</span></button>
@@ -1287,6 +1388,8 @@ function _renderLineageDetail(reportId) {
             </div>
         </div>
 
+        <div id="ai-risk-slot"></div>
+
         <div class="lineage-source-tree">
             ${sortedFolders.map(([folder, folderSources]) => `
                 <div class="lineage-folder-group">
@@ -1328,7 +1431,9 @@ function bindLineagePage() {
             item.addEventListener("click", () => {
                 document.querySelectorAll(".lineage-report-item.selected").forEach(i => i.classList.remove("selected"));
                 item.classList.add("selected");
-                _renderLineageDetail(parseInt(item.dataset.reportId));
+                const rid = parseInt(item.dataset.reportId);
+                _renderLineageDetail(rid);
+                renderAIReportRisk(rid);
             });
         });
     }
@@ -1375,6 +1480,7 @@ function bindLineagePage() {
         if (item) {
             item.classList.add("selected");
             _renderLineageDetail(autoSelect.id);
+            renderAIReportRisk(autoSelect.id);
         }
     }
 }
@@ -1421,6 +1527,7 @@ async function navigate(page) {
 
         bindDataTables();
         if (page === "dashboard") {
+            renderAIBriefing();
             renderDashboardAlerts();
             const btnShowAll = document.getElementById("btn-show-all-attention");
             if (btnShowAll) {
@@ -1449,7 +1556,7 @@ async function navigate(page) {
             });
         }
         if (page === "scanner") bindScannerButtons();
-        if (page === "issues") bindIssuesPage();
+        if (page === "issues") { bindIssuesPage(); renderAISuggestions(); }
         if (page === "reports") bindReportsPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
@@ -1504,6 +1611,264 @@ function bindScannerButtons() {
             }
         });
     }
+
+    const btnAIBriefing = $("#btn-ai-briefing");
+    if (btnAIBriefing) {
+        btnAIBriefing.addEventListener("click", async () => {
+            btnAIBriefing.disabled = true;
+            btnAIBriefing.textContent = "Generating...";
+            const slot = document.getElementById("scanner-ai-briefing-slot");
+            if (slot) slot.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
+            try {
+                const data = await api("/api/ai/briefing");
+                if (slot) {
+                    slot.innerHTML = `
+                        <div class="ai-briefing-card" style="margin-bottom:1.25rem">
+                            <div class="ai-briefing-header">
+                                <span class="ai-briefing-label">&#10024; AI Briefing</span>
+                                <span class="risk-dot risk-${data.risk_level}"></span>
+                            </div>
+                            <div class="ai-briefing-text">${renderMd(data.summary)}</div>
+                            <div class="ai-briefing-footer">
+                                <span class="ai-briefing-meta">AI-generated &middot; ${data.risk_level} risk &middot; ${timeAgo(data.generated_at)}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (err) {
+                toast("Briefing failed: " + err.message);
+                if (slot) slot.innerHTML = "";
+            }
+            btnAIBriefing.disabled = false;
+            btnAIBriefing.innerHTML = "&#10024; AI Briefing";
+        });
+    }
+}
+
+
+// ── AI Chat Panel ──
+
+function initAIChatPanel() {
+    if (document.getElementById("ai-chat-panel")) return;
+
+    // Floating action button
+    const fab = document.createElement("button");
+    fab.className = "ai-fab";
+    fab.id = "ai-fab";
+    fab.innerHTML = "&#10024;";
+    fab.title = "AI Assistant";
+    document.body.appendChild(fab);
+
+    // Overlay
+    const overlay = document.createElement("div");
+    overlay.className = "ai-chat-overlay";
+    overlay.id = "ai-chat-overlay";
+    document.body.appendChild(overlay);
+
+    // Panel
+    const panel = document.createElement("div");
+    panel.className = "ai-chat-panel";
+    panel.id = "ai-chat-panel";
+    panel.innerHTML = `
+        <div class="ai-chat-header">
+            <h3><span class="ai-sparkle">&#10024;</span> AI Assistant</h3>
+            <button class="ai-chat-close" id="ai-chat-close">&times;</button>
+        </div>
+        <div class="ai-chat-messages" id="ai-chat-messages">
+            <div class="ai-msg assistant">
+                <p>Hi! I can help you understand your data governance ecosystem. Ask me about risks, source health, or specific reports.</p>
+            </div>
+        </div>
+        <div class="ai-chat-quick" id="ai-chat-quick">
+            <button class="ai-quick-chip" data-q="What's at risk?">What's at risk?</button>
+            <button class="ai-quick-chip" data-q="Summarize dashboard">Summarize dashboard</button>
+            <button class="ai-quick-chip" data-q="Show stale sources">Show stale sources</button>
+            <button class="ai-quick-chip" data-q="Audit report queries">Audit report queries</button>
+        </div>
+        <div class="ai-chat-input-area">
+            <textarea class="ai-chat-input" id="ai-chat-input" placeholder="Ask about your data..." rows="1"></textarea>
+            <button class="ai-chat-send" id="ai-chat-send">&#9654;</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    // Bind events
+    fab.addEventListener("click", () => toggleAIChat(true));
+    overlay.addEventListener("click", () => toggleAIChat(false));
+    document.getElementById("ai-chat-close").addEventListener("click", () => toggleAIChat(false));
+    document.getElementById("ai-chat-send").addEventListener("click", sendAIChat);
+
+    const input = document.getElementById("ai-chat-input");
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendAIChat();
+        }
+    });
+    // Auto-resize
+    input.addEventListener("input", () => {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 100) + "px";
+    });
+
+    // Quick chips
+    document.querySelectorAll(".ai-quick-chip").forEach(chip => {
+        chip.addEventListener("click", () => {
+            input.value = chip.dataset.q;
+            sendAIChat();
+        });
+    });
+}
+
+function toggleAIChat(open) {
+    const panel = document.getElementById("ai-chat-panel");
+    const overlay = document.getElementById("ai-chat-overlay");
+    const fab = document.getElementById("ai-fab");
+    if (open) {
+        panel.classList.add("open");
+        overlay.classList.add("visible");
+        fab.style.display = "none";
+        document.body.classList.add("ai-panel-open");
+        document.getElementById("ai-chat-input").focus();
+    } else {
+        panel.classList.remove("open");
+        overlay.classList.remove("visible");
+        fab.style.display = "flex";
+        document.body.classList.remove("ai-panel-open");
+    }
+}
+
+async function sendAIChat() {
+    const input = document.getElementById("ai-chat-input");
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    const messages = document.getElementById("ai-chat-messages");
+    const sendBtn = document.getElementById("ai-chat-send");
+
+    // Add user message
+    const userEl = document.createElement("div");
+    userEl.className = "ai-msg user";
+    userEl.textContent = msg;
+    messages.appendChild(userEl);
+    input.value = "";
+    input.style.height = "auto";
+    sendBtn.disabled = true;
+
+    // Hide quick chips after first message
+    const quickArea = document.getElementById("ai-chat-quick");
+    if (quickArea) quickArea.style.display = "none";
+
+    // Typing indicator
+    const typing = document.createElement("div");
+    typing.className = "ai-typing";
+    typing.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+    messages.appendChild(typing);
+    messages.scrollTop = messages.scrollHeight;
+
+    try {
+        const res = await fetch("/api/ai/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: msg }),
+        });
+        const data = await res.json();
+        typing.remove();
+
+        const assistantEl = document.createElement("div");
+        assistantEl.className = "ai-msg assistant ai-content";
+        assistantEl.innerHTML = renderMd(data.response);
+        messages.appendChild(assistantEl);
+    } catch (err) {
+        typing.remove();
+        const errEl = document.createElement("div");
+        errEl.className = "ai-msg assistant";
+        errEl.innerHTML = `<p style="color:var(--red)">Error: ${err.message}</p>`;
+        messages.appendChild(errEl);
+    }
+
+    sendBtn.disabled = false;
+    messages.scrollTop = messages.scrollHeight;
+}
+
+
+// ── AI Briefing (Dashboard) ──
+
+async function renderAIBriefing() {
+    const container = document.getElementById("ai-briefing-slot");
+    if (!container) return;
+    container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating AI briefing...</div>';
+    try {
+        const data = await api("/api/ai/briefing");
+        container.innerHTML = `
+            <div class="ai-briefing-card">
+                <div class="ai-briefing-header">
+                    <span class="ai-briefing-label">&#10024; AI Briefing</span>
+                    <span class="risk-dot risk-${data.risk_level}"></span>
+                </div>
+                <div class="ai-briefing-text">${renderMd(data.summary)}</div>
+                <div class="ai-briefing-footer">
+                    <span class="ai-briefing-meta">AI-generated &middot; ${data.risk_level} risk &middot; Generated ${timeAgo(data.generated_at)}</span>
+                    <button class="ai-briefing-regen" id="ai-briefing-regen">&#8635; Regenerate</button>
+                </div>
+            </div>
+        `;
+        document.getElementById("ai-briefing-regen").addEventListener("click", () => renderAIBriefing());
+    } catch (err) {
+        container.innerHTML = "";
+    }
+}
+
+
+// ── AI Report Risk (Dependencies detail) ──
+
+async function renderAIReportRisk(reportId) {
+    const container = document.getElementById("ai-risk-slot");
+    if (!container) return;
+    container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Assessing risk...</div>';
+    try {
+        const data = await api(`/api/ai/report-risk/${reportId}`);
+        container.innerHTML = `
+            <div class="ai-risk-card">
+                <div class="ai-risk-header">
+                    <span class="risk-dot risk-${data.risk_level}"></span>
+                    <h3>AI Risk Assessment</h3>
+                </div>
+                <div class="ai-risk-text ai-content">${renderMd(data.assessment)}</div>
+            </div>
+        `;
+    } catch (err) {
+        container.innerHTML = "";
+    }
+}
+
+
+// ── AI Suggestions (Issues page) ──
+
+async function renderAISuggestions() {
+    const container = document.getElementById("ai-suggestions-slot");
+    if (!container) return;
+    container.innerHTML = '<div class="ai-loading"><div class="ai-spinner"></div>Generating suggestions...</div>';
+    try {
+        const data = await api("/api/ai/suggestions");
+        const priorityDot = (p) => `<span class="risk-dot risk-${p}"></span>`;
+        container.innerHTML = `
+            <div class="ai-suggestions-card">
+                <div class="ai-suggestions-header">&#10024; AI Suggestions</div>
+                ${data.suggestions.map(s => `
+                    <div class="ai-suggestion-item">
+                        <div class="ai-suggestion-priority">${priorityDot(s.priority)}</div>
+                        <div class="ai-suggestion-body">
+                            <h4>${s.title}</h4>
+                            <p>${s.description}</p>
+                        </div>
+                    </div>
+                `).join("")}
+            </div>
+        `;
+    } catch (err) {
+        container.innerHTML = "";
+    }
 }
 
 
@@ -1537,5 +1902,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (pages[page] && page !== currentPage) navigate(page);
     });
 
+    initAIChatPanel();
     navigate(getInitialPage());
 });

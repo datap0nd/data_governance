@@ -28,7 +28,12 @@ def trigger_scan():
 @router.post("/probe")
 def trigger_probe():
     """Probe all sources for freshness (file mod times, PostgreSQL CSV, etc.)."""
-    result = run_probe()
+    from app.config import SIMULATE_FRESHNESS
+    if SIMULATE_FRESHNESS:
+        from app.scanner.prober import simulate_probe
+        result = simulate_probe()
+    else:
+        result = run_probe()
     return result
 
 

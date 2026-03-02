@@ -194,6 +194,16 @@ def run_scan(reports_path: str | None = None) -> dict:
                 ),
             )
 
+        # Run simulated freshness if enabled
+        from app.config import SIMULATE_FRESHNESS
+        if SIMULATE_FRESHNESS:
+            from app.scanner.prober import simulate_probe
+            try:
+                simulate_probe()
+                logger.info("Simulated freshness probe completed after scan")
+            except Exception as e:
+                logger.exception("Simulated probe failed after scan: %s", e)
+
         summary = {
             "scan_id": scan_id,
             "reports_scanned": len(reports),
