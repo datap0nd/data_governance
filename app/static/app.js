@@ -817,7 +817,7 @@ async function renderReports() {
 
     const cols = [
         { key: "name", label: "Report", render: r => `<strong>${r.name}</strong>` },
-        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ current: "0_current", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
+        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ current: "0_current", "stale sources": "1_stale sources", "outdated sources": "2_outdated sources" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
         { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
