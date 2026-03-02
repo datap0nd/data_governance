@@ -787,7 +787,7 @@ async function renderSources() {
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "_fullLocation", label: "Full Location", resizable: true, render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
-        { key: "status", label: "Status", render: s => statusBadge(s.status) },
+        { key: "status", label: "Status", render: s => statusBadge(s.status), sortVal: s => ({ fresh: 0, stale: 1, outdated: 2, unknown: 3 })[s.status] ?? 4 },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
