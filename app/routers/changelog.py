@@ -3,33 +3,50 @@
 import logging
 import subprocess
 from fastapi import APIRouter
+from app.config import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/changelog", tags=["changelog"])
 
 # Curated feature descriptions keyed by commit hash prefix.
-# Commits not listed here are grouped under their date as minor updates.
 FEATURES = {
-    "b5000e0": ("Power BI Links", "Reports now link directly to Power BI workspace via powerbi_links.csv"),
-    "643c414": ("Live AI Chat", "AI chat connects to LiteLLM endpoint for real questions about your data ecosystem"),
-    "47c0f43": ("Filter Unknown Sources", "Unknown/no-connection sources hidden from UI and no longer affect report health status"),
-    "2a4fde6": ("Scanner Fix", "Scans no longer attempt to access shared drive files; respects simulated freshness setting"),
-    "0539a2e": ("Windows CSV Support", "CSV files read via pywin32 Excel COM on Windows for reliable encoding handling"),
-    "03e2a80": ("Simplified UI", "Removed AI briefing from dashboard, inline report expansion, alerts-only Issues page"),
-    "a8f80a5": ("Dashboard Redesign", "Clickable stat cards, health bar tooltips, unified Needs Attention list, pulse animation on critical items"),
-    "4512cbc": ("Owner Assignment", "Report and business owners randomly assigned from owners.csv on each scan"),
-    "b710ac7": ("AI Insights & Freshness", "AI-powered chat, briefing, risk assessment, and simulated source freshness probing"),
-    "034b9f6": ("4-Page Consolidation", "Merged pages into Dashboard, Sources, Reports, and Issues with dependency view"),
-    "e257ff5": ("Actions & Alerts System", "Workflow actions, alert management, dark theme polish"),
-    "e533743": ("UI Redesign", "Professional BI monitoring dashboard with dark theme"),
-    "65d5b95": ("Sources Page Redesign", "Redesigned sources view with detail panels"),
-    "312a943": ("CSV-Based Probing", "Source freshness probing via latest_upload_date.csv instead of direct DB connection"),
-    "ff98732": ("PostgreSQL Probing", "Source freshness checking for PostgreSQL data sources"),
-    "1028268": ("Sortable Tables", "All tables now have sortable and filterable columns"),
-    "d69d509": ("PBIX Scanning", "Direct .pbix file scanning via PBIXRay — no TMDL export needed"),
-    "7f2a995": ("Owner Extraction", "Business owner and report owner extracted from TMDL metadata"),
-    "d48f0e6": ("Phase 1 Launch", "TMDL scanner, REST API, and web panel — initial release"),
+    # ── Mar 3 ──
+    "f40456a": ("Power BI Button Always Visible", "Open in Power BI button now always shows in report details, greyed out when no link is configured"),
+    "a827af5": ("CSV Export", "Export button on Sources, Reports, and Issues pages to download filtered data as CSV"),
+    "eca5812": ("Changelog Tab", "New Changelog page showing version history and feature releases"),
+    "b5000e0": ("Power BI Report Links", "Click through from any report directly to its Power BI workspace via powerbi_links.csv"),
+    "643c414": ("Live AI Assistant", "AI chat now connects to LiteLLM endpoint for real questions about your data ecosystem"),
+
+    # ── Mar 2 ──
+    "80fe3e0": ("Dashboard Visual Fix", "Removed colored backgrounds from status text on dashboard stat cards"),
+    "47c0f43": ("Hide Unknown Sources", "Unknown and no-connection sources filtered from all views and no longer affect report health"),
+    "0539a2e": ("Windows CSV Compatibility", "All CSV files read via pywin32 Excel COM on Windows for reliable encoding"),
+    "2a4fde6": ("Scanner Shared Drive Fix", "Scans no longer try to access shared drive files; probe respects simulated freshness"),
+    "75e9b85": ("Status Sort Order Fix", "Sources sort fresh-stale-outdated, reports sort current-at risk-degraded"),
+    "4512cbc": ("CSV-Based Owner Assignment", "Report and business owners randomly assigned from owners.csv on each scan"),
+    "03e2a80": ("Simplified Interface", "Removed AI briefing from dashboard, inline report expansion replaces bottom panel, Issues page is alerts-only"),
+    "a8f80a5": ("Dashboard Redesign", "Clickable stat cards with navigation, health bar tooltips, unified Needs Attention list, pulse animation on critical items"),
+    "b710ac7": ("AI Insights Engine", "AI-powered chat assistant, dashboard briefing, report risk assessment, and simulated source freshness probing"),
+
+    # ── Feb 28 ──
+    "034b9f6": ("4-Page Layout", "Consolidated UI into Dashboard, Sources, Reports, and Issues with dependency lineage view"),
+
+    # ── Feb 27 ──
+    "cef004f": ("Auto-Update Improvements", "Improved update.ps1 reliability with Chrome-based downloads and timeout handling"),
+    "e257ff5": ("Actions & Alerts", "Action workflow system for managing stale/outdated sources, alert notifications, dark scrollbar theme"),
+    "e533743": ("Professional Dark Theme", "Complete UI redesign with dark theme, Inter font, and polished card layouts"),
+    "65d5b95": ("Sources Detail View", "Redesigned sources page with expandable detail panels and probe history"),
+    "312a943": ("CSV-Based Freshness Probing", "Source freshness checked via latest_upload_date.csv instead of direct database connections"),
+    "ff98732": ("PostgreSQL Source Probing", "Automatic last-updated timestamp checking for PostgreSQL data sources"),
+    "1028268": ("Interactive Tables", "All data tables now have sortable columns and per-column text filters"),
+    "bcbccda": ("Database Source Display", "Database sources show schema.table format instead of just server/database"),
+    "8c45cf1": ("Extended Connector Support", "Added support for SQL Server, MySQL, Oracle, ODBC, OLEDB, SSAS, Redshift, Snowflake, BigQuery, SharePoint"),
+    "d69d509": ("Direct PBIX Scanning", "Scan .pbix files directly using PBIXRay — no TMDL export step needed"),
+    "7f2a995": ("Owner Metadata Extraction", "Business owner and report owner automatically extracted from TMDL metadata"),
+    "a0122a8": ("Auto-Update Script", "PowerShell update.ps1 script for one-click updates from GitHub"),
+    "5d9e74f": ("Windows Setup Guide", "Step-by-step installation instructions for Windows deployment"),
+    "d48f0e6": ("Initial Release", "TMDL scanner, FastAPI REST API, web panel with source and report tracking"),
 }
 
 
@@ -40,7 +57,7 @@ def get_changelog():
         result = subprocess.run(
             ["git", "log", "--pretty=format:%H|%aI|%s", "--no-merges"],
             capture_output=True, text=True, timeout=10,
-            cwd="/workspace/data_governance",
+            cwd=str(BASE_DIR),
         )
         if result.returncode != 0:
             return _static_changelog()
@@ -72,12 +89,41 @@ def get_changelog():
 
 
 def _static_changelog():
-    """Fallback when git is unavailable."""
+    """Fallback when git is unavailable — uses same FEATURES dict."""
+    # Hardcoded dates for when git isn't available
+    dates = {
+        "f40456a": "2026-03-03T08:22:53+00:00",
+        "a827af5": "2026-03-03T08:14:17+00:00",
+        "eca5812": "2026-03-03T08:10:28+00:00",
+        "b5000e0": "2026-03-03T08:04:55+00:00",
+        "643c414": "2026-03-03T07:41:14+00:00",
+        "80fe3e0": "2026-03-02T18:43:56+00:00",
+        "47c0f43": "2026-03-02T18:30:54+00:00",
+        "0539a2e": "2026-03-02T18:20:58+00:00",
+        "2a4fde6": "2026-03-02T17:45:02+00:00",
+        "75e9b85": "2026-03-02T17:27:35+00:00",
+        "4512cbc": "2026-03-02T16:46:02+00:00",
+        "03e2a80": "2026-03-02T16:40:12+00:00",
+        "a8f80a5": "2026-03-02T16:19:54+00:00",
+        "b710ac7": "2026-03-02T12:28:11+00:00",
+        "034b9f6": "2026-02-28T20:04:00+00:00",
+        "cef004f": "2026-02-27T13:06:19+00:00",
+        "e257ff5": "2026-02-27T13:00:00+00:00",
+        "e533743": "2026-02-27T12:23:10+00:00",
+        "65d5b95": "2026-02-27T12:06:35+00:00",
+        "312a943": "2026-02-27T11:31:49+00:00",
+        "ff98732": "2026-02-27T09:32:37+00:00",
+        "1028268": "2026-02-27T08:53:10+00:00",
+        "bcbccda": "2026-02-27T08:06:25+00:00",
+        "8c45cf1": "2026-02-27T08:02:03+00:00",
+        "d69d509": "2026-02-27T07:52:55+00:00",
+        "7f2a995": "2026-02-27T07:37:26+00:00",
+        "a0122a8": "2026-02-27T07:14:04+00:00",
+        "5d9e74f": "2026-02-27T07:01:34+00:00",
+        "d48f0e6": "2026-02-27T06:47:39+00:00",
+    }
     return [
-        {"date": "2026-03-03T08:04:55+00:00", "title": "Power BI Links", "description": "Reports now link directly to Power BI workspace", "commit": "b5000e0"},
-        {"date": "2026-03-03T07:41:14+00:00", "title": "Live AI Chat", "description": "AI chat connects to real LLM endpoint", "commit": "643c414"},
-        {"date": "2026-03-02T18:30:54+00:00", "title": "Filter Unknown Sources", "description": "Unknown sources hidden and don't affect report status", "commit": "47c0f43"},
-        {"date": "2026-03-02T16:40:12+00:00", "title": "Simplified UI", "description": "Inline report expansion, alerts-only Issues page", "commit": "03e2a80"},
-        {"date": "2026-03-02T16:19:54+00:00", "title": "Dashboard Redesign", "description": "Clickable stat cards, health bar tooltips, unified attention list", "commit": "a8f80a5"},
-        {"date": "2026-02-27T06:47:39+00:00", "title": "Phase 1 Launch", "description": "TMDL scanner, REST API, and web panel", "commit": "d48f0e6"},
+        {"date": dates.get(k, ""), "title": v[0], "description": v[1], "commit": k}
+        for k, v in FEATURES.items()
+        if k in dates
     ]

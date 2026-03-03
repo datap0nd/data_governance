@@ -1125,7 +1125,6 @@ function bindActionsTab() {
 
 function bindIssuesPage() {
     bindAlertsTab();
-    bindDataTables();
 }
 
 function bindActionStatusSelects() {
