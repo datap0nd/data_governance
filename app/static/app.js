@@ -96,12 +96,12 @@ function $$(sel) { return document.querySelectorAll(sel); }
 function statusBadge(status) {
     if (!status) return '<span class="badge badge-muted">not probed</span>';
     const s = status.toLowerCase();
-    if (s === "fresh" || s === "current" || s === "pass" || s === "completed")
-        return `<span class="badge badge-green">${status}</span>`;
-    if (s === "stale" || s === "stale sources" || s === "warn" || s === "warning")
-        return `<span class="badge badge-yellow">${s === "stale sources" ? "at risk" : status}</span>`;
-    if (s === "outdated" || s === "outdated sources")
-        return `<span class="badge badge-red">${s === "outdated sources" ? "degraded" : status}</span>`;
+    if (s === "fresh" || s === "healthy" || s === "current" || s === "pass" || s === "completed")
+        return `<span class="badge badge-green">healthy</span>`;
+    if (s === "stale" || s === "at risk" || s === "stale sources" || s === "warn" || s === "warning")
+        return `<span class="badge badge-yellow">at risk</span>`;
+    if (s === "outdated" || s === "degraded" || s === "outdated sources")
+        return `<span class="badge badge-red">degraded</span>`;
     if (s === "error" || s === "fail" || s === "failed" || s === "critical")
         return `<span class="badge badge-red">${status}</span>`;
     if (s === "no_connection")
@@ -124,9 +124,9 @@ function actionStatusBadge(status) {
 
 function actionTypeBadge(type) {
     const labels = {
-        stale_source: "Stale",
-        outdated_source: "Outdated",
-        error_source: "Outdated",
+        stale_source: "At Risk",
+        outdated_source: "Degraded",
+        error_source: "Degraded",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
     };
@@ -531,7 +531,7 @@ async function showSourceDetail(source) {
             <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${source.owner || "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${source.upstream_name || "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${source.upstream_refresh_day || "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + source.refresh_schedule : "-"}</span></div>
         </div>
 
         <h2>Reports using this source (${reports.length})</h2>
@@ -542,11 +542,11 @@ async function showSourceDetail(source) {
 
         <h2>Freshness Rule</h2>
         <div class="freshness-rule-form">
-            <label class="freshness-label">Fresh up to
+            <label class="freshness-label">Healthy up to
                 <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="31" min="1" max="9999" class="input-sm">
                 days
             </label>
-            <label class="freshness-label">Stale up to
+            <label class="freshness-label">At risk up to
                 <input type="number" id="stale-days-input" value="${staleVal}" placeholder="90" min="1" max="9999" class="input-sm">
                 days
             </label>
@@ -636,7 +636,7 @@ async function showReportDetail(report) {
             const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
             const srcStatus = src ? src.status : "unknown";
             return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
-                <span class="dot dot-${srcStatus === 'fresh' ? 'green' : srcStatus === 'stale' ? 'yellow' : srcStatus === 'outdated' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
+                <span class="dot dot-${srcStatus === 'fresh' || srcStatus === 'healthy' ? 'green' : srcStatus === 'stale' || srcStatus === 'at risk' ? 'yellow' : srcStatus === 'outdated' || srcStatus === 'degraded' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
                 <span class="report-source-table">${t.table_name}</span>
                 <span class="report-source-arrow">&rarr;</span>
                 <span class="report-source-name">${srcName}</span>
@@ -686,16 +686,16 @@ async function showReportDetail(report) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, alerts, alertTrend] = await Promise.all([
+    const [data, sources, reports, alerts, healthTrend] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
         api("/api/alerts?active_only=true"),
-        api("/api/schedules/alert-trend"),
+        api("/api/schedules/health-trend"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
-    window._alertTrend = alertTrend;
+    window._healthTrend = healthTrend;
 
     const total = data.sources_total;
     const hasSources = total > 0;
@@ -709,26 +709,26 @@ async function renderDashboard() {
     let healthLabel;
     if (!hasSources) healthLabel = "No sources yet";
     else if (allUnknown) healthLabel = "Not yet probed";
-    else healthLabel = freshPct + "% fresh";
+    else healthLabel = freshPct + "% healthy";
 
     // Build unified "Needs Attention" list from problem sources, reports, and alerts
     const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated");
-    const problemReports = reports.filter(r => r.status === "outdated sources" || r.status === "stale sources");
+    const problemReports = reports.filter(r => r.status === "degraded" || r.status === "at risk");
     const needsAttention = [];
     problemSources.forEach(s => {
         const parsed = parseSourceName(s);
         needsAttention.push({
             severity: s.status === "outdated" ? "red" : "yellow",
             kind: "source", name: parsed.shortName,
-            description: s.status === "outdated" ? "data older than 90 days" : "data is 31\u201390 days old",
+            description: s.status === "outdated" ? "degraded — data older than 90 days" : "at risk — data is 31\u201390 days old",
             timestamp: s.last_updated, id: s.id, data: s,
         });
     });
     problemReports.forEach(r => {
         needsAttention.push({
-            severity: r.status === "outdated sources" ? "red" : "yellow",
+            severity: r.status === "degraded" ? "red" : "yellow",
             kind: "report", name: r.name,
-            description: "has " + (r.status === "outdated sources" ? "outdated" : "stale") + " sources",
+            description: "has " + (r.status === "degraded" ? "degraded" : "at-risk") + " sources",
             timestamp: r.worst_source_updated, id: r.id, data: r,
         });
     });
@@ -759,9 +759,9 @@ async function renderDashboard() {
                 <div class="stat-label">Total Sources</div>
                 <div class="stat-value">${data.sources_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green stat-filter" data-filter="fresh">${data.sources_fresh} fresh</span>
-                    <span class="stat-dot dot-yellow stat-filter" data-filter="stale">${data.sources_stale} stale</span>
-                    <span class="stat-dot dot-red stat-filter" data-filter="outdated">${data.sources_outdated} outdated</span>
+                    <span class="stat-dot dot-green stat-filter" data-filter="healthy">${data.sources_fresh} healthy</span>
+                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk">${data.sources_stale} at risk</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="degraded">${data.sources_outdated} degraded</span>
                     ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
@@ -770,9 +770,9 @@ async function renderDashboard() {
                 <div class="stat-label">Reports</div>
                 <div class="stat-value">${data.reports_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green">${reports.filter(r => r.status === "current").length} healthy</span>
-                    <span class="stat-dot dot-yellow">${reports.filter(r => r.status === "stale sources").length} at risk</span>
-                    <span class="stat-dot dot-red">${reports.filter(r => r.status === "outdated sources").length} degraded</span>
+                    <span class="stat-dot dot-green">${reports.filter(r => r.status === "healthy").length} healthy</span>
+                    <span class="stat-dot dot-yellow">${reports.filter(r => r.status === "at risk").length} at risk</span>
+                    <span class="stat-dot dot-red">${reports.filter(r => r.status === "degraded").length} degraded</span>
                     ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
@@ -807,27 +807,28 @@ async function renderDashboard() {
             <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered &mdash; probe to check freshness</div>
             ` : `
             <div class="health-bar">
-                ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} fresh sources (${freshPct}%)" data-filter="fresh" style="width:${freshPct}%"></div>` : ""}
-                ${stalePct > 0 ? `<div class="segment segment-yellow segment-clickable" data-tooltip="${data.sources_stale} stale (${stalePct}%)" data-filter="stale" style="width:${stalePct}%"></div>` : ""}
-                ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} outdated (${outdatedPct}%)" data-filter="outdated" style="width:${outdatedPct}%"></div>` : ""}
+                ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} healthy (${freshPct}%)" data-filter="healthy" style="width:${freshPct}%"></div>` : ""}
+                ${stalePct > 0 ? `<div class="segment segment-yellow segment-clickable" data-tooltip="${data.sources_stale} at risk (${stalePct}%)" data-filter="at risk" style="width:${stalePct}%"></div>` : ""}
+                ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} degraded (${outdatedPct}%)" data-filter="degraded" style="width:${outdatedPct}%"></div>` : ""}
                 ${unknownPct > 0 ? `<div class="segment segment-muted" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
             </div>
             <div class="health-tooltip" id="health-tooltip"></div>
             <div class="health-legend">
-                <span class="stat-dot dot-green">${data.sources_fresh} Fresh</span>
-                <span class="stat-dot dot-yellow">${data.sources_stale} Stale</span>
-                <span class="stat-dot dot-red">${data.sources_outdated} Outdated</span>
+                <span class="stat-dot dot-green">${data.sources_fresh} Healthy</span>
+                <span class="stat-dot dot-yellow">${data.sources_stale} At Risk</span>
+                <span class="stat-dot dot-red">${data.sources_outdated} Degraded</span>
                 ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} Unknown</span>` : ""}
             </div>
             `}
         </div>
 
-        <div class="alert-trend-container">
-            <h2>Alert Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
-            <canvas id="alert-trend-canvas" height="120"></canvas>
+        <div class="alert-trend-container" style="position:relative">
+            <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
+            <canvas id="health-trend-canvas" height="140"></canvas>
+            <div id="health-trend-tooltip" class="chart-tooltip"></div>
         </div>
 
-        <div class="section">
+        <div class="section" style="margin-top:1.5rem">
             <h2>Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
             ${needsAttention.length > 0 ? `
                 <div class="alert-list" id="attention-list">
@@ -861,8 +862,8 @@ async function renderDashboard() {
     `;
 }
 
-function drawAlertTrendChart() {
-    const canvas = document.getElementById("alert-trend-canvas");
+function drawHealthTrendChart() {
+    const canvas = document.getElementById("health-trend-canvas");
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
@@ -872,14 +873,15 @@ function drawAlertTrendChart() {
     ctx.scale(dpr, dpr);
     const W = rect.width, H = rect.height;
 
-    const trend = window._alertTrend || [];
+    const trend = window._healthTrend || [];
     if (trend.length === 0) return;
 
-    const counts = trend.map(t => t.count);
-    const maxVal = Math.max(...counts, 1);
     const padL = 30, padR = 10, padT = 10, padB = 24;
     const chartW = W - padL - padR;
     const chartH = H - padT - padB;
+
+    // Compute max total (stacked)
+    const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.at_risk || 0) + (t.degraded || 0)), 1);
 
     // Grid lines
     ctx.strokeStyle = "rgba(255,255,255,0.06)";
@@ -894,38 +896,88 @@ function drawAlertTrendChart() {
         ctx.fillText(Math.round(i / gridSteps * maxVal), padL - 4, y + 3);
     }
 
-    // Area fill
+    // Helper to get x position for index
+    const xAt = (i) => padL + (i / (trend.length - 1)) * chartW;
+    const yAt = (val) => padT + chartH - (val / maxVal) * chartH;
+
+    // Build stacked y-values per point
+    const series = trend.map(t => ({
+        degraded: t.degraded || 0,
+        at_risk: t.at_risk || 0,
+        healthy: t.healthy || 0,
+    }));
+
+    // Draw stacked areas (bottom to top: degraded, at_risk, healthy)
+    // degraded: from 0 to degraded
+    // at_risk: from degraded to degraded+at_risk
+    // healthy: from degraded+at_risk to total
+
+    const colors = {
+        healthy: { fill: "rgba(34, 197, 94, 0.18)", stroke: "#22c55e" },
+        at_risk: { fill: "rgba(234, 179, 8, 0.18)", stroke: "#eab308" },
+        degraded: { fill: "rgba(239, 68, 68, 0.18)", stroke: "#ef4444" },
+    };
+
+    // Draw areas (in order: healthy on top, then at_risk, then degraded at bottom)
+    // But for stacked area, draw bottom-most first (degraded), then at_risk, then healthy
+
+    // Degraded area (bottom)
     ctx.beginPath();
-    trend.forEach((t, i) => {
-        const x = padL + (i / (trend.length - 1)) * chartW;
-        const y = padT + chartH - (t.count / maxVal) * chartH;
+    for (let i = 0; i < trend.length; i++) {
+        const x = xAt(i);
+        const y = yAt(series[i].degraded);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.lineTo(padL + chartW, padT + chartH);
+    }
+    ctx.lineTo(xAt(trend.length - 1), padT + chartH);
     ctx.lineTo(padL, padT + chartH);
     ctx.closePath();
-    ctx.fillStyle = "rgba(239, 68, 68, 0.10)";
+    ctx.fillStyle = colors.degraded.fill;
     ctx.fill();
 
-    // Line
+    // At risk area (middle)
     ctx.beginPath();
-    trend.forEach((t, i) => {
-        const x = padL + (i / (trend.length - 1)) * chartW;
-        const y = padT + chartH - (t.count / maxVal) * chartH;
+    for (let i = 0; i < trend.length; i++) {
+        const x = xAt(i);
+        const y = yAt(series[i].degraded + series[i].at_risk);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#ef4444";
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    }
+    for (let i = trend.length - 1; i >= 0; i--) {
+        ctx.lineTo(xAt(i), yAt(series[i].degraded));
+    }
+    ctx.closePath();
+    ctx.fillStyle = colors.at_risk.fill;
+    ctx.fill();
 
-    // Dots
-    trend.forEach((t, i) => {
-        if (t.count === 0) return;
-        const x = padL + (i / (trend.length - 1)) * chartW;
-        const y = padT + chartH - (t.count / maxVal) * chartH;
-        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = "#ef4444"; ctx.fill();
-    });
+    // Healthy area (top)
+    ctx.beginPath();
+    for (let i = 0; i < trend.length; i++) {
+        const x = xAt(i);
+        const total = series[i].degraded + series[i].at_risk + series[i].healthy;
+        const y = yAt(total);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    for (let i = trend.length - 1; i >= 0; i--) {
+        ctx.lineTo(xAt(i), yAt(series[i].degraded + series[i].at_risk));
+    }
+    ctx.closePath();
+    ctx.fillStyle = colors.healthy.fill;
+    ctx.fill();
+
+    // Draw lines for each series
+    function drawLine(getY, color) {
+        ctx.beginPath();
+        for (let i = 0; i < trend.length; i++) {
+            const x = xAt(i);
+            const y = yAt(getY(i));
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+    drawLine(i => series[i].degraded + series[i].at_risk + series[i].healthy, colors.healthy.stroke);
+    drawLine(i => series[i].degraded + series[i].at_risk, colors.at_risk.stroke);
+    drawLine(i => series[i].degraded, colors.degraded.stroke);
 
     // X-axis labels (every 7 days)
     ctx.fillStyle = "rgba(255,255,255,0.35)";
@@ -933,11 +985,80 @@ function drawAlertTrendChart() {
     ctx.textAlign = "center";
     trend.forEach((t, i) => {
         if (i % 7 === 0 || i === trend.length - 1) {
-            const x = padL + (i / (trend.length - 1)) * chartW;
+            const x = xAt(i);
             const parts = t.day.split("-");
-            ctx.fillText(`${parts[1]}/${parts[2]}`, x, H - 4);
+            ctx.fillText(`${parts[2]}/${parts[1]}`, x, H - 4);
         }
     });
+
+    // Legend
+    ctx.font = "9px Inter, sans-serif";
+    const legendX = padL + 4;
+    const legendY = padT + 10;
+    [
+        { color: colors.healthy.stroke, label: "Healthy" },
+        { color: colors.at_risk.stroke, label: "At Risk" },
+        { color: colors.degraded.stroke, label: "Degraded" },
+    ].forEach((item, idx) => {
+        const x = legendX + idx * 72;
+        ctx.fillStyle = item.color;
+        ctx.fillRect(x, legendY - 6, 8, 8);
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.textAlign = "left";
+        ctx.fillText(item.label, x + 11, legendY + 1);
+    });
+
+    // Store chart geometry for tooltip
+    window._healthChartGeom = { padL, padR, padT, padB, chartW, chartH, trend, series, xAt, yAt, maxVal, canvasRect: rect };
+
+    // Tooltip handler
+    canvas.addEventListener("mousemove", _healthChartMouseMove);
+    canvas.addEventListener("mouseleave", () => {
+        const tip = document.getElementById("health-trend-tooltip");
+        if (tip) tip.style.display = "none";
+    });
+}
+
+function _healthChartMouseMove(e) {
+    const g = window._healthChartGeom;
+    if (!g) return;
+    const tip = document.getElementById("health-trend-tooltip");
+    if (!tip) return;
+
+    const rect = e.target.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Find nearest data point index
+    if (mx < g.padL || mx > g.padL + g.chartW) { tip.style.display = "none"; return; }
+    const ratio = (mx - g.padL) / g.chartW;
+    const idx = Math.round(ratio * (g.trend.length - 1));
+    if (idx < 0 || idx >= g.trend.length) { tip.style.display = "none"; return; }
+
+    const t = g.trend[idx];
+    const s = g.series[idx];
+    const total = s.healthy + s.at_risk + s.degraded;
+    const parts = t.day.split("-");
+    const dayLabel = `${parts[2]}/${parts[1]}/${parts[0]}`;
+
+    tip.innerHTML = `<div style="font-weight:600;margin-bottom:3px">${dayLabel}</div>
+        <div><span style="color:#22c55e">&#9679;</span> Healthy: ${s.healthy}</div>
+        <div><span style="color:#eab308">&#9679;</span> At Risk: ${s.at_risk}</div>
+        <div><span style="color:#ef4444">&#9679;</span> Degraded: ${s.degraded}</div>
+        <div style="border-top:1px solid rgba(255,255,255,0.15);margin-top:3px;padding-top:3px;color:var(--text-dim)">Total: ${total}</div>`;
+    tip.style.display = "block";
+
+    // Position tooltip near cursor
+    const tipX = Math.min(mx + 12, rect.width - 140);
+    const tipY = Math.max(my - 70, 0);
+    tip.style.left = tipX + "px";
+    tip.style.top = tipY + "px";
+
+    // Draw vertical guideline
+    const canvas = e.target;
+    const ctx = canvas.getContext("2d");
+    // Redraw chart then overlay guideline
+    drawHealthTrendChart.__lastHoverIdx = idx;
 }
 
 async function renderDashboardAlerts() {
@@ -984,27 +1105,56 @@ async function renderSources() {
             let b = statusBadge(s.status);
             if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
             return b;
-        }, sortVal: s => ({ fresh: "0_fresh", stale: "1_stale", outdated: "2_outdated", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
+        }, sortVal: s => ({ fresh: "0_healthy", stale: "1_at risk", outdated: "2_degraded", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
             ? `<span style="color:var(--text-muted);cursor:help;border-bottom:1px dotted var(--text-dim)" title="Source is used by multiple report owners">${s.owner}</span>`
             : `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
-        { key: "refresh_schedule", label: "Refresh Day", render: s => `<span style="color:var(--text-muted)">${s.refresh_schedule || "-"}</span>` },
+        { key: "refresh_schedule", label: "Frequency", render: s => {
+            const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+            const current = s.refresh_schedule ? `Weekly - ${s.refresh_schedule}` : "";
+            const opts = days.map(d => {
+                const val = `Weekly - ${d}`;
+                return `<option value="${d}"${s.refresh_schedule === d ? ' selected' : ''}>${val}</option>`;
+            }).join("");
+            return `<select class="freq-select-inline source-freq-select" data-source-id="${s.id}">
+                ${s.refresh_schedule ? '' : '<option value="">-</option>'}${opts}
+            </select>`;
+        }},
     ];
 
-    const fresh = sources.filter(s => s.status === "fresh").length;
-    const stale = sources.filter(s => s.status === "stale").length;
-    const outdated = sources.filter(s => s.status === "outdated").length;
+    const healthy = sources.filter(s => s.status === "fresh").length;
+    const atRiskCount = sources.filter(s => s.status === "stale").length;
+    const degradedCount = sources.filter(s => s.status === "outdated").length;
 
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${sources.length} data sources tracked &mdash; ${fresh} fresh, ${stale} stale, ${outdated} outdated</span>
+            <span class="subtitle">${sources.length} data sources tracked &mdash; ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
             <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
+}
+
+function bindSourcesPage() {
+    // Inline frequency select dropdowns for sources
+    document.querySelectorAll(".source-freq-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const sourceId = sel.dataset.sourceId;
+            const day = sel.value;
+            if (!day) return;
+            try {
+                await apiPatch(`/api/sources/${sourceId}`, { refresh_schedule: day });
+                toast("Frequency updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
 }
 
 async function renderReports() {
@@ -1016,17 +1166,24 @@ async function renderReports() {
 
     const cols = [
         { key: "name", label: "Report", render: r => `<strong>${r.name}</strong>` },
-        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ current: "0_current", "stale sources": "1_stale sources", "outdated sources": "2_outdated sources" })[r.status] ?? "3_" + r.status },
+        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
         { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
-        { key: "frequency", label: "Frequency", render: r => r.frequency
-            ? `<span style="color:var(--text-muted)">${r.frequency}</span>`
-            : `<span class="freq-inline" data-report-id="${r.id}"><button class="btn-outline btn-sm btn-set-freq" data-report-id="${r.id}" style="font-size:0.68rem">Set</button></span>` },
+        { key: "frequency", label: "Frequency", render: r => {
+            const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+            const opts = days.map(d => {
+                const val = `Weekly - ${d}`;
+                return `<option value="${val}"${r.frequency === val ? ' selected' : ''}>${val}</option>`;
+            }).join("");
+            return `<select class="freq-select-inline" data-report-id="${r.id}">
+                ${r.frequency ? '' : '<option value="">Choose...</option>'}${opts}
+            </select>`;
+        }},
     ];
 
-    const healthy = reports.filter(r => r.status === "current").length;
-    const atRisk = reports.filter(r => r.status !== "current" && r.status !== "unknown").length;
+    const healthy = reports.filter(r => r.status === "healthy").length;
+    const atRisk = reports.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
 
     // Store sources for inline expansion lookups
     window._reportPageSources = sources;
@@ -1043,43 +1200,21 @@ async function renderReports() {
 }
 
 function bindReportsPage() {
-    // Frequency set buttons
-    document.querySelectorAll(".btn-set-freq").forEach(btn => {
-        btn.addEventListener("click", (e) => {
+    // Inline frequency select dropdowns
+    document.querySelectorAll(".freq-select-inline").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
             e.stopPropagation();
-            const reportId = btn.dataset.reportId;
-            const container = btn.closest(".freq-inline");
-            if (!container) return;
-
-            container.innerHTML = `
-                <span style="display:inline-flex;gap:0.3rem;align-items:center" onclick="event.stopPropagation()">
-                    <select class="freq-select" data-report-id="${reportId}" style="font-size:0.72rem;padding:0.2rem 0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)">
-                        <option value="">Choose...</option>
-                        <option value="Daily">Daily</option>
-                        <option value="Weekly">Weekly</option>
-                        <option value="Monthly">Monthly</option>
-                        <option value="Quarterly">Quarterly</option>
-                    </select>
-                    <button class="btn-sm freq-save" data-report-id="${reportId}" style="font-size:0.68rem;padding:0.15rem 0.4rem">Save</button>
-                </span>
-            `;
-
-            const saveBtn = container.querySelector(".freq-save");
-            const select = container.querySelector(".freq-select");
-            saveBtn.addEventListener("click", async (ev) => {
-                ev.stopPropagation();
-                const freq = select.value;
-                if (!freq) { toast("Select a frequency"); return; }
-                try {
-                    await apiPatch(`/api/reports/${reportId}`, { frequency: freq });
-                    toast("Frequency updated");
-                    navigate("reports");
-                } catch (err) {
-                    toast("Failed: " + err.message);
-                }
-            });
-            select.addEventListener("click", (ev) => ev.stopPropagation());
+            const reportId = sel.dataset.reportId;
+            const freq = sel.value;
+            if (!freq) return;
+            try {
+                await apiPatch(`/api/reports/${reportId}`, { frequency: freq });
+                toast("Frequency updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
         });
+        sel.addEventListener("click", (e) => e.stopPropagation());
     });
 }
 
@@ -1137,9 +1272,9 @@ async function renderScanner() {
                     { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
                     { key: "status", label: "Status", render: r => statusBadge(r.status) },
                     { key: "sources_probed", label: "Probed", render: r => `${r.sources_probed ?? "-"}` },
-                    { key: "fresh", label: "Fresh", render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
-                    { key: "stale", label: "Stale", render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
-                    { key: "outdated", label: "Outdated", render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
+                    { key: "fresh", label: "Healthy", render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
+                    { key: "stale", label: "At Risk", render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
+                    { key: "outdated", label: "Degraded", render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
                 ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
             </div>
         </div>
@@ -1147,7 +1282,11 @@ async function renderScanner() {
 }
 
 async function renderAlerts() {
-    const alerts = await api("/api/alerts?active_only=false");
+    const [alerts, owners] = await Promise.all([
+        api("/api/alerts?active_only=false"),
+        api("/api/alerts/owners/list"),
+    ]);
+    window._alertOwners = owners;
 
     const cols = [
         { key: "severity", label: "Severity", render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
@@ -1155,6 +1294,14 @@ async function renderAlerts() {
             const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
             return srcShort ? `<strong>${srcShort}</strong> &mdash; ${a.message}` : a.message;
         }},
+        { key: "assigned_to", label: "Owner", render: a => {
+            const opts = (window._alertOwners || []).map(o =>
+                `<option value="${o}"${a.assigned_to === o ? ' selected' : ''}>${o}</option>`
+            ).join("");
+            return `<select class="alert-owner-select" data-alert-id="${a.id}">
+                <option value="">Unassigned</option>${opts}
+            </select>`;
+        }, sortVal: a => a.assigned_to || "zzz_unassigned" },
         { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
         { key: "resolution_status", label: "Status", render: a => {
             const reasonAttr = a.resolution_reason ? ` title="${a.resolution_reason.replace(/"/g, '&quot;')}"` : "";
@@ -1176,6 +1323,24 @@ async function renderAlerts() {
 }
 
 function bindAlertsTab() {
+    // Owner select dropdowns
+    document.querySelectorAll(".alert-owner-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const alertId = sel.dataset.alertId;
+            const owner = sel.value || "";
+            try {
+                const url = owner
+                    ? `/api/alerts/${alertId}/assign?owner=${encodeURIComponent(owner)}`
+                    : `/api/alerts/${alertId}/assign`;
+                await fetch(url, { method: "PATCH" });
+                toast(owner ? `Assigned to ${owner}` : "Unassigned");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
     // Acknowledge / Resolve buttons
     document.querySelectorAll(".btn-resolve-alert").forEach(btn => {
         btn.addEventListener("click", async (e) => {
@@ -1239,8 +1404,8 @@ async function renderActionsContent() {
         }
 
         return `<div class="action-cards">${filtered.map(a => {
-            const indColor = a.type.includes("outdated") || a.type.includes("error") ? "ind-red"
-                           : a.type.includes("stale") ? "ind-yellow"
+            const indColor = a.type.includes("outdated") || a.type.includes("error") || a.type.includes("degraded") ? "ind-red"
+                           : a.type.includes("stale") || a.type.includes("at_risk") ? "ind-yellow"
                            : a.type.includes("broken") ? "ind-red"
                            : "ind-blue";
 
@@ -1289,7 +1454,7 @@ async function renderActionsContent() {
             <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
             <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
             <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
-            <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally stale/outdated (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
+            <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally at-risk/degraded (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
         </div>
 
         <div id="action-list">
@@ -1345,18 +1510,18 @@ function renderDiscrepancies(data) {
         },
         { key: "upstream_name", label: "Upstream System",
           render: d => `<span style="color:var(--text-muted)">${d.upstream_name}</span>
-                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.upstream_refresh_day}</span>`
+                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.upstream_refresh_date || d.upstream_refresh_day}</span>`
         },
         { key: "source_name", label: "Source",
           render: d => {
               const short = shortNameFromPath(d.source_name) || d.source_name;
               return `<strong>${short}</strong>
-                      <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.source_refresh_day}</span>`;
+                      <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.source_refresh_date || d.source_refresh_day}</span>`;
           }
         },
         { key: "report_name", label: "Report",
           render: d => `<span style="color:var(--text-muted)">${d.report_name}</span>
-                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">Sunday</span>`
+                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.report_refresh_date || 'Sunday'}</span>`
         },
         { key: "issue", label: "Issue",
           render: d => d.issues.map(i => `<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.2rem">${i.message}</div>`).join("")
@@ -1484,9 +1649,9 @@ function shortNameFromPath(fullName) {
 
 function _lineageReportItem(r, reportSources) {
     const srcCount = reportSources.get(r.id)?.size || 0;
-    const statusClass = r.status === "current" ? "dot-green"
-        : r.status === "stale sources" ? "dot-yellow"
-        : r.status === "outdated sources" ? "dot-red"
+    const statusClass = r.status === "healthy" ? "dot-green"
+        : r.status === "at risk" ? "dot-yellow"
+        : r.status === "degraded" ? "dot-red"
         : "dot-muted";
     return `
         <div class="lineage-report-item" data-report-id="${r.id}">
@@ -1524,8 +1689,8 @@ function _renderLineageDetail(reportId) {
 
     // Sort folders: folders with issues first
     const folderOrder = (sources) => {
-        if (sources.some(s => s.status === "outdated" || s.status === "error")) return 0;
-        if (sources.some(s => s.status === "stale")) return 1;
+        if (sources.some(s => s.status === "outdated" || s.status === "error" || s.status === "degraded")) return 0;
+        if (sources.some(s => s.status === "stale" || s.status === "at risk")) return 1;
         return 2;
     };
     const sortedFolders = [...grouped.entries()].sort((a, b) => {
@@ -1544,11 +1709,11 @@ function _renderLineageDetail(reportId) {
         }
     });
 
-    const statusSummary = { fresh: 0, stale: 0, outdated: 0, unknown: 0 };
+    const statusSummary = { healthy: 0, at_risk: 0, degraded: 0, unknown: 0 };
     reportSources.forEach(s => {
-        if (s.status === "fresh") statusSummary.fresh++;
-        else if (s.status === "stale") statusSummary.stale++;
-        else if (s.status === "outdated" || s.status === "error") statusSummary.outdated++;
+        if (s.status === "fresh") statusSummary.healthy++;
+        else if (s.status === "stale") statusSummary.at_risk++;
+        else if (s.status === "outdated" || s.status === "error") statusSummary.degraded++;
         else statusSummary.unknown++;
     });
 
@@ -1568,9 +1733,9 @@ function _renderLineageDetail(reportId) {
                 </div>
             </div>
             <div class="lineage-health-pills">
-                ${statusSummary.fresh ? `<span class="health-pill pill-green">${statusSummary.fresh} fresh</span>` : ""}
-                ${statusSummary.stale ? `<span class="health-pill pill-yellow">${statusSummary.stale} stale</span>` : ""}
-                ${statusSummary.outdated ? `<span class="health-pill pill-red">${statusSummary.outdated} outdated</span>` : ""}
+                ${statusSummary.healthy ? `<span class="health-pill pill-green">${statusSummary.healthy} healthy</span>` : ""}
+                ${statusSummary.at_risk ? `<span class="health-pill pill-yellow">${statusSummary.at_risk} at risk</span>` : ""}
+                ${statusSummary.degraded ? `<span class="health-pill pill-red">${statusSummary.degraded} degraded</span>` : ""}
                 ${statusSummary.unknown ? `<span class="health-pill pill-muted">${statusSummary.unknown} unknown</span>` : ""}
             </div>
         </div>
@@ -1632,7 +1797,7 @@ function bindLineagePage() {
         const activeFilter = document.querySelector(".lineage-filter-btn.active")?.dataset.filter || "all";
 
         const filtered = data.sortedReports.filter(r => {
-            if (activeFilter === "unhealthy" && r.status === "current") return false;
+            if (activeFilter === "unhealthy" && r.status === "healthy") return false;
             if (query) {
                 const name = (r.name || "").toLowerCase();
                 const owner = (r.owner || "").toLowerCase();
@@ -1660,7 +1825,7 @@ function bindLineagePage() {
     });
 
     // Auto-select first unhealthy report, or first report
-    const firstUnhealthy = data.sortedReports.find(r => r.status !== "current");
+    const firstUnhealthy = data.sortedReports.find(r => r.status !== "healthy");
     const autoSelect = firstUnhealthy || data.sortedReports[0];
     if (autoSelect) {
         const item = document.querySelector(`.lineage-report-item[data-report-id="${autoSelect.id}"]`);
@@ -1768,9 +1933,9 @@ async function navigate(page) {
             const navDot = document.getElementById("nav-health-dot");
             const dd = window._dashboardData;
             if (navDot && dd) {
-                if (dd.sources_outdated > 0 || dd.alerts_active > 5) navDot.style.background = "var(--red)";
-                else if (dd.sources_stale > 0) navDot.style.background = "var(--yellow)";
-                else navDot.style.background = "var(--green)";
+                if (dd.sources_outdated > 0 || dd.alerts_active > 5) navDot.style.background = "var(--red)"; // degraded
+                else if (dd.sources_stale > 0) navDot.style.background = "var(--yellow)"; // at risk
+                else navDot.style.background = "var(--green)"; // healthy
             }
             const btnShowAll = document.getElementById("btn-show-all-attention");
             if (btnShowAll) {
@@ -1848,11 +2013,12 @@ async function navigate(page) {
                     }
                 });
             });
-            // Draw alert trend chart
-            drawAlertTrendChart();
+            // Draw health trend chart
+            drawHealthTrendChart();
         }
         if (page === "scanner") bindScannerButtons();
         if (page === "issues") { bindIssuesPage(); }
+        if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
@@ -1947,7 +2113,7 @@ function initAIChatPanel() {
         <div class="ai-chat-quick" id="ai-chat-quick">
             <button class="ai-quick-chip" data-q="What's at risk?">What's at risk?</button>
             <button class="ai-quick-chip" data-q="Summarize dashboard">Summarize dashboard</button>
-            <button class="ai-quick-chip" data-q="Show stale sources">Show stale sources</button>
+            <button class="ai-quick-chip" data-q="Show at-risk sources">Show at-risk sources</button>
             <button class="ai-quick-chip" data-q="Audit report queries">Audit report queries</button>
         </div>
         <div class="ai-chat-input-area">

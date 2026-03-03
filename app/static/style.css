@@ -148,7 +148,7 @@ nav a:last-child {
 
 /* ── Main ── */
 main {
-    max-width: 1440px;
+    max-width: 1600px;
     margin: 0 auto;
     padding: 1.5rem 1.5rem 2rem;
 }
@@ -497,9 +497,10 @@ table {
 
 th, td {
     text-align: left;
-    padding: 0.6rem 0.9rem;
+    padding: 0.5rem 0.65rem;
     border-bottom: 1px solid var(--border);
     font-size: 0.82rem;
+    white-space: nowrap;
 }
 
 thead tr:first-child th {
@@ -2266,4 +2267,51 @@ body.ai-panel-open main {
 .alert-trend-container canvas {
     width: 100%;
     display: block;
+}
+
+.chart-tooltip {
+    display: none;
+    position: absolute;
+    background: var(--surface-2);
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.72rem;
+    color: var(--text);
+    pointer-events: none;
+    z-index: 10;
+    line-height: 1.5;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    min-width: 120px;
+}
+
+.alert-owner-select {
+    font-size: 0.72rem;
+    padding: 0.15rem 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    max-width: 140px;
+    cursor: pointer;
+}
+.alert-owner-select:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+.freq-select-inline {
+    font-size: 0.72rem;
+    padding: 0.15rem 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    max-width: 160px;
+}
+.freq-select-inline:focus {
+    outline: none;
+    border-color: var(--blue);
+    color: var(--text);
 }

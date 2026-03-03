@@ -31,6 +31,7 @@ def list_alerts(active_only: bool = True):
             message=r["message"],
             acknowledged=bool(r["acknowledged"]),
             acknowledged_by=r["acknowledged_by"],
+            assigned_to=r["assigned_to"],
             resolution_status=r["resolution_status"],
             resolution_reason=r["resolution_reason"],
             resolved_at=r["resolved_at"],
@@ -69,6 +70,28 @@ def reopen_alert(alert_id: int):
             (alert_id,),
         )
     return {"status": "active"}
+
+
+@router.patch("/{alert_id}/assign")
+def assign_alert(alert_id: int, owner: str | None = None):
+    """Assign an owner to an alert."""
+    with get_db() as db:
+        db.execute("UPDATE alerts SET assigned_to = ? WHERE id = ?", (owner, alert_id))
+    return {"status": "assigned", "assigned_to": owner}
+
+
+@router.get("/owners/list")
+def list_alert_owners():
+    """Return distinct owners available for alert assignment."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT DISTINCT owner FROM (
+                SELECT DISTINCT owner FROM reports WHERE owner IS NOT NULL AND owner != ''
+                UNION
+                SELECT DISTINCT business_owner AS owner FROM reports WHERE business_owner IS NOT NULL AND business_owner != ''
+            ) ORDER BY owner
+        """).fetchall()
+    return [r["owner"] for r in rows]
 
 
 @router.post("/{alert_id}/acknowledge")

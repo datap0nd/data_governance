@@ -1,4 +1,4 @@
-"""Schedule discrepancy detection and alert trend endpoints."""
+"""Schedule discrepancy detection, alert trend, and health trend endpoints."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -11,6 +11,20 @@ DAY_ORDER = {
     "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
     "Friday": 4, "Saturday": 5, "Sunday": 6,
 }
+
+
+def _next_weekday_date(day_name: str) -> str:
+    """Compute the next occurrence of the given weekday as dd/mm."""
+    day_num = DAY_ORDER.get(day_name, -1)
+    if day_num < 0:
+        return day_name
+    today = datetime.now(timezone.utc).date()
+    today_dow = today.weekday()  # Monday=0, Sunday=6
+    diff = day_num - today_dow
+    if diff < 0:
+        diff += 7
+    next_date = today + timedelta(days=diff)
+    return next_date.strftime("%d/%m")
 
 
 @router.get("/upstream-systems")
@@ -28,7 +42,7 @@ def list_upstream_systems():
 
 @router.get("/discrepancies")
 def get_schedule_discrepancies():
-    """Detect refresh schedule discrepancies in upstream → source → report chains.
+    """Detect refresh schedule discrepancies in upstream -> source -> report chains.
 
     A discrepancy occurs when:
     - upstream refreshes on same day or after its dependent source (source pulls stale data)
@@ -57,10 +71,16 @@ def get_schedule_discrepancies():
             ORDER BY s.name, r.name
         """).fetchall()
 
+    # Compute next Sunday date for reports
+    sunday_date = _next_weekday_date("Sunday")
+
     discrepancies = []
     for row in rows:
         upstream_day = DAY_ORDER.get(row["upstream_refresh_day"], -1)
         source_day = DAY_ORDER.get(row["source_refresh_day"], -1)
+
+        upstream_date = _next_weekday_date(row["upstream_refresh_day"])
+        source_date = _next_weekday_date(row["source_refresh_day"])
 
         issues = []
 
@@ -70,8 +90,8 @@ def get_schedule_discrepancies():
                 "type": "upstream_after_source",
                 "severity": "warning",
                 "message": (
-                    f"Upstream refreshes {row['upstream_refresh_day']} but source "
-                    f"refreshes {row['source_refresh_day']} — source may pull stale upstream data"
+                    f"Upstream refreshes {upstream_date} ({row['upstream_refresh_day']}) but source "
+                    f"refreshes {source_date} ({row['source_refresh_day']}) — source may pull stale upstream data"
                 ),
             })
 
@@ -81,7 +101,7 @@ def get_schedule_discrepancies():
                 "type": "source_after_report",
                 "severity": "critical",
                 "message": (
-                    f"Source refreshes {row['source_refresh_day']} (same day as report) "
+                    f"Source refreshes {source_date} ({row['source_refresh_day']}) same day as report ({sunday_date}) "
                     f"— report may use previous week's data"
                 ),
             })
@@ -92,11 +112,14 @@ def get_schedule_discrepancies():
                 "upstream_name": row["upstream_name"],
                 "upstream_code": row["upstream_code"],
                 "upstream_refresh_day": row["upstream_refresh_day"],
+                "upstream_refresh_date": upstream_date,
                 "source_id": row["source_id"],
                 "source_name": row["source_name"],
                 "source_refresh_day": row["source_refresh_day"],
+                "source_refresh_date": source_date,
                 "report_id": row["report_id"],
                 "report_name": row["report_name"],
+                "report_refresh_date": sunday_date,
                 "issues": issues,
             })
 
@@ -131,5 +154,41 @@ def get_alert_trend():
     for i in range(29, -1, -1):
         day = (today - timedelta(days=i)).isoformat()
         trend.append({"day": day, "count": counts.get(day, 0)})
+
+    return trend
+
+
+@router.get("/health-trend")
+def get_health_trend():
+    """Return daily source health distribution for the past 30 days.
+
+    Uses probe_runs aggregate counts, carrying forward the last known values
+    for days without probes.
+    """
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT DATE(started_at) AS day, fresh, stale, outdated
+            FROM probe_runs
+            WHERE started_at >= date('now', '-30 days') AND status = 'completed'
+            ORDER BY started_at
+        """).fetchall()
+
+    # Group by day, take latest per day
+    daily = {}
+    for r in rows:
+        daily[r["day"]] = {
+            "healthy": r["fresh"] or 0,
+            "at_risk": r["stale"] or 0,
+            "degraded": r["outdated"] or 0,
+        }
+
+    today = datetime.now(timezone.utc).date()
+    trend = []
+    last_known = {"healthy": 0, "at_risk": 0, "degraded": 0}
+    for i in range(29, -1, -1):
+        day = (today - timedelta(days=i)).isoformat()
+        if day in daily:
+            last_known = daily[day]
+        trend.append({"day": day, **last_known})
 
     return trend

@@ -262,26 +262,15 @@ def run_scan(reports_path: str | None = None) -> dict:
                     (row["id"], now),
                 )
 
-            # Propagate ownership: if a source is used by exactly one report, inherit its owner
-            db.execute("""
-                UPDATE sources SET owner = (
-                    SELECT r.owner FROM report_tables rt
-                    JOIN reports r ON r.id = rt.report_id
-                    WHERE rt.source_id = sources.id AND r.owner IS NOT NULL
-                    GROUP BY rt.source_id
-                    HAVING COUNT(DISTINCT r.id) = 1
-                    LIMIT 1
-                )
-                WHERE owner IS NULL
-            """)
-            # For sources used by multiple reports, mark as "Multiple"
-            db.execute("""
-                UPDATE sources SET owner = 'Multiple' WHERE owner IS NULL AND (
-                    SELECT COUNT(DISTINCT r.id) FROM report_tables rt
-                    JOIN reports r ON r.id = rt.report_id
-                    WHERE rt.source_id = sources.id AND r.owner IS NOT NULL
-                ) > 1
-            """)
+            # Assign source owners randomly from owners.csv
+            csv_report_owners_for_sources, _ = _load_owners_csv()
+            if csv_report_owners_for_sources:
+                no_owner = db.execute("SELECT id FROM sources WHERE owner IS NULL OR owner = ''").fetchall()
+                for row in no_owner:
+                    db.execute(
+                        "UPDATE sources SET owner = ? WHERE id = ?",
+                        (random.choice(csv_report_owners_for_sources), row["id"]),
+                    )
 
             # Seed upstream systems and refresh schedules
             _seed_upstream_and_schedules(db, now)

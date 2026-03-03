@@ -147,6 +147,8 @@ MIGRATIONS = [
     "ALTER TABLE sources ADD COLUMN custom_stale_days INTEGER",
     # Upstream system linkage
     "ALTER TABLE sources ADD COLUMN upstream_id INTEGER REFERENCES upstream_systems(id)",
+    # Alert owner assignment
+    "ALTER TABLE alerts ADD COLUMN assigned_to TEXT",
 ]
 
 

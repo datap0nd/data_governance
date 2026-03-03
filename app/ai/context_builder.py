@@ -135,11 +135,13 @@ def get_dashboard_summary() -> dict:
             "SELECT COUNT(*) AS c FROM actions WHERE status = 'open'"
         ).fetchone()["c"]
 
-    status_counts = {"fresh": 0, "stale": 0, "outdated": 0, "no_connection": 0, "unknown": 0}
+    status_counts = {"healthy": 0, "at_risk": 0, "degraded": 0, "no_connection": 0, "unknown": 0}
+    _status_map = {"fresh": "healthy", "stale": "at_risk", "outdated": "degraded"}
     for s in sources:
         st = s.get("probe_status") or "unknown"
-        if st in status_counts:
-            status_counts[st] += 1
+        mapped = _status_map.get(st, st)
+        if mapped in status_counts:
+            status_counts[mapped] += 1
         else:
             status_counts["unknown"] += 1
 

@@ -56,6 +56,8 @@ def mock_chat(message: str, context: dict) -> dict:
     outdated = [s for s in sources if s.get("probe_status") == "outdated"]
     no_conn = [s for s in sources if s.get("probe_status") == "no_connection"]
     unknown = [s for s in sources if s.get("probe_status") in (None, "unknown")]
+    # Display labels
+    healthy, at_risk, degraded = fresh, stale, outdated
 
     # Build report-source map
     report_sources = {}
@@ -89,13 +91,13 @@ def mock_chat(message: str, context: dict) -> dict:
                 lines.append(f"\nThese feed into **{len(affected)} reports**: {', '.join(affected_names[:6])}")
             sources_referenced = [s["id"] for s in no_conn]
             lines.append("")
-        if stale:
-            names = ", ".join(f"**{_short_name(s['name'])}**" for s in stale[:5])
-            lines.append(f"**{len(stale)} stale sources:** {names}")
-        if outdated:
-            names = ", ".join(f"**{_short_name(s['name'])}**" for s in outdated[:5])
-            lines.append(f"**{len(outdated)} outdated sources:** {names}")
-        if not no_conn and not stale and not outdated:
+        if at_risk:
+            names = ", ".join(f"**{_short_name(s['name'])}**" for s in at_risk[:5])
+            lines.append(f"**{len(at_risk)} at-risk sources:** {names}")
+        if degraded:
+            names = ", ".join(f"**{_short_name(s['name'])}**" for s in degraded[:5])
+            lines.append(f"**{len(degraded)} degraded sources:** {names}")
+        if not no_conn and not at_risk and not degraded:
             lines.append("No significant risks detected. All monitored sources are healthy.")
 
         open_actions = [a for a in actions if a.get("status") == "open"]
@@ -112,9 +114,9 @@ def mock_chat(message: str, context: dict) -> dict:
         lines.append(f"Tracking **{len(sources)} data sources** across **{len(reports)} Power BI reports**.\n")
         lines.append("| Status | Count |")
         lines.append("|--------|-------|")
-        lines.append(f"| Fresh | {len(fresh)} |")
-        lines.append(f"| Stale | {len(stale)} |")
-        lines.append(f"| Outdated | {len(outdated)} |")
+        lines.append(f"| Healthy | {len(healthy)} |")
+        lines.append(f"| At Risk | {len(at_risk)} |")
+        lines.append(f"| Degraded | {len(degraded)} |")
         lines.append(f"| No Connection | {len(no_conn)} |")
         lines.append(f"| Unknown | {len(unknown)} |")
         lines.append(f"\n**{len(alerts)} active alerts**, **{len([a for a in actions if a.get('status') == 'open'])} open actions**.")
@@ -125,16 +127,16 @@ def mock_chat(message: str, context: dict) -> dict:
             lines.append(f"\n**Note:** {len(no_conn)} SQL sources have no connection — these should be investigated.")
         return {"response": "\n".join(lines), "sources_referenced": [], "reports_referenced": []}
 
-    # ── "stale" ──
-    if "stale" in msg_lower:
-        if stale:
-            lines = [f"## {len(stale)} Stale Sources\n"]
+    # ── "at risk" / "stale" ──
+    if "at risk" in msg_lower or "stale" in msg_lower:
+        if at_risk:
+            lines = [f"## {len(at_risk)} At-Risk Sources\n"]
             lines.append("These sources have data that is 31-90 days old:\n")
-            for s in stale:
+            for s in at_risk:
                 lines.append(f"- **{_short_name(s['name'])}** ({s.get('type', '?')}) — last updated {_time_ago(s.get('last_updated'))}")
                 sources_referenced.append(s["id"])
             return {"response": "\n".join(lines), "sources_referenced": sources_referenced, "reports_referenced": []}
-        return {"response": "No stale sources detected. All monitored sources are either fresh, outdated, or have no connection.", "sources_referenced": [], "reports_referenced": []}
+        return {"response": "No at-risk sources detected. All monitored sources are either healthy, degraded, or have no connection.", "sources_referenced": [], "reports_referenced": []}
 
     # ── asking about a specific report ──
     for r in reports:
@@ -254,9 +256,9 @@ def mock_briefing(summary: dict) -> dict:
 
     sources_list = summary["sources"]
     no_conn = [s for s in sources_list if s.get("probe_status") == "no_connection"]
-    stale = [s for s in sources_list if s.get("probe_status") == "stale"]
-    outdated = [s for s in sources_list if s.get("probe_status") == "outdated"]
-    fresh = [s for s in sources_list if s.get("probe_status") == "fresh"]
+    at_risk = [s for s in sources_list if s.get("probe_status") == "stale"]
+    degraded = [s for s in sources_list if s.get("probe_status") == "outdated"]
+    healthy = [s for s in sources_list if s.get("probe_status") == "fresh"]
 
     parts = []
     if total == 0:
@@ -264,9 +266,9 @@ def mock_briefing(summary: dict) -> dict:
         risk = "low"
     else:
         # Opening summary
-        if fresh:
+        if healthy:
             parts.append(f"Your BI ecosystem is tracking **{total} data sources** across **{len(reports)} reports**. "
-                         f"**{len(fresh)}** of {total} sources are fresh")
+                         f"**{len(healthy)}** of {total} sources are healthy")
             if no_conn:
                 names = ", ".join(_short_name(s["name"]) for s in no_conn[:4])
                 more = f" and {len(no_conn) - 4} more" if len(no_conn) > 4 else ""
@@ -277,22 +279,22 @@ def mock_briefing(summary: dict) -> dict:
             parts.append(f"Tracking **{total} sources** and **{len(reports)} reports**.")
 
         # Issues
-        if stale:
-            names = ", ".join(_short_name(s["name"]) for s in stale[:3])
-            parts.append(f"**{len(stale)} stale source{'s' if len(stale) != 1 else ''}** (data 31-90 days old): {names}.")
-        if outdated:
-            names = ", ".join(_short_name(s["name"]) for s in outdated[:3])
-            parts.append(f"**{len(outdated)} outdated source{'s' if len(outdated) != 1 else ''}** (data >90 days old): {names}.")
+        if at_risk:
+            names = ", ".join(_short_name(s["name"]) for s in at_risk[:3])
+            parts.append(f"**{len(at_risk)} at-risk source{'s' if len(at_risk) != 1 else ''}** (data 31-90 days old): {names}.")
+        if degraded:
+            names = ", ".join(_short_name(s["name"]) for s in degraded[:3])
+            parts.append(f"**{len(degraded)} degraded source{'s' if len(degraded) != 1 else ''}** (data >90 days old): {names}.")
 
         if alerts:
             parts.append(f"**{alerts} active alert{'s' if alerts != 1 else ''}** need attention.")
-        elif not stale and not outdated and not no_conn:
+        elif not at_risk and not degraded and not no_conn:
             parts.append("No active alerts.")
 
         parts.append(f"Last scan: **{scan_ago}**.")
 
-        # Risk level — any stale/outdated = high; any no_connection = medium; all fresh = low
-        if stale or outdated:
+        # Risk level — any at_risk/degraded = high; any no_connection = medium; all healthy = low
+        if at_risk or degraded:
             risk = "high"
         elif no_conn:
             risk = "medium"
@@ -321,10 +323,10 @@ def mock_report_risk(report_ctx: dict) -> dict:
             "at_risk_sources": [],
         }
 
-    fresh = [t for t in tables if t.get("probe_status") == "fresh"]
-    stale = [t for t in tables if t.get("probe_status") == "stale"]
+    healthy = [t for t in tables if t.get("probe_status") == "fresh"]
+    at_risk_src = [t for t in tables if t.get("probe_status") == "stale"]
     no_conn = [t for t in tables if t.get("probe_status") == "no_connection"]
-    outdated = [t for t in tables if t.get("probe_status") == "outdated"]
+    degraded = [t for t in tables if t.get("probe_status") == "outdated"]
     unknown = [t for t in tables if t.get("probe_status") in (None, "unknown")]
 
     unique_sources = {t["source_id"] for t in tables if t.get("source_id")}
@@ -335,24 +337,24 @@ def mock_report_risk(report_ctx: dict) -> dict:
         risk = "high"
         names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in no_conn)
         parts.append(f"This report has **HIGH risk**. {len(no_conn)} of {len(unique_sources)} sources ({names}) have no SQL connection. "
-                     f"If this persists, the report will show stale or missing data.")
+                     f"If this persists, the report will show degraded or missing data.")
         at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "no_connection"} for t in no_conn]
-    elif outdated:
+    elif degraded:
         risk = "high"
-        names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in outdated)
-        parts.append(f"This report has **HIGH risk**. {len(outdated)} source{'s are' if len(outdated) != 1 else ' is'} outdated ({names}) with data older than 90 days.")
-        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "outdated"} for t in outdated]
-    elif stale:
+        names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in degraded)
+        parts.append(f"This report has **HIGH risk**. {len(degraded)} source{'s are' if len(degraded) != 1 else ' is'} degraded ({names}) with data older than 90 days.")
+        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "degraded"} for t in degraded]
+    elif at_risk_src:
         risk = "medium"
-        names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in stale)
-        parts.append(f"This report has **MEDIUM risk**. {len(stale)} source{'s have' if len(stale) != 1 else ' has'} stale data ({names}).")
-        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "stale"} for t in stale]
-    elif unknown and not fresh:
+        names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in at_risk_src)
+        parts.append(f"This report has **MEDIUM risk**. {len(at_risk_src)} source{'s have' if len(at_risk_src) != 1 else ' has'} at-risk data ({names}).")
+        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "at_risk"} for t in at_risk_src]
+    elif unknown and not healthy:
         risk = "medium"
         parts.append(f"This report has **MEDIUM risk**. None of its {len(unique_sources)} sources have been probed yet — run a probe to verify freshness.")
     else:
         risk = "low"
-        parts.append(f"This report has **LOW risk**. All {len(fresh)} source{'s are' if len(fresh) != 1 else ' is'} fresh and updating regularly.")
+        parts.append(f"This report has **LOW risk**. All {len(healthy)} source{'s are' if len(healthy) != 1 else ' is'} healthy and updating regularly.")
 
     if shared:
         shared_names = ", ".join(r["name"] for r in shared[:4])
@@ -375,8 +377,8 @@ def mock_suggestions(summary: dict) -> dict:
     suggestions = []
 
     no_conn = [s for s in sources if s.get("probe_status") == "no_connection"]
-    stale = [s for s in sources if s.get("probe_status") == "stale"]
-    outdated = [s for s in sources if s.get("probe_status") == "outdated"]
+    at_risk_src = [s for s in sources if s.get("probe_status") == "stale"]
+    degraded_src = [s for s in sources if s.get("probe_status") == "outdated"]
     no_freq = [r for r in reports if not r.get("frequency")]
 
     if no_conn:
@@ -389,24 +391,24 @@ def mock_suggestions(summary: dict) -> dict:
             "entity_id": no_conn[0].get("id") if no_conn else None,
         })
 
-    if outdated:
-        names = ", ".join(_short_name(s["name"]) for s in outdated[:3])
+    if degraded_src:
+        names = ", ".join(_short_name(s["name"]) for s in degraded_src[:3])
         suggestions.append({
-            "title": "Address outdated data sources",
-            "description": f"{len(outdated)} sources have data older than 90 days ({names}). Review whether these sources are still active or should be decommissioned.",
+            "title": "Address degraded data sources",
+            "description": f"{len(degraded_src)} sources have data older than 90 days ({names}). Review whether these sources are still active or should be decommissioned.",
             "priority": "high",
             "related_entity": "source",
-            "entity_id": outdated[0].get("id") if outdated else None,
+            "entity_id": degraded_src[0].get("id") if degraded_src else None,
         })
 
-    if stale:
-        names = ", ".join(_short_name(s["name"]) for s in stale[:3])
+    if at_risk_src:
+        names = ", ".join(_short_name(s["name"]) for s in at_risk_src[:3])
         suggestions.append({
-            "title": "Refresh stale data sources",
-            "description": f"{len(stale)} sources have data 31-90 days old ({names}). Check refresh schedules and ensure ETL pipelines are running.",
+            "title": "Refresh at-risk data sources",
+            "description": f"{len(at_risk_src)} sources have data 31-90 days old ({names}). Check refresh schedules and ensure ETL pipelines are running.",
             "priority": "medium",
             "related_entity": "source",
-            "entity_id": stale[0].get("id") if stale else None,
+            "entity_id": at_risk_src[0].get("id") if at_risk_src else None,
         })
 
     if no_freq:

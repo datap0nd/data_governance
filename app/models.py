@@ -115,6 +115,7 @@ class AlertOut(BaseModel):
     message: str
     acknowledged: bool = False
     acknowledged_by: str | None = None
+    assigned_to: str | None = None
     resolution_status: str | None = None
     resolution_reason: str | None = None
     resolved_at: str | None = None

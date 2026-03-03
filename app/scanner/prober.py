@@ -132,20 +132,22 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
     msg = (f"Source data is older than {stale_max} days" if status == "outdated"
            else f"Source data is {fresh_max}-{stale_max} days old")
 
+    # Find owner for assignment (from linked report)
+    owner_row = db.execute(
+        """SELECT r.owner FROM report_tables rt
+           JOIN reports r ON r.id = rt.report_id
+           WHERE rt.source_id = ? AND r.owner IS NOT NULL
+           LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    assigned = owner_row["owner"] if owner_row else None
+
     # Action
     existing_action = db.execute(
         "SELECT id FROM actions WHERE source_id = ? AND type = ? AND status NOT IN ('resolved', 'expected')",
         (source_id, action_type),
     ).fetchone()
     if not existing_action:
-        owner_row = db.execute(
-            """SELECT r.owner FROM report_tables rt
-               JOIN reports r ON r.id = rt.report_id
-               WHERE rt.source_id = ? AND r.owner IS NOT NULL
-               LIMIT 1""",
-            (source_id,),
-        ).fetchone()
-        assigned = owner_row["owner"] if owner_row else None
         db.execute(
             "INSERT INTO actions (source_id, type, status, assigned_to, notes, created_at) VALUES (?, ?, 'open', ?, ?, ?)",
             (source_id, action_type, assigned, msg, now),
@@ -158,9 +160,31 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
     ).fetchone()
     if not existing_alert:
         db.execute(
-            "INSERT INTO alerts (source_id, severity, message, created_at) VALUES (?, ?, ?, ?)",
-            (source_id, severity, msg, now),
+            "INSERT INTO alerts (source_id, severity, message, assigned_to, created_at) VALUES (?, ?, ?, ?, ?)",
+            (source_id, severity, msg, assigned, now),
         )
+
+
+def _backfill_alert_owners(db):
+    """Assign owners to alerts that don't have one yet, based on linked report owners."""
+    unassigned = db.execute(
+        "SELECT id, source_id FROM alerts WHERE assigned_to IS NULL"
+    ).fetchall()
+    for alert in unassigned:
+        if not alert["source_id"]:
+            continue
+        owner_row = db.execute(
+            """SELECT r.owner FROM report_tables rt
+               JOIN reports r ON r.id = rt.report_id
+               WHERE rt.source_id = ? AND r.owner IS NOT NULL
+               LIMIT 1""",
+            (alert["source_id"],),
+        ).fetchone()
+        if owner_row:
+            db.execute(
+                "UPDATE alerts SET assigned_to = ? WHERE id = ?",
+                (owner_row["owner"], alert["id"]),
+            )
 
 
 def run_probe() -> dict:
@@ -268,6 +292,9 @@ def run_probe() -> dict:
              statuses.get("outdated", 0), statuses.get("unknown", 0), log_text),
         )
 
+        # Backfill: assign owners to alerts that don't have one yet
+        _backfill_alert_owners(db)
+
     summary = {
         "probed_at": now,
         "probed": probed,
@@ -357,6 +384,9 @@ def simulate_probe() -> dict:
             (now_str, finished, probed, statuses.get("fresh", 0), statuses.get("stale", 0),
              statuses.get("outdated", 0), log_text),
         )
+
+        # Backfill: assign owners to alerts that don't have one yet
+        _backfill_alert_owners(db)
 
     summary = {
         "probed_at": now_str,

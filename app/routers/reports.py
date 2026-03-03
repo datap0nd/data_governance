@@ -152,7 +152,7 @@ def _derive_report_status(report_id: int) -> tuple[str, str | None]:
     worst_date = min(dates) if dates else None
 
     if "outdated" in statuses or "error" in statuses:
-        return "outdated sources", worst_date
+        return "degraded", worst_date
     if "stale" in statuses:
-        return "stale sources", worst_date
-    return "current", worst_date
+        return "at risk", worst_date
+    return "healthy", worst_date
