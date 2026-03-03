@@ -1386,6 +1386,55 @@ function bindLineagePage() {
 }
 
 
+// ── Changelog ──
+
+async function renderChangelog() {
+    const entries = await api("/api/changelog");
+
+    // Group by date (day)
+    const grouped = {};
+    for (const e of entries) {
+        const day = e.date ? e.date.substring(0, 10) : "Unknown";
+        if (!grouped[day]) grouped[day] = [];
+        grouped[day].push(e);
+    }
+
+    const days = Object.keys(grouped).sort().reverse();
+
+    const rows = days.map(day => {
+        const d = new Date(day + "T00:00:00Z");
+        const label = d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+        const items = grouped[day].map(e => {
+            const time = e.date ? new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "";
+            return `
+                <div class="changelog-item">
+                    <div class="changelog-time">${time}</div>
+                    <div class="changelog-body">
+                        <div class="changelog-title">${e.title}</div>
+                        <div class="changelog-desc">${e.description}</div>
+                    </div>
+                    <span class="changelog-commit">${e.commit}</span>
+                </div>
+            `;
+        }).join("");
+        return `
+            <div class="changelog-day">
+                <div class="changelog-date">${label}</div>
+                ${items}
+            </div>
+        `;
+    }).join("");
+
+    return `
+        <div class="page-header">
+            <h1>Changelog</h1>
+            <span class="subtitle">${entries.length} updates</span>
+        </div>
+        <div class="changelog-list">${rows || '<div style="color:var(--text-muted)">No changelog entries found.</div>'}</div>
+    `;
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -1394,6 +1443,7 @@ const pages = {
     reports: renderReports,
     scanner: renderScanner,
     issues: renderIssues,
+    changelog: renderChangelog,
 };
 
 // Map old hash routes to new pages for backwards compat
