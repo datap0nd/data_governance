@@ -170,6 +170,22 @@ main {
     font-size: 0.82rem;
 }
 
+.btn-export {
+    float: right;
+    font-size: 0.72rem;
+    padding: 0.3rem 0.7rem;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.btn-export:hover {
+    background: var(--surface-2);
+    color: var(--text);
+}
+
 h2 {
     font-size: 1.05rem;
     font-weight: 600;

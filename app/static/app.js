@@ -152,6 +152,28 @@ function formatDate(dateStr) {
          + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
+function exportTableCSV(tableId, filename) {
+    const dt = window._dt && window._dt[tableId];
+    if (!dt) return;
+    const rows = dt._displayRows || dt.rows;
+    const cols = dt.columns;
+    const header = cols.map(c => c.label).join(",");
+    const body = rows.map(r =>
+        cols.map(c => {
+            let val = r[c.key] ?? "";
+            val = String(val).replace(/"/g, '""');
+            return `"${val}"`;
+        }).join(",")
+    ).join("\n");
+    const csv = header + "\n" + body;
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || (tableId + ".csv");
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
 function toast(msg) {
     const el = document.createElement("div");
     el.className = "toast";
@@ -804,6 +826,7 @@ async function renderSources() {
         <div class="page-header">
             <h1>Sources</h1>
             <span class="subtitle">${sources.length} data sources tracked &mdash; ${fresh} fresh, ${stale} stale, ${outdated} outdated</span>
+            <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
@@ -837,6 +860,7 @@ async function renderReports() {
         <div class="page-header">
             <h1>Reports</h1>
             <span class="subtitle">${reports.length} Power BI reports &mdash; ${healthy} healthy, ${atRisk} need attention</span>
+            <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
         ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
@@ -1072,6 +1096,7 @@ async function renderIssues() {
         <div class="page-header">
             <h1>Issues</h1>
             <span class="subtitle">${alertsData.active} active alert${alertsData.active !== 1 ? 's' : ''} &middot; ${alertsData.acked} acknowledged</span>
+            <button class="btn-export" onclick="exportTableCSV('dt-alerts','issues.csv')">Export CSV</button>
         </div>
 
         ${alertsData.html}
