@@ -1,38 +1,40 @@
-"""Interface for real LLM providers (to be connected later)."""
+"""Interface for the LiteLLM / OpenAI-compatible LLM endpoint."""
 
+import logging
 import httpx
 from app.config import AI_API_URL, AI_API_KEY, AI_MODEL
 
+logger = logging.getLogger(__name__)
 
-async def call_llm(system_prompt: str, user_prompt: str) -> str:
+
+def call_llm(system_prompt: str, user_prompt: str) -> str:
     """Send a prompt to the configured LLM endpoint and return the response text.
 
-    This is a placeholder for real LLM integration. The endpoint should accept
-    an OpenAI-compatible chat completions format.
+    Expects an OpenAI-compatible chat completions endpoint.
     """
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        headers = {"Content-Type": "application/json"}
-        if AI_API_KEY:
-            headers["Authorization"] = f"Bearer {AI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    if AI_API_KEY:
+        headers["Authorization"] = f"Bearer {AI_API_KEY}"
 
-        payload = {
-            "model": AI_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": 1024,
-            "temperature": 0.3,
-        }
+    payload = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.3,
+    }
 
-        resp = await client.post(AI_API_URL, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    logger.info("Calling LLM at %s with model %s", AI_API_URL, AI_MODEL)
+    resp = httpx.post(AI_API_URL, json=payload, headers=headers, timeout=120.0)
+    resp.raise_for_status()
+    data = resp.json()
 
-        # OpenAI-compatible format
-        if "choices" in data:
-            return data["choices"][0]["message"]["content"]
-        # Anthropic format
-        if "content" in data:
-            return data["content"][0]["text"]
-        return str(data)
+    # OpenAI-compatible format
+    if "choices" in data:
+        return data["choices"][0]["message"]["content"]
+    # Anthropic format
+    if "content" in data:
+        return data["content"][0]["text"]
+    return str(data)

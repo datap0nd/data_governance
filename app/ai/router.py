@@ -59,15 +59,28 @@ class AISettingsResponse(BaseModel):
 def ai_chat(req: ChatRequest):
     """Chat with the AI assistant about your data ecosystem."""
     try:
+        ctx = get_full_context()
         if AI_MOCK:
-            ctx = get_full_context()
             result = mock_chat(req.message, ctx)
             return ChatResponse(**result)
         else:
-            # Future: call real LLM
-            ctx = get_full_context()
-            result = mock_chat(req.message, ctx)
-            return ChatResponse(**result)
+            from app.ai.llm_provider import call_llm
+            import json
+
+            system_prompt = (
+                "You are a data governance assistant. You help BI managers understand "
+                "the health of their data sources, reports, and alerts. Answer concisely "
+                "based on the data context provided. If you don't know, say so.\n\n"
+                "DATA CONTEXT:\n" + json.dumps({
+                    "sources": [{"name": s["name"], "type": s["type"], "status": s.get("probe_status", "unknown")} for s in ctx["sources"]],
+                    "reports": [{"name": r["name"], "owner": r.get("owner"), "source_count": r.get("source_count", 0)} for r in ctx["reports"]],
+                    "alerts_active": len(ctx["alerts"]),
+                    "last_scan": ctx["last_scan"]["started_at"] if ctx.get("last_scan") else None,
+                }, indent=None)
+            )
+
+            response_text = call_llm(system_prompt, req.message)
+            return ChatResponse(response=response_text)
     except Exception as e:
         logger.exception("AI chat error")
         raise HTTPException(status_code=500, detail=str(e))
