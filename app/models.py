@@ -38,6 +38,7 @@ class ReportOut(BaseModel):
     recipients: str | None = None
     frequency: str | None = None
     last_published: str | None = None
+    powerbi_url: str | None = None
     status: str | None = None  # derived from source statuses
     source_count: int = 0
     worst_source_updated: str | None = None  # oldest source last_data_at

@@ -48,6 +48,28 @@ def _load_owners_csv() -> tuple[list[str], list[str]]:
     return report_owners, business_owners
 
 
+def _load_powerbi_links() -> dict[str, str]:
+    """Load report name → Power BI URL mapping from powerbi_links.csv.
+
+    CSV format: report_name,powerbi_url (no headers).
+    Returns a dict mapping report name to URL.
+    """
+    csv_path = BASE_DIR.parent / "powerbi_links.csv"
+    if not csv_path.exists():
+        return {}
+
+    from app.scanner import read_csv_rows
+    links = {}
+    for row in read_csv_rows(csv_path):
+        if not row or len(row) < 2:
+            continue
+        name = row[0].strip()
+        url = row[1].strip()
+        if name and url:
+            links[name] = url
+    return links
+
+
 def run_scan(reports_path: str | None = None) -> dict:
     """Run a full scan and store results.
 
@@ -108,14 +130,16 @@ def run_scan(reports_path: str | None = None) -> dict:
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
 
-            # Load owner names from CSV for random assignment
+            # Load owner names and Power BI links from CSVs
             csv_report_owners, csv_business_owners = _load_owners_csv()
+            powerbi_links = _load_powerbi_links()
 
             # Upsert reports and their tables
             for report in reports:
                 # Assign owners from CSV if available, otherwise keep report metadata
                 report_owner = random.choice(csv_report_owners) if csv_report_owners else report.report_owner
                 business_owner = random.choice(csv_business_owners) if csv_business_owners else report.business_owner
+                powerbi_url = powerbi_links.get(report.name, None)
 
                 existing_report = db.execute(
                     "SELECT id FROM reports WHERE name = ?",
@@ -125,13 +149,13 @@ def run_scan(reports_path: str | None = None) -> dict:
                 if existing_report:
                     report_id = existing_report["id"]
                     db.execute(
-                        "UPDATE reports SET tmdl_path = ?, owner = ?, business_owner = ?, updated_at = ? WHERE id = ?",
-                        (report.tmdl_path, report_owner, business_owner, now, report_id),
+                        "UPDATE reports SET tmdl_path = ?, owner = ?, business_owner = ?, powerbi_url = ?, updated_at = ? WHERE id = ?",
+                        (report.tmdl_path, report_owner, business_owner, powerbi_url, now, report_id),
                     )
                 else:
                     cursor = db.execute(
-                        "INSERT INTO reports (name, tmdl_path, owner, business_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (report.name, report.tmdl_path, report_owner, business_owner, now, now),
+                        "INSERT INTO reports (name, tmdl_path, owner, business_owner, powerbi_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (report.name, report.tmdl_path, report_owner, business_owner, powerbi_url, now, now),
                     )
                     report_id = cursor.lastrowid
 

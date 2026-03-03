@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS reports (
     recipients      TEXT,
     frequency       TEXT,
     last_published  DATETIME,
+    powerbi_url     TEXT,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -128,6 +129,7 @@ CREATE VIEW IF NOT EXISTS lineage AS
 
 MIGRATIONS = [
     "ALTER TABLE reports ADD COLUMN business_owner TEXT",
+    "ALTER TABLE reports ADD COLUMN powerbi_url TEXT",
 ]
 
 

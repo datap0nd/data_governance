@@ -550,6 +550,7 @@ async function showReportDetail(report) {
                     <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${report.owner || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${report.frequency || "-"}</span></div>
+                    ${report.powerbi_url ? `<div class="detail-item"><a href="${report.powerbi_url}" target="_blank" rel="noopener" class="powerbi-link">Open in Power BI &rarr;</a></div>` : ""}
                 </div>
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>

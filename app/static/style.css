@@ -739,6 +739,20 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
     border-left: 3px solid var(--blue);
 }
 
+.powerbi-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--blue-border);
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.powerbi-link:hover {
+    background: var(--blue-bg);
+}
+
 .report-expand-label {
     font-size: 0.72rem;
     text-transform: uppercase;
