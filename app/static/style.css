@@ -768,6 +768,15 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
 .powerbi-link:hover {
     background: var(--blue-bg);
 }
+.powerbi-link-disabled {
+    color: var(--text-dim);
+    border-color: var(--border);
+    cursor: default;
+    opacity: 0.5;
+}
+.powerbi-link-disabled:hover {
+    background: transparent;
+}
 
 .report-expand-label {
     font-size: 0.72rem;
