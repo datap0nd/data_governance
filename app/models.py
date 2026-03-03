@@ -19,6 +19,9 @@ class SourceOut(BaseModel):
     report_count: int = 0
     custom_fresh_days: int | None = None
     custom_stale_days: int | None = None
+    upstream_id: int | None = None
+    upstream_name: str | None = None
+    upstream_refresh_day: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

@@ -529,6 +529,9 @@ async function showSourceDetail(source) {
             <div class="detail-item"><div class="detail-label">Schema</div><span style="color:var(--text)">${parsed.folderSchema}</span></div>
             <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${parsed.fullLocation}</span></div>
             <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${source.owner || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${source.upstream_name || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${source.upstream_refresh_day || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule || "-"}</span></div>
         </div>
 
         <h2>Reports using this source (${reports.length})</h2>
@@ -683,14 +686,16 @@ async function showReportDetail(report) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, alerts] = await Promise.all([
+    const [data, sources, reports, alerts, alertTrend] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
         api("/api/alerts?active_only=true"),
+        api("/api/schedules/alert-trend"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
+    window._alertTrend = alertTrend;
 
     const total = data.sources_total;
     const hasSources = total > 0;
@@ -817,6 +822,11 @@ async function renderDashboard() {
             `}
         </div>
 
+        <div class="alert-trend-container">
+            <h2>Alert Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
+            <canvas id="alert-trend-canvas" height="120"></canvas>
+        </div>
+
         <div class="section">
             <h2>Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
             ${needsAttention.length > 0 ? `
@@ -849,6 +859,85 @@ async function renderDashboard() {
             }
         </div>
     `;
+}
+
+function drawAlertTrendChart() {
+    const canvas = document.getElementById("alert-trend-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+
+    const trend = window._alertTrend || [];
+    if (trend.length === 0) return;
+
+    const counts = trend.map(t => t.count);
+    const maxVal = Math.max(...counts, 1);
+    const padL = 30, padR = 10, padT = 10, padB = 24;
+    const chartW = W - padL - padR;
+    const chartH = H - padT - padB;
+
+    // Grid lines
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.lineWidth = 1;
+    const gridSteps = Math.min(maxVal, 4);
+    for (let i = 0; i <= gridSteps; i++) {
+        const y = padT + chartH - (i / gridSteps) * chartH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.3)";
+        ctx.font = "10px Inter, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(Math.round(i / gridSteps * maxVal), padL - 4, y + 3);
+    }
+
+    // Area fill
+    ctx.beginPath();
+    trend.forEach((t, i) => {
+        const x = padL + (i / (trend.length - 1)) * chartW;
+        const y = padT + chartH - (t.count / maxVal) * chartH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.lineTo(padL + chartW, padT + chartH);
+    ctx.lineTo(padL, padT + chartH);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(239, 68, 68, 0.10)";
+    ctx.fill();
+
+    // Line
+    ctx.beginPath();
+    trend.forEach((t, i) => {
+        const x = padL + (i / (trend.length - 1)) * chartW;
+        const y = padT + chartH - (t.count / maxVal) * chartH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#ef4444";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Dots
+    trend.forEach((t, i) => {
+        if (t.count === 0) return;
+        const x = padL + (i / (trend.length - 1)) * chartW;
+        const y = padT + chartH - (t.count / maxVal) * chartH;
+        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#ef4444"; ctx.fill();
+    });
+
+    // X-axis labels (every 7 days)
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.font = "9px Inter, sans-serif";
+    ctx.textAlign = "center";
+    trend.forEach((t, i) => {
+        if (i % 7 === 0 || i === trend.length - 1) {
+            const x = padL + (i / (trend.length - 1)) * chartW;
+            const parts = t.day.split("-");
+            ctx.fillText(`${parts[1]}/${parts[2]}`, x, H - 4);
+        }
+    });
 }
 
 async function renderDashboardAlerts() {
@@ -901,6 +990,7 @@ async function renderSources() {
         { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
             ? `<span style="color:var(--text-muted);cursor:help;border-bottom:1px dotted var(--text-dim)" title="Source is used by multiple report owners">${s.owner}</span>`
             : `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
+        { key: "refresh_schedule", label: "Refresh Day", render: s => `<span style="color:var(--text-muted)">${s.refresh_schedule || "-"}</span>` },
     ];
 
     const fresh = sources.filter(s => s.status === "fresh").length;
@@ -1210,17 +1300,70 @@ async function renderActionsContent() {
 }
 
 async function renderIssues() {
-    const alertsData = await renderAlerts();
+    const [alertsData, discData] = await Promise.all([
+        renderAlerts(),
+        api("/api/schedules/discrepancies"),
+    ]);
+
+    const discHtml = renderDiscrepancies(discData);
 
     return `
         <div class="page-header">
             <h1>Issues</h1>
-            <span class="subtitle">${alertsData.active} active &middot; ${alertsData.acked} acknowledged &middot; ${alertsData.resolved} resolved</span>
+            <span class="subtitle">${alertsData.active} active &middot; ${alertsData.acked} acknowledged &middot; ${alertsData.resolved} resolved &middot; ${discData.summary.discrepancy_count} schedule</span>
             <button class="btn-export" onclick="exportTableCSV('dt-alerts','issues.csv')">Export CSV</button>
         </div>
 
+        <h2>Data Freshness Alerts</h2>
         ${alertsData.html}
+
+        <h2 style="margin-top:2rem">Schedule Discrepancies
+            <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">
+                (${discData.summary.discrepancy_count} of ${discData.summary.total_chains} chains)
+            </span>
+        </h2>
+        <p style="color:var(--text-dim);font-size:0.78rem;margin-bottom:0.75rem">
+            Flags refresh chains where the timing order is broken:
+            Upstream System &rarr; Source &rarr; Report (Sunday)
+        </p>
+        ${discHtml}
     `;
+}
+
+function renderDiscrepancies(data) {
+    if (!data.discrepancies || data.discrepancies.length === 0) {
+        return '<div class="empty-state">No schedule discrepancies detected</div>';
+    }
+
+    const cols = [
+        { key: "severity", label: "Severity",
+          render: d => {
+              const worst = d.issues.some(i => i.severity === "critical") ? "critical" : "warning";
+              return statusBadge(worst);
+          },
+          sortVal: d => d.issues.some(i => i.severity === "critical") ? "0_critical" : "1_warning"
+        },
+        { key: "upstream_name", label: "Upstream System",
+          render: d => `<span style="color:var(--text-muted)">${d.upstream_name}</span>
+                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.upstream_refresh_day}</span>`
+        },
+        { key: "source_name", label: "Source",
+          render: d => {
+              const short = shortNameFromPath(d.source_name) || d.source_name;
+              return `<strong>${short}</strong>
+                      <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.source_refresh_day}</span>`;
+          }
+        },
+        { key: "report_name", label: "Report",
+          render: d => `<span style="color:var(--text-muted)">${d.report_name}</span>
+                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">Sunday</span>`
+        },
+        { key: "issue", label: "Issue",
+          render: d => d.issues.map(i => `<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.2rem">${i.message}</div>`).join("")
+        },
+    ];
+
+    return dataTable("dt-discrepancies", cols, data.discrepancies);
 }
 
 function bindActionsTab() {
@@ -1705,6 +1848,8 @@ async function navigate(page) {
                     }
                 });
             });
+            // Draw alert trend chart
+            drawAlertTrendChart();
         }
         if (page === "scanner") bindScannerButtons();
         if (page === "issues") { bindIssuesPage(); }

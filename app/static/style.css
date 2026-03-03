@@ -2249,3 +2249,21 @@ body.ai-panel-open main {
 .input-sm::placeholder {
     color: var(--text-dim);
 }
+
+/* ── Alert trend chart ── */
+.alert-trend-container {
+    margin-top: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+}
+
+.alert-trend-container h2 {
+    margin-bottom: 0.5rem;
+}
+
+.alert-trend-container canvas {
+    width: 100%;
+    display: block;
+}

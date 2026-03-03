@@ -120,6 +120,14 @@ CREATE TABLE IF NOT EXISTS actions (
     resolved_at     DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS upstream_systems (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    code            TEXT NOT NULL,
+    refresh_day     TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables
@@ -137,6 +145,8 @@ MIGRATIONS = [
     # Per-source custom freshness thresholds
     "ALTER TABLE sources ADD COLUMN custom_fresh_days INTEGER",
     "ALTER TABLE sources ADD COLUMN custom_stale_days INTEGER",
+    # Upstream system linkage
+    "ALTER TABLE sources ADD COLUMN upstream_id INTEGER REFERENCES upstream_systems(id)",
 ]
 
 

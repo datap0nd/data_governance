@@ -12,13 +12,16 @@ def list_sources():
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
-                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
+                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
+                   us.name AS upstream_name,
+                   us.refresh_day AS upstream_refresh_day
             FROM sources s
             LEFT JOIN (
                 SELECT source_id, status, last_data_at,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
+            LEFT JOIN upstream_systems us ON us.id = s.upstream_id
             ORDER BY s.name
         """).fetchall()
 
@@ -38,6 +41,9 @@ def list_sources():
             report_count=r["report_count"],
             custom_fresh_days=r["custom_fresh_days"],
             custom_stale_days=r["custom_stale_days"],
+            upstream_id=r["upstream_id"],
+            upstream_name=r["upstream_name"],
+            upstream_refresh_day=r["upstream_refresh_day"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -53,13 +59,16 @@ def get_source(source_id: int):
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
-                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count
+                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
+                   us.name AS upstream_name,
+                   us.refresh_day AS upstream_refresh_day
             FROM sources s
             LEFT JOIN (
                 SELECT source_id, status, last_data_at,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
+            LEFT JOIN upstream_systems us ON us.id = s.upstream_id
             WHERE s.id = ?
         """, (source_id,)).fetchone()
 
@@ -81,6 +90,9 @@ def get_source(source_id: int):
         report_count=r["report_count"],
         custom_fresh_days=r["custom_fresh_days"],
         custom_stale_days=r["custom_stale_days"],
+        upstream_id=r["upstream_id"],
+        upstream_name=r["upstream_name"],
+        upstream_refresh_day=r["upstream_refresh_day"],
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
