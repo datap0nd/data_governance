@@ -64,6 +64,32 @@ async function apiPatch(path, body) {
     return res.json();
 }
 
+async function apiPostJson(path, body) {
+    const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
+async function apiPut(path, body) {
+    const res = await fetch(path, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
+async function apiDelete(path) {
+    const res = await fetch(path, { method: "DELETE" });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
@@ -487,6 +513,10 @@ async function showSourceDetail(source) {
         `).join("")
         : '<tr><td colspan="3" class="empty-state" style="border:none">No reports linked to this source</td></tr>';
 
+    const hasCustomRule = source.custom_fresh_days != null;
+    const freshVal = source.custom_fresh_days || "";
+    const staleVal = source.custom_stale_days || "";
+
     panel.innerHTML = `
         <div class="source-detail-header">
             <h2>${parsed.shortName}</h2>
@@ -506,11 +536,60 @@ async function showSourceDetail(source) {
             <thead><tr><th>Report</th><th>Table Name</th><th>Owner</th></tr></thead>
             <tbody>${reportRows}</tbody>
         </table>
+
+        <h2>Freshness Rule</h2>
+        <div class="freshness-rule-form">
+            <label class="freshness-label">Fresh up to
+                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="31" min="1" max="9999" class="input-sm">
+                days
+            </label>
+            <label class="freshness-label">Stale up to
+                <input type="number" id="stale-days-input" value="${staleVal}" placeholder="90" min="1" max="9999" class="input-sm">
+                days
+            </label>
+            <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
+            ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Reset to default</button>' : ''}
+            ${hasCustomRule
+                ? '<span class="badge badge-blue" style="font-size:0.72rem">custom rule active</span>'
+                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global defaults (31 / 90 days)</span>'}
+        </div>
     `;
 
     $("#app").appendChild(panel);
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
     $("#btn-close-detail").addEventListener("click", () => panel.remove());
+
+    // Freshness rule bindings
+    const saveFreshBtn = document.getElementById("btn-save-freshness");
+    if (saveFreshBtn) {
+        saveFreshBtn.addEventListener("click", async () => {
+            const fd = parseInt(document.getElementById("fresh-days-input").value);
+            const sd = parseInt(document.getElementById("stale-days-input").value);
+            if (!fd || !sd || fd >= sd) {
+                toast("Fresh days must be less than stale days");
+                return;
+            }
+            try {
+                await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd, stale_days: sd });
+                toast("Freshness rule saved — re-probe to apply");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    }
+    const resetFreshBtn = document.getElementById("btn-reset-freshness");
+    if (resetFreshBtn) {
+        resetFreshBtn.addEventListener("click", async () => {
+            try {
+                await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                toast("Freshness rule reset to defaults");
+                document.getElementById("fresh-days-input").value = "";
+                document.getElementById("stale-days-input").value = "";
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    }
 }
 
 
@@ -812,7 +891,11 @@ async function renderSources() {
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "_fullLocation", label: "Full Location", resizable: true, render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
-        { key: "status", label: "Status", render: s => statusBadge(s.status), sortVal: s => ({ fresh: "0_fresh", stale: "1_stale", outdated: "2_outdated", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
+        { key: "status", label: "Status", render: s => {
+            let b = statusBadge(s.status);
+            if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
+            return b;
+        }, sortVal: s => ({ fresh: "0_fresh", stale: "1_stale", outdated: "2_outdated", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
@@ -983,29 +1066,64 @@ async function renderAlerts() {
             return srcShort ? `<strong>${srcShort}</strong> &mdash; ${a.message}` : a.message;
         }},
         { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
-        { key: "acknowledged", label: "Status", render: a => a.acknowledged
-            ? `<span class="badge badge-muted">acknowledged</span>`
-            : `<button class="btn-sm btn-red btn-ack-alert" data-alert-id="${a.id}">Acknowledge</button>`,
-            sortVal: a => a.acknowledged ? "1_acknowledged" : "0_active" },
+        { key: "resolution_status", label: "Status", render: a => {
+            const reasonAttr = a.resolution_reason ? ` title="${a.resolution_reason.replace(/"/g, '&quot;')}"` : "";
+            if (a.resolution_status === "acknowledged") {
+                return `<span class="badge badge-blue"${reasonAttr}>acknowledged</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>`;
+            }
+            if (a.resolution_status === "resolved") {
+                return `<span class="badge badge-green"${reasonAttr}>resolved</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>`;
+            }
+            return `<button class="btn-sm btn-blue btn-resolve-alert" data-alert-id="${a.id}" data-action="acknowledged">Acknowledge</button> <button class="btn-sm btn-green btn-resolve-alert" data-alert-id="${a.id}" data-action="resolved">Resolve</button>`;
+        }, sortVal: a => a.resolution_status ? "1_" + a.resolution_status : "0_active" },
     ];
 
-    const active = alerts.filter(a => !a.acknowledged).length;
-    const acked = alerts.length - active;
+    const active = alerts.filter(a => !a.resolution_status).length;
+    const acked = alerts.filter(a => a.resolution_status === "acknowledged").length;
+    const resolved = alerts.filter(a => a.resolution_status === "resolved").length;
 
-    return { html: dataTable("dt-alerts", cols, alerts), active, acked, total: alerts.length };
+    return { html: dataTable("dt-alerts", cols, alerts), active, acked, resolved, total: alerts.length };
 }
 
 function bindAlertsTab() {
-    document.querySelectorAll(".btn-ack-alert").forEach(btn => {
+    // Acknowledge / Resolve buttons
+    document.querySelectorAll(".btn-resolve-alert").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const alertId = btn.dataset.alertId;
+            const action = btn.dataset.action; // "acknowledged" or "resolved"
+            const label = action === "resolved" ? "resolving" : "acknowledging";
+            const reason = prompt(`Reason for ${label} this alert (optional):`);
+            if (reason === null) return; // cancelled
+            try {
+                await apiPostJson(`/api/alerts/${alertId}/resolve`, { status: action, reason: reason || null });
+                const cell = btn.closest("td");
+                const badge = action === "resolved" ? "badge-green" : "badge-blue";
+                const reasonAttr = reason ? ` title="${reason.replace(/"/g, '&quot;')}"` : "";
+                if (cell) {
+                    cell.innerHTML = `<span class="badge ${badge}"${reasonAttr}>${action}</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${alertId}">Reopen</button>`;
+                    bindReopenButtons(cell);
+                }
+                toast(`Alert ${action}`);
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    });
+    // Reopen buttons
+    bindReopenButtons();
+}
+
+function bindReopenButtons(scope) {
+    const root = scope || document;
+    root.querySelectorAll(".btn-reopen-alert").forEach(btn => {
         btn.addEventListener("click", async (e) => {
             e.stopPropagation();
             const alertId = btn.dataset.alertId;
             try {
-                await fetch(`/api/alerts/${alertId}/acknowledge`, { method: "POST" });
-                // Immediate UI update without page refresh
-                const cell = btn.closest("td");
-                if (cell) cell.innerHTML = '<span class="badge badge-muted">acknowledged</span>';
-                toast("Alert acknowledged");
+                await apiPost(`/api/alerts/${alertId}/reopen`);
+                toast("Alert reopened");
+                await navigate("issues");
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -1097,7 +1215,7 @@ async function renderIssues() {
     return `
         <div class="page-header">
             <h1>Issues</h1>
-            <span class="subtitle">${alertsData.active} active alert${alertsData.active !== 1 ? 's' : ''} &middot; ${alertsData.acked} acknowledged</span>
+            <span class="subtitle">${alertsData.active} active &middot; ${alertsData.acked} acknowledged &middot; ${alertsData.resolved} resolved</span>
             <button class="btn-export" onclick="exportTableCSV('dt-alerts','issues.csv')">Export CSV</button>
         </div>
 

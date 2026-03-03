@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
-from app.models import SourceOut, SourceUpdate
+from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -36,6 +36,8 @@ def list_sources():
             status=r["latest_status"] if r["latest_status"] else "unknown",
             last_updated=r["latest_last_data_at"],
             report_count=r["report_count"],
+            custom_fresh_days=r["custom_fresh_days"],
+            custom_stale_days=r["custom_stale_days"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -77,6 +79,8 @@ def get_source(source_id: int):
         status=r["latest_status"] or "unknown",
         last_updated=r["latest_last_data_at"],
         report_count=r["report_count"],
+        custom_fresh_days=r["custom_fresh_days"],
+        custom_stale_days=r["custom_stale_days"],
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -130,3 +134,35 @@ def get_source_probes(source_id: int):
         """, (source_id,)).fetchall()
 
     return [dict(r) for r in rows]
+
+
+@router.put("/{source_id}/freshness-rule")
+def set_freshness_rule(source_id: int, body: FreshnessRuleRequest):
+    """Set custom freshness thresholds for a source."""
+    if body.fresh_days >= body.stale_days:
+        raise HTTPException(status_code=400, detail="fresh_days must be less than stale_days")
+    if body.fresh_days < 1:
+        raise HTTPException(status_code=400, detail="fresh_days must be at least 1")
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Source not found")
+        db.execute(
+            "UPDATE sources SET custom_fresh_days = ?, custom_stale_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (body.fresh_days, body.stale_days, source_id),
+        )
+    return {"status": "ok", "fresh_days": body.fresh_days, "stale_days": body.stale_days}
+
+
+@router.delete("/{source_id}/freshness-rule")
+def delete_freshness_rule(source_id: int):
+    """Reset freshness thresholds to global defaults."""
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Source not found")
+        db.execute(
+            "UPDATE sources SET custom_fresh_days = NULL, custom_stale_days = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (source_id,),
+        )
+    return {"status": "ok", "fresh_days": None, "stale_days": None}

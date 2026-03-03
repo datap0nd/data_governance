@@ -31,12 +31,14 @@ STALE_MAX_DAYS = 90
 FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
 
 
-def _compute_status(last_activity_str: str | None) -> str:
+def _compute_status(last_activity_str: str | None,
+                    fresh_max: int = FRESH_MAX_DAYS,
+                    stale_max: int = STALE_MAX_DAYS) -> str:
     """Compute freshness status based on age of last_activity.
 
-    <= 31 days: fresh
-    31-90 days: stale
-    > 90 days: outdated
+    <= fresh_max days: fresh
+    fresh_max-stale_max days: stale
+    > stale_max days: outdated
     Unparseable or missing: unknown
     """
     if not last_activity_str:
@@ -61,9 +63,9 @@ def _compute_status(last_activity_str: str | None) -> str:
             dt = dt.replace(tzinfo=timezone.utc)
 
         age_days = (datetime.now(timezone.utc) - dt).days
-        if age_days <= FRESH_MAX_DAYS:
+        if age_days <= fresh_max:
             return "fresh"
-        elif age_days <= STALE_MAX_DAYS:
+        elif age_days <= stale_max:
             return "stale"
         else:
             return "outdated"
@@ -94,7 +96,8 @@ def _find_file(file_path: str) -> Path | None:
     return None
 
 
-def _probe_file_source(db, source_id: int, file_path: str, now: str) -> str:
+def _probe_file_source(db, source_id: int, file_path: str, now: str,
+                       fresh_max: int = FRESH_MAX_DAYS, stale_max: int = STALE_MAX_DAYS) -> str:
     """Probe a file-based source by checking file existence and modification time.
 
     Returns the computed status.
@@ -109,7 +112,7 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str) -> str:
         return "unknown"
 
     mod_time = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
-    status = _compute_status(mod_time.isoformat())
+    status = _compute_status(mod_time.isoformat(), fresh_max, stale_max)
 
     db.execute(
         "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
@@ -118,14 +121,16 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str) -> str:
     return status
 
 
-def _create_action_and_alert(db, source_id: int, status: str, now: str):
+def _create_action_and_alert(db, source_id: int, status: str, now: str,
+                             fresh_max: int = FRESH_MAX_DAYS, stale_max: int = STALE_MAX_DAYS):
     """Create an action item and alert for stale/outdated sources if not already open."""
     if status not in ("stale", "outdated"):
         return
 
     action_type = f"{status}_source"
     severity = "critical" if status == "outdated" else "warning"
-    msg = f"Source data is {'older than 90 days' if status == 'outdated' else '31-90 days old'}"
+    msg = (f"Source data is older than {stale_max} days" if status == "outdated"
+           else f"Source data is {fresh_max}-{stale_max} days old")
 
     # Action
     existing_action = db.execute(
@@ -178,14 +183,16 @@ def run_probe() -> dict:
     with get_db() as db:
         # 1. Probe file-based sources
         file_sources = db.execute(
-            "SELECT id, name, type, connection_info FROM sources WHERE type IN ('csv', 'excel', 'folder')"
+            "SELECT id, name, type, connection_info, custom_fresh_days, custom_stale_days FROM sources WHERE type IN ('csv', 'excel', 'folder')"
         ).fetchall()
 
         for src in file_sources:
             file_path = src["connection_info"] or src["name"]
-            status = _probe_file_source(db, src["id"], file_path, now)
+            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            sm = src["custom_stale_days"] or STALE_MAX_DAYS
+            status = _probe_file_source(db, src["id"], file_path, now, fm, sm)
             statuses[status] = statuses.get(status, 0) + 1
-            _create_action_and_alert(db, src["id"], status, now)
+            _create_action_and_alert(db, src["id"], status, now, fm, sm)
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
@@ -204,7 +211,7 @@ def run_probe() -> dict:
                 match_pattern = f"%{schema_name}.{table_name}"
 
                 source = db.execute(
-                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    "SELECT id, name, custom_fresh_days, custom_stale_days FROM sources WHERE name LIKE ? AND type = 'postgresql'",
                     (match_pattern,),
                 ).fetchone()
 
@@ -212,15 +219,17 @@ def run_probe() -> dict:
                     skipped += 1
                     continue
 
+                fm = source["custom_fresh_days"] or FRESH_MAX_DAYS
+                sm = source["custom_stale_days"] or STALE_MAX_DAYS
                 last_activity_str = last_activity if last_activity else None
-                status = _compute_status(last_activity_str)
+                status = _compute_status(last_activity_str, fm, sm)
 
                 db.execute(
                     "INSERT INTO source_probes (source_id, probed_at, last_data_at, status) VALUES (?, ?, ?, ?)",
                     (source["id"], now, last_activity_str, status),
                 )
                 statuses[status] = statuses.get(status, 0) + 1
-                _create_action_and_alert(db, source["id"], status, now)
+                _create_action_and_alert(db, source["id"], status, now, fm, sm)
                 csv_probed += 1
                 probed += 1
                 log_lines.append(f"PG: {schema_name}.{table_name} → {status}")
@@ -291,7 +300,9 @@ def simulate_probe() -> dict:
     DB_TYPES = {"postgresql", "sql", "sqlserver", "mysql", "oracle", "sql server"}
     FILE_TYPES = {"csv", "excel", "folder"}
 
-    def _random_last_data(source_type: str) -> tuple[str, str]:
+    def _random_last_data(source_type: str,
+                          fresh_max: int = FRESH_MAX_DAYS,
+                          stale_max: int = STALE_MAX_DAYS) -> tuple[str, str]:
         src_t = (source_type or "").lower()
         if src_t in DB_TYPES:
             weights = [0.70, 0.20, 0.10]
@@ -302,32 +313,34 @@ def simulate_probe() -> dict:
 
         bucket = random.choices(["fresh", "stale", "outdated"], weights=weights, k=1)[0]
         if bucket == "fresh":
-            days_ago = random.randint(0, FRESH_MAX_DAYS)
+            days_ago = random.randint(0, fresh_max)
         elif bucket == "stale":
-            days_ago = random.randint(FRESH_MAX_DAYS + 1, STALE_MAX_DAYS)
+            days_ago = random.randint(fresh_max + 1, stale_max)
         else:
-            days_ago = random.randint(STALE_MAX_DAYS + 1, 365)
+            days_ago = random.randint(stale_max + 1, max(stale_max + 2, 365))
 
         # Add some hour/minute variation
         hours_ago = random.randint(0, 23)
         mins_ago = random.randint(0, 59)
         dt = now - timedelta(days=days_ago, hours=hours_ago, minutes=mins_ago)
-        status = _compute_status(dt.isoformat())
+        status = _compute_status(dt.isoformat(), fresh_max, stale_max)
         return dt.isoformat(), status
 
     with get_db() as db:
         # Delete previous simulated probes
         db.execute("DELETE FROM source_probes WHERE message = 'simulated'")
 
-        sources = db.execute("SELECT id, name, type FROM sources").fetchall()
+        sources = db.execute("SELECT id, name, type, custom_fresh_days, custom_stale_days FROM sources").fetchall()
 
         for src in sources:
-            last_data_str, status = _random_last_data(src["type"])
+            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            sm = src["custom_stale_days"] or STALE_MAX_DAYS
+            last_data_str, status = _random_last_data(src["type"], fm, sm)
             db.execute(
                 "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, 'simulated')",
                 (src["id"], now_str, last_data_str, status),
             )
-            _create_action_and_alert(db, src["id"], status, now_str)
+            _create_action_and_alert(db, src["id"], status, now_str, fm, sm)
             statuses[status] = statuses.get(status, 0) + 1
             probed += 1
             short = src["name"].replace("\\", "/").split("/")[-1]

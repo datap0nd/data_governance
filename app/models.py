@@ -17,8 +17,15 @@ class SourceOut(BaseModel):
     status: str | None = None  # populated from latest probe
     last_updated: str | None = None
     report_count: int = 0
+    custom_fresh_days: int | None = None
+    custom_stale_days: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class FreshnessRuleRequest(BaseModel):
+    fresh_days: int
+    stale_days: int
 
 
 class SourceUpdate(BaseModel):
@@ -92,6 +99,11 @@ class ScanRunOut(BaseModel):
 
 # --- Alerts ---
 
+class AlertResolveRequest(BaseModel):
+    status: str  # "acknowledged" or "resolved"
+    reason: str | None = None
+
+
 class AlertOut(BaseModel):
     id: int
     source_id: int | None = None
@@ -100,6 +112,9 @@ class AlertOut(BaseModel):
     message: str
     acknowledged: bool = False
     acknowledged_by: str | None = None
+    resolution_status: str | None = None
+    resolution_reason: str | None = None
+    resolved_at: str | None = None
     created_at: str | None = None
 
 

@@ -130,6 +130,13 @@ CREATE VIEW IF NOT EXISTS lineage AS
 MIGRATIONS = [
     "ALTER TABLE reports ADD COLUMN business_owner TEXT",
     "ALTER TABLE reports ADD COLUMN powerbi_url TEXT",
+    # Alert resolution workflow
+    "ALTER TABLE alerts ADD COLUMN resolution_status TEXT",
+    "ALTER TABLE alerts ADD COLUMN resolution_reason TEXT",
+    "ALTER TABLE alerts ADD COLUMN resolved_at DATETIME",
+    # Per-source custom freshness thresholds
+    "ALTER TABLE sources ADD COLUMN custom_fresh_days INTEGER",
+    "ALTER TABLE sources ADD COLUMN custom_stale_days INTEGER",
 ]
 
 
