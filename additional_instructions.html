@@ -84,10 +84,8 @@
     font-size: 0.84rem;
     line-height: 1.5;
     overflow-x: auto;
+    white-space: pre;
   }
-  pre .kw { color: #569cd6; }
-  pre .fn { color: #dcdcaa; }
-  pre .str { color: #ce9178; }
   .def {
     display: flex;
     gap: 0.5rem;
@@ -101,15 +99,6 @@
   }
   .def-value {
     color: #555;
-  }
-  .note {
-    background: #fff8e1;
-    border-left: 3px solid #f9a825;
-    padding: 0.75rem 1rem;
-    border-radius: 0 4px 4px 0;
-    margin: 1rem 0;
-    font-size: 0.85rem;
-    color: #5d4037;
   }
   .checklist {
     list-style: none;
@@ -140,6 +129,12 @@
     font-size: 0.82rem;
     color: #888;
   }
+  .example-note {
+    font-size: 0.8rem;
+    color: #888;
+    margin-top: -0.4rem;
+    margin-bottom: 0.75rem;
+  }
 </style>
 </head>
 <body>
@@ -164,12 +159,13 @@
   <ol>
     <li>Go to <strong>Home &gt; New Source &gt; Blank Query</strong></li>
     <li>Open the <strong>Advanced Editor</strong> (Home &gt; Advanced Editor)</li>
-    <li>Replace everything with:</li>
+    <li>Replace everything with the expression below, putting the business owner's name where it says <code>Rafael Cunha</code>:</li>
   </ol>
-  <pre><span class="kw">let</span>
-    Source = <span class="fn">#table</span>({<span class="str">"Business Owner"</span>}, {{<span class="str">"Rafael Cunha"</span>}})
-<span class="kw">in</span>
+<pre>let
+    Source = #table({"Business Owner"}, {{"Rafael Cunha"}})
+in
     Source</pre>
+  <p class="example-note">Example uses "Rafael Cunha". Replace with the actual business owner's full name.</p>
   <ol start="4">
     <li>Click <strong>Done</strong></li>
     <li>In the Query Settings pane on the right, rename the query to exactly: <strong>Business Owner</strong></li>
@@ -179,12 +175,13 @@
   <ol>
     <li>Go to <strong>Home &gt; New Source &gt; Blank Query</strong> again</li>
     <li>Open the <strong>Advanced Editor</strong></li>
-    <li>Replace everything with:</li>
+    <li>Replace everything with the expression below, putting your name where it says <code>Rafael Cunha</code>:</li>
   </ol>
-  <pre><span class="kw">let</span>
-    Source = <span class="fn">#table</span>({<span class="str">"Report Owner"</span>}, {{<span class="str">"Rafael Cunha"</span>}})
-<span class="kw">in</span>
+<pre>let
+    Source = #table({"Report Owner"}, {{"Rafael Cunha"}})
+in
     Source</pre>
+  <p class="example-note">Example uses "Rafael Cunha". Replace with your full name.</p>
   <ol start="4">
     <li>Click <strong>Done</strong></li>
     <li>Rename the query to exactly: <strong>Report Owner</strong></li>
@@ -207,8 +204,9 @@
   <h2>Checklist</h2>
   <ul class="checklist">
     <li>Opened Power Query Editor in my report</li>
-    <li>Created <strong>Business Owner</strong> blank query with <code>#table({"Business Owner"}, {{"Rafael Cunha"}})</code></li>
-    <li>Created <strong>Report Owner</strong> blank query with <code>#table({"Report Owner"}, {{"Rafael Cunha"}})</code></li>
+    <li>Created <strong>Business Owner</strong> blank query with the <code>#table</code> expression</li>
+    <li>Created <strong>Report Owner</strong> blank query with the <code>#table</code> expression</li>
+    <li>Replaced the example name with actual names</li>
     <li>Query names are exactly <code>Business Owner</code> and <code>Report Owner</code></li>
     <li>Column names match the table names</li>
     <li>Close &amp; Apply, saved, and published</li>
