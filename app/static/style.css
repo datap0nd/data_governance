@@ -148,7 +148,7 @@ nav a:last-child {
 
 /* ── Main ── */
 main {
-    max-width: 1600px;
+    max-width: 1800px;
     margin: 0 auto;
     padding: 1.5rem 1.5rem 2rem;
 }
@@ -546,6 +546,16 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 
 .cell-expandable:hover { color: var(--text); }
+
+.cell-copyable {
+    cursor: copy;
+}
+
+.cell-copyable:hover {
+    color: var(--blue);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+}
 
 .cell-expandable.expanded {
     max-width: none;
@@ -2310,16 +2320,15 @@ body.ai-panel-open main {
 .create-type-btn {
     flex: 1;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 0.4rem;
+    justify-content: center;
     padding: 1.1rem 1rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
     color: var(--text-muted);
-    font-size: 0.82rem;
-    font-weight: 500;
+    font-size: 0.95rem;
+    font-weight: 700;
     cursor: pointer;
     transition: all 0.15s;
 }
@@ -2335,10 +2344,6 @@ body.ai-panel-open main {
     border-color: var(--blue);
     color: var(--text);
     background: var(--blue-bg);
-}
-
-.create-type-icon {
-    font-size: 1.5rem;
 }
 
 .create-form {
@@ -2405,6 +2410,37 @@ body.ai-panel-open main {
 }
 
 .create-field select {
+    cursor: pointer;
+}
+
+.create-field-full {
+    grid-column: 1 / -1;
+}
+
+.create-checkbox-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    max-height: 140px;
+    overflow-y: auto;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.create-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.create-checkbox input[type="checkbox"] {
+    accent-color: var(--blue);
     cursor: pointer;
 }
 

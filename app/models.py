@@ -156,6 +156,7 @@ class CreateSourceRequest(BaseModel):
     refresh_schedule: str | None = None
     tags: str | None = None
     upstream_id: int | None = None
+    report_ids: list[int] | None = None
 
 
 class CreateReportRequest(BaseModel):

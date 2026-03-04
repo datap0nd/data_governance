@@ -755,17 +755,6 @@ async function renderDashboard() {
 
     return `
         <div class="stat-grid">
-            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources">
-                <div class="stat-label">Total Sources</div>
-                <div class="stat-value">${data.sources_total}</div>
-                <div class="stat-breakdown">
-                    <span class="stat-dot dot-green stat-filter" data-filter="healthy">${data.sources_fresh} healthy</span>
-                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk">${data.sources_stale} at risk</span>
-                    <span class="stat-dot dot-red stat-filter" data-filter="degraded">${data.sources_outdated} degraded</span>
-                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown">${data.sources_unknown} unknown</span>` : ""}
-                </div>
-                <div class="stat-card-link">View &rarr;</div>
-            </div>
             <div class="stat-card card-purple stat-card-clickable" data-navigate="reports">
                 <div class="stat-label">Reports</div>
                 <div class="stat-value">${data.reports_total}</div>
@@ -774,6 +763,17 @@ async function renderDashboard() {
                     <span class="stat-dot dot-yellow">${reports.filter(r => r.status === "at risk").length} at risk</span>
                     <span class="stat-dot dot-red">${reports.filter(r => r.status === "degraded").length} degraded</span>
                     ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
+                </div>
+                <div class="stat-card-link">View &rarr;</div>
+            </div>
+            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources">
+                <div class="stat-label">Total Sources</div>
+                <div class="stat-value">${data.sources_total}</div>
+                <div class="stat-breakdown">
+                    <span class="stat-dot dot-green stat-filter" data-filter="healthy">${data.sources_fresh} healthy</span>
+                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk">${data.sources_stale} at risk</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="degraded">${data.sources_outdated} degraded</span>
+                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
@@ -1098,8 +1098,12 @@ async function renderSources() {
 
     const cols = [
         { key: "_shortName", label: "File / Table", render: s => `<strong>${s._shortName}</strong>`, sortVal: s => s._shortName || "" },
-        { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted)">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
-        { key: "_fullLocation", label: "Full Location", resizable: true, render: s => `<span class="cell-expandable" title="${(s._fullLocation || '').replace(/"/g, '&quot;')}">${s._fullLocation || "-"}</span>`, sortVal: s => s._fullLocation || "" },
+        { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
+        { key: "_fullLocation", label: "Full Location", resizable: true, render: s => {
+            const loc = s._fullLocation || "-";
+            const escaped = loc.replace(/"/g, '&quot;');
+            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}">${loc}</span>`;
+        }, sortVal: s => s._fullLocation || "" },
         { key: "type", label: "Type", render: s => typeBadge(s.type) },
         { key: "status", label: "Status", render: s => {
             let b = statusBadge(s.status);
@@ -1154,6 +1158,19 @@ function bindSourcesPage() {
             }
         });
         sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+    // Click-to-copy on full location paths
+    document.querySelectorAll(".cell-copyable").forEach(el => {
+        el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const path = el.dataset.copy;
+            if (!path || path === "-") return;
+            navigator.clipboard.writeText(path).then(() => {
+                toast("Path copied to clipboard");
+            }).catch(() => {
+                toast("Failed to copy path");
+            });
+        });
     });
 }
 
@@ -1905,6 +1922,9 @@ function _renderCreateForm(entity) {
     if (entity === 'source') {
         const typeOpts = (opts.source_types || []).map(t => `<option value="${t}">${t}</option>`).join('');
         const upOpts = (opts.upstream_systems || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+        const reportCheckboxes = (opts.reports || []).map(r =>
+            `<label class="create-checkbox"><input type="checkbox" value="${r.id}" class="cf-report-cb"> ${r.name}</label>`
+        ).join('');
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
                 <input type="text" id="cf-name" placeholder="e.g. dbo.Customers or sales_data.csv" required></div>
@@ -1922,6 +1942,9 @@ function _renderCreateForm(entity) {
                 <input type="text" id="cf-tags" placeholder="comma-separated tags"></div>
             <div class="create-field"><label>Upstream System</label>
                 <select id="cf-upstream_id"><option value="">None</option>${upOpts}</select></div>
+            <div class="create-field create-field-full"><label>Associated Reports</label>
+                <div class="create-checkbox-list" id="cf-report-list">${reportCheckboxes || '<span style="color:var(--text-dim)">No reports available</span>'}</div>
+            </div>
         `;
     } else if (entity === 'report') {
         const freqOpts = (opts.report_frequencies || []).map(f => `<option value="${f}">${f}</option>`).join('');
@@ -1981,6 +2004,8 @@ async function _handleCreateSubmit(e) {
         body.tags = document.getElementById('cf-tags')?.value || null;
         const upId = document.getElementById('cf-upstream_id')?.value;
         body.upstream_id = upId ? parseInt(upId) : null;
+        const reportIds = [...document.querySelectorAll('.cf-report-cb:checked')].map(cb => parseInt(cb.value));
+        body.report_ids = reportIds.length > 0 ? reportIds : null;
     } else if (entity === 'report') {
         body.owner = document.getElementById('cf-owner')?.value || null;
         body.business_owner = document.getElementById('cf-business_owner')?.value || null;
@@ -2028,18 +2053,9 @@ async function renderCreate() {
         </div>
 
         <div class="create-type-selector">
-            <button class="create-type-btn" data-entity="source">
-                <span class="create-type-icon">&#128451;</span>
-                Data Source
-            </button>
-            <button class="create-type-btn" data-entity="report">
-                <span class="create-type-icon">&#128202;</span>
-                Report
-            </button>
-            <button class="create-type-btn" data-entity="upstream">
-                <span class="create-type-icon">&#128259;</span>
-                Upstream System
-            </button>
+            <button class="create-type-btn" data-entity="report">Report</button>
+            <button class="create-type-btn" data-entity="source">Data Source</button>
+            <button class="create-type-btn" data-entity="upstream">Upstream System</button>
         </div>
 
         <div id="create-form-container"></div>

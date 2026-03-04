@@ -30,6 +30,9 @@ def get_create_options():
         upstreams = db.execute(
             "SELECT id, name, code FROM upstream_systems ORDER BY name"
         ).fetchall()
+        reports = db.execute(
+            "SELECT id, name FROM reports ORDER BY name"
+        ).fetchall()
 
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     return {
@@ -39,6 +42,7 @@ def get_create_options():
         "owners": [r["owner"] for r in owners],
         "upstream_systems": [dict(r) for r in upstreams],
         "upstream_codes": ["GSCM", "ASAP"],
+        "reports": [dict(r) for r in reports],
     }
 
 
@@ -55,6 +59,15 @@ def create_source(req: CreateSourceRequest):
                  req.owner, req.refresh_schedule, req.tags, req.upstream_id, now, now),
             )
             source_id = cursor.lastrowid
+
+            # Link source to selected reports via report_tables
+            if req.report_ids:
+                for report_id in req.report_ids:
+                    db.execute(
+                        """INSERT OR IGNORE INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
+                           VALUES (?, ?, ?, 'manual entry', ?)""",
+                        (report_id, req.name, source_id, now),
+                    )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="A source with that name already exists")
 
