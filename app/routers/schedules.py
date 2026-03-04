@@ -13,18 +13,26 @@ DAY_ORDER = {
 }
 
 
-def _next_weekday_date(day_name: str) -> str:
-    """Compute the next occurrence of the given weekday as dd/mm."""
+def _next_weekday_date(day_name: str, with_iso: bool = False) -> str | dict:
+    """Compute the next occurrence of the given weekday.
+
+    If *with_iso* is True, return a dict with both the short label and full ISO
+    datetime (midnight UTC) for use in the discrepancies API.
+    """
     day_num = DAY_ORDER.get(day_name, -1)
     if day_num < 0:
-        return day_name
+        return {"label": day_name, "iso": None} if with_iso else day_name
     today = datetime.now(timezone.utc).date()
     today_dow = today.weekday()  # Monday=0, Sunday=6
     diff = day_num - today_dow
     if diff < 0:
         diff += 7
     next_date = today + timedelta(days=diff)
-    return next_date.strftime("%d/%m")
+    label = next_date.strftime("%d/%m")
+    if with_iso:
+        iso = datetime(next_date.year, next_date.month, next_date.day, tzinfo=timezone.utc).isoformat()
+        return {"label": label, "iso": iso}
+    return label
 
 
 @router.get("/upstream-systems")
@@ -72,15 +80,15 @@ def get_schedule_discrepancies():
         """).fetchall()
 
     # Compute next Sunday date for reports
-    sunday_date = _next_weekday_date("Sunday")
+    sunday_info = _next_weekday_date("Sunday", with_iso=True)
 
     discrepancies = []
     for row in rows:
         upstream_day = DAY_ORDER.get(row["upstream_refresh_day"], -1)
         source_day = DAY_ORDER.get(row["source_refresh_day"], -1)
 
-        upstream_date = _next_weekday_date(row["upstream_refresh_day"])
-        source_date = _next_weekday_date(row["source_refresh_day"])
+        upstream_info = _next_weekday_date(row["upstream_refresh_day"], with_iso=True)
+        source_info = _next_weekday_date(row["source_refresh_day"], with_iso=True)
 
         issues = []
 
@@ -89,10 +97,7 @@ def get_schedule_discrepancies():
             issues.append({
                 "type": "upstream_after_source",
                 "severity": "warning",
-                "message": (
-                    f"Upstream refreshes {upstream_date} ({row['upstream_refresh_day']}) but source "
-                    f"refreshes {source_date} ({row['source_refresh_day']}) — source may pull stale upstream data"
-                ),
+                "message": f"Upstream \u2265 source ({row['upstream_refresh_day']} \u2265 {row['source_refresh_day']})",
             })
 
         # Source must refresh BEFORE report (Sunday = 6)
@@ -100,10 +105,7 @@ def get_schedule_discrepancies():
             issues.append({
                 "type": "source_after_report",
                 "severity": "critical",
-                "message": (
-                    f"Source refreshes {source_date} ({row['source_refresh_day']}) same day as report ({sunday_date}) "
-                    f"— report may use previous week's data"
-                ),
+                "message": f"Source on report day ({row['source_refresh_day']})",
             })
 
         if issues:
@@ -112,14 +114,17 @@ def get_schedule_discrepancies():
                 "upstream_name": row["upstream_name"],
                 "upstream_code": row["upstream_code"],
                 "upstream_refresh_day": row["upstream_refresh_day"],
-                "upstream_refresh_date": upstream_date,
+                "upstream_refresh_date": upstream_info["label"],
+                "upstream_refresh_iso": upstream_info["iso"],
                 "source_id": row["source_id"],
                 "source_name": row["source_name"],
                 "source_refresh_day": row["source_refresh_day"],
-                "source_refresh_date": source_date,
+                "source_refresh_date": source_info["label"],
+                "source_refresh_iso": source_info["iso"],
                 "report_id": row["report_id"],
                 "report_name": row["report_name"],
-                "report_refresh_date": sunday_date,
+                "report_refresh_date": sunday_info["label"],
+                "report_refresh_iso": sunday_info["iso"],
                 "issues": issues,
             })
 

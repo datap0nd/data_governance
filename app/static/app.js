@@ -1512,6 +1512,11 @@ async function renderIssues() {
     `;
 }
 
+function _discDateBadge(dateStr, day, iso) {
+    const title = iso ? new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : day;
+    return `<span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem" title="${title}">${dateStr || day}</span>`;
+}
+
 function renderDiscrepancies(data) {
     if (!data.discrepancies || data.discrepancies.length === 0) {
         return '<div class="empty-state">No schedule discrepancies detected</div>';
@@ -1525,23 +1530,25 @@ function renderDiscrepancies(data) {
           },
           sortVal: d => d.issues.some(i => i.severity === "critical") ? "0_critical" : "1_warning"
         },
-        { key: "upstream_name", label: "Upstream System",
+        { key: "upstream_name", label: "Upstream",
           render: d => `<span style="color:var(--text-muted)">${d.upstream_name}</span>
-                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.upstream_refresh_date || d.upstream_refresh_day}</span>`
+                        ${_discDateBadge(d.upstream_refresh_date, d.upstream_refresh_day, d.upstream_refresh_iso)}`
         },
         { key: "source_name", label: "Source",
           render: d => {
               const short = shortNameFromPath(d.source_name) || d.source_name;
               return `<strong>${short}</strong>
-                      <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.source_refresh_date || d.source_refresh_day}</span>`;
+                      ${_discDateBadge(d.source_refresh_date, d.source_refresh_day, d.source_refresh_iso)}`;
           }
         },
         { key: "report_name", label: "Report",
           render: d => `<span style="color:var(--text-muted)">${d.report_name}</span>
-                        <span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem">${d.report_refresh_date || 'Sunday'}</span>`
+                        ${_discDateBadge(d.report_refresh_date, 'Sunday', d.report_refresh_iso)}`
         },
         { key: "issue", label: "Issue",
-          render: d => d.issues.map(i => `<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.2rem">${i.message}</div>`).join("")
+          render: d => d.issues.map(i =>
+              `<span class="badge ${i.severity === 'critical' ? 'badge-red' : 'badge-yellow'}" style="font-size:0.65rem">${i.message}</span>`
+          ).join(' ')
         },
     ];
 
@@ -1894,13 +1901,91 @@ async function renderChangelog() {
         `;
     }).join("");
 
+    const howItWorks = `
+        <div class="how-it-works">
+            <h2>How This Works</h2>
+            <div class="how-overview">This Data Governance Panel monitors your Power BI ecosystem by scanning TMDL semantic model exports and tracking data source freshness.</div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-sources">
+                    <span class="how-chevron">&#9654;</span> Data Sources
+                </div>
+                <div class="how-section-body" id="how-sources">
+                    <p>The system tracks 28 data sources including PostgreSQL tables (dbo.Orders, dbo.Contacts...), CSV files (sales data, employee rosters...), and Excel workbooks (budget forecasts, inventory levels...).</p>
+                    <p>Each source is probed for freshness and classified as healthy (&lt; 31 days), at risk (31\u201390 days), or degraded (&gt; 90 days).</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-reports">
+                    <span class="how-chevron">&#9654;</span> TMDL Reports
+                </div>
+                <div class="how-section-body" id="how-reports">
+                    <p>11 Power BI reports are scanned from TMDL (Tabular Model Definition Language) exports. Each report contains semantic model definitions with M expressions that reference data sources.</p>
+                    <p>Reports: Customer 360, Executive Summary, Finance Monthly, HR Dashboard, Inventory Analysis, Marketing ROI, Monthly KPI, Product Mix, Sales Pipeline, Supply Chain Tracker, Weekly Sales</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-upstream">
+                    <span class="how-chevron">&#9654;</span> Upstream Systems
+                </div>
+                <div class="how-section-body" id="how-upstream">
+                    <p>Sources are linked to upstream systems (GSCM and ASAP) that feed data into your pipeline. The schedule discrepancy engine checks that refresh timing follows the correct order: upstream \u2192 source \u2192 report.</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-scanning">
+                    <span class="how-chevron">&#9654;</span> Scanning & Probing
+                </div>
+                <div class="how-section-body" id="how-scanning">
+                    <p>The scanner walks the reports directory, parses TMDL files for M expressions, extracts source references, and stores everything in SQLite. The prober then checks each source's freshness by reading file modification times or a latest_upload_date.csv for database sources.</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-files">
+                    <span class="how-chevron">&#9654;</span> Files Read
+                </div>
+                <div class="how-section-body" id="how-files">
+                    <p>Configuration: owners.csv (report/business owners), powerbi_links.csv (Power BI URLs), latest_upload_date.csv (database freshness timestamps)</p>
+                    <p>Sample data: 14 CSV files and 6 Excel workbooks in test_data/sample_files/</p>
+                    <p>TMDL models: 54 table definitions across 11 reports in test_data/reports/</p>
+                </div>
+            </div>
+        </div>
+    `;
+
     return `
         <div class="page-header">
             <h1>Changelog</h1>
             <span class="subtitle">${entries.length} updates</span>
         </div>
-        <div class="changelog-list">${rows || '<div style="color:var(--text-muted)">No changelog entries found.</div>'}</div>
+        <div class="changelog-layout">
+            <div class="changelog-list">${rows || '<div style="color:var(--text-muted)">No changelog entries found.</div>'}</div>
+            ${howItWorks}
+        </div>
     `;
+}
+
+
+function bindChangelogPage() {
+    document.querySelectorAll('.how-section-header[data-how-toggle]').forEach(header => {
+        header.addEventListener('click', () => {
+            const targetId = header.dataset.howToggle;
+            const body = document.getElementById(targetId);
+            if (!body) return;
+            const isExpanded = header.classList.contains('expanded');
+            if (isExpanded) {
+                header.classList.remove('expanded');
+                body.classList.remove('visible');
+            } else {
+                header.classList.add('expanded');
+                body.classList.add('visible');
+            }
+        });
+    });
 }
 
 
@@ -2044,6 +2129,10 @@ async function renderCreate() {
         { key: "name", label: "Name", render: e => '<strong>' + e.name + '</strong>' },
         { key: "detail", label: "Detail", render: e => '<span style="color:var(--text-muted)">' + (e.detail || '-') + '</span>' },
         { key: "created_at", label: "Created", render: e => '<span style="color:var(--text-muted)" title="' + formatDate(e.created_at) + '">' + timeAgo(e.created_at) + '</span>', sortVal: e => e.created_at || '' },
+        { key: "actions", label: "", render: e => `<div class="ce-actions">
+            <button class="btn-sm btn-outline ce-edit-btn" data-id="${e.id}" data-type="${e.entity_type}">Edit</button>
+            <button class="btn-sm btn-outline btn-danger-outline ce-delete-btn" data-id="${e.id}" data-type="${e.entity_type}">Delete</button>
+        </div>` },
     ], customEntries) : '<div class="empty-state">No custom entries yet</div>';
 
     return `
@@ -2098,6 +2187,162 @@ function bindCreatePage() {
             }
         });
     }
+
+    // Delete handler (event delegation)
+    document.addEventListener('click', async (e) => {
+        const delBtn = e.target.closest('.ce-delete-btn');
+        if (!delBtn) return;
+        e.stopPropagation();
+        const id = delBtn.dataset.id;
+        const type = delBtn.dataset.type;
+        const label = type === 'upstream' ? 'upstream system' : type;
+        if (!confirm(`Delete this ${label}? This cannot be undone.`)) return;
+        try {
+            await apiDelete(`/api/create/${type}/${id}`);
+            toast(`${label.charAt(0).toUpperCase() + label.slice(1)} deleted`);
+            navigate('create');
+        } catch (err) {
+            toast('Delete failed: ' + err.message);
+        }
+    });
+
+    // Edit handler (event delegation)
+    document.addEventListener('click', async (e) => {
+        const editBtn = e.target.closest('.ce-edit-btn');
+        if (!editBtn) return;
+        e.stopPropagation();
+        const id = editBtn.dataset.id;
+        const type = editBtn.dataset.type;
+        try {
+            let entity;
+            if (type === 'source') {
+                entity = await api(`/api/sources/${id}`);
+            } else if (type === 'report') {
+                entity = await api(`/api/reports/${id}`);
+            } else if (type === 'upstream') {
+                const upstreams = await api('/api/schedules/upstream-systems');
+                entity = upstreams.find(u => u.id === parseInt(id));
+                if (!entity) throw new Error('Upstream not found');
+            }
+            _showEditForm(type, id, entity);
+        } catch (err) {
+            toast('Failed to load entry: ' + err.message);
+        }
+    });
+}
+
+function _showEditForm(type, id, entity) {
+    const container = document.getElementById('create-form-container');
+    if (!container) return;
+    // Deselect type buttons
+    document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
+
+    const opts = window._createOptions;
+    if (!opts) return;
+    let fields = '';
+    const ownerOpts = (opts.owners || []).map(o => `<option value="${o}" ${entity.owner === o ? 'selected' : ''}>${o}</option>`).join('');
+    const dayOpts = (opts.weekdays || []).map(d => `<option value="${d}">${d}</option>`).join('');
+
+    if (type === 'source') {
+        const typeOpts = (opts.source_types || []).map(t => `<option value="${t}" ${entity.type === t ? 'selected' : ''}>${t}</option>`).join('');
+        const upOpts = (opts.upstream_systems || []).map(u => `<option value="${u.id}" ${entity.upstream_id === u.id ? 'selected' : ''}>${u.name}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+            <div class="create-field"><label>Type <span class="required">*</span></label>
+                <select id="cf-type"><option value="">Choose...</option>${typeOpts}</select></div>
+            <div class="create-field"><label>Connection Info</label>
+                <input type="text" id="cf-connection_info" value="${entity.connection_info || ''}"></div>
+            <div class="create-field"><label>Source Query</label>
+                <input type="text" id="cf-source_query" value="${entity.source_query || ''}"></div>
+            <div class="create-field"><label>Owner</label>
+                <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
+            <div class="create-field"><label>Refresh Schedule</label>
+                <select id="cf-refresh_schedule"><option value="">Choose...</option>${dayOpts.replace(`value="${entity.refresh_schedule}"`, `value="${entity.refresh_schedule}" selected`)}</select></div>
+            <div class="create-field"><label>Tags</label>
+                <input type="text" id="cf-tags" value="${entity.tags || ''}"></div>
+            <div class="create-field"><label>Upstream System</label>
+                <select id="cf-upstream_id"><option value="">None</option>${upOpts}</select></div>
+        `;
+    } else if (type === 'report') {
+        const freqOpts = (opts.report_frequencies || []).map(f => `<option value="${f}" ${entity.frequency === f ? 'selected' : ''}>${f}</option>`).join('');
+        const boOpts = (opts.owners || []).map(o => `<option value="${o}" ${entity.business_owner === o ? 'selected' : ''}>${o}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+            <div class="create-field"><label>Report Owner</label>
+                <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
+            <div class="create-field"><label>Business Owner</label>
+                <select id="cf-business_owner"><option value="">Choose...</option>${boOpts}</select></div>
+            <div class="create-field"><label>Frequency</label>
+                <select id="cf-frequency"><option value="">Choose...</option>${freqOpts}</select></div>
+            <div class="create-field"><label>Power BI URL</label>
+                <input type="url" id="cf-powerbi_url" value="${entity.powerbi_url || ''}"></div>
+        `;
+    } else if (type === 'upstream') {
+        const codeOpts = (opts.upstream_codes || []).map(c => `<option value="${c}" ${entity.code === c ? 'selected' : ''}>${c}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+            <div class="create-field"><label>Code <span class="required">*</span></label>
+                <select id="cf-code"><option value="">Choose...</option>${codeOpts}</select></div>
+            <div class="create-field"><label>Refresh Day</label>
+                <select id="cf-refresh_day"><option value="">Choose...</option>${dayOpts.replace(`value="${entity.refresh_day}"`, `value="${entity.refresh_day}" selected`)}</select></div>
+        `;
+    }
+
+    const entityLabels = { source: 'Data Source', report: 'Report', upstream: 'Upstream System' };
+    container.innerHTML = `
+        <div class="create-form">
+            <h2>Edit ${entityLabels[type]}</h2>
+            <div class="create-fields">${fields}</div>
+            <div class="create-form-actions">
+                <button id="btn-edit-submit" data-entity="${type}" data-id="${id}">Save Changes</button>
+                <button class="btn-outline" id="btn-edit-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    document.getElementById('btn-edit-submit').addEventListener('click', async (e) => {
+        const entType = e.target.dataset.entity;
+        const entId = e.target.dataset.id;
+        let body = {};
+
+        if (entType === 'source') {
+            body.name = document.getElementById('cf-name')?.value || null;
+            body.type = document.getElementById('cf-type')?.value || null;
+            body.connection_info = document.getElementById('cf-connection_info')?.value || null;
+            body.source_query = document.getElementById('cf-source_query')?.value || null;
+            body.owner = document.getElementById('cf-owner')?.value || null;
+            body.refresh_schedule = document.getElementById('cf-refresh_schedule')?.value || null;
+            body.tags = document.getElementById('cf-tags')?.value || null;
+            const upId = document.getElementById('cf-upstream_id')?.value;
+            body.upstream_id = upId ? parseInt(upId) : null;
+        } else if (entType === 'report') {
+            body.name = document.getElementById('cf-name')?.value || null;
+            body.owner = document.getElementById('cf-owner')?.value || null;
+            body.business_owner = document.getElementById('cf-business_owner')?.value || null;
+            body.frequency = document.getElementById('cf-frequency')?.value || null;
+            body.powerbi_url = document.getElementById('cf-powerbi_url')?.value || null;
+        } else if (entType === 'upstream') {
+            body.name = document.getElementById('cf-name')?.value || null;
+            body.code = document.getElementById('cf-code')?.value || null;
+            body.refresh_day = document.getElementById('cf-refresh_day')?.value || null;
+        }
+
+        try {
+            await apiPatch(`/api/create/${entType}/${entId}`, body);
+            toast('Changes saved');
+            navigate('create');
+        } catch (err) {
+            toast('Update failed: ' + err.message);
+        }
+    });
+
+    document.getElementById('btn-edit-cancel').addEventListener('click', () => {
+        container.innerHTML = '';
+    });
 }
 
 
@@ -2236,6 +2481,7 @@ async function navigate(page) {
         if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
         if (page === "create") bindCreatePage();
+        if (page === "changelog") bindChangelogPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }

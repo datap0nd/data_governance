@@ -2166,7 +2166,7 @@ body.ai-panel-open main {
 
 /* Changelog */
 .changelog-list {
-    max-width: 700px;
+    max-width: none;
 }
 
 .changelog-day {
@@ -2470,4 +2470,119 @@ body.ai-panel-open main {
     outline: none;
     border-color: var(--blue);
     color: var(--text);
+}
+
+/* ── Delete / Danger outline button ── */
+button.btn-danger-outline {
+    background: transparent;
+    border: 1px solid var(--red-border);
+    color: var(--red);
+}
+
+button.btn-danger-outline:hover {
+    background: var(--red-bg);
+    border-color: var(--red);
+    color: var(--red);
+    transform: none;
+    opacity: 1;
+}
+
+/* ── Changelog two-column layout ── */
+.changelog-layout {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .changelog-layout { grid-template-columns: 1fr; }
+}
+
+/* ── How It Works panel ── */
+.how-it-works {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    position: sticky;
+    top: 1rem;
+}
+
+.how-it-works h2 {
+    font-size: 0.95rem;
+    margin-bottom: 0.75rem;
+    color: #fff;
+}
+
+.how-section {
+    border-bottom: 1px solid var(--border);
+}
+
+.how-section:last-child {
+    border-bottom: none;
+}
+
+.how-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+    transition: color 0.15s;
+}
+
+.how-section-header:hover {
+    color: var(--blue);
+}
+
+.how-chevron {
+    font-size: 0.55rem;
+    color: var(--text-dim);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.how-section-header.expanded .how-chevron {
+    transform: rotate(90deg);
+}
+
+.how-section-body {
+    display: none;
+    padding: 0 0 0.75rem 1.1rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+.how-section-body.visible {
+    display: block;
+}
+
+.how-section-body p {
+    margin-bottom: 0.4rem;
+}
+
+.how-section-body p:last-child {
+    margin-bottom: 0;
+}
+
+/* Overview text (always visible, no toggle) */
+.how-overview {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Actions cell spacing */
+.ce-actions {
+    display: flex;
+    gap: 0.35rem;
 }

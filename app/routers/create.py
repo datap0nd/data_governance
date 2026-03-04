@@ -2,8 +2,9 @@
 
 import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from app.database import get_db
 from app.models import (
@@ -137,3 +138,119 @@ def list_custom_entries():
         )
         for r in rows
     ]
+
+
+# ── DELETE endpoints ──
+
+
+@router.delete("/source/{source_id}")
+def delete_source(source_id: int):
+    """Delete a manually-created source and clean up FK references."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM sources WHERE id = ? AND discovered_by = 'manual'",
+            (source_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Manual source not found")
+        db.execute("DELETE FROM report_tables WHERE source_id = ?", (source_id,))
+        db.execute("DELETE FROM source_probes WHERE source_id = ?", (source_id,))
+        db.execute("UPDATE alerts SET source_id = NULL WHERE source_id = ?", (source_id,))
+        db.execute("UPDATE actions SET source_id = NULL WHERE source_id = ?", (source_id,))
+        db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+    return {"status": "deleted", "id": source_id}
+
+
+@router.delete("/report/{report_id}")
+def delete_report(report_id: int):
+    """Delete a manually-created report and clean up FK references."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM reports WHERE id = ? AND discovered_by = 'manual'",
+            (report_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Manual report not found")
+        db.execute("DELETE FROM report_tables WHERE report_id = ?", (report_id,))
+        db.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+    return {"status": "deleted", "id": report_id}
+
+
+@router.delete("/upstream/{upstream_id}")
+def delete_upstream(upstream_id: int):
+    """Delete a manually-created upstream system and clean up FK references."""
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM upstream_systems WHERE id = ? AND discovered_by = 'manual'",
+            (upstream_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Manual upstream system not found")
+        db.execute("UPDATE sources SET upstream_id = NULL WHERE upstream_id = ?", (upstream_id,))
+        db.execute("DELETE FROM upstream_systems WHERE id = ?", (upstream_id,))
+    return {"status": "deleted", "id": upstream_id}
+
+
+# ── PATCH endpoints ──
+
+_SOURCE_FIELDS = {"name", "type", "connection_info", "source_query", "owner", "refresh_schedule", "tags", "upstream_id"}
+_REPORT_FIELDS = {"name", "owner", "business_owner", "frequency", "powerbi_url"}
+_UPSTREAM_FIELDS = {"name", "code", "refresh_day"}
+
+
+@router.patch("/source/{source_id}")
+def update_source(source_id: int, body: dict[str, Any] = Body(...)):
+    """Partially update a manually-created source."""
+    updates = {k: v for k, v in body.items() if k in _SOURCE_FIELDS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    now = datetime.now(timezone.utc).isoformat()
+    updates["updated_at"] = now
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [source_id]
+    with get_db() as db:
+        cursor = db.execute(
+            f"UPDATE sources SET {set_clause} WHERE id = ? AND discovered_by = 'manual'",
+            values,
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Manual source not found")
+    return {"status": "updated", "id": source_id}
+
+
+@router.patch("/report/{report_id}")
+def update_report(report_id: int, body: dict[str, Any] = Body(...)):
+    """Partially update a manually-created report."""
+    updates = {k: v for k, v in body.items() if k in _REPORT_FIELDS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    now = datetime.now(timezone.utc).isoformat()
+    updates["updated_at"] = now
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [report_id]
+    with get_db() as db:
+        cursor = db.execute(
+            f"UPDATE reports SET {set_clause} WHERE id = ? AND discovered_by = 'manual'",
+            values,
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Manual report not found")
+    return {"status": "updated", "id": report_id}
+
+
+@router.patch("/upstream/{upstream_id}")
+def update_upstream(upstream_id: int, body: dict[str, Any] = Body(...)):
+    """Partially update a manually-created upstream system."""
+    updates = {k: v for k, v in body.items() if k in _UPSTREAM_FIELDS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [upstream_id]
+    with get_db() as db:
+        cursor = db.execute(
+            f"UPDATE upstream_systems SET {set_clause} WHERE id = ? AND discovered_by = 'manual'",
+            values,
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Manual upstream system not found")
+    return {"status": "updated", "id": upstream_id}
