@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pathlib import Path
 
 from app.database import init_db
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -26,6 +26,7 @@ app.include_router(actions.router)
 app.include_router(ai_router)
 app.include_router(changelog.router)
 app.include_router(schedules.router)
+app.include_router(create.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

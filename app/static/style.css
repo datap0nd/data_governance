@@ -2300,6 +2300,126 @@ body.ai-panel-open main {
     border-color: var(--blue);
 }
 
+/* ── Create Page ── */
+.create-type-selector {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.create-type-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 1.1rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.create-type-btn:hover {
+    border-color: var(--border-light);
+    color: var(--text);
+    background: var(--surface-hover);
+    transform: translateY(-1px);
+}
+
+.create-type-btn.active {
+    border-color: var(--blue);
+    color: var(--text);
+    background: var(--blue-bg);
+}
+
+.create-type-icon {
+    font-size: 1.5rem;
+}
+
+.create-form {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+    animation: slideUp 0.2s ease;
+}
+
+.create-form h2 {
+    margin-bottom: 1rem;
+}
+
+.create-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem 1.25rem;
+}
+
+@media (max-width: 700px) {
+    .create-fields { grid-template-columns: 1fr; }
+}
+
+.create-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.create-field label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.create-field .required {
+    color: var(--red);
+}
+
+.create-field input,
+.create-field select {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.82rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    outline: none;
+    font-family: inherit;
+    transition: border-color 0.15s;
+}
+
+.create-field input:focus,
+.create-field select:focus {
+    border-color: var(--blue);
+}
+
+.create-field input::placeholder {
+    color: var(--text-dim);
+}
+
+.create-field select {
+    cursor: pointer;
+}
+
+.create-form-actions {
+    margin-top: 1.25rem;
+    display: flex;
+    gap: 0.75rem;
+}
+
+.badge-purple {
+    background: transparent;
+    color: var(--purple);
+    border: 1px solid rgba(139, 92, 246, 0.25);
+}
+
 .freq-select-inline {
     font-size: 0.72rem;
     padding: 0.15rem 0.3rem;

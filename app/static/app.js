@@ -1887,6 +1887,204 @@ async function renderChangelog() {
 }
 
 
+// ── Create Page ──
+
+function _entityTypeBadge(type) {
+    const labels = { source: "Source", report: "Report", upstream: "Upstream" };
+    const colors = { source: "badge-blue", report: "badge-green", upstream: "badge-purple" };
+    return `<span class="badge ${colors[type] || 'badge-muted'}">${labels[type] || type}</span>`;
+}
+
+function _renderCreateForm(entity) {
+    const opts = window._createOptions;
+    if (!opts) return '';
+    let fields = '';
+    const ownerOpts = (opts.owners || []).map(o => `<option value="${o}">${o}</option>`).join('');
+    const dayOpts = (opts.weekdays || []).map(d => `<option value="${d}">${d}</option>`).join('');
+
+    if (entity === 'source') {
+        const typeOpts = (opts.source_types || []).map(t => `<option value="${t}">${t}</option>`).join('');
+        const upOpts = (opts.upstream_systems || []).map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" placeholder="e.g. dbo.Customers or sales_data.csv" required></div>
+            <div class="create-field"><label>Type <span class="required">*</span></label>
+                <select id="cf-type"><option value="">Choose...</option>${typeOpts}</select></div>
+            <div class="create-field"><label>Connection Info</label>
+                <input type="text" id="cf-connection_info" placeholder="Server/path"></div>
+            <div class="create-field"><label>Source Query</label>
+                <input type="text" id="cf-source_query" placeholder="SQL query or file path"></div>
+            <div class="create-field"><label>Owner</label>
+                <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
+            <div class="create-field"><label>Refresh Schedule</label>
+                <select id="cf-refresh_schedule"><option value="">Choose...</option>${dayOpts}</select></div>
+            <div class="create-field"><label>Tags</label>
+                <input type="text" id="cf-tags" placeholder="comma-separated tags"></div>
+            <div class="create-field"><label>Upstream System</label>
+                <select id="cf-upstream_id"><option value="">None</option>${upOpts}</select></div>
+        `;
+    } else if (entity === 'report') {
+        const freqOpts = (opts.report_frequencies || []).map(f => `<option value="${f}">${f}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" placeholder="e.g. Weekly Sales Report" required></div>
+            <div class="create-field"><label>Report Owner</label>
+                <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
+            <div class="create-field"><label>Business Owner</label>
+                <select id="cf-business_owner"><option value="">Choose...</option>${ownerOpts}</select></div>
+            <div class="create-field"><label>Frequency</label>
+                <select id="cf-frequency"><option value="">Choose...</option>${freqOpts}</select></div>
+            <div class="create-field"><label>Power BI URL</label>
+                <input type="url" id="cf-powerbi_url" placeholder="https://app.powerbi.com/..."></div>
+        `;
+    } else if (entity === 'upstream') {
+        const codeOpts = (opts.upstream_codes || []).map(c => `<option value="${c}">${c}</option>`).join('');
+        fields = `
+            <div class="create-field"><label>Name <span class="required">*</span></label>
+                <input type="text" id="cf-name" placeholder="e.g. GSCM - Global Supply Chain Master" required></div>
+            <div class="create-field"><label>Code <span class="required">*</span></label>
+                <select id="cf-code"><option value="">Choose...</option>${codeOpts}</select></div>
+            <div class="create-field"><label>Refresh Day</label>
+                <select id="cf-refresh_day"><option value="">Choose...</option>${dayOpts}</select></div>
+        `;
+    }
+
+    const entityLabels = { source: 'Data Source', report: 'Report', upstream: 'Upstream Data Source' };
+    return `
+        <div class="create-form">
+            <h2>New ${entityLabels[entity]}</h2>
+            <div class="create-fields">${fields}</div>
+            <div class="create-form-actions">
+                <button id="btn-create-submit" data-entity="${entity}">Create ${entityLabels[entity]}</button>
+                <button class="btn-outline" id="btn-create-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+}
+
+async function _handleCreateSubmit(e) {
+    const entity = e.target.dataset.entity;
+    const name = (document.getElementById('cf-name')?.value || '').trim();
+    if (!name) { toast('Name is required'); return; }
+
+    let body = { name };
+    let url = `/api/create/${entity}`;
+
+    if (entity === 'source') {
+        const type = document.getElementById('cf-type')?.value;
+        if (!type) { toast('Type is required'); return; }
+        body.type = type;
+        body.connection_info = document.getElementById('cf-connection_info')?.value || null;
+        body.source_query = document.getElementById('cf-source_query')?.value || null;
+        body.owner = document.getElementById('cf-owner')?.value || null;
+        body.refresh_schedule = document.getElementById('cf-refresh_schedule')?.value || null;
+        body.tags = document.getElementById('cf-tags')?.value || null;
+        const upId = document.getElementById('cf-upstream_id')?.value;
+        body.upstream_id = upId ? parseInt(upId) : null;
+    } else if (entity === 'report') {
+        body.owner = document.getElementById('cf-owner')?.value || null;
+        body.business_owner = document.getElementById('cf-business_owner')?.value || null;
+        body.frequency = document.getElementById('cf-frequency')?.value || null;
+        body.powerbi_url = document.getElementById('cf-powerbi_url')?.value || null;
+    } else if (entity === 'upstream') {
+        const code = document.getElementById('cf-code')?.value;
+        if (!code) { toast('Code is required'); return; }
+        body.code = code;
+        body.refresh_day = document.getElementById('cf-refresh_day')?.value || null;
+    }
+
+    try {
+        await apiPostJson(url, body);
+        const label = entity === 'upstream' ? 'Upstream system' : entity.charAt(0).toUpperCase() + entity.slice(1);
+        toast(`${label} "${name}" created`);
+        navigate('create');
+    } catch (err) {
+        if (err.message.includes('409')) {
+            toast('An entry with that name already exists');
+        } else {
+            toast('Failed: ' + err.message);
+        }
+    }
+}
+
+async function renderCreate() {
+    const [options, customEntries] = await Promise.all([
+        api("/api/create/options"),
+        api("/api/create/custom-entries"),
+    ]);
+    window._createOptions = options;
+
+    const entryTable = customEntries.length > 0 ? dataTable("dt-custom-entries", [
+        { key: "entity_type", label: "Type", render: e => _entityTypeBadge(e.entity_type) },
+        { key: "name", label: "Name", render: e => '<strong>' + e.name + '</strong>' },
+        { key: "detail", label: "Detail", render: e => '<span style="color:var(--text-muted)">' + (e.detail || '-') + '</span>' },
+        { key: "created_at", label: "Created", render: e => '<span style="color:var(--text-muted)" title="' + formatDate(e.created_at) + '">' + timeAgo(e.created_at) + '</span>', sortVal: e => e.created_at || '' },
+    ], customEntries) : '<div class="empty-state">No custom entries yet</div>';
+
+    return `
+        <div class="page-header">
+            <h1>Create Entry</h1>
+            <span class="subtitle">Manually add reports, data sources, and upstream systems</span>
+        </div>
+
+        <div class="create-type-selector">
+            <button class="create-type-btn" data-entity="source">
+                <span class="create-type-icon">&#128451;</span>
+                Data Source
+            </button>
+            <button class="create-type-btn" data-entity="report">
+                <span class="create-type-icon">&#128202;</span>
+                Report
+            </button>
+            <button class="create-type-btn" data-entity="upstream">
+                <span class="create-type-icon">&#128259;</span>
+                Upstream System
+            </button>
+        </div>
+
+        <div id="create-form-container"></div>
+
+        <div class="section" style="margin-top:2rem">
+            <h2 class="create-history-toggle" style="cursor:pointer;user-select:none">
+                Custom Entries (${customEntries.length})
+                <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span>
+            </h2>
+            <div id="create-history-body" style="display:none">
+                ${entryTable}
+            </div>
+        </div>
+    `;
+}
+
+function bindCreatePage() {
+    document.querySelectorAll('.create-type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const container = document.getElementById('create-form-container');
+            container.innerHTML = _renderCreateForm(btn.dataset.entity);
+            document.getElementById('btn-create-submit').addEventListener('click', _handleCreateSubmit);
+            document.getElementById('btn-create-cancel').addEventListener('click', () => {
+                container.innerHTML = '';
+                document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
+            });
+        });
+    });
+
+    const toggle = document.querySelector('.create-history-toggle');
+    if (toggle) {
+        toggle.addEventListener('click', () => {
+            const body = document.getElementById('create-history-body');
+            if (body) {
+                const showing = body.style.display !== 'none';
+                body.style.display = showing ? 'none' : '';
+                if (!showing) bindDataTables();
+            }
+        });
+    }
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -1896,6 +2094,7 @@ const pages = {
     scanner: renderScanner,
     issues: renderIssues,
     changelog: renderChangelog,
+    create: renderCreate,
 };
 
 // Map old hash routes to new pages for backwards compat
@@ -2020,6 +2219,7 @@ async function navigate(page) {
         if (page === "issues") { bindIssuesPage(); }
         if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
+        if (page === "create") bindCreatePage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }

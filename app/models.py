@@ -145,6 +145,41 @@ class ActionUpdate(BaseModel):
     notes: str | None = None
 
 
+# --- Create (manual entry) ---
+
+class CreateSourceRequest(BaseModel):
+    name: str
+    type: str
+    connection_info: str | None = None
+    source_query: str | None = None
+    owner: str | None = None
+    refresh_schedule: str | None = None
+    tags: str | None = None
+    upstream_id: int | None = None
+
+
+class CreateReportRequest(BaseModel):
+    name: str
+    owner: str | None = None
+    business_owner: str | None = None
+    frequency: str | None = None
+    powerbi_url: str | None = None
+
+
+class CreateUpstreamRequest(BaseModel):
+    name: str
+    code: str
+    refresh_day: str | None = None
+
+
+class CustomEntryOut(BaseModel):
+    id: int
+    entity_type: str
+    name: str
+    detail: str | None = None
+    created_at: str | None = None
+
+
 # --- Dashboard ---
 
 class DashboardStats(BaseModel):

@@ -149,6 +149,9 @@ MIGRATIONS = [
     "ALTER TABLE sources ADD COLUMN upstream_id INTEGER REFERENCES upstream_systems(id)",
     # Alert owner assignment
     "ALTER TABLE alerts ADD COLUMN assigned_to TEXT",
+    # Manual entry tracking
+    "ALTER TABLE reports ADD COLUMN discovered_by TEXT DEFAULT 'scanned'",
+    "ALTER TABLE upstream_systems ADD COLUMN discovered_by TEXT DEFAULT 'scanned'",
 ]
 
 
