@@ -1904,54 +1904,87 @@ async function renderChangelog() {
     const howItWorks = `
         <div class="how-it-works">
             <h2>How This Works</h2>
-            <div class="how-overview">This Data Governance Panel monitors your Power BI ecosystem by scanning TMDL semantic model exports and tracking data source freshness.</div>
+            <div class="how-overview">A full-stack data governance platform built with <strong>Python</strong> and <strong>vanilla JavaScript</strong>. The backend runs on <strong>FastAPI</strong> served by <strong>Uvicorn</strong> (ASGI), with <strong>Pydantic</strong> for request/response validation. The frontend is a single-page application with no framework dependencies \u2014 just native DOM APIs, fetch, and CSS custom properties for theming.</div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-arch">
+                    <span class="how-chevron">&#9654;</span> Architecture
+                </div>
+                <div class="how-section-body" id="how-arch">
+                    <p>API-first design: FastAPI serves a RESTful JSON API under <code>/api/*</code> with modular routers (sources, reports, scanner, alerts, schedules, lineage, actions, changelog, create). The SPA frontend consumes these endpoints via async fetch wrappers. Static files are served by FastAPI's StaticFiles mount with cache-busting version strings.</p>
+                    <p>The data pipeline follows a clear flow: <strong>Scanner</strong> discovers reports \u2192 <strong>Parser</strong> extracts sources &amp; M expressions \u2192 <strong>Deduplicator</strong> consolidates \u2192 <strong>SQLite</strong> stores \u2192 <strong>Prober</strong> checks freshness \u2192 <strong>API</strong> serves to frontend.</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-db">
+                    <span class="how-chevron">&#9654;</span> Database
+                </div>
+                <div class="how-section-body" id="how-db">
+                    <p>All state is persisted in a single <strong>SQLite</strong> file (<code>governance.db</code>) using raw SQL with parameterized queries \u2014 no ORM layer. The connection uses Python's <code>sqlite3</code> module with <code>row_factory = sqlite3.Row</code> for dict-like row access, wrapped in a context manager that handles commits and rollbacks.</p>
+                    <p>Schema: 11 tables (<code>sources</code>, <code>source_probes</code>, <code>reports</code>, <code>report_tables</code>, <code>scan_runs</code>, <code>probe_runs</code>, <code>checks</code>, <code>check_results</code>, <code>alerts</code>, <code>actions</code>, <code>upstream_systems</code>) plus a <code>lineage</code> view for source\u2192report mappings. Foreign keys are enforced via <code>PRAGMA foreign_keys = ON</code>.</p>
+                    <p>Schema evolution is handled by a lightweight migrations array \u2014 each <code>ALTER TABLE</code> runs inside a try/except that silently skips if the column already exists, keeping deployments idempotent.</p>
+                </div>
+            </div>
+
+            <div class="how-section">
+                <div class="how-section-header" data-how-toggle="how-scanning">
+                    <span class="how-chevron">&#9654;</span> Scanner & Parser
+                </div>
+                <div class="how-section-body" id="how-scanning">
+                    <p>The scanner supports two modes: <strong>PBIX mode</strong> (primary) parses <code>.pbix</code> binary files using the <strong>PBIXRay</strong> library to extract table schemas and Power Query M expressions. <strong>TMDL mode</strong> (fallback) walks Tabular Model Definition Language text files and parses partition expressions with a custom Python parser.</p>
+                    <p>Extracted M expressions are analyzed to identify source types (PostgreSQL, SQL Server, MySQL, Oracle, CSV, Excel, SharePoint, and more), connection strings, file paths, and SQL queries. A deduplication engine consolidates matching sources across reports by connection key.</p>
+                    <p>The prober checks freshness via two strategies: <strong>file-based sources</strong> use OS-level modification timestamps; <strong>database sources</strong> read from <code>latest_upload_date.csv</code>. Thresholds are configurable per-source (default: healthy &lt; 31d, at risk 31\u201390d, degraded &gt; 90d).</p>
+                </div>
+            </div>
 
             <div class="how-section">
                 <div class="how-section-header" data-how-toggle="how-sources">
                     <span class="how-chevron">&#9654;</span> Data Sources
                 </div>
                 <div class="how-section-body" id="how-sources">
-                    <p>The system tracks 28 data sources including PostgreSQL tables (dbo.Orders, dbo.Contacts...), CSV files (sales data, employee rosters...), and Excel workbooks (budget forecasts, inventory levels...).</p>
-                    <p>Each source is probed for freshness and classified as healthy (&lt; 31 days), at risk (31\u201390 days), or degraded (&gt; 90 days).</p>
+                    <p>The system tracks 28 data sources across multiple types: PostgreSQL tables (<code>dbo.Orders</code>, <code>dbo.Contacts</code>...), CSV files (sales data, employee rosters...), and Excel workbooks (budget forecasts, inventory levels...). Each is linked to its parent reports via the <code>report_tables</code> junction table.</p>
+                    <p>Sources can be linked to upstream systems (GSCM, ASAP) to model the full refresh chain. The schedule discrepancy engine validates timing order: upstream \u2192 source \u2192 report, flagging violations as warnings or critical issues.</p>
                 </div>
             </div>
 
             <div class="how-section">
                 <div class="how-section-header" data-how-toggle="how-reports">
-                    <span class="how-chevron">&#9654;</span> TMDL Reports
+                    <span class="how-chevron">&#9654;</span> Reports
                 </div>
                 <div class="how-section-body" id="how-reports">
-                    <p>11 Power BI reports are scanned from TMDL (Tabular Model Definition Language) exports. Each report contains semantic model definitions with M expressions that reference data sources.</p>
-                    <p>Reports: Customer 360, Executive Summary, Finance Monthly, HR Dashboard, Inventory Analysis, Marketing ROI, Monthly KPI, Product Mix, Sales Pipeline, Supply Chain Tracker, Weekly Sales</p>
+                    <p>11 Power BI reports are managed, each with owner metadata, business owner assignments, refresh frequencies, and direct Power BI URLs. Report health status is derived from the worst-status source in its dependency tree.</p>
+                    <p>Reports: Customer 360, Executive Summary, Finance Monthly, HR Dashboard, Inventory Analysis, Marketing ROI, Monthly KPI, Product Mix, Sales Pipeline, Supply Chain Tracker, Weekly Sales.</p>
                 </div>
             </div>
 
             <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-upstream">
-                    <span class="how-chevron">&#9654;</span> Upstream Systems
+                <div class="how-section-header" data-how-toggle="how-ai">
+                    <span class="how-chevron">&#9654;</span> AI Features
                 </div>
-                <div class="how-section-body" id="how-upstream">
-                    <p>Sources are linked to upstream systems (GSCM and ASAP) that feed data into your pipeline. The schedule discrepancy engine checks that refresh timing follows the correct order: upstream \u2192 source \u2192 report.</p>
+                <div class="how-section-body" id="how-ai">
+                    <p>An optional AI layer provides conversational chat, dashboard briefings, per-report risk assessments, and action suggestions. It integrates with any <strong>OpenAI-compatible endpoint</strong> (including local models via LiteLLM/Ollama) using <strong>httpx</strong> for async HTTP. A context builder enriches prompts with live database metrics.</p>
+                    <p>A comprehensive mock provider generates context-aware responses from real data for demo and development, toggled via the <code>DG_AI_MOCK</code> environment variable.</p>
                 </div>
             </div>
 
             <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-scanning">
-                    <span class="how-chevron">&#9654;</span> Scanning & Probing
+                <div class="how-section-header" data-how-toggle="how-frontend">
+                    <span class="how-chevron">&#9654;</span> Frontend
                 </div>
-                <div class="how-section-body" id="how-scanning">
-                    <p>The scanner walks the reports directory, parses TMDL files for M expressions, extracts source references, and stores everything in SQLite. The prober then checks each source's freshness by reading file modification times or a latest_upload_date.csv for database sources.</p>
+                <div class="how-section-body" id="how-frontend">
+                    <p>The SPA is built without any JavaScript framework \u2014 pure vanilla JS (~3,500 lines). It features a custom data table component with sorting, column filtering, resizable columns, and row expansion. A custom markdown renderer converts AI responses to HTML. Routing is hash-based with alias support for backwards compatibility.</p>
+                    <p>Styling uses a custom CSS design system (~2,500 lines) with CSS custom properties for a dark theme palette, responsive grid layouts, and micro-animations (health bar sweep, pulse borders, slide-up toasts). Charts are rendered directly on <code>&lt;canvas&gt;</code> without any charting library.</p>
                 </div>
             </div>
 
             <div class="how-section">
                 <div class="how-section-header" data-how-toggle="how-files">
-                    <span class="how-chevron">&#9654;</span> Files Read
+                    <span class="how-chevron">&#9654;</span> Configuration Files
                 </div>
                 <div class="how-section-body" id="how-files">
-                    <p>Configuration: owners.csv (report/business owners), powerbi_links.csv (Power BI URLs), latest_upload_date.csv (database freshness timestamps)</p>
-                    <p>Sample data: 14 CSV files and 6 Excel workbooks in test_data/sample_files/</p>
-                    <p>TMDL models: 54 table definitions across 11 reports in test_data/reports/</p>
+                    <p><code>owners.csv</code> \u2014 report/business owner assignments. <code>powerbi_links.csv</code> \u2014 report-to-URL mappings. <code>latest_upload_date.csv</code> \u2014 database source freshness timestamps.</p>
+                    <p>Environment variables control database path, reports directory, scan intervals, AI model/endpoint, and simulation mode. All settings have sensible defaults for zero-config local development.</p>
                 </div>
             </div>
         </div>
