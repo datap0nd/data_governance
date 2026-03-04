@@ -4,7 +4,7 @@
 
 Our Data Governance Panel automatically scans every report's semantic model to track ownership. Right now, some reports are missing owner metadata, which means the panel can't attribute issues, send the right alerts to the right people, or show accurate lineage.
 
-By adding two small tables to your report — **Report Owner** and **Business Owner** — the scanner picks up your name directly from the `.pbix` file. No manual spreadsheet updates, no chasing people for info. It just works every time you publish.
+By adding two small tables to your report, **Report Owner** and **Business Owner**, the scanner picks up your name directly from the `.pbix` file. No manual spreadsheet updates, no chasing people for info. It just works every time you publish.
 
 **Report Owner** = the person who builds and maintains the report (you, the developer).
 **Business Owner** = the stakeholder who owns the data and signs off on accuracy.
@@ -13,7 +13,7 @@ By adding two small tables to your report — **Report Owner** and **Business Ow
 
 ## What to do
 
-You need to create two Power Query tables in each report you own. These are tiny, hidden metadata tables — they won't appear in your report visuals or affect performance.
+You need to create two Power Query tables in each report you own. These are tiny, hidden metadata tables. They won't appear in your report visuals or affect performance.
 
 ### Step 1: Open Power Query Editor
 
@@ -27,7 +27,7 @@ In Power BI Desktop, go to **Home > Transform data** to open Power Query Editor.
 
 ```m
 let
-    Source = #table({"Business Owner"}, {{"Your Stakeholder's Name"}})
+    Source = #table({"Business Owner"}, {{"Rafael Cunha"}})
 in
     Source
 ```
@@ -43,7 +43,7 @@ in
 
 ```m
 let
-    Source = #table({"Report Owner"}, {{"Your Full Name"}})
+    Source = #table({"Report Owner"}, {{"Rafael Cunha"}})
 in
     Source
 ```
@@ -53,7 +53,7 @@ in
 
 ### Step 4: Hide the tables (optional but recommended)
 
-Back in the model view, right-click each of the two new tables and select **Hide in report view**. They're metadata only — no need to clutter the field list.
+Back in the model view, right-click each of the two new tables and select **Hide in report view**. They're metadata only, no need to clutter the field list.
 
 ### Step 5: Close & Apply, then publish
 
@@ -63,10 +63,10 @@ Click **Close & Apply**, save your `.pbix`, and publish as usual. The governance
 
 ## Important details
 
-- **Names must be exact**: The table names must be `Business Owner` and `Report Owner` — case-sensitive, with a space, no quotes in the name itself.
+- **Names must be exact**: The table names must be `Business Owner` and `Report Owner`. Case-sensitive, with a space, no quotes in the name itself.
 - **Column name must match the table name**: The column inside `Business Owner` must also be called `Business Owner`. Same for `Report Owner`.
 - **One value per table**: Each table should have exactly one row with your name as a quoted string.
-- **Use real names**: Use the same name you use across the business (e.g., "Maria Silva", not "msilva" or an alias). This is what shows up in dashboards and alert assignments.
+- **Use real names**: Use the same name you use across the business (e.g., "Rafael Cunha", not "rcunha" or an alias). This is what shows up in dashboards and alert assignments.
 
 ---
 
@@ -91,7 +91,7 @@ table 'Business Owner'
 		mode: import
 		source =
 				let
-				    Source = #table({"Business Owner"}, {{"Maria Silva"}})
+				    Source = #table({"Business Owner"}, {{"Rafael Cunha"}})
 				in
 				    Source
 
@@ -122,17 +122,17 @@ table 'Report Owner'
 	annotation PBI_ResultType = Table
 ```
 
-You don't need to edit TMDL files manually — just create the two queries in Power Query and the export handles the rest.
+You don't need to edit TMDL files manually. Just create the two queries in Power Query and the export handles the rest.
 
 ---
 
 ## Checklist
 
 - [ ] Opened Power Query Editor in my report
-- [ ] Created **Business Owner** blank query with `#table({"Business Owner"}, {{"Stakeholder Name"}})`
-- [ ] Created **Report Owner** blank query with `#table({"Report Owner"}, {{"My Name"}})`
+- [ ] Created **Business Owner** blank query with `#table({"Business Owner"}, {{"Rafael Cunha"}})`
+- [ ] Created **Report Owner** blank query with `#table({"Report Owner"}, {{"Rafael Cunha"}})`
 - [ ] Query names are exactly `Business Owner` and `Report Owner`
 - [ ] Column names match the table names
 - [ ] Close & Apply, saved, and published
 
-If you have questions, reach out. This is a one-time setup per report — once it's in, it stays through all future publishes.
+If you have questions, reach out. This is a one-time setup per report. Once it's in, it stays through all future publishes.
