@@ -2381,6 +2381,12 @@ function _showEditForm(type, id, entity) {
 
 // ── Best Practices page ──
 
+function _bpSevBadge(sev) {
+    if (sev === "high") return '<span class="badge badge-red">high</span>';
+    if (sev === "medium") return '<span class="badge badge-yellow">medium</span>';
+    return '<span class="badge badge-muted">low</span>';
+}
+
 async function renderBestPractices() {
     const data = await api("/api/best-practices");
     const findings = data.findings || [];
@@ -2389,23 +2395,14 @@ async function renderBestPractices() {
     const counts = { high: 0, medium: 0, low: 0 };
     findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
 
-    // Severity badge helper
-    function sevBadge(sev) {
-        if (sev === "high") return '<span class="badge badge-red">high</span>';
-        if (sev === "medium") return '<span class="badge badge-yellow">medium</span>';
-        return '<span class="badge badge-muted">low</span>';
-    }
-
-    // Build rows
-    const rows = findings.map(f => `
-        <tr>
-            <td>${f.report}</td>
-            <td>${f.table}</td>
-            <td>${f.rule}</td>
-            <td class="bp-issue-cell">${f.issue}</td>
-            <td>${sevBadge(f.severity)}</td>
-        </tr>
-    `).join("");
+    // Column definitions — severity first
+    const cols = [
+        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0", medium: "1", low: "2" })[f.severity] || "3" },
+        { key: "report", label: "Report" },
+        { key: "table", label: "Table" },
+        { key: "rule", label: "Rule" },
+        { key: "issue", label: "Issue", render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
+    ];
 
     const noIssues = findings.length === 0
         ? '<p style="color:var(--green);margin:1rem 0">All reports pass best-practice checks.</p>'
@@ -2414,18 +2411,19 @@ async function renderBestPractices() {
     return `
     <div class="page-header">
         <h1>Best Practices</h1>
-        <p class="subtitle">Automated checks against Power BI TMDL files</p>
+        <span class="subtitle">Automated checks against Power BI reports</span>
+        <button class="btn-export" onclick="exportTableCSV('dt-bp','best_practices.csv')">Export CSV</button>
     </div>
     <div class="stat-row" style="margin-bottom:1.25rem">
-        <div class="stat-card" style="border-left:3px solid var(--red)">
+        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
             <div class="stat-value">${counts.high}</div>
             <div class="stat-label">High</div>
         </div>
-        <div class="stat-card" style="border-left:3px solid var(--yellow)">
+        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
             <div class="stat-value">${counts.medium}</div>
             <div class="stat-label">Medium</div>
         </div>
-        <div class="stat-card" style="border-left:3px solid var(--text-dim)">
+        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
             <div class="stat-value">${counts.low}</div>
             <div class="stat-label">Low</div>
         </div>
@@ -2435,46 +2433,35 @@ async function renderBestPractices() {
         </div>
     </div>
     ${noIssues}
-    ${findings.length > 0 ? `
-    <div class="section-card">
-        <h2 style="margin-bottom:0.75rem">Findings</h2>
-        <div class="table-wrap">
-            <table class="data-table" data-dt="dt-bp">
-                <thead>
-                    <tr>
-                        <th data-sort>Report</th>
-                        <th data-sort>Table</th>
-                        <th data-sort>Rule</th>
-                        <th>Issue</th>
-                        <th data-sort>Severity</th>
-                    </tr>
-                    <tr class="filter-row">
-                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="report"></td>
-                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="table"></td>
-                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="rule"></td>
-                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="issue"></td>
-                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="severity"></td>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rows}
-                </tbody>
-            </table>
-        </div>
-    </div>` : ''}
+    ${findings.length > 0 ? dataTable("dt-bp", cols, findings) : ''}
     <div class="section-card" style="margin-top:1rem">
         <h2 style="margin-bottom:0.5rem">Rules checked</h2>
         <table class="mini-table">
-            <thead><tr><th>Rule</th><th>Severity</th><th>Description</th></tr></thead>
+            <thead><tr><th>Severity</th><th>Rule</th><th>Description</th></tr></thead>
             <tbody>
-                <tr><td>No local file sources</td><td>${sevBadge("high")}</td><td>Data sources must not point to local drives (C:\\, D:\\). Use shared network paths or database connections.</td></tr>
-                <tr><td>Report Owner required</td><td>${sevBadge("medium")}</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
-                <tr><td>Business Owner required</td><td>${sevBadge("medium")}</td><td>Every report should include a Business Owner metadata table.</td></tr>
-                <tr><td>Date columns should use dateTime</td><td>${sevBadge("medium")}</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
-                <tr><td>Use parameters for connections</td><td>${sevBadge("low")}</td><td>Database server addresses should be defined as parameters in expressions.tmdl for easier environment changes.</td></tr>
+                <tr><td>${_bpSevBadge("high")}</td><td>No local file sources</td><td>Data sources must not point to local drives (C:\\, D:\\). Use shared network paths or database connections.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Report Owner required</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Business Owner required</td><td>Every report should include a Business Owner metadata table.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Date columns should use dateTime</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
+                <tr><td>${_bpSevBadge("low")}</td><td>Use parameters for connections</td><td>Database server addresses should be defined as parameters in expressions.tmdl for easier environment changes.</td></tr>
             </tbody>
         </table>
     </div>`;
+}
+
+function bindBestPracticesPage() {
+    document.querySelectorAll(".bp-filter-card[data-bp-filter]").forEach(card => {
+        card.addEventListener("click", () => {
+            const sev = card.dataset.bpFilter;
+            const dt = window._dt && window._dt["dt-bp"];
+            if (dt) {
+                dt.filters["severity"] = sev;
+                const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-bp"][data-fcol="severity"]');
+                if (filterInput) filterInput.value = sev;
+                _refreshDT("dt-bp");
+            }
+        });
+    });
 }
 
 
@@ -2615,6 +2602,7 @@ async function navigate(page) {
         if (page === "reports") bindReportsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
+        if (page === "bestpractices") bindBestPracticesPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }

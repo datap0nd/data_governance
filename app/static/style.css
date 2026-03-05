@@ -2606,8 +2606,6 @@ button.btn-danger-outline:hover {
     font-size: 0.7rem;
     letter-spacing: 0.04em;
 }
-.bp-issue-cell {
-    max-width: 420px;
-    font-size: 0.82rem;
-    color: var(--text-secondary);
+.mini-table td:last-child {
+    white-space: normal;
 }
