@@ -2379,6 +2379,105 @@ function _showEditForm(type, id, entity) {
 }
 
 
+// ── Best Practices page ──
+
+async function renderBestPractices() {
+    const data = await api("/api/best-practices");
+    const findings = data.findings || [];
+
+    // Severity counts
+    const counts = { high: 0, medium: 0, low: 0 };
+    findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
+
+    // Severity badge helper
+    function sevBadge(sev) {
+        if (sev === "high") return '<span class="badge badge-red">high</span>';
+        if (sev === "medium") return '<span class="badge badge-yellow">medium</span>';
+        return '<span class="badge badge-muted">low</span>';
+    }
+
+    // Build rows
+    const rows = findings.map(f => `
+        <tr>
+            <td>${f.report}</td>
+            <td>${f.table}</td>
+            <td>${f.rule}</td>
+            <td class="bp-issue-cell">${f.issue}</td>
+            <td>${sevBadge(f.severity)}</td>
+        </tr>
+    `).join("");
+
+    const noIssues = findings.length === 0
+        ? '<p style="color:var(--green);margin:1rem 0">All reports pass best-practice checks.</p>'
+        : '';
+
+    return `
+    <div class="page-header">
+        <h1>Best Practices</h1>
+        <p class="subtitle">Automated checks against Power BI TMDL files</p>
+    </div>
+    <div class="stat-row" style="margin-bottom:1.25rem">
+        <div class="stat-card" style="border-left:3px solid var(--red)">
+            <div class="stat-value">${counts.high}</div>
+            <div class="stat-label">High</div>
+        </div>
+        <div class="stat-card" style="border-left:3px solid var(--yellow)">
+            <div class="stat-value">${counts.medium}</div>
+            <div class="stat-label">Medium</div>
+        </div>
+        <div class="stat-card" style="border-left:3px solid var(--text-dim)">
+            <div class="stat-value">${counts.low}</div>
+            <div class="stat-label">Low</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">${findings.length}</div>
+            <div class="stat-label">Total Issues</div>
+        </div>
+    </div>
+    ${noIssues}
+    ${findings.length > 0 ? `
+    <div class="section-card">
+        <h2 style="margin-bottom:0.75rem">Findings</h2>
+        <div class="table-wrap">
+            <table class="data-table" data-dt="dt-bp">
+                <thead>
+                    <tr>
+                        <th data-sort>Report</th>
+                        <th data-sort>Table</th>
+                        <th data-sort>Rule</th>
+                        <th>Issue</th>
+                        <th data-sort>Severity</th>
+                    </tr>
+                    <tr class="filter-row">
+                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="report"></td>
+                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="table"></td>
+                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="rule"></td>
+                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="issue"></td>
+                        <td><input type="text" placeholder="Filter..." data-dt="dt-bp" data-fcol="severity"></td>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        </div>
+    </div>` : ''}
+    <div class="section-card" style="margin-top:1rem">
+        <h2 style="margin-bottom:0.5rem">Rules checked</h2>
+        <table class="mini-table">
+            <thead><tr><th>Rule</th><th>Severity</th><th>Description</th></tr></thead>
+            <tbody>
+                <tr><td>No local file sources</td><td>${sevBadge("high")}</td><td>Data sources must not point to local drives (C:\\, D:\\). Use shared network paths or database connections.</td></tr>
+                <tr><td>Report Owner required</td><td>${sevBadge("medium")}</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
+                <tr><td>Business Owner required</td><td>${sevBadge("medium")}</td><td>Every report should include a Business Owner metadata table.</td></tr>
+                <tr><td>Date columns should use dateTime</td><td>${sevBadge("medium")}</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
+                <tr><td>Use parameters for connections</td><td>${sevBadge("low")}</td><td>Database server addresses should be defined as parameters in expressions.tmdl for easier environment changes.</td></tr>
+            </tbody>
+        </table>
+    </div>`;
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -2389,6 +2488,7 @@ const pages = {
     issues: renderIssues,
     changelog: renderChangelog,
     create: renderCreate,
+    bestpractices: renderBestPractices,
 };
 
 // Map old hash routes to new pages for backwards compat
