@@ -661,29 +661,7 @@ async function showReportDetail(report) {
         }).join("")
         : '<div class="empty-state" style="padding:0.5rem">No tables found</div>';
 
-    // Visual lineage section
     const totalVisuals = visuals.reduce((a, p) => a + p.visuals.length, 0);
-    const visualSection = visuals.length > 0 ? `
-        <div class="report-expand-label" style="margin-top:0.75rem;cursor:pointer" id="visual-lineage-toggle">
-            Visual Lineage (${totalVisuals} visuals across ${visuals.length} page${visuals.length !== 1 ? 's' : ''})
-            <span style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
-        </div>
-        <div class="report-visual-list" id="visual-lineage-content" style="display:none">
-            ${visuals.map(page => `
-                <div class="visual-page-group">
-                    <div class="visual-page-label">${page.page_name}</div>
-                    ${page.visuals.map(v => `
-                        <div class="visual-item">
-                            <span class="visual-type-badge">${_visualTypeLabel(v.visual_type)}</span>
-                            <span class="visual-title">${v.title || _autoVisualTitle(v)}</span>
-                            <span class="visual-field-count">${v.fields.length} field${v.fields.length !== 1 ? 's' : ''}</span>
-                            <span class="visual-fields-detail" style="display:none;font-size:0.72rem;color:var(--text-dim);margin-left:0.5rem">${v.fields.map(f => `${f.table}.${f.field}`).join(', ')}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            `).join('')}
-        </div>
-    ` : '';
 
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
@@ -693,14 +671,10 @@ async function showReportDetail(report) {
                     <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${report.owner || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${report.frequency || "-"}</span></div>
-                    <div class="detail-item">${report.powerbi_url
-                        ? `<a href="${report.powerbi_url}" target="_blank" rel="noopener" class="powerbi-link">Open in Power BI &rarr;</a>`
-                        : `<span class="powerbi-link powerbi-link-disabled">Open in Power BI</span>`}</div>
                 </div>
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>
             <div class="report-source-list">${sourceRows}</div>
-            ${visualSection}
         </div>
     </td>`;
 
@@ -721,25 +695,15 @@ async function showReportDetail(report) {
         });
     });
 
-    // Bind visual lineage toggle
-    const vlToggle = document.getElementById("visual-lineage-toggle");
-    const vlContent = document.getElementById("visual-lineage-content");
-    if (vlToggle && vlContent) {
-        vlToggle.addEventListener("click", () => {
-            const showing = vlContent.style.display !== "none";
-            vlContent.style.display = showing ? "none" : "";
-            vlToggle.querySelector("span").textContent = showing ? " — click to expand" : " — click to collapse";
+    // Bind lineage button in detail panel
+    const lineageBtn = expandRow.querySelector(".btn-lineage-detail");
+    if (lineageBtn) {
+        lineageBtn.addEventListener("click", async () => {
+            await navigate("lineage");
+            const sel = document.getElementById("lineage-report-select");
+            if (sel) { sel.value = report.id; sel.dispatchEvent(new Event("change")); }
         });
     }
-
-    // Bind visual items — click to show/hide field details
-    expandRow.querySelectorAll(".visual-item").forEach(el => {
-        el.style.cursor = "pointer";
-        el.addEventListener("click", () => {
-            const detail = el.querySelector(".visual-fields-detail");
-            if (detail) detail.style.display = detail.style.display === "none" ? "inline" : "none";
-        });
-    });
 }
 
 function _visualTypeLabel(type) {
@@ -1284,6 +1248,11 @@ async function renderReports() {
                 ${r.frequency ? '' : '<option value="">Choose...</option>'}${opts}
             </select>`;
         }},
+        { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
+            ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
+            : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
+        { key: "_lineage", label: "Lineage", filterable: false, sortable: false, render: r =>
+            `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
     ];
 
     const healthy = reports.filter(r => r.status === "healthy").length;
@@ -1319,6 +1288,19 @@ function bindReportsPage() {
             }
         });
         sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+
+    // Lineage button — navigate to Lineage tab with report pre-selected
+    document.querySelectorAll(".btn-lineage[data-lineage-report]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const reportId = btn.dataset.lineageReport;
+            await navigate("lineage");
+            const sel = document.getElementById("lineage-report-select");
+            if (sel) {
+                sel.value = reportId;
+                sel.dispatchEvent(new Event("change"));
+            }
+        });
     });
 }
 

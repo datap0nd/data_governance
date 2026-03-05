@@ -2656,6 +2656,29 @@ button.btn-danger-outline:hover {
     font-size: 0.72rem;
 }
 
+/* ── Table action buttons (Power BI, Lineage) ── */
+.btn-table-link {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.72rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    text-decoration: none;
+    text-align: center;
+    white-space: nowrap;
+    transition: border-color 0.15s, background 0.15s;
+}
+.btn-table-link:hover { border-color: var(--accent); background: var(--surface-hover); }
+.btn-table-link-disabled { color: var(--text-dim); cursor: default; border-color: transparent; background: none; }
+.btn-table-link-disabled:hover { border-color: transparent; background: none; }
+.btn-pbi { color: var(--yellow); border-color: rgba(255,214,10,0.3); }
+.btn-pbi:hover { border-color: var(--yellow); }
+.btn-lineage { color: var(--accent); border-color: rgba(100,160,255,0.3); }
+.btn-lineage:hover { border-color: var(--accent); }
+
 /* ── Lineage Diagram ── */
 .lineage-controls { margin-bottom: 1rem; }
 .lineage-dropdown {
