@@ -249,6 +249,52 @@ def run_scan(reports_path: str | None = None) -> dict:
                             ),
                         )
 
+                # Store visual layout (PBIX mode only)
+                layout = getattr(report, "layout", None)
+                if layout and hasattr(layout, "pages"):
+                    # Clean stale layout data for this report
+                    db.execute("""
+                        DELETE FROM visual_fields WHERE visual_id IN (
+                            SELECT rv.id FROM report_visuals rv
+                            JOIN report_pages rp ON rp.id = rv.page_id
+                            WHERE rp.report_id = ?)""", (report_id,))
+                    db.execute("""
+                        DELETE FROM report_visuals WHERE page_id IN (
+                            SELECT id FROM report_pages WHERE report_id = ?)""", (report_id,))
+                    db.execute("DELETE FROM report_pages WHERE report_id = ?", (report_id,))
+
+                    for page in layout.pages:
+                        db.execute(
+                            """INSERT INTO report_pages (report_id, page_name, page_ordinal, last_scanned)
+                               VALUES (?, ?, ?, ?)""",
+                            (report_id, page.page_name, page.page_ordinal, now),
+                        )
+                        page_row = db.execute(
+                            "SELECT id FROM report_pages WHERE report_id = ? AND page_name = ?",
+                            (report_id, page.page_name),
+                        ).fetchone()
+                        page_id = page_row["id"]
+
+                        for visual in page.visuals:
+                            db.execute(
+                                """INSERT INTO report_visuals (page_id, visual_id, visual_type, title, last_scanned)
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                (page_id, visual.visual_id, visual.visual_type, visual.title, now),
+                            )
+                            vis_row = db.execute(
+                                "SELECT id FROM report_visuals WHERE page_id = ? AND visual_id = ?",
+                                (page_id, visual.visual_id),
+                            ).fetchone()
+                            vis_id = vis_row["id"]
+
+                            for ref in visual.field_refs:
+                                db.execute(
+                                    """INSERT INTO visual_fields (visual_id, table_name, field_name)
+                                       VALUES (?, ?, ?)
+                                       ON CONFLICT(visual_id, table_name, field_name) DO NOTHING""",
+                                    (vis_id, ref.table_name, ref.field_name),
+                                )
+
             # Set initial "unknown" status for any source without a probe
             sourceless = db.execute("""
                 SELECT s.id FROM sources s

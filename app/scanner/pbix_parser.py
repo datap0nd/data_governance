@@ -39,6 +39,7 @@ class PbixReport:
     tables: list[PbixTable] = field(default_factory=list)
     business_owner: str | None = None
     report_owner: str | None = None
+    layout: object = None  # ReportLayout from layout_parser, if available
 
 
 def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
@@ -136,10 +137,19 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
             elif tname == "Report Owner":
                 report_owner = metadata_value
 
+    # Extract visual layout (pages, visuals, field references)
+    layout = None
+    try:
+        from app.scanner.layout_parser import parse_pbix_layout
+        layout = parse_pbix_layout(file_path)
+    except Exception as e:
+        logger.warning("Could not parse layout from %s: %s", file_path.name, e)
+
     return PbixReport(
         name=report_name,
         file_path=str(file_path),
         tables=tables,
         business_owner=business_owner,
         report_owner=report_owner,
+        layout=layout,
     )

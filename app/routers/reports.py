@@ -121,6 +121,56 @@ def get_report_tables(report_id: int):
     ]
 
 
+@router.get("/{report_id}/visuals")
+def get_report_visuals(report_id: int):
+    """Get all visuals grouped by page for a report."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT rp.page_name, rp.page_ordinal,
+                   rv.visual_id, rv.visual_type, rv.title,
+                   vf.table_name, vf.field_name
+            FROM report_pages rp
+            JOIN report_visuals rv ON rv.page_id = rp.id
+            LEFT JOIN visual_fields vf ON vf.visual_id = rv.id
+            WHERE rp.report_id = ?
+            ORDER BY rp.page_ordinal, rv.visual_type, vf.table_name, vf.field_name
+        """, (report_id,)).fetchall()
+
+    # Group into nested structure: pages -> visuals -> fields
+    pages = {}
+    for r in rows:
+        page_key = r["page_name"]
+        if page_key not in pages:
+            pages[page_key] = {
+                "page_name": r["page_name"],
+                "page_ordinal": r["page_ordinal"],
+                "visuals": {},
+            }
+        vis_key = r["visual_id"]
+        if vis_key not in pages[page_key]["visuals"]:
+            pages[page_key]["visuals"][vis_key] = {
+                "visual_id": r["visual_id"],
+                "visual_type": r["visual_type"],
+                "title": r["title"],
+                "fields": [],
+            }
+        if r["table_name"]:
+            pages[page_key]["visuals"][vis_key]["fields"].append({
+                "table": r["table_name"],
+                "field": r["field_name"],
+            })
+
+    # Convert to sorted list
+    result = []
+    for p in sorted(pages.values(), key=lambda x: x["page_ordinal"]):
+        result.append({
+            "page_name": p["page_name"],
+            "page_ordinal": p["page_ordinal"],
+            "visuals": list(p["visuals"].values()),
+        })
+    return result
+
+
 def _derive_report_status(report_id: int) -> tuple[str, str | None]:
     """Derive report status and worst source date from its sources' latest probe statuses.
 

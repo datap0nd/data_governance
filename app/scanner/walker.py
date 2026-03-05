@@ -32,6 +32,7 @@ class DiscoveredReport:
     expressions: dict[str, str] = field(default_factory=dict)
     business_owner: str | None = None
     report_owner: str | None = None
+    layout: object = None  # ReportLayout from layout_parser (PBIX mode only)
 
 
 def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
@@ -75,6 +76,7 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
                 tables=report.tables,
                 business_owner=report.business_owner,
                 report_owner=report.report_owner,
+                layout=report.layout,
             ))
         else:
             logger.warning("Could not parse: %s", pbix_path.name)

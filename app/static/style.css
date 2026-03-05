@@ -2609,3 +2609,49 @@ button.btn-danger-outline:hover {
 .mini-table td:last-child {
     white-space: normal;
 }
+
+/* ── Visual Lineage ── */
+.report-visual-list {
+    padding: 0.25rem 0;
+}
+.visual-page-group {
+    margin-bottom: 0.5rem;
+}
+.visual-page-label {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+    padding-left: 0.25rem;
+}
+.visual-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    border-radius: 4px;
+}
+.visual-item:hover {
+    background: var(--surface-hover);
+}
+.visual-type-badge {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    min-width: 3.5rem;
+    text-align: center;
+}
+.visual-title {
+    flex: 1;
+}
+.visual-field-count {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+}

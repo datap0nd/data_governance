@@ -128,6 +128,33 @@ CREATE TABLE IF NOT EXISTS upstream_systems (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS report_pages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER REFERENCES reports(id),
+    page_name       TEXT NOT NULL,
+    page_ordinal    INTEGER DEFAULT 0,
+    last_scanned    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(report_id, page_name)
+);
+
+CREATE TABLE IF NOT EXISTS report_visuals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id         INTEGER REFERENCES report_pages(id),
+    visual_id       TEXT NOT NULL,
+    visual_type     TEXT,
+    title           TEXT,
+    last_scanned    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(page_id, visual_id)
+);
+
+CREATE TABLE IF NOT EXISTS visual_fields (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    visual_id       INTEGER REFERENCES report_visuals(id),
+    table_name      TEXT NOT NULL,
+    field_name      TEXT NOT NULL,
+    UNIQUE(visual_id, table_name, field_name)
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables

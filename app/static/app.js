@@ -618,12 +618,25 @@ async function showReportDetail(report) {
         }
     });
 
-    const tables = await api(`/api/reports/${report.id}/tables`);
+    const [tables, visuals] = await Promise.all([
+        api(`/api/reports/${report.id}/tables`),
+        api(`/api/reports/${report.id}/visuals`).catch(() => []),
+    ]);
 
     // Look up full source objects from the sources we fetched
     const allSources = window._reportPageSources || [];
     const sourceMap = new Map();
     allSources.forEach(s => sourceMap.set(s.id, s));
+
+    // Count how many visuals reference each table
+    const tableVisualCount = new Map();
+    visuals.forEach(page => {
+        page.visuals.forEach(v => {
+            v.fields.forEach(f => {
+                tableVisualCount.set(f.table, (tableVisualCount.get(f.table) || 0) + 1);
+            });
+        });
+    });
 
     const colCount = targetRow ? targetRow.children.length : 6;
     const expandRow = document.createElement("tr");
@@ -635,9 +648,11 @@ async function showReportDetail(report) {
             const src = t.source_id ? sourceMap.get(t.source_id) : null;
             const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
             const srcStatus = src ? src.status : "unknown";
+            const vCount = tableVisualCount.get(t.table_name) || 0;
             return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
                 <span class="dot dot-${srcStatus === 'fresh' || srcStatus === 'healthy' ? 'green' : srcStatus === 'stale' || srcStatus === 'at risk' ? 'yellow' : srcStatus === 'outdated' || srcStatus === 'degraded' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
                 <span class="report-source-table">${t.table_name}</span>
+                ${vCount > 0 ? `<span class="badge badge-muted" style="margin-left:0.25rem;font-size:0.65rem">${vCount} visual${vCount !== 1 ? 's' : ''}</span>` : ''}
                 <span class="report-source-arrow">&rarr;</span>
                 <span class="report-source-name">${srcName}</span>
                 ${src ? statusBadge(src.status) : ''}
@@ -645,6 +660,30 @@ async function showReportDetail(report) {
             </div>`;
         }).join("")
         : '<div class="empty-state" style="padding:0.5rem">No tables found</div>';
+
+    // Visual lineage section
+    const totalVisuals = visuals.reduce((a, p) => a + p.visuals.length, 0);
+    const visualSection = visuals.length > 0 ? `
+        <div class="report-expand-label" style="margin-top:0.75rem;cursor:pointer" id="visual-lineage-toggle">
+            Visual Lineage (${totalVisuals} visuals across ${visuals.length} page${visuals.length !== 1 ? 's' : ''})
+            <span style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
+        </div>
+        <div class="report-visual-list" id="visual-lineage-content" style="display:none">
+            ${visuals.map(page => `
+                <div class="visual-page-group">
+                    <div class="visual-page-label">${page.page_name}</div>
+                    ${page.visuals.map(v => `
+                        <div class="visual-item">
+                            <span class="visual-type-badge">${_visualTypeLabel(v.visual_type)}</span>
+                            <span class="visual-title">${v.title || '(untitled)'}</span>
+                            <span class="visual-field-count">${v.fields.length} field${v.fields.length !== 1 ? 's' : ''}</span>
+                            <span class="visual-fields-detail" style="display:none;font-size:0.72rem;color:var(--text-dim);margin-left:0.5rem">${v.fields.map(f => `${f.table}.${f.field}`).join(', ')}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('')}
+        </div>
+    ` : '';
 
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
@@ -661,6 +700,7 @@ async function showReportDetail(report) {
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>
             <div class="report-source-list">${sourceRows}</div>
+            ${visualSection}
         </div>
     </td>`;
 
@@ -680,6 +720,45 @@ async function showReportDetail(report) {
             if (src) { await navigate("sources"); showSourceDetail(src); }
         });
     });
+
+    // Bind visual lineage toggle
+    const vlToggle = document.getElementById("visual-lineage-toggle");
+    const vlContent = document.getElementById("visual-lineage-content");
+    if (vlToggle && vlContent) {
+        vlToggle.addEventListener("click", () => {
+            const showing = vlContent.style.display !== "none";
+            vlContent.style.display = showing ? "none" : "";
+            vlToggle.querySelector("span").textContent = showing ? " — click to expand" : " — click to collapse";
+        });
+    }
+
+    // Bind visual items — click to show/hide field details
+    expandRow.querySelectorAll(".visual-item").forEach(el => {
+        el.style.cursor = "pointer";
+        el.addEventListener("click", () => {
+            const detail = el.querySelector(".visual-fields-detail");
+            if (detail) detail.style.display = detail.style.display === "none" ? "inline" : "none";
+        });
+    });
+}
+
+function _visualTypeLabel(type) {
+    const labels = {
+        barChart: "Bar", clusteredBarChart: "Bar", stackedBarChart: "Bar",
+        columnChart: "Column", clusteredColumnChart: "Column", stackedColumnChart: "Column",
+        lineChart: "Line", areaChart: "Area", lineClusteredColumnComboChart: "Combo",
+        lineStackedColumnComboChart: "Combo",
+        pieChart: "Pie", donutChart: "Donut", treemap: "Treemap",
+        card: "Card", multiRowCard: "Multi Card", kpi: "KPI",
+        tableEx: "Table", pivotTable: "Matrix", table: "Table",
+        slicer: "Slicer", advancedSlicerVisual: "Slicer",
+        map: "Map", filledMap: "Filled Map", shape: "Shape",
+        gauge: "Gauge", waterfallChart: "Waterfall", funnel: "Funnel",
+        ribbonChart: "Ribbon", scatterChart: "Scatter",
+        decompositionTreeVisual: "Decomp Tree", cardVisual: "Card",
+        textbox: "Text", image: "Image", actionButton: "Button",
+    };
+    return labels[type] || type || "Visual";
 }
 
 
