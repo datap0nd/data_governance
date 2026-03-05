@@ -2656,6 +2656,33 @@ button.btn-danger-outline:hover {
     font-size: 0.72rem;
 }
 
+/* ── Unused Measures ── */
+.unused-measures-list {
+    display: flex; flex-direction: column; gap: 0.2rem;
+    margin-top: 0.25rem;
+    max-height: 300px; overflow-y: auto;
+}
+.unused-measure-item {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.unused-measure-item:hover { border-color: var(--accent); }
+.unused-measure-name { font-weight: 500; }
+.unused-measure-table { color: var(--text-dim); font-size: 0.68rem; margin-left: auto; }
+.unused-measure-dax {
+    width: 100%; margin-top: 0.3rem;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.7rem; font-family: monospace;
+    color: var(--text-dim); background: var(--bg);
+    border-radius: 4px; white-space: pre-wrap; word-break: break-all;
+}
+
 /* ── Table action buttons (Power BI, Lineage) ── */
 .btn-table-link {
     display: inline-block;

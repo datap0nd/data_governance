@@ -85,6 +85,7 @@ class ParsedTable:
     """A parsed table from a TMDL file."""
     table_name: str
     columns: list[str] = field(default_factory=list)
+    measures: list[tuple[str, str | None]] = field(default_factory=list)  # [(name, dax)]
     partition_name: str | None = None
     mode: str | None = None  # "import" or "directQuery"
     m_expression: str | None = None
@@ -115,6 +116,7 @@ def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
         return None
 
     columns = _extract_columns(lines)
+    measures = _extract_measures(lines)
     partition_name, mode, m_expression = _extract_partition(lines)
 
     # Check if this is a metadata table (Business Owner / Report Owner)
@@ -131,6 +133,7 @@ def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
     return ParsedTable(
         table_name=table_name,
         columns=columns,
+        measures=measures,
         partition_name=partition_name,
         mode=mode,
         m_expression=m_expression,
@@ -190,6 +193,34 @@ def _extract_columns(lines: list[str]) -> list[str]:
                 col_name = col_name[1:-1]
             columns.append(col_name)
     return columns
+
+
+def _extract_measures(lines: list[str]) -> list[tuple[str, str | None]]:
+    """Extract measure names and DAX expressions from the TMDL file.
+
+    Returns list of (measure_name, dax_expression) tuples.
+    """
+    measures = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("measure "):
+            rest = stripped[8:].strip()
+            # Remove quotes: measure 'Total Sales' = SUM(...)
+            if rest.startswith("'"):
+                end_quote = rest.find("'", 1)
+                if end_quote > 0:
+                    name = rest[1:end_quote]
+                    dax = rest[end_quote + 1:].lstrip(" =").strip() or None
+                else:
+                    name = rest[1:]
+                    dax = None
+            else:
+                # measure TotalSales = SUM(...)
+                parts = rest.split("=", 1)
+                name = parts[0].strip()
+                dax = parts[1].strip() if len(parts) > 1 else None
+            measures.append((name, dax))
+    return measures
 
 
 def _extract_partition(lines: list[str]) -> tuple[str | None, str | None, str | None]:

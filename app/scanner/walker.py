@@ -29,6 +29,7 @@ class DiscoveredReport:
     name: str
     tmdl_path: str  # path to the report folder or .pbix file
     tables: list = field(default_factory=list)  # ParsedTable or PbixTable
+    measures: list = field(default_factory=list)  # MeasureInfo list
     expressions: dict[str, str] = field(default_factory=dict)
     business_owner: str | None = None
     report_owner: str | None = None
@@ -74,6 +75,7 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
                 name=report.name,
                 tmdl_path=report.file_path,
                 tables=report.tables,
+                measures=report.measures,
                 business_owner=report.business_owner,
                 report_owner=report.report_owner,
                 layout=report.layout,
@@ -171,17 +173,23 @@ def _scan_tmdl_report_folder(report_dir: Path) -> DiscoveredReport | None:
 
     business_owner = None
     report_owner = None
+    # Collect measures from TMDL tables
+    from app.scanner.pbix_parser import MeasureInfo
+    measures = []
     for t in tables:
         if t.is_metadata and t.metadata_value:
             if t.table_name == "Business Owner":
                 business_owner = t.metadata_value
             elif t.table_name == "Report Owner":
                 report_owner = t.metadata_value
+        for mname, mdax in getattr(t, "measures", []):
+            measures.append(MeasureInfo(table_name=t.table_name, measure_name=mname, dax_expression=mdax))
 
     return DiscoveredReport(
         name=report_name,
         tmdl_path=str(report_dir),
         tables=tables,
+        measures=measures,
         expressions=expressions,
         business_owner=business_owner,
         report_owner=report_owner,

@@ -307,6 +307,18 @@ def run_scan(reports_path: str | None = None) -> dict:
                                     (vis_id, ref.table_name, ref.field_name),
                                 )
 
+                # Store measures
+                measures = getattr(report, "measures", [])
+                if measures:
+                    db.execute("DELETE FROM report_measures WHERE report_id = ?", (report_id,))
+                    for m in measures:
+                        db.execute(
+                            """INSERT INTO report_measures (report_id, table_name, measure_name, measure_dax)
+                               VALUES (?, ?, ?, ?)
+                               ON CONFLICT(report_id, table_name, measure_name) DO UPDATE SET measure_dax = ?""",
+                            (report_id, m.table_name, m.measure_name, m.dax_expression, m.dax_expression),
+                        )
+
             # Set initial "unknown" status for any source without a probe
             sourceless = db.execute("""
                 SELECT s.id FROM sources s

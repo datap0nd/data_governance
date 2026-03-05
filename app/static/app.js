@@ -618,9 +618,10 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, visuals] = await Promise.all([
+    const [tables, visuals, unusedData] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/visuals`).catch(() => []),
+        api(`/api/reports/${report.id}/unused-measures`).catch(() => ({ total_measures: 0, unused_measures: [], unused_count: 0 })),
     ]);
 
     // Look up full source objects from the sources we fetched
@@ -663,6 +664,27 @@ async function showReportDetail(report) {
 
     const totalVisuals = visuals.reduce((a, p) => a + p.visuals.length, 0);
 
+    // Unused measures section
+    const unusedSection = unusedData.total_measures > 0 ? `
+        <div class="report-expand-label unused-measures-toggle" style="margin-top:0.75rem;cursor:pointer">
+            Unused Measures (${unusedData.unused_count} of ${unusedData.total_measures})
+            ${unusedData.unused_count > 0
+                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${Math.round(unusedData.unused_count / unusedData.total_measures * 100)}%</span>`
+                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to ${unusedData.unused_count > 0 ? 'expand' : 'view'}</span>
+        </div>
+        <div class="unused-measures-list" style="display:none">
+            ${unusedData.unused_count > 0
+                ? unusedData.unused_measures.map(m => `
+                    <div class="unused-measure-item">
+                        <span class="unused-measure-name">${m.measure_name}</span>
+                        <span class="unused-measure-table">${m.table_name}</span>
+                        ${m.dax ? `<span class="unused-measure-dax" style="display:none">${m.dax.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>` : ''}
+                    </div>`).join('')
+                : '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All measures are used in visuals</div>'}
+        </div>
+    ` : '';
+
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
             <div class="report-expand-header">
@@ -675,6 +697,7 @@ async function showReportDetail(report) {
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>
             <div class="report-source-list">${sourceRows}</div>
+            ${unusedSection}
         </div>
     </td>`;
 
@@ -695,15 +718,26 @@ async function showReportDetail(report) {
         });
     });
 
-    // Bind lineage button in detail panel
-    const lineageBtn = expandRow.querySelector(".btn-lineage-detail");
-    if (lineageBtn) {
-        lineageBtn.addEventListener("click", async () => {
-            await navigate("lineage");
-            const sel = document.getElementById("lineage-report-select");
-            if (sel) { sel.value = report.id; sel.dispatchEvent(new Event("change")); }
+    // Bind unused measures toggle
+    const umToggle = expandRow.querySelector(".unused-measures-toggle");
+    const umList = expandRow.querySelector(".unused-measures-list");
+    if (umToggle && umList) {
+        umToggle.addEventListener("click", () => {
+            const showing = umList.style.display !== "none";
+            umList.style.display = showing ? "none" : "";
+            const hint = umToggle.querySelector(".unused-toggle-hint");
+            if (hint) hint.textContent = showing ? " — click to expand" : " — click to collapse";
         });
     }
+
+    // Bind unused measure items — click to show/hide DAX
+    expandRow.querySelectorAll(".unused-measure-item").forEach(el => {
+        el.style.cursor = "pointer";
+        el.addEventListener("click", () => {
+            const dax = el.querySelector(".unused-measure-dax");
+            if (dax) dax.style.display = dax.style.display === "none" ? "block" : "none";
+        });
+    });
 }
 
 function _visualTypeLabel(type) {

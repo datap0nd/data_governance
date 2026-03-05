@@ -32,11 +32,20 @@ class PbixTable:
 
 
 @dataclass
+class MeasureInfo:
+    """A DAX measure extracted from a .pbix or .tmdl file."""
+    table_name: str
+    measure_name: str
+    dax_expression: str | None = None
+
+
+@dataclass
 class PbixReport:
     """A report extracted from a .pbix file."""
     name: str
     file_path: str
     tables: list[PbixTable] = field(default_factory=list)
+    measures: list[MeasureInfo] = field(default_factory=list)
     business_owner: str | None = None
     report_owner: str | None = None
     layout: object = None  # ReportLayout from layout_parser, if available
@@ -137,6 +146,24 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
             elif tname == "Report Owner":
                 report_owner = metadata_value
 
+    # Extract DAX measures
+    measures = []
+    try:
+        dax_measures = model.dax_measures
+        if dax_measures is not None and len(dax_measures) > 0:
+            for _, row in dax_measures.iterrows():
+                tbl = row.get("TableName") or row.get("tableName") or ""
+                name = row.get("Name") or row.get("name") or ""
+                expr = row.get("Expression") or row.get("expression") or ""
+                if name:
+                    measures.append(MeasureInfo(
+                        table_name=str(tbl),
+                        measure_name=str(name),
+                        dax_expression=str(expr) if expr else None,
+                    ))
+    except Exception as e:
+        logger.warning("Could not read dax_measures from %s: %s", file_path.name, e)
+
     # Extract visual layout (pages, visuals, field references)
     layout = None
     try:
@@ -149,6 +176,7 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
         name=report_name,
         file_path=str(file_path),
         tables=tables,
+        measures=measures,
         business_owner=business_owner,
         report_owner=report_owner,
         layout=layout,

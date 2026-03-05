@@ -171,6 +171,46 @@ def get_report_visuals(report_id: int):
     return result
 
 
+@router.get("/{report_id}/unused-measures")
+def get_unused_measures(report_id: int):
+    """Get measures defined in the model but not referenced by any visual."""
+    with get_db() as db:
+        # All measures for this report
+        all_measures = db.execute(
+            "SELECT table_name, measure_name, measure_dax FROM report_measures WHERE report_id = ?",
+            (report_id,),
+        ).fetchall()
+
+        if not all_measures:
+            return {"total_measures": 0, "unused_measures": [], "unused_count": 0}
+
+        # All fields referenced by visuals in this report
+        used_fields = db.execute("""
+            SELECT DISTINCT vf.table_name, vf.field_name
+            FROM visual_fields vf
+            JOIN report_visuals rv ON rv.id = vf.visual_id
+            JOIN report_pages rp ON rp.id = rv.page_id
+            WHERE rp.report_id = ?
+        """, (report_id,)).fetchall()
+
+        used_set = {(r["table_name"], r["field_name"]) for r in used_fields}
+
+        unused = []
+        for m in all_measures:
+            if (m["table_name"], m["measure_name"]) not in used_set:
+                unused.append({
+                    "table_name": m["table_name"],
+                    "measure_name": m["measure_name"],
+                    "dax": m["measure_dax"],
+                })
+
+    return {
+        "total_measures": len(all_measures),
+        "unused_measures": unused,
+        "unused_count": len(unused),
+    }
+
+
 def _derive_report_status(report_id: int) -> tuple[str, str | None]:
     """Derive report status and worst source date from its sources' latest probe statuses.
 
