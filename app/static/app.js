@@ -2912,9 +2912,13 @@ function _traceConnections(startId) {
     const fwd = window._lineageFwd;
     const bwd = window._lineageBwd;
     if (!fwd || !bwd) return new Set([startId]);
-    const visited = new Set();
 
-    // Trace forward (upstream: visual→field→table→source→upstream)
+    // Determine node type from prefix
+    const isVisual = startId.startsWith("visual-");
+    const isField = startId.startsWith("field-");
+
+    // Always trace forward (left→right: toward upstream)
+    const visited = new Set();
     const fwdQueue = [startId];
     while (fwdQueue.length > 0) {
         const cur = fwdQueue.shift();
@@ -2924,14 +2928,17 @@ function _traceConnections(startId) {
         if (neighbors) for (const n of neighbors) if (!visited.has(n)) fwdQueue.push(n);
     }
 
-    // Trace backward (downstream: upstream→source→table→field→visual)
-    const bwdQueue = [startId];
-    while (bwdQueue.length > 0) {
-        const cur = bwdQueue.shift();
-        if (visited.has(cur)) continue;
-        visited.add(cur);
-        const neighbors = bwd.get(cur);
-        if (neighbors) for (const n of neighbors) if (!visited.has(n)) bwdQueue.push(n);
+    // Only trace backward (right→left: toward visuals) when clicking
+    // on tables, sources, or upstreams — NOT visuals or fields
+    if (!isVisual && !isField) {
+        const bwdQueue = [startId];
+        while (bwdQueue.length > 0) {
+            const cur = bwdQueue.shift();
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+            const neighbors = bwd.get(cur);
+            if (neighbors) for (const n of neighbors) if (!visited.has(n)) bwdQueue.push(n);
+        }
     }
 
     return visited;
