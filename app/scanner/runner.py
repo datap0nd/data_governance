@@ -319,6 +319,20 @@ def run_scan(reports_path: str | None = None) -> dict:
                             (report_id, m.table_name, m.measure_name, m.dax_expression, m.dax_expression),
                         )
 
+                # Store columns
+                db.execute("DELETE FROM report_columns WHERE report_id = ?", (report_id,))
+                for table in report.tables:
+                    is_metadata = getattr(table, "is_metadata", False)
+                    if is_metadata:
+                        continue
+                    for col in getattr(table, "columns", []):
+                        db.execute(
+                            """INSERT INTO report_columns (report_id, table_name, column_name)
+                               VALUES (?, ?, ?)
+                               ON CONFLICT(report_id, table_name, column_name) DO NOTHING""",
+                            (report_id, table.table_name, col),
+                        )
+
             # Set initial "unknown" status for any source without a probe
             sourceless = db.execute("""
                 SELECT s.id FROM sources s

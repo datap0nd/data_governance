@@ -621,7 +621,7 @@ async function showReportDetail(report) {
     const [tables, visuals, unusedData] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/visuals`).catch(() => []),
-        api(`/api/reports/${report.id}/unused-measures`).catch(() => ({ total_measures: 0, unused_measures: [], unused_count: 0 })),
+        api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
     ]);
 
     // Look up full source objects from the sources we fetched
@@ -664,24 +664,47 @@ async function showReportDetail(report) {
 
     const totalVisuals = visuals.reduce((a, p) => a + p.visuals.length, 0);
 
-    // Unused measures section
-    const unusedSection = unusedData.total_measures > 0 ? `
-        <div class="report-expand-label unused-measures-toggle" style="margin-top:0.75rem;cursor:pointer">
-            Unused Measures (${unusedData.unused_count} of ${unusedData.total_measures})
-            ${unusedData.unused_count > 0
-                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${Math.round(unusedData.unused_count / unusedData.total_measures * 100)}%</span>`
+    // Unused measures/columns section
+    const hasUnusedData = unusedData.total_fields > 0 || unusedData.total_tables > 0;
+    const unusedMC = unusedData.unused_measures.length + unusedData.unused_columns.length;
+    const unusedSection = hasUnusedData ? `
+        <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="unused-mc">
+            Unused Measures / Columns (${unusedMC} of ${unusedData.total_fields})
+            ${unusedMC > 0
+                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${unusedData.unused_pct}%</span>`
                 : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to ${unusedData.unused_count > 0 ? 'expand' : 'view'}</span>
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
         </div>
-        <div class="unused-measures-list" style="display:none">
-            ${unusedData.unused_count > 0
-                ? unusedData.unused_measures.map(m => `
+        <div class="unused-measures-list" id="unused-mc" style="display:none">
+            ${unusedData.unused_measures.length > 0 ? `
+                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.3rem 0 0.15rem 0.2rem">Measures (${unusedData.unused_measures.length})</div>
+                ${unusedData.unused_measures.map(m => `
                     <div class="unused-measure-item">
-                        <span class="unused-measure-name">${m.measure_name}</span>
+                        <span class="unused-measure-name">${m.name}</span>
                         <span class="unused-measure-table">${m.table_name}</span>
                         ${m.dax ? `<span class="unused-measure-dax" style="display:none">${m.dax.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>` : ''}
-                    </div>`).join('')
-                : '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All measures are used in visuals</div>'}
+                    </div>`).join('')}` : ''}
+            ${unusedData.unused_columns.length > 0 ? `
+                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.3rem 0 0.15rem 0.2rem">Columns (${unusedData.unused_columns.length})</div>
+                ${unusedData.unused_columns.map(c => `
+                    <div class="unused-measure-item">
+                        <span class="unused-measure-name">${c.name}</span>
+                        <span class="unused-measure-table">${c.table_name}</span>
+                    </div>`).join('')}` : ''}
+            ${unusedMC === 0 ? '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All measures and columns are used in visuals</div>' : ''}
+        </div>
+        <div class="report-expand-label unused-toggle" style="margin-top:0.5rem;cursor:pointer" data-target="unused-tables">
+            Unused Tables (${unusedData.unused_tables_count} of ${unusedData.total_tables})
+            ${unusedData.unused_tables_count > 0
+                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${Math.round(unusedData.unused_tables_count / unusedData.total_tables * 100)}%</span>`
+                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
+        </div>
+        <div class="unused-measures-list" id="unused-tables" style="display:none">
+            ${unusedData.unused_tables.length > 0
+                ? unusedData.unused_tables.map(t => `
+                    <div class="unused-measure-item"><span class="unused-measure-name">${t}</span></div>`).join('')
+                : '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All tables are referenced by visuals</div>'}
         </div>
     ` : '';
 
@@ -718,25 +741,27 @@ async function showReportDetail(report) {
         });
     });
 
-    // Bind unused measures toggle
-    const umToggle = expandRow.querySelector(".unused-measures-toggle");
-    const umList = expandRow.querySelector(".unused-measures-list");
-    if (umToggle && umList) {
-        umToggle.addEventListener("click", () => {
-            const showing = umList.style.display !== "none";
-            umList.style.display = showing ? "none" : "";
-            const hint = umToggle.querySelector(".unused-toggle-hint");
+    // Bind unused section toggles
+    expandRow.querySelectorAll(".unused-toggle[data-target]").forEach(toggle => {
+        toggle.addEventListener("click", () => {
+            const list = expandRow.querySelector(`#${toggle.dataset.target}`);
+            if (!list) return;
+            const showing = list.style.display !== "none";
+            list.style.display = showing ? "none" : "";
+            const hint = toggle.querySelector(".unused-toggle-hint");
             if (hint) hint.textContent = showing ? " — click to expand" : " — click to collapse";
         });
-    }
+    });
 
     // Bind unused measure items — click to show/hide DAX
     expandRow.querySelectorAll(".unused-measure-item").forEach(el => {
-        el.style.cursor = "pointer";
-        el.addEventListener("click", () => {
-            const dax = el.querySelector(".unused-measure-dax");
-            if (dax) dax.style.display = dax.style.display === "none" ? "block" : "none";
-        });
+        const dax = el.querySelector(".unused-measure-dax");
+        if (dax) {
+            el.style.cursor = "pointer";
+            el.addEventListener("click", () => {
+                dax.style.display = dax.style.display === "none" ? "block" : "none";
+            });
+        }
     });
 }
 
@@ -1282,6 +1307,11 @@ async function renderReports() {
                 ${r.frequency ? '' : '<option value="">Choose...</option>'}${opts}
             </select>`;
         }},
+        { key: "unused_pct", label: "Unused %", render: r => {
+            if (r.unused_pct == null) return `<span style="color:var(--text-dim)">-</span>`;
+            const color = r.unused_pct > 50 ? "var(--red)" : r.unused_pct > 25 ? "var(--yellow)" : "var(--green)";
+            return `<span style="color:${color};font-weight:500">${r.unused_pct}%</span>`;
+        }, sortVal: r => r.unused_pct != null ? r.unused_pct : -1 },
         { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
             ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
             : `<span class="btn-table-link btn-table-link-disabled">-</span>` },

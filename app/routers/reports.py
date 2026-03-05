@@ -17,6 +17,35 @@ def list_reports():
             ORDER BY r.name
         """).fetchall()
 
+        # Pre-compute unused % for all reports
+        unused_pct_map = {}
+        for r in rows:
+            rid = r["id"]
+            total = db.execute("""
+                SELECT (SELECT COUNT(*) FROM report_measures WHERE report_id = ?)
+                     + (SELECT COUNT(*) FROM report_columns WHERE report_id = ?) AS total
+            """, (rid, rid)).fetchone()["total"]
+            if total > 0:
+                used_fields = db.execute("""
+                    SELECT DISTINCT vf.table_name, vf.field_name
+                    FROM visual_fields vf
+                    JOIN report_visuals rv ON rv.id = vf.visual_id
+                    JOIN report_pages rp ON rp.id = rv.page_id
+                    WHERE rp.report_id = ?
+                """, (rid,)).fetchall()
+                used_set = {(uf["table_name"], uf["field_name"]) for uf in used_fields}
+                measures = db.execute(
+                    "SELECT table_name, measure_name FROM report_measures WHERE report_id = ?", (rid,)
+                ).fetchall()
+                columns = db.execute(
+                    "SELECT table_name, column_name FROM report_columns WHERE report_id = ?", (rid,)
+                ).fetchall()
+                unused = sum(1 for m in measures if (m["table_name"], m["measure_name"]) not in used_set)
+                unused += sum(1 for c in columns if (c["table_name"], c["column_name"]) not in used_set)
+                unused_pct_map[rid] = round(unused / total * 100)
+            else:
+                unused_pct_map[rid] = None
+
     results = []
     for r in rows:
         status, worst_date = _derive_report_status(r["id"])
@@ -33,6 +62,7 @@ def list_reports():
             status=status,
             source_count=r["source_count"],
             worst_source_updated=worst_date,
+            unused_pct=unused_pct_map.get(r["id"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         ))
@@ -171,18 +201,19 @@ def get_report_visuals(report_id: int):
     return result
 
 
-@router.get("/{report_id}/unused-measures")
-def get_unused_measures(report_id: int):
-    """Get measures defined in the model but not referenced by any visual."""
+@router.get("/{report_id}/unused")
+def get_unused(report_id: int):
+    """Get unused measures, columns, and tables for a report."""
     with get_db() as db:
-        # All measures for this report
+        # All measures and columns for this report
         all_measures = db.execute(
             "SELECT table_name, measure_name, measure_dax FROM report_measures WHERE report_id = ?",
             (report_id,),
         ).fetchall()
-
-        if not all_measures:
-            return {"total_measures": 0, "unused_measures": [], "unused_count": 0}
+        all_columns = db.execute(
+            "SELECT table_name, column_name FROM report_columns WHERE report_id = ?",
+            (report_id,),
+        ).fetchall()
 
         # All fields referenced by visuals in this report
         used_fields = db.execute("""
@@ -194,20 +225,50 @@ def get_unused_measures(report_id: int):
         """, (report_id,)).fetchall()
 
         used_set = {(r["table_name"], r["field_name"]) for r in used_fields}
+        used_tables = {r["table_name"] for r in used_fields}
 
-        unused = []
+        # Unused measures
+        unused_measures = []
         for m in all_measures:
             if (m["table_name"], m["measure_name"]) not in used_set:
-                unused.append({
+                unused_measures.append({
                     "table_name": m["table_name"],
-                    "measure_name": m["measure_name"],
+                    "name": m["measure_name"],
                     "dax": m["measure_dax"],
                 })
 
+        # Unused columns
+        unused_columns = []
+        for c in all_columns:
+            if (c["table_name"], c["column_name"]) not in used_set:
+                unused_columns.append({
+                    "table_name": c["table_name"],
+                    "name": c["column_name"],
+                })
+
+        # Unused tables — tables in report_tables not referenced by any visual
+        all_tables = db.execute(
+            "SELECT table_name FROM report_tables WHERE report_id = ?",
+            (report_id,),
+        ).fetchall()
+        all_table_names = {r["table_name"] for r in all_tables}
+        unused_tables = sorted(all_table_names - used_tables) if used_tables else []
+
+        total_fields = len(all_measures) + len(all_columns)
+        unused_fields = len(unused_measures) + len(unused_columns)
+        unused_pct = round(unused_fields / total_fields * 100) if total_fields > 0 else 0
+
     return {
         "total_measures": len(all_measures),
-        "unused_measures": unused,
-        "unused_count": len(unused),
+        "total_columns": len(all_columns),
+        "total_fields": total_fields,
+        "unused_measures": unused_measures,
+        "unused_columns": unused_columns,
+        "unused_tables": unused_tables,
+        "unused_fields_count": unused_fields,
+        "unused_pct": unused_pct,
+        "total_tables": len(all_table_names),
+        "unused_tables_count": len(unused_tables),
     }
 
 

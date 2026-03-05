@@ -164,6 +164,14 @@ CREATE TABLE IF NOT EXISTS report_measures (
     UNIQUE(report_id, table_name, measure_name)
 );
 
+CREATE TABLE IF NOT EXISTS report_columns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id       INTEGER REFERENCES reports(id),
+    table_name      TEXT NOT NULL,
+    column_name     TEXT NOT NULL,
+    UNIQUE(report_id, table_name, column_name)
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables

@@ -52,6 +52,7 @@ class ReportOut(BaseModel):
     status: str | None = None  # derived from source statuses
     source_count: int = 0
     worst_source_updated: str | None = None  # oldest source last_data_at
+    unused_pct: int | None = None  # % of measures+columns not used in visuals
     created_at: str | None = None
     updated_at: str | None = None
 
