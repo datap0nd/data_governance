@@ -210,7 +210,11 @@ def run_scan(reports_path: str | None = None) -> dict:
                     report_id = cursor.lastrowid
 
                 # Upsert report tables
+                from app.scanner.tmdl_parser import is_auto_table
                 for table in report.tables:
+                    # Skip Power BI auto-generated internal tables
+                    if is_auto_table(table.table_name):
+                        continue
                     source_id = None
                     source = getattr(table, "source", None)
                     m_expression = getattr(table, "m_expression", None)
@@ -322,8 +326,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                 # Store columns
                 db.execute("DELETE FROM report_columns WHERE report_id = ?", (report_id,))
                 for table in report.tables:
-                    is_metadata = getattr(table, "is_metadata", False)
-                    if is_metadata:
+                    if getattr(table, "is_metadata", False) or is_auto_table(table.table_name):
                         continue
                     for col in getattr(table, "columns", []):
                         db.execute(

@@ -13,6 +13,7 @@ from pathlib import Path
 from app.scanner.tmdl_parser import (
     SourceInfo,
     METADATA_TABLES,
+    is_auto_table,
     _parse_m_expression,
     _extract_hashtable_value,
 )
@@ -113,6 +114,10 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
 
     # Process each table
     for tname in table_names:
+        # Skip Power BI auto-generated internal tables
+        if is_auto_table(tname):
+            continue
+
         expr = m_expressions.get(tname)
         columns = column_map.get(tname, [])
 

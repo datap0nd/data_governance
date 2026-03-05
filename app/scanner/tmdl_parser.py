@@ -98,6 +98,18 @@ class ParsedTable:
 # Tables that contain report metadata (not data sources)
 METADATA_TABLES = {"Business Owner", "Report Owner"}
 
+# Prefixes for Power BI auto-generated internal tables (not real data)
+_AUTO_TABLE_PREFIXES = (
+    "LocalDateTable_",
+    "DateTableTemplate_",
+    "LocalDate_",
+)
+
+
+def is_auto_table(name: str) -> bool:
+    """Return True if this table name is a Power BI auto-generated internal table."""
+    return name.startswith(_AUTO_TABLE_PREFIXES)
+
 
 def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
     """Parse a single .tmdl table file and extract source information."""
@@ -410,6 +422,22 @@ def _parse_m_expression(expr: str) -> SourceInfo:
         path_match = re.search(r'Folder\.Files\s*\(\s*"([^"]+)"', expr)
         if path_match:
             source.file_path = path_match.group(1)
+        return source
+
+    # Detect calculated/internal tables — not real external sources
+    # #table() literal, Table.FromRows, Table.FromList, Table.FromColumns, {record} syntax
+    if re.search(r'#table\s*\(', expr) or re.search(r'Table\.From(Rows|List|Columns|Records)\s*\(', expr):
+        source.source_type = "calculated"
+        return source
+
+    # Date scaffolding functions (auto-generated date tables)
+    if re.search(r'#date\s*\(|#datetime\s*\(|List\.Dates\s*\(|List\.DateTimes\s*\(|Calendar\s*\(', expr):
+        source.source_type = "calculated"
+        return source
+
+    # Literal record/list expressions
+    if expr.strip().startswith("{") or expr.strip().startswith("#"):
+        source.source_type = "calculated"
         return source
 
     # If we still can't identify it, log the first 200 chars for debugging
