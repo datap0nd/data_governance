@@ -13,17 +13,6 @@ def get_findings():
     """Scan all reports and return best-practice findings."""
     findings = scan_all(TMDL_ROOT)
 
-    # Also scan test_reports if TMDL_ROOT points to test_data (covers both dirs)
-    from pathlib import Path
-    test_reports = Path(TMDL_ROOT).parent / "test_reports"
-    if test_reports.is_dir():
-        findings.extend(scan_all(test_reports))
-
-    # Also check a nested "reports" subdirectory (test_data/reports layout)
-    nested = Path(TMDL_ROOT) / "reports"
-    if nested.is_dir():
-        findings.extend(scan_all(nested))
-
     return {
         "total": len(findings),
         "findings": [

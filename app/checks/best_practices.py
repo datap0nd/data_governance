@@ -1,15 +1,15 @@
 """
-Power BI best-practice checker — analyses TMDL files for common issues.
+Power BI best-practice checker — analyses reports for common issues.
 
-Each check returns a list of findings with report, table, issue description,
-and severity (high / medium / low).
+Works with both PBIX and TMDL modes via the existing scanner walker.
+Each check returns findings with report, table, issue, and severity.
 """
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.scanner.tmdl_parser import parse_tmdl_file, ParsedTable, METADATA_TABLES
+from app.scanner.walker import walk_reports_root, DiscoveredReport
 
 
 @dataclass
@@ -24,46 +24,52 @@ class Finding:
 # ── Individual checks ──────────────────────────────────────────────────
 
 
-def _check_local_file_source(parsed: ParsedTable, report_name: str) -> list[Finding]:
-    """Flag data sources pointing to local drives (C:\\, D:\\, etc.)
-    instead of shared network paths or databases."""
-    if not parsed.source or not parsed.source.file_path:
+def _check_local_file_source(table, report_name: str) -> list[Finding]:
+    """Flag data sources pointing to local drives (C:\\, D:\\, etc.)."""
+    source = getattr(table, "source", None)
+    if not source or not source.file_path:
         return []
-    fp = parsed.source.file_path
-    # Local drive letter pattern (C:\, D:\, etc.)
+    fp = source.file_path
     if re.match(r'^[A-Za-z]:\\', fp):
         return [Finding(
             report=report_name,
-            table=parsed.table_name,
+            table=table.table_name,
             rule="No local file sources",
-            issue=f"Source uses local path \"{fp}\". Use a shared network drive (\\\\server\\share\\...) or a database connection instead.",
+            issue=f'Source uses local path "{fp}". Use a shared network drive (\\\\server\\share\\...) or a database connection instead.',
             severity="high",
         )]
     return []
 
 
-def _check_missing_owner(tables: list[ParsedTable], report_name: str,
-                          owner_type: str) -> list[Finding]:
-    """Flag reports missing a Report Owner or Business Owner metadata table."""
-    has_owner = any(t.table_name == owner_type for t in tables)
-    if not has_owner:
+def _check_missing_owner(report: DiscoveredReport, owner_type: str) -> list[Finding]:
+    """Flag reports missing a Report Owner or Business Owner."""
+    attr = "report_owner" if owner_type == "Report Owner" else "business_owner"
+    value = getattr(report, attr, None)
+
+    # Also check if there's a metadata table with that name
+    has_table = any(t.table_name == owner_type for t in report.tables)
+
+    if not value and not has_table:
         return [Finding(
-            report=report_name,
+            report=report.name,
             table="—",
             rule=f"{owner_type} required",
-            issue=f"Report is missing a \"{owner_type}\" table. Every report should declare a {owner_type.lower()} for accountability.",
+            issue=f'Report is missing a "{owner_type}" table. Every report should declare a {owner_type.lower()} for accountability.',
             severity="medium",
         )]
     return []
 
 
-def _check_date_column_as_string(parsed: ParsedTable, report_name: str) -> list[Finding]:
-    """Flag columns whose name contains 'date' but whose dataType is string."""
-    if parsed.is_metadata:
+def _check_date_column_as_string(table, report_name: str) -> list[Finding]:
+    """Flag columns named *date* that are typed as string (TMDL mode only)."""
+    if getattr(table, "is_metadata", False):
         return []
+    file_path = getattr(table, "file_path", None)
+    if not file_path or not Path(file_path).exists():
+        return []
+
     findings = []
-    text = Path(parsed.file_path).read_text(encoding="utf-8-sig") if parsed.file_path else ""
-    # Parse column blocks: look for column name + dataType pairs
+    text = Path(file_path).read_text(encoding="utf-8-sig")
     col_name = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -74,32 +80,30 @@ def _check_date_column_as_string(parsed: ParsedTable, report_name: str) -> list[
             if dtype == "string" and re.search(r'date', col_name, re.IGNORECASE):
                 findings.append(Finding(
                     report=report_name,
-                    table=parsed.table_name,
+                    table=table.table_name,
                     rule="Date columns should use dateTime",
-                    issue=f"Column \"{col_name}\" appears to be a date but is typed as string. Use dateTime for proper sorting and filtering.",
+                    issue=f'Column "{col_name}" appears to be a date but is typed as string. Use dateTime for proper sorting and filtering.',
                     severity="medium",
                 ))
             col_name = None
     return findings
 
 
-def _check_hardcoded_server(parsed: ParsedTable, report_name: str,
+def _check_hardcoded_server(table, report_name: str,
                             expressions: dict[str, str]) -> list[Finding]:
-    """Flag database sources with hardcoded server/IP instead of using
-    expressions.tmdl parameters."""
-    if not parsed.source or not parsed.source.server:
+    """Flag database sources with hardcoded server/IP instead of parameters."""
+    source = getattr(table, "source", None)
+    if not source or not source.server:
         return []
-    # If the report already uses parameters, no issue
     if expressions:
         return []
-    server = parsed.source.server
-    # Only flag if it looks like a raw hostname or IP (not a parameter reference)
+    server = source.server
     if re.match(r'^\d+\.\d+\.\d+\.\d+$', server) or '.' in server:
         return [Finding(
             report=report_name,
-            table=parsed.table_name,
+            table=table.table_name,
             rule="Use parameters for connections",
-            issue=f"Server \"{server}\" is hardcoded. Define Server/Database parameters in expressions.tmdl to simplify environment changes.",
+            issue=f'Server "{server}" is hardcoded. Define Server/Database parameters in expressions.tmdl to simplify environment changes.',
             severity="low",
         )]
     return []
@@ -108,65 +112,29 @@ def _check_hardcoded_server(parsed: ParsedTable, report_name: str,
 # ── Main entry point ───────────────────────────────────────────────────
 
 
-def scan_report(report_dir: Path) -> list[Finding]:
-    """Run all best-practice checks on a single report directory.
-
-    Expects the standard TMDL layout:
-        ReportName/ReportName.SemanticModel/Definition/Tables/*.tmdl
-    """
+def check_report(report: DiscoveredReport) -> list[Finding]:
+    """Run all best-practice checks on a discovered report."""
     findings: list[Finding] = []
-    report_name = report_dir.name
 
-    # Locate Tables directory
-    tables_dir = None
-    for sm_dir in report_dir.iterdir():
-        candidate = sm_dir / "Definition" / "Tables"
-        if candidate.is_dir():
-            tables_dir = candidate
-            break
-
-    if tables_dir is None:
-        return findings
-
-    # Parse expressions.tmdl if present
-    expressions: dict[str, str] = {}
-    expr_file = tables_dir.parent / "expressions.tmdl"
-    if expr_file.exists():
-        from app.scanner.tmdl_parser import parse_expressions_file
-        expressions = parse_expressions_file(expr_file)
-
-    # Parse all table files
-    parsed_tables: list[ParsedTable] = []
-    for tmdl_file in sorted(tables_dir.glob("*.tmdl")):
-        parsed = parse_tmdl_file(tmdl_file)
-        if parsed:
-            parsed_tables.append(parsed)
-
-    # Report-level checks (owners)
-    findings.extend(_check_missing_owner(parsed_tables, report_name, "Report Owner"))
-    findings.extend(_check_missing_owner(parsed_tables, report_name, "Business Owner"))
+    # Report-level checks
+    findings.extend(_check_missing_owner(report, "Report Owner"))
+    findings.extend(_check_missing_owner(report, "Business Owner"))
 
     # Table-level checks
-    for pt in parsed_tables:
-        if pt.is_metadata:
+    for table in report.tables:
+        if getattr(table, "is_metadata", False):
             continue
-        findings.extend(_check_local_file_source(pt, report_name))
-        findings.extend(_check_date_column_as_string(pt, report_name))
-        findings.extend(_check_hardcoded_server(pt, report_name, expressions))
+        findings.extend(_check_local_file_source(table, report.name))
+        findings.extend(_check_date_column_as_string(table, report.name))
+        findings.extend(_check_hardcoded_server(table, report.name, report.expressions))
 
     return findings
 
 
 def scan_all(root: str | Path) -> list[Finding]:
-    """Scan every report under the TMDL root and return all findings."""
-    root = Path(root)
+    """Scan every report under the root using the existing walker."""
+    reports = walk_reports_root(root)
     findings: list[Finding] = []
-    if not root.is_dir():
-        return findings
-
-    # Each top-level subdirectory is a report
-    for report_dir in sorted(root.iterdir()):
-        if report_dir.is_dir() and not report_dir.name.startswith("."):
-            findings.extend(scan_report(report_dir))
-
+    for report in reports:
+        findings.extend(check_report(report))
     return findings
