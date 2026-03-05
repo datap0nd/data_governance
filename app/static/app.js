@@ -2772,8 +2772,9 @@ function _renderLineageDiagram(data) {
     `;
 
     // Build connections and draw lines
-    const { connections, adjacency } = _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes);
-    window._lineageAdj = adjacency;
+    const { connections, forward, backward } = _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes);
+    window._lineageFwd = forward;
+    window._lineageBwd = backward;
     _drawLineageLines(connections);
 
     // Bind click interactions
@@ -2790,14 +2791,17 @@ function _renderLineageDiagram(data) {
 
 function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes) {
     const connections = [];
-    const adjacency = new Map();
+    // Directed graphs: forward = left-to-right (visual→field→table→source→upstream)
+    //                  backward = right-to-left (upstream→source→table→field→visual)
+    const forward = new Map();
+    const backward = new Map();
 
     function addEdge(a, b) {
         connections.push({ from: a, to: b });
-        if (!adjacency.has(a)) adjacency.set(a, new Set());
-        if (!adjacency.has(b)) adjacency.set(b, new Set());
-        adjacency.get(a).add(b);
-        adjacency.get(b).add(a);
+        if (!forward.has(a)) forward.set(a, new Set());
+        forward.get(a).add(b);
+        if (!backward.has(b)) backward.set(b, new Set());
+        backward.get(b).add(a);
     }
 
     // Visual -> Field
@@ -2827,7 +2831,7 @@ function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNod
         if (s.upstream_id) addEdge(`source-${s.id}`, `upstream-${s.upstream_id}`);
     }
 
-    return { connections, adjacency };
+    return { connections, forward, backward };
 }
 
 function _drawLineageLines(connections) {
@@ -2905,21 +2909,31 @@ function _bindLineageClicks() {
 }
 
 function _traceConnections(startId) {
-    const adj = window._lineageAdj;
-    if (!adj) return new Set([startId]);
+    const fwd = window._lineageFwd;
+    const bwd = window._lineageBwd;
+    if (!fwd || !bwd) return new Set([startId]);
     const visited = new Set();
-    const queue = [startId];
-    while (queue.length > 0) {
-        const cur = queue.shift();
+
+    // Trace forward (upstream: visual→field→table→source→upstream)
+    const fwdQueue = [startId];
+    while (fwdQueue.length > 0) {
+        const cur = fwdQueue.shift();
         if (visited.has(cur)) continue;
         visited.add(cur);
-        const neighbors = adj.get(cur);
-        if (neighbors) {
-            for (const n of neighbors) {
-                if (!visited.has(n)) queue.push(n);
-            }
-        }
+        const neighbors = fwd.get(cur);
+        if (neighbors) for (const n of neighbors) if (!visited.has(n)) fwdQueue.push(n);
     }
+
+    // Trace backward (downstream: upstream→source→table→field→visual)
+    const bwdQueue = [startId];
+    while (bwdQueue.length > 0) {
+        const cur = bwdQueue.shift();
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        const neighbors = bwd.get(cur);
+        if (neighbors) for (const n of neighbors) if (!visited.has(n)) bwdQueue.push(n);
+    }
+
     return visited;
 }
 

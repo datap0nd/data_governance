@@ -2661,17 +2661,21 @@ button.btn-danger-outline:hover {
 .lineage-dropdown {
     padding: 0.45rem 0.65rem;
     font-size: 0.85rem;
-    background: var(--bg-card);
+    background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text);
     min-width: 320px;
     cursor: pointer;
 }
+.lineage-dropdown option {
+    background: var(--surface);
+    color: var(--text);
+}
 .lineage-dropdown:focus { border-color: var(--accent); outline: none; }
 
 .lineage-container {
-    background: var(--bg-card);
+    background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 1.25rem;
