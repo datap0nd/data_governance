@@ -89,24 +89,44 @@ def _check_date_column_as_string(table, report_name: str) -> list[Finding]:
     return findings
 
 
-def _check_hardcoded_server(table, report_name: str,
-                            expressions: dict[str, str]) -> list[Finding]:
-    """Flag database sources with hardcoded server/IP instead of parameters."""
-    source = getattr(table, "source", None)
-    if not source or not source.server:
-        return []
-    if expressions:
-        return []
-    server = source.server
-    if re.match(r'^\d+\.\d+\.\d+\.\d+$', server) or '.' in server:
+def _check_directquery_mode(table, report_name: str) -> list[Finding]:
+    """Flag tables using DirectQuery mode instead of Import."""
+    mode = getattr(table, "mode", None)
+    if mode and mode.lower() == "directquery":
         return [Finding(
             report=report_name,
             table=table.table_name,
-            rule="Use parameters for connections",
-            issue=f'Server "{server}" is hardcoded. Define Server/Database parameters in expressions.tmdl to simplify environment changes.',
-            severity="low",
+            rule="Avoid DirectQuery mode",
+            issue=f'Table uses DirectQuery mode, which queries the source on every interaction. Use Import mode for better performance unless real-time data is required.',
+            severity="medium",
         )]
     return []
+
+
+def _check_duplicate_sources(tables, report_name: str) -> list[Finding]:
+    """Flag multiple tables in the same report pulling from the same source."""
+    seen: dict[str, str] = {}  # connection_key -> first table name
+    findings = []
+    for table in tables:
+        if getattr(table, "is_metadata", False):
+            continue
+        source = getattr(table, "source", None)
+        if not source:
+            continue
+        key = source.connection_key
+        if key.startswith("unknown::"):
+            continue
+        if key in seen:
+            findings.append(Finding(
+                report=report_name,
+                table=table.table_name,
+                rule="Duplicate data source",
+                issue=f'Same source as table "{seen[key]}". Consolidate into a single source table or use a reference query to avoid redundant refreshes.',
+                severity="low",
+            ))
+        else:
+            seen[key] = table.table_name
+    return findings
 
 
 # ── Main entry point ───────────────────────────────────────────────────
@@ -119,6 +139,7 @@ def check_report(report: DiscoveredReport) -> list[Finding]:
     # Report-level checks
     findings.extend(_check_missing_owner(report, "Report Owner"))
     findings.extend(_check_missing_owner(report, "Business Owner"))
+    findings.extend(_check_duplicate_sources(report.tables, report.name))
 
     # Table-level checks
     for table in report.tables:
@@ -126,7 +147,7 @@ def check_report(report: DiscoveredReport) -> list[Finding]:
             continue
         findings.extend(_check_local_file_source(table, report.name))
         findings.extend(_check_date_column_as_string(table, report.name))
-        findings.extend(_check_hardcoded_server(table, report.name, report.expressions))
+        findings.extend(_check_directquery_mode(table, report.name))
 
     return findings
 

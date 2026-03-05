@@ -2396,8 +2396,9 @@ async function renderBestPractices() {
     findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
 
     // Column definitions — severity first
+    // sortVal prefixes with sort order number but includes the label so filter .includes() works
     const cols = [
-        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0", medium: "1", low: "2" })[f.severity] || "3" },
+        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
         { key: "report", label: "Report" },
         { key: "table", label: "Table" },
         { key: "rule", label: "Rule" },
@@ -2415,19 +2416,19 @@ async function renderBestPractices() {
         <button class="btn-export" onclick="exportTableCSV('dt-bp','best_practices.csv')">Export CSV</button>
     </div>
     <div class="stat-row" style="margin-bottom:1.25rem">
-        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
             <div class="stat-value">${counts.high}</div>
             <div class="stat-label">High</div>
         </div>
-        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
             <div class="stat-value">${counts.medium}</div>
             <div class="stat-label">Medium</div>
         </div>
-        <div class="stat-card stat-card-clickable bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
             <div class="stat-value">${counts.low}</div>
             <div class="stat-label">Low</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card bp-filter-card" data-bp-filter="" style="cursor:pointer">
             <div class="stat-value">${findings.length}</div>
             <div class="stat-label">Total Issues</div>
         </div>
@@ -2443,7 +2444,8 @@ async function renderBestPractices() {
                 <tr><td>${_bpSevBadge("medium")}</td><td>Report Owner required</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Business Owner required</td><td>Every report should include a Business Owner metadata table.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Date columns should use dateTime</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Use parameters for connections</td><td>Database server addresses should be defined as parameters in expressions.tmdl for easier environment changes.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Avoid DirectQuery mode</td><td>Tables should use Import mode for better performance. DirectQuery queries the source on every interaction.</td></tr>
+                <tr><td>${_bpSevBadge("low")}</td><td>Duplicate data source</td><td>Multiple tables pulling from the same source should be consolidated into a single table or use reference queries.</td></tr>
             </tbody>
         </table>
     </div>`;
@@ -2454,12 +2456,12 @@ function bindBestPracticesPage() {
         card.addEventListener("click", () => {
             const sev = card.dataset.bpFilter;
             const dt = window._dt && window._dt["dt-bp"];
-            if (dt) {
-                dt.filters["severity"] = sev;
-                const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-bp"][data-fcol="severity"]');
-                if (filterInput) filterInput.value = sev;
-                _refreshDT("dt-bp");
-            }
+            if (!dt) return;
+            // Set or clear the severity filter
+            dt.filters["severity"] = sev;
+            const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-bp"][data-fcol="severity"]');
+            if (filterInput) filterInput.value = sev;
+            _refreshDT("dt-bp");
         });
     });
 }
