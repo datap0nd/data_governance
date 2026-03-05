@@ -263,15 +263,27 @@ def run_scan(reports_path: str | None = None) -> dict:
                             SELECT id FROM report_pages WHERE report_id = ?)""", (report_id,))
                     db.execute("DELETE FROM report_pages WHERE report_id = ?", (report_id,))
 
+                    seen_pages = {}
                     for page in layout.pages:
+                        # Deduplicate page names (Power BI allows duplicate page names)
+                        pname = page.page_name
+                        if pname in seen_pages:
+                            seen_pages[pname] += 1
+                            pname = f"{pname} ({seen_pages[pname]})"
+                        else:
+                            seen_pages[pname] = 1
+
                         db.execute(
                             """INSERT INTO report_pages (report_id, page_name, page_ordinal, last_scanned)
-                               VALUES (?, ?, ?, ?)""",
-                            (report_id, page.page_name, page.page_ordinal, now),
+                               VALUES (?, ?, ?, ?)
+                               ON CONFLICT(report_id, page_name)
+                               DO UPDATE SET page_ordinal = ?, last_scanned = ?""",
+                            (report_id, pname, page.page_ordinal, now,
+                             page.page_ordinal, now),
                         )
                         page_row = db.execute(
                             "SELECT id FROM report_pages WHERE report_id = ? AND page_name = ?",
-                            (report_id, page.page_name),
+                            (report_id, pname),
                         ).fetchone()
                         page_id = page_row["id"]
 
