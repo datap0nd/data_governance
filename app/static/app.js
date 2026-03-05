@@ -2555,12 +2555,394 @@ function bindBestPracticesPage() {
 }
 
 
+// ── Lineage Diagram ──
+
+async function renderLineageDiagram() {
+    const reports = await api("/api/reports");
+    return `
+        <div class="page-header">
+            <h2>Lineage Diagram</h2>
+            <p class="page-subtitle">Trace data flow from upstream systems to report visuals</p>
+        </div>
+        <div class="lineage-controls">
+            <select id="lineage-report-select" class="lineage-dropdown">
+                <option value="">Select a report...</option>
+                ${reports.map(r => `<option value="${r.id}">${r.name}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
+            </select>
+        </div>
+        <div id="lineage-container" class="lineage-container">
+            <div class="lineage-placeholder">Select a report above to view its data lineage</div>
+        </div>
+    `;
+}
+
+function bindLineageDiagramPage() {
+    const sel = document.getElementById("lineage-report-select");
+    if (!sel) return;
+    sel.addEventListener("change", async () => {
+        const id = sel.value;
+        if (!id) {
+            document.getElementById("lineage-container").innerHTML =
+                '<div class="lineage-placeholder">Select a report above to view its data lineage</div>';
+            return;
+        }
+        document.getElementById("lineage-container").innerHTML =
+            '<div class="lineage-placeholder">Loading lineage...</div>';
+        try {
+            const data = await api(`/api/lineage/report/${id}/diagram`);
+            _renderLineageDiagram(data);
+        } catch (e) {
+            document.getElementById("lineage-container").innerHTML =
+                `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
+        }
+    });
+}
+
+function _renderLineageDiagram(data) {
+    const container = document.getElementById("lineage-container");
+
+    // Build unique nodes for each column
+    const fieldMap = new Map(); // "Table.Field" -> { table, field }
+    const visualNodes = [];     // { id, type, title, fields: ["T.F", ...], page }
+
+    // Collect visuals with fields (skip empty visuals)
+    for (const page of data.pages) {
+        for (const v of page.visuals) {
+            if (!v.fields || v.fields.length === 0) continue;
+            const fieldKeys = v.fields.map(f => `${f.table}.${f.field}`);
+            visualNodes.push({
+                id: `visual-${v.visual_db_id}`,
+                type: v.visual_type,
+                title: v.title,
+                fields: fieldKeys,
+                page: page.page_name,
+            });
+            for (const f of v.fields) {
+                const key = `${f.table}.${f.field}`;
+                if (!fieldMap.has(key)) fieldMap.set(key, { table: f.table, field: f.field });
+            }
+        }
+    }
+
+    // Table nodes
+    const tableMap = new Map();
+    for (const t of data.tables) {
+        tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
+    }
+
+    // Source nodes
+    const sourceMap = new Map();
+    for (const s of data.sources) {
+        sourceMap.set(s.id, s);
+    }
+
+    // Upstream nodes
+    const upstreamMap = new Map();
+    for (const u of data.upstreams) {
+        upstreamMap.set(u.id, u);
+    }
+
+    // Only keep fields that reference tables in this report
+    const fieldNodes = [];
+    for (const [key, f] of fieldMap) {
+        fieldNodes.push({ id: `field-${key}`, key, table: f.table, field: f.field });
+    }
+
+    // Only keep tables referenced by fields
+    const usedTableNames = new Set(fieldNodes.map(f => f.table));
+    const tableNodes = [];
+    for (const [name, t] of tableMap) {
+        if (usedTableNames.has(name) || t.source_id) {
+            tableNodes.push({ id: `table-${name}`, name, source_id: t.source_id });
+        }
+    }
+
+    // Only keep sources referenced by tables
+    const usedSourceIds = new Set(tableNodes.map(t => t.source_id).filter(Boolean));
+    const sourceNodes = [];
+    for (const [id, s] of sourceMap) {
+        if (usedSourceIds.has(id)) sourceNodes.push(s);
+    }
+
+    // Only keep upstreams referenced by sources
+    const usedUpstreamIds = new Set(sourceNodes.map(s => s.upstream_id).filter(Boolean));
+    const upstreamNodes = [];
+    for (const [id, u] of upstreamMap) {
+        if (usedUpstreamIds.has(id)) upstreamNodes.push(u);
+    }
+
+    if (visualNodes.length === 0 && tableNodes.length === 0) {
+        container.innerHTML = '<div class="lineage-placeholder">No visual lineage data for this report. Run a scan from Admin to parse layout data.</div>';
+        return;
+    }
+
+    // Group visuals by page
+    const pageGroups = new Map();
+    for (const v of visualNodes) {
+        if (!pageGroups.has(v.page)) pageGroups.set(v.page, []);
+        pageGroups.get(v.page).push(v);
+    }
+
+    // Build HTML
+    const statusClass = s => {
+        if (s === "current" || s === "fresh") return "lineage-status-current";
+        if (s === "stale") return "lineage-status-stale";
+        if (s === "outdated" || s === "error") return "lineage-status-error";
+        return "lineage-status-unknown";
+    };
+
+    const statusDot = s => {
+        const colors = { current: "var(--green)", fresh: "var(--green)", stale: "var(--yellow)", outdated: "var(--red)", error: "var(--red)" };
+        const c = colors[s] || "var(--text-dim)";
+        return `<span class="lineage-dot" style="background:${c}"></span>`;
+    };
+
+    // Visuals column
+    let visualsHtml = '<div class="lineage-col" data-col="visuals"><div class="lineage-col-header">Visuals</div>';
+    for (const [pageName, visuals] of pageGroups) {
+        visualsHtml += `<div class="lineage-page-group"><div class="lineage-page-label">${pageName}</div>`;
+        for (const v of visuals) {
+            const autoLabel = v.fields.length > 0 ? v.fields.slice(0, 3).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") + (v.fields.length > 3 ? ` +${v.fields.length - 3}` : "") : null;
+            const label = v.title || autoLabel || _visualTypeLabel(v.type);
+            visualsHtml += `<div class="lineage-node lineage-node-visual" data-lineage-id="${v.id}" title="${(v.title || "").replace(/"/g, "&quot;")}">
+                <span class="visual-type-badge">${_visualTypeLabel(v.type)}</span>
+                <span class="lineage-node-label">${label}</span>
+            </div>`;
+        }
+        visualsHtml += '</div>';
+    }
+    visualsHtml += '</div>';
+
+    // Fields column
+    let fieldsHtml = '<div class="lineage-col" data-col="fields"><div class="lineage-col-header">Fields / Measures</div>';
+    for (const f of fieldNodes) {
+        fieldsHtml += `<div class="lineage-node lineage-node-field" data-lineage-id="${f.id}">
+            <span class="lineage-node-label">${f.field.replace(/_/g, " ")}</span>
+            <span class="lineage-table-hint">${f.table}</span>
+        </div>`;
+    }
+    fieldsHtml += '</div>';
+
+    // Tables column
+    let tablesHtml = '<div class="lineage-col" data-col="tables"><div class="lineage-col-header">Tables</div>';
+    for (const t of tableNodes) {
+        const srcBadge = t.source_id ? "" : ' <span class="lineage-no-link">no source</span>';
+        tablesHtml += `<div class="lineage-node lineage-node-table" data-lineage-id="${t.id}">
+            <span class="lineage-node-label">${t.name}</span>${srcBadge}
+        </div>`;
+    }
+    tablesHtml += '</div>';
+
+    // Sources column
+    let sourcesHtml = '<div class="lineage-col" data-col="sources"><div class="lineage-col-header">Sources</div>';
+    for (const s of sourceNodes) {
+        const shortName = s.name.length > 30 ? "..." + s.name.slice(-27) : s.name;
+        sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${s.name}">
+            ${statusDot(s.status)}
+            <span class="lineage-node-label">${shortName}</span>
+        </div>`;
+    }
+    sourcesHtml += '</div>';
+
+    // Upstream column
+    let upstreamHtml = '<div class="lineage-col" data-col="upstreams"><div class="lineage-col-header">Upstream Systems</div>';
+    for (const u of upstreamNodes) {
+        upstreamHtml += `<div class="lineage-node lineage-node-upstream" data-lineage-id="upstream-${u.id}">
+            <span class="lineage-node-label">${u.name}</span>
+            <span class="lineage-table-hint">${u.refresh_day || ""}</span>
+        </div>`;
+    }
+    upstreamHtml += '</div>';
+
+    // Report header
+    const reportHeader = `<div class="lineage-report-header">
+        <strong>${data.report.name}</strong>
+        <span class="lineage-report-status lineage-report-status-${(data.report.status || "").replace(/\s+/g, "-")}">${data.report.status}</span>
+        ${data.report.owner ? `<span class="lineage-report-owner">${data.report.owner}</span>` : ""}
+    </div>`;
+
+    container.innerHTML = `
+        ${reportHeader}
+        <div class="lineage-diagram-wrap">
+            <div class="lineage-diagram-grid">
+                ${visualsHtml}${fieldsHtml}${tablesHtml}${sourcesHtml}${upstreamHtml}
+            </div>
+            <svg class="lineage-svg" id="lineage-svg"></svg>
+        </div>
+    `;
+
+    // Build connections and draw lines
+    const { connections, adjacency } = _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes);
+    window._lineageAdj = adjacency;
+    _drawLineageLines(connections);
+
+    // Bind click interactions
+    _bindLineageClicks();
+
+    // Redraw on resize
+    if (window._lineageResizeObs) window._lineageResizeObs.disconnect();
+    const wrap = container.querySelector(".lineage-diagram-wrap");
+    if (wrap) {
+        window._lineageResizeObs = new ResizeObserver(() => _drawLineageLines(connections));
+        window._lineageResizeObs.observe(wrap);
+    }
+}
+
+function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes) {
+    const connections = [];
+    const adjacency = new Map();
+
+    function addEdge(a, b) {
+        connections.push({ from: a, to: b });
+        if (!adjacency.has(a)) adjacency.set(a, new Set());
+        if (!adjacency.has(b)) adjacency.set(b, new Set());
+        adjacency.get(a).add(b);
+        adjacency.get(b).add(a);
+    }
+
+    // Visual -> Field
+    for (const v of visualNodes) {
+        for (const fk of v.fields) {
+            addEdge(v.id, `field-${fk}`);
+        }
+    }
+
+    // Field -> Table
+    const ftDone = new Set();
+    for (const f of fieldNodes) {
+        const key = `${f.id}->table-${f.table}`;
+        if (!ftDone.has(key)) {
+            ftDone.add(key);
+            addEdge(f.id, `table-${f.table}`);
+        }
+    }
+
+    // Table -> Source
+    for (const t of tableNodes) {
+        if (t.source_id) addEdge(t.id, `source-${t.source_id}`);
+    }
+
+    // Source -> Upstream
+    for (const s of sourceNodes) {
+        if (s.upstream_id) addEdge(`source-${s.id}`, `upstream-${s.upstream_id}`);
+    }
+
+    return { connections, adjacency };
+}
+
+function _drawLineageLines(connections) {
+    const svg = document.getElementById("lineage-svg");
+    if (!svg) return;
+    const wrap = svg.parentElement;
+    if (!wrap) return;
+
+    svg.innerHTML = "";
+    svg.setAttribute("width", wrap.scrollWidth);
+    svg.setAttribute("height", wrap.scrollHeight);
+
+    const wrapRect = wrap.getBoundingClientRect();
+
+    for (const conn of connections) {
+        const fromEl = wrap.querySelector(`[data-lineage-id="${conn.from}"]`);
+        const toEl = wrap.querySelector(`[data-lineage-id="${conn.to}"]`);
+        if (!fromEl || !toEl) continue;
+
+        const fromRect = fromEl.getBoundingClientRect();
+        const toRect = toEl.getBoundingClientRect();
+
+        const x1 = fromRect.right - wrapRect.left;
+        const y1 = fromRect.top + fromRect.height / 2 - wrapRect.top;
+        const x2 = toRect.left - wrapRect.left;
+        const y2 = toRect.top + toRect.height / 2 - wrapRect.top;
+
+        const midX = (x1 + x2) / 2;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`);
+        path.setAttribute("class", "lineage-line");
+        path.dataset.from = conn.from;
+        path.dataset.to = conn.to;
+        svg.appendChild(path);
+    }
+}
+
+function _bindLineageClicks() {
+    const wrap = document.querySelector(".lineage-diagram-wrap");
+    if (!wrap) return;
+    const svg = document.getElementById("lineage-svg");
+
+    wrap.querySelectorAll(".lineage-node").forEach(node => {
+        node.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const id = node.dataset.lineageId;
+
+            // Toggle off if already highlighted
+            if (node.classList.contains("lineage-highlighted")) {
+                _resetLineageHighlight(wrap, svg);
+                return;
+            }
+
+            // BFS to find all connected nodes
+            const connected = _traceConnections(id);
+
+            wrap.querySelectorAll(".lineage-node").forEach(n => {
+                const isConn = connected.has(n.dataset.lineageId);
+                n.classList.toggle("lineage-highlighted", isConn);
+                n.classList.toggle("lineage-dimmed", !isConn);
+            });
+
+            if (svg) {
+                svg.querySelectorAll(".lineage-line").forEach(line => {
+                    const isConn = connected.has(line.dataset.from) && connected.has(line.dataset.to);
+                    line.classList.toggle("lineage-highlighted", isConn);
+                    line.classList.toggle("lineage-dimmed", !isConn);
+                });
+            }
+        });
+    });
+
+    // Click empty space to reset
+    wrap.addEventListener("click", () => _resetLineageHighlight(wrap, svg));
+}
+
+function _traceConnections(startId) {
+    const adj = window._lineageAdj;
+    if (!adj) return new Set([startId]);
+    const visited = new Set();
+    const queue = [startId];
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        const neighbors = adj.get(cur);
+        if (neighbors) {
+            for (const n of neighbors) {
+                if (!visited.has(n)) queue.push(n);
+            }
+        }
+    }
+    return visited;
+}
+
+function _resetLineageHighlight(wrap, svg) {
+    wrap.querySelectorAll(".lineage-node").forEach(n => {
+        n.classList.remove("lineage-highlighted", "lineage-dimmed");
+    });
+    if (svg) {
+        svg.querySelectorAll(".lineage-line").forEach(l => {
+            l.classList.remove("lineage-highlighted", "lineage-dimmed");
+        });
+    }
+}
+
+
+
 // ── Router ──
 
 const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
     reports: renderReports,
+    lineage: renderLineageDiagram,
     scanner: renderScanner,
     issues: renderIssues,
     changelog: renderChangelog,
@@ -2569,7 +2951,7 @@ const pages = {
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "issues", actions: "issues", lineage: "reports" };
+const pageAliases = { alerts: "issues", actions: "issues" };
 
 let currentPage = "dashboard";
 
@@ -2693,6 +3075,7 @@ async function navigate(page) {
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
     }

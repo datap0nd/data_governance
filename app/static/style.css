@@ -2655,3 +2655,127 @@ button.btn-danger-outline:hover {
     color: var(--text-dim);
     font-size: 0.72rem;
 }
+
+/* ── Lineage Diagram ── */
+.lineage-controls { margin-bottom: 1rem; }
+.lineage-dropdown {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.85rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    min-width: 320px;
+    cursor: pointer;
+}
+.lineage-dropdown:focus { border-color: var(--accent); outline: none; }
+
+.lineage-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    min-height: 400px;
+}
+.lineage-placeholder {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 350px; color: var(--text-dim); font-size: 0.9rem;
+}
+.lineage-report-header {
+    display: flex; align-items: center; gap: 0.6rem;
+    margin-bottom: 1rem; padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.lineage-report-status {
+    font-size: 0.72rem; padding: 0.15rem 0.5rem;
+    border-radius: 4px; font-weight: 600;
+}
+.lineage-report-status-healthy { background: rgba(52,199,89,0.15); color: var(--green); }
+.lineage-report-status-degraded { background: rgba(255,69,58,0.15); color: var(--red); }
+.lineage-report-status-at-risk { background: rgba(255,214,10,0.15); color: var(--yellow); }
+.lineage-report-status-current { background: rgba(52,199,89,0.15); color: var(--green); }
+.lineage-report-owner { color: var(--text-dim); font-size: 0.78rem; }
+
+.lineage-diagram-wrap {
+    position: relative;
+    overflow-x: auto;
+}
+.lineage-diagram-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 2rem;
+    min-width: 950px;
+    position: relative;
+}
+.lineage-col {
+    display: flex; flex-direction: column; gap: 0.35rem;
+}
+.lineage-col-header {
+    font-size: 0.68rem; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-dim);
+    font-weight: 600; padding-bottom: 0.45rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.2rem;
+}
+.lineage-node {
+    padding: 0.4rem 0.55rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font-size: 0.76rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex; align-items: center; gap: 0.35rem;
+}
+.lineage-node:hover { border-color: var(--accent); }
+.lineage-node-label {
+    white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; flex: 1;
+}
+.lineage-table-hint {
+    font-size: 0.65rem; color: var(--text-dim);
+    white-space: nowrap;
+}
+.lineage-no-link {
+    font-size: 0.62rem; color: var(--text-dim);
+    font-style: italic;
+}
+.lineage-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* Source status left border */
+.lineage-node-source { border-left: 3px solid var(--text-dim); }
+.lineage-status-current { border-left-color: var(--green); }
+.lineage-status-stale { border-left-color: var(--yellow); }
+.lineage-status-error { border-left-color: var(--red); }
+
+/* Page groups in visuals column */
+.lineage-page-group { margin-bottom: 0.5rem; }
+.lineage-page-label {
+    font-size: 0.65rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin-bottom: 0.15rem; padding-left: 0.2rem;
+}
+
+/* SVG overlay */
+.lineage-svg {
+    position: absolute; top: 0; left: 0;
+    pointer-events: none; overflow: visible;
+}
+.lineage-line {
+    fill: none; stroke: var(--border); stroke-width: 1.5;
+    opacity: 0.4; transition: stroke 0.2s, opacity 0.2s, stroke-width 0.2s;
+}
+.lineage-line.lineage-highlighted {
+    stroke: var(--accent); stroke-width: 2; opacity: 1;
+}
+.lineage-line.lineage-dimmed { opacity: 0.08; }
+
+/* Node highlight/dim states */
+.lineage-node.lineage-highlighted {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+.lineage-node.lineage-dimmed { opacity: 0.25; }
