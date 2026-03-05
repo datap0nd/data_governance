@@ -675,7 +675,7 @@ async function showReportDetail(report) {
                     ${page.visuals.map(v => `
                         <div class="visual-item">
                             <span class="visual-type-badge">${_visualTypeLabel(v.visual_type)}</span>
-                            <span class="visual-title">${v.title || '(untitled)'}</span>
+                            <span class="visual-title">${v.title || _autoVisualTitle(v)}</span>
                             <span class="visual-field-count">${v.fields.length} field${v.fields.length !== 1 ? 's' : ''}</span>
                             <span class="visual-fields-detail" style="display:none;font-size:0.72rem;color:var(--text-dim);margin-left:0.5rem">${v.fields.map(f => `${f.table}.${f.field}`).join(', ')}</span>
                         </div>
@@ -759,6 +759,14 @@ function _visualTypeLabel(type) {
         textbox: "Text", image: "Image", actionButton: "Button",
     };
     return labels[type] || type || "Visual";
+}
+
+function _autoVisualTitle(v) {
+    // Generate a descriptive label from field references
+    if (!v.fields || v.fields.length === 0) return '<span style="color:var(--text-dim)">(no fields)</span>';
+    const fieldNames = v.fields.map(f => f.field.replace(/_/g, ' '));
+    const label = fieldNames.slice(0, 3).join(', ') + (fieldNames.length > 3 ? ` +${fieldNames.length - 3}` : '');
+    return `<span style="color:var(--text-dim)">${label}</span>`;
 }
 
 
