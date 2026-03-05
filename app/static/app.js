@@ -2445,6 +2445,7 @@ async function renderBestPractices() {
                 <tr><td>${_bpSevBadge("medium")}</td><td>Business Owner required</td><td>Every report should include a Business Owner metadata table.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Date columns should use dateTime</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Avoid DirectQuery mode</td><td>Tables should use Import mode for better performance. DirectQuery queries the source on every interaction.</td></tr>
+                <tr><td>${_bpSevBadge("low")}</td><td>Too many columns</td><td>Tables with more than 30 columns may hurt performance. Consider splitting or removing unused columns.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Duplicate data source</td><td>Multiple tables pulling from the same source should be consolidated into a single table or use reference queries.</td></tr>
             </tbody>
         </table>

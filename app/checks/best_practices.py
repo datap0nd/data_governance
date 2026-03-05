@@ -103,6 +103,23 @@ def _check_directquery_mode(table, report_name: str) -> list[Finding]:
     return []
 
 
+MAX_COLUMNS = 30
+
+
+def _check_too_many_columns(table, report_name: str) -> list[Finding]:
+    """Flag tables with more than MAX_COLUMNS columns."""
+    columns = getattr(table, "columns", [])
+    if len(columns) > MAX_COLUMNS:
+        return [Finding(
+            report=report_name,
+            table=table.table_name,
+            rule="Too many columns",
+            issue=f'Table has {len(columns)} columns (threshold: {MAX_COLUMNS}). Consider splitting into smaller tables or removing unused columns to improve performance.',
+            severity="low",
+        )]
+    return []
+
+
 def _check_duplicate_sources(tables, report_name: str) -> list[Finding]:
     """Flag multiple tables in the same report pulling from the same source."""
     seen: dict[str, str] = {}  # connection_key -> first table name
@@ -148,6 +165,7 @@ def check_report(report: DiscoveredReport) -> list[Finding]:
         findings.extend(_check_local_file_source(table, report.name))
         findings.extend(_check_date_column_as_string(table, report.name))
         findings.extend(_check_directquery_mode(table, report.name))
+        findings.extend(_check_too_many_columns(table, report.name))
 
     return findings
 
