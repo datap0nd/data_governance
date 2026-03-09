@@ -291,7 +291,7 @@ function _filterAndSortDT(dt) {
 
 function _renderDT(tableId) {
     const dt = window._dt[tableId];
-    const { columns, sortCol, sortDir } = dt;
+    const { columns, sortCol, sortDir, filters } = dt;
     let rows = _filterAndSortDT(dt);
 
     const arrow = (key) => {
@@ -952,10 +952,12 @@ async function renderDashboard() {
                 : '<div class="empty-state">All sources and reports are healthy</div>'
             }
         </div>
-        <div class="alert-trend-container dashboard-attention-side" style="position:relative">
+        <div class="dashboard-attention-side">
             <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
-            <canvas id="health-trend-canvas" height="120"></canvas>
-            <div id="health-trend-tooltip" class="chart-tooltip"></div>
+            <div class="alert-trend-container" style="position:relative">
+                <canvas id="health-trend-canvas" height="200"></canvas>
+                <div id="health-trend-tooltip" class="chart-tooltip"></div>
+            </div>
         </div>
         </div>
     `;
