@@ -68,7 +68,7 @@ def ai_chat(req: ChatRequest):
             import json
 
             system_prompt = (
-                "You are a data governance assistant. You help BI managers understand "
+                "You are the MX Analytics assistant. You help BI managers understand "
                 "the health of their data sources, reports, and alerts. Answer concisely "
                 "based on the data context provided. If you don't know, say so.\n\n"
                 "DATA CONTEXT:\n" + json.dumps({

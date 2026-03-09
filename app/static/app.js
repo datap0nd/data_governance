@@ -1752,7 +1752,7 @@ async function renderChangelog() {
 
     const flowchart = `
         <div class="flowchart-wrap">
-            <div class="flowchart-title">Data Governance Pipeline</div>
+            <div class="flowchart-title">MX Analytics Pipeline</div>
             <div class="flowchart-sub">Hover each step for details</div>
             <div class="fc-pipeline">
                 <div class="fc-col">
@@ -3104,7 +3104,7 @@ function bindTasksPage() {
 const FAQ_ITEMS = [
     {
         q: "What does this platform do?",
-        a: "The Data Governance Panel automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives your team a single place to manage data quality and accountability."
+        a: "MX Analytics automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives your team a single place to manage data quality and accountability."
     },
     {
         q: "Where does the data come from?",
@@ -3441,7 +3441,7 @@ function initAIChatPanel() {
         </div>
         <div class="ai-chat-messages" id="ai-chat-messages">
             <div class="ai-msg assistant">
-                <p>Hi! I can help you understand your data governance ecosystem. Ask me about risks, source health, or specific reports.</p>
+                <p>Hi! I can help you understand your analytics ecosystem. Ask me about risks, source health, or specific reports.</p>
             </div>
         </div>
         <div class="ai-chat-quick" id="ai-chat-quick">

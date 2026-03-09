@@ -231,7 +231,7 @@ def mock_chat(message: str, context: dict) -> dict:
 
     # ── generic fallback ──
     lines = [
-        "I can help you understand your data governance ecosystem. Try asking:\n",
+        "I can help you understand your analytics ecosystem. Try asking:\n",
         "- **\"What's at risk?\"** — risk analysis across sources and reports",
         "- **\"Summarize the dashboard\"** — overview of all sources and reports",
         "- **\"Show stale sources\"** — list sources with aging data",

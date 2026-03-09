@@ -21,7 +21,7 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title="Data Governance Panel", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="MX Analytics", version="0.1.0", lifespan=lifespan)
 
 # Register API routers
 app.include_router(dashboard.router)
