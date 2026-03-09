@@ -2357,15 +2357,11 @@ async function renderBestPractices() {
             <tbody>
                 <tr><td>${_bpSevBadge("high")}</td><td>No local file sources</td><td>Data sources must not point to local drives (C:\\, D:\\). Use shared network paths or database connections.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Report Owner required</td><td>Every report should include a Report Owner metadata table for accountability.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Business Owner required</td><td>Every report should include a Business Owner metadata table.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Date columns should use dateTime</td><td>Columns with "date" in the name should use dateTime type, not string, for proper filtering and sorting.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Avoid DirectQuery mode</td><td>Tables should use Import mode for better performance. DirectQuery queries the source on every interaction.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Too many columns</td><td>Tables with more than 30 columns may hurt performance. Consider splitting or removing unused columns.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Duplicate data source</td><td>Multiple tables pulling from the same source should be consolidated into a single table or use reference queries.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Unused measure</td><td>Measures defined but not used in any visual add bloat. Remove them or verify they are referenced by other measures.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Unused column</td><td>Columns imported but not used in any visual increase model size and slow refresh. Remove them to improve performance.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Excessive unused measures</td><td>Reports with 5+ unused measures (not referenced by any visual) indicate model bloat. Review and clean up.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Too many visuals on page</td><td>Pages with more than 15 visuals are slower to render and harder to read. Split into multiple pages.</td></tr>
-                <tr><td>${_bpSevBadge("low")}</td><td>Missing visual title</td><td>Chart and table visuals should have descriptive titles so users understand what each visual shows.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Hardcoded date in DAX</td><td>DAX measures should not contain hardcoded dates like DATE(2024,1,1). Use TODAY(), NOW(), or a date parameter table.</td></tr>
             </tbody>
         </table>

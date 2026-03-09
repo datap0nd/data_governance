@@ -16,53 +16,42 @@ def _db_findings() -> list[dict]:
     findings: list[dict] = []
 
     with get_db() as db:
-        # 1. Unused measures — measures not referenced by any visual
-        report_measures = db.execute("""
-            SELECT rm.report_id, r.name AS report_name, rm.table_name, rm.measure_name
+        # 1. Excessive unused measures — flag reports with many unused measures
+        report_ids = db.execute("""
+            SELECT DISTINCT rm.report_id, r.name AS report_name
             FROM report_measures rm
             JOIN reports r ON r.id = rm.report_id
         """).fetchall()
-        for rm in report_measures:
-            used = db.execute("""
-                SELECT 1 FROM visual_fields vf
-                JOIN report_visuals rv ON rv.id = vf.visual_id
-                JOIN report_pages rp ON rp.id = rv.page_id
-                WHERE rp.report_id = ? AND vf.table_name = ? AND vf.field_name = ?
-                LIMIT 1
-            """, (rm["report_id"], rm["table_name"], rm["measure_name"])).fetchone()
-            if not used:
+        for rpt in report_ids:
+            rid = rpt["report_id"]
+            total = db.execute(
+                "SELECT COUNT(*) AS c FROM report_measures WHERE report_id = ?", (rid,)
+            ).fetchone()["c"]
+            if total == 0:
+                continue
+            unused = db.execute("""
+                SELECT COUNT(*) AS c FROM report_measures rm
+                WHERE rm.report_id = ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM visual_fields vf
+                    JOIN report_visuals rv ON rv.id = vf.visual_id
+                    JOIN report_pages rp ON rp.id = rv.page_id
+                    WHERE rp.report_id = rm.report_id
+                      AND vf.table_name = rm.table_name AND vf.field_name = rm.measure_name
+                  )
+            """, (rid,)).fetchone()["c"]
+            if unused >= 5:
+                pct = round(unused / total * 100)
+                sev = "medium" if unused >= 10 or pct >= 50 else "low"
                 findings.append({
-                    "report": rm["report_name"],
-                    "table": rm["table_name"],
-                    "rule": "Unused measure",
-                    "issue": f'Measure "{rm["measure_name"]}" is defined but not used in any visual. Remove it or verify it is needed by other measures.',
-                    "severity": "medium",
+                    "report": rpt["report_name"],
+                    "table": "—",
+                    "rule": "Excessive unused measures",
+                    "issue": f'{unused} of {total} measures ({pct}%) are not used in any visual. Review and remove unused measures to reduce model bloat.',
+                    "severity": sev,
                 })
 
-        # 2. Unused columns — columns not referenced by any visual
-        report_columns = db.execute("""
-            SELECT rc.report_id, r.name AS report_name, rc.table_name, rc.column_name
-            FROM report_columns rc
-            JOIN reports r ON r.id = rc.report_id
-        """).fetchall()
-        for rc in report_columns:
-            used = db.execute("""
-                SELECT 1 FROM visual_fields vf
-                JOIN report_visuals rv ON rv.id = vf.visual_id
-                JOIN report_pages rp ON rp.id = rv.page_id
-                WHERE rp.report_id = ? AND vf.table_name = ? AND vf.field_name = ?
-                LIMIT 1
-            """, (rc["report_id"], rc["table_name"], rc["column_name"])).fetchone()
-            if not used:
-                findings.append({
-                    "report": rc["report_name"],
-                    "table": rc["table_name"],
-                    "rule": "Unused column",
-                    "issue": f'Column "{rc["column_name"]}" is imported but not used in any visual. Removing unused columns reduces model size and improves refresh speed.',
-                    "severity": "low",
-                })
-
-        # 3. Visual density — pages with > 15 visuals
+        # 2. Visual density — pages with > 15 visuals
         pages = db.execute("""
             SELECT rp.id, rp.page_name, r.name AS report_name,
                    COUNT(rv.id) AS visual_count
@@ -82,25 +71,7 @@ def _db_findings() -> list[dict]:
                 "severity": sev,
             })
 
-        # 4. Missing visual titles
-        untitled = db.execute("""
-            SELECT rv.visual_type, rp.page_name, r.name AS report_name
-            FROM report_visuals rv
-            JOIN report_pages rp ON rp.id = rv.page_id
-            JOIN reports r ON r.id = rp.report_id
-            WHERE (rv.title IS NULL OR rv.title = '')
-              AND rv.visual_type NOT IN ('textbox', 'slicer', 'shape', 'image', 'actionButton')
-        """).fetchall()
-        for v in untitled:
-            findings.append({
-                "report": v["report_name"],
-                "table": f'Page: {v["page_name"]}',
-                "rule": "Missing visual title",
-                "issue": f'A {v["visual_type"]} visual has no title. Add descriptive titles so users understand what each chart shows.',
-                "severity": "low",
-            })
-
-        # 7. Hardcoded values in DAX
+        # 3. Hardcoded values in DAX
         dax_measures = db.execute("""
             SELECT rm.report_id, r.name AS report_name, rm.table_name,
                    rm.measure_name, rm.measure_dax

@@ -155,7 +155,6 @@ def check_report(report: DiscoveredReport) -> list[Finding]:
 
     # Report-level checks
     findings.extend(_check_missing_owner(report, "Report Owner"))
-    findings.extend(_check_missing_owner(report, "Business Owner"))
     findings.extend(_check_duplicate_sources(report.tables, report.name))
 
     # Table-level checks
@@ -163,7 +162,6 @@ def check_report(report: DiscoveredReport) -> list[Finding]:
         if getattr(table, "is_metadata", False):
             continue
         findings.extend(_check_local_file_source(table, report.name))
-        findings.extend(_check_date_column_as_string(table, report.name))
         findings.extend(_check_directquery_mode(table, report.name))
         findings.extend(_check_too_many_columns(table, report.name))
 
