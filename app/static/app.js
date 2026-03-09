@@ -2360,7 +2360,7 @@ async function renderBestPractices() {
                 <tr><td>${_bpSevBadge("medium")}</td><td>Avoid DirectQuery mode</td><td>Tables should use Import mode for better performance. DirectQuery queries the source on every interaction.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Too many columns</td><td>Tables with more than 30 columns may hurt performance. Consider splitting or removing unused columns.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Duplicate data source</td><td>Multiple tables pulling from the same source should be consolidated into a single table or use reference queries.</td></tr>
-                <tr><td>${_bpSevBadge("medium")}</td><td>Excessive unused measures</td><td>Reports with 5+ unused measures (not referenced by any visual) indicate model bloat. Review and clean up.</td></tr>
+                <tr><td>${_bpSevBadge("medium")}</td><td>Measure bloat</td><td>Reports with 50+ measures slow refresh and are hard to maintain. 100+ is high severity. Consider a shared dataset.</td></tr>
                 <tr><td>${_bpSevBadge("low")}</td><td>Too many visuals on page</td><td>Pages with more than 15 visuals are slower to render and harder to read. Split into multiple pages.</td></tr>
                 <tr><td>${_bpSevBadge("medium")}</td><td>Hardcoded date in DAX</td><td>DAX measures should not contain hardcoded dates like DATE(2024,1,1). Use TODAY(), NOW(), or a date parameter table.</td></tr>
             </tbody>

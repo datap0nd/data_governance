@@ -16,40 +16,28 @@ def _db_findings() -> list[dict]:
     findings: list[dict] = []
 
     with get_db() as db:
-        # 1. Excessive unused measures — flag reports with many unused measures
-        report_ids = db.execute("""
-            SELECT DISTINCT rm.report_id, r.name AS report_name
+        # 1. Measure bloat — reports with too many measures
+        measure_counts = db.execute("""
+            SELECT rm.report_id, r.name AS report_name,
+                   COUNT(*) AS measure_count,
+                   COUNT(DISTINCT rm.table_name) AS table_count
             FROM report_measures rm
             JOIN reports r ON r.id = rm.report_id
+            GROUP BY rm.report_id
+            HAVING COUNT(*) > 50
         """).fetchall()
-        for rpt in report_ids:
-            rid = rpt["report_id"]
-            total = db.execute(
-                "SELECT COUNT(*) AS c FROM report_measures WHERE report_id = ?", (rid,)
-            ).fetchone()["c"]
-            if total == 0:
-                continue
-            unused = db.execute("""
-                SELECT COUNT(*) AS c FROM report_measures rm
-                WHERE rm.report_id = ?
-                  AND NOT EXISTS (
-                    SELECT 1 FROM visual_fields vf
-                    JOIN report_visuals rv ON rv.id = vf.visual_id
-                    JOIN report_pages rp ON rp.id = rv.page_id
-                    WHERE rp.report_id = rm.report_id
-                      AND vf.table_name = rm.table_name AND vf.field_name = rm.measure_name
-                  )
-            """, (rid,)).fetchone()["c"]
-            if unused >= 5:
-                pct = round(unused / total * 100)
-                sev = "medium" if unused >= 10 or pct >= 50 else "low"
-                findings.append({
-                    "report": rpt["report_name"],
-                    "table": "—",
-                    "rule": "Excessive unused measures",
-                    "issue": f'{unused} of {total} measures ({pct}%) are not used in any visual. Review and remove unused measures to reduce model bloat.',
-                    "severity": sev,
-                })
+        for mc in measure_counts:
+            cnt = mc["measure_count"]
+            tables = mc["table_count"]
+            sev = "high" if cnt > 100 else "medium"
+            spread = f" spread across {tables} tables" if tables > 1 else ""
+            findings.append({
+                "report": mc["report_name"],
+                "table": "—",
+                "rule": "Measure bloat",
+                "issue": f'Report has {cnt} measures{spread}. Large measure counts slow refresh, increase model size, and make reports harder to maintain. Consider splitting into a shared dataset.',
+                "severity": sev,
+            })
 
         # 2. Visual density — pages with > 15 visuals
         pages = db.execute("""
