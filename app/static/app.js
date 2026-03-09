@@ -2535,53 +2535,78 @@ function _bpSevBadge(sev) {
 }
 
 async function renderBestPractices() {
-    const data = await api("/api/best-practices");
+    const [data, reports] = await Promise.all([
+        api("/api/best-practices"),
+        api("/api/reports"),
+    ]);
     const findings = data.findings || [];
+
+    // Build report→owner lookup
+    const ownerMap = {};
+    const ownerSet = new Set();
+    reports.forEach(r => {
+        if (r.owner) { ownerMap[r.name] = r.owner; ownerSet.add(r.owner); }
+    });
+
+    // Enrich findings with owner
+    findings.forEach(f => { f.owner = ownerMap[f.report] || ""; });
+    window._bpFindings = findings;
+
+    const owners = [...ownerSet].sort();
+    const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
 
     // Severity counts
     const counts = { high: 0, medium: 0, low: 0 };
     findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
 
-    // Column definitions — severity first
-    // sortVal prefixes with sort order number but includes the label so filter .includes() works
     const cols = [
         { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
         { key: "report", label: "Report" },
+        { key: "owner", label: "Owner" },
         { key: "table", label: "Table" },
         { key: "rule", label: "Rule" },
         { key: "issue", label: "Issue", render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
     ];
 
     const noIssues = findings.length === 0
-        ? '<p style="color:var(--green);margin:1rem 0">All reports pass best-practice checks.</p>'
+        ? '<p style="color:var(--green);margin:1rem 0">All reports pass TMDL checks.</p>'
         : '';
 
     return `
     <div class="page-header">
-        <h1>Best Practices</h1>
+        <h1>TMDL Checker</h1>
         <span class="subtitle">Automated checks against Power BI reports</span>
-        <button class="btn-export" onclick="exportTableCSV('dt-bp','best_practices.csv')">Export CSV</button>
+        <button class="btn-export" onclick="exportTableCSV('dt-bp','tmdl_checker.csv')">Export CSV</button>
     </div>
-    <div class="stat-row" style="margin-bottom:1.25rem">
+    <div class="kanban-toolbar" style="margin-bottom:0.75rem">
+        <span class="owner-filter-label">Report Owner:</span>
+        <select id="bp-owner-filter">
+            <option value="">All Owners</option>
+            ${ownerOptions}
+        </select>
+    </div>
+    <div class="stat-row" style="margin-bottom:1.25rem" id="bp-stat-row">
         <div class="stat-card bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
-            <div class="stat-value">${counts.high}</div>
+            <div class="stat-value" id="bp-count-high">${counts.high}</div>
             <div class="stat-label">High</div>
         </div>
         <div class="stat-card bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
-            <div class="stat-value">${counts.medium}</div>
+            <div class="stat-value" id="bp-count-medium">${counts.medium}</div>
             <div class="stat-label">Medium</div>
         </div>
         <div class="stat-card bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
-            <div class="stat-value">${counts.low}</div>
+            <div class="stat-value" id="bp-count-low">${counts.low}</div>
             <div class="stat-label">Low</div>
         </div>
         <div class="stat-card bp-filter-card" data-bp-filter="" style="cursor:pointer">
-            <div class="stat-value">${findings.length}</div>
+            <div class="stat-value" id="bp-count-total">${findings.length}</div>
             <div class="stat-label">Total Issues</div>
         </div>
     </div>
     ${noIssues}
-    ${findings.length > 0 ? dataTable("dt-bp", cols, findings) : ''}
+    <div id="bp-table-container">
+        ${findings.length > 0 ? dataTable("dt-bp", cols, findings) : ''}
+    </div>
     <div class="section-card" style="margin-top:1rem">
         <h2 style="margin-bottom:0.5rem">Rules checked</h2>
         <table class="mini-table">
@@ -2599,13 +2624,47 @@ async function renderBestPractices() {
     </div>`;
 }
 
+function _rebuildBpTable(filtered) {
+    const cols = [
+        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
+        { key: "report", label: "Report" },
+        { key: "owner", label: "Owner" },
+        { key: "table", label: "Table" },
+        { key: "rule", label: "Rule" },
+        { key: "issue", label: "Issue", render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
+    ];
+    const container = document.getElementById("bp-table-container");
+    if (container) {
+        container.innerHTML = filtered.length > 0 ? dataTable("dt-bp", cols, filtered) : '<p style="color:var(--green);margin:1rem 0">No issues for this owner.</p>';
+        bindDataTables();
+    }
+    // Update counts
+    const counts = { high: 0, medium: 0, low: 0 };
+    filtered.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
+    const hEl = document.getElementById("bp-count-high"); if (hEl) hEl.textContent = counts.high;
+    const mEl = document.getElementById("bp-count-medium"); if (mEl) mEl.textContent = counts.medium;
+    const lEl = document.getElementById("bp-count-low"); if (lEl) lEl.textContent = counts.low;
+    const tEl = document.getElementById("bp-count-total"); if (tEl) tEl.textContent = filtered.length;
+}
+
 function bindBestPracticesPage() {
+    // Owner filter
+    const ownerFilter = document.getElementById("bp-owner-filter");
+    if (ownerFilter) {
+        ownerFilter.addEventListener("change", () => {
+            const owner = ownerFilter.value;
+            const all = window._bpFindings || [];
+            const filtered = owner ? all.filter(f => f.owner === owner) : all;
+            _rebuildBpTable(filtered);
+        });
+    }
+
+    // Severity card filters
     document.querySelectorAll(".bp-filter-card[data-bp-filter]").forEach(card => {
         card.addEventListener("click", () => {
             const sev = card.dataset.bpFilter;
             const dt = window._dt && window._dt["dt-bp"];
             if (!dt) return;
-            // Set or clear the severity filter
             dt.filters["severity"] = sev;
             const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-bp"][data-fcol="severity"]');
             if (filterInput) filterInput.value = sev;
