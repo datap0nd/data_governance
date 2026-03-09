@@ -887,7 +887,7 @@ async function renderDashboard() {
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="issues">
+            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="dashboard">
                 <div class="stat-label">Active Alerts</div>
                 <div class="stat-value">${data.alerts_active}</div>
                 <div class="stat-card-link">View &rarr;</div>
@@ -932,13 +932,8 @@ async function renderDashboard() {
             `}
         </div>
 
-        <div class="alert-trend-container" style="position:relative">
-            <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
-            <canvas id="health-trend-canvas" height="140"></canvas>
-            <div id="health-trend-tooltip" class="chart-tooltip"></div>
-        </div>
-
-        <div class="section" style="margin-top:1.5rem">
+        <div class="dashboard-attention-row">
+        <div class="section dashboard-attention-main">
             <h2>Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
             ${needsAttention.length > 0 ? `
                 <div class="alert-list" id="attention-list">
@@ -968,6 +963,12 @@ async function renderDashboard() {
                 ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
                 : '<div class="empty-state">All sources and reports are healthy</div>'
             }
+        </div>
+        <div class="alert-trend-container dashboard-attention-side" style="position:relative">
+            <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
+            <canvas id="health-trend-canvas" height="120"></canvas>
+            <div id="health-trend-tooltip" class="chart-tooltip"></div>
+        </div>
         </div>
     `;
 }
@@ -1528,7 +1529,7 @@ function bindReopenButtons(scope) {
             try {
                 await apiPost(`/api/alerts/${alertId}/reopen`);
                 toast("Alert reopened");
-                await navigate("issues");
+                await navigate("dashboard");
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -1769,7 +1770,7 @@ function bindActionStatusSelects() {
                 toast(`Action #${actionId} updated to ${newStatus}`);
             } catch (err) {
                 toast("Failed to update: " + err.message);
-                navigate("issues");
+                navigate("dashboard");
             }
         });
     });
@@ -3494,7 +3495,6 @@ const pages = {
     reports: renderReports,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
-    issues: renderIssues,
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
@@ -3503,7 +3503,7 @@ const pages = {
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "issues", actions: "issues" };
+const pageAliases = { alerts: "dashboard", actions: "dashboard", issues: "dashboard" };
 
 let currentPage = "dashboard";
 
@@ -3618,7 +3618,7 @@ async function navigate(page) {
                         const rpt = (window._dashboardReports || []).find(r => r.id === id);
                         if (rpt) { await navigate("reports"); showReportDetail(rpt); }
                     } else if (kind === "alert") {
-                        await navigate("issues");
+                        await navigate("dashboard");
                     }
                 });
             });
@@ -3626,7 +3626,6 @@ async function navigate(page) {
             drawHealthTrendChart();
         }
         if (page === "scanner") bindScannerButtons();
-        if (page === "issues") { bindIssuesPage(); }
         if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
         if (page === "create") bindCreatePage();

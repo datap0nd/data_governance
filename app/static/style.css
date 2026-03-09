@@ -2345,9 +2345,31 @@ body.ai-panel-open main {
     color: var(--text-dim);
 }
 
+/* ── Dashboard attention row ── */
+.dashboard-attention-row {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 1.25rem;
+    align-items: start;
+    margin-top: 1.5rem;
+}
+
+.dashboard-attention-main {
+    min-width: 0;
+}
+
+.dashboard-attention-side {
+    margin-top: 0 !important;
+}
+
+@media (max-width: 1000px) {
+    .dashboard-attention-row {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* ── Alert trend chart ── */
 .alert-trend-container {
-    margin-top: 1.5rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
