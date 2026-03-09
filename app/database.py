@@ -172,6 +172,19 @@ CREATE TABLE IF NOT EXISTS report_columns (
     UNIQUE(report_id, table_name, column_name)
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    description TEXT,
+    status      TEXT DEFAULT 'backlog',
+    priority    TEXT DEFAULT 'medium',
+    assigned_to TEXT,
+    due_date    TEXT,
+    position    INTEGER DEFAULT 0,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables

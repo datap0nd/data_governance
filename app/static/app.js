@@ -3003,6 +3003,275 @@ function _resetLineageHighlight(wrap, svg) {
 
 
 
+// ── Tasks / Kanban ──
+
+const TASK_STATUSES = [
+    { key: "backlog", label: "Backlog" },
+    { key: "todo", label: "To Do" },
+    { key: "in_progress", label: "In Progress" },
+    { key: "done", label: "Done" },
+];
+
+function _taskCard(task) {
+    const today = new Date().toISOString().slice(0, 10);
+    const overdue = task.due_date && task.due_date < today && task.status !== "done";
+    const dueFmt = task.due_date ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
+    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}">
+        <div class="kanban-card-title">${task.title}</div>
+        <div class="kanban-card-meta">
+            <span class="priority-tag ${task.priority}">${task.priority}</span>
+            ${task.assigned_to ? `<span class="assignee-chip" title="${task.assigned_to}">${task.assigned_to}</span>` : ""}
+            ${dueFmt ? `<span class="due-date${overdue ? " overdue" : ""}">${overdue ? "Overdue: " : ""}${dueFmt}</span>` : ""}
+        </div>
+    </div>`;
+}
+
+async function renderTasks() {
+    const [tasks, owners] = await Promise.all([
+        api("/api/tasks"),
+        api("/api/tasks/owners"),
+    ]);
+
+    // Store globally for filtering
+    window._tasksData = tasks;
+    window._tasksOwners = owners;
+
+    const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
+
+    const boardHtml = _buildKanbanBoard(tasks);
+
+    return `
+        <div class="page-header">
+            <h1>Tasks</h1>
+            <button class="btn-new-task" id="btn-new-task">+ New Task</button>
+        </div>
+        <div class="kanban-toolbar">
+            <span class="owner-filter-label">View:</span>
+            <select id="task-owner-filter">
+                <option value="">All Team Members</option>
+                ${ownerOptions}
+            </select>
+        </div>
+        <div id="kanban-board-container">
+            ${boardHtml}
+        </div>
+    `;
+}
+
+function _buildKanbanBoard(tasks, filterOwner) {
+    const filtered = filterOwner ? tasks.filter(t => t.assigned_to === filterOwner) : tasks;
+    const grouped = {};
+    TASK_STATUSES.forEach(s => grouped[s.key] = []);
+    filtered.forEach(t => {
+        if (grouped[t.status]) grouped[t.status].push(t);
+        else grouped.backlog.push(t);
+    });
+    // Sort each column by position
+    Object.values(grouped).forEach(arr => arr.sort((a, b) => a.position - b.position));
+
+    return `<div class="kanban-board">
+        ${TASK_STATUSES.map(s => `
+            <div class="kanban-column" data-status="${s.key}">
+                <div class="kanban-col-header">
+                    <span>${s.label}</span>
+                    <span class="col-count">${grouped[s.key].length}</span>
+                </div>
+                <div class="kanban-col-body" data-status="${s.key}">
+                    ${grouped[s.key].length === 0
+                        ? '<div class="kanban-empty">No tasks</div>'
+                        : grouped[s.key].map(t => _taskCard(t)).join("")}
+                </div>
+            </div>
+        `).join("")}
+    </div>`;
+}
+
+function _taskModalHtml(task, owners) {
+    const isEdit = !!task;
+    const title = isEdit ? "Edit Task" : "New Task";
+    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "" };
+    const ownerOptions = owners.map(o =>
+        `<option value="${o}" ${t.assigned_to === o ? "selected" : ""}>${o}</option>`
+    ).join("");
+    const statusOptions = TASK_STATUSES.map(s =>
+        `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}</option>`
+    ).join("");
+
+    return `<div class="task-modal-overlay" id="task-modal-overlay">
+        <div class="task-modal">
+            <h2>${title}</h2>
+            <label>Title</label>
+            <input type="text" id="task-title" value="${(t.title || "").replace(/"/g, "&quot;")}" placeholder="Task title..." />
+            <label>Description</label>
+            <textarea id="task-desc" placeholder="Optional description...">${t.description || ""}</textarea>
+            <label>Status</label>
+            <select id="task-status">${statusOptions}</select>
+            <label>Priority</label>
+            <select id="task-priority">
+                <option value="high" ${t.priority === "high" ? "selected" : ""}>High</option>
+                <option value="medium" ${t.priority === "medium" ? "selected" : ""}>Medium</option>
+                <option value="low" ${t.priority === "low" ? "selected" : ""}>Low</option>
+            </select>
+            <label>Assign To</label>
+            <select id="task-assign">
+                <option value="">Unassigned</option>
+                ${ownerOptions}
+            </select>
+            <label>Due Date</label>
+            <input type="date" id="task-due" value="${t.due_date || ""}" />
+            <div class="task-modal-actions">
+                ${isEdit ? `<button class="btn-danger" id="task-delete-btn">Delete</button>` : ""}
+                <button id="task-cancel-btn">Cancel</button>
+                <button class="btn-primary" id="task-save-btn">${isEdit ? "Save" : "Create"}</button>
+            </div>
+        </div>
+    </div>`;
+}
+
+function _openTaskModal(task) {
+    const owners = window._tasksOwners || [];
+    const existing = document.getElementById("task-modal-overlay");
+    if (existing) existing.remove();
+    document.body.insertAdjacentHTML("beforeend", _taskModalHtml(task, owners));
+
+    const overlay = document.getElementById("task-modal-overlay");
+    const cancelBtn = document.getElementById("task-cancel-btn");
+    const saveBtn = document.getElementById("task-save-btn");
+    const deleteBtn = document.getElementById("task-delete-btn");
+
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    cancelBtn.addEventListener("click", close);
+
+    saveBtn.addEventListener("click", async () => {
+        const title = document.getElementById("task-title").value.trim();
+        if (!title) { document.getElementById("task-title").style.borderColor = "var(--red)"; return; }
+
+        const body = {
+            title,
+            description: document.getElementById("task-desc").value.trim() || null,
+            status: document.getElementById("task-status").value,
+            priority: document.getElementById("task-priority").value,
+            assigned_to: document.getElementById("task-assign").value || null,
+            due_date: document.getElementById("task-due").value || null,
+        };
+
+        if (task) {
+            await apiPatch(`/api/tasks/${task.id}`, body);
+        } else {
+            await apiPostJson("/api/tasks", body);
+        }
+        close();
+        await _refreshTaskBoard();
+    });
+
+    if (deleteBtn && task) {
+        deleteBtn.addEventListener("click", async () => {
+            if (!confirm("Delete this task?")) return;
+            await apiDelete(`/api/tasks/${task.id}`);
+            close();
+            await _refreshTaskBoard();
+        });
+    }
+
+    document.getElementById("task-title").focus();
+}
+
+async function _refreshTaskBoard() {
+    const tasks = await api("/api/tasks");
+    window._tasksData = tasks;
+    const filterOwner = document.getElementById("task-owner-filter")?.value || "";
+    const container = document.getElementById("kanban-board-container");
+    if (container) {
+        container.innerHTML = _buildKanbanBoard(tasks, filterOwner || null);
+        _bindKanbanDragDrop();
+        _bindKanbanCardClicks();
+    }
+}
+
+function _bindKanbanDragDrop() {
+    document.querySelectorAll(".kanban-card[draggable]").forEach(card => {
+        card.addEventListener("dragstart", (e) => {
+            card.classList.add("dragging");
+            e.dataTransfer.setData("text/plain", card.dataset.taskId);
+            e.dataTransfer.effectAllowed = "move";
+        });
+        card.addEventListener("dragend", () => {
+            card.classList.remove("dragging");
+            document.querySelectorAll(".kanban-column.drag-over").forEach(c => c.classList.remove("drag-over"));
+        });
+    });
+
+    document.querySelectorAll(".kanban-col-body").forEach(colBody => {
+        colBody.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            colBody.closest(".kanban-column").classList.add("drag-over");
+        });
+        colBody.addEventListener("dragleave", (e) => {
+            if (!colBody.contains(e.relatedTarget)) {
+                colBody.closest(".kanban-column").classList.remove("drag-over");
+            }
+        });
+        colBody.addEventListener("drop", async (e) => {
+            e.preventDefault();
+            colBody.closest(".kanban-column").classList.remove("drag-over");
+            const taskId = e.dataTransfer.getData("text/plain");
+            const newStatus = colBody.dataset.status;
+
+            // Calculate position based on drop location
+            const cards = [...colBody.querySelectorAll(".kanban-card")];
+            let position = cards.length;
+            const rect = colBody.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            for (let i = 0; i < cards.length; i++) {
+                const cardRect = cards[i].getBoundingClientRect();
+                const cardMid = cardRect.top + cardRect.height / 2 - rect.top;
+                if (y < cardMid) { position = i; break; }
+            }
+
+            await apiPatch(`/api/tasks/${taskId}/move`, { status: newStatus, position });
+            await _refreshTaskBoard();
+        });
+    });
+}
+
+function _bindKanbanCardClicks() {
+    document.querySelectorAll(".kanban-card").forEach(card => {
+        card.addEventListener("click", (e) => {
+            if (e.defaultPrevented) return;
+            const taskId = parseInt(card.dataset.taskId);
+            const task = (window._tasksData || []).find(t => t.id === taskId);
+            if (task) _openTaskModal(task);
+        });
+    });
+}
+
+function bindTasksPage() {
+    // New task button
+    const newBtn = document.getElementById("btn-new-task");
+    if (newBtn) newBtn.addEventListener("click", () => _openTaskModal(null));
+
+    // Owner filter
+    const filter = document.getElementById("task-owner-filter");
+    if (filter) {
+        filter.addEventListener("change", () => {
+            const tasks = window._tasksData || [];
+            const filterOwner = filter.value || null;
+            const container = document.getElementById("kanban-board-container");
+            if (container) {
+                container.innerHTML = _buildKanbanBoard(tasks, filterOwner);
+                _bindKanbanDragDrop();
+                _bindKanbanCardClicks();
+            }
+        });
+    }
+
+    _bindKanbanDragDrop();
+    _bindKanbanCardClicks();
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -3015,6 +3284,7 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
+    tasks: renderTasks,
 };
 
 // Map old hash routes to new pages for backwards compat
@@ -3142,6 +3412,7 @@ async function navigate(page) {
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
         app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;

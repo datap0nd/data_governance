@@ -1,0 +1,127 @@
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+from app.database import get_db
+from app.models import TaskOut, TaskCreate, TaskUpdate, TaskMove
+
+router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+def _row_to_task(r) -> TaskOut:
+    return TaskOut(
+        id=r["id"],
+        title=r["title"],
+        description=r["description"],
+        status=r["status"],
+        priority=r["priority"],
+        assigned_to=r["assigned_to"],
+        due_date=r["due_date"],
+        position=r["position"],
+        created_at=r["created_at"],
+        updated_at=r["updated_at"],
+    )
+
+
+@router.get("", response_model=list[TaskOut])
+def list_tasks(status: str | None = None, assigned_to: str | None = None):
+    with get_db() as db:
+        query = "SELECT * FROM tasks"
+        conditions = []
+        params = []
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if assigned_to:
+            conditions.append("assigned_to = ?")
+            params.append(assigned_to)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY position, created_at DESC"
+        rows = db.execute(query, params).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+@router.post("", response_model=TaskOut)
+def create_task(task: TaskCreate):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        # Set position to end of target column
+        max_pos = db.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE status = ?",
+            (task.status,),
+        ).fetchone()[0]
+
+        cursor = db.execute(
+            """INSERT INTO tasks (title, description, status, priority, assigned_to, due_date, position, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task.title, task.description, task.status, task.priority,
+             task.assigned_to, task.due_date, max_pos, now, now),
+        )
+        row = db.execute("SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return _row_to_task(row)
+
+
+@router.patch("/{task_id}", response_model=TaskOut)
+def update_task(task_id: int, update: TaskUpdate):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        fields = ["updated_at = ?"]
+        values = [now]
+        for field_name, value in update.model_dump(exclude_unset=True).items():
+            fields.append(f"{field_name} = ?")
+            values.append(value)
+
+        values.append(task_id)
+        db.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", values)
+        row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return _row_to_task(row)
+
+
+@router.patch("/{task_id}/move", response_model=TaskOut)
+def move_task(task_id: int, move: TaskMove):
+    """Move a task to a different column and/or position (for drag-and-drop)."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        existing = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Shift positions in target column to make room
+        db.execute(
+            "UPDATE tasks SET position = position + 1 WHERE status = ? AND position >= ? AND id != ?",
+            (move.status, move.position, task_id),
+        )
+        db.execute(
+            "UPDATE tasks SET status = ?, position = ?, updated_at = ? WHERE id = ?",
+            (move.status, move.position, now, task_id),
+        )
+        row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return _row_to_task(row)
+
+
+@router.delete("/{task_id}")
+def delete_task(task_id: int):
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task not found")
+        db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    return {"status": "deleted"}
+
+
+@router.get("/owners")
+def list_task_owners():
+    """Return distinct owners available for task assignment (same as alert owners)."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT DISTINCT owner FROM (
+                SELECT DISTINCT owner FROM reports WHERE owner IS NOT NULL AND owner != ''
+                UNION
+                SELECT DISTINCT business_owner AS owner FROM reports WHERE business_owner IS NOT NULL AND business_owner != ''
+            ) ORDER BY owner
+        """).fetchall()
+    return [r["owner"] for r in rows]

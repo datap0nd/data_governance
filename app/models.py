@@ -200,3 +200,41 @@ class DashboardStats(BaseModel):
     checks_fail: int = 0
     alerts_active: int = 0
     last_scan: ScanRunOut | None = None
+
+
+# --- Tasks ---
+
+class TaskOut(BaseModel):
+    id: int
+    title: str
+    description: str | None = None
+    status: str = "backlog"
+    priority: str = "medium"
+    assigned_to: str | None = None
+    due_date: str | None = None
+    position: int = 0
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class TaskCreate(BaseModel):
+    title: str
+    description: str | None = None
+    status: str = "backlog"
+    priority: str = "medium"
+    assigned_to: str | None = None
+    due_date: str | None = None
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    assigned_to: str | None = None
+    due_date: str | None = None
+
+
+class TaskMove(BaseModel):
+    status: str
+    position: int = 0
