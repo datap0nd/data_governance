@@ -2574,27 +2574,26 @@ button.btn-danger-outline:hover {
 /* ── Changelog two-column layout ── */
 /* ── Flowchart (Changelog) ── */
 .flowchart-wrap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.5rem 1rem 1.25rem;
-    margin-bottom: 1.5rem;
+    background: transparent;
+    border: none;
+    padding: 1rem 0 1.5rem;
+    margin-bottom: 2rem;
     overflow-x: auto;
 }
 
 .flowchart-title {
-    font-size: 0.82rem;
+    font-size: 1.1rem;
     font-weight: 600;
     color: #fff;
     text-align: center;
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.25rem;
 }
 
 .flowchart-sub {
-    font-size: 0.68rem;
+    font-size: 0.82rem;
     color: var(--text-dim);
     text-align: center;
-    margin-bottom: 1.25rem;
+    margin-bottom: 2rem;
 }
 
 .fc-pipeline {
@@ -2603,9 +2602,8 @@ button.btn-danger-outline:hover {
     justify-content: center;
     gap: 0;
     width: 100%;
-    max-width: 1100px;
     margin: 0 auto;
-    padding: 0 8px;
+    padding: 0 16px;
 }
 
 .fc-col {
@@ -2618,9 +2616,9 @@ button.btn-danger-outline:hover {
 }
 
 .fc-ico {
-    width: 56px;
-    height: 56px;
-    border-radius: 14px;
+    width: 96px;
+    height: 96px;
+    border-radius: 20px;
     background: var(--surface-2);
     border: 1px solid var(--border);
     display: flex;
@@ -2631,35 +2629,35 @@ button.btn-danger-outline:hover {
     flex-shrink: 0;
 }
 .fc-col:hover .fc-ico {
-    transform: scale(1.08);
+    transform: scale(1.06);
     border-color: var(--border-light);
-    box-shadow: 0 6px 28px rgba(255,255,255,0.04);
+    box-shadow: 0 8px 32px rgba(255,255,255,0.05);
 }
-.fc-ico svg { width: 30px; height: 30px; }
+.fc-ico svg { width: 52px; height: 52px; }
 
 .fc-lbl {
-    font-size: 0.68rem;
-    font-weight: 500;
+    font-size: 0.92rem;
+    font-weight: 600;
     color: var(--text);
-    margin-top: 6px;
+    margin-top: 10px;
     text-align: center;
     white-space: nowrap;
 }
 
 .fc-harr {
-    width: 28px;
+    width: 48px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
-    margin-top: 22px;
+    margin-top: 42px;
 }
 .fc-harr::before {
     content: '';
     width: 100%;
     height: 0;
-    border-top: 1px solid var(--border);
+    border-top: 1.5px solid var(--border);
 }
 .fc-harr::after {
     content: '';
@@ -2667,89 +2665,89 @@ button.btn-danger-outline:hover {
     right: 0;
     top: 50%;
     transform: translateY(-50%) rotate(45deg);
-    width: 5px;
-    height: 5px;
-    border-right: 1px solid var(--border-light);
-    border-top: 1px solid var(--border-light);
+    width: 8px;
+    height: 8px;
+    border-right: 1.5px solid var(--border-light);
+    border-top: 1.5px solid var(--border-light);
 }
 
 .fc-branch {
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin-top: 4px;
+    margin-top: 8px;
 }
 
 .fc-vline {
     width: 0;
-    height: 12px;
+    height: 20px;
     border-left: 1px solid var(--border);
 }
 
 .fc-vtag {
-    font-size: 0.5rem;
-    letter-spacing: 1px;
+    font-size: 0.65rem;
+    letter-spacing: 1.2px;
     text-transform: uppercase;
     color: var(--text-dim);
-    margin: 3px 0;
+    margin: 5px 0;
 }
 
 .fc-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 3px;
+    gap: 5px;
     justify-content: center;
-    max-width: 180px;
+    max-width: 240px;
 }
 
 .fc-chip {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
+    gap: 6px;
+    padding: 5px 12px;
     background: var(--surface-2);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 0.6rem;
+    border-radius: 8px;
+    font-size: 0.78rem;
     color: var(--text-muted);
     white-space: nowrap;
     transition: border-color 0.2s;
 }
 .fc-col:hover .fc-chip { border-color: var(--border-light); }
-.fc-chip svg { width: 12px; height: 12px; flex-shrink: 0; }
+.fc-chip svg { width: 16px; height: 16px; flex-shrink: 0; }
 
-.fc-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.fc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .fc-dot-g { background: var(--green); }
 .fc-dot-y { background: var(--yellow); }
 .fc-dot-r { background: var(--red); }
 
 .fc-tip {
     position: absolute;
-    bottom: calc(100% + 10px);
+    bottom: calc(100% + 12px);
     left: 50%;
     transform: translateX(-50%) translateY(-4px);
     background: var(--surface);
     border: 1px solid var(--border-light);
-    border-radius: 8px;
-    padding: 10px 14px;
-    width: 190px;
-    font-size: 0.72rem;
-    line-height: 1.5;
+    border-radius: 10px;
+    padding: 14px 18px;
+    width: 240px;
+    font-size: 0.85rem;
+    line-height: 1.55;
     color: var(--text-muted);
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.2s, transform 0.2s;
     z-index: 20;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    box-shadow: 0 10px 32px rgba(0,0,0,0.45);
 }
 .fc-tip::after {
     content: '';
     position: absolute;
-    bottom: -5px;
+    bottom: -6px;
     left: 50%;
     transform: translateX(-50%) rotate(45deg);
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     background: var(--surface);
     border-right: 1px solid var(--border-light);
     border-bottom: 1px solid var(--border-light);
@@ -2761,24 +2759,24 @@ button.btn-danger-outline:hover {
 }
 .fc-tip b {
     color: var(--text);
-    font-size: 0.75rem;
+    font-size: 0.9rem;
     display: block;
-    margin-bottom: 3px;
+    margin-bottom: 4px;
 }
 
 .fc-foot {
-    margin-top: 1rem;
-    font-size: 0.6rem;
+    margin-top: 1.5rem;
+    font-size: 0.75rem;
     color: var(--text-dim);
     text-align: center;
 }
 
-@media (max-width: 700px) {
-    .fc-pipeline { flex-direction: column; align-items: center; gap: 4px; }
-    .fc-harr { width: 1px; height: 16px; margin-top: 0; }
-    .fc-harr::before { width: 0; height: 100%; border-top: none; border-left: 1px solid var(--border); }
+@media (max-width: 900px) {
+    .fc-pipeline { flex-direction: column; align-items: center; gap: 6px; }
+    .fc-harr { width: 1px; height: 24px; margin-top: 0; }
+    .fc-harr::before { width: 0; height: 100%; border-top: none; border-left: 1.5px solid var(--border); }
     .fc-harr::after { right: 50%; top: auto; bottom: 0; transform: translateX(50%) rotate(135deg); }
-    .fc-chips { max-width: 280px; }
+    .fc-chips { max-width: 320px; }
 }
 
 /* Actions cell spacing */
