@@ -213,6 +213,7 @@ class TaskOut(BaseModel):
     assigned_to: str | None = None
     due_date: str | None = None
     position: int = 0
+    email_owner: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -224,6 +225,7 @@ class TaskCreate(BaseModel):
     priority: str = "medium"
     assigned_to: str | None = None
     due_date: str | None = None
+    email_owner: bool = False
 
 
 class TaskUpdate(BaseModel):
@@ -233,8 +235,21 @@ class TaskUpdate(BaseModel):
     priority: str | None = None
     assigned_to: str | None = None
     due_date: str | None = None
+    email_owner: bool | None = None
 
 
 class TaskMove(BaseModel):
     status: str
     position: int = 0
+
+
+# --- Event Log ---
+
+class EventLogOut(BaseModel):
+    id: int
+    entity_type: str
+    entity_id: int | None = None
+    entity_name: str | None = None
+    action: str
+    detail: str | None = None
+    created_at: str | None = None

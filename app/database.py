@@ -185,6 +185,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS event_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id   INTEGER,
+    entity_name TEXT,
+    action      TEXT NOT NULL,
+    detail      TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables
@@ -209,6 +219,8 @@ MIGRATIONS = [
     # Manual entry tracking
     "ALTER TABLE reports ADD COLUMN discovered_by TEXT DEFAULT 'scanned'",
     "ALTER TABLE upstream_systems ADD COLUMN discovered_by TEXT DEFAULT 'scanned'",
+    # Task email-owner flag
+    "ALTER TABLE tasks ADD COLUMN email_owner INTEGER DEFAULT 0",
 ]
 
 

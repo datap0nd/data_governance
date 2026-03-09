@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
+from app.routers.eventlog import log_event
 from app.models import ActionOut, ActionUpdate
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
@@ -68,6 +69,9 @@ def update_action(action_id: int, update: ActionUpdate):
             f"UPDATE actions SET {', '.join(fields)} WHERE id = ?",
             values,
         )
+
+        changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
+        log_event(db, "action", action_id, None, "updated", changed)
 
         r = db.execute("""
             SELECT a.*, s.name AS source_name, r.name AS report_name

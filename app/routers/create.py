@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from app.database import get_db
+from app.routers.eventlog import log_event
 from app.models import (
     CreateSourceRequest,
     CreateReportRequest,
@@ -73,6 +74,7 @@ def create_source(req: CreateSourceRequest):
                            VALUES (?, ?, ?, 'manual entry', ?)""",
                         (report_id, req.name, source_id, now),
                     )
+            log_event(db, "source", source_id, req.name, "created", f"type={req.type}")
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="A source with that name already exists")
 
@@ -92,6 +94,7 @@ def create_report(req: CreateReportRequest):
                  req.powerbi_url, now, now),
             )
             report_id = cursor.lastrowid
+            log_event(db, "report", report_id, req.name, "created")
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="A report with that name already exists")
 
@@ -110,6 +113,7 @@ def create_upstream(req: CreateUpstreamRequest):
                 (req.name, req.code, req.refresh_day, now),
             )
             upstream_id = cursor.lastrowid
+            log_event(db, "upstream", upstream_id, req.name, "created", f"code={req.code}")
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="An upstream system with that name already exists")
 
@@ -162,6 +166,7 @@ def delete_source(source_id: int):
         db.execute("UPDATE alerts SET source_id = NULL WHERE source_id = ?", (source_id,))
         db.execute("UPDATE actions SET source_id = NULL WHERE source_id = ?", (source_id,))
         db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        log_event(db, "source", source_id, None, "deleted")
     return {"status": "deleted", "id": source_id}
 
 
@@ -177,6 +182,7 @@ def delete_report(report_id: int):
             raise HTTPException(status_code=404, detail="Manual report not found")
         db.execute("DELETE FROM report_tables WHERE report_id = ?", (report_id,))
         db.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        log_event(db, "report", report_id, None, "deleted")
     return {"status": "deleted", "id": report_id}
 
 
@@ -192,6 +198,7 @@ def delete_upstream(upstream_id: int):
             raise HTTPException(status_code=404, detail="Manual upstream system not found")
         db.execute("UPDATE sources SET upstream_id = NULL WHERE upstream_id = ?", (upstream_id,))
         db.execute("DELETE FROM upstream_systems WHERE id = ?", (upstream_id,))
+        log_event(db, "upstream", upstream_id, None, "deleted")
     return {"status": "deleted", "id": upstream_id}
 
 
@@ -219,6 +226,7 @@ def update_source(source_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual source not found")
+        log_event(db, "source", source_id, None, "updated", ", ".join(updates.keys()))
     return {"status": "updated", "id": source_id}
 
 
@@ -239,6 +247,7 @@ def update_report(report_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual report not found")
+        log_event(db, "report", report_id, None, "updated", ", ".join(updates.keys()))
     return {"status": "updated", "id": report_id}
 
 
@@ -257,4 +266,5 @@ def update_upstream(upstream_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual upstream system not found")
+        log_event(db, "upstream", upstream_id, None, "updated", ", ".join(updates.keys()))
     return {"status": "updated", "id": upstream_id}

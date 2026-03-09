@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
+from app.routers.eventlog import log_event
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -117,6 +118,8 @@ def update_source(source_id: int, update: SourceUpdate):
                 f"UPDATE sources SET {', '.join(fields)} WHERE id = ?",
                 values,
             )
+            changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
+            log_event(db, "source", source_id, None, "updated", changed)
 
     return get_source(source_id)
 
@@ -163,6 +166,7 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest):
             "UPDATE sources SET custom_fresh_days = ?, custom_stale_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (body.fresh_days, body.stale_days, source_id),
         )
+        log_event(db, "source", source_id, None, "freshness_rule_set", f"fresh={body.fresh_days}, stale={body.stale_days}")
     return {"status": "ok", "fresh_days": body.fresh_days, "stale_days": body.stale_days}
 
 
@@ -177,4 +181,5 @@ def delete_freshness_rule(source_id: int):
             "UPDATE sources SET custom_fresh_days = NULL, custom_stale_days = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (source_id,),
         )
+        log_event(db, "source", source_id, None, "freshness_rule_reset")
     return {"status": "ok", "fresh_days": None, "stale_days": None}

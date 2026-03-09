@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
+from app.routers.eventlog import log_event
 from app.models import AlertOut, AlertResolveRequest
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
@@ -55,6 +56,7 @@ def resolve_alert(alert_id: int, body: AlertResolveRequest):
                WHERE id = ?""",
             (body.status, body.reason, now, alert_id),
         )
+        log_event(db, "alert", alert_id, None, body.status, body.reason)
     return {"status": body.status}
 
 
@@ -69,6 +71,7 @@ def reopen_alert(alert_id: int):
                WHERE id = ?""",
             (alert_id,),
         )
+        log_event(db, "alert", alert_id, None, "reopened")
     return {"status": "active"}
 
 
@@ -77,6 +80,7 @@ def assign_alert(alert_id: int, owner: str | None = None):
     """Assign an owner to an alert."""
     with get_db() as db:
         db.execute("UPDATE alerts SET assigned_to = ? WHERE id = ?", (owner, alert_id))
+        log_event(db, "alert", alert_id, None, "assigned", f"to {owner}")
     return {"status": "assigned", "assigned_to": owner}
 
 

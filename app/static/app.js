@@ -784,12 +784,13 @@ function _autoVisualTitle(v) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, alerts, healthTrend] = await Promise.all([
+    const [data, sources, reports, alerts, healthTrend, impactData] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
         api("/api/alerts?active_only=true"),
         api("/api/schedules/health-trend"),
+        api("/api/dashboard/impact"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
@@ -922,7 +923,14 @@ async function renderDashboard() {
 
         <div class="dashboard-attention-row">
         <div class="section dashboard-attention-main">
-            <h2>Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+                <h2 style="margin:0">Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
+                <div class="impact-toggle">
+                    <button class="impact-toggle-btn active" data-view="timeline">Timeline</button>
+                    <button class="impact-toggle-btn" data-view="impact">By Impact${impactData.length > 0 ? ` (${impactData.length})` : ""}</button>
+                </div>
+            </div>
+            <div id="attention-timeline">
             ${needsAttention.length > 0 ? `
                 <div class="alert-list" id="attention-list">
                     ${needsAttention.slice(0, ATTENTION_LIMIT).map(item => `
@@ -951,6 +959,25 @@ async function renderDashboard() {
                 ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
                 : '<div class="empty-state">All sources and reports are healthy</div>'
             }
+            </div>
+            <div id="attention-impact" style="display:none">
+            ${impactData.length > 0 ? `
+                <div class="impact-list">
+                    ${impactData.map(item => `
+                        <div class="impact-item impact-clickable" data-source-id="${item.source_id}">
+                            <div class="impact-header">
+                                <div class="dot dot-${item.status === "outdated" || item.status === "error" ? "red" : "yellow"}"></div>
+                                <strong>${esc(item.source_name)}</strong>
+                                <span class="impact-status">${esc(item.status)}</span>
+                                <span class="impact-badge">${item.affected_reports} report${item.affected_reports !== 1 ? "s" : ""}</span>
+                                <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${item.last_data_at ? timeAgo(item.last_data_at) : ""}</span>
+                            </div>
+                            <div class="impact-reports">${item.report_names.map(n => esc(n)).join(", ")}</div>
+                        </div>
+                    `).join("")}
+                </div>
+            ` : '<div class="empty-state">No freshness issues affecting reports</div>'}
+            </div>
         </div>
         <div class="dashboard-attention-side">
             <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
@@ -2884,7 +2911,7 @@ function _buildKanbanBoard(tasks, filterOwner) {
 function _taskModalHtml(task, owners) {
     const isEdit = !!task;
     const title = isEdit ? "Edit Task" : "New Task";
-    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "" };
+    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "", email_owner: false };
     const ownerOptions = owners.map(o =>
         `<option value="${o}" ${t.assigned_to === o ? "selected" : ""}>${o}</option>`
     ).join("");
@@ -2914,6 +2941,10 @@ function _taskModalHtml(task, owners) {
             </select>
             <label>Due Date</label>
             <input type="date" id="task-due" value="${t.due_date || ""}" />
+            <label class="task-checkbox-label">
+                <input type="checkbox" id="task-email-owner" ${t.email_owner ? "checked" : ""} />
+                Email owner on assignment
+            </label>
             <div class="task-modal-actions">
                 ${isEdit ? `<button class="btn-danger" id="task-delete-btn">Delete</button>` : ""}
                 <button id="task-cancel-btn">Cancel</button>
@@ -2956,6 +2987,7 @@ function _openTaskModal(task) {
             priority: document.getElementById("task-priority").value,
             assigned_to: document.getElementById("task-assign").value || null,
             due_date: document.getElementById("task-due").value || null,
+            email_owner: document.getElementById("task-email-owner").checked,
         };
 
         try {
@@ -3099,6 +3131,32 @@ function bindTasksPage() {
 }
 
 
+// ── Event Log Page ──
+
+async function renderEventLog() {
+    const events = await api("/api/eventlog");
+    const cols = [
+        { key: "created_at", label: "When", render: e => `<span title="${esc(e.created_at || "")}">${timeAgo(e.created_at)}</span>` },
+        { key: "entity_type", label: "Type", render: e => `<span class="eventlog-type-badge type-${esc(e.entity_type)}">${esc(e.entity_type)}</span>` },
+        { key: "entity_name", label: "Entity", render: e => esc(e.entity_name) || `#${e.entity_id || "—"}` },
+        { key: "action", label: "Action", render: e => `<span class="eventlog-action action-${esc(e.action)}">${esc(e.action)}</span>` },
+        { key: "detail", label: "Detail", render: e => esc(e.detail) || "" },
+    ];
+
+    return `
+        <div class="page-header">
+            <h1>Event Log</h1>
+            <span class="subtitle">${events.length} events</span>
+        </div>
+        ${dataTable("dt-eventlog", cols, events)}
+    `;
+}
+
+function bindEventLogPage() {
+    bindDataTables();
+}
+
+
 // ── FAQ Page ──
 
 const FAQ_ITEMS = [
@@ -3217,6 +3275,7 @@ const pages = {
     create: renderCreate,
     bestpractices: renderBestPractices,
     tasks: renderTasks,
+    eventlog: renderEventLog,
     faq: renderFaq,
 };
 
@@ -3342,6 +3401,26 @@ async function navigate(page) {
                     }
                 });
             });
+            // Impact toggle
+            document.querySelectorAll(".impact-toggle-btn").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    const view = btn.dataset.view;
+                    document.querySelectorAll(".impact-toggle-btn").forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                    const timeline = document.getElementById("attention-timeline");
+                    const impact = document.getElementById("attention-impact");
+                    if (timeline) timeline.style.display = view === "timeline" ? "" : "none";
+                    if (impact) impact.style.display = view === "impact" ? "" : "none";
+                });
+            });
+            // Impact items — click to source detail
+            document.querySelectorAll(".impact-clickable").forEach(el => {
+                el.addEventListener("click", async () => {
+                    const srcId = parseInt(el.dataset.sourceId);
+                    const src = (window._dashboardSources || []).find(s => s.id === srcId);
+                    if (src) { await navigate("sources"); showSourceDetail(src); }
+                });
+            });
             // Draw health trend chart
             drawHealthTrendChart();
         }
@@ -3352,6 +3431,7 @@ async function navigate(page) {
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
         if (page === "faq") bindFaqPage();
+        if (page === "eventlog") bindEventLogPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {

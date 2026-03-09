@@ -53,3 +53,52 @@ def get_dashboard():
         alerts_active=alerts_active,
         last_scan=last_scan,
     )
+
+
+@router.get("/impact")
+def get_impact_hierarchy():
+    """Return stale/outdated sources ranked by how many reports they affect."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT s.id AS source_id, s.name AS source_name,
+                   sp.status,
+                   CAST(sp.last_data_at AS TEXT) AS last_data_at,
+                   COUNT(DISTINCT rt.report_id) AS affected_reports
+            FROM sources s
+            JOIN (
+                SELECT source_id, status, last_data_at,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                FROM source_probes
+            ) sp ON sp.source_id = s.id AND sp.rn = 1
+            JOIN report_tables rt ON rt.source_id = s.id
+            WHERE sp.status IN ('stale', 'outdated', 'error')
+            GROUP BY s.id
+            ORDER BY affected_reports DESC, CASE sp.status WHEN 'outdated' THEN 0 WHEN 'error' THEN 0 ELSE 1 END
+        """).fetchall()
+
+        # Gather report names per source
+        source_ids = [r["source_id"] for r in rows]
+        report_map: dict[int, list[str]] = {}
+        if source_ids:
+            placeholders = ",".join("?" * len(source_ids))
+            rnames = db.execute(f"""
+                SELECT rt.source_id, r.name
+                FROM report_tables rt
+                JOIN reports r ON r.id = rt.report_id
+                WHERE rt.source_id IN ({placeholders})
+                ORDER BY r.name
+            """, source_ids).fetchall()
+            for rn in rnames:
+                report_map.setdefault(rn["source_id"], []).append(rn["name"])
+
+    return [
+        {
+            "source_id": r["source_id"],
+            "source_name": r["source_name"],
+            "status": r["status"],
+            "last_data_at": r["last_data_at"],
+            "affected_reports": r["affected_reports"],
+            "report_names": report_map.get(r["source_id"], []),
+        }
+        for r in rows
+    ]

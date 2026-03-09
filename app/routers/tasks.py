@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
 from app.models import TaskOut, TaskCreate, TaskUpdate, TaskMove
+from app.routers.eventlog import log_event
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -17,6 +18,7 @@ def _row_to_task(r) -> TaskOut:
         assigned_to=r["assigned_to"],
         due_date=r["due_date"],
         position=r["position"],
+        email_owner=bool(r["email_owner"]) if r["email_owner"] else False,
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -52,11 +54,12 @@ def create_task(task: TaskCreate):
         ).fetchone()[0]
 
         cursor = db.execute(
-            """INSERT INTO tasks (title, description, status, priority, assigned_to, due_date, position, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO tasks (title, description, status, priority, assigned_to, due_date, position, email_owner, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task.title, task.description, task.status, task.priority,
-             task.assigned_to, task.due_date, max_pos, now, now),
+             task.assigned_to, task.due_date, max_pos, int(task.email_owner), now, now),
         )
+        log_event(db, "task", cursor.lastrowid, task.title, "created")
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_task(row)
 
@@ -77,6 +80,8 @@ def update_task(task_id: int, update: TaskUpdate):
 
         values.append(task_id)
         db.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", values)
+        changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
+        log_event(db, "task", task_id, None, "updated", changed)
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return _row_to_task(row)
 
@@ -122,6 +127,7 @@ def delete_task(task_id: int):
         if not existing:
             raise HTTPException(status_code=404, detail="Task not found")
         db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        log_event(db, "task", task_id, None, "deleted")
     return {"status": "deleted"}
 
 
