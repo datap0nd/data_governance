@@ -215,12 +215,16 @@ MIGRATIONS = [
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     for migration in MIGRATIONS:
         try:
             conn.execute(migration)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass  # column already exists
+            else:
+                raise
     conn.commit()
     conn.close()
 

@@ -8,25 +8,26 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 @router.get("", response_model=DashboardStats)
 def get_dashboard():
     with get_db() as db:
-        # Source status counts from latest probes (excluding unknown/no_connection)
+        # Total source count
+        sources_total = db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"]
+
+        # Source status counts from latest probes
         probe_statuses = db.execute("""
-            SELECT sp.status, COUNT(*) AS c
+            SELECT COALESCE(sp.status, 'unknown') AS eff_status, COUNT(*) AS c
             FROM sources s
             LEFT JOIN (
                 SELECT source_id, status,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
-            WHERE COALESCE(sp.status, 'unknown') NOT IN ('unknown', 'no_connection')
-            GROUP BY sp.status
+            GROUP BY eff_status
         """).fetchall()
 
-        status_counts = {r["status"]: r["c"] for r in probe_statuses}
+        status_counts = {r["eff_status"]: r["c"] for r in probe_statuses}
         sources_fresh = status_counts.get("fresh", 0)
         sources_stale = status_counts.get("stale", 0)
         sources_outdated = status_counts.get("outdated", 0) + status_counts.get("error", 0)
-        sources_unknown = 0
-        sources_total = sources_fresh + sources_stale + sources_outdated
+        sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0)
 
         # Report counts
         reports_total = db.execute("SELECT COUNT(*) AS c FROM reports").fetchone()["c"]

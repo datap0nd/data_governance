@@ -17,40 +17,18 @@ def list_reports():
             ORDER BY r.name
         """).fetchall()
 
-        # Pre-compute unused % for all reports
-        unused_pct_map = {}
-        for r in rows:
-            rid = r["id"]
-            total = db.execute("""
-                SELECT (SELECT COUNT(*) FROM report_measures WHERE report_id = ?)
-                     + (SELECT COUNT(*) FROM report_columns WHERE report_id = ?) AS total
-            """, (rid, rid)).fetchone()["total"]
-            if total > 0:
-                used_fields = db.execute("""
-                    SELECT DISTINCT vf.table_name, vf.field_name
-                    FROM visual_fields vf
-                    JOIN report_visuals rv ON rv.id = vf.visual_id
-                    JOIN report_pages rp ON rp.id = rv.page_id
-                    WHERE rp.report_id = ?
-                """, (rid,)).fetchall()
-                used_set = {(uf["table_name"], uf["field_name"]) for uf in used_fields}
-                measures = db.execute(
-                    "SELECT table_name, measure_name FROM report_measures WHERE report_id = ?", (rid,)
-                ).fetchall()
-                columns = db.execute(
-                    "SELECT table_name, column_name FROM report_columns WHERE report_id = ?", (rid,)
-                ).fetchall()
-                unused = sum(1 for m in measures if (m["table_name"], m["measure_name"]) not in used_set)
-                unused += sum(1 for c in columns if (c["table_name"], c["column_name"]) not in used_set)
-                unused_pct_map[rid] = round(unused / total * 100)
-            else:
-                unused_pct_map[rid] = None
+        # Batch: compute unused_pct for all reports in a few queries
+        unused_pct_map = _batch_unused_pct(db)
+
+        # Batch: derive report status for all reports in one query
+        status_map = _batch_report_statuses(db)
 
     results = []
     for r in rows:
-        status, worst_date = _derive_report_status(r["id"])
+        rid = r["id"]
+        status, worst_date = status_map.get(rid, ("current", None))
         results.append(ReportOut(
-            id=r["id"],
+            id=rid,
             name=r["name"],
             tmdl_path=r["tmdl_path"],
             owner=r["owner"],
@@ -62,7 +40,7 @@ def list_reports():
             status=status,
             source_count=r["source_count"],
             worst_source_updated=worst_date,
-            unused_pct=unused_pct_map.get(r["id"]),
+            unused_pct=unused_pct_map.get(rid),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         ))
@@ -278,32 +256,94 @@ def _derive_report_status(report_id: int) -> tuple[str, str | None]:
     Returns (status, worst_source_updated) tuple.
     """
     with get_db() as db:
-        rows = db.execute("""
-            SELECT sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
-            FROM report_tables rt
-            JOIN source_probes sp ON sp.source_id = rt.source_id
-            WHERE rt.report_id = ?
-            AND sp.id = (
-                SELECT sp2.id FROM source_probes sp2
-                WHERE sp2.source_id = rt.source_id
-                ORDER BY sp2.probed_at DESC LIMIT 1
-            )
-        """, (report_id,)).fetchall()
+        result = _batch_report_statuses(db)
+    return result.get(report_id, ("current", None))
 
-    if not rows:
-        return "current", None
 
-    # Ignore unknown/no_connection sources — they shouldn't affect report status
-    known_rows = [r for r in rows if r["status"] not in ("unknown", "no_connection", None)]
-    if not known_rows:
-        return "current", None
+def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:
+    """Compute report statuses for all reports in a single query.
 
-    statuses = [r["status"] for r in known_rows]
-    dates = [r["last_data_at"] for r in known_rows if r["last_data_at"]]
-    worst_date = min(dates) if dates else None
+    Returns {report_id: (status, worst_source_updated)}.
+    """
+    rows = db.execute("""
+        SELECT rt.report_id, sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
+        FROM report_tables rt
+        JOIN source_probes sp ON sp.source_id = rt.source_id
+        WHERE sp.id = (
+            SELECT sp2.id FROM source_probes sp2
+            WHERE sp2.source_id = rt.source_id
+            ORDER BY sp2.probed_at DESC LIMIT 1
+        )
+        AND COALESCE(sp.status, 'unknown') NOT IN ('unknown', 'no_connection')
+    """).fetchall()
 
-    if "outdated" in statuses or "error" in statuses:
-        return "degraded", worst_date
-    if "stale" in statuses:
-        return "at risk", worst_date
-    return "healthy", worst_date
+    # Group by report_id
+    report_data: dict[int, list] = {}
+    for r in rows:
+        report_data.setdefault(r["report_id"], []).append(r)
+
+    result = {}
+    for rid, probes in report_data.items():
+        statuses = [p["status"] for p in probes]
+        dates = [p["last_data_at"] for p in probes if p["last_data_at"]]
+        worst_date = min(dates) if dates else None
+
+        if "outdated" in statuses or "error" in statuses:
+            result[rid] = ("degraded", worst_date)
+        elif "stale" in statuses:
+            result[rid] = ("at risk", worst_date)
+        else:
+            result[rid] = ("healthy", worst_date)
+
+    return result
+
+
+def _batch_unused_pct(db) -> dict[int, int | None]:
+    """Compute unused_pct for all reports in a few aggregate queries.
+
+    Returns {report_id: unused_pct_or_None}.
+    """
+    # Total fields per report (measures + columns)
+    totals = {}
+    for row in db.execute("""
+        SELECT report_id, COUNT(*) AS cnt FROM (
+            SELECT report_id, table_name, measure_name AS field_name FROM report_measures
+            UNION ALL
+            SELECT report_id, table_name, column_name AS field_name FROM report_columns
+        ) GROUP BY report_id
+    """).fetchall():
+        totals[row["report_id"]] = row["cnt"]
+
+    if not totals:
+        return {}
+
+    # All defined fields (measures + columns) per report
+    all_fields: dict[int, set] = {}
+    for row in db.execute("""
+        SELECT report_id, table_name, measure_name AS field_name FROM report_measures
+        UNION ALL
+        SELECT report_id, table_name, column_name AS field_name FROM report_columns
+    """).fetchall():
+        all_fields.setdefault(row["report_id"], set()).add((row["table_name"], row["field_name"]))
+
+    # All used fields per report (referenced by visuals)
+    used_fields: dict[int, set] = {}
+    for row in db.execute("""
+        SELECT rp.report_id, vf.table_name, vf.field_name
+        FROM visual_fields vf
+        JOIN report_visuals rv ON rv.id = vf.visual_id
+        JOIN report_pages rp ON rp.id = rv.page_id
+    """).fetchall():
+        used_fields.setdefault(row["report_id"], set()).add((row["table_name"], row["field_name"]))
+
+    result = {}
+    for rid, total in totals.items():
+        if total == 0:
+            result[rid] = None
+            continue
+        defined = all_fields.get(rid, set())
+        used = used_fields.get(rid, set())
+        unused_count = len(defined - used)
+        result[rid] = round(unused_count / total * 100)
+
+    return result

@@ -1,5 +1,6 @@
 import logging
-import time
+import re
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +14,14 @@ from app.ai.router import router as ai_router
 # Show scanner logs in the console
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
-app = FastAPI(title="Data Governance Panel", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Data Governance Panel", version="0.1.0", lifespan=lifespan)
 
 # Register API routers
 app.include_router(dashboard.router)
@@ -46,16 +54,11 @@ def _serve_index():
     """Serve index.html with dynamic cache-busting version."""
     html = (static_dir / "index.html").read_text()
     ver = _cache_ver()
-    html = html.replace("?v=7", f"?v={ver}")
+    html = re.sub(r'\?v=\d+', f'?v={ver}', html)
     return HTMLResponse(content=html, headers={
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
     })
-
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 
 @app.get("/")

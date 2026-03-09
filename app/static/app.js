@@ -42,6 +42,11 @@ function renderMd(text) {
 
 // ── Helpers ──
 
+function esc(str) {
+    if (str == null) return "";
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 async function api(path) {
     const res = await fetch(path);
     if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -158,7 +163,7 @@ function timeAgo(dateStr) {
     const now = new Date();
     const diffMs = now - d;
     const mins = Math.floor(diffMs / 60000);
-    if (mins < 0) return "just now";
+    if (mins < 0) return "in the future";
     if (mins < 1) return "just now";
     if (mins < 60) return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
@@ -257,12 +262,9 @@ function dataTable(tableId, columns, rows, opts) {
     return _renderDT(tableId);
 }
 
-function _renderDT(tableId) {
-    const dt = window._dt[tableId];
+function _filterAndSortDT(dt) {
     const { columns, sortCol, sortDir, filters } = dt;
-    let rows = dt.rows;
-
-    rows = rows.filter(r => {
+    let rows = dt.rows.filter(r => {
         for (const col of columns) {
             const f = (filters[col.key] || "").toLowerCase();
             if (!f) continue;
@@ -284,6 +286,13 @@ function _renderDT(tableId) {
             return 0;
         });
     }
+    return rows;
+}
+
+function _renderDT(tableId) {
+    const dt = window._dt[tableId];
+    const { columns, sortCol, sortDir } = dt;
+    let rows = _filterAndSortDT(dt);
 
     const arrow = (key) => {
         if (sortCol !== key) return '<span class="sort-arrow">&#9650;</span>';
@@ -421,29 +430,8 @@ function _refreshDT(tableId) {
     if (!table) return;
 
     // Filter and sort rows
-    const { columns, sortCol, sortDir, filters } = dt;
-    let rows = dt.rows.filter(r => {
-        for (const col of columns) {
-            const f = (filters[col.key] || "").toLowerCase();
-            if (!f) continue;
-            const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
-            if (!val.includes(f)) return false;
-        }
-        return true;
-    });
-
-    if (sortCol) {
-        const col = columns.find(c => c.key === sortCol);
-        rows = [...rows].sort((a, b) => {
-            let va = col && col.sortVal ? col.sortVal(a) : (a[sortCol] ?? "");
-            let vb = col && col.sortVal ? col.sortVal(b) : (b[sortCol] ?? "");
-            if (typeof va === "string") va = va.toLowerCase();
-            if (typeof vb === "string") vb = vb.toLowerCase();
-            if (va < vb) return sortDir === "asc" ? -1 : 1;
-            if (va > vb) return sortDir === "asc" ? 1 : -1;
-            return 0;
-        });
-    }
+    const { columns, sortCol, sortDir } = dt;
+    let rows = _filterAndSortDT(dt);
     dt._displayRows = rows;
 
     // Only replace tbody (preserves thead/filter inputs/focus)
@@ -506,9 +494,9 @@ async function showSourceDetail(source) {
     const reportRows = reports.length > 0
         ? reports.map(r => `
             <tr>
-                <td><strong>${r.name}</strong></td>
-                <td style="color:var(--text-muted)">${r.table_name || "-"}</td>
-                <td style="color:var(--text-muted)">${r.owner || "-"}</td>
+                <td><strong>${esc(r.name)}</strong></td>
+                <td style="color:var(--text-muted)">${esc(r.table_name) || "-"}</td>
+                <td style="color:var(--text-muted)">${esc(r.owner) || "-"}</td>
             </tr>
         `).join("")
         : '<tr><td colspan="3" class="empty-state" style="border:none">No reports linked to this source</td></tr>';
@@ -519,7 +507,7 @@ async function showSourceDetail(source) {
 
     panel.innerHTML = `
         <div class="source-detail-header">
-            <h2>${parsed.shortName}</h2>
+            <h2>${esc(parsed.shortName)}</h2>
             <button class="btn-outline" id="btn-close-detail">&times; Close</button>
         </div>
         <div class="detail-grid">
@@ -941,7 +929,7 @@ async function renderDashboard() {
                         <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
                             <div class="dot dot-${item.severity}"></div>
                             <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                            <span><strong>${item.name}</strong> &mdash; ${item.description}</span>
+                            <span><strong>${esc(item.name)}</strong> &mdash; ${esc(item.description)}</span>
                             <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
                         </div>
                     `).join("")}
@@ -952,7 +940,7 @@ async function renderDashboard() {
                             <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
                                 <div class="dot dot-${item.severity}"></div>
                                 <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                                <span><strong>${item.name}</strong> &mdash; ${item.description}</span>
+                                <span><strong>${esc(item.name)}</strong> &mdash; ${esc(item.description)}</span>
                                 <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
                             </div>
                         `).join("")}
@@ -1122,12 +1110,16 @@ function drawHealthTrendChart() {
     // Store chart geometry for tooltip
     window._healthChartGeom = { padL, padR, padT, padB, chartW, chartH, trend, series, xAt, yAt, maxVal, canvasRect: rect };
 
-    // Tooltip handler
+    // Tooltip handler — remove previous listeners to avoid accumulation
+    canvas.removeEventListener("mousemove", _healthChartMouseMove);
+    canvas.removeEventListener("mouseleave", _healthChartMouseLeave);
     canvas.addEventListener("mousemove", _healthChartMouseMove);
-    canvas.addEventListener("mouseleave", () => {
-        const tip = document.getElementById("health-trend-tooltip");
-        if (tip) tip.style.display = "none";
-    });
+    canvas.addEventListener("mouseleave", _healthChartMouseLeave);
+}
+
+function _healthChartMouseLeave() {
+    const tip = document.getElementById("health-trend-tooltip");
+    if (tip) tip.style.display = "none";
 }
 
 function _healthChartMouseMove(e) {
@@ -1189,7 +1181,7 @@ async function renderDashboardAlerts() {
                 const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
                 return `<div class="alert-item">
                     <div class="dot ${a.severity === 'critical' ? 'dot-red' : 'dot-yellow'}"></div>
-                    <span>${srcShort ? `<strong>${srcShort}</strong> &mdash; ` : ""}${a.message}</span>
+                    <span>${srcShort ? `<strong>${esc(srcShort)}</strong> &mdash; ` : ""}${esc(a.message)}</span>
                     <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${timeAgo(a.created_at)}</span>
                 </div>`;
             }).join("")}
@@ -1208,7 +1200,7 @@ async function renderSources() {
     });
 
     const cols = [
-        { key: "_shortName", label: "File / Table", render: s => `<strong>${s._shortName}</strong>`, sortVal: s => s._shortName || "" },
+        { key: "_shortName", label: "File / Table", render: s => `<strong>${esc(s._shortName)}</strong>`, sortVal: s => s._shortName || "" },
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "_fullLocation", label: "Full Location", resizable: true, render: s => {
             const loc = s._fullLocation || "-";
@@ -1293,7 +1285,7 @@ async function renderReports() {
     ]);
 
     const cols = [
-        { key: "name", label: "Report", render: r => `<strong>${r.name}</strong>` },
+        { key: "name", label: "Report", render: r => `<strong>${esc(r.name)}</strong>` },
         { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
@@ -1443,7 +1435,7 @@ async function renderAlerts() {
         { key: "severity", label: "Severity", render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
         { key: "message", label: "Message", render: a => {
             const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
-            return srcShort ? `<strong>${srcShort}</strong> &mdash; ${a.message}` : a.message;
+            return srcShort ? `<strong>${esc(srcShort)}</strong> &mdash; ${esc(a.message)}` : esc(a.message);
         }},
         { key: "assigned_to", label: "Owner", render: a => {
             const opts = (window._alertOwners || []).map(o =>
@@ -1573,7 +1565,7 @@ async function renderActionsContent() {
                             <span>Assigned: ${a.assigned_to || "unassigned"}</span>
                             <span>${timeAgo(a.created_at)}</span>
                         </div>
-                        ${a.notes ? `<div class="action-notes">${a.notes}</div>` : ""}
+                        ${a.notes ? `<div class="action-notes">${esc(a.notes)}</div>` : ""}
                     </div>
                     <div class="action-controls">
                         <div class="status-pill-wrapper">
@@ -1613,80 +1605,6 @@ async function renderActionsContent() {
         </div>
     `;
     return { html, open, total: actions.length };
-}
-
-async function renderIssues() {
-    const [alertsData, discData] = await Promise.all([
-        renderAlerts(),
-        api("/api/schedules/discrepancies"),
-    ]);
-
-    const discHtml = renderDiscrepancies(discData);
-
-    return `
-        <div class="page-header">
-            <h1>Issues</h1>
-            <span class="subtitle">${alertsData.active} active &middot; ${alertsData.acked} acknowledged &middot; ${alertsData.resolved} resolved &middot; ${discData.summary.discrepancy_count} schedule</span>
-            <button class="btn-export" onclick="exportTableCSV('dt-alerts','issues.csv')">Export CSV</button>
-        </div>
-
-        <h2>Data Freshness Alerts</h2>
-        ${alertsData.html}
-
-        <h2 style="margin-top:2rem">Schedule Discrepancies
-            <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">
-                (${discData.summary.discrepancy_count} of ${discData.summary.total_chains} chains)
-            </span>
-        </h2>
-        <p style="color:var(--text-dim);font-size:0.78rem;margin-bottom:0.75rem">
-            Flags refresh chains where the timing order is broken:
-            Upstream System &rarr; Source &rarr; Report (Sunday)
-        </p>
-        ${discHtml}
-    `;
-}
-
-function _discDateBadge(dateStr, day, iso) {
-    const title = iso ? new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : day;
-    return `<span class="badge badge-muted" style="font-size:0.65rem;margin-left:0.3rem" title="${title}">${dateStr || day}</span>`;
-}
-
-function renderDiscrepancies(data) {
-    if (!data.discrepancies || data.discrepancies.length === 0) {
-        return '<div class="empty-state">No schedule discrepancies detected</div>';
-    }
-
-    const cols = [
-        { key: "severity", label: "Severity",
-          render: d => {
-              const worst = d.issues.some(i => i.severity === "critical") ? "critical" : "warning";
-              return statusBadge(worst);
-          },
-          sortVal: d => d.issues.some(i => i.severity === "critical") ? "0_critical" : "1_warning"
-        },
-        { key: "upstream_name", label: "Upstream",
-          render: d => `<span style="color:var(--text-muted)">${d.upstream_name}</span>
-                        ${_discDateBadge(d.upstream_refresh_date, d.upstream_refresh_day, d.upstream_refresh_iso)}`
-        },
-        { key: "source_name", label: "Source",
-          render: d => {
-              const short = shortNameFromPath(d.source_name) || d.source_name;
-              return `<strong>${short}</strong>
-                      ${_discDateBadge(d.source_refresh_date, d.source_refresh_day, d.source_refresh_iso)}`;
-          }
-        },
-        { key: "report_name", label: "Report",
-          render: d => `<span style="color:var(--text-muted)">${d.report_name}</span>
-                        ${_discDateBadge(d.report_refresh_date, 'Sunday', d.report_refresh_iso)}`
-        },
-        { key: "issue", label: "Issue",
-          render: d => d.issues.map(i =>
-              `<span class="badge ${i.severity === 'critical' ? 'badge-red' : 'badge-yellow'}" style="font-size:0.65rem">${i.message}</span>`
-          ).join(' ')
-        },
-    ];
-
-    return dataTable("dt-discrepancies", cols, data.discrepancies);
 }
 
 function bindActionsTab() {
@@ -1777,20 +1695,6 @@ function bindActionStatusSelects() {
 }
 
 
-function shortSourceLabel(name, type) {
-    const DB_TYPES = new Set(["sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"]);
-    if (DB_TYPES.has(type)) {
-        // "sqlserver01.company.local/SalesDB/dbo.Orders" → "dbo.Orders"
-        const lastSlash = name.lastIndexOf("/");
-        return lastSlash >= 0 ? name.substring(lastSlash + 1) : name;
-    }
-    // File-based: "C:\Data\SKU_Master.xlsx" → "SKU_Master"
-    const sep = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
-    const withExt = sep >= 0 ? name.substring(sep + 1) : name;
-    const dot = withExt.lastIndexOf(".");
-    return dot > 0 ? withExt.substring(0, dot) : withExt;
-}
-
 /** Extract a short display name from a source name string (no extension for files). */
 function shortNameFromPath(fullName) {
     if (!fullName) return "";
@@ -1804,197 +1708,6 @@ function shortNameFromPath(fullName) {
     const dot = base.lastIndexOf(".");
     return dot > 0 ? base.substring(0, dot) : base;
 }
-
-function _lineageReportItem(r, reportSources) {
-    const srcCount = reportSources.get(r.id)?.size || 0;
-    const statusClass = r.status === "healthy" ? "dot-green"
-        : r.status === "at risk" ? "dot-yellow"
-        : r.status === "degraded" ? "dot-red"
-        : "dot-muted";
-    return `
-        <div class="lineage-report-item" data-report-id="${r.id}">
-            <span class="dot ${statusClass}" style="width:8px;height:8px;flex-shrink:0"></span>
-            <div class="lineage-report-info">
-                <span class="lineage-report-name">${shortNameFromPath(r.name) || r.name}</span>
-                <span class="lineage-report-meta">${srcCount} source${srcCount !== 1 ? "s" : ""}${r.owner ? " &middot; " + r.owner : ""}</span>
-            </div>
-            ${statusBadge(r.status)}
-        </div>
-    `;
-}
-
-function _renderLineageDetail(reportId) {
-    const data = window._lineageData;
-    if (!data) return;
-
-    const report = data.sortedReports.find(r => r.id === reportId);
-    if (!report) return;
-
-    const srcIds = data.reportSources.get(reportId) || new Set();
-    const reportSources = [];
-    srcIds.forEach(sid => {
-        const s = data.sourceMap.get(sid);
-        if (s) reportSources.push(s);
-    });
-
-    // Group sources by folder
-    const grouped = new Map();
-    reportSources.forEach(s => {
-        const folder = data.sourceFolder(s.name);
-        if (!grouped.has(folder)) grouped.set(folder, []);
-        grouped.get(folder).push(s);
-    });
-
-    // Sort folders: folders with issues first
-    const folderOrder = (sources) => {
-        if (sources.some(s => s.status === "outdated" || s.status === "error" || s.status === "degraded")) return 0;
-        if (sources.some(s => s.status === "stale" || s.status === "at risk")) return 1;
-        return 2;
-    };
-    const sortedFolders = [...grouped.entries()].sort((a, b) => {
-        const oa = folderOrder(a[1]);
-        const ob = folderOrder(b[1]);
-        if (oa !== ob) return oa - ob;
-        return a[0].localeCompare(b[0]);
-    });
-
-    // Find which other reports share sources with this one
-    const sharedReports = new Map(); // sourceId → [report names]
-    data.edges.forEach(e => {
-        if (srcIds.has(e.source_id) && e.report_id !== reportId) {
-            if (!sharedReports.has(e.source_id)) sharedReports.set(e.source_id, []);
-            sharedReports.get(e.source_id).push(e.report_name);
-        }
-    });
-
-    const statusSummary = { healthy: 0, at_risk: 0, degraded: 0, unknown: 0 };
-    reportSources.forEach(s => {
-        if (s.status === "fresh") statusSummary.healthy++;
-        else if (s.status === "stale") statusSummary.at_risk++;
-        else if (s.status === "outdated" || s.status === "error") statusSummary.degraded++;
-        else statusSummary.unknown++;
-    });
-
-    const detailEl = document.getElementById("lineage-detail");
-    if (!detailEl) return;
-
-    detailEl.innerHTML = `
-        <div class="lineage-detail-header">
-            <div>
-                <h2 style="margin-bottom:0.15rem">${shortNameFromPath(report.name) || report.name}</h2>
-                <div class="lineage-detail-meta">
-                    ${statusBadge(report.status)}
-                    <span>${reportSources.length} source${reportSources.length !== 1 ? "s" : ""}</span>
-                    ${report.owner ? `<span>Owner: ${report.owner}</span>` : ""}
-                    ${report.frequency ? `<span>Frequency: ${report.frequency}</span>` : ""}
-                    ${report.worst_source_updated ? `<span>Oldest data: ${timeAgo(report.worst_source_updated)}</span>` : ""}
-                </div>
-            </div>
-            <div class="lineage-health-pills">
-                ${statusSummary.healthy ? `<span class="health-pill pill-green">${statusSummary.healthy} healthy</span>` : ""}
-                ${statusSummary.at_risk ? `<span class="health-pill pill-yellow">${statusSummary.at_risk} at risk</span>` : ""}
-                ${statusSummary.degraded ? `<span class="health-pill pill-red">${statusSummary.degraded} degraded</span>` : ""}
-                ${statusSummary.unknown ? `<span class="health-pill pill-muted">${statusSummary.unknown} unknown</span>` : ""}
-            </div>
-        </div>
-
-        <div id="ai-risk-slot"></div>
-
-        <div class="lineage-source-tree">
-            ${sortedFolders.map(([folder, folderSources]) => `
-                <div class="lineage-folder-group">
-                    <div class="lineage-folder-label">${folder}</div>
-                    ${folderSources.map(s => {
-                        const shared = sharedReports.get(s.id) || [];
-                        return `
-                        <div class="lineage-source-row">
-                            <div class="lineage-source-indicator status-dot-${s.status}"></div>
-                            <div class="lineage-source-info">
-                                <div class="lineage-source-name">${shortNameFromPath(s.name) || s.name}</div>
-                                <div class="lineage-source-path">${s.name}</div>
-                                <div class="lineage-source-details">
-                                    ${typeBadge(s.type)}
-                                    ${statusBadge(s.status)}
-                                    ${s.last_updated ? `<span class="lineage-source-date">${timeAgo(s.last_updated)}</span>` : '<span class="lineage-source-date">never probed</span>'}
-                                    ${s.owner ? `<span class="lineage-source-owner">${s.owner}</span>` : ""}
-                                </div>
-                                ${shared.length ? `<div class="lineage-shared">Also used by: ${shared.map(n => shortNameFromPath(n) || n).join(", ")}</div>` : ""}
-                            </div>
-                        </div>`;
-                    }).join("")}
-                </div>
-            `).join("")}
-        </div>
-    `;
-}
-
-function bindLineagePage() {
-    const data = window._lineageData;
-    if (!data) return;
-
-    const listEl = document.getElementById("lineage-report-list");
-    const searchInput = document.getElementById("lineage-report-search");
-
-    // Report item click → show detail
-    function bindReportClicks() {
-        document.querySelectorAll(".lineage-report-item").forEach(item => {
-            item.addEventListener("click", () => {
-                document.querySelectorAll(".lineage-report-item.selected").forEach(i => i.classList.remove("selected"));
-                item.classList.add("selected");
-                const rid = parseInt(item.dataset.reportId);
-                _renderLineageDetail(rid);
-                renderAIReportRisk(rid);
-            });
-        });
-    }
-    bindReportClicks();
-
-    // Filter + search
-    function filterList() {
-        const query = (searchInput?.value || "").toLowerCase().trim();
-        const activeFilter = document.querySelector(".lineage-filter-btn.active")?.dataset.filter || "all";
-
-        const filtered = data.sortedReports.filter(r => {
-            if (activeFilter === "unhealthy" && r.status === "healthy") return false;
-            if (query) {
-                const name = (r.name || "").toLowerCase();
-                const owner = (r.owner || "").toLowerCase();
-                if (!name.includes(query) && !owner.includes(query)) return false;
-            }
-            return true;
-        });
-
-        listEl.innerHTML = filtered.length
-            ? filtered.map(r => _lineageReportItem(r, data.reportSources)).join("")
-            : '<div class="lineage-empty-list">No reports match</div>';
-        bindReportClicks();
-    }
-
-    if (searchInput) {
-        searchInput.addEventListener("input", () => filterList());
-    }
-
-    document.querySelectorAll(".lineage-filter-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            document.querySelectorAll(".lineage-filter-btn").forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            filterList();
-        });
-    });
-
-    // Auto-select first unhealthy report, or first report
-    const firstUnhealthy = data.sortedReports.find(r => r.status !== "healthy");
-    const autoSelect = firstUnhealthy || data.sortedReports[0];
-    if (autoSelect) {
-        const item = document.querySelector(`.lineage-report-item[data-report-id="${autoSelect.id}"]`);
-        if (item) {
-            item.classList.add("selected");
-            _renderLineageDetail(autoSelect.id);
-            renderAIReportRisk(autoSelect.id);
-        }
-    }
-}
-
 
 // ── Changelog ──
 
@@ -2429,19 +2142,19 @@ function _showEditForm(type, id, entity) {
         const upOpts = (opts.upstream_systems || []).map(u => `<option value="${u.id}" ${entity.upstream_id === u.id ? 'selected' : ''}>${u.name}</option>`).join('');
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
-                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+                <input type="text" id="cf-name" value="${esc(entity.name)}" required></div>
             <div class="create-field"><label>Type <span class="required">*</span></label>
                 <select id="cf-type"><option value="">Choose...</option>${typeOpts}</select></div>
             <div class="create-field"><label>Connection Info</label>
-                <input type="text" id="cf-connection_info" value="${entity.connection_info || ''}"></div>
+                <input type="text" id="cf-connection_info" value="${esc(entity.connection_info)}"></div>
             <div class="create-field"><label>Source Query</label>
-                <input type="text" id="cf-source_query" value="${entity.source_query || ''}"></div>
+                <input type="text" id="cf-source_query" value="${esc(entity.source_query)}"></div>
             <div class="create-field"><label>Owner</label>
                 <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
             <div class="create-field"><label>Refresh Schedule</label>
                 <select id="cf-refresh_schedule"><option value="">Choose...</option>${dayOpts.replace(`value="${entity.refresh_schedule}"`, `value="${entity.refresh_schedule}" selected`)}</select></div>
             <div class="create-field"><label>Tags</label>
-                <input type="text" id="cf-tags" value="${entity.tags || ''}"></div>
+                <input type="text" id="cf-tags" value="${esc(entity.tags)}"></div>
             <div class="create-field"><label>Upstream System</label>
                 <select id="cf-upstream_id"><option value="">None</option>${upOpts}</select></div>
         `;
@@ -2450,7 +2163,7 @@ function _showEditForm(type, id, entity) {
         const boOpts = (opts.owners || []).map(o => `<option value="${o}" ${entity.business_owner === o ? 'selected' : ''}>${o}</option>`).join('');
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
-                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+                <input type="text" id="cf-name" value="${esc(entity.name)}" required></div>
             <div class="create-field"><label>Report Owner</label>
                 <select id="cf-owner"><option value="">Choose...</option>${ownerOpts}</select></div>
             <div class="create-field"><label>Business Owner</label>
@@ -2464,7 +2177,7 @@ function _showEditForm(type, id, entity) {
         const codeOpts = (opts.upstream_codes || []).map(c => `<option value="${c}" ${entity.code === c ? 'selected' : ''}>${c}</option>`).join('');
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
-                <input type="text" id="cf-name" value="${entity.name || ''}" required></div>
+                <input type="text" id="cf-name" value="${esc(entity.name)}" required></div>
             <div class="create-field"><label>Code <span class="required">*</span></label>
                 <select id="cf-code"><option value="">Choose...</option>${codeOpts}</select></div>
             <div class="create-field"><label>Refresh Day</label>
@@ -2857,9 +2570,9 @@ function _renderLineageDiagram(data) {
     let sourcesHtml = '<div class="lineage-col" data-col="sources"><div class="lineage-col-header">Sources</div>';
     for (const s of sourceNodes) {
         const shortName = s.name.length > 30 ? "..." + s.name.slice(-27) : s.name;
-        sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${s.name}">
+        sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
             ${statusDot(s.status)}
-            <span class="lineage-node-label">${shortName}</span>
+            <span class="lineage-node-label">${esc(shortName)}</span>
         </div>`;
     }
     sourcesHtml += '</div>';
@@ -2876,9 +2589,9 @@ function _renderLineageDiagram(data) {
 
     // Report header
     const reportHeader = `<div class="lineage-report-header">
-        <strong>${data.report.name}</strong>
+        <strong>${esc(data.report.name)}</strong>
         <span class="lineage-report-status lineage-report-status-${(data.report.status || "").replace(/\s+/g, "-")}">${data.report.status}</span>
-        ${data.report.owner ? `<span class="lineage-report-owner">${data.report.owner}</span>` : ""}
+        ${data.report.owner ? `<span class="lineage-report-owner">${esc(data.report.owner)}</span>` : ""}
     </div>`;
 
     container.innerHTML = `
@@ -2904,7 +2617,10 @@ function _renderLineageDiagram(data) {
     if (window._lineageResizeObs) window._lineageResizeObs.disconnect();
     const wrap = container.querySelector(".lineage-diagram-wrap");
     if (wrap) {
-        window._lineageResizeObs = new ResizeObserver(() => _drawLineageLines(connections));
+        window._lineageResizeObs = new ResizeObserver(() => {
+            clearTimeout(window._lineageResizeTimer);
+            window._lineageResizeTimer = setTimeout(() => _drawLineageLines(connections), 50);
+        });
         window._lineageResizeObs.observe(wrap);
     }
 }
@@ -3090,11 +2806,11 @@ function _taskCard(task) {
     const today = new Date().toISOString().slice(0, 10);
     const overdue = task.due_date && task.due_date < today && task.status !== "done";
     const dueFmt = task.due_date ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
-    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}" tabindex="0" role="listitem" aria-label="Task: ${task.title}, Priority: ${task.priority}${task.assigned_to ? ', Assigned to: ' + task.assigned_to : ''}">
-        <div class="kanban-card-title">${task.title}</div>
+    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}" tabindex="0" role="listitem" aria-label="Task: ${esc(task.title)}, Priority: ${task.priority}${task.assigned_to ? ', Assigned to: ' + esc(task.assigned_to) : ''}">
+        <div class="kanban-card-title">${esc(task.title)}</div>
         <div class="kanban-card-meta">
             <span class="priority-tag ${task.priority}">${task.priority}</span>
-            ${task.assigned_to ? `<span class="assignee-chip" title="${task.assigned_to}">${task.assigned_to}</span>` : ""}
+            ${task.assigned_to ? `<span class="assignee-chip" title="${esc(task.assigned_to)}">${esc(task.assigned_to)}</span>` : ""}
             ${dueFmt ? `<span class="due-date${overdue ? " overdue" : ""}">${overdue ? "Overdue: " : ""}${dueFmt}</span>` : ""}
         </div>
     </div>`;
@@ -3178,9 +2894,9 @@ function _taskModalHtml(task, owners) {
         <div class="task-modal">
             <h2 id="task-modal-title">${title}</h2>
             <label>Title</label>
-            <input type="text" id="task-title" value="${(t.title || "").replace(/"/g, "&quot;")}" placeholder="Task title..." />
+            <input type="text" id="task-title" value="${esc(t.title)}" placeholder="Task title..." />
             <label>Description</label>
-            <textarea id="task-desc" placeholder="Optional description...">${t.description || ""}</textarea>
+            <textarea id="task-desc" placeholder="Optional description...">${esc(t.description)}</textarea>
             <label>Status</label>
             <select id="task-status">${statusOptions}</select>
             <label>Priority</label>
@@ -3618,7 +3334,9 @@ async function navigate(page) {
                         const rpt = (window._dashboardReports || []).find(r => r.id === id);
                         if (rpt) { await navigate("reports"); showReportDetail(rpt); }
                     } else if (kind === "alert") {
-                        await navigate("dashboard");
+                        // Flash-highlight the clicked alert row
+                        el.style.background = "rgba(59,130,246,0.25)";
+                        setTimeout(() => { el.style.background = ""; }, 1200);
                     }
                 });
             });
@@ -3635,7 +3353,7 @@ async function navigate(page) {
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
-        app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${err.message}</div>`;
+        app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${esc(err.message)}</div>`;
     }
 }
 

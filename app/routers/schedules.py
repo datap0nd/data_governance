@@ -79,9 +79,6 @@ def get_schedule_discrepancies():
             ORDER BY s.name, r.name
         """).fetchall()
 
-    # Compute next Sunday date for reports
-    sunday_info = _next_weekday_date("Sunday", with_iso=True)
-
     discrepancies = []
     for row in rows:
         upstream_day = DAY_ORDER.get(row["upstream_refresh_day"], -1)
@@ -89,6 +86,15 @@ def get_schedule_discrepancies():
 
         upstream_info = _next_weekday_date(row["upstream_refresh_day"], with_iso=True)
         source_info = _next_weekday_date(row["source_refresh_day"], with_iso=True)
+
+        # Parse report refresh day from frequency field (e.g. "Weekly - Tuesday")
+        report_day_name = "Sunday"  # default
+        freq = row["report_frequency"] or ""
+        if freq.startswith("Weekly - "):
+            parsed_day = freq.replace("Weekly - ", "").strip()
+            if parsed_day in DAY_ORDER:
+                report_day_name = parsed_day
+        report_day = DAY_ORDER.get(report_day_name, 6)
 
         issues = []
 
@@ -100,12 +106,12 @@ def get_schedule_discrepancies():
                 "message": f"Upstream \u2265 source ({row['upstream_refresh_day']} \u2265 {row['source_refresh_day']})",
             })
 
-        # Source must refresh BEFORE report (Sunday = 6)
-        if source_day >= 6:
+        # Source must refresh BEFORE report
+        if source_day >= report_day:
             issues.append({
                 "type": "source_after_report",
                 "severity": "critical",
-                "message": f"Source on report day ({row['source_refresh_day']})",
+                "message": f"Source on report day ({row['source_refresh_day']} \u2265 {report_day_name})",
             })
 
         if issues:
@@ -123,8 +129,8 @@ def get_schedule_discrepancies():
                 "source_refresh_iso": source_info["iso"],
                 "report_id": row["report_id"],
                 "report_name": row["report_name"],
-                "report_refresh_date": sunday_info["label"],
-                "report_refresh_iso": sunday_info["iso"],
+                "report_refresh_date": _next_weekday_date(report_day_name, with_iso=True)["label"],
+                "report_refresh_iso": _next_weekday_date(report_day_name, with_iso=True)["iso"],
                 "issues": issues,
             })
 

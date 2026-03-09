@@ -90,6 +90,8 @@ def move_task(task_id: int, move: TaskMove):
         if not existing:
             raise HTTPException(status_code=404, detail="Task not found")
 
+        old_status = existing["status"]
+
         # Shift positions in target column to make room
         db.execute(
             "UPDATE tasks SET position = position + 1 WHERE status = ? AND position >= ? AND id != ?",
@@ -99,6 +101,16 @@ def move_task(task_id: int, move: TaskMove):
             "UPDATE tasks SET status = ?, position = ?, updated_at = ? WHERE id = ?",
             (move.status, move.position, now, task_id),
         )
+
+        # Close gaps in the old column if the task moved to a different column
+        if old_status != move.status:
+            old_tasks = db.execute(
+                "SELECT id FROM tasks WHERE status = ? ORDER BY position",
+                (old_status,),
+            ).fetchall()
+            for i, t in enumerate(old_tasks):
+                db.execute("UPDATE tasks SET position = ? WHERE id = ?", (i, t["id"]))
+
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return _row_to_task(row)
 

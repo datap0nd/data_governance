@@ -10,23 +10,18 @@ router = APIRouter(prefix="/api/actions", tags=["actions"])
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
+        query = """
+            SELECT a.*, s.name AS source_name, r.name AS report_name
+            FROM actions a
+            LEFT JOIN sources s ON s.id = a.source_id
+            LEFT JOIN reports r ON r.id = a.report_id
+        """
+        params = []
         if status:
-            rows = db.execute("""
-                SELECT a.*, s.name AS source_name, r.name AS report_name
-                FROM actions a
-                LEFT JOIN sources s ON s.id = a.source_id
-                LEFT JOIN reports r ON r.id = a.report_id
-                ORDER BY a.created_at DESC
-            """).fetchall()
-            rows = [r for r in rows if r["status"] == status]
-        else:
-            rows = db.execute("""
-                SELECT a.*, s.name AS source_name, r.name AS report_name
-                FROM actions a
-                LEFT JOIN sources s ON s.id = a.source_id
-                LEFT JOIN reports r ON r.id = a.report_id
-                ORDER BY a.created_at DESC
-            """).fetchall()
+            query += " WHERE a.status = ?"
+            params.append(status)
+        query += " ORDER BY a.created_at DESC"
+        rows = db.execute(query, params).fetchall()
 
     return [
         ActionOut(

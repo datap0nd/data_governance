@@ -34,6 +34,10 @@ def get_create_options():
         reports = db.execute(
             "SELECT id, name FROM reports ORDER BY name"
         ).fetchall()
+        # Derive upstream codes from existing systems
+        upstream_codes = db.execute(
+            "SELECT DISTINCT code FROM upstream_systems WHERE code IS NOT NULL AND code != '' ORDER BY code"
+        ).fetchall()
 
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     return {
@@ -42,7 +46,7 @@ def get_create_options():
         "report_frequencies": [f"Weekly - {d}" for d in weekdays],
         "owners": [r["owner"] for r in owners],
         "upstream_systems": [dict(r) for r in upstreams],
-        "upstream_codes": ["GSCM", "ASAP"],
+        "upstream_codes": [r["code"] for r in upstream_codes],
         "reports": [dict(r) for r in reports],
     }
 
