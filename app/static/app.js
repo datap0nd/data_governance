@@ -2034,92 +2034,122 @@ async function renderChangelog() {
         `;
     }).join("");
 
-    const howItWorks = `
-        <div class="how-it-works">
-            <h2>How This Works</h2>
-            <div class="how-overview">A full-stack data governance platform built with <strong>Python</strong> and <strong>vanilla JavaScript</strong>. The backend runs on <strong>FastAPI</strong> served by <strong>Uvicorn</strong> (ASGI), with <strong>Pydantic</strong> for request/response validation. The frontend is a single-page application with no framework dependencies \u2014 just native DOM APIs, fetch, and CSS custom properties for theming.</div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-arch">
-                    <span class="how-chevron">&#9654;</span> Architecture
+    const flowchart = `
+        <div class="flowchart-wrap">
+            <div class="flowchart-title">Data Governance Pipeline</div>
+            <div class="flowchart-sub">Hover each step for details</div>
+            <div class="fc-pipeline">
+                <div class="fc-col">
+                    <div class="fc-tip"><b>Data Input</b>.pbix report files and TMDL exports from the shared network folder.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <rect x="22" y="4" width="5" height="26" rx="2.5" fill="#F2C811"/>
+                            <rect x="14.5" y="10" width="5" height="20" rx="2.5" fill="#E8A40A"/>
+                            <rect x="7" y="16" width="5" height="14" rx="2.5" fill="#DA9508"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">Power BI</div>
                 </div>
-                <div class="how-section-body" id="how-arch">
-                    <p>API-first design: FastAPI serves a RESTful JSON API under <code>/api/*</code> with modular routers (sources, reports, scanner, alerts, schedules, lineage, actions, changelog, create). The SPA frontend consumes these endpoints via async fetch wrappers. Static files are served by FastAPI's StaticFiles mount with cache-busting version strings.</p>
-                    <p>The data pipeline follows a clear flow: <strong>Scanner</strong> discovers reports \u2192 <strong>Parser</strong> extracts sources &amp; M expressions \u2192 <strong>Deduplicator</strong> consolidates \u2192 <strong>SQLite</strong> stores \u2192 <strong>Prober</strong> checks freshness \u2192 <strong>API</strong> serves to frontend.</p>
+                <div class="fc-harr"></div>
+                <div class="fc-col">
+                    <div class="fc-tip"><b>Python Scanner</b>Opens each report, extracts all data sources, deduplicates across reports, detects changes.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <path d="M16.9 4C11.5 4 11.8 6.4 11.8 6.4v2.5h5.3v.8H9.6S5.5 9.2 5.5 14.7s3.6 5.3 3.6 5.3h2.1v-2.5s-.1-3.6 3.5-3.6h5.1s3.4.1 3.4-3.3V6.9S23.7 4 16.9 4Zm-2.8 1.7c.5 0 1 .4 1 1s-.4 1-1 1c-.5 0-1-.4-1-1s.5-1 1-1Z" fill="#3776AB"/>
+                            <path d="M17.1 30c5.4 0 5.1-2.4 5.1-2.4v-2.5h-5.3v-.8h7.5s4.1.5 4.1-5c0-5.5-3.6-5.3-3.6-5.3h-2.1v2.5s.1 3.6-3.5 3.6h-5.1s-3.4-.1-3.4 3.3v3.7S10.3 30 17.1 30Zm2.8-1.7c-.5 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.5 1-1 1Z" fill="#FFD43B"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">Scanner</div>
+                    <div class="fc-branch">
+                        <div class="fc-vline"></div>
+                        <div class="fc-vtag">discovers</div>
+                        <div class="fc-chips">
+                            <div class="fc-chip"><svg viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.5"><path d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v4.875c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375"/></svg>SQL Server</div>
+                            <div class="fc-chip"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="6" stroke="#336791" stroke-width="1.5"/><path d="M12 6v12" stroke="#336791" stroke-width="1"/></svg>PostgreSQL</div>
+                            <div class="fc-chip"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#217346" stroke-width="1.5"/><path d="M8 8h8M8 12h8M8 16h5" stroke="#217346" stroke-width="1"/></svg>Excel</div>
+                            <div class="fc-chip"><svg viewBox="0 0 24 24" fill="none" stroke="#86868b" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>CSV</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="fc-harr"></div>
+                <div class="fc-col">
+                    <div class="fc-tip"><b>governance.db</b>Single SQLite file. All sources, reports, lineage, alerts, actions, and scan history.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <ellipse cx="17" cy="9" rx="10" ry="4" stroke="#5E5CE6" stroke-width="2" fill="none"/>
+                            <path d="M7 9v16c0 2.2 4.5 4 10 4s10-1.8 10-4V9" stroke="#5E5CE6" stroke-width="2" fill="none"/>
+                            <path d="M7 17c0 2.2 4.5 4 10 4s10-1.8 10-4" stroke="#5E5CE6" stroke-width="1.5" fill="none" opacity="0.4"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">SQLite</div>
+                    <div class="fc-branch">
+                        <div class="fc-vline"></div>
+                        <div class="fc-vtag">stores</div>
+                        <div class="fc-chips">
+                            <div class="fc-chip">Sources</div>
+                            <div class="fc-chip">Reports</div>
+                            <div class="fc-chip">Lineage</div>
+                            <div class="fc-chip">History</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="fc-harr"></div>
+                <div class="fc-col">
+                    <div class="fc-tip"><b>Freshness Monitor</b>Checks file dates and database timestamps. Configurable thresholds per source.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <circle cx="17" cy="17" r="12" stroke="#34C759" stroke-width="2" fill="none"/>
+                            <circle cx="17" cy="17" r="1.5" fill="#34C759"/>
+                            <line x1="17" y1="17" x2="17" y2="9" stroke="#34C759" stroke-width="2" stroke-linecap="round"/>
+                            <line x1="17" y1="17" x2="23" y2="20" stroke="#34C759" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">Freshness</div>
+                    <div class="fc-branch">
+                        <div class="fc-vline"></div>
+                        <div class="fc-vtag">classifies</div>
+                        <div class="fc-chips">
+                            <div class="fc-chip"><div class="fc-dot fc-dot-g"></div> Fresh</div>
+                            <div class="fc-chip"><div class="fc-dot fc-dot-y"></div> Stale</div>
+                            <div class="fc-chip"><div class="fc-dot fc-dot-r"></div> Outdated</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="fc-harr"></div>
+                <div class="fc-col">
+                    <div class="fc-tip"><b>Alerts &amp; Actions</b>Auto-created for stale/broken sources. Assigned to report owners. Tracked to resolution.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <path d="M25 14a8 8 0 1 0-16 0c0 8-3.5 10-3.5 10h23S25 22 25 14Z" stroke="#FF3B30" stroke-width="2" fill="none"/>
+                            <path d="M19.5 28a2.5 2.5 0 0 1-5 0" stroke="#FF3B30" stroke-width="2" fill="none"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">Alerts</div>
+                    <div class="fc-branch">
+                        <div class="fc-vline"></div>
+                        <div class="fc-vtag">workflow</div>
+                        <div class="fc-chips">
+                            <div class="fc-chip"><div class="fc-dot fc-dot-r"></div> Open</div>
+                            <div class="fc-chip"><div class="fc-dot fc-dot-y"></div> Investigating</div>
+                            <div class="fc-chip"><div class="fc-dot fc-dot-g"></div> Resolved</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="fc-harr"></div>
+                <div class="fc-col">
+                    <div class="fc-tip"><b>Web Dashboard</b>Browser-based panel for the whole team. Health KPIs, lineage maps, alert triage, AI assistant.</div>
+                    <div class="fc-ico">
+                        <svg viewBox="0 0 34 34" fill="none">
+                            <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="#FF9500" stroke-width="2" fill="none"/>
+                            <rect x="19" y="4" width="11" height="11" rx="2.5" stroke="#FF9500" stroke-width="2" fill="none"/>
+                            <rect x="4" y="19" width="11" height="11" rx="2.5" stroke="#FF9500" stroke-width="2" fill="none"/>
+                            <rect x="19" y="19" width="11" height="11" rx="2.5" stroke="#FF9500" stroke-width="2" fill="none"/>
+                        </svg>
+                    </div>
+                    <div class="fc-lbl">Dashboard</div>
                 </div>
             </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-db">
-                    <span class="how-chevron">&#9654;</span> Database
-                </div>
-                <div class="how-section-body" id="how-db">
-                    <p>All state is persisted in a single <strong>SQLite</strong> file (<code>governance.db</code>) using raw SQL with parameterized queries \u2014 no ORM layer. The connection uses Python's <code>sqlite3</code> module with <code>row_factory = sqlite3.Row</code> for dict-like row access, wrapped in a context manager that handles commits and rollbacks.</p>
-                    <p>Schema: 11 tables (<code>sources</code>, <code>source_probes</code>, <code>reports</code>, <code>report_tables</code>, <code>scan_runs</code>, <code>probe_runs</code>, <code>checks</code>, <code>check_results</code>, <code>alerts</code>, <code>actions</code>, <code>upstream_systems</code>) plus a <code>lineage</code> view for source\u2192report mappings. Foreign keys are enforced via <code>PRAGMA foreign_keys = ON</code>.</p>
-                    <p>Schema evolution is handled by a lightweight migrations array \u2014 each <code>ALTER TABLE</code> runs inside a try/except that silently skips if the column already exists, keeping deployments idempotent.</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-scanning">
-                    <span class="how-chevron">&#9654;</span> Scanner & Parser
-                </div>
-                <div class="how-section-body" id="how-scanning">
-                    <p>The scanner supports two modes: <strong>PBIX mode</strong> (primary) parses <code>.pbix</code> binary files using the <strong>PBIXRay</strong> library to extract table schemas and Power Query M expressions. <strong>TMDL mode</strong> (fallback) walks Tabular Model Definition Language text files and parses partition expressions with a custom Python parser.</p>
-                    <p>Extracted M expressions are analyzed to identify source types (PostgreSQL, SQL Server, MySQL, Oracle, CSV, Excel, SharePoint, and more), connection strings, file paths, and SQL queries. A deduplication engine consolidates matching sources across reports by connection key.</p>
-                    <p>The prober checks freshness via two strategies: <strong>file-based sources</strong> use OS-level modification timestamps; <strong>database sources</strong> read from <code>latest_upload_date.csv</code>. Thresholds are configurable per-source (default: healthy &lt; 31d, at risk 31\u201390d, degraded &gt; 90d).</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-sources">
-                    <span class="how-chevron">&#9654;</span> Data Sources
-                </div>
-                <div class="how-section-body" id="how-sources">
-                    <p>The system tracks 28 data sources across multiple types: PostgreSQL tables (<code>dbo.Orders</code>, <code>dbo.Contacts</code>...), CSV files (sales data, employee rosters...), and Excel workbooks (budget forecasts, inventory levels...). Each is linked to its parent reports via the <code>report_tables</code> junction table.</p>
-                    <p>Sources can be linked to upstream systems (GSCM, ASAP) to model the full refresh chain. The schedule discrepancy engine validates timing order: upstream \u2192 source \u2192 report, flagging violations as warnings or critical issues.</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-reports">
-                    <span class="how-chevron">&#9654;</span> Reports
-                </div>
-                <div class="how-section-body" id="how-reports">
-                    <p>11 Power BI reports are managed, each with owner metadata, business owner assignments, refresh frequencies, and direct Power BI URLs. Report health status is derived from the worst-status source in its dependency tree.</p>
-                    <p>Reports: Customer 360, Executive Summary, Finance Monthly, HR Dashboard, Inventory Analysis, Marketing ROI, Monthly KPI, Product Mix, Sales Pipeline, Supply Chain Tracker, Weekly Sales.</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-ai">
-                    <span class="how-chevron">&#9654;</span> AI Features
-                </div>
-                <div class="how-section-body" id="how-ai">
-                    <p>An optional AI layer provides conversational chat, dashboard briefings, per-report risk assessments, and action suggestions. It integrates with any <strong>OpenAI-compatible endpoint</strong> (including local models via LiteLLM/Ollama) using <strong>httpx</strong> for async HTTP. A context builder enriches prompts with live database metrics.</p>
-                    <p>A comprehensive mock provider generates context-aware responses from real data for demo and development, toggled via the <code>DG_AI_MOCK</code> environment variable.</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-frontend">
-                    <span class="how-chevron">&#9654;</span> Frontend
-                </div>
-                <div class="how-section-body" id="how-frontend">
-                    <p>The SPA is built without any JavaScript framework \u2014 pure vanilla JS (~3,500 lines). It features a custom data table component with sorting, column filtering, resizable columns, and row expansion. A custom markdown renderer converts AI responses to HTML. Routing is hash-based with alias support for backwards compatibility.</p>
-                    <p>Styling uses a custom CSS design system (~2,500 lines) with CSS custom properties for a dark theme palette, responsive grid layouts, and micro-animations (health bar sweep, pulse borders, slide-up toasts). Charts are rendered directly on <code>&lt;canvas&gt;</code> without any charting library.</p>
-                </div>
-            </div>
-
-            <div class="how-section">
-                <div class="how-section-header" data-how-toggle="how-files">
-                    <span class="how-chevron">&#9654;</span> Configuration Files
-                </div>
-                <div class="how-section-body" id="how-files">
-                    <p><code>owners.csv</code> \u2014 report/business owner assignments. <code>powerbi_links.csv</code> \u2014 report-to-URL mappings. <code>latest_upload_date.csv</code> \u2014 database source freshness timestamps.</p>
-                    <p>Environment variables control database path, reports directory, scan intervals, AI model/endpoint, and simulation mode. All settings have sensible defaults for zero-config local development.</p>
-                </div>
-            </div>
+            <div class="fc-foot">governance.db is the only file to back up</div>
         </div>
     `;
 
@@ -2128,30 +2158,14 @@ async function renderChangelog() {
             <h1>Changelog</h1>
             <span class="subtitle">${entries.length} updates</span>
         </div>
-        <div class="changelog-layout">
-            <div class="changelog-list">${rows || '<div style="color:var(--text-muted)">No changelog entries found.</div>'}</div>
-            ${howItWorks}
-        </div>
+        ${flowchart}
+        <div class="changelog-list">${rows || '<div style="color:var(--text-muted)">No changelog entries found.</div>'}</div>
     `;
 }
 
 
 function bindChangelogPage() {
-    document.querySelectorAll('.how-section-header[data-how-toggle]').forEach(header => {
-        header.addEventListener('click', () => {
-            const targetId = header.dataset.howToggle;
-            const body = document.getElementById(targetId);
-            if (!body) return;
-            const isExpanded = header.classList.contains('expanded');
-            if (isExpanded) {
-                header.classList.remove('expanded');
-                body.classList.remove('visible');
-            } else {
-                header.classList.add('expanded');
-                body.classList.add('visible');
-            }
-        });
-    });
+    // Placeholder — no interactive elements currently needed
 }
 
 
@@ -3016,7 +3030,7 @@ function _taskCard(task) {
     const today = new Date().toISOString().slice(0, 10);
     const overdue = task.due_date && task.due_date < today && task.status !== "done";
     const dueFmt = task.due_date ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
-    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}">
+    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}" tabindex="0" role="listitem" aria-label="Task: ${task.title}, Priority: ${task.priority}${task.assigned_to ? ', Assigned to: ' + task.assigned_to : ''}">
         <div class="kanban-card-title">${task.title}</div>
         <div class="kanban-card-meta">
             <span class="priority-tag ${task.priority}">${task.priority}</span>
@@ -3032,12 +3046,10 @@ async function renderTasks() {
         api("/api/tasks/owners"),
     ]);
 
-    // Store globally for filtering
     window._tasksData = tasks;
     window._tasksOwners = owners;
 
     const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
-
     const boardHtml = _buildKanbanBoard(tasks);
 
     return `
@@ -3060,13 +3072,18 @@ async function renderTasks() {
 
 function _buildKanbanBoard(tasks, filterOwner) {
     const filtered = filterOwner ? tasks.filter(t => t.assigned_to === filterOwner) : tasks;
+
+    // Show message when filter yields nothing
+    if (filterOwner && filtered.length === 0) {
+        return `<div class="kanban-empty-filtered">No tasks assigned to <strong>${filterOwner}</strong></div>`;
+    }
+
     const grouped = {};
     TASK_STATUSES.forEach(s => grouped[s.key] = []);
     filtered.forEach(t => {
         if (grouped[t.status]) grouped[t.status].push(t);
         else grouped.backlog.push(t);
     });
-    // Sort each column by position
     Object.values(grouped).forEach(arr => arr.sort((a, b) => a.position - b.position));
 
     return `<div class="kanban-board">
@@ -3076,7 +3093,7 @@ function _buildKanbanBoard(tasks, filterOwner) {
                     <span>${s.label}</span>
                     <span class="col-count">${grouped[s.key].length}</span>
                 </div>
-                <div class="kanban-col-body" data-status="${s.key}">
+                <div class="kanban-col-body" data-status="${s.key}" role="list">
                     ${grouped[s.key].length === 0
                         ? '<div class="kanban-empty">No tasks</div>'
                         : grouped[s.key].map(t => _taskCard(t)).join("")}
@@ -3097,9 +3114,9 @@ function _taskModalHtml(task, owners) {
         `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}</option>`
     ).join("");
 
-    return `<div class="task-modal-overlay" id="task-modal-overlay">
+    return `<div class="task-modal-overlay" id="task-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
         <div class="task-modal">
-            <h2>${title}</h2>
+            <h2 id="task-modal-title">${title}</h2>
             <label>Title</label>
             <input type="text" id="task-title" value="${(t.title || "").replace(/"/g, "&quot;")}" placeholder="Task title..." />
             <label>Description</label>
@@ -3138,15 +3155,22 @@ function _openTaskModal(task) {
     const cancelBtn = document.getElementById("task-cancel-btn");
     const saveBtn = document.getElementById("task-save-btn");
     const deleteBtn = document.getElementById("task-delete-btn");
+    const titleInput = document.getElementById("task-title");
 
-    const close = () => overlay.remove();
+    const close = () => { document.removeEventListener("keydown", escHandler); overlay.remove(); };
+    const escHandler = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", escHandler);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     cancelBtn.addEventListener("click", close);
 
-    saveBtn.addEventListener("click", async () => {
-        const title = document.getElementById("task-title").value.trim();
-        if (!title) { document.getElementById("task-title").style.borderColor = "var(--red)"; return; }
+    // Clear validation error on typing
+    titleInput.addEventListener("input", () => titleInput.classList.remove("input-error"));
 
+    saveBtn.addEventListener("click", async () => {
+        const title = titleInput.value.trim();
+        if (!title) { titleInput.classList.add("input-error"); titleInput.focus(); return; }
+
+        saveBtn.disabled = true;
         const body = {
             title,
             description: document.getElementById("task-desc").value.trim() || null,
@@ -3156,95 +3180,50 @@ function _openTaskModal(task) {
             due_date: document.getElementById("task-due").value || null,
         };
 
-        if (task) {
-            await apiPatch(`/api/tasks/${task.id}`, body);
-        } else {
-            await apiPostJson("/api/tasks", body);
+        try {
+            if (task) {
+                await apiPatch(`/api/tasks/${task.id}`, body);
+            } else {
+                await apiPostJson("/api/tasks", body);
+            }
+            close();
+            await _refreshTaskBoard();
+        } catch (err) {
+            saveBtn.disabled = false;
+            toast("Failed to save task: " + err.message);
         }
-        close();
-        await _refreshTaskBoard();
     });
 
     if (deleteBtn && task) {
         deleteBtn.addEventListener("click", async () => {
             if (!confirm("Delete this task?")) return;
-            await apiDelete(`/api/tasks/${task.id}`);
-            close();
-            await _refreshTaskBoard();
+            deleteBtn.disabled = true;
+            try {
+                await apiDelete(`/api/tasks/${task.id}`);
+                close();
+                await _refreshTaskBoard();
+            } catch (err) {
+                deleteBtn.disabled = false;
+                toast("Failed to delete task: " + err.message);
+            }
         });
     }
 
-    document.getElementById("task-title").focus();
+    titleInput.focus();
 }
 
 async function _refreshTaskBoard() {
-    const tasks = await api("/api/tasks");
-    window._tasksData = tasks;
-    const filterOwner = document.getElementById("task-owner-filter")?.value || "";
-    const container = document.getElementById("kanban-board-container");
-    if (container) {
-        container.innerHTML = _buildKanbanBoard(tasks, filterOwner || null);
-        _bindKanbanDragDrop();
-        _bindKanbanCardClicks();
+    try {
+        const tasks = await api("/api/tasks");
+        window._tasksData = tasks;
+        const filterOwner = document.getElementById("task-owner-filter")?.value || "";
+        const container = document.getElementById("kanban-board-container");
+        if (container) {
+            container.innerHTML = _buildKanbanBoard(tasks, filterOwner || null);
+        }
+    } catch (err) {
+        toast("Failed to refresh tasks: " + err.message);
     }
-}
-
-function _bindKanbanDragDrop() {
-    document.querySelectorAll(".kanban-card[draggable]").forEach(card => {
-        card.addEventListener("dragstart", (e) => {
-            card.classList.add("dragging");
-            e.dataTransfer.setData("text/plain", card.dataset.taskId);
-            e.dataTransfer.effectAllowed = "move";
-        });
-        card.addEventListener("dragend", () => {
-            card.classList.remove("dragging");
-            document.querySelectorAll(".kanban-column.drag-over").forEach(c => c.classList.remove("drag-over"));
-        });
-    });
-
-    document.querySelectorAll(".kanban-col-body").forEach(colBody => {
-        colBody.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            colBody.closest(".kanban-column").classList.add("drag-over");
-        });
-        colBody.addEventListener("dragleave", (e) => {
-            if (!colBody.contains(e.relatedTarget)) {
-                colBody.closest(".kanban-column").classList.remove("drag-over");
-            }
-        });
-        colBody.addEventListener("drop", async (e) => {
-            e.preventDefault();
-            colBody.closest(".kanban-column").classList.remove("drag-over");
-            const taskId = e.dataTransfer.getData("text/plain");
-            const newStatus = colBody.dataset.status;
-
-            // Calculate position based on drop location
-            const cards = [...colBody.querySelectorAll(".kanban-card")];
-            let position = cards.length;
-            const rect = colBody.getBoundingClientRect();
-            const y = e.clientY - rect.top;
-            for (let i = 0; i < cards.length; i++) {
-                const cardRect = cards[i].getBoundingClientRect();
-                const cardMid = cardRect.top + cardRect.height / 2 - rect.top;
-                if (y < cardMid) { position = i; break; }
-            }
-
-            await apiPatch(`/api/tasks/${taskId}/move`, { status: newStatus, position });
-            await _refreshTaskBoard();
-        });
-    });
-}
-
-function _bindKanbanCardClicks() {
-    document.querySelectorAll(".kanban-card").forEach(card => {
-        card.addEventListener("click", (e) => {
-            if (e.defaultPrevented) return;
-            const taskId = parseInt(card.dataset.taskId);
-            const task = (window._tasksData || []).find(t => t.id === taskId);
-            if (task) _openTaskModal(task);
-        });
-    });
 }
 
 function bindTasksPage() {
@@ -3261,14 +3240,84 @@ function bindTasksPage() {
             const container = document.getElementById("kanban-board-container");
             if (container) {
                 container.innerHTML = _buildKanbanBoard(tasks, filterOwner);
-                _bindKanbanDragDrop();
-                _bindKanbanCardClicks();
             }
         });
     }
 
-    _bindKanbanDragDrop();
-    _bindKanbanCardClicks();
+    // Event delegation for kanban board (drag-drop, clicks, keyboard)
+    const board = document.getElementById("kanban-board-container");
+    if (!board) return;
+
+    // Card clicks + keyboard (Enter/Space)
+    board.addEventListener("click", (e) => {
+        const card = e.target.closest(".kanban-card");
+        if (!card) return;
+        const taskId = parseInt(card.dataset.taskId);
+        const task = (window._tasksData || []).find(t => t.id === taskId);
+        if (task) _openTaskModal(task);
+    });
+    board.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const card = e.target.closest(".kanban-card");
+        if (!card) return;
+        e.preventDefault();
+        const taskId = parseInt(card.dataset.taskId);
+        const task = (window._tasksData || []).find(t => t.id === taskId);
+        if (task) _openTaskModal(task);
+    });
+
+    // Drag-and-drop (delegated)
+    board.addEventListener("dragstart", (e) => {
+        const card = e.target.closest(".kanban-card");
+        if (!card) return;
+        card.classList.add("dragging");
+        e.dataTransfer.setData("text/plain", card.dataset.taskId);
+        e.dataTransfer.effectAllowed = "move";
+    });
+    board.addEventListener("dragend", (e) => {
+        const card = e.target.closest(".kanban-card");
+        if (card) card.classList.remove("dragging");
+        board.querySelectorAll(".kanban-column.drag-over").forEach(c => c.classList.remove("drag-over"));
+    });
+    board.addEventListener("dragover", (e) => {
+        const colBody = e.target.closest(".kanban-col-body");
+        if (!colBody) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        colBody.closest(".kanban-column").classList.add("drag-over");
+    });
+    board.addEventListener("dragleave", (e) => {
+        const colBody = e.target.closest(".kanban-col-body");
+        if (!colBody) return;
+        if (!colBody.contains(e.relatedTarget)) {
+            colBody.closest(".kanban-column").classList.remove("drag-over");
+        }
+    });
+    board.addEventListener("drop", async (e) => {
+        const colBody = e.target.closest(".kanban-col-body");
+        if (!colBody) return;
+        e.preventDefault();
+        colBody.closest(".kanban-column").classList.remove("drag-over");
+        const taskId = e.dataTransfer.getData("text/plain");
+        const newStatus = colBody.dataset.status;
+
+        const cards = [...colBody.querySelectorAll(".kanban-card")];
+        let position = cards.length;
+        const rect = colBody.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        for (let i = 0; i < cards.length; i++) {
+            const cardRect = cards[i].getBoundingClientRect();
+            const cardMid = cardRect.top + cardRect.height / 2 - rect.top;
+            if (y < cardMid) { position = i; break; }
+        }
+
+        try {
+            await apiPatch(`/api/tasks/${taskId}/move`, { status: newStatus, position });
+            await _refreshTaskBoard();
+        } catch (err) {
+            toast("Failed to move task: " + err.message);
+        }
+    });
 }
 
 
