@@ -3305,8 +3305,13 @@ async function navigate(page) {
     // Reset lazy-init flags
     window._lineageBound = false;
 
-    $$("nav a").forEach(a => {
+    $$("nav a[data-page]").forEach(a => {
         a.classList.toggle("active", a.dataset.page === page);
+    });
+    // Highlight parent nav-group when a child page is active
+    $$("nav .nav-group").forEach(g => {
+        const childPages = (g.dataset.pages || "").split(",");
+        g.classList.toggle("active", childPages.includes(page));
     });
 
     const app = $("#app");

@@ -131,8 +131,92 @@ nav a.active::after {
     right: 0.5rem;
 }
 
-nav a:last-child {
+/* ── Nav dropdown groups ── */
+.nav-group {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.nav-group:last-child {
     margin-left: auto;
+}
+
+.nav-group-label {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 0.4rem 0.85rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+    position: relative;
+}
+
+.nav-group-label:hover {
+    color: var(--text);
+}
+
+.nav-group.active .nav-group-label {
+    color: var(--text);
+    background: var(--blue-bg);
+}
+
+.nav-arrow {
+    font-size: 0.6rem;
+    margin-left: 0.15rem;
+    opacity: 0.6;
+    vertical-align: middle;
+}
+
+.nav-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    min-width: 160px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.35rem 0;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+    z-index: 100;
+}
+
+.nav-group:hover .nav-dropdown {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.nav-dropdown a {
+    display: block;
+    padding: 0.45rem 1rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-weight: 500;
+    border-radius: 0;
+    transition: background 0.1s, color 0.1s;
+}
+
+.nav-dropdown a::after {
+    display: none;
+}
+
+.nav-dropdown a:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.nav-dropdown a.active {
+    color: var(--blue);
+    background: var(--blue-bg);
 }
 
 /* Health status dot in nav */

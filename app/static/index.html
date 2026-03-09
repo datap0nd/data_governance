@@ -12,15 +12,30 @@
     <nav>
         <span class="logo"><span class="logo-icon">&#9679;</span> Data Governance</span>
         <a href="#" data-page="dashboard" class="active"><span class="nav-health-dot" id="nav-health-dot"></span>Dashboard</a>
-        <a href="#" data-page="reports">Reports</a>
-        <a href="#" data-page="lineage">Lineage</a>
-        <a href="#" data-page="sources">Sources</a>
-        <a href="#" data-page="issues">Issues</a>
-        <a href="#" data-page="bestpractices">Best Practices</a>
-        <a href="#" data-page="create">Create</a>
-        <a href="#" data-page="tasks">Tasks</a>
-        <a href="#" data-page="changelog">Changelog</a>
-        <a href="#" data-page="scanner">&#9881; Admin</a>
+        <div class="nav-group" data-pages="reports,sources,lineage">
+            <span class="nav-group-label">Data <span class="nav-arrow">&#9662;</span></span>
+            <div class="nav-dropdown">
+                <a href="#" data-page="reports">Reports</a>
+                <a href="#" data-page="sources">Sources</a>
+                <a href="#" data-page="lineage">Lineage</a>
+            </div>
+        </div>
+        <div class="nav-group" data-pages="issues,tasks,bestpractices">
+            <span class="nav-group-label">Management <span class="nav-arrow">&#9662;</span></span>
+            <div class="nav-dropdown">
+                <a href="#" data-page="issues">Issues</a>
+                <a href="#" data-page="tasks">Tasks</a>
+                <a href="#" data-page="bestpractices">Best Practices</a>
+            </div>
+        </div>
+        <div class="nav-group" data-pages="create,changelog,scanner">
+            <span class="nav-group-label">&#9881; Admin <span class="nav-arrow">&#9662;</span></span>
+            <div class="nav-dropdown">
+                <a href="#" data-page="create">Create</a>
+                <a href="#" data-page="changelog">Changelog</a>
+                <a href="#" data-page="scanner">Scanner</a>
+            </div>
+        </div>
     </nav>
     <main id="app">
         <div class="loading">Loading...</div>
