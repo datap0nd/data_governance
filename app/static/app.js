@@ -3380,6 +3380,112 @@ function bindTasksPage() {
 }
 
 
+// ── FAQ Page ──
+
+const FAQ_ITEMS = [
+    {
+        q: "What does this platform do?",
+        a: "The Data Governance Panel automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives your team a single place to manage data quality and accountability."
+    },
+    {
+        q: "Where does the data come from?",
+        a: "The scanner reads .pbix files and TMDL exports from a shared folder you configure (DG_TMDL_ROOT). It extracts all tables, data sources, measures, and columns automatically — no manual entry needed."
+    },
+    {
+        q: "What data source types are supported?",
+        a: "SQL Server, PostgreSQL, MySQL, Oracle, CSV files, Excel workbooks, SharePoint lists, web sources, and folder-based imports. The scanner identifies the type from the Power Query M expression in each report."
+    },
+    {
+        q: "How does freshness monitoring work?",
+        a: "After a scan, the prober checks when each data source was last updated. Sources are classified as Fresh, Stale, or Outdated based on configurable thresholds (default: fresh < 3 days, stale 3–7 days, outdated > 7 days). You can set custom thresholds per source."
+    },
+    {
+        q: "What are Report Owner and Business Owner?",
+        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans."
+    },
+    {
+        q: "How do alerts work?",
+        a: "Alerts are auto-generated when sources become stale, go offline, have broken references, or have changed queries. Each alert can be assigned to an owner, acknowledged, or resolved with a reason."
+    },
+    {
+        q: "What is the TMDL Checker?",
+        a: "It scans all reports against a set of best-practice rules: no local file paths, required owner metadata, proper date types, avoiding DirectQuery mode, excessive columns, and duplicate sources. Findings are shown by severity with filtering by report owner."
+    },
+    {
+        q: "How does the Kanban task board work?",
+        a: "Create tasks for your team with titles, descriptions, priorities, due dates, and assignees (from the report owner list). Drag cards between Backlog, To Do, In Progress, and Done columns. Filter by team member to see individual workloads."
+    },
+    {
+        q: "What is the Lineage view?",
+        a: "Lineage shows the full dependency chain: Visuals → Fields → Tables → Data Sources → Upstream Systems. Select a report to see exactly which sources feed into which visuals, helping you trace data quality issues upstream."
+    },
+    {
+        q: "How do upstream systems work?",
+        a: "Upstream systems (like GSCM or ASAP) represent the parent data platforms that feed your sources. Linking sources to upstream systems enables schedule discrepancy detection — flagging when the refresh chain timing is broken."
+    },
+    {
+        q: "What does the Schedule Discrepancies check do?",
+        a: "It validates that data flows in the right order: Upstream System refreshes before Source, which refreshes before Report. If the timing is wrong (e.g., a report refreshes before its source), it flags a warning or critical issue."
+    },
+    {
+        q: "Can I add sources and reports manually?",
+        a: "Yes. Use the Create page to add sources, reports, or upstream systems manually. These appear alongside scanned entries and can be linked together."
+    },
+    {
+        q: "What is the AI Assistant?",
+        a: "The AI chat (bottom-right button) lets you ask questions about your data ecosystem — risks, source health, specific reports, or general governance questions. It uses live data from the database to give contextual answers."
+    },
+    {
+        q: "What database does the platform use?",
+        a: "A single SQLite file (governance.db). No external database server needed. This is the only file you need to back up to preserve all state."
+    },
+    {
+        q: "How do I set up the platform?",
+        a: "Install Python 3.11+, run pip install -r requirements.txt, set DG_TMDL_ROOT to your reports folder, and start with: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000. Open http://localhost:8000 in your browser."
+    },
+];
+
+async function renderFaq() {
+    const items = FAQ_ITEMS.map((f, i) => `
+        <div class="faq-item">
+            <div class="faq-question" data-faq-idx="${i}">
+                <span class="faq-chevron">&#9654;</span>
+                <span>${f.q}</span>
+            </div>
+            <div class="faq-answer" id="faq-ans-${i}">${f.a}</div>
+        </div>
+    `).join("");
+
+    return `
+        <div class="page-header">
+            <h1>FAQ</h1>
+            <span class="subtitle">${FAQ_ITEMS.length} questions</span>
+        </div>
+        <div class="faq-list">
+            ${items}
+        </div>
+    `;
+}
+
+function bindFaqPage() {
+    document.querySelectorAll(".faq-question[data-faq-idx]").forEach(q => {
+        q.addEventListener("click", () => {
+            const idx = q.dataset.faqIdx;
+            const ans = document.getElementById("faq-ans-" + idx);
+            if (!ans) return;
+            const open = q.classList.contains("expanded");
+            if (open) {
+                q.classList.remove("expanded");
+                ans.classList.remove("visible");
+            } else {
+                q.classList.add("expanded");
+                ans.classList.add("visible");
+            }
+        });
+    });
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -3393,6 +3499,7 @@ const pages = {
     create: renderCreate,
     bestpractices: renderBestPractices,
     tasks: renderTasks,
+    faq: renderFaq,
 };
 
 // Map old hash routes to new pages for backwards compat
@@ -3525,6 +3632,7 @@ async function navigate(page) {
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "faq") bindFaqPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
