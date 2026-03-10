@@ -846,7 +846,6 @@ async function renderDashboard() {
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
         return tb - ta;
     });
-    const ATTENTION_LIMIT = 8;
 
     // Store for click-through navigation
     window._dashboardSources = sources;
@@ -932,8 +931,8 @@ async function renderDashboard() {
             </div>
             <div id="attention-timeline">
             ${needsAttention.length > 0 ? `
-                <div class="alert-list" id="attention-list">
-                    ${needsAttention.slice(0, ATTENTION_LIMIT).map(item => `
+                <div class="alert-list attention-scrollable" id="attention-list">
+                    ${needsAttention.map(item => `
                         <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
                             <div class="dot dot-${item.severity}"></div>
                             <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
@@ -942,19 +941,6 @@ async function renderDashboard() {
                         </div>
                     `).join("")}
                 </div>
-                ${needsAttention.length > ATTENTION_LIMIT ? `
-                    <div id="attention-overflow" style="display:none" class="alert-list">
-                        ${needsAttention.slice(ATTENTION_LIMIT).map(item => `
-                            <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
-                                <div class="dot dot-${item.severity}"></div>
-                                <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                                <span><strong>${esc(item.name)}</strong> &mdash; ${esc(item.description)}</span>
-                                <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
-                            </div>
-                        `).join("")}
-                    </div>
-                    <button class="btn-outline btn-sm" id="btn-show-all-attention" style="margin-top:0.5rem;font-size:0.72rem">Show all ${needsAttention.length} items</button>
-                ` : ""}
             ` : allUnknown
                 ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
                 : '<div class="empty-state">All sources and reports are healthy</div>'
@@ -3413,17 +3399,6 @@ async function navigate(page) {
                 if (dd.sources_outdated > 0 || dd.alerts_active > 5) navDot.style.background = "var(--red)"; // degraded
                 else if (dd.sources_stale > 0) navDot.style.background = "var(--yellow)"; // at risk
                 else navDot.style.background = "var(--green)"; // healthy
-            }
-            const btnShowAll = document.getElementById("btn-show-all-attention");
-            if (btnShowAll) {
-                btnShowAll.addEventListener("click", () => {
-                    const overflow = document.getElementById("attention-overflow");
-                    if (overflow) {
-                        const showing = overflow.style.display !== "none";
-                        overflow.style.display = showing ? "none" : "";
-                        btnShowAll.textContent = showing ? `Show all ${document.querySelectorAll("#attention-list .attention-clickable, #attention-overflow .attention-clickable").length} items` : "Show less";
-                    }
-                });
             }
             // Clickable stat card sub-labels — filter navigation
             document.querySelectorAll(".stat-filter[data-filter]").forEach(dot => {
