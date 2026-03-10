@@ -9,6 +9,7 @@ Scan runner — orchestrates a full scan.
 """
 
 import logging
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,30 @@ from app.scanner.source_matcher import deduplicate_sources
 
 logger = logging.getLogger(__name__)
 
+
+def _load_owners_csv() -> tuple[list[str], list[str]]:
+    """Load report_owner and business_owner names from owners.csv.
+
+    Returns two lists: (report_owners, business_owners).
+    Falls back to empty lists if file not found.
+    """
+    csv_path = BASE_DIR.parent / "owners.csv"
+    if not csv_path.exists():
+        return [], []
+
+    from app.scanner import read_csv_rows
+    report_owners = []
+    business_owners = []
+    for row in read_csv_rows(csv_path):
+        if not row:
+            continue
+        ro = row[0].strip() if len(row) > 0 else ""
+        bo = row[1].strip() if len(row) > 1 else ""
+        if ro:
+            report_owners.append(ro)
+        if bo:
+            business_owners.append(bo)
+    return report_owners, business_owners
 
 
 def _load_powerbi_links() -> dict[str, str]:
@@ -42,6 +67,55 @@ def _load_powerbi_links() -> dict[str, str]:
             links[name] = url
     return links
 
+
+_UPSTREAM_SYSTEMS = [
+    ("GSCM - Global Supply Chain Master", "GSCM"),
+    ("GSCM - Global Sourcing & Contract Mgmt", "GSCM"),
+    ("GSCM - Goods & Services Catalog Manager", "GSCM"),
+    ("GSCM - Group Supply Configuration Module", "GSCM"),
+    ("ASAP - Automated Sales Analytics Platform", "ASAP"),
+    ("ASAP - Advanced Strategic Account Portal", "ASAP"),
+    ("ASAP - Aggregated Sales & Allocation Pipeline", "ASAP"),
+    ("ASAP - Analytics Suite for Account Performance", "ASAP"),
+]
+
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+
+def _seed_upstream_and_schedules(db, now: str):
+    """Seed upstream systems, assign upstream linkage, and randomize refresh schedules."""
+    # 1. Insert upstream systems if table is empty
+    count = db.execute("SELECT COUNT(*) AS c FROM upstream_systems").fetchone()["c"]
+    if count == 0:
+        for name, code in _UPSTREAM_SYSTEMS:
+            day = random.choice(_WEEKDAYS)
+            db.execute(
+                "INSERT INTO upstream_systems (name, code, refresh_day, created_at) VALUES (?, ?, ?, ?)",
+                (name, code, day, now),
+            )
+
+    # 2. For each source without an upstream_id, randomly assign one
+    upstream_ids = [r["id"] for r in db.execute("SELECT id FROM upstream_systems").fetchall()]
+    if upstream_ids:
+        unlinked = db.execute("SELECT id FROM sources WHERE upstream_id IS NULL").fetchall()
+        for row in unlinked:
+            db.execute(
+                "UPDATE sources SET upstream_id = ? WHERE id = ?",
+                (random.choice(upstream_ids), row["id"]),
+            )
+
+    # 3. For each source without a refresh_schedule, assign random weekday
+    no_sched = db.execute("SELECT id FROM sources WHERE refresh_schedule IS NULL OR refresh_schedule = ''").fetchall()
+    for row in no_sched:
+        db.execute(
+            "UPDATE sources SET refresh_schedule = ? WHERE id = ?",
+            (random.choice(_WEEKDAYS), row["id"]),
+        )
+
+    # 4. Set all reports to frequency = 'Weekly - Sunday' if not set
+    db.execute(
+        "UPDATE reports SET frequency = 'Weekly - Sunday' WHERE frequency IS NULL OR frequency = ''"
+    )
 
 
 def run_scan(reports_path: str | None = None) -> dict:
@@ -104,13 +178,15 @@ def run_scan(reports_path: str | None = None) -> dict:
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
 
-            # Load Power BI links from CSV
+            # Load owner names and Power BI links from CSVs
+            csv_report_owners, csv_business_owners = _load_owners_csv()
             powerbi_links = _load_powerbi_links()
 
             # Upsert reports and their tables
             for report in reports:
-                report_owner = report.report_owner
-                business_owner = report.business_owner
+                # Assign owners from CSV if available, otherwise keep report metadata
+                report_owner = random.choice(csv_report_owners) if csv_report_owners else report.report_owner
+                business_owner = random.choice(csv_business_owners) if csv_business_owners else report.business_owner
                 powerbi_url = powerbi_links.get(report.name, None)
 
                 existing_report = db.execute(
@@ -270,6 +346,19 @@ def run_scan(reports_path: str | None = None) -> dict:
                     "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', 'Initial scan — no probe data yet')",
                     (row["id"], now),
                 )
+
+            # Assign source owners randomly from owners.csv
+            csv_report_owners_for_sources, _ = _load_owners_csv()
+            if csv_report_owners_for_sources:
+                no_owner = db.execute("SELECT id FROM sources WHERE owner IS NULL OR owner = ''").fetchall()
+                for row in no_owner:
+                    db.execute(
+                        "UPDATE sources SET owner = ? WHERE id = ?",
+                        (random.choice(csv_report_owners_for_sources), row["id"]),
+                    )
+
+            # Seed upstream systems and refresh schedules
+            _seed_upstream_and_schedules(db, now)
 
             # Update scan run record
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."

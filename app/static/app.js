@@ -1732,15 +1732,13 @@ function bindActionStatusSelects() {
 
 async function renderActions() {
     const result = await renderActionsContent();
-    const appEl = $("#app");
-    appEl.innerHTML = `
+    return `
         <div class="page-header">
             <h1>Actions</h1>
             <span class="subtitle">${result.open} open of ${result.total} total</span>
         </div>
         ${result.html}
     `;
-    bindActionsTab();
 }
 
 
@@ -3462,6 +3460,7 @@ async function navigate(page) {
         }
         if (page === "scanner") bindScannerButtons();
         if (page === "sources") bindSourcesPage();
+        if (page === "actions") bindActionsTab();
         if (page === "reports") bindReportsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
