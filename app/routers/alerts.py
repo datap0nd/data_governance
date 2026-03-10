@@ -98,15 +98,3 @@ def list_alert_owners():
     return [r["owner"] for r in rows]
 
 
-@router.post("/{alert_id}/acknowledge")
-def acknowledge_alert(alert_id: int, by: str = "user"):
-    """Legacy acknowledge endpoint — kept for backward compatibility."""
-    with get_db() as db:
-        db.execute(
-            """UPDATE alerts
-               SET acknowledged = 1, acknowledged_by = ?,
-                   resolution_status = 'acknowledged', resolved_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
-            (by, alert_id),
-        )
-    return {"status": "acknowledged"}

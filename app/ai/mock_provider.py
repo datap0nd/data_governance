@@ -183,21 +183,6 @@ def mock_chat(message: str, context: dict) -> dict:
             sources_referenced.append(s["id"])
             return {"response": "\n".join(lines), "sources_referenced": sources_referenced, "reports_referenced": reports_referenced}
 
-    # ── "audit" ──
-    if any(kw in msg_lower for kw in ["audit", "query", "m expression", "power query"]):
-        from app.ai.query_auditor import mock_audit_all
-        from app.ai.context_builder import get_report_context
-        from app.database import get_db
-        with get_db() as db:
-            all_reports = [dict(r) for r in db.execute("SELECT * FROM reports").fetchall()]
-        all_data = []
-        for r in all_reports:
-            ctx = get_report_context(r["id"])
-            if ctx:
-                all_data.append(ctx)
-        result = mock_audit_all(all_data)
-        return {"response": result["response"], "sources_referenced": [], "reports_referenced": []}
-
     # ── "no connection" / "sql" ──
     if any(kw in msg_lower for kw in ["no connection", "no_connection", "sql connection", "connection"]):
         if no_conn:
@@ -367,87 +352,3 @@ def mock_report_risk(report_ctx: dict) -> dict:
     }
 
 
-# ── Suggestions mock ──
-
-def mock_suggestions(summary: dict) -> dict:
-    """Generate actionable suggestions based on current state."""
-    sc = summary["status_counts"]
-    sources = summary["sources"]
-    reports = summary["reports"]
-    suggestions = []
-
-    no_conn = [s for s in sources if s.get("probe_status") == "no_connection"]
-    at_risk_src = [s for s in sources if s.get("probe_status") == "stale"]
-    degraded_src = [s for s in sources if s.get("probe_status") == "outdated"]
-    no_freq = [r for r in reports if not r.get("frequency")]
-
-    if no_conn:
-        names = ", ".join(_short_name(s["name"]) for s in no_conn[:4])
-        suggestions.append({
-            "title": "Investigate SQL connection issues",
-            "description": f"{len(no_conn)} SQL sources have no connection ({names}). This may indicate a server connectivity problem or misconfigured credentials. Verify the SQL Server is reachable from this environment.",
-            "priority": "high",
-            "related_entity": "source",
-            "entity_id": no_conn[0].get("id") if no_conn else None,
-        })
-
-    if degraded_src:
-        names = ", ".join(_short_name(s["name"]) for s in degraded_src[:3])
-        suggestions.append({
-            "title": "Address degraded data sources",
-            "description": f"{len(degraded_src)} sources have data older than 90 days ({names}). Review whether these sources are still active or should be decommissioned.",
-            "priority": "high",
-            "related_entity": "source",
-            "entity_id": degraded_src[0].get("id") if degraded_src else None,
-        })
-
-    if at_risk_src:
-        names = ", ".join(_short_name(s["name"]) for s in at_risk_src[:3])
-        suggestions.append({
-            "title": "Refresh at-risk data sources",
-            "description": f"{len(at_risk_src)} sources have data 31-90 days old ({names}). Check refresh schedules and ensure ETL pipelines are running.",
-            "priority": "medium",
-            "related_entity": "source",
-            "entity_id": at_risk_src[0].get("id") if at_risk_src else None,
-        })
-
-    if no_freq:
-        names = ", ".join(r["name"] for r in no_freq[:3])
-        more = f" and {len(no_freq) - 3} more" if len(no_freq) > 3 else ""
-        suggestions.append({
-            "title": "Set report refresh frequencies",
-            "description": f"{len(no_freq)} reports have no frequency set ({names}{more}). Setting frequencies helps track whether reports are being refreshed on schedule.",
-            "priority": "medium",
-            "related_entity": "report",
-            "entity_id": no_freq[0].get("id") if no_freq else None,
-        })
-
-    if summary["actions_open"] > 0:
-        suggestions.append({
-            "title": "Resolve open action items",
-            "description": f"{summary['actions_open']} open actions are pending. Review and triage them — mark expected items as 'expected' to reduce noise.",
-            "priority": "medium",
-            "related_entity": None,
-            "entity_id": None,
-        })
-
-    # Always offer a positive suggestion if things are mostly healthy
-    if len(suggestions) < 2:
-        suggestions.append({
-            "title": "Schedule regular probes",
-            "description": "Set up automated probing to catch freshness issues early. Run probes daily before business hours so stakeholders see up-to-date status each morning.",
-            "priority": "low",
-            "related_entity": None,
-            "entity_id": None,
-        })
-
-    if not suggestions:
-        suggestions.append({
-            "title": "Ecosystem is healthy",
-            "description": "No immediate actions needed. All sources are fresh and reports are current. Consider documenting your data lineage for new team members.",
-            "priority": "low",
-            "related_entity": None,
-            "entity_id": None,
-        })
-
-    return {"suggestions": suggestions[:5]}

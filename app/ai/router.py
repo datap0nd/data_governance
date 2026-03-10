@@ -4,9 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.config import AI_MOCK
-from app.ai.context_builder import get_full_context, get_report_context, get_dashboard_summary
-from app.ai.mock_provider import mock_chat, mock_briefing, mock_report_risk, mock_suggestions
-from app.ai.query_auditor import mock_audit_report, mock_audit_all
+from app.ai.mock_provider import mock_chat, mock_briefing, mock_report_risk
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +34,11 @@ class ReportRiskResponse(BaseModel):
     at_risk_sources: list = []
 
 
-class SuggestionItem(BaseModel):
-    title: str
-    description: str
-    priority: str
-    related_entity: str | None = None
-    entity_id: int | None = None
-
-
-class SuggestionsResponse(BaseModel):
-    suggestions: list[SuggestionItem]
-
-
-class AISettingsResponse(BaseModel):
-    mock_mode: bool
-    api_url: str
-    model: str
-    has_api_key: bool
-
-
 @router.post("/chat", response_model=ChatResponse)
 def ai_chat(req: ChatRequest):
     """Chat with the AI assistant about your data ecosystem."""
     try:
+        from app.ai.context_builder import get_full_context
         ctx = get_full_context()
         if AI_MOCK:
             result = mock_chat(req.message, ctx)
@@ -90,11 +70,9 @@ def ai_chat(req: ChatRequest):
 def ai_briefing():
     """Get an AI-generated dashboard briefing."""
     try:
+        from app.ai.context_builder import get_dashboard_summary
         summary = get_dashboard_summary()
-        if AI_MOCK:
-            result = mock_briefing(summary)
-        else:
-            result = mock_briefing(summary)
+        result = mock_briefing(summary)
         return BriefingResponse(**result)
     except Exception as e:
         logger.exception("AI briefing error")
@@ -105,78 +83,14 @@ def ai_briefing():
 def ai_report_risk(report_id: int):
     """Get AI risk assessment for a specific report."""
     try:
+        from app.ai.context_builder import get_report_context
         ctx = get_report_context(report_id)
         if not ctx:
             raise HTTPException(status_code=404, detail="Report not found")
-        if AI_MOCK:
-            result = mock_report_risk(ctx)
-        else:
-            result = mock_report_risk(ctx)
+        result = mock_report_risk(ctx)
         return ReportRiskResponse(**result)
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("AI report risk error")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/suggestions", response_model=SuggestionsResponse)
-def ai_suggestions():
-    """Get AI-powered action suggestions."""
-    try:
-        summary = get_dashboard_summary()
-        if AI_MOCK:
-            result = mock_suggestions(summary)
-        else:
-            result = mock_suggestions(summary)
-        return SuggestionsResponse(**result)
-    except Exception as e:
-        logger.exception("AI suggestions error")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/audit/{report_id}")
-def ai_audit_report(report_id: int):
-    """Audit M expressions for a specific report."""
-    try:
-        ctx = get_report_context(report_id)
-        if not ctx:
-            raise HTTPException(status_code=404, detail="Report not found")
-        result = mock_audit_report(ctx["report"], ctx["tables"])
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("AI audit error")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/audit")
-def ai_audit_all():
-    """Audit M expressions for all reports."""
-    try:
-        from app.database import get_db
-        with get_db() as db:
-            reports = [dict(r) for r in db.execute("SELECT * FROM reports").fetchall()]
-        all_data = []
-        for r in reports:
-            ctx = get_report_context(r["id"])
-            if ctx:
-                all_data.append(ctx)
-        result = mock_audit_all(all_data)
-        return result
-    except Exception as e:
-        logger.exception("AI audit all error")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/settings", response_model=AISettingsResponse)
-def ai_settings():
-    """Get current AI configuration."""
-    from app.config import AI_API_URL, AI_API_KEY, AI_MODEL
-    return AISettingsResponse(
-        mock_mode=AI_MOCK,
-        api_url=AI_API_URL,
-        model=AI_MODEL,
-        has_api_key=bool(AI_API_KEY),
-    )

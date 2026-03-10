@@ -199,6 +199,21 @@ CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables
     WHERE source_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_source_probes_source_id ON source_probes(source_id);
+CREATE INDEX IF NOT EXISTS idx_report_tables_source_id ON report_tables(source_id);
+CREATE INDEX IF NOT EXISTS idx_report_tables_report_id ON report_tables(report_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_source_id ON alerts(source_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_acknowledged ON alerts(acknowledged);
+CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
+CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
+CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+CREATE INDEX IF NOT EXISTS idx_report_pages_report_id ON report_pages(report_id);
+CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id);
+CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);
+CREATE INDEX IF NOT EXISTS idx_report_measures_report_id ON report_measures(report_id);
+CREATE INDEX IF NOT EXISTS idx_report_columns_report_id ON report_columns(report_id);
 """
 
 

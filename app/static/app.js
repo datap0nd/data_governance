@@ -1282,10 +1282,16 @@ function bindSourcesPage() {
             const sourceId = sel.dataset.sourceId;
             const day = sel.value;
             if (!day) return;
+            if (!confirm(`Change refresh schedule to "${day}"?`)) {
+                sel.value = sel.dataset.prev || "";
+                return;
+            }
             try {
                 await apiPatch(`/api/sources/${sourceId}`, { refresh_schedule: day });
+                sel.dataset.prev = day;
                 toast("Frequency updated");
             } catch (err) {
+                sel.value = sel.dataset.prev || "";
                 toast("Failed: " + err.message);
             }
         });
@@ -1476,12 +1482,12 @@ async function renderAlerts() {
         }, sortVal: a => a.assigned_to || "zzz_unassigned" },
         { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
         { key: "resolution_status", label: "Status", render: a => {
-            const reasonAttr = a.resolution_reason ? ` title="${a.resolution_reason.replace(/"/g, '&quot;')}"` : "";
+            const reasonHtml = a.resolution_reason ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.2rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.resolution_reason.replace(/"/g, '&quot;')}">${a.resolution_reason}</div>` : "";
             if (a.resolution_status === "acknowledged") {
-                return `<span class="badge badge-blue"${reasonAttr}>acknowledged</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>`;
+                return `<span class="badge badge-blue">acknowledged</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>${reasonHtml}`;
             }
             if (a.resolution_status === "resolved") {
-                return `<span class="badge badge-green"${reasonAttr}>resolved</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>`;
+                return `<span class="badge badge-green">resolved</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>${reasonHtml}`;
             }
             return `<button class="btn-sm btn-blue btn-resolve-alert" data-alert-id="${a.id}" data-action="acknowledged">Acknowledge</button> <button class="btn-sm btn-green btn-resolve-alert" data-alert-id="${a.id}" data-action="resolved">Resolve</button>`;
         }, sortVal: a => a.resolution_status ? "1_" + a.resolution_status : "0_active" },
@@ -1721,6 +1727,20 @@ function bindActionStatusSelects() {
             }
         });
     });
+}
+
+
+async function renderActions() {
+    const result = await renderActionsContent();
+    const appEl = $("#app");
+    appEl.innerHTML = `
+        <div class="page-header">
+            <h1>Actions</h1>
+            <span class="subtitle">${result.open} open of ${result.total} total</span>
+        </div>
+        ${result.html}
+    `;
+    bindActionsTab();
 }
 
 
@@ -3286,13 +3306,14 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
+    actions: renderActions,
     tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", actions: "dashboard", issues: "dashboard" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard" };
 
 let currentPage = "dashboard";
 
