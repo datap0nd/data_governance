@@ -1335,11 +1335,6 @@ async function renderReports() {
                 ${r.frequency ? '' : '<option value="">Choose...</option>'}${opts}
             </select>`;
         }},
-        { key: "unused_pct", label: "Unused %", render: r => {
-            if (r.unused_pct == null) return `<span style="color:var(--text-dim)">-</span>`;
-            const color = r.unused_pct > 50 ? "var(--red)" : r.unused_pct > 25 ? "var(--yellow)" : "var(--green)";
-            return `<span style="color:${color};font-weight:500">${r.unused_pct}%</span>`;
-        }, sortVal: r => r.unused_pct != null ? r.unused_pct : -1 },
         { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
             ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
             : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
