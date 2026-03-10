@@ -1226,9 +1226,41 @@ button.btn-blue {
 /* Action filter tabs */
 .action-filters {
     display: flex;
-    gap: 0.35rem;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
     margin-bottom: 1rem;
     flex-wrap: wrap;
+}
+
+.action-filters-row {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.action-owner-filter {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-family: inherit;
+    cursor: pointer;
+    min-width: 140px;
+}
+
+.action-owner-select {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: inherit;
+    cursor: pointer;
+    max-width: 160px;
 }
 
 .action-filter-btn {

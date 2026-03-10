@@ -1566,6 +1566,8 @@ function bindReopenButtons(scope) {
 
 async function renderActionsContent() {
     const actions = await api("/api/actions");
+    let owners = [];
+    try { owners = await api("/api/alerts/owners/list"); } catch(e) {}
 
     const open = actions.filter(a => a.status === "open").length;
     const investigating = actions.filter(a => a.status === "investigating").length;
@@ -1574,8 +1576,18 @@ async function renderActionsContent() {
 
     const statusOptions = ["open", "acknowledged", "investigating", "expected", "resolved"];
 
-    function renderActionCards(filter) {
-        const filtered = filter === "all" ? actions : actions.filter(a => a.status === filter);
+    // Build owner options HTML for assignment dropdowns
+    const ownerOptionsHtml = owners.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+
+    function renderActionCards(filter, ownerFilter) {
+        let filtered = filter === "all" ? actions : actions.filter(a => a.status === filter);
+        if (ownerFilter && ownerFilter !== "all") {
+            if (ownerFilter === "unassigned") {
+                filtered = filtered.filter(a => !a.assigned_to);
+            } else {
+                filtered = filtered.filter(a => a.assigned_to === ownerFilter);
+            }
+        }
 
         if (filtered.length === 0) {
             return '<div class="empty-state">No actions match this filter</div>';
@@ -1589,6 +1601,7 @@ async function renderActionsContent() {
 
             const sourceName = a.source_name || "-";
             const shortSource = shortNameFromPath(sourceName) || sourceName;
+            const currentOwner = a.assigned_to || "";
 
             return `
                 <div class="action-card" data-action-id="${a.id}">
@@ -1597,7 +1610,10 @@ async function renderActionsContent() {
                         <div class="action-title">${shortSource}</div>
                         <div class="action-meta">
                             ${actionTypeBadge(a.type)}
-                            <span>Assigned: ${a.assigned_to || "unassigned"}</span>
+                            <select class="action-owner-select" data-action-id="${a.id}">
+                                <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
+                                ${owners.map(o => `<option value="${esc(o)}"${o === currentOwner ? ' selected' : ''}>${esc(o)}</option>`).join("")}
+                            </select>
                             <span>${timeAgo(a.created_at)}</span>
                         </div>
                         ${a.notes ? `<div class="action-notes">${esc(a.notes)}</div>` : ""}
@@ -1615,8 +1631,11 @@ async function renderActionsContent() {
         }).join("")}</div>`;
     }
 
+    // Collect unique assigned owners for filter dropdown
+    const assignedOwners = [...new Set(actions.map(a => a.assigned_to).filter(Boolean))].sort();
+
     // Store render function for re-rendering after filter change
-    window._actionsData = { actions, renderActionCards };
+    window._actionsData = { actions, renderActionCards, owners };
 
     const html = `
         <div class="summary-counts">
@@ -1627,37 +1646,63 @@ async function renderActionsContent() {
         </div>
 
         <div class="action-filters">
-            <button class="action-filter-btn active" data-filter="all">All (${actions.length})</button>
-            <button class="action-filter-btn" data-filter="open">Open (${open})</button>
-            <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
-            <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
-            <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
-            <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally at-risk/degraded (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
+            <div class="action-filters-row">
+                <button class="action-filter-btn active" data-filter="all">All (${actions.length})</button>
+                <button class="action-filter-btn" data-filter="open">Open (${open})</button>
+                <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
+                <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
+                <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
+                <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally at-risk/degraded (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
+            </div>
+            <select id="action-owner-filter" class="action-owner-filter">
+                <option value="all">All owners</option>
+                <option value="unassigned">Unassigned</option>
+                ${assignedOwners.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("")}
+            </select>
         </div>
 
         <div id="action-list">
-            ${renderActionCards("all")}
+            ${renderActionCards("all", "all")}
         </div>
     `;
     return { html, open, total: actions.length };
 }
 
+function _getActiveActionFilters() {
+    const activeBtn = document.querySelector(".action-filter-btn.active");
+    const statusFilter = activeBtn ? activeBtn.dataset.filter : "all";
+    const ownerSelect = document.getElementById("action-owner-filter");
+    const ownerFilter = ownerSelect ? ownerSelect.value : "all";
+    return { statusFilter, ownerFilter };
+}
+
+function _reRenderActionList() {
+    const container = document.getElementById("action-list");
+    if (!container || !window._actionsData) return;
+    const { statusFilter, ownerFilter } = _getActiveActionFilters();
+    container.innerHTML = window._actionsData.renderActionCards(statusFilter, ownerFilter);
+    bindActionStatusSelects();
+    bindActionOwnerSelects();
+}
+
 function bindActionsTab() {
-    // Filter buttons
+    // Status filter buttons
     document.querySelectorAll(".action-filter-btn").forEach(btn => {
         btn.addEventListener("click", () => {
             document.querySelectorAll(".action-filter-btn").forEach(b => b.classList.remove("active"));
             btn.classList.add("active");
-            const filter = btn.dataset.filter;
-            const container = $("#action-list");
-            if (container && window._actionsData) {
-                container.innerHTML = window._actionsData.renderActionCards(filter);
-                bindActionStatusSelects();
-            }
+            _reRenderActionList();
         });
     });
 
+    // Owner filter dropdown
+    const ownerFilter = document.getElementById("action-owner-filter");
+    if (ownerFilter) {
+        ownerFilter.addEventListener("change", () => _reRenderActionList());
+    }
+
     bindActionStatusSelects();
+    bindActionOwnerSelects();
 }
 
 function bindIssuesPage() {
@@ -1729,6 +1774,26 @@ function bindActionStatusSelects() {
     });
 }
 
+
+function bindActionOwnerSelects() {
+    document.querySelectorAll(".action-owner-select").forEach(select => {
+        select.addEventListener("change", async (e) => {
+            const actionId = select.dataset.actionId;
+            const newOwner = select.value || null;
+            try {
+                await apiPatch(`/api/actions/${actionId}`, { assigned_to: newOwner });
+                // Update cached data so filters stay consistent
+                if (window._actionsData) {
+                    const action = window._actionsData.actions.find(a => a.id == actionId);
+                    if (action) action.assigned_to = newOwner;
+                }
+                toast(`Action #${actionId} assigned to ${newOwner || "unassigned"}`);
+            } catch (err) {
+                toast("Failed to assign: " + err.message);
+            }
+        });
+    });
+}
 
 async function renderActions() {
     const result = await renderActionsContent();
