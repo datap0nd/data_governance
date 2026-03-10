@@ -65,6 +65,42 @@ body {
     min-height: 100vh;
 }
 
+/* ── Skip link (accessibility) ── */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: var(--blue);
+    color: #fff;
+    padding: 0.5rem 1rem;
+    z-index: 200;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0 0 6px 0;
+    transition: top 0.2s;
+}
+
+.skip-link:focus {
+    top: 0;
+}
+
+/* ── Focus-visible outlines (accessibility) ── */
+:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+}
+
 /* ── Nav ── */
 nav {
     display: flex;
@@ -92,7 +128,7 @@ nav .logo .logo-icon {
 nav a {
     color: var(--text-muted);
     text-decoration: none;
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     font-weight: 500;
     padding: 0.4rem 0.85rem;
     border-radius: 6px;
@@ -144,7 +180,7 @@ nav a.active::after {
 
 .nav-group-label {
     color: var(--text-muted);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     font-weight: 500;
     padding: 0.4rem 0.85rem;
     border-radius: 6px;
@@ -156,6 +192,7 @@ nav a.active::after {
 
 .nav-group-label:hover {
     color: var(--text);
+    background: var(--surface-hover);
 }
 
 .nav-group.active .nav-group-label {
@@ -164,10 +201,35 @@ nav a.active::after {
 }
 
 .nav-arrow {
-    font-size: 0.6rem;
-    margin-left: 0.15rem;
-    opacity: 0.6;
+    font-size: 0.55rem;
+    margin-left: 0.2rem;
+    opacity: 0.5;
     vertical-align: middle;
+    transition: transform 0.2s, opacity 0.15s;
+}
+
+.nav-group:hover .nav-arrow {
+    transform: rotate(180deg);
+    opacity: 0.8;
+}
+
+.nav-icon {
+    margin-right: 0.3rem;
+    font-size: 0.9rem;
+    vertical-align: -0.05em;
+    opacity: 0.7;
+}
+
+nav a .nav-icon,
+.nav-dropdown a .nav-icon {
+    opacity: 0.6;
+}
+
+nav a:hover .nav-icon,
+nav a.active .nav-icon,
+.nav-dropdown a:hover .nav-icon,
+.nav-dropdown a.active .nav-icon {
+    opacity: 1;
 }
 
 .nav-dropdown {
@@ -188,7 +250,8 @@ nav a.active::after {
     z-index: 100;
 }
 
-.nav-group:hover .nav-dropdown {
+.nav-group:hover .nav-dropdown,
+.nav-group:focus-within .nav-dropdown {
     opacity: 1;
     visibility: visible;
     transform: translateY(0);
@@ -197,7 +260,7 @@ nav a.active::after {
 .nav-dropdown a {
     display: block;
     padding: 0.45rem 1rem;
-    font-size: 0.78rem;
+    font-size: 0.85rem;
     color: var(--text-muted);
     text-decoration: none;
     font-weight: 500;
@@ -251,17 +314,17 @@ main {
 
 .page-header .subtitle {
     color: var(--text-muted);
-    font-size: 0.82rem;
+    font-size: 0.88rem;
 }
 
 .btn-export {
     float: right;
-    font-size: 0.72rem;
-    padding: 0.3rem 0.7rem;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.85rem;
     background: transparent;
     color: var(--text-muted);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
 }
@@ -311,7 +374,7 @@ h2 {
 .stat-card.card-purple::before { background: var(--purple); }
 
 .stat-card .stat-label {
-    font-size: 0.7rem;
+    font-size: 0.78rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
@@ -329,7 +392,7 @@ h2 {
 
 .stat-card .stat-breakdown {
     margin-top: 0.5rem;
-    font-size: 0.75rem;
+    font-size: 0.82rem;
     color: var(--text-secondary);
     display: flex;
     gap: 0.5rem;
@@ -369,7 +432,7 @@ h2 {
 
 .stat-card-link {
     margin-top: 0.6rem;
-    font-size: 0.72rem;
+    font-size: 0.78rem;
     color: var(--text-dim);
     font-weight: 500;
     transition: color 0.15s;
@@ -476,7 +539,7 @@ h2 {
     display: flex;
     gap: 1rem;
     margin-top: 0.4rem;
-    font-size: 0.72rem;
+    font-size: 0.78rem;
 }
 
 /* Segment hover expand */
@@ -512,9 +575,9 @@ h2 {
 .badge {
     display: inline-flex;
     align-items: center;
-    padding: 0.15rem 0.5rem;
+    padding: 0.2rem 0.55rem;
     border-radius: 4px;
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 500;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -531,7 +594,7 @@ h2 {
     background: none !important;
     border: none !important;
     padding: 0;
-    font-size: 0.7rem;
+    font-size: 0.78rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.02em;
@@ -590,14 +653,14 @@ th, td {
 thead tr:first-child th {
     background: var(--surface-2);
     font-weight: 600;
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
     position: sticky;
     top: 0;
     z-index: 3;
-    height: 32px;
+    height: 34px;
     box-sizing: border-box;
 }
 
@@ -929,8 +992,8 @@ button, .btn {
     color: white;
     border: none;
     padding: 0.45rem 1rem;
-    border-radius: 7px;
-    font-size: 0.82rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.15s;
@@ -949,8 +1012,8 @@ button.btn-outline {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
-    padding: 0.35rem 0.75rem;
-    font-size: 0.78rem;
+    padding: 0.4rem 0.85rem;
+    font-size: 0.82rem;
 }
 
 button.btn-outline:hover {
@@ -960,13 +1023,27 @@ button.btn-outline:hover {
 }
 
 button.btn-sm {
-    padding: 0.25rem 0.6rem;
-    font-size: 0.72rem;
-    border-radius: 5px;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.78rem;
+    border-radius: 6px;
 }
 
 button.btn-green {
     background: var(--green);
+}
+
+/* Ghost button — transparent with no border */
+button.btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+}
+
+button.btn-ghost:hover {
+    color: var(--text);
+    background: var(--surface-hover);
 }
 
 button.btn-yellow {
@@ -2439,11 +2516,12 @@ body.ai-panel-open main {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.5rem;
     padding: 1.1rem 1rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: 0.95rem;
     font-weight: 700;
     cursor: pointer;
@@ -2832,10 +2910,16 @@ button.btn-danger-outline:hover {
     padding: 1rem 0;
     cursor: pointer;
     user-select: none;
-    font-size: 0.92rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: var(--text);
     transition: color 0.15s;
+}
+
+.faq-question:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+    border-radius: 4px;
 }
 
 .faq-question:hover {
@@ -2843,10 +2927,12 @@ button.btn-danger-outline:hover {
 }
 
 .faq-chevron {
-    font-size: 0.6rem;
-    color: var(--text-dim);
+    font-size: 0.7rem;
+    color: var(--text-muted);
     transition: transform 0.2s;
     flex-shrink: 0;
+    width: 1rem;
+    text-align: center;
 }
 
 .faq-question.expanded .faq-chevron {
@@ -2855,10 +2941,10 @@ button.btn-danger-outline:hover {
 
 .faq-answer {
     display: none;
-    padding: 0 0 1rem 1.4rem;
-    font-size: 0.85rem;
+    padding: 0 0 1.25rem 1.6rem;
+    font-size: 0.88rem;
     color: var(--text-secondary);
-    line-height: 1.65;
+    line-height: 1.7;
 }
 
 .faq-answer.visible {
@@ -3364,7 +3450,7 @@ button.btn-danger-outline:hover {
     border: 1px solid var(--border);
     background: var(--surface-2);
     color: var(--text);
-    font-size: 0.78rem;
+    font-size: 0.82rem;
     font-family: inherit;
     cursor: pointer;
     transition: background 0.15s;

@@ -854,34 +854,34 @@ async function renderDashboard() {
 
     return `
         <div class="stat-grid">
-            <div class="stat-card card-purple stat-card-clickable" data-navigate="reports">
+            <div class="stat-card card-purple stat-card-clickable" data-navigate="reports" role="button" tabindex="0" aria-label="Reports: ${data.reports_total} total">
                 <div class="stat-label">Reports</div>
                 <div class="stat-value">${data.reports_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green">${reports.filter(r => r.status === "healthy").length} healthy</span>
-                    <span class="stat-dot dot-yellow">${reports.filter(r => r.status === "at risk").length} at risk</span>
-                    <span class="stat-dot dot-red">${reports.filter(r => r.status === "degraded").length} degraded</span>
-                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
+                    <span class="stat-dot dot-green" title="All data sources are fresh and up to date">${reports.filter(r => r.status === "healthy").length} healthy</span>
+                    <span class="stat-dot dot-yellow" title="Some data sources are 31–90 days old">${reports.filter(r => r.status === "at risk").length} at risk</span>
+                    <span class="stat-dot dot-red" title="Data sources are older than 90 days">${reports.filter(r => r.status === "degraded").length} degraded</span>
+                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted" title="Status has not been probed yet">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources">
+            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources" role="button" tabindex="0" aria-label="Total Sources: ${data.sources_total}, ${data.sources_fresh} healthy, ${data.sources_stale} at risk, ${data.sources_outdated} degraded">
                 <div class="stat-label">Total Sources</div>
                 <div class="stat-value">${data.sources_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green stat-filter" data-filter="healthy">${data.sources_fresh} healthy</span>
-                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk">${data.sources_stale} at risk</span>
-                    <span class="stat-dot dot-red stat-filter" data-filter="degraded">${data.sources_outdated} degraded</span>
-                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown">${data.sources_unknown} unknown</span>` : ""}
+                    <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within the last 30 days">${data.sources_fresh} healthy</span>
+                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk" title="Data is 31–90 days old — may need refresh">${data.sources_stale} at risk</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data is older than 90 days — action required">${data.sources_outdated} degraded</span>
+                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown" title="Source has not been probed yet">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="dashboard">
+            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="dashboard" role="button" tabindex="0" aria-label="Active Alerts: ${data.alerts_active}">
                 <div class="stat-label">Active Alerts</div>
                 <div class="stat-value">${data.alerts_active}</div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card card-green stat-card-clickable" data-navigate="scanner">
+            <div class="stat-card card-green stat-card-clickable" data-navigate="scanner" role="button" tabindex="0" aria-label="Last Scan: ${scan ? timeAgo(scan.started_at) : 'never'}" title="Click to view scanner details and trigger new scans">
                 <div class="stat-label">Last Scan</div>
                 <div class="stat-value" style="font-size:1.1rem">${scan ? timeAgo(scan.started_at) : "never"}</div>
                 ${scan ? `<div class="stat-breakdown">${scan.reports_scanned} reports &middot; ${scan.sources_found} sources</div>` : ""}
@@ -891,8 +891,8 @@ async function renderDashboard() {
 
         <div class="health-bar-container">
             <div style="display:flex;justify-content:space-between;align-items:center">
-                <h2 style="margin-bottom:0">Source Health</h2>
-                <span style="color:var(--text-dim);font-size:0.72rem">${healthLabel}</span>
+                <h2 style="margin-bottom:0" title="Freshness status of all registered data sources">Source Health</h2>
+                <span style="color:var(--text-dim);font-size:0.78rem" title="Healthy = updated within 30 days. At risk = 31–90 days. Degraded = 90+ days.">${healthLabel}</span>
             </div>
             ${!hasSources ? `
             <div class="health-bar">
@@ -2065,12 +2065,17 @@ async function renderCreate() {
         </div>
 
         <div class="create-type-selector">
-            <button class="create-type-btn" data-entity="report">Report</button>
-            <button class="create-type-btn" data-entity="source">Data Source</button>
-            <button class="create-type-btn" data-entity="upstream">Upstream System</button>
+            <button class="create-type-btn" data-entity="report">&#128196; Report</button>
+            <button class="create-type-btn" data-entity="source">&#128451; Data Source</button>
+            <button class="create-type-btn" data-entity="upstream">&#9650; Upstream System</button>
         </div>
 
-        <div id="create-form-container"></div>
+        <div id="create-form-container">
+            <div class="create-prompt" style="text-align:center;padding:2.5rem 1rem;color:var(--text-muted);font-size:0.9rem">
+                <div style="font-size:1.8rem;margin-bottom:0.75rem;opacity:0.4">&#10010;</div>
+                <div>Select a type above to create a new entry</div>
+            </div>
+        </div>
 
         <div class="section" style="margin-top:2rem">
             <h2 class="create-history-toggle" style="cursor:pointer;user-select:none">
@@ -3226,11 +3231,11 @@ const FAQ_ITEMS = [
 async function renderFaq() {
     const items = FAQ_ITEMS.map((f, i) => `
         <div class="faq-item">
-            <div class="faq-question" data-faq-idx="${i}">
+            <div class="faq-question" data-faq-idx="${i}" role="button" tabindex="0" aria-expanded="false" aria-controls="faq-ans-${i}">
                 <span class="faq-chevron">&#9654;</span>
                 <span>${f.q}</span>
             </div>
-            <div class="faq-answer" id="faq-ans-${i}">${f.a}</div>
+            <div class="faq-answer" id="faq-ans-${i}" role="region">${f.a}</div>
         </div>
     `).join("");
 
@@ -3247,7 +3252,7 @@ async function renderFaq() {
 
 function bindFaqPage() {
     document.querySelectorAll(".faq-question[data-faq-idx]").forEach(q => {
-        q.addEventListener("click", () => {
+        const toggle = () => {
             const idx = q.dataset.faqIdx;
             const ans = document.getElementById("faq-ans-" + idx);
             if (!ans) return;
@@ -3255,10 +3260,16 @@ function bindFaqPage() {
             if (open) {
                 q.classList.remove("expanded");
                 ans.classList.remove("visible");
+                q.setAttribute("aria-expanded", "false");
             } else {
                 q.classList.add("expanded");
                 ans.classList.add("visible");
+                q.setAttribute("aria-expanded", "true");
             }
+        };
+        q.addEventListener("click", toggle);
+        q.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
         });
     });
 }
@@ -3353,6 +3364,9 @@ async function navigate(page) {
             // Clickable stat cards — navigate to target page
             document.querySelectorAll(".stat-card-clickable[data-navigate]").forEach(card => {
                 card.addEventListener("click", () => navigate(card.dataset.navigate));
+                card.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(card.dataset.navigate); }
+                });
             });
             // Health bar tooltips
             const healthTooltip = document.getElementById("health-tooltip");
@@ -3711,6 +3725,40 @@ document.addEventListener("DOMContentLoaded", () => {
         a.addEventListener("click", (e) => {
             e.preventDefault();
             navigate(a.dataset.page);
+        });
+    });
+
+    // Keyboard navigation for nav dropdown groups
+    $$("nav .nav-group-label[tabindex]").forEach(label => {
+        label.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                const dropdown = label.parentElement.querySelector(".nav-dropdown");
+                if (dropdown) {
+                    const firstLink = dropdown.querySelector("a");
+                    if (firstLink) firstLink.focus();
+                }
+            }
+        });
+    });
+
+    // Arrow key navigation inside dropdowns
+    $$("nav .nav-dropdown").forEach(dropdown => {
+        dropdown.addEventListener("keydown", (e) => {
+            const links = Array.from(dropdown.querySelectorAll("a"));
+            const idx = links.indexOf(document.activeElement);
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                const next = idx < links.length - 1 ? idx + 1 : 0;
+                links[next].focus();
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                const prev = idx > 0 ? idx - 1 : links.length - 1;
+                links[prev].focus();
+            } else if (e.key === "Escape") {
+                const label = dropdown.parentElement.querySelector(".nav-group-label");
+                if (label) label.focus();
+            }
         });
     });
 
