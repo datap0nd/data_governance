@@ -208,6 +208,8 @@ function exportTableCSV(tableId, filename) {
 function toast(msg) {
     const el = document.createElement("div");
     el.className = "toast";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
     el.textContent = msg;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 3500);
@@ -424,6 +426,17 @@ function bindDataTables() {
     });
 }
 
+function detectTableScroll() {
+    document.querySelectorAll(".table-wrapper").forEach(wrapper => {
+        const hasScroll = wrapper.scrollWidth > wrapper.clientWidth;
+        wrapper.classList.toggle("has-scroll", hasScroll);
+        wrapper.addEventListener("scroll", () => {
+            const atEnd = wrapper.scrollLeft + wrapper.clientWidth >= wrapper.scrollWidth - 2;
+            wrapper.classList.toggle("has-scroll", !atEnd && wrapper.scrollWidth > wrapper.clientWidth);
+        });
+    });
+}
+
 function _refreshDT(tableId) {
     const dt = window._dt[tableId];
     const table = document.getElementById(tableId);
@@ -513,13 +526,13 @@ async function showSourceDetail(source) {
         <div class="detail-grid">
             <div class="detail-item"><div class="detail-label">Type</div>${typeBadge(source.type)}</div>
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
-            <div class="detail-item"><div class="detail-label">Last Updated</div><span style="color:var(--text)">${source.last_updated ? formatDate(source.last_updated) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Schema</div><span style="color:var(--text)">${parsed.folderSchema}</span></div>
-            <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${parsed.fullLocation}</span></div>
-            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${source.owner || "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${source.upstream_name || "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${source.upstream_refresh_day || "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + source.refresh_schedule : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Updated</div><span style="color:var(--text)">${source.last_updated ? esc(formatDate(source.last_updated)) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Schema</div><span style="color:var(--text)">${esc(parsed.folderSchema)}</span></div>
+            <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(parsed.fullLocation)}</span></div>
+            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${esc(source.upstream_name) || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${esc(source.upstream_refresh_day) || "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + esc(source.refresh_schedule) : "-"}</span></div>
         </div>
 
         <h2>Reports using this source (${reports.length})</h2>
@@ -701,9 +714,9 @@ async function showReportDetail(report) {
             <div class="report-expand-header">
                 <div class="detail-grid" style="margin-bottom:0.5rem">
                     <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(report.status)}</div>
-                    <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${report.owner || "-"}</span></div>
-                    <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${report.business_owner || "-"}</span></div>
-                    <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${report.frequency || "-"}</span></div>
+                    <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner) || "-"}</span></div>
+                    <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${esc(report.business_owner) || "-"}</span></div>
+                    <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${esc(report.frequency) || "-"}</span></div>
                 </div>
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>
@@ -902,7 +915,7 @@ async function renderDashboard() {
             <div class="health-bar">
                 <div class="segment segment-muted" style="width:100%"></div>
             </div>
-            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered &mdash; probe to check freshness</div>
+            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered  - probe to check freshness</div>
             ` : `
             <div class="health-bar">
                 ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} healthy (${freshPct}%)" data-filter="healthy" style="width:${freshPct}%"></div>` : ""}
@@ -936,13 +949,13 @@ async function renderDashboard() {
                         <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
                             <div class="dot dot-${item.severity}"></div>
                             <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                            <span><strong>${esc(item.name)}</strong> &mdash; ${esc(item.description)}</span>
+                            <span><strong>${esc(item.name)}</strong>  - ${esc(item.description)}</span>
                             <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
                         </div>
                     `).join("")}
                 </div>
             ` : allUnknown
-                ? '<div class="empty-state">No issues detected &mdash; run a probe to check source freshness</div>'
+                ? '<div class="empty-state">No issues detected  - run a probe to check source freshness</div>'
                 : '<div class="empty-state">All sources and reports are healthy</div>'
             }
             </div>
@@ -968,7 +981,7 @@ async function renderDashboard() {
         <div class="dashboard-attention-side">
             <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
             <div class="alert-trend-container" style="position:relative">
-                <canvas id="health-trend-canvas" height="200"></canvas>
+                <canvas id="health-trend-canvas" height="200" role="img" aria-label="Health trend chart showing source freshness over the past 30 days"></canvas>
                 <div id="health-trend-tooltip" class="chart-tooltip"></div>
             </div>
         </div>
@@ -986,6 +999,9 @@ function drawHealthTrendChart() {
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
     const W = rect.width, H = rect.height;
+    const isDarkMode = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().startsWith('#1');
+    const gridColor = isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
+    const labelColor = isDarkMode ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.35)";
 
     const trend = window._healthTrend || [];
     if (trend.length === 0) return;
@@ -998,13 +1014,13 @@ function drawHealthTrendChart() {
     const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.at_risk || 0) + (t.degraded || 0)), 1);
 
     // Grid lines
-    ctx.strokeStyle = "rgba(0,0,0,0.06)";
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     const gridSteps = Math.min(maxVal, 4);
     for (let i = 0; i <= gridSteps; i++) {
         const y = padT + chartH - (i / gridSteps) * chartH;
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillStyle = labelColor;
         ctx.font = "10px 'DM Sans', sans-serif";
         ctx.textAlign = "right";
         ctx.fillText(Math.round(i / gridSteps * maxVal), padL - 4, y + 3);
@@ -1094,7 +1110,7 @@ function drawHealthTrendChart() {
     drawLine(i => series[i].degraded, colors.degraded.stroke);
 
     // X-axis labels (every 7 days)
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillStyle = labelColor;
     ctx.font = "9px 'DM Sans', sans-serif";
     ctx.textAlign = "center";
     trend.forEach((t, i) => {
@@ -1117,7 +1133,7 @@ function drawHealthTrendChart() {
         const x = legendX + idx * 72;
         ctx.fillStyle = item.color;
         ctx.fillRect(x, legendY - 6, 8, 8);
-        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillStyle = labelColor;
         ctx.textAlign = "left";
         ctx.fillText(item.label, x + 11, legendY + 1);
     });
@@ -1176,7 +1192,6 @@ function _healthChartMouseMove(e) {
     const canvas = e.target;
     const ctx = canvas.getContext("2d");
     // Redraw chart then overlay guideline
-    drawHealthTrendChart.__lastHoverIdx = idx;
 }
 
 async function renderDashboardAlerts() {
@@ -1196,7 +1211,7 @@ async function renderDashboardAlerts() {
                 const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
                 return `<div class="alert-item">
                     <div class="dot ${a.severity === 'critical' ? 'dot-red' : 'dot-yellow'}"></div>
-                    <span>${srcShort ? `<strong>${esc(srcShort)}</strong> &mdash; ` : ""}${esc(a.message)}</span>
+                    <span>${srcShort ? `<strong>${esc(srcShort)}</strong>  - ` : ""}${esc(a.message)}</span>
                     <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${timeAgo(a.created_at)}</span>
                 </div>`;
             }).join("")}
@@ -1253,7 +1268,7 @@ async function renderSources() {
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${sources.length} data sources tracked &mdash; ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
+            <span class="subtitle">${sources.length} data sources tracked  - ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
             <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
@@ -1337,7 +1352,7 @@ async function renderReports() {
     return `
         <div class="page-header">
             <h1>Reports</h1>
-            <span class="subtitle">${reports.length} Power BI reports &mdash; ${healthy} healthy, ${atRisk} need attention</span>
+            <span class="subtitle">${reports.length} Power BI reports  - ${healthy} healthy, ${atRisk} need attention</span>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
@@ -1402,14 +1417,14 @@ async function renderScanner() {
 
         ${lastRun && lastRun.log ? `
             <div class="section">
-                <h2 class="log-toggle" data-target="scan-log-body" style="cursor:pointer;user-select:none">Last Scan Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span></h2>
+                <h2 class="log-toggle" data-target="scan-log-body" style="cursor:pointer;user-select:none">Last Scan Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)"> - click to expand</span></h2>
                 <div id="scan-log-body" class="scan-log" style="display:none">${lastRun.log}</div>
             </div>
         ` : ""}
 
         ${lastProbe && lastProbe.log ? `
             <div class="section">
-                <h2 class="log-toggle" data-target="probe-log-body" style="cursor:pointer;user-select:none">Last Probe Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span></h2>
+                <h2 class="log-toggle" data-target="probe-log-body" style="cursor:pointer;user-select:none">Last Probe Log <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)"> - click to expand</span></h2>
                 <div id="probe-log-body" class="scan-log" style="display:none">${lastProbe.log}</div>
             </div>
         ` : ""}
@@ -1451,7 +1466,7 @@ async function renderAlerts() {
         { key: "severity", label: "Severity", render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
         { key: "message", label: "Message", render: a => {
             const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
-            return srcShort ? `<strong>${esc(srcShort)}</strong> &mdash; ${esc(a.message)}` : esc(a.message);
+            return srcShort ? `<strong>${esc(srcShort)}</strong>  - ${esc(a.message)}` : esc(a.message);
         }},
         { key: "assigned_to", label: "Owner", render: a => {
             const opts = (window._alertOwners || []).map(o =>
@@ -1826,10 +1841,10 @@ async function renderChangelog() {
                 <div class="changelog-item">
                     <div class="changelog-time">${time}</div>
                     <div class="changelog-body">
-                        <div class="changelog-title">${e.title}</div>
-                        <div class="changelog-desc">${e.description}</div>
+                        <div class="changelog-title">${esc(e.title)}</div>
+                        <div class="changelog-desc">${esc(e.description)}</div>
                     </div>
-                    <span class="changelog-commit">${e.commit}</span>
+                    <span class="changelog-commit">${esc(e.commit)}</span>
                 </div>
             `;
         }).join("");
@@ -2144,7 +2159,7 @@ async function renderCreate() {
         <div class="section" style="margin-top:2rem">
             <h2 class="create-history-toggle" style="cursor:pointer;user-select:none">
                 Custom Entries (${customEntries.length})
-                <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)">&mdash; click to expand</span>
+                <span style="font-size:0.72rem;font-weight:400;color:var(--text-dim)"> - click to expand</span>
             </h2>
             <div id="create-history-body" style="display:none">
                 ${entryTable}
@@ -3391,6 +3406,7 @@ async function navigate(page) {
         app.innerHTML = html;
 
         bindDataTables();
+        detectTableScroll();
         if (page === "dashboard") {
             // Update nav health dot
             const navDot = document.getElementById("nav-health-dot");
@@ -3505,7 +3521,7 @@ async function navigate(page) {
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
-        app.innerHTML = `<div class="loading" style="color:var(--red)">Error loading page: ${esc(err.message)}</div>`;
+        app.innerHTML = '<div class="empty-state" style="margin-top:2rem"><strong>Failed to load page</strong><br><span style="color:var(--text-dim);font-size:0.8rem">' + esc(err.message) + '</span><br><br><button onclick="navigate(\'' + page + '\')" class="btn-outline" style="font-size:0.8rem">Retry</button></div>';
     }
 }
 
@@ -3775,6 +3791,16 @@ function getInitialPage() {
     return "dashboard";
 }
 
+function updateThemeIcon() {
+    const btn = document.getElementById("theme-toggle");
+    if (!btn) return;
+    const html = document.documentElement;
+    const isDark = html.classList.contains("dark") ||
+        (!html.classList.contains("light") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    btn.innerHTML = isDark ? "&#9788;" : "&#9790;";
+    btn.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     $$("nav a[data-page]").forEach(a => {
         a.addEventListener("click", (e) => {
@@ -3825,4 +3851,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
     initAIChatPanel();
     navigate(getInitialPage());
+
+    // Theme toggle
+    const themeToggle = document.getElementById("theme-toggle");
+    if (themeToggle) {
+        // Restore saved preference
+        const saved = localStorage.getItem("mx-theme");
+        if (saved === "dark") document.documentElement.classList.add("dark");
+        else if (saved === "light") document.documentElement.classList.add("light");
+        updateThemeIcon();
+
+        themeToggle.addEventListener("click", () => {
+            const html = document.documentElement;
+            if (html.classList.contains("dark")) {
+                html.classList.remove("dark");
+                html.classList.add("light");
+                localStorage.setItem("mx-theme", "light");
+            } else if (html.classList.contains("light")) {
+                html.classList.remove("light");
+                html.classList.add("dark");
+                localStorage.setItem("mx-theme", "dark");
+            } else {
+                // Auto mode - toggle to opposite of system preference
+                const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+                if (prefersDark) {
+                    html.classList.add("light");
+                    localStorage.setItem("mx-theme", "light");
+                } else {
+                    html.classList.add("dark");
+                    localStorage.setItem("mx-theme", "dark");
+                }
+            }
+            updateThemeIcon();
+        });
+    }
 });
