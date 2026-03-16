@@ -19,7 +19,11 @@ if not os.path.isdir(_default_reports):
 REPORTS_PATH = os.environ.get("DG_REPORTS_PATH", _default_reports)
 
 # DG_TMDL_ROOT is the documented env var — prefer it over REPORTS_PATH
-TMDL_ROOT = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
+_tmdl_root_raw = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
+# Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
+if not os.path.isabs(_tmdl_root_raw):
+    _tmdl_root_raw = str(BASE_DIR / _tmdl_root_raw)
+TMDL_ROOT = _tmdl_root_raw
 
 
 # How often to run scheduled scans and checks (in hours)

@@ -1,0 +1,6 @@
+# Full dependencies including native C extensions (for local development)
+# Install with: pip install -r requirements-local.txt
+-r requirements.txt
+pbixray
+apsw
+kaitaistruct
