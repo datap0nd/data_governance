@@ -6,7 +6,7 @@ function renderMd(text) {
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         // headers
         .replace(/^### (.+)$/gm, "<h4>$1</h4>")
-        .replace(/^## (.+)$/gm, "<h3 style='font-size:0.88rem;margin:0.4rem 0 0.25rem;color:#fff'>$1</h3>")
+        .replace(/^## (.+)$/gm, "<h3 style='font-size:0.88rem;margin:0.4rem 0 0.25rem;color:var(--text)'>$1</h3>")
         // bold
         .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
         // tables
@@ -998,14 +998,14 @@ function drawHealthTrendChart() {
     const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.at_risk || 0) + (t.degraded || 0)), 1);
 
     // Grid lines
-    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.strokeStyle = "rgba(0,0,0,0.06)";
     ctx.lineWidth = 1;
     const gridSteps = Math.min(maxVal, 4);
     for (let i = 0; i <= gridSteps; i++) {
         const y = padT + chartH - (i / gridSteps) * chartH;
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-        ctx.fillStyle = "rgba(255,255,255,0.3)";
-        ctx.font = "10px Inter, sans-serif";
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.font = "10px 'DM Sans', sans-serif";
         ctx.textAlign = "right";
         ctx.fillText(Math.round(i / gridSteps * maxVal), padL - 4, y + 3);
     }
@@ -1027,9 +1027,9 @@ function drawHealthTrendChart() {
     // healthy: from degraded+at_risk to total
 
     const colors = {
-        healthy: { fill: "rgba(34, 197, 94, 0.18)", stroke: "#22c55e" },
-        at_risk: { fill: "rgba(234, 179, 8, 0.18)", stroke: "#eab308" },
-        degraded: { fill: "rgba(239, 68, 68, 0.18)", stroke: "#ef4444" },
+        healthy: { fill: "rgba(22, 128, 61, 0.12)", stroke: "#15803d" },
+        at_risk: { fill: "rgba(161, 98, 7, 0.12)", stroke: "#a16207" },
+        degraded: { fill: "rgba(185, 28, 28, 0.12)", stroke: "#b91c1c" },
     };
 
     // Draw areas (in order: healthy on top, then at_risk, then degraded at bottom)
@@ -1094,8 +1094,8 @@ function drawHealthTrendChart() {
     drawLine(i => series[i].degraded, colors.degraded.stroke);
 
     // X-axis labels (every 7 days)
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    ctx.font = "9px Inter, sans-serif";
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.font = "9px 'DM Sans', sans-serif";
     ctx.textAlign = "center";
     trend.forEach((t, i) => {
         if (i % 7 === 0 || i === trend.length - 1) {
@@ -1106,7 +1106,7 @@ function drawHealthTrendChart() {
     });
 
     // Legend
-    ctx.font = "9px Inter, sans-serif";
+    ctx.font = "9px 'DM Sans', sans-serif";
     const legendX = padL + 4;
     const legendY = padT + 10;
     [
@@ -1117,7 +1117,7 @@ function drawHealthTrendChart() {
         const x = legendX + idx * 72;
         ctx.fillStyle = item.color;
         ctx.fillRect(x, legendY - 6, 8, 8);
-        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
         ctx.textAlign = "left";
         ctx.fillText(item.label, x + 11, legendY + 1);
     });
@@ -1160,9 +1160,9 @@ function _healthChartMouseMove(e) {
     const dayLabel = `${parts[2]}/${parts[1]}/${parts[0]}`;
 
     tip.innerHTML = `<div style="font-weight:600;margin-bottom:3px">${dayLabel}</div>
-        <div><span style="color:#22c55e">&#9679;</span> Healthy: ${s.healthy}</div>
-        <div><span style="color:#eab308">&#9679;</span> At Risk: ${s.at_risk}</div>
-        <div><span style="color:#ef4444">&#9679;</span> Degraded: ${s.degraded}</div>
+        <div><span style="color:#15803d">&#9679;</span> Healthy: ${s.healthy}</div>
+        <div><span style="color:#a16207">&#9679;</span> At Risk: ${s.at_risk}</div>
+        <div><span style="color:#b91c1c">&#9679;</span> Degraded: ${s.degraded}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.15);margin-top:3px;padding-top:3px;color:var(--text-dim)">Total: ${total}</div>`;
     tip.style.display = "block";
 
