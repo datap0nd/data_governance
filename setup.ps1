@@ -9,9 +9,23 @@
 
 $ErrorActionPreference = "Stop"
 
+# --- Relaunch from temp if running from inside the code folder ---
+# This avoids "folder in use" errors when replacing the code directory.
+if (-not $env:MX_SETUP_RELAUNCHED) {
+    $TempScript = "$env:TEMP\mx_setup.ps1"
+    Copy-Item $PSCommandPath $TempScript -Force
+    $env:MX_SETUP_RELAUNCHED = "1"
+    $env:MX_SETUP_CODEDIR = $PSScriptRoot
+    & $TempScript
+    Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
+    $env:MX_SETUP_RELAUNCHED = $null
+    $env:MX_SETUP_CODEDIR = $null
+    exit
+}
+
 $ServiceName = "MXAnalytics"
-$ProjectDir  = Split-Path $PSScriptRoot                # one level up from this script
-$CodeDir     = $PSScriptRoot                           # this script lives in the code folder
+$CodeDir     = $env:MX_SETUP_CODEDIR                  # original location (not temp)
+$ProjectDir  = Split-Path $CodeDir                     # one level up
 $CodeDirName = Split-Path $CodeDir -Leaf               # folder name (e.g. data_governance-main)
 $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
