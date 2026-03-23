@@ -53,7 +53,7 @@ if ($existing) {
 # --- Download latest code ---
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
 Write-Host "Downloading latest version..." -ForegroundColor Yellow
-Start-Process "chrome" $ZipUrl
+Start-Process "msedge" $ZipUrl
 
 $timeout = 300
 $elapsed = 0
