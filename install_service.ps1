@@ -46,8 +46,11 @@ if (-not (Test-Path $NssmExe)) {
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "Removing existing $ServiceName service..." -ForegroundColor Yellow
-    & $NssmExe stop $ServiceName 2>$null
-    & $NssmExe remove $ServiceName confirm
+    $ErrorActionPreference = "Continue"
+    & $NssmExe stop $ServiceName 2>&1 | Out-Null
+    & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
+    $ErrorActionPreference = "Stop"
+    Write-Host "Removed." -ForegroundColor Green
 }
 
 # --- Install service ---
