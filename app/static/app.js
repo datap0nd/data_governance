@@ -3247,7 +3247,7 @@ function bindEventLogPage() {
 const FAQ_ITEMS = [
     {
         q: "What does this platform do?",
-        a: "MX Analytics automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives your team a single place to manage data quality and accountability."
+        a: "MX Analytics automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives the BI team a single place to manage data quality and accountability."
     },
     {
         q: "Where does the data come from?",
@@ -3275,7 +3275,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "How does the Kanban task board work?",
-        a: "Create tasks for your team with titles, descriptions, priorities, due dates, and assignees (from the report owner list). Drag cards between Backlog, To Do, In Progress, and Done columns. Filter by team member to see individual workloads."
+        a: "Create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Filter by analyst to see individual workloads."
     },
     {
         q: "What is the Lineage view?",
@@ -3303,7 +3303,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "How do I set up the platform?",
-        a: "Install Python 3.11+, run pip install -r requirements.txt, set DG_TMDL_ROOT to your reports folder, and start with: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000. Open http://localhost:8000 in your browser."
+        a: "Install Python 3.11+, run pip install -r requirements.txt, then run install_service.ps1 as Administrator. The app installs as a Windows service and starts automatically. Open http://localhost:8000 in your browser. See instructions.md for the full guide."
     },
 ];
 
