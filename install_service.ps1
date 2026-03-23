@@ -16,7 +16,7 @@ $ServiceName = "MXAnalytics"
 $CodeDir     = $PSScriptRoot                          # wherever this script lives
 $ProjectDir  = Split-Path $CodeDir                    # one level up
 $DbPath      = "$ProjectDir\governance.db"
-$ReportsPath = "Z:\METOMX\Desktop\BI Report Originals"
+$ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $NssmExe     = "$CodeDir\tools\nssm.exe"              # bundled in the repo
 $Port        = 8000
 

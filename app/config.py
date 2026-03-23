@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
-_default_reports = r"Z:\METOMX\Desktop\BI Report Originals"
+_default_reports = r"\\\\MX-SHARE\\Users\\METOMX\\Desktop\\BI Report Originals"
 
 # If the default path doesn't exist, fall back to test_data inside the project
 if not os.path.isdir(_default_reports):

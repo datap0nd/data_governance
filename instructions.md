@@ -47,7 +47,7 @@ This:
 - Creates the **MXAnalytics** Windows service using the bundled NSSM
 - Configures it to auto-start on boot and restart on failure
 - Stores the database one level up from the code folder (survives updates)
-- Points the scanner at `Z:\METOMX\Desktop\BI Report Originals`
+- Points the scanner at `\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals`
 - Sets up log rotation
 
 After install, the app runs at **http://localhost:8000** automatically.
@@ -65,7 +65,7 @@ some_folder\
 - Open http://localhost:8000
 - Go to **Scanner** in the nav bar
 - Click **Run Scan Now**
-- The scanner reads all `.pbix` files from `Z:\METOMX\Desktop\BI Report Originals`
+- The scanner reads all `.pbix` files from `\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals`
 - It extracts sources, tables, measures, visuals, and lineage from each report
 
 After the scan, explore the pages:
