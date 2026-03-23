@@ -28,6 +28,13 @@ $CodeDir     = $env:MX_SETUP_CODEDIR                  # original location (not t
 $ProjectDir  = Split-Path $CodeDir                     # one level up
 $CodeDirName = Split-Path $CodeDir -Leaf               # folder name (e.g. data_governance-main)
 $DbPath      = "$ProjectDir\governance.db"
+
+# --- Safety check: make sure this is actually a data_governance code folder ---
+if (-not (Test-Path "$CodeDir\app\main.py") -and -not (Test-Path "$CodeDir\requirements.txt")) {
+    Write-Host "ERROR: This does not look like the data_governance code folder." -ForegroundColor Red
+    Write-Host "Run this script from inside data_governance-main\, not from $CodeDir" -ForegroundColor Red
+    exit 1
+}
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $NssmExe     = "$CodeDir\tools\nssm.exe"
 $Port        = 8000
