@@ -9,38 +9,23 @@
 
 $ErrorActionPreference = "Stop"
 
-# --- Relaunch from temp if running from inside the code folder ---
-# This avoids "folder in use" errors when replacing the code directory.
-if (-not $env:MX_SETUP_RELAUNCHED) {
-    $TempScript = "$env:TEMP\mx_setup.ps1"
-    Copy-Item $PSCommandPath $TempScript -Force
-    $env:MX_SETUP_RELAUNCHED = "1"
-    $env:MX_SETUP_CODEDIR = $PSScriptRoot
-    & $TempScript
-    Remove-Item $TempScript -Force -ErrorAction SilentlyContinue
-    $env:MX_SETUP_RELAUNCHED = $null
-    $env:MX_SETUP_CODEDIR = $null
-    exit
-}
-
 $ServiceName = "MXAnalytics"
-$CodeDir     = $env:MX_SETUP_CODEDIR                  # original location (not temp)
+$CodeDir     = $PSScriptRoot                           # wherever this script lives
 $ProjectDir  = Split-Path $CodeDir                     # one level up
-$CodeDirName = Split-Path $CodeDir -Leaf               # folder name (e.g. data_governance-main)
 $DbPath      = "$ProjectDir\governance.db"
-
-# --- Safety check: make sure this is actually a data_governance code folder ---
-if (-not (Test-Path "$CodeDir\app\main.py") -and -not (Test-Path "$CodeDir\requirements.txt")) {
-    Write-Host "ERROR: This does not look like the data_governance code folder." -ForegroundColor Red
-    Write-Host "Run this script from inside data_governance-main\, not from $CodeDir" -ForegroundColor Red
-    exit 1
-}
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $NssmExe     = "$CodeDir\tools\nssm.exe"
 $Port        = 8000
 $Downloads   = "$env:USERPROFILE\Downloads"
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$Downloads\data_governance-main.zip"
+
+# --- Safety check ---
+if (-not (Test-Path "$CodeDir\app\main.py") -and -not (Test-Path "$CodeDir\requirements.txt")) {
+    Write-Host "ERROR: This does not look like the data_governance code folder." -ForegroundColor Red
+    Write-Host "Run this script from inside data_governance-main\, not from $CodeDir" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "MX Analytics Setup" -ForegroundColor Cyan
@@ -101,28 +86,32 @@ while ($true) {
 }
 Write-Host "Download complete." -ForegroundColor Green
 
-# --- Replace code folder ---
-if (Test-Path $CodeDir) {
-    Write-Host "Replacing code folder..." -ForegroundColor Yellow
-    Remove-Item $CodeDir -Recurse -Force
+# --- Extract new code over the existing folder ---
+# Expand-Archive -Force overwrites existing files without needing to delete first.
+# This avoids "folder in use" errors from PowerShell or the service.
+Write-Host "Extracting new code..." -ForegroundColor Yellow
+
+$TempExtract = "$env:TEMP\mx_extract"
+Remove-Item $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+
+# GitHub ZIP contains a single folder like data_governance-main/
+$ExtractedDir = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
+if (-not $ExtractedDir) {
+    Write-Host "ERROR: ZIP extraction failed." -ForegroundColor Red
+    exit 1
 }
 
-Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
+# Copy all files from extracted folder into the code dir, overwriting
+Copy-Item "$($ExtractedDir.FullName)\*" $CodeDir -Recurse -Force
+Write-Host "Code updated." -ForegroundColor Green
 
-# GitHub ZIPs extract as data_governance-main by default; rename if needed
-$Extracted = Get-ChildItem $ProjectDir -Directory |
-    Where-Object { $_.Name -like "data_governance*" -and $_.Name -ne $CodeDirName -and $_.Name -ne "logs" } |
-    Select-Object -First 1
-if ($Extracted) {
-    Rename-Item $Extracted.FullName $CodeDirName
-}
-
+# Cleanup
+Remove-Item $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
 
-# Update paths after code folder was replaced
-$NssmExe = "$CodeDir\tools\nssm.exe"
-
 # --- Verify NSSM ---
+$NssmExe = "$CodeDir\tools\nssm.exe"
 if (-not (Test-Path $NssmExe)) {
     Write-Host "ERROR: NSSM not found at $NssmExe" -ForegroundColor Red
     exit 1
