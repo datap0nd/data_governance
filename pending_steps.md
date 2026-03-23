@@ -16,7 +16,7 @@
 ### 2. Place .pbix files in the reports folder
 Copy (or save) all your .pbix files to:
 ```
-C:\Users\r.cunha\documents\Home\projects\data_governance\BI Report Originals\
+C:\Users\meto.mx\documents\Home\projects\data_governance\BI Report Originals\
 ```
 The scanner reads .pbix files directly — no TMDL export needed.
 

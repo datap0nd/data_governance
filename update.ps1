@@ -11,7 +11,7 @@
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "MXAnalytics"
-$ProjectDir  = "C:\Users\r.cunha\documents\Home\projects\data_governance"
+$ProjectDir  = "$env:USERPROFILE\documents\Home\projects\data_governance"
 $CodeDir     = "$ProjectDir\data_governance-main"
 $NssmExe     = "$ProjectDir\nssm\nssm.exe"
 $Downloads   = "$env:USERPROFILE\Downloads"
