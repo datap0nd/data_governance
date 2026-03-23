@@ -75,9 +75,17 @@ Place in the project root (next to `governance.db`, one level above the code fol
 
 ## Running manually (without the service)
 
+Stop the service first, then run directly:
 ```powershell
+.\tools\nssm.exe stop MXAnalytics
 cd path\to\data_governance-main
+$env:DG_REPORTS_PATH = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
+$env:DG_DB_PATH = "..\governance.db"
+$env:DG_SIMULATE_FRESHNESS = "false"
+$env:DG_AI_MOCK = "true"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Press `Ctrl+C` to stop.
+Open http://localhost:8000, go to Scanner, click Run Scan Now.
+
+Press `Ctrl+C` to stop. Start the service again with `.\tools\nssm.exe start MXAnalytics`.
