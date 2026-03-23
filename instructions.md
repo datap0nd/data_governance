@@ -1,4 +1,4 @@
-# How to Run — Step by Step (Windows)
+# MX Analytics - Setup Guide (Windows)
 
 ## 1. Install Python
 
@@ -8,115 +8,131 @@
 - **Check the box "Add Python to PATH"** at the bottom of the first screen
 - Click "Install Now"
 
-To verify, open PowerShell and type:
+Verify in PowerShell:
 ```
 python --version
 ```
-You should see something like `Python 3.12.x`.
 
 ## 2. Download the project
 
 - Go to https://github.com/datap0nd/data_governance
-- Click the green **"<> Code"** button
-- Click **"Download ZIP"**
-- Extract the ZIP to `C:\Users\meto.mx\documents\Home\projects\data_governance\`
+- Click the green **"<> Code"** button > **"Download ZIP"**
+- Create the project folder and extract the ZIP into it:
 
-This creates the project at:
 ```
-C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main\
+%USERPROFILE%\documents\Home\projects\data_governance\data_governance-main\
 ```
 
-**Note:** In all commands below, replace `meto.mx` with your actual Windows username.
+The folder structure should look like:
+```
+data_governance\
+    data_governance-main\    <-- the code (replaced on updates)
+    governance.db            <-- database (created on first scan, persists across updates)
+    logs\                    <-- service logs (created by install_service.ps1)
+    nssm\                    <-- service manager (downloaded by install_service.ps1)
+```
 
 ## 3. Install dependencies
 
 Open PowerShell and run:
-```
-cd C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main
+```powershell
+cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
 pip install -r requirements.txt
 ```
 
-You only need to do this once (or again if `requirements.txt` changes).
+## 4. Install as a Windows service
 
-## 4. Run the tests
-
-```
-cd C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main
-python tests/test_scanner.py
-```
-
-You should see 6 tests pass. This confirms the TMDL scanner works.
-
-## 5. Start the app
-
-```
-cd C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main
-$env:DG_TMDL_ROOT = "C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main\test_data"
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Right-click PowerShell > **Run as Administrator**, then:
+```powershell
+cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+.\install_service.ps1
 ```
 
-When you see `Uvicorn running on http://0.0.0.0:8000`, the app is running.
+This does the following:
+- Downloads NSSM (Non-Sucking Service Manager) if not present
+- Creates the **MXAnalytics** Windows service
+- Configures it to auto-start on boot and restart on failure
+- Sets the database path outside the code folder (so it survives updates)
+- Points the scanner at `Z:\METOMX\Desktop\BI Report Originals`
+- Sets up log rotation in the `logs\` folder
 
-## 6. Open the panel
+After install, the app runs at **http://localhost:8000** automatically.
 
-Open your browser and go to:
-```
-http://localhost:8000
-```
+## 5. Run the first scan
 
-## 7. Run a scan
-
-- Click **Scanner** in the top nav
+- Open http://localhost:8000
+- Go to **Scanner** in the nav bar
 - Click **Run Scan Now**
-- It should find 3 reports and 4 sources
+- The scanner reads all `.pbix` files from `Z:\METOMX\Desktop\BI Report Originals`
+- It extracts sources, tables, measures, visuals, and lineage from each report
 
-Then click through the other pages:
-- **Dashboard** — overview with source/report counts
-- **Sources** — all detected data sources (SQL Server, Excel, CSV)
-- **Reports** — all Power BI reports found
-- **Lineage** — which sources feed which reports
+After the scan, explore the pages:
+- **Dashboard** - overview stats, health summary, stale source impact
+- **Sources** - all data sources extracted from your reports
+- **Reports** - all Power BI reports found
+- **Lineage** - which sources feed which reports, down to the visual level
+- **Best Practices** - TMDL checker findings (measure bloat, unused columns, etc.)
+- **Actions** - stale/broken source tracking with assignment
+- **Tasks** - kanban board for team task management
 
-## 8. Stop the app
+## 6. Network access
 
-Press `Ctrl+C` in PowerShell.
-
-## 9. Let other people access the panel
-
-While the app is running, other people on the same network can open it at:
+Other people on the same network can open the panel at:
 ```
-http://YOUR_COMPUTER_IP:8000
+http://YOUR_PC_IP:8000
 ```
 
 To find your IP, run `ipconfig` in PowerShell and look for your IPv4 address.
 
-## Updating the project
+## Updating
 
-When there's a new version:
-1. Delete the old `data_governance-main` folder
-2. Download the new ZIP from GitHub
-3. Extract to the same `data_governance\` folder
-4. Run `pip install -r requirements.txt` again (in case dependencies changed)
-5. Start the app as in step 5
+When there is a new version, run `update.ps1` (double-click or right-click > Run with PowerShell).
 
-## Using with your real reports
+It stops the service, downloads fresh code from GitHub, installs dependencies, and restarts the service. The database is not affected since it lives outside the code folder.
 
-Once testing works, point the app at your real TMDL exports:
+## Managing the service
+
+```powershell
+nssm stop MXAnalytics        # stop
+nssm start MXAnalytics       # start
+nssm restart MXAnalytics     # restart
+nssm status MXAnalytics      # check status
+nssm remove MXAnalytics confirm   # uninstall completely
 ```
-cd C:\Users\meto.mx\documents\Home\projects\data_governance\data_governance-main
-$env:DG_TMDL_ROOT = "C:\Users\meto.mx\documents\Home\projects\data_governance"
+
+Logs are at `%USERPROFILE%\documents\Home\projects\data_governance\logs\`.
+
+## Optional CSV files
+
+These files go in the project root (next to `governance.db`, one level above `data_governance-main`). None are required - the app works without them.
+
+| File | Purpose | Format |
+|------|---------|--------|
+| `owners.csv` | Report and source owner names | `report_owner,business_owner` (no header) |
+| `powerbi_links.csv` | Links to Power BI workspace | `report_name,powerbi_url` (no header) |
+| `endpoint_url.txt` | AI chat endpoint URL | Single line, e.g. `https://your-llm/v1` |
+| `latest_upload_date.csv` | PostgreSQL freshness dates (placeholder, not active) | `schema_name,table_name,last_activity` (with header) |
+
+## Data source freshness
+
+- **File sources** (CSV, Excel): probed for real by checking the file's last modified time at the path extracted from the Power BI report's M expression. These paths must be accessible from the machine running the app.
+- **Database sources** (PostgreSQL, SQL Server): simulated with weighted random data (70% fresh, 20% stale, 10% outdated). No actual database connection is attempted. This is a placeholder until read-only database access is available.
+
+## Running manually (without the service)
+
+If you prefer not to use the service, you can run the app directly:
+```powershell
+cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Your reports should be in:
+Press `Ctrl+C` to stop. The app will not auto-start on boot in this mode.
+
+## Running the tests
+
+```powershell
+cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+python tests/test_scanner.py
 ```
-C:\Users\meto.mx\documents\Home\projects\data_governance\reports\
-├── Report_Name_1\
-│   └── Report_Name_1.SemanticModel\
-│       └── Definition\
-│           └── Tables\
-│               ├── TableA.tmdl
-│               └── TableB.tmdl
-├── Report_Name_2\
-│   └── ...
-└── ...
-```
+
+This runs against the bundled test data, not your real reports.
