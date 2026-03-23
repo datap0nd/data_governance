@@ -258,27 +258,45 @@ def run_probe() -> dict:
                 probed += 1
                 log_lines.append(f"PG: {schema_name}.{table_name} → {status}")
 
-        # 3. Mark remaining DB sources as unknown if not yet probed this run
-        db_sources = db.execute(
-            "SELECT id, name, type FROM sources WHERE type NOT IN ('csv', 'excel', 'folder', 'postgresql')"
+        # 3. Simulate freshness for DB sources not yet probed this run
+        #    (PostgreSQL not matched by CSV, SQL Server, etc. - no direct connection)
+        unprobed_db = db.execute(
+            """SELECT s.id, s.name, s.type, s.custom_fresh_days, s.custom_stale_days
+               FROM sources s
+               WHERE s.type NOT IN ('csv', 'excel', 'folder')
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_probes sp
+                   WHERE sp.source_id = s.id AND sp.probed_at = ?
+               )""",
+            (now,),
         ).fetchall()
 
-        for src in db_sources:
-            # Check if we already probed this source in a previous step
-            recent = db.execute(
-                "SELECT id FROM source_probes WHERE source_id = ? AND probed_at = ?",
-                (src["id"], now),
-            ).fetchone()
-            if recent:
-                continue
+        for src in unprobed_db:
+            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            sm = src["custom_stale_days"] or STALE_MAX_DAYS
+            # Simulate: DB sources typically have good refresh rates
+            weights = [0.70, 0.20, 0.10]
+            bucket = random.choices(["fresh", "stale", "outdated"], weights=weights, k=1)[0]
+            if bucket == "fresh":
+                days_ago = random.randint(0, fm)
+            elif bucket == "stale":
+                days_ago = random.randint(fm + 1, sm)
+            else:
+                days_ago = random.randint(sm + 1, max(sm + 2, 365))
+            hours_ago = random.randint(0, 23)
+            mins_ago = random.randint(0, 59)
+            dt = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=hours_ago, minutes=mins_ago)
+            status = _compute_status(dt.isoformat(), fm, sm)
 
             db.execute(
-                "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'no_connection', ?)",
-                (src["id"], now, f"Cannot probe {src['type']} sources without direct connection"),
+                "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
+                (src["id"], now, dt.isoformat(), status, f"simulated ({src['type']} - no db connection)"),
             )
-            statuses["unknown"] = statuses.get("unknown", 0) + 1
+            statuses[status] = statuses.get(status, 0) + 1
+            _create_action_and_alert(db, src["id"], status, now, fm, sm)
             probed += 1
-            log_lines.append(f"DB: {src['name'][:40]} → unknown (no connection)")
+            short = src["name"].replace("\\", "/").split("/")[-1]
+            log_lines.append(f"SIM: {short} → {status} ({src['type']})")
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()

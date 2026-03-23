@@ -8,9 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
-_default_reports = os.path.expanduser(
-    os.path.join("~", "documents", "Home", "projects", "data_governance", "BI Report Originals")
-)
+_default_reports = r"Z:\METOMX\Desktop\BI Report Originals"
 
 # If the default path doesn't exist, fall back to test_data inside the project
 if not os.path.isdir(_default_reports):
@@ -47,5 +45,7 @@ else:
     AI_API_URL = os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
 
-# Simulated freshness — generates realistic source_probes entries for demo mode
-SIMULATE_FRESHNESS = os.environ.get("DG_SIMULATE_FRESHNESS", "true").lower() in ("true", "1", "yes")
+# Simulated freshness — when true, ALL sources get randomized probe data (demo mode).
+# When false, file-based sources are probed for real; DB sources without
+# a connection are simulated individually.
+SIMULATE_FRESHNESS = os.environ.get("DG_SIMULATE_FRESHNESS", "false").lower() in ("true", "1", "yes")
