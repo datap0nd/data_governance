@@ -37,7 +37,7 @@ data_governance\
 Open PowerShell and run:
 ```powershell
 cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
-pip install -r requirements.txt
+pip install -r requirements.txt --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 ```
 
 ## 4. Install as a Windows service

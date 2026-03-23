@@ -79,7 +79,7 @@ Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
 # --- Install/update dependencies ---
 Write-Host "Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
-pip install -r requirements.txt -q
+pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 
 # --- Restart service ---
 Write-Host "Starting $ServiceName service..." -ForegroundColor Yellow
