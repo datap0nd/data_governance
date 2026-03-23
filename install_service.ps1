@@ -5,24 +5,24 @@
 #   - Python 3.11+ installed and on PATH
 #   - pip install -r requirements.txt already done
 #
-# What this does:
-#   1. Copies bundled NSSM (Non-Sucking Service Manager) to project dir
-#   2. Creates the MXAnalytics Windows service
-#   3. Configures environment variables (DB path, reports path)
-#   4. Starts the service
+# Extract the ZIP anywhere you like. This script figures out all paths
+# automatically from wherever it is located.
 #
 # After install, the app runs at http://localhost:8000 automatically on boot.
 
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "MXAnalytics"
-$ProjectDir  = "$env:USERPROFILE\documents\Home\projects\data_governance"
-$CodeDir     = "$ProjectDir\data_governance-main"
+$CodeDir     = $PSScriptRoot                          # wherever this script lives
+$ProjectDir  = Split-Path $CodeDir                    # one level up
 $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "Z:\METOMX\Desktop\BI Report Originals"
-$NssmDir     = "$ProjectDir\nssm"
-$NssmExe     = "$NssmDir\nssm.exe"
+$NssmExe     = "$CodeDir\tools\nssm.exe"              # bundled in the repo
 $Port        = 8000
+
+Write-Host "Code folder:    $CodeDir" -ForegroundColor DarkGray
+Write-Host "Project folder: $ProjectDir" -ForegroundColor DarkGray
+Write-Host "Database:       $DbPath" -ForegroundColor DarkGray
 
 # --- Find Python ---
 $PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
@@ -33,19 +33,13 @@ if (-not $PythonExe) {
     Write-Host "ERROR: Python not found on PATH. Install Python 3.11+ first." -ForegroundColor Red
     exit 1
 }
-Write-Host "Using Python: $PythonExe" -ForegroundColor Cyan
+Write-Host "Python:         $PythonExe" -ForegroundColor DarkGray
 
-# --- Copy bundled NSSM if not already in project dir ---
+# --- Verify NSSM is bundled ---
 if (-not (Test-Path $NssmExe)) {
-    $BundledNssm = "$CodeDir\tools\nssm.exe"
-    if (-not (Test-Path $BundledNssm)) {
-        Write-Host "ERROR: NSSM not found at $BundledNssm" -ForegroundColor Red
-        Write-Host "The tools\nssm.exe file should be included in the project." -ForegroundColor Red
-        exit 1
-    }
-    New-Item -ItemType Directory -Path $NssmDir -Force | Out-Null
-    Copy-Item $BundledNssm $NssmExe -Force
-    Write-Host "NSSM copied to $NssmExe" -ForegroundColor Green
+    Write-Host "ERROR: NSSM not found at $NssmExe" -ForegroundColor Red
+    Write-Host "The tools\nssm.exe file should be included in the download." -ForegroundColor Red
+    exit 1
 }
 
 # --- Remove existing service if present ---
@@ -72,11 +66,11 @@ Write-Host "Installing $ServiceName service..." -ForegroundColor Yellow
     "DG_SIMULATE_FRESHNESS=false" `
     "DG_AI_MOCK=true"
 
-# Restart on failure (wait 5 seconds, retry up to 3 times)
+# Restart on failure (wait 5 seconds)
 & $NssmExe set $ServiceName AppExit Default Restart
 & $NssmExe set $ServiceName AppRestartDelay 5000
 
-# Logging - write stdout/stderr to log files
+# Logging
 $LogDir = "$ProjectDir\logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppStdout "$LogDir\mx_analytics.log"

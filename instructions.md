@@ -17,26 +17,21 @@ python --version
 
 - Go to https://github.com/datap0nd/data_governance
 - Click the green **"<> Code"** button > **"Download ZIP"**
-- Create the project folder and extract the ZIP into it:
+- Extract the ZIP wherever you want, e.g. your Desktop, Documents, or a projects folder
 
+You should end up with a folder like:
 ```
-%USERPROFILE%\documents\Home\projects\data_governance\data_governance-main\
+some_folder\
+    data_governance-main\    <-- the code
 ```
 
-The folder structure should look like:
-```
-data_governance\
-    data_governance-main\    <-- the code (replaced on updates)
-    governance.db            <-- database (created on first scan, persists across updates)
-    logs\                    <-- service logs (created by install_service.ps1)
-    nssm\                    <-- service manager (downloaded by install_service.ps1)
-```
+That's it. The scripts figure out all paths automatically from wherever they are.
 
 ## 3. Install dependencies
 
-Open PowerShell and run:
+Open PowerShell, `cd` into the code folder, and run:
 ```powershell
-cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+cd path\to\data_governance-main
 pip install -r requirements.txt --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 ```
 
@@ -44,19 +39,26 @@ pip install -r requirements.txt --index-url "https://bart.sec.samsung.net/artifa
 
 Right-click PowerShell > **Run as Administrator**, then:
 ```powershell
-cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+cd path\to\data_governance-main
 .\install_service.ps1
 ```
 
-This does the following:
-- Downloads NSSM (Non-Sucking Service Manager) if not present
-- Creates the **MXAnalytics** Windows service
+This:
+- Creates the **MXAnalytics** Windows service using the bundled NSSM
 - Configures it to auto-start on boot and restart on failure
-- Sets the database path outside the code folder (so it survives updates)
+- Stores the database one level up from the code folder (survives updates)
 - Points the scanner at `Z:\METOMX\Desktop\BI Report Originals`
-- Sets up log rotation in the `logs\` folder
+- Sets up log rotation
 
 After install, the app runs at **http://localhost:8000** automatically.
+
+The folder structure after install:
+```
+some_folder\
+    data_governance-main\    <-- the code (replaced on updates)
+    governance.db            <-- database (persists across updates)
+    logs\                    <-- service logs
+```
 
 ## 5. Run the first scan
 
@@ -86,21 +88,20 @@ To find your IP, run `ipconfig` in PowerShell and look for your IPv4 address.
 
 ## Updating
 
-When there is a new version, run `update.ps1` (double-click or right-click > Run with PowerShell).
+When there is a new version, run `update.ps1` from inside the code folder (double-click or right-click > Run with PowerShell).
 
 It stops the service, downloads fresh code from GitHub, installs dependencies, and restarts the service. The database is not affected since it lives outside the code folder.
 
 ## Managing the service
 
+From inside the code folder:
 ```powershell
-nssm stop MXAnalytics        # stop
-nssm start MXAnalytics       # start
-nssm restart MXAnalytics     # restart
-nssm status MXAnalytics      # check status
-nssm remove MXAnalytics confirm   # uninstall completely
+.\tools\nssm.exe stop MXAnalytics
+.\tools\nssm.exe start MXAnalytics
+.\tools\nssm.exe restart MXAnalytics
+.\tools\nssm.exe status MXAnalytics
+.\tools\nssm.exe remove MXAnalytics confirm   # uninstall completely
 ```
-
-Logs are at `%USERPROFILE%\documents\Home\projects\data_governance\logs\`.
 
 ## Optional CSV files
 
@@ -120,9 +121,9 @@ These files go in the project root (next to `governance.db`, one level above `da
 
 ## Running manually (without the service)
 
-If you prefer not to use the service, you can run the app directly:
+If you prefer not to use the service, run the app directly from the code folder:
 ```powershell
-cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+cd path\to\data_governance-main
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -131,7 +132,7 @@ Press `Ctrl+C` to stop. The app will not auto-start on boot in this mode.
 ## Running the tests
 
 ```powershell
-cd "$env:USERPROFILE\documents\Home\projects\data_governance\data_governance-main"
+cd path\to\data_governance-main
 python tests/test_scanner.py
 ```
 

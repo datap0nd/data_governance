@@ -1,19 +1,15 @@
 # MX Analytics - Update script
 # Downloads latest code from GitHub and restarts the Windows service.
 #
-# Prerequisites:
-#   - install_service.ps1 has been run once (service exists)
-#   - Internet access to download from GitHub
-#
-# The database lives at $ProjectDir\governance.db (outside the code folder),
-# so replacing the code folder does not affect scan history or data.
+# Run from the current code folder. It replaces the code folder with
+# the latest version. The database is not affected (it lives one level up).
 
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "MXAnalytics"
-$ProjectDir  = "$env:USERPROFILE\documents\Home\projects\data_governance"
-$CodeDir     = "$ProjectDir\data_governance-main"
-$NssmExe     = "$ProjectDir\nssm\nssm.exe"
+$CodeDir     = $PSScriptRoot
+$ProjectDir  = Split-Path $CodeDir
+$NssmExe     = "$CodeDir\tools\nssm.exe"
 $Downloads   = "$env:USERPROFILE\Downloads"
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$Downloads\data_governance-main.zip"
@@ -66,12 +62,12 @@ if (Test-Path $CodeDir) {
 Write-Host "Extracting..." -ForegroundColor Yellow
 Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
 
-# GitHub ZIPs may extract with a different folder name
+# GitHub ZIPs extract as data_governance-main by default
 $Extracted = Get-ChildItem $ProjectDir -Directory |
-    Where-Object { $_.Name -like "data_governance*" -and $_.Name -ne "data_governance-main" -and $_.Name -ne "nssm" -and $_.Name -ne "logs" } |
+    Where-Object { $_.Name -like "data_governance*" -and $_.Name -ne (Split-Path $CodeDir -Leaf) -and $_.Name -ne "logs" } |
     Select-Object -First 1
 if ($Extracted) {
-    Rename-Item $Extracted.FullName "data_governance-main"
+    Rename-Item $Extracted.FullName (Split-Path $CodeDir -Leaf)
 }
 
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
@@ -83,6 +79,7 @@ pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/art
 
 # --- Restart service ---
 Write-Host "Starting $ServiceName service..." -ForegroundColor Yellow
+$NssmExe = "$CodeDir\tools\nssm.exe"
 & $NssmExe start $ServiceName
 
 Start-Sleep -Seconds 3
@@ -95,5 +92,4 @@ if ($svc.Status -eq "Running") {
 } else {
     Write-Host "WARNING: Service not running after update. Check logs:" -ForegroundColor Red
     Write-Host "  $ProjectDir\logs\" -ForegroundColor Yellow
-    Write-Host "  Run: nssm status $ServiceName" -ForegroundColor Yellow
 }
