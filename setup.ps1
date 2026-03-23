@@ -1,39 +1,33 @@
-# MX Analytics - Setup & Update (run as Administrator)
+# MX Analytics - Setup & Update
+# Right-click > Run with PowerShell (as Administrator)
 #
-# This single script handles everything:
-#   - First run: downloads code, installs deps, creates the service
-#   - Later runs: downloads latest code, updates deps, reconfigures and restarts the service
-#
-# Prerequisites: Python 3.11+ installed and on PATH.
-# After running, the app is at http://localhost:8000.
+# Does everything: downloads latest code, installs deps, sets up service.
+# Run again any time to update.
 
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "MXAnalytics"
-$CodeDir     = $PSScriptRoot                           # wherever this script lives
-$ProjectDir  = Split-Path $CodeDir                     # one level up
+$CodeDir     = $PSScriptRoot
+$ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
-$NssmExe     = "$CodeDir\tools\nssm.exe"
 $Port        = 8000
 $Downloads   = "$env:USERPROFILE\Downloads"
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$Downloads\data_governance-main.zip"
 
 # --- Safety check ---
-if (-not (Test-Path "$CodeDir\app\main.py") -and -not (Test-Path "$CodeDir\requirements.txt")) {
-    Write-Host "ERROR: This does not look like the data_governance code folder." -ForegroundColor Red
-    Write-Host "Run this script from inside data_governance-main\, not from $CodeDir" -ForegroundColor Red
+if (-not (Test-Path "$CodeDir\app\main.py")) {
+    Write-Host "ERROR: Run this from inside the data_governance-main folder." -ForegroundColor Red
     exit 1
 }
+
+# Move out of the code folder so it can be deleted later
+Set-Location $ProjectDir
 
 Write-Host ""
 Write-Host "MX Analytics Setup" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
-Write-Host "  Code:     $CodeDir" -ForegroundColor DarkGray
-Write-Host "  Database: $DbPath" -ForegroundColor DarkGray
-Write-Host "  Reports:  $ReportsPath" -ForegroundColor DarkGray
-Write-Host ""
 
 # --- Find Python ---
 $PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
@@ -41,20 +35,20 @@ if (-not $PythonExe) {
     $PythonExe = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 }
 if (-not $PythonExe) {
-    Write-Host "ERROR: Python not found on PATH. Install Python 3.11+ first." -ForegroundColor Red
+    Write-Host "ERROR: Python not found on PATH." -ForegroundColor Red
     exit 1
 }
 
-# --- Stop existing service ---
+# --- Stop and remove existing service ---
+$ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "Stopping $ServiceName service..." -ForegroundColor Yellow
-    $ErrorActionPreference = "Continue"
-    & $NssmExe stop $ServiceName 2>&1 | Out-Null
-    & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
-    $ErrorActionPreference = "Stop"
-    Write-Host "Stopped and removed old service." -ForegroundColor Green
+    Write-Host "Stopping service..." -ForegroundColor Yellow
+    & "$CodeDir\tools\nssm.exe" stop $ServiceName 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+    & "$CodeDir\tools\nssm.exe" remove $ServiceName confirm 2>&1 | Out-Null
 }
+$ErrorActionPreference = "Stop"
 
 # --- Download latest code ---
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
@@ -68,15 +62,14 @@ while ($true) {
     $elapsed += 3
 
     if (Test-Path $ZipPath) {
-        $partial = "$ZipPath.crdownload"
-        if (-not (Test-Path $partial)) {
+        if (-not (Test-Path "$ZipPath.crdownload")) {
             Start-Sleep -Seconds 2
             break
         }
     }
 
     if ($elapsed -ge $timeout) {
-        Write-Host "Timed out after 5 minutes. Download the ZIP manually to $Downloads and re-run." -ForegroundColor Red
+        Write-Host "Timed out. Download the ZIP manually to $Downloads and re-run." -ForegroundColor Red
         exit 1
     }
 
@@ -86,36 +79,21 @@ while ($true) {
 }
 Write-Host "Download complete." -ForegroundColor Green
 
-# --- Extract new code over the existing folder ---
-# Expand-Archive -Force overwrites existing files without needing to delete first.
-# This avoids "folder in use" errors from PowerShell or the service.
-Write-Host "Extracting new code..." -ForegroundColor Yellow
+# --- Delete old code folder and extract new one ---
+Write-Host "Replacing code..." -ForegroundColor Yellow
+Remove-Item $CodeDir -Recurse -Force
+Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
 
-$TempExtract = "$env:TEMP\mx_extract"
-Remove-Item $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
-Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
-
-# GitHub ZIP contains a single folder like data_governance-main/
-$ExtractedDir = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
-if (-not $ExtractedDir) {
-    Write-Host "ERROR: ZIP extraction failed." -ForegroundColor Red
-    exit 1
+# GitHub ZIP extracts as data_governance-main/ - rename if needed
+$CodeDirName = Split-Path $CodeDir -Leaf
+$Extracted = Get-ChildItem $ProjectDir -Directory |
+    Where-Object { $_.Name -like "data_governance*" -and $_.Name -ne $CodeDirName -and $_.Name -ne "logs" } |
+    Select-Object -First 1
+if ($Extracted) {
+    Rename-Item $Extracted.FullName $CodeDirName
 }
 
-# Copy all files from extracted folder into the code dir, overwriting
-Copy-Item "$($ExtractedDir.FullName)\*" $CodeDir -Recurse -Force
-Write-Host "Code updated." -ForegroundColor Green
-
-# Cleanup
-Remove-Item $TempExtract -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
-
-# --- Verify NSSM ---
-$NssmExe = "$CodeDir\tools\nssm.exe"
-if (-not (Test-Path $NssmExe)) {
-    Write-Host "ERROR: NSSM not found at $NssmExe" -ForegroundColor Red
-    exit 1
-}
 
 # --- Install dependencies ---
 Write-Host "Installing dependencies..." -ForegroundColor Yellow
@@ -123,12 +101,13 @@ Set-Location $CodeDir
 pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 
 # --- Create service ---
-Write-Host "Installing $ServiceName service..." -ForegroundColor Yellow
+$NssmExe = "$CodeDir\tools\nssm.exe"
+Write-Host "Creating service..." -ForegroundColor Yellow
 
 & $NssmExe install $ServiceName $PythonExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
 & $NssmExe set $ServiceName AppDirectory $CodeDir
 & $NssmExe set $ServiceName DisplayName "MX Analytics - Data Governance"
-& $NssmExe set $ServiceName Description "BI data governance panel - freshness monitoring, lineage mapping, TMDL checker"
+& $NssmExe set $ServiceName Description "BI data governance panel"
 & $NssmExe set $ServiceName Start SERVICE_AUTO_START
 
 & $NssmExe set $ServiceName AppEnvironmentExtra `
@@ -151,20 +130,13 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppRotateBytes 10485760
 
 # --- Start ---
-Write-Host "Starting $ServiceName..." -ForegroundColor Yellow
 & $NssmExe start $ServiceName
-
 Start-Sleep -Seconds 3
 $svc = Get-Service -Name $ServiceName
 if ($svc.Status -eq "Running") {
-    Write-Host "" -ForegroundColor Green
-    Write-Host "Done. MX Analytics is running." -ForegroundColor Green
-    Write-Host "" -ForegroundColor Green
-    Write-Host "  URL:       http://localhost:$Port" -ForegroundColor Cyan
-    Write-Host "  DB:        $DbPath" -ForegroundColor Cyan
-    Write-Host "  Reports:   $ReportsPath" -ForegroundColor Cyan
-    Write-Host "  Logs:      $LogDir\" -ForegroundColor Cyan
-    Write-Host "" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Done. MX Analytics is running at http://localhost:$Port" -ForegroundColor Green
+    Write-Host ""
 } else {
-    Write-Host "WARNING: Service not running. Check logs at $LogDir\" -ForegroundColor Red
+    Write-Host "WARNING: Service not running. Check $LogDir\" -ForegroundColor Red
 }
