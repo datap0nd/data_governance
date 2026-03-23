@@ -6,7 +6,7 @@
 #   - pip install -r requirements.txt already done
 #
 # What this does:
-#   1. Downloads NSSM (Non-Sucking Service Manager) if not present
+#   1. Copies bundled NSSM (Non-Sucking Service Manager) to project dir
 #   2. Creates the MXAnalytics Windows service
 #   3. Configures environment variables (DB path, reports path)
 #   4. Starts the service
@@ -35,20 +35,17 @@ if (-not $PythonExe) {
 }
 Write-Host "Using Python: $PythonExe" -ForegroundColor Cyan
 
-# --- Download NSSM if missing ---
+# --- Copy bundled NSSM if not already in project dir ---
 if (-not (Test-Path $NssmExe)) {
-    Write-Host "Downloading NSSM..." -ForegroundColor Yellow
-    $NssmZip = "$env:TEMP\nssm.zip"
-    $NssmUrl = "https://nssm.cc/release/nssm-2.24.zip"
-    Invoke-WebRequest -Uri $NssmUrl -OutFile $NssmZip
-    Expand-Archive -Path $NssmZip -DestinationPath "$env:TEMP\nssm_extract" -Force
-
-    # NSSM zip contains nssm-2.24/win64/nssm.exe
+    $BundledNssm = "$CodeDir\tools\nssm.exe"
+    if (-not (Test-Path $BundledNssm)) {
+        Write-Host "ERROR: NSSM not found at $BundledNssm" -ForegroundColor Red
+        Write-Host "The tools\nssm.exe file should be included in the project." -ForegroundColor Red
+        exit 1
+    }
     New-Item -ItemType Directory -Path $NssmDir -Force | Out-Null
-    Copy-Item "$env:TEMP\nssm_extract\nssm-2.24\win64\nssm.exe" $NssmExe -Force
-    Remove-Item $NssmZip -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:TEMP\nssm_extract" -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "NSSM installed at $NssmExe" -ForegroundColor Green
+    Copy-Item $BundledNssm $NssmExe -Force
+    Write-Host "NSSM copied to $NssmExe" -ForegroundColor Green
 }
 
 # --- Remove existing service if present ---
