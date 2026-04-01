@@ -134,6 +134,10 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "DG_SIMULATE_FRESHNESS=false" `
     "DG_AI_MOCK=true"
 
+# Run service as current user (needed for network share access)
+$cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter your Windows password so the service can access network shares"
+& $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $cred.GetNetworkCredential().Password
+
 & $NssmExe set $ServiceName AppExit Default Restart
 & $NssmExe set $ServiceName AppRestartDelay 5000
 
