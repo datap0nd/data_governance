@@ -1409,11 +1409,14 @@ async function renderScanner() {
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
+            <button id="btn-diagnose" class="btn-outline">Diagnose</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
             </span>
         </div>
+
+        <div id="diagnose-panel" style="display:none"></div>
 
         ${lastRun && lastRun.log ? `
             <div class="section">
@@ -3574,6 +3577,110 @@ function bindScannerButtons() {
         });
     }
 
+    const btnDiagnose = $("#btn-diagnose");
+    if (btnDiagnose) {
+        btnDiagnose.addEventListener("click", async () => {
+            const panel = $("#diagnose-panel");
+            if (!panel) return;
+            // Toggle off if already showing
+            if (panel.style.display !== "none") {
+                panel.style.display = "none";
+                return;
+            }
+            btnDiagnose.disabled = true;
+            btnDiagnose.textContent = "Diagnosing...";
+            try {
+                const d = await api("/api/scanner/diagnose");
+                panel.innerHTML = renderDiagnosePanel(d);
+                panel.style.display = "";
+            } catch (err) {
+                panel.innerHTML = `<div class="section" style="border-left:3px solid var(--red);padding-left:0.75rem;margin-bottom:1.25rem"><h2>Diagnostics Error</h2><pre class="scan-log">${esc(err.message)}</pre></div>`;
+                panel.style.display = "";
+            }
+            btnDiagnose.disabled = false;
+            btnDiagnose.textContent = "Diagnose";
+        });
+    }
+
+}
+
+function renderDiagnosePanel(d) {
+    const errBlock = d.errors.length > 0
+        ? `<div style="background:rgba(239,68,68,0.08);border:1px solid var(--red);border-radius:6px;padding:0.6rem 0.75rem;margin-bottom:0.75rem">
+            <strong style="color:var(--red)">Errors (${d.errors.length})</strong>
+            <ul style="margin:0.4rem 0 0 1.2rem;padding:0;color:var(--red)">${d.errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul>
+           </div>`
+        : "";
+
+    const pathStatus = d.exists
+        ? (d.is_dir ? '<span style="color:var(--green)">exists (directory)</span>' : '<span style="color:var(--yellow)">exists (not a directory)</span>')
+        : '<span style="color:var(--red)">does not exist</span>';
+
+    // Directory listing
+    let dirListHtml = "";
+    if (d.directory_listing.length > 0) {
+        const rows = d.directory_listing.map(e => {
+            const icon = e.is_dir ? "DIR" : "FILE";
+            const size = e.size_bytes != null ? ` (${(e.size_bytes / 1024).toFixed(1)} KB)` : "";
+            const isPbix = e.name.endsWith(".pbix") ? ' style="color:var(--green)"' : "";
+            const isSemantic = e.name.toLowerCase().endsWith(".semanticmodel") ? ' style="color:var(--blue)"' : "";
+            return `<span style="color:var(--text-dim);display:inline-block;width:3rem">${icon}</span> <span${isPbix || isSemantic}>${esc(e.name)}</span>${size}`;
+        }).join("\n");
+        dirListHtml = `<pre class="scan-log" style="max-height:200px">${rows}</pre>`;
+    } else if (d.exists) {
+        dirListHtml = `<div style="color:var(--text-dim);font-size:0.8rem">Directory is empty</div>`;
+    }
+
+    // Steps
+    const stepsHtml = d.steps.map(s => {
+        const found = s.found != null ? ` - found ${s.found}` : "";
+        const result = s.result ? ` - ${s.result}` : "";
+        const extra = s.tables != null ? ` (${s.tables} tables, ${s.measures} measures)` : "";
+        const files = s.files && s.files.length > 0 ? `\n    ${s.files.join("\n    ")}` : "";
+        return `${esc(s.action)}${found}${result}${extra}${files}`;
+    }).join("\n");
+
+    // TMDL folder analysis
+    let tmdlHtml = "";
+    if (d.tmdl_folders.length > 0) {
+        const rows = d.tmdl_folders.map(f => {
+            const checks = [
+                f.has_semantic_model ? '<span style="color:var(--green)">SemanticModel</span>' : '<span style="color:var(--red)">SemanticModel</span>',
+                f.has_definition ? '<span style="color:var(--green)">Definition</span>' : '<span style="color:var(--text-dim)">Definition</span>',
+                f.has_tables ? '<span style="color:var(--green)">Tables</span>' : '<span style="color:var(--text-dim)">Tables</span>',
+            ].join(" / ");
+            const tmdlCount = f.tmdl_file_count > 0 ? ` - ${f.tmdl_file_count} .tmdl files` : "";
+            const reason = f.skip_reason ? `<div style="color:var(--yellow);font-size:0.72rem;margin-left:1rem">${esc(f.skip_reason)}</div>` : `<div style="color:var(--green);font-size:0.72rem;margin-left:1rem">OK${tmdlCount}</div>`;
+            const contents = f.contents.length > 0 ? `<div style="color:var(--text-dim);font-size:0.68rem;margin-left:1rem">Contents: ${f.contents.join(", ")}</div>` : "";
+            return `<div style="padding:0.3rem 0;border-bottom:1px solid var(--border)"><strong>${esc(f.folder)}</strong> ${checks}${reason}${contents}</div>`;
+        }).join("");
+        tmdlHtml = `<div class="section"><h2>TMDL Folder Analysis</h2><div style="font-size:0.82rem">${rows}</div></div>`;
+    }
+
+    // PBIX file list
+    let pbixHtml = "";
+    if (d.pbix_files.length > 0) {
+        pbixHtml = `<div class="section"><h2>PBIX Files Found (${d.pbix_files.length})</h2><pre class="scan-log">${d.pbix_files.map(f => esc(f)).join("\n")}</pre></div>`;
+    }
+
+    return `
+        <div class="section" style="border-left:3px solid var(--blue);padding-left:0.75rem;margin-bottom:1.25rem">
+            <h2>Scanner Diagnostics</h2>
+            ${errBlock}
+            <table style="font-size:0.82rem;margin-bottom:0.75rem">
+                <tr><td style="padding-right:1rem;color:var(--text-dim)">Raw path</td><td><code>${esc(d.raw_path)}</code></td></tr>
+                <tr><td style="padding-right:1rem;color:var(--text-dim)">Resolved path</td><td><code>${esc(d.resolved_path)}</code></td></tr>
+                <tr><td style="padding-right:1rem;color:var(--text-dim)">Status</td><td>${pathStatus}</td></tr>
+                <tr><td style="padding-right:1rem;color:var(--text-dim)">Mode</td><td>${d.mode ? esc(d.mode).toUpperCase() : "N/A"}</td></tr>
+            </table>
+            <h3 style="font-size:0.82rem;margin-bottom:0.4rem">Directory Listing</h3>
+            ${dirListHtml}
+            <h3 style="font-size:0.82rem;margin:0.75rem 0 0.4rem">Discovery Steps</h3>
+            <pre class="scan-log">${stepsHtml}</pre>
+            ${pbixHtml}
+            ${tmdlHtml}
+        </div>
+    `;
 }
 
 

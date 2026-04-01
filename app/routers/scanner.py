@@ -1,9 +1,11 @@
 import logging
 
 from fastapi import APIRouter
+from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe, probe_debug
+from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,16 @@ def list_scan_runs():
             "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 20"
         ).fetchall()
     return [ScanRunOut(**dict(r)) for r in rows]
+
+
+@router.get("/diagnose")
+def diagnose_scan():
+    """Step-by-step diagnostics of the scanner discovery logic.
+
+    Shows the resolved path, directory listing, what .pbix/.tmdl files
+    were found, and why each subfolder was accepted or skipped.
+    """
+    return diagnose_reports_root(TMDL_ROOT)
 
 
 @router.get("/runs/{run_id}", response_model=ScanRunOut)

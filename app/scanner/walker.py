@@ -62,6 +62,194 @@ def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
     return _walk_tmdl(root)
 
 
+def diagnose_reports_root(root_path: str | Path) -> dict:
+    """Walk through the discovery logic step by step and return diagnostics.
+
+    Returns a dict with detailed info about what the scanner sees,
+    useful for debugging why 0 reports are found.
+    """
+    raw_path = str(root_path)
+    root = Path(root_path).resolve()
+    result = {
+        "raw_path": raw_path,
+        "resolved_path": str(root),
+        "exists": root.exists(),
+        "is_dir": root.is_dir() if root.exists() else False,
+        "mode": None,
+        "steps": [],
+        "pbix_files": [],
+        "tmdl_folders": [],
+        "errors": [],
+        "directory_listing": [],
+    }
+
+    if not root.exists():
+        result["errors"].append(f"Path does not exist: {root}")
+        return result
+
+    if not root.is_dir():
+        result["errors"].append(f"Path is not a directory: {root}")
+        return result
+
+    # List root contents
+    try:
+        for entry in sorted(root.iterdir()):
+            entry_info = {
+                "name": entry.name,
+                "is_dir": entry.is_dir(),
+                "is_file": entry.is_file(),
+            }
+            if entry.is_file():
+                try:
+                    entry_info["size_bytes"] = entry.stat().st_size
+                except OSError:
+                    pass
+            result["directory_listing"].append(entry_info)
+    except PermissionError as e:
+        result["errors"].append(f"Permission denied listing directory: {e}")
+        return result
+
+    # Step 1: Check for .pbix files at root
+    pbix_root = list(root.glob("*.pbix"))
+    result["steps"].append({
+        "action": f"Glob *.pbix in {root}",
+        "found": len(pbix_root),
+        "files": [f.name for f in pbix_root],
+    })
+
+    # Step 2: Check for .pbix files one level deep
+    pbix_sub = list(root.glob("*/*.pbix"))
+    result["steps"].append({
+        "action": f"Glob */*.pbix in {root}",
+        "found": len(pbix_sub),
+        "files": [str(f.relative_to(root)) for f in pbix_sub],
+    })
+
+    all_pbix = pbix_root + pbix_sub
+    if all_pbix:
+        result["mode"] = "pbix"
+        result["pbix_files"] = [str(f.relative_to(root)) for f in all_pbix]
+        # Try parsing each one to check for errors
+        for pbix_path in all_pbix:
+            try:
+                from app.scanner.pbix_parser import parse_pbix_file
+                report = parse_pbix_file(pbix_path)
+                if report:
+                    result["steps"].append({
+                        "action": f"Parse {pbix_path.name}",
+                        "result": "OK",
+                        "tables": len(report.tables),
+                        "measures": len(report.measures),
+                    })
+                else:
+                    result["steps"].append({
+                        "action": f"Parse {pbix_path.name}",
+                        "result": "FAILED - parser returned None",
+                    })
+                    result["errors"].append(f"{pbix_path.name}: parser returned None")
+            except Exception as e:
+                result["steps"].append({
+                    "action": f"Parse {pbix_path.name}",
+                    "result": f"ERROR: {e}",
+                })
+                result["errors"].append(f"{pbix_path.name}: {e}")
+        return result
+
+    # TMDL mode
+    result["mode"] = "tmdl"
+    result["steps"].append({
+        "action": "No .pbix files found, falling back to TMDL mode",
+        "found": 0,
+    })
+
+    # Check for reports/ subdirectory
+    reports_dir = root / "reports"
+    if reports_dir.exists():
+        scan_dir = reports_dir
+        result["steps"].append({
+            "action": f"Found reports/ subdirectory at {reports_dir}",
+            "found": 1,
+        })
+    else:
+        scan_dir = root
+        result["steps"].append({
+            "action": f"No reports/ subdirectory, scanning root directly: {root}",
+            "found": 0,
+        })
+
+    # Walk each subdirectory
+    for entry in sorted(scan_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+
+        folder_diag = {
+            "folder": entry.name,
+            "has_semantic_model": False,
+            "has_definition": False,
+            "has_tables": False,
+            "tmdl_file_count": 0,
+            "semantic_dirs_found": [],
+            "skip_reason": None,
+            "contents": [],
+        }
+
+        # List folder contents for debugging
+        try:
+            folder_diag["contents"] = [e.name for e in sorted(entry.iterdir())]
+        except PermissionError:
+            folder_diag["skip_reason"] = "Permission denied"
+            result["tmdl_folders"].append(folder_diag)
+            continue
+
+        # Check for SemanticModel directory
+        semantic_dirs = list(entry.glob("*.SemanticModel"))
+        if not semantic_dirs:
+            semantic_dirs = [
+                d for d in entry.iterdir()
+                if d.is_dir() and d.name.lower().endswith(".semanticmodel")
+            ]
+
+        if not semantic_dirs:
+            folder_diag["skip_reason"] = "No *.SemanticModel directory found"
+            result["tmdl_folders"].append(folder_diag)
+            continue
+
+        folder_diag["has_semantic_model"] = True
+        folder_diag["semantic_dirs_found"] = [d.name for d in semantic_dirs]
+
+        semantic_dir = semantic_dirs[0]
+        definition_dir = semantic_dir / "Definition"
+        if not definition_dir.exists():
+            definition_dir = semantic_dir / "definition"
+        if not definition_dir.exists():
+            folder_diag["skip_reason"] = f"No Definition/ dir inside {semantic_dir.name}"
+            result["tmdl_folders"].append(folder_diag)
+            continue
+
+        folder_diag["has_definition"] = True
+
+        tables_dir = definition_dir / "Tables"
+        if not tables_dir.exists():
+            tables_dir = definition_dir / "tables"
+        if not tables_dir.exists():
+            folder_diag["skip_reason"] = f"No Tables/ dir inside {definition_dir.name}"
+            result["tmdl_folders"].append(folder_diag)
+            continue
+
+        folder_diag["has_tables"] = True
+        tmdl_files = list(tables_dir.glob("*.tmdl"))
+        folder_diag["tmdl_file_count"] = len(tmdl_files)
+
+        if not tmdl_files:
+            folder_diag["skip_reason"] = "Tables/ dir exists but contains no .tmdl files"
+        else:
+            folder_diag["skip_reason"] = None  # This folder should parse successfully
+
+        result["tmdl_folders"].append(folder_diag)
+
+    return result
+
+
 def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
     """Parse .pbix files using PBIXRay."""
     from app.scanner.pbix_parser import parse_pbix_file

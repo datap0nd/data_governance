@@ -408,6 +408,7 @@ def run_scan(reports_path: str | None = None) -> dict:
             "broken_refs": broken_refs,
             "status": "completed",
             "log": log_text,
+            "scanned_path": str(Path(root).resolve()),
         }
         logger.info("Scan completed: %s", summary)
         return summary
