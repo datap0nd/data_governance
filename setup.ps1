@@ -40,7 +40,14 @@ if (-not (Test-Path "$CodeDir\app\main.py")) {
 Write-Host ""
 Write-Host "MX Analytics Setup" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
-Write-Host "  Code dir: $CodeDir" -ForegroundColor DarkGray
+Write-Host "  Code dir:  $CodeDir" -ForegroundColor DarkGray
+Write-Host "  Database:  $DbPath" -ForegroundColor DarkGray
+if (Test-Path $DbPath) {
+    $dbSize = [math]::Round((Get-Item $DbPath).Length / 1024)
+    Write-Host "  DB exists: ${dbSize} KB (will be preserved)" -ForegroundColor Green
+} else {
+    Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
+}
 
 # --- Portable Python 3.13 ---
 if (-not (Test-Path $PyExe)) {

@@ -8,6 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from pathlib import Path
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
 from app.database import init_db
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people
 from app.ai.router import router as ai_router
@@ -16,13 +19,26 @@ from app.ai.router import router as ai_router
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
 
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """Prevent browser from caching static JS/CSS files."""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app):
+    from app.config import DB_PATH
+    logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
     yield
 
 
 app = FastAPI(title="MX Analytics", version="0.1.0", lifespan=lifespan)
+app.add_middleware(NoCacheStaticMiddleware)
 
 # Register API routers
 app.include_router(dashboard.router)
