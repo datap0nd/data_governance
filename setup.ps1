@@ -49,7 +49,7 @@ if (-not $PythonExe) {
 }
 Write-Host "  Python:   $PythonExe" -ForegroundColor DarkGray
 
-# --- Stop existing service ---
+# --- Stop existing service and free the port ---
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -60,6 +60,17 @@ if ($existing) {
     & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
 } else {
     Write-Host "[1/4] No existing service." -ForegroundColor DarkGray
+}
+
+# Kill anything still holding the port
+$portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
+    ($_ -split '\s+')[-1]
+} | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique)
+foreach ($p in $portPid) {
+    if ($p -and $p -ne "0") {
+        Write-Host "  Killing PID $p holding port $Port" -ForegroundColor Yellow
+        taskkill /PID $p /F 2>&1 | Out-Null
+    }
 }
 $ErrorActionPreference = "Stop"
 
