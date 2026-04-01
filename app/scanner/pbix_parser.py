@@ -21,6 +21,19 @@ from app.scanner.tmdl_parser import (
 logger = logging.getLogger(__name__)
 
 
+def _df_col(df, *names) -> str | None:
+    """Find a DataFrame column by trying names, with case-insensitive fallback."""
+    cols = set(df.columns)
+    for name in names:
+        if name in cols:
+            return name
+    lower_map = {c.lower(): c for c in cols}
+    for name in names:
+        if name.lower() in lower_map:
+            return lower_map[name.lower()]
+    return None
+
+
 @dataclass
 class PbixTable:
     """A table extracted from a .pbix file."""
@@ -80,11 +93,16 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     try:
         pq = model.power_query
         if pq is not None and len(pq) > 0:
-            for _, row in pq.iterrows():
-                table_name = row.get("TableName") or row.get("tableName") or row.get("Name")
-                expression = row.get("Expression") or row.get("expression")
-                if table_name and expression:
-                    m_expressions[table_name] = expression
+            tname_col = _df_col(pq, "TableName", "tableName", "Name", "Table")
+            expr_col = _df_col(pq, "Expression", "expression", "Query")
+            if tname_col and expr_col:
+                for _, row in pq.iterrows():
+                    table_name = row.get(tname_col)
+                    expression = row.get(expr_col)
+                    if table_name and expression:
+                        m_expressions[str(table_name)] = str(expression)
+            else:
+                logger.warning("Unexpected power_query columns in %s: %s", file_path.name, list(pq.columns))
     except Exception as e:
         logger.warning("Could not read power_query from %s: %s", file_path.name, e)
 
@@ -93,13 +111,19 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     try:
         schema = model.schema
         if schema is not None and len(schema) > 0:
-            for _, row in schema.iterrows():
-                table_name = row.get("TableName") or row.get("tableName")
-                col_name = row.get("ColumnName") or row.get("columnName") or row.get("Name")
-                if table_name and col_name:
-                    if table_name not in column_map:
-                        column_map[table_name] = []
-                    column_map[table_name].append(col_name)
+            tname_col = _df_col(schema, "TableName", "tableName", "Table")
+            cname_col = _df_col(schema, "ColumnName", "columnName", "Name", "Column")
+            if tname_col and cname_col:
+                for _, row in schema.iterrows():
+                    table_name = row.get(tname_col)
+                    col_name = row.get(cname_col)
+                    if table_name and col_name:
+                        tname_str = str(table_name)
+                        if tname_str not in column_map:
+                            column_map[tname_str] = []
+                        column_map[tname_str].append(str(col_name))
+            else:
+                logger.warning("Unexpected schema columns in %s: %s", file_path.name, list(schema.columns))
     except Exception as e:
         logger.warning("Could not read schema from %s: %s", file_path.name, e)
 
@@ -156,16 +180,22 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     try:
         dax_measures = model.dax_measures
         if dax_measures is not None and len(dax_measures) > 0:
-            for _, row in dax_measures.iterrows():
-                tbl = row.get("TableName") or row.get("tableName") or ""
-                name = row.get("Name") or row.get("name") or ""
-                expr = row.get("Expression") or row.get("expression") or ""
-                if name:
-                    measures.append(MeasureInfo(
-                        table_name=str(tbl),
-                        measure_name=str(name),
-                        dax_expression=str(expr) if expr else None,
-                    ))
+            tbl_col = _df_col(dax_measures, "TableName", "tableName", "Table")
+            name_col = _df_col(dax_measures, "Name", "name", "MeasureName", "DisplayName")
+            expr_col = _df_col(dax_measures, "Expression", "expression", "MeasureExpression")
+            if name_col:
+                for _, row in dax_measures.iterrows():
+                    tbl = str(row.get(tbl_col, "")) if tbl_col else ""
+                    name = row.get(name_col)
+                    expr = row.get(expr_col) if expr_col else ""
+                    if name:
+                        measures.append(MeasureInfo(
+                            table_name=tbl,
+                            measure_name=str(name),
+                            dax_expression=str(expr) if expr else None,
+                        ))
+            else:
+                logger.warning("Unexpected dax_measures columns in %s: %s", file_path.name, list(dax_measures.columns))
     except Exception as e:
         logger.warning("Could not read dax_measures from %s: %s", file_path.name, e)
 

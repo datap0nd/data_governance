@@ -9,10 +9,11 @@ Scan runner — orchestrates a full scan.
 """
 
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import TMDL_ROOT
+from app.config import TMDL_ROOT, DB_PATH
 from app.database import get_db
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
@@ -20,11 +21,32 @@ from app.scanner.source_matcher import deduplicate_sources
 logger = logging.getLogger(__name__)
 
 
+def _backup_db() -> None:
+    """Backup governance.db before scanning."""
+    db_file = Path(DB_PATH)
+    if not db_file.exists():
+        return
+
+    backup_dir = db_file.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"governance_{timestamp}.db"
+
+    try:
+        shutil.copy2(str(db_file), str(backup_path))
+        logger.info("Database backed up to %s", backup_path)
+    except Exception as e:
+        logger.warning("Failed to backup database: %s", e)
+
+
 def run_scan(reports_path: str | None = None) -> dict:
     """Run a full scan and store results.
 
     Returns a summary dict with scan statistics.
     """
+    _backup_db()
+
     root = reports_path or TMDL_ROOT
     now = datetime.now(timezone.utc).isoformat()
 

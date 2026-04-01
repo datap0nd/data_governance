@@ -125,7 +125,7 @@ def _parse_section(section: dict) -> ParsedPage | None:
     for vc in section.get("visualContainers", []):
         try:
             visual = _parse_visual_container(vc)
-            if visual and visual.field_refs:
+            if visual:
                 page.visuals.append(visual)
         except Exception:
             # Skip malformed visuals silently
@@ -169,6 +169,14 @@ def _parse_visual_container(vc: dict) -> ParsedVisual | None:
         refs = _extract_field_ref(select_item, alias_map)
         field_refs.extend(refs)
 
+    # Also extract from Where clause (filter conditions, slicers)
+    for where_item in proto_query.get("Where", []):
+        field_refs.extend(_walk_expression(where_item, alias_map))
+
+    # Also extract from OrderBy clause
+    for ob_item in proto_query.get("OrderBy", []):
+        field_refs.extend(_walk_expression(ob_item, alias_map))
+
     # Deduplicate
     seen = set()
     unique_refs = []
@@ -209,62 +217,54 @@ def _extract_visual_title(single_visual: dict) -> str | None:
 def _extract_field_ref(select_item: dict, alias_map: dict) -> list[VisualFieldRef]:
     """Extract field references from a single Select item.
 
-    Handles three expression types:
-    - Column: {Column: {Expression: {SourceRef: {Source: "alias"}}, Property: "field"}}
-    - Measure: {Measure: {Expression: {SourceRef: {Source: "alias"}}, Property: "measure"}}
-    - Aggregation: {Aggregation: {Expression: {Column: {...}}, Function: 0}}
+    Recursively walks the expression tree to find all Column and Measure
+    references, handling wrapper types like Aggregation, Filter, Arithmetic,
+    Comparison, Not, And, Or, ScopedEval, DateSpan, etc.
+    """
+    return _walk_expression(select_item, alias_map)
+
+
+def _walk_expression(obj, alias_map: dict) -> list[VisualFieldRef]:
+    """Recursively walk an expression tree and extract all field references.
+
+    Power BI expressions are deeply nested trees. Instead of handling each
+    wrapper type individually, this walks the entire tree and picks out
+    Column/Measure leaf nodes (which have Expression+Property) and
+    HierarchyLevel nodes (which have Expression+Level).
     """
     refs = []
 
-    # Try direct Column reference
-    col = select_item.get("Column")
-    if col:
-        ref = _resolve_source_ref(col, alias_map)
-        if ref:
-            refs.append(ref)
-        return refs
-
-    # Try direct Measure reference
-    measure = select_item.get("Measure")
-    if measure:
-        ref = _resolve_source_ref(measure, alias_map)
-        if ref:
-            refs.append(ref)
-        return refs
-
-    # Try Aggregation wrapper (wraps a Column or Measure)
-    agg = select_item.get("Aggregation")
-    if agg:
-        inner_expr = agg.get("Expression", {})
-        # Aggregation can wrap Column or Measure
-        inner_col = inner_expr.get("Column")
-        if inner_col:
-            ref = _resolve_source_ref(inner_col, alias_map)
+    if isinstance(obj, dict):
+        # Leaf: Column or Measure reference -- has both Expression and Property
+        if "Property" in obj and "Expression" in obj:
+            ref = _resolve_source_ref(obj, alias_map)
             if ref:
                 refs.append(ref)
-            return refs
-        inner_measure = inner_expr.get("Measure")
-        if inner_measure:
-            ref = _resolve_source_ref(inner_measure, alias_map)
-            if ref:
-                refs.append(ref)
-            return refs
+                return refs  # Leaf node, don't recurse deeper
 
-    # Try HierarchyLevel
-    hier = select_item.get("HierarchyLevel")
-    if hier:
-        inner_expr = hier.get("Expression", {})
-        hierarchy = inner_expr.get("Hierarchy", {})
-        inner_expr2 = hierarchy.get("Expression", {})
-        source_ref = inner_expr2.get("SourceRef", {})
-        alias = source_ref.get("Source")
-        if alias and alias in alias_map:
-            level = hier.get("Level", "")
-            refs.append(VisualFieldRef(
-                table_name=alias_map[alias],
-                field_name=level,
-            ))
-        return refs
+        # Leaf: HierarchyLevel -- has Expression and Level
+        if "Level" in obj and "Expression" in obj:
+            hierarchy = obj["Expression"].get("Hierarchy", {})
+            inner_expr = hierarchy.get("Expression", {})
+            source_ref = inner_expr.get("SourceRef", {})
+            alias = source_ref.get("Source")
+            level = obj.get("Level")
+            if alias and level and alias in alias_map:
+                refs.append(VisualFieldRef(
+                    table_name=alias_map[alias],
+                    field_name=level,
+                ))
+                return refs
+
+        # Wrapper node -- recurse into all dict values
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                refs.extend(_walk_expression(value, alias_map))
+
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                refs.extend(_walk_expression(item, alias_map))
 
     return refs
 
