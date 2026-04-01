@@ -63,8 +63,11 @@ def _serve_index():
     })
 
 
-def _git_short_hash() -> str:
-    """Get the short commit hash, or 'dev' if git is unavailable."""
+def _get_version() -> str:
+    """Get the version from VERSION file, or fall back to git, or 'dev'."""
+    version_file = Path(__file__).parent.parent / "VERSION"
+    if version_file.exists():
+        return version_file.read_text().strip()
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -75,7 +78,7 @@ def _git_short_hash() -> str:
     except Exception:
         return "dev"
 
-_APP_VERSION = _git_short_hash()
+_APP_VERSION = _get_version()
 
 
 @app.get("/api/version")
