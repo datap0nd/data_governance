@@ -860,9 +860,10 @@ async function renderDashboard() {
         return tb - ta;
     });
 
-    // Store for click-through navigation
+    // Store for click-through navigation and "show more"
     window._dashboardSources = sources;
     window._dashboardReports = reports;
+    window._needsAttentionFull = needsAttention;
 
     return `
         <div class="stat-grid">
@@ -938,14 +939,14 @@ async function renderDashboard() {
             <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
                 <h2 style="margin:0">Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
                 <div class="impact-toggle">
-                    <button class="impact-toggle-btn active" data-view="timeline">Timeline</button>
-                    <button class="impact-toggle-btn" data-view="impact">By Impact${impactData.length > 0 ? ` (${impactData.length})` : ""}</button>
+                    <button class="impact-toggle-btn active" data-view="impact">By Impact${impactData.length > 0 ? ` (${impactData.length})` : ""}</button>
+                    <button class="impact-toggle-btn" data-view="timeline">Timeline</button>
                 </div>
             </div>
-            <div id="attention-timeline">
+            <div id="attention-timeline" style="display:none">
             ${needsAttention.length > 0 ? `
                 <div class="alert-list attention-scrollable" id="attention-list">
-                    ${needsAttention.map(item => `
+                    ${needsAttention.slice(0, 10).map(item => `
                         <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
                             <div class="dot dot-${item.severity}"></div>
                             <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
@@ -953,13 +954,14 @@ async function renderDashboard() {
                             <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
                         </div>
                     `).join("")}
+                    ${needsAttention.length > 10 ? `<div class="attention-show-more" id="attention-show-more">Show all ${needsAttention.length} items</div>` : ""}
                 </div>
             ` : allUnknown
                 ? '<div class="empty-state">No issues detected  - run a probe to check source freshness</div>'
                 : '<div class="empty-state">All sources and reports are healthy</div>'
             }
             </div>
-            <div id="attention-impact" style="display:none">
+            <div id="attention-impact">
             ${impactData.length > 0 ? `
                 <div class="impact-list">
                     ${impactData.map(item => `
@@ -3635,6 +3637,37 @@ async function navigate(page) {
                     }
                 });
             });
+            // "Show more" in attention list
+            const showMoreBtn = document.getElementById("attention-show-more");
+            if (showMoreBtn) {
+                showMoreBtn.addEventListener("click", () => {
+                    const list = document.getElementById("attention-list");
+                    if (!list || !window._needsAttentionFull) return;
+                    const items = window._needsAttentionFull;
+                    list.innerHTML = items.map(item => `
+                        <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
+                            <div class="dot dot-${item.severity}"></div>
+                            <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
+                            <span><strong>${esc(item.name)}</strong>  - ${esc(item.description)}</span>
+                            <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
+                        </div>
+                    `).join("");
+                    // Re-bind click handlers on new items
+                    list.querySelectorAll(".attention-clickable").forEach(el => {
+                        el.addEventListener("click", async () => {
+                            const kind = el.dataset.kind;
+                            const id = parseInt(el.dataset.id);
+                            if (kind === "source") {
+                                const src = (window._dashboardSources || []).find(s => s.id === id);
+                                if (src) { await navigate("sources"); showSourceDetail(src); }
+                            } else if (kind === "report") {
+                                const rpt = (window._dashboardReports || []).find(r => r.id === id);
+                                if (rpt) { await navigate("reports"); showReportDetail(rpt); }
+                            }
+                        });
+                    });
+                });
+            }
             // Impact toggle
             document.querySelectorAll(".impact-toggle-btn").forEach(btn => {
                 btn.addEventListener("click", () => {
