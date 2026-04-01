@@ -179,10 +179,10 @@ Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
 $PipExe = "$PyDir\Scripts\pip.exe"
-# Install bundled wheels first (pbixray + deps that aren't on corporate mirror)
+# Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
 & $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
-# Install remaining deps from corporate mirror
-& $PipExe install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
+# Install remaining deps from public PyPI (portable Python has clean config)
+& $PipExe install -r requirements.txt -q
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
