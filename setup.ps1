@@ -127,7 +127,10 @@ Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 # --- Install dependencies ---
 Write-Host "[4/4] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
-pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net --extra-index-url "https://pypi.org/simple/"
+# Install bundled wheels first (pbixray + deps that aren't on corporate mirror)
+pip install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
+# Install remaining deps from corporate mirror
+pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
