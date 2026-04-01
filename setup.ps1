@@ -175,6 +175,16 @@ if ($Inner) {
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
+# --- Stamp VERSION with latest commit hash ---
+try {
+    $commitInfo = Invoke-WebRequest -Uri "https://api.github.com/repos/datap0nd/data_governance/commits/main" -UseBasicParsing | ConvertFrom-Json
+    $shortHash = $commitInfo.sha.Substring(0, 7)
+    Set-Content "$CodeDir\VERSION" $shortHash
+    Write-Host "  Version: $shortHash" -ForegroundColor DarkGray
+} catch {
+    Write-Host "  Could not fetch version hash (offline?)" -ForegroundColor DarkGray
+}
+
 # --- Install dependencies ---
 Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
