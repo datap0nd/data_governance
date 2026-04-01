@@ -207,6 +207,14 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     except Exception as e:
         logger.warning("Could not parse layout from %s: %s", file_path.name, e)
 
+    # Per-report summary for debugging
+    vis_count = sum(len(p.visuals) for p in layout.pages) if layout else 0
+    field_count = sum(len(v.field_refs) for p in layout.pages for v in p.visuals) if layout else 0
+    col_count = sum(len(cols) for cols in column_map.values())
+    logger.info("[%s] Summary: %d tables, %d columns, %d measures, %d visuals, %d field refs, layout=%s",
+                report_name, len(tables), col_count, len(measures), vis_count, field_count,
+                f"{len(layout.pages)} pages" if layout else "NONE")
+
     return PbixReport(
         name=report_name,
         file_path=str(file_path),

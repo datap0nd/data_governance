@@ -70,25 +70,32 @@ def parse_pbix_layout(file_path: str | Path) -> ReportLayout | None:
                     break
 
             if layout_entry is None:
-                logger.info("No Report/Layout found in %s", file_path.name)
+                logger.warning("No Report/Layout found in %s (entries: %s)",
+                               file_path.name,
+                               [n for n in zf.namelist() if "layout" in n.lower() or "report" in n.lower()])
                 return None
 
             raw = zf.read(layout_entry)
 
-        # Decode UTF-16 LE (with or without BOM)
-        try:
-            text = raw.decode("utf-16-le")
-        except UnicodeDecodeError:
-            text = raw.decode("utf-16")
+        # Try multiple encodings - newer PBI versions may use UTF-8
+        layout_json = None
+        for encoding in ("utf-16-le", "utf-16", "utf-8-sig", "utf-8"):
+            try:
+                text = raw.decode(encoding)
+                if text and text[0] == "\ufeff":
+                    text = text[1:]
+                layout_json = json.loads(text)
+                break  # Success
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                continue
 
-        # Strip BOM if present
-        if text and text[0] == "\ufeff":
-            text = text[1:]
+        if layout_json is None:
+            logger.warning("Could not decode/parse layout from %s (tried all encodings, %d bytes)",
+                           file_path.name, len(raw))
+            return None
 
-        layout_json = json.loads(text)
-
-    except (zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError) as e:
-        logger.warning("Failed to parse layout from %s: %s", file_path.name, e)
+    except zipfile.BadZipFile as e:
+        logger.warning("Failed to open %s as ZIP: %s", file_path.name, e)
         return None
 
     return _parse_layout_json(layout_json, file_path.name)
@@ -127,9 +134,8 @@ def _parse_section(section: dict) -> ParsedPage | None:
             visual = _parse_visual_container(vc)
             if visual:
                 page.visuals.append(visual)
-        except Exception:
-            # Skip malformed visuals silently
-            pass
+        except Exception as e:
+            logger.debug("Skipped malformed visual on page '%s': %s", page_name, e)
 
     return page
 
