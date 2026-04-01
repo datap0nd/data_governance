@@ -129,30 +129,46 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
     if all_pbix:
         result["mode"] = "pbix"
         result["pbix_files"] = [str(f.relative_to(root)) for f in all_pbix]
-        # Try parsing each one to check for errors
+        # Try opening each one with PBIXRay directly to surface real errors
         for pbix_path in all_pbix:
+            # Step 1: Check file size
             try:
-                from app.scanner.pbix_parser import parse_pbix_file
-                report = parse_pbix_file(pbix_path)
-                if report:
-                    result["steps"].append({
-                        "action": f"Parse {pbix_path.name}",
-                        "result": "OK",
-                        "tables": len(report.tables),
-                        "measures": len(report.measures),
-                    })
-                else:
-                    result["steps"].append({
-                        "action": f"Parse {pbix_path.name}",
-                        "result": "FAILED - parser returned None",
-                    })
-                    result["errors"].append(f"{pbix_path.name}: parser returned None")
+                size_kb = pbix_path.stat().st_size / 1024
+                result["steps"].append({
+                    "action": f"File {pbix_path.name}",
+                    "result": f"{size_kb:.0f} KB",
+                })
             except Exception as e:
                 result["steps"].append({
-                    "action": f"Parse {pbix_path.name}",
-                    "result": f"ERROR: {e}",
+                    "action": f"File {pbix_path.name}",
+                    "result": f"Cannot stat: {e}",
                 })
-                result["errors"].append(f"{pbix_path.name}: {e}")
+                result["errors"].append(f"{pbix_path.name}: cannot read file - {e}")
+                continue
+
+            # Step 2: Try PBIXRay directly (not through parse_pbix_file)
+            try:
+                from pbixray import PBIXRay
+                model = PBIXRay(str(pbix_path))
+                table_count = len(model.tables) if model.tables else 0
+                pq_count = len(model.power_query) if model.power_query is not None else 0
+                result["steps"].append({
+                    "action": f"PBIXRay {pbix_path.name}",
+                    "result": f"OK - {table_count} tables, {pq_count} power query expressions",
+                })
+            except ImportError:
+                result["steps"].append({
+                    "action": f"PBIXRay {pbix_path.name}",
+                    "result": "ERROR: pbixray package not installed",
+                })
+                result["errors"].append(f"pbixray is not installed (pip install pbixray)")
+                break
+            except Exception as e:
+                result["steps"].append({
+                    "action": f"PBIXRay {pbix_path.name}",
+                    "result": f"ERROR: {type(e).__name__}: {e}",
+                })
+                result["errors"].append(f"{pbix_path.name}: {type(e).__name__}: {e}")
         return result
 
     # TMDL mode
