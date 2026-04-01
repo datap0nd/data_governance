@@ -3,6 +3,9 @@
 #
 # Does everything: downloads latest code, installs deps, sets up service.
 # Run again any time to update.
+#
+# This script NEVER deletes files. It extracts new code over the existing
+# folder (overwriting updated files). Clean up old files yourself if needed.
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -16,35 +19,17 @@ $Port        = 8000
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$ProjectDir\_update.zip"
 
-# --- Safety checks ---
-if (-not $CodeDir -or $CodeDir.Length -lt 5) {
-    Write-Host "ERROR: Could not determine script directory. Do not paste this script - run the .ps1 file directly." -ForegroundColor Red
-    pause
-    exit 1
-}
-if ($CodeDir -match '^[A-Z]:\\?$') {
-    Write-Host "ERROR: Script is at a drive root ($CodeDir). Move the folder somewhere safe first." -ForegroundColor Red
-    pause
-    exit 1
-}
+# --- Safety check ---
 if (-not (Test-Path "$CodeDir\app\main.py")) {
-    Write-Host "ERROR: $CodeDir does not look like the data_governance folder (app\main.py missing)." -ForegroundColor Red
+    Write-Host "ERROR: Run this from inside the data_governance-main folder." -ForegroundColor Red
     pause
     exit 1
 }
-if ((Split-Path $CodeDir -Leaf) -notlike "data_governance*") {
-    Write-Host "ERROR: Folder name '$(Split-Path $CodeDir -Leaf)' does not start with 'data_governance'." -ForegroundColor Red
-    Write-Host "       Rename the folder back to data_governance-main and retry." -ForegroundColor Red
-    pause
-    exit 1
-}
-
-# Move out of the code folder so it can be deleted later
-Set-Location $ProjectDir
 
 Write-Host ""
 Write-Host "MX Analytics Setup" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
+Write-Host "  Code dir: $CodeDir" -ForegroundColor DarkGray
 
 # --- Find Python ---
 $PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
@@ -56,25 +41,24 @@ if (-not $PythonExe) {
     pause
     exit 1
 }
-Write-Host "  Python: $PythonExe" -ForegroundColor DarkGray
+Write-Host "  Python:   $PythonExe" -ForegroundColor DarkGray
 
 # --- Stop existing service ---
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "[1/5] Stopping service..." -ForegroundColor Yellow
+    Write-Host "[1/4] Stopping service..." -ForegroundColor Yellow
     & $NssmExe stop $ServiceName 2>&1 | Out-Null
     Start-Sleep -Seconds 2
     & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
 } else {
-    Write-Host "[1/5] No existing service." -ForegroundColor DarkGray
+    Write-Host "[1/4] No existing service." -ForegroundColor DarkGray
 }
 $ErrorActionPreference = "Stop"
 
 # --- Download latest code ---
-Write-Host "[2/5] Downloading latest version..." -ForegroundColor Yellow
-Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+Write-Host "[2/4] Downloading latest version..." -ForegroundColor Yellow
 
 try {
     Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
@@ -83,9 +67,7 @@ try {
     Write-Host "  Direct download failed: $_" -ForegroundColor Yellow
     Write-Host "  Trying via Chrome..." -ForegroundColor Yellow
 
-    # Fall back to browser download
     $BrowserZip = "$env:USERPROFILE\Downloads\data_governance-main.zip"
-    Remove-Item $BrowserZip -Force -ErrorAction SilentlyContinue
 
     $chrome = (Get-Command chrome -ErrorAction SilentlyContinue).Source
     if (-not $chrome) {
@@ -122,43 +104,32 @@ try {
             Write-Host "  Waiting for download... ($elapsed s)" -ForegroundColor DarkGray
         }
     }
-    # Move browser download to project dir
     Move-Item $BrowserZip $ZipPath -Force
     Write-Host "  Downloaded via Chrome." -ForegroundColor Green
 }
 
-# --- Replace code ---
-Write-Host "[3/5] Replacing code..." -ForegroundColor Yellow
+# --- Extract new code over existing folder (no deletion) ---
+Write-Host "[3/4] Extracting update over existing code..." -ForegroundColor Yellow
 
-# Final deletion guard - re-verify right before removing
-if (-not $CodeDir -or $CodeDir.Length -lt 5 -or $CodeDir -match '^[A-Z]:\\?$' -or -not (Test-Path "$CodeDir\app")) {
-    Write-Host "ABORT: Deletion target failed safety check: '$CodeDir'" -ForegroundColor Red
-    Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
-    pause
-    exit 1
+# Extract to a temp folder first, then copy contents over
+$TempExtract = "$ProjectDir\_extract_temp"
+Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
+
+# GitHub ZIP has a top-level folder (data_governance-main/) - copy its contents into $CodeDir
+$Inner = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
+if ($Inner) {
+    Copy-Item "$($Inner.FullName)\*" $CodeDir -Recurse -Force
+    Remove-Item $TempExtract -Recurse -Force
 }
-Write-Host "  Deleting: $CodeDir" -ForegroundColor DarkGray
-
-Remove-Item $CodeDir -Recurse -Force
-Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
-
-# GitHub ZIP extracts as data_governance-main/ - rename if needed
-$CodeDirName = Split-Path $CodeDir -Leaf
-$Extracted = Get-ChildItem $ProjectDir -Directory |
-    Where-Object { $_.Name -like "data_governance*" -and $_.Name -ne $CodeDirName -and $_.Name -ne "logs" } |
-    Select-Object -First 1
-if ($Extracted) {
-    Rename-Item $Extracted.FullName $CodeDirName
-}
-Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
 # --- Install dependencies ---
-Write-Host "[4/5] Installing dependencies..." -ForegroundColor Yellow
+Write-Host "[4/4] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
 pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 
 # --- Create and start service ---
-Write-Host "[5/5] Creating service..." -ForegroundColor Yellow
+Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
 
 & $NssmExe install $ServiceName $PythonExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
