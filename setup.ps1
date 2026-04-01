@@ -6,6 +6,8 @@
 #
 # This script NEVER deletes files. It extracts new code over the existing
 # folder (overwriting updated files). Clean up old files yourself if needed.
+#
+# Uses a portable Python 3.13 (no system changes) so pbixray works.
 
 # --- Self-elevate to Admin if needed ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -24,6 +26,9 @@ $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $Port        = 8000
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$ProjectDir\_update.zip"
+$PyDir       = "$ProjectDir\python313"
+$PyExe       = "$PyDir\python.exe"
+$PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
 
 # --- Safety check ---
 if (-not (Test-Path "$CodeDir\app\main.py")) {
@@ -37,29 +42,75 @@ Write-Host "MX Analytics Setup" -ForegroundColor Cyan
 Write-Host "==================" -ForegroundColor Cyan
 Write-Host "  Code dir: $CodeDir" -ForegroundColor DarkGray
 
-# --- Find Python ---
-$PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $PythonExe) {
-    $PythonExe = (Get-Command python3 -ErrorAction SilentlyContinue).Source
+# --- Portable Python 3.13 ---
+if (-not (Test-Path $PyExe)) {
+    Write-Host "[1/5] Downloading portable Python 3.13..." -ForegroundColor Yellow
+    $PyZipPath = "$ProjectDir\_python.zip"
+    try {
+        Invoke-WebRequest -Uri $PyZipUrl -OutFile $PyZipPath -UseBasicParsing
+    } catch {
+        Write-Host "  Direct download failed, trying Edge..." -ForegroundColor Yellow
+        Start-Process "msedge" $PyZipUrl
+        $timeout = 120
+        $elapsed = 0
+        $BrowserPyZip = "$env:USERPROFILE\Downloads\python-3.13.2-embed-amd64.zip"
+        while ($true) {
+            Start-Sleep -Seconds 3
+            $elapsed += 3
+            if ((Test-Path $BrowserPyZip) -and -not (Test-Path "$BrowserPyZip.partial")) {
+                Start-Sleep -Seconds 1
+                Move-Item $BrowserPyZip $PyZipPath -Force
+                break
+            }
+            if ($elapsed -ge $timeout) {
+                Write-Host "  Timed out. Download Python manually from:" -ForegroundColor Red
+                Write-Host "  $PyZipUrl" -ForegroundColor White
+                Write-Host "  Extract to: $PyDir" -ForegroundColor White
+                pause
+                exit 1
+            }
+        }
+    }
+    New-Item -ItemType Directory -Path $PyDir -Force | Out-Null
+    Expand-Archive -Path $PyZipPath -DestinationPath $PyDir -Force
+
+    # Enable pip: uncomment "import site" in python313._pth
+    $pthFile = Get-ChildItem $PyDir -Filter "python*._pth" | Select-Object -First 1
+    if ($pthFile) {
+        $content = Get-Content $pthFile.FullName
+        $content = $content -replace '^#\s*import site', 'import site'
+        Set-Content $pthFile.FullName $content
+    }
+
+    # Bootstrap pip
+    Write-Host "  Installing pip..." -ForegroundColor DarkGray
+    $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
+    $getPipPath = "$PyDir\get-pip.py"
+    try {
+        Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipPath -UseBasicParsing
+    } catch {
+        Write-Host "  Could not download get-pip.py" -ForegroundColor Red
+        pause
+        exit 1
+    }
+    & $PyExe $getPipPath --no-warn-script-location -q
+    Write-Host "  Portable Python 3.13 ready." -ForegroundColor Green
+} else {
+    Write-Host "[1/5] Portable Python 3.13 already installed." -ForegroundColor DarkGray
 }
-if (-not $PythonExe) {
-    Write-Host "ERROR: Python not found on PATH." -ForegroundColor Red
-    pause
-    exit 1
-}
-Write-Host "  Python:   $PythonExe" -ForegroundColor DarkGray
+Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 
 # --- Stop existing service and free the port ---
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "[1/4] Stopping service..." -ForegroundColor Yellow
+    Write-Host "[2/5] Stopping service..." -ForegroundColor Yellow
     & $NssmExe stop $ServiceName 2>&1 | Out-Null
     Start-Sleep -Seconds 2
     & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
 } else {
-    Write-Host "[1/4] No existing service." -ForegroundColor DarkGray
+    Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
 }
 
 # Kill anything still holding the port
@@ -75,7 +126,7 @@ foreach ($p in $portPid) {
 $ErrorActionPreference = "Stop"
 
 # --- Download latest code ---
-Write-Host "[2/4] Downloading latest version..." -ForegroundColor Yellow
+Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
 try {
     Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
@@ -110,7 +161,7 @@ try {
 }
 
 # --- Extract new code over existing folder (no deletion) ---
-Write-Host "[3/4] Extracting update over existing code..." -ForegroundColor Yellow
+Write-Host "[4/5] Extracting update over existing code..." -ForegroundColor Yellow
 
 # Extract to a temp folder first, then copy contents over
 $TempExtract = "$ProjectDir\_extract_temp"
@@ -125,18 +176,19 @@ if ($Inner) {
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
 # --- Install dependencies ---
-Write-Host "[4/4] Installing dependencies..." -ForegroundColor Yellow
+Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
 Set-Location $CodeDir
+$PipExe = "$PyDir\Scripts\pip.exe"
 # Install bundled wheels first (pbixray + deps that aren't on corporate mirror)
-pip install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
+& $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
 # Install remaining deps from corporate mirror
-pip install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
+& $PipExe install -r requirements.txt -q --index-url "https://bart.sec.samsung.net/artifactory/api/pypi/pypi-remote/simple" --trusted-host bart.sec.samsung.net
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
 
-& $NssmExe install $ServiceName $PythonExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
+& $NssmExe install $ServiceName $PyExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
 & $NssmExe set $ServiceName AppDirectory $CodeDir
 & $NssmExe set $ServiceName DisplayName "MX Analytics - Data Governance"
 & $NssmExe set $ServiceName Description "BI data governance panel"
