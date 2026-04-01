@@ -65,33 +65,17 @@ try {
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
 } catch {
     Write-Host "  Direct download failed: $_" -ForegroundColor Yellow
-    Write-Host "  Trying via Chrome..." -ForegroundColor Yellow
+    Write-Host "  Trying via Edge..." -ForegroundColor Yellow
 
     $BrowserZip = "$env:USERPROFILE\Downloads\data_governance-main.zip"
 
-    $chrome = (Get-Command chrome -ErrorAction SilentlyContinue).Source
-    if (-not $chrome) {
-        $chrome = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
-    }
-    if (-not $chrome -or -not (Test-Path $chrome)) {
-        $chrome = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
-    }
-    if (-not (Test-Path $chrome)) {
-        Write-Host "  Chrome not found. Download manually:" -ForegroundColor Red
-        Write-Host "  $ZipUrl" -ForegroundColor White
-        Write-Host "  Save to: $BrowserZip" -ForegroundColor White
-        Write-Host "  Then re-run this script." -ForegroundColor Red
-        pause
-        exit 1
-    }
-
-    Start-Process $chrome $ZipUrl
+    Start-Process "msedge" $ZipUrl
     $timeout = 300
     $elapsed = 0
     while ($true) {
         Start-Sleep -Seconds 3
         $elapsed += 3
-        if ((Test-Path $BrowserZip) -and -not (Test-Path "$BrowserZip.crdownload")) {
+        if ((Test-Path $BrowserZip) -and -not (Test-Path "$BrowserZip.partial")) {
             Start-Sleep -Seconds 1
             break
         }
@@ -105,7 +89,7 @@ try {
         }
     }
     Move-Item $BrowserZip $ZipPath -Force
-    Write-Host "  Downloaded via Chrome." -ForegroundColor Green
+    Write-Host "  Downloaded via Edge." -ForegroundColor Green
 }
 
 # --- Extract new code over existing folder (no deletion) ---
