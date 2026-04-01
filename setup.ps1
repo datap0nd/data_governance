@@ -16,9 +16,25 @@ $Port        = 8000
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$ProjectDir\_update.zip"
 
-# --- Safety check ---
+# --- Safety checks ---
+if (-not $CodeDir -or $CodeDir.Length -lt 5) {
+    Write-Host "ERROR: Could not determine script directory. Do not paste this script - run the .ps1 file directly." -ForegroundColor Red
+    pause
+    exit 1
+}
+if ($CodeDir -match '^[A-Z]:\\?$') {
+    Write-Host "ERROR: Script is at a drive root ($CodeDir). Move the folder somewhere safe first." -ForegroundColor Red
+    pause
+    exit 1
+}
 if (-not (Test-Path "$CodeDir\app\main.py")) {
-    Write-Host "ERROR: Run this from inside the data_governance-main folder." -ForegroundColor Red
+    Write-Host "ERROR: $CodeDir does not look like the data_governance folder (app\main.py missing)." -ForegroundColor Red
+    pause
+    exit 1
+}
+if ((Split-Path $CodeDir -Leaf) -notlike "data_governance*") {
+    Write-Host "ERROR: Folder name '$(Split-Path $CodeDir -Leaf)' does not start with 'data_governance'." -ForegroundColor Red
+    Write-Host "       Rename the folder back to data_governance-main and retry." -ForegroundColor Red
     pause
     exit 1
 }
@@ -113,6 +129,16 @@ try {
 
 # --- Replace code ---
 Write-Host "[3/5] Replacing code..." -ForegroundColor Yellow
+
+# Final deletion guard - re-verify right before removing
+if (-not $CodeDir -or $CodeDir.Length -lt 5 -or $CodeDir -match '^[A-Z]:\\?$' -or -not (Test-Path "$CodeDir\app")) {
+    Write-Host "ABORT: Deletion target failed safety check: '$CodeDir'" -ForegroundColor Red
+    Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+    pause
+    exit 1
+}
+Write-Host "  Deleting: $CodeDir" -ForegroundColor DarkGray
+
 Remove-Item $CodeDir -Recurse -Force
 Expand-Archive -Path $ZipPath -DestinationPath $ProjectDir -Force
 
