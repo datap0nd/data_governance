@@ -39,6 +39,7 @@ def get_create_options():
         upstream_codes = db.execute(
             "SELECT DISTINCT code FROM upstream_systems WHERE code IS NOT NULL AND code != '' ORDER BY code"
         ).fetchall()
+        people = db.execute("SELECT id, name, role FROM people ORDER BY name").fetchall()
 
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     return {
@@ -49,6 +50,7 @@ def get_create_options():
         "upstream_systems": [dict(r) for r in upstreams],
         "upstream_codes": [r["code"] for r in upstream_codes],
         "reports": [dict(r) for r in reports],
+        "people": [dict(r) for r in people],
     }
 
 

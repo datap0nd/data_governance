@@ -35,6 +35,7 @@ class SourceUpdate(BaseModel):
     owner: str | None = None
     refresh_schedule: str | None = None
     tags: str | None = None
+    upstream_id: int | None = None
 
 
 # --- Reports ---
@@ -61,6 +62,7 @@ class ReportUpdate(BaseModel):
     owner: str | None = None
     recipients: str | None = None
     frequency: str | None = None
+    business_owner: str | None = None
 
 
 # --- Report Tables ---
@@ -241,6 +243,19 @@ class TaskUpdate(BaseModel):
 class TaskMove(BaseModel):
     status: str
     position: int = 0
+
+
+# --- People ---
+
+class PersonOut(BaseModel):
+    id: int
+    name: str
+    role: str
+    created_at: str | None = None
+
+class PersonCreate(BaseModel):
+    name: str
+    role: str
 
 
 # --- Event Log ---

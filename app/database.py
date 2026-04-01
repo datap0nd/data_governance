@@ -236,6 +236,8 @@ MIGRATIONS = [
     "ALTER TABLE upstream_systems ADD COLUMN discovered_by TEXT DEFAULT 'scanned'",
     # Task email-owner flag
     "ALTER TABLE tasks ADD COLUMN email_owner INTEGER DEFAULT 0",
+    # People table
+    "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
 ]
 
 

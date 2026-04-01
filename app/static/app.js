@@ -1220,7 +1220,12 @@ async function renderDashboardAlerts() {
 }
 
 async function renderSources() {
-    const sources = await api("/api/sources");
+    const [sources, options] = await Promise.all([
+        api("/api/sources"),
+        api("/api/create/options"),
+    ]);
+    const people = options.people || [];
+    const upstreams = options.upstream_systems || [];
 
     sources.forEach(s => {
         const parsed = parseSourceName(s);
@@ -1245,9 +1250,18 @@ async function renderSources() {
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_at risk", outdated: "2_degraded", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
         { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
-        { key: "owner", label: "Owner", render: s => s.owner === "Multiple"
-            ? `<span style="color:var(--text-muted);cursor:help;border-bottom:1px dotted var(--text-dim)" title="Source is used by multiple report owners">${s.owner}</span>`
-            : `<span style="color:var(--text-muted)">${s.owner || "-"}</span>` },
+        { key: "owner", label: "Owner", render: s => {
+            const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
+        }, sortVal: s => s.owner || "" },
+        { key: "upstream_id", label: "Upstream", render: s => {
+            const opts = upstreams.map(u => `<option value="${u.id}"${s.upstream_id === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join("");
+            return `<select class="freq-select-inline source-upstream-select" data-source-id="${s.id}"><option value="">None</option>${opts}</select>`;
+        }, sortVal: s => {
+            if (!s.upstream_id) return "";
+            const u = upstreams.find(u => u.id === s.upstream_id);
+            return u ? u.name : "";
+        }},
         { key: "refresh_schedule", label: "Frequency", render: s => {
             const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
             const current = s.refresh_schedule ? `Weekly - ${s.refresh_schedule}` : "";
@@ -1276,6 +1290,35 @@ async function renderSources() {
 }
 
 function bindSourcesPage() {
+    // Inline owner select dropdowns for sources
+    document.querySelectorAll(".source-owner-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const sourceId = sel.dataset.sourceId;
+            try {
+                await apiPatch(`/api/sources/${sourceId}`, { owner: sel.value });
+                toast("Owner updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+    // Inline upstream select dropdowns for sources
+    document.querySelectorAll(".source-upstream-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const sourceId = sel.dataset.sourceId;
+            const val = sel.value ? parseInt(sel.value) : null;
+            try {
+                await apiPatch(`/api/sources/${sourceId}`, { upstream_id: val });
+                toast("Upstream updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
     // Inline frequency select dropdowns for sources
     document.querySelectorAll(".source-freq-select").forEach(sel => {
         sel.addEventListener("change", async (e) => {
@@ -1314,18 +1357,26 @@ function bindSourcesPage() {
 }
 
 async function renderReports() {
-    const [reports, edges, sources] = await Promise.all([
+    const [reports, edges, sources, options] = await Promise.all([
         api("/api/reports"),
         api("/api/lineage"),
         api("/api/sources"),
+        api("/api/create/options"),
     ]);
+    const people = options.people || [];
 
     const cols = [
         { key: "name", label: "Report", render: r => `<strong>${esc(r.name)}</strong>` },
         { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
-        { key: "owner", label: "Report Owner", render: r => `<span style="color:var(--text-muted)">${r.owner || "-"}</span>` },
-        { key: "business_owner", label: "Business Owner", render: r => `<span style="color:var(--text-muted)">${r.business_owner || "-"}</span>` },
+        { key: "owner", label: "Report Owner", render: r => {
+            const opts = people.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline report-owner-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
+        }, sortVal: r => r.owner || "" },
+        { key: "business_owner", label: "Business Owner", render: r => {
+            const opts = people.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
+        }, sortVal: r => r.business_owner || "" },
         { key: "frequency", label: "Frequency", render: r => {
             const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
             const opts = days.map(d => {
@@ -1361,6 +1412,34 @@ async function renderReports() {
 }
 
 function bindReportsPage() {
+    // Inline report owner select dropdowns
+    document.querySelectorAll(".report-owner-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const reportId = sel.dataset.reportId;
+            try {
+                await apiPatch(`/api/reports/${reportId}`, { owner: sel.value });
+                toast("Report owner updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+    // Inline business owner select dropdowns
+    document.querySelectorAll(".report-bo-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const reportId = sel.dataset.reportId;
+            try {
+                await apiPatch(`/api/reports/${reportId}`, { business_owner: sel.value });
+                toast("Business owner updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
     // Inline frequency select dropdowns
     document.querySelectorAll(".freq-select-inline").forEach(sel => {
         sel.addEventListener("change", async (e) => {
@@ -2123,9 +2202,10 @@ async function _handleCreateSubmit(e) {
 }
 
 async function renderCreate() {
-    const [options, customEntries] = await Promise.all([
+    const [options, customEntries, people] = await Promise.all([
         api("/api/create/options"),
         api("/api/create/custom-entries"),
+        api("/api/people"),
     ]);
     window._createOptions = options;
 
@@ -2139,6 +2219,36 @@ async function renderCreate() {
             <button class="btn-sm btn-outline btn-danger-outline ce-delete-btn" data-id="${e.id}" data-type="${e.entity_type}">Delete</button>
         </div>` },
     ], customEntries) : '<div class="empty-state">No custom entries yet</div>';
+
+    const roles = ["BI", "PM", "Management"];
+    const roleOpts = roles.map(r => `<option value="${r}">${r}</option>`).join("");
+
+    const peopleRows = people.map(p => `<tr>
+        <td style="padding:0.35rem 0.5rem">${esc(p.name)}</td>
+        <td style="padding:0.35rem 0.5rem;color:var(--text-muted)">${esc(p.role)}</td>
+        <td style="padding:0.35rem 0.5rem"><button class="btn-sm btn-outline btn-danger-outline people-delete-btn" data-person-id="${p.id}">Delete</button></td>
+    </tr>`).join("");
+
+    const peopleSection = `
+        <div class="section" style="margin-top:1.5rem;margin-bottom:2rem">
+            <h2>People</h2>
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
+                <input type="text" id="people-name-input" placeholder="Name" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
+                <select id="people-role-input" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
+                    <option value="">Role...</option>${roleOpts}
+                </select>
+                <button id="btn-add-person" class="btn-sm">Add</button>
+            </div>
+            ${people.length > 0 ? `<table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+                <thead><tr style="border-bottom:1px solid var(--border)">
+                    <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Name</th>
+                    <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Role</th>
+                    <th style="padding:0.35rem 0.5rem;width:60px"></th>
+                </tr></thead>
+                <tbody>${peopleRows}</tbody>
+            </table>` : '<div style="color:var(--text-dim);font-size:0.82rem">No people added yet</div>'}
+        </div>
+    `;
 
     return `
         <div class="page-header">
@@ -2158,6 +2268,8 @@ async function renderCreate() {
                 <div>Select a type above to create a new entry</div>
             </div>
         </div>
+
+        ${peopleSection}
 
         <div class="section" style="margin-top:2rem">
             <h2 class="create-history-toggle" style="cursor:pointer;user-select:none">
@@ -2183,6 +2295,40 @@ function bindCreatePage() {
                 container.innerHTML = '';
                 document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
             });
+        });
+    });
+
+    // Add Person button
+    const addPersonBtn = document.getElementById('btn-add-person');
+    if (addPersonBtn) {
+        addPersonBtn.addEventListener('click', async () => {
+            const nameInput = document.getElementById('people-name-input');
+            const roleInput = document.getElementById('people-role-input');
+            const name = (nameInput.value || '').trim();
+            const role = roleInput.value;
+            if (!name) { toast('Name is required'); return; }
+            if (!role) { toast('Role is required'); return; }
+            try {
+                await apiPostJson('/api/people', { name, role });
+                toast('Person added');
+                navigate('create');
+            } catch (err) {
+                toast('Failed: ' + err.message);
+            }
+        });
+    }
+    // Delete person buttons
+    document.querySelectorAll('.people-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const personId = btn.dataset.personId;
+            if (!confirm('Delete this person?')) return;
+            try {
+                await fetch(`/api/people/${personId}`, { method: 'DELETE' });
+                toast('Person deleted');
+                navigate('create');
+            } catch (err) {
+                toast('Failed: ' + err.message);
+            }
         });
     });
 
