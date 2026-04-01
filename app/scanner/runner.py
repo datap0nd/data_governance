@@ -66,6 +66,24 @@ def run_scan(reports_path: str | None = None) -> dict:
         broken_refs = 0
         log_lines = []
 
+        # Per-report parsing summary (visible in scan log)
+        for report in reports:
+            tables_count = len(report.tables)
+            measures_count = len(getattr(report, "measures", []))
+            layout = getattr(report, "layout", None)
+            if layout and hasattr(layout, "pages"):
+                vis_count = sum(len(p.visuals) for p in layout.pages)
+                field_count = sum(len(v.field_refs) for p in layout.pages for v in p.visuals)
+                log_lines.append(
+                    f"REPORT: {report.name} - {tables_count} tables, {measures_count} measures, "
+                    f"{len(layout.pages)} pages, {vis_count} visuals, {field_count} field refs"
+                )
+            else:
+                log_lines.append(
+                    f"REPORT: {report.name} - {tables_count} tables, {measures_count} measures, "
+                    f"NO LAYOUT (visuals not detected)"
+                )
+
         with get_db() as db:
             # Upsert sources
             for key, source_info in all_sources.items():
