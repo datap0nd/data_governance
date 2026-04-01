@@ -133,13 +133,9 @@ def delete_task(task_id: int):
 
 @router.get("/owners")
 def list_task_owners():
-    """Return distinct owners available for task assignment (same as alert owners)."""
+    """Return BI people available for task assignment."""
     with get_db() as db:
-        rows = db.execute("""
-            SELECT DISTINCT owner FROM (
-                SELECT DISTINCT owner FROM reports WHERE owner IS NOT NULL AND owner != ''
-                UNION
-                SELECT DISTINCT business_owner AS owner FROM reports WHERE business_owner IS NOT NULL AND business_owner != ''
-            ) ORDER BY owner
-        """).fetchall()
-    return [r["owner"] for r in rows]
+        rows = db.execute(
+            "SELECT name FROM people WHERE role = 'BI' ORDER BY name"
+        ).fetchall()
+    return [r["name"] for r in rows]

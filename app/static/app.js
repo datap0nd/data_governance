@@ -1372,11 +1372,13 @@ async function renderReports() {
         { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => {
-            const opts = people.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
+            const opts = biFirst.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-owner-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.owner || "" },
         { key: "business_owner", label: "Business Owner", render: r => {
-            const opts = people.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            const bizFirst = [...people].sort((a, b) => a.role === "Business" && b.role !== "Business" ? -1 : a.role !== "Business" && b.role === "Business" ? 1 : 0);
+            const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
         { key: "frequency", label: "Frequency", render: r => {
@@ -1540,10 +1542,11 @@ async function renderScanner() {
 }
 
 async function renderAlerts() {
-    const [alerts, owners] = await Promise.all([
+    const [alerts, allPeople] = await Promise.all([
         api("/api/alerts?active_only=false"),
-        api("/api/alerts/owners/list"),
+        api("/api/people"),
     ]);
+    const owners = allPeople.filter(p => p.role === "BI").map(p => p.name);
     window._alertOwners = owners;
 
     const cols = [
@@ -1647,7 +1650,10 @@ function bindReopenButtons(scope) {
 async function renderActionsContent() {
     const actions = await api("/api/actions");
     let owners = [];
-    try { owners = await api("/api/alerts/owners/list"); } catch(e) {}
+    try {
+        const allPeople = await api("/api/people");
+        owners = allPeople.filter(p => p.role === "BI").map(p => p.name);
+    } catch(e) {}
 
     const open = actions.filter(a => a.status === "open").length;
     const investigating = actions.filter(a => a.status === "investigating").length;
@@ -2222,7 +2228,7 @@ async function renderCreate() {
         </div>` },
     ], customEntries) : '<div class="empty-state">No custom entries yet</div>';
 
-    const roles = ["BI", "PM", "Management"];
+    const roles = ["BI", "Business"];
     const roleOpts = roles.map(r => `<option value="${r}">${r}</option>`).join("");
 
     const peopleRows = people.map(p => `<tr>
@@ -3125,7 +3131,13 @@ function _buildKanbanBoard(tasks, filterOwner) {
         if (grouped[t.status]) grouped[t.status].push(t);
         else grouped.backlog.push(t);
     });
-    Object.values(grouped).forEach(arr => arr.sort((a, b) => a.position - b.position));
+    const prioOrder = { high: 0, medium: 1, low: 2 };
+    Object.values(grouped).forEach(arr => arr.sort((a, b) => {
+        const pa = prioOrder[a.priority] ?? 1;
+        const pb = prioOrder[b.priority] ?? 1;
+        if (pa !== pb) return pa - pb;
+        return a.position - b.position;
+    }));
 
     return `<div class="kanban-board">
         ${TASK_STATUSES.map(s => `

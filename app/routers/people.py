@@ -1,4 +1,4 @@
-"""People management - BI, PM, Management roles."""
+"""People management - BI and Business roles."""
 
 from fastapi import APIRouter, HTTPException
 
@@ -8,7 +8,7 @@ from app.models import PersonOut, PersonCreate
 
 router = APIRouter(prefix="/api/people", tags=["people"])
 
-VALID_ROLES = ["BI", "PM", "Management"]
+VALID_ROLES = ["BI", "Business"]
 
 
 @router.get("/roles")
