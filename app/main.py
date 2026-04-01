@@ -1,5 +1,6 @@
 import logging
 import re
+import subprocess
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -60,6 +61,26 @@ def _serve_index():
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
     })
+
+
+def _git_short_hash() -> str:
+    """Get the short commit hash, or 'dev' if git is unavailable."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).parent.parent),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "dev"
+
+_APP_VERSION = _git_short_hash()
+
+
+@app.get("/api/version")
+def get_version():
+    return {"version": _APP_VERSION}
 
 
 @app.get("/")

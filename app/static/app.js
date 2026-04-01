@@ -3959,6 +3959,12 @@ document.addEventListener("DOMContentLoaded", () => {
     initAIChatPanel();
     navigate(getInitialPage());
 
+    // Show version in nav
+    api("/api/version").then(v => {
+        const el = document.getElementById("app-version");
+        if (el && v.version) el.textContent = "#" + v.version;
+    }).catch(() => {});
+
     // Theme toggle
     const themeToggle = document.getElementById("theme-toggle");
     if (themeToggle) {
