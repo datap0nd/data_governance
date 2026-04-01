@@ -1,11 +1,17 @@
 # MX Analytics - Setup & Update
-# Right-click > Run with PowerShell (as Administrator)
+# Right-click > Run with PowerShell
 #
 # Does everything: downloads latest code, installs deps, sets up service.
-# Run again any time to update.
+# Run again any time to update. Auto-elevates to Admin if needed.
 #
 # This script NEVER deletes files. It extracts new code over the existing
 # folder (overwriting updated files). Clean up old files yourself if needed.
+
+# --- Self-elevate to Admin if needed ---
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe "-ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
