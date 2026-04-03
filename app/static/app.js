@@ -2665,18 +2665,46 @@ async function renderExport() {
     return `
     <div class="page-header">
         <h1>Full Export</h1>
-        <span class="subtitle">Export all report and source data as markdown</span>
+        <span class="subtitle">Select sections to export as markdown</span>
     </div>
-    <div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center">
+    <div style="display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
+        <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
+            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">PBI Reports</legend>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="reports-overview" checked> Report overview (name, owner, status, frequency, pages, sources)
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="visuals-fields"> Visuals and fields (visual -> table.field mapping per page)
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="measures-dax"> Measures and DAX expressions
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="columns"> Table columns (all columns per report table)
+            </label>
+        </fieldset>
+        <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
+            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Data Sources</legend>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="sources" checked> All sources (type, status, refresh, connections)
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="lineage"> Lineage map (source -> report edges)
+            </label>
+        </fieldset>
+    </div>
+    <div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
         <button class="btn-export" id="btn-generate-export" style="float:none">Generate Export</button>
         <button class="btn-export" id="btn-copy-export" style="float:none;display:none">Copy to Clipboard</button>
+        <button class="btn-outline" id="btn-select-all" style="font-size:0.78rem">Select all</button>
+        <button class="btn-outline" id="btn-select-none" style="font-size:0.78rem">Select none</button>
         <span id="export-status" style="font-size:0.78rem;color:var(--text-dim)"></span>
     </div>
     <textarea id="export-output" readonly
         style="width:100%;min-height:500px;font-family:monospace;font-size:0.78rem;padding:0.75rem;
         background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;
         resize:vertical;white-space:pre;tab-size:4;line-height:1.5"
-        placeholder="Click 'Generate Export' to fetch all data and build the markdown export."></textarea>
+        placeholder="Select sections above, then click 'Generate Export'."></textarea>
     `;
 }
 
@@ -2685,92 +2713,220 @@ function bindExportPage() {
     const btnCopy = document.getElementById("btn-copy-export");
     const textarea = document.getElementById("export-output");
     const status = document.getElementById("export-status");
+    const btnAll = document.getElementById("btn-select-all");
+    const btnNone = document.getElementById("btn-select-none");
 
     if (!btnGenerate) return;
 
+    const checkboxes = () => document.querySelectorAll(".export-opt");
+
+    btnAll.addEventListener("click", () => checkboxes().forEach(c => c.checked = true));
+    btnNone.addEventListener("click", () => checkboxes().forEach(c => c.checked = false));
+
+    function getSelected() {
+        const s = new Set();
+        checkboxes().forEach(c => { if (c.checked) s.add(c.dataset.section); });
+        return s;
+    }
+
     btnGenerate.addEventListener("click", async () => {
+        const selected = getSelected();
+        if (selected.size === 0) { toast("Select at least one section"); return; }
+
         btnGenerate.disabled = true;
         btnGenerate.textContent = "Fetching data...";
         status.textContent = "";
         btnCopy.style.display = "none";
 
         try {
-            const [reports, sources, edges] = await Promise.all([
-                api("/api/reports"),
-                api("/api/sources"),
-                api("/api/lineage"),
-            ]);
+            // Determine which API calls we need
+            const needReports = selected.has("reports-overview") || selected.has("visuals-fields");
+            const needSources = selected.has("sources");
+            const needLineage = selected.has("lineage") || selected.has("reports-overview") || selected.has("sources");
+            const needVisuals = selected.has("visuals-fields") || selected.has("reports-overview");
+            const needMeasures = selected.has("measures-dax");
+            const needColumns = selected.has("columns");
 
-            // Fetch pages for each report in parallel
-            status.textContent = "Fetching page details...";
-            const visualsMap = {};
-            const visualsPromises = reports.map(r =>
-                api(`/api/reports/${r.id}/visuals`)
-                    .then(v => { visualsMap[r.id] = v; })
-                    .catch(() => { visualsMap[r.id] = []; })
-            );
-            await Promise.all(visualsPromises);
+            // Fetch base data in parallel
+            status.textContent = "Fetching base data...";
+            const fetches = {};
+            if (needReports) fetches.reports = api("/api/reports");
+            if (needSources) fetches.sources = api("/api/sources");
+            if (needLineage) fetches.edges = api("/api/lineage");
+            if (needMeasures) fetches.measures = api("/api/reports/all-measures");
+            if (needColumns) fetches.columns = api("/api/reports/all-columns");
 
-            // Build source->report and report->source maps from lineage
-            const reportSourceMap = {};  // report_id -> [source_name, ...]
-            const sourceReportMap = {};  // source_id -> [report_name, ...]
+            const keys = Object.keys(fetches);
+            const values = await Promise.all(Object.values(fetches));
+            const data = {};
+            keys.forEach((k, i) => data[k] = values[i]);
+
+            const reports = data.reports || [];
+            const sources = data.sources || [];
+            const edges = data.edges || [];
+
+            // Fetch visuals per report if needed
+            let visualsMap = {};
+            if (needVisuals && reports.length > 0) {
+                status.textContent = `Fetching visuals for ${reports.length} reports...`;
+                const promises = reports.map(r =>
+                    api(`/api/reports/${r.id}/visuals`)
+                        .then(v => { visualsMap[r.id] = v; })
+                        .catch(() => { visualsMap[r.id] = []; })
+                );
+                await Promise.all(promises);
+            }
+
+            // Build lineage maps
+            const reportSourceMap = {};
+            const sourceReportMap = {};
             edges.forEach(e => {
                 if (!reportSourceMap[e.report_id]) reportSourceMap[e.report_id] = [];
-                if (!reportSourceMap[e.report_id].includes(e.source_name)) {
+                if (!reportSourceMap[e.report_id].includes(e.source_name))
                     reportSourceMap[e.report_id].push(e.source_name);
-                }
                 if (!sourceReportMap[e.source_id]) sourceReportMap[e.source_id] = [];
-                if (!sourceReportMap[e.source_id].includes(e.report_name)) {
+                if (!sourceReportMap[e.source_id].includes(e.report_name))
                     sourceReportMap[e.source_id].push(e.report_name);
-                }
             });
 
             // Build markdown
+            status.textContent = "Building markdown...";
             const now = new Date();
             const dateStr = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
                 + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
-            let md = `# Data Governance Export\nGenerated: ${dateStr}\n\n`;
+            const sections = [];
+            let md = `# Data Governance Export\nGenerated: ${dateStr}\n`;
+            md += `Sections: ${[...selected].join(", ")}\n\n`;
 
-            // Reports section
-            md += `## Reports (${reports.length})\n\n`;
-            for (const r of reports) {
-                md += `### ${r.name}\n`;
-                md += `- Owner: ${r.owner || "-"}\n`;
-                md += `- Business Owner: ${r.business_owner || "-"}\n`;
-                md += `- Status: ${r.status || "-"}\n`;
-                md += `- Frequency: ${r.frequency || "-"}\n`;
-                const srcNames = reportSourceMap[r.id] || [];
-                md += `- Sources: ${srcNames.length > 0 ? srcNames.join(", ") : "-"}\n`;
-                const pages = (visualsMap[r.id] || []).map(p => p.page_name).filter(Boolean);
-                md += `- Pages: ${pages.length > 0 ? pages.join(", ") : "-"}\n`;
-                md += `- Unused: ${r.unused_pct != null ? r.unused_pct + "%" : "-"}\n`;
-                md += "\n";
+            // ── Reports Overview ──
+            if (selected.has("reports-overview")) {
+                md += `## Reports (${reports.length})\n\n`;
+                for (const r of reports) {
+                    md += `### ${r.name}\n`;
+                    md += `- Owner: ${r.owner || "-"}\n`;
+                    md += `- Business Owner: ${r.business_owner || "-"}\n`;
+                    md += `- Status: ${r.status || "-"}\n`;
+                    md += `- Frequency: ${r.frequency || "-"}\n`;
+                    const srcNames = reportSourceMap[r.id] || [];
+                    md += `- Sources: ${srcNames.length > 0 ? srcNames.join(", ") : "-"}\n`;
+                    const pages = (visualsMap[r.id] || []).map(p => p.page_name).filter(Boolean);
+                    md += `- Pages: ${pages.length > 0 ? pages.join(", ") : "-"}\n`;
+                    md += `- Unused: ${r.unused_pct != null ? r.unused_pct + "%" : "-"}\n`;
+                    md += "\n";
+                }
+                sections.push(`${reports.length} reports`);
             }
 
-            // Sources section
-            md += `## Sources (${sources.length})\n\n`;
-            for (const s of sources) {
-                md += `### ${s.name}\n`;
-                md += `- Type: ${s.type || "-"}\n`;
-                md += `- Owner: ${s.owner || "-"}\n`;
-                md += `- Status: ${s.status || "-"}\n`;
-                md += `- Refresh: ${s.refresh_schedule || "-"}\n`;
-                md += `- Last Data: ${s.last_updated || "-"}\n`;
-                const rptNames = sourceReportMap[s.id] || [];
-                md += `- Reports: ${rptNames.length > 0 ? rptNames.join(", ") : "-"}\n`;
-                md += "\n";
+            // ── Visuals & Fields ──
+            if (selected.has("visuals-fields")) {
+                md += `## Visuals & Fields\n\n`;
+                for (const r of reports) {
+                    const rpages = visualsMap[r.id] || [];
+                    if (rpages.length === 0) continue;
+                    md += `### ${r.name}\n\n`;
+                    for (const pg of rpages) {
+                        md += `#### Page: ${pg.page_name}\n`;
+                        for (const v of pg.visuals) {
+                            const label = v.title ? `${v.visual_type} - "${v.title}"` : v.visual_type;
+                            md += `- **${label}**\n`;
+                            for (const f of v.fields) {
+                                md += `  - ${f.table}.${f.field}\n`;
+                            }
+                        }
+                        md += "\n";
+                    }
+                }
+                const totalVisuals = reports.reduce((sum, r) =>
+                    sum + (visualsMap[r.id] || []).reduce((s, p) => s + p.visuals.length, 0), 0);
+                sections.push(`${totalVisuals} visuals`);
             }
 
-            // Lineage section
-            md += `## Lineage\n`;
-            for (const e of edges) {
-                md += `- ${e.source_name} -> ${e.report_name}\n`;
+            // ── Measures & DAX ──
+            if (selected.has("measures-dax")) {
+                const allMeasures = data.measures || [];
+                md += `## Measures & DAX (${allMeasures.length})\n\n`;
+                // Group by report
+                const byReport = {};
+                allMeasures.forEach(m => {
+                    if (!byReport[m.report_name]) byReport[m.report_name] = {};
+                    if (!byReport[m.report_name][m.table_name]) byReport[m.report_name][m.table_name] = [];
+                    byReport[m.report_name][m.table_name].push(m);
+                });
+                for (const [rptName, tables] of Object.entries(byReport).sort()) {
+                    md += `### ${rptName}\n\n`;
+                    for (const [tblName, measures] of Object.entries(tables).sort()) {
+                        md += `**Table: ${tblName}**\n\n`;
+                        for (const m of measures) {
+                            md += `\`${m.measure_name}\`\n`;
+                            if (m.measure_dax) {
+                                md += "```dax\n" + m.measure_dax + "\n```\n";
+                            }
+                            md += "\n";
+                        }
+                    }
+                }
+                sections.push(`${allMeasures.length} measures`);
+            }
+
+            // ── Table Columns ──
+            if (selected.has("columns")) {
+                const allCols = data.columns || [];
+                md += `## Table Columns (${allCols.length})\n\n`;
+                const byReport = {};
+                allCols.forEach(c => {
+                    if (!byReport[c.report_name]) byReport[c.report_name] = {};
+                    if (!byReport[c.report_name][c.table_name]) byReport[c.report_name][c.table_name] = [];
+                    byReport[c.report_name][c.table_name].push(c.column_name);
+                });
+                for (const [rptName, tables] of Object.entries(byReport).sort()) {
+                    md += `### ${rptName}\n\n`;
+                    for (const [tblName, cols] of Object.entries(tables).sort()) {
+                        md += `**${tblName}:** ${cols.join(", ")}\n\n`;
+                    }
+                }
+                sections.push(`${allCols.length} columns`);
+            }
+
+            // ── Data Sources ──
+            if (selected.has("sources")) {
+                md += `## Data Sources (${sources.length})\n\n`;
+                // Group by type
+                const byType = {};
+                sources.forEach(s => {
+                    const t = s.type || "unknown";
+                    if (!byType[t]) byType[t] = [];
+                    byType[t].push(s);
+                });
+                for (const [typeName, srcs] of Object.entries(byType).sort()) {
+                    md += `### ${typeName} (${srcs.length})\n\n`;
+                    for (const s of srcs) {
+                        md += `**${s.name}**\n`;
+                        md += `- Owner: ${s.owner || "-"}\n`;
+                        md += `- Status: ${s.status || "-"}\n`;
+                        md += `- Refresh: ${s.refresh_schedule || "-"}\n`;
+                        md += `- Last Data: ${s.last_updated || "-"}\n`;
+                        const rptNames = sourceReportMap[s.id] || [];
+                        md += `- Reports: ${rptNames.length > 0 ? rptNames.join(", ") : "-"}\n`;
+                        md += "\n";
+                    }
+                }
+                sections.push(`${sources.length} sources`);
+            }
+
+            // ── Lineage ──
+            if (selected.has("lineage")) {
+                md += `## Lineage (${edges.length} edges)\n\n`;
+                for (const e of edges) {
+                    md += `- ${e.source_name} -> ${e.report_name}\n`;
+                }
+                md += "\n";
+                sections.push(`${edges.length} edges`);
             }
 
             textarea.value = md;
             btnCopy.style.display = "";
-            status.textContent = `Done - ${reports.length} reports, ${sources.length} sources, ${edges.length} edges`;
+            status.textContent = `Done - ${sections.join(", ")}`;
         } catch (err) {
             status.textContent = "Error: " + err.message;
         } finally {

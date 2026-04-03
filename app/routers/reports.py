@@ -47,6 +47,34 @@ def list_reports():
     return results
 
 
+@router.get("/all-measures")
+def all_measures():
+    """Get all measures across all reports (bulk export)."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT rm.report_id, r.name AS report_name,
+                   rm.table_name, rm.measure_name, rm.measure_dax
+            FROM report_measures rm
+            JOIN reports r ON r.id = rm.report_id
+            ORDER BY r.name, rm.table_name, rm.measure_name
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.get("/all-columns")
+def all_columns():
+    """Get all columns across all reports (bulk export)."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT rc.report_id, r.name AS report_name,
+                   rc.table_name, rc.column_name
+            FROM report_columns rc
+            JOIN reports r ON r.id = rc.report_id
+            ORDER BY r.name, rc.table_name, rc.column_name
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
 @router.get("/{report_id}", response_model=ReportOut)
 def get_report(report_id: int):
     with get_db() as db:
