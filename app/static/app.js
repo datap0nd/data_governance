@@ -2659,6 +2659,145 @@ function bindBestPracticesPage() {
 }
 
 
+// ── Full Export ──
+
+async function renderExport() {
+    return `
+    <div class="page-header">
+        <h1>Full Export</h1>
+        <span class="subtitle">Export all report and source data as markdown</span>
+    </div>
+    <div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center">
+        <button class="btn-export" id="btn-generate-export" style="float:none">Generate Export</button>
+        <button class="btn-export" id="btn-copy-export" style="float:none;display:none">Copy to Clipboard</button>
+        <span id="export-status" style="font-size:0.78rem;color:var(--text-dim)"></span>
+    </div>
+    <textarea id="export-output" readonly
+        style="width:100%;min-height:500px;font-family:monospace;font-size:0.78rem;padding:0.75rem;
+        background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;
+        resize:vertical;white-space:pre;tab-size:4;line-height:1.5"
+        placeholder="Click 'Generate Export' to fetch all data and build the markdown export."></textarea>
+    `;
+}
+
+function bindExportPage() {
+    const btnGenerate = document.getElementById("btn-generate-export");
+    const btnCopy = document.getElementById("btn-copy-export");
+    const textarea = document.getElementById("export-output");
+    const status = document.getElementById("export-status");
+
+    if (!btnGenerate) return;
+
+    btnGenerate.addEventListener("click", async () => {
+        btnGenerate.disabled = true;
+        btnGenerate.textContent = "Fetching data...";
+        status.textContent = "";
+        btnCopy.style.display = "none";
+
+        try {
+            const [reports, sources, edges] = await Promise.all([
+                api("/api/reports"),
+                api("/api/sources"),
+                api("/api/lineage"),
+            ]);
+
+            // Fetch pages for each report in parallel
+            status.textContent = "Fetching page details...";
+            const visualsMap = {};
+            const visualsPromises = reports.map(r =>
+                api(`/api/reports/${r.id}/visuals`)
+                    .then(v => { visualsMap[r.id] = v; })
+                    .catch(() => { visualsMap[r.id] = []; })
+            );
+            await Promise.all(visualsPromises);
+
+            // Build source->report and report->source maps from lineage
+            const reportSourceMap = {};  // report_id -> [source_name, ...]
+            const sourceReportMap = {};  // source_id -> [report_name, ...]
+            edges.forEach(e => {
+                if (!reportSourceMap[e.report_id]) reportSourceMap[e.report_id] = [];
+                if (!reportSourceMap[e.report_id].includes(e.source_name)) {
+                    reportSourceMap[e.report_id].push(e.source_name);
+                }
+                if (!sourceReportMap[e.source_id]) sourceReportMap[e.source_id] = [];
+                if (!sourceReportMap[e.source_id].includes(e.report_name)) {
+                    sourceReportMap[e.source_id].push(e.report_name);
+                }
+            });
+
+            // Build markdown
+            const now = new Date();
+            const dateStr = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+                + " " + now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+            let md = `# Data Governance Export\nGenerated: ${dateStr}\n\n`;
+
+            // Reports section
+            md += `## Reports (${reports.length})\n\n`;
+            for (const r of reports) {
+                md += `### ${r.name}\n`;
+                md += `- Owner: ${r.owner || "-"}\n`;
+                md += `- Business Owner: ${r.business_owner || "-"}\n`;
+                md += `- Status: ${r.status || "-"}\n`;
+                md += `- Frequency: ${r.frequency || "-"}\n`;
+                const srcNames = reportSourceMap[r.id] || [];
+                md += `- Sources: ${srcNames.length > 0 ? srcNames.join(", ") : "-"}\n`;
+                const pages = (visualsMap[r.id] || []).map(p => p.page_name).filter(Boolean);
+                md += `- Pages: ${pages.length > 0 ? pages.join(", ") : "-"}\n`;
+                md += `- Unused: ${r.unused_pct != null ? r.unused_pct + "%" : "-"}\n`;
+                md += "\n";
+            }
+
+            // Sources section
+            md += `## Sources (${sources.length})\n\n`;
+            for (const s of sources) {
+                md += `### ${s.name}\n`;
+                md += `- Type: ${s.type || "-"}\n`;
+                md += `- Owner: ${s.owner || "-"}\n`;
+                md += `- Status: ${s.status || "-"}\n`;
+                md += `- Refresh: ${s.refresh_schedule || "-"}\n`;
+                md += `- Last Data: ${s.last_updated || "-"}\n`;
+                const rptNames = sourceReportMap[s.id] || [];
+                md += `- Reports: ${rptNames.length > 0 ? rptNames.join(", ") : "-"}\n`;
+                md += "\n";
+            }
+
+            // Lineage section
+            md += `## Lineage\n`;
+            for (const e of edges) {
+                md += `- ${e.source_name} -> ${e.report_name}\n`;
+            }
+
+            textarea.value = md;
+            btnCopy.style.display = "";
+            status.textContent = `Done - ${reports.length} reports, ${sources.length} sources, ${edges.length} edges`;
+        } catch (err) {
+            status.textContent = "Error: " + err.message;
+        } finally {
+            btnGenerate.disabled = false;
+            btnGenerate.textContent = "Generate Export";
+        }
+    });
+
+    btnCopy.addEventListener("click", () => {
+        if (!textarea.value) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(textarea.value).then(() => {
+                toast("Copied to clipboard");
+            }).catch(() => {
+                textarea.select();
+                document.execCommand("copy");
+                toast("Copied to clipboard");
+            });
+        } else {
+            textarea.select();
+            document.execCommand("copy");
+            toast("Copied to clipboard");
+        }
+    });
+}
+
+
 // ── Lineage Diagram ──
 
 async function renderLineageDiagram() {
@@ -3528,6 +3667,7 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
+    export: renderExport,
     actions: renderActions,
     tasks: renderTasks,
     eventlog: renderEventLog,
@@ -3710,6 +3850,7 @@ async function navigate(page) {
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
         if (page === "tasks") bindTasksPage();
