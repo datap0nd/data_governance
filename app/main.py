@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.database import init_db
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -57,6 +57,7 @@ app.include_router(tasks.router)
 app.include_router(eventlog.router)
 app.include_router(people.router)
 app.include_router(scripts.router)
+app.include_router(scheduled_tasks.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

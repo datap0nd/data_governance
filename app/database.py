@@ -263,6 +263,27 @@ MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN email_owner INTEGER DEFAULT 0",
     # People table
     "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+    # Scheduled tasks (Windows Task Scheduler)
+    """CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_name       TEXT UNIQUE NOT NULL,
+        task_path       TEXT NOT NULL,
+        status          TEXT,
+        last_run_time   DATETIME,
+        last_result     TEXT,
+        next_run_time   DATETIME,
+        author          TEXT,
+        run_as_user     TEXT,
+        action_command  TEXT,
+        action_args     TEXT,
+        schedule_type   TEXT,
+        enabled         INTEGER DEFAULT 1,
+        script_id       INTEGER REFERENCES scripts(id),
+        last_scanned    DATETIME,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
 ]
 
 

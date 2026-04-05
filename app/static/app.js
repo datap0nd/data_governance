@@ -3160,6 +3160,172 @@ function bindScriptsPage() {
 }
 
 
+// ── Scheduled Tasks (Windows Task Scheduler) ──
+
+async function renderScheduledTasks() {
+    const tasks = await api("/api/scheduled-tasks");
+
+    const cols = [
+        { key: "task_name", label: "Task", render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
+        { key: "status", label: "Status", render: t => {
+            if (!t.status) return '<span style="color:var(--text-dim)">-</span>';
+            const cls = t.status === "Ready" ? "badge-green" : t.status === "Running" ? "badge-yellow" : t.status === "Disabled" ? "badge-dim" : "badge-yellow";
+            return `<span class="badge ${cls}">${esc(t.status)}</span>`;
+        }, sortVal: t => t.status || "" },
+        { key: "enabled", label: "Enabled", render: t => t.enabled
+            ? '<span class="badge badge-green">Yes</span>'
+            : '<span class="badge badge-dim">No</span>',
+          sortVal: t => t.enabled ? "1" : "0" },
+        { key: "last_run_time", label: "Last Run", render: t => t.last_run_time
+            ? `<span style="color:var(--text-muted)" title="${esc(t.last_run_time)}">${esc(t.last_run_time)}</span>`
+            : '<span style="color:var(--text-dim)">Never</span>',
+          sortVal: t => t.last_run_time || "" },
+        { key: "last_result", label: "Result", render: t => {
+            if (!t.last_result) return '<span style="color:var(--text-dim)">-</span>';
+            const ok = t.last_result === "0";
+            return `<span class="badge ${ok ? 'badge-green' : 'badge-red'}">${esc(t.last_result)}</span>`;
+        }, sortVal: t => t.last_result || "" },
+        { key: "next_run_time", label: "Next Run", render: t => t.next_run_time
+            ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${esc(t.next_run_time)}</span>`
+            : '<span style="color:var(--text-dim)">-</span>',
+          sortVal: t => t.next_run_time || "" },
+        { key: "schedule_type", label: "Schedule", render: t => t.schedule_type
+            ? `<span style="color:var(--text)">${esc(t.schedule_type)}</span>`
+            : '<span style="color:var(--text-dim)">-</span>',
+          sortVal: t => t.schedule_type || "" },
+        { key: "script_name", label: "Linked Script", render: t => t.script_id
+            ? `<span class="badge badge-blue schtask-script-link" style="cursor:pointer" data-script-id="${t.script_id}">${esc(t.script_name)}</span>`
+            : '<span style="color:var(--text-dim)">-</span>',
+          sortVal: t => t.script_name || "" },
+    ];
+
+    const failedCount = tasks.filter(t => t.last_result && t.last_result !== "0").length;
+    const linkedCount = tasks.filter(t => t.script_id).length;
+    const failedNote = failedCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${failedCount} failed</span>` : "";
+
+    return `
+        <div class="page-header">
+            <h1>Scheduled Tasks</h1>
+            <span class="subtitle">${tasks.length} tasks tracked, ${linkedCount} linked to scripts${failedNote}</span>
+            <button class="btn-outline" id="btn-scan-schtasks" style="margin-left:0.5rem">Scan Task Scheduler</button>
+            <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
+        </div>
+        ${tasks.length === 0
+            ? '<div class="empty-state" style="margin-top:2rem">No scheduled tasks found. Click <strong>Scan Task Scheduler</strong> to import from Windows Task Scheduler.<br><span style="color:var(--text-dim);font-size:0.8rem">This feature only works on Windows.</span></div>'
+            : dataTable("dt-schtasks", cols, tasks, { onRowClick: showScheduledTaskDetail })
+        }
+    `;
+}
+
+async function showScheduledTaskDetail(task) {
+    const existing = $("#schtask-detail");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.id = "schtask-detail";
+    panel.className = "source-detail-panel";
+
+    const resultBadge = !task.last_result ? '-'
+        : task.last_result === "0" ? '<span class="badge badge-green">0 (Success)</span>'
+        : `<span class="badge badge-red">${esc(task.last_result)} (Failed)</span>`;
+
+    const enabledBadge = task.enabled
+        ? '<span class="badge badge-green">Enabled</span>'
+        : '<span class="badge badge-dim">Disabled</span>';
+
+    const statusBadge = !task.status ? '-'
+        : task.status === "Ready" ? '<span class="badge badge-green">Ready</span>'
+        : task.status === "Running" ? '<span class="badge badge-yellow">Running</span>'
+        : `<span class="badge badge-dim">${esc(task.status)}</span>`;
+
+    const scriptLink = task.script_id
+        ? `<span class="badge badge-blue schtask-detail-script-link" style="cursor:pointer" data-script-id="${task.script_id}">${esc(task.script_name)}</span>`
+        : '<span style="color:var(--text-dim)">Not linked</span>';
+
+    const actionDisplay = [task.action_command, task.action_args].filter(Boolean).join(" ");
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${esc(task.task_name)}</h2>
+            <button class="btn-outline" id="btn-close-schtask-detail">&times; Close</button>
+        </div>
+        <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(task.task_path)}</span></div>
+            <div class="detail-item"><div class="detail-label">Status</div>${statusBadge}</div>
+            <div class="detail-item"><div class="detail-label">Enabled</div>${enabledBadge}</div>
+            <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(task.schedule_type || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${esc(task.last_run_time || "Never")}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Result</div>${resultBadge}</div>
+            <div class="detail-item"><div class="detail-label">Next Run</div><span style="color:var(--text)">${esc(task.next_run_time || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Author</div><span style="color:var(--text)">${esc(task.author || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Run As</div><span style="color:var(--text)">${esc(task.run_as_user || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Action</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(actionDisplay || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Linked Script</div>${scriptLink}</div>
+            <div class="detail-item"><div class="detail-label">Last Scanned</div><span style="color:var(--text)">${task.last_scanned ? formatDate(task.last_scanned) : "-"}</span></div>
+        </div>
+    `;
+
+    $("#app").appendChild(panel);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    document.getElementById("btn-close-schtask-detail").addEventListener("click", () => panel.remove());
+
+    // Click linked script to navigate
+    const scriptEl = panel.querySelector(".schtask-detail-script-link");
+    if (scriptEl) {
+        scriptEl.addEventListener("click", async () => {
+            const scriptId = parseInt(scriptEl.dataset.scriptId);
+            try {
+                const script = await api(`/api/scripts/${scriptId}`);
+                await navigate("scripts");
+                showScriptDetail(script);
+            } catch (err) {
+                toast("Script not found");
+            }
+        });
+    }
+}
+
+function bindScheduledTasksPage() {
+    // Scan button
+    const btnScan = document.getElementById("btn-scan-schtasks");
+    if (btnScan) {
+        btnScan.addEventListener("click", async () => {
+            btnScan.disabled = true;
+            btnScan.textContent = "Scanning...";
+            try {
+                const result = await apiPost("/api/scheduled-tasks/scan");
+                if (result.status === "completed") {
+                    toast(`Scan complete - ${result.tasks_total || 0} tasks found, ${result.scripts_linked || 0} linked to scripts`);
+                } else {
+                    toast("Scan failed: " + (result.error || "unknown error"));
+                }
+                await navigate("scheduledtasks");
+            } catch (err) {
+                toast("Scan failed: " + err.message);
+                btnScan.disabled = false;
+                btnScan.textContent = "Scan Task Scheduler";
+            }
+        });
+    }
+
+    // Clickable script badges in table rows
+    document.querySelectorAll(".schtask-script-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const scriptId = parseInt(el.dataset.scriptId);
+            try {
+                const script = await api(`/api/scripts/${scriptId}`);
+                await navigate("scripts");
+                showScriptDetail(script);
+            } catch (err) {
+                toast("Script not found");
+            }
+        });
+    });
+}
+
+
 // ── Lineage Diagram ──
 
 async function renderLineageDiagram() {
@@ -3341,10 +3507,9 @@ function _renderLineageDiagram(data) {
     // Sources column
     let sourcesHtml = '<div class="lineage-col" data-col="sources"><div class="lineage-col-header">Sources</div>';
     for (const s of sourceNodes) {
-        const shortName = s.name.length > 30 ? "..." + s.name.slice(-27) : s.name;
         sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
             ${statusDot(s.status)}
-            <span class="lineage-node-label">${esc(shortName)}</span>
+            <span class="lineage-node-label">${esc(s.name)}</span>
         </div>`;
     }
     sourcesHtml += '</div>';
@@ -4025,6 +4190,7 @@ const pages = {
     sources: renderSources,
     reports: renderReports,
     scripts: renderScripts,
+    scheduledtasks: renderScheduledTasks,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -4211,6 +4377,7 @@ async function navigate(page) {
         if (page === "actions") bindActionsTab();
         if (page === "reports") bindReportsPage();
         if (page === "scripts") bindScriptsPage();
+        if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();

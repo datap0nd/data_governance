@@ -297,3 +297,26 @@ class EventLogOut(BaseModel):
     action: str
     detail: str | None = None
     created_at: str | None = None
+
+
+# --- Scheduled Tasks (Windows Task Scheduler) ---
+
+class ScheduledTaskOut(BaseModel):
+    id: int
+    task_name: str
+    task_path: str
+    status: str | None = None
+    last_run_time: str | None = None
+    last_result: str | None = None
+    next_run_time: str | None = None
+    author: str | None = None
+    run_as_user: str | None = None
+    action_command: str | None = None
+    action_args: str | None = None
+    schedule_type: str | None = None
+    enabled: bool = True
+    script_id: int | None = None
+    script_name: str | None = None
+    last_scanned: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
