@@ -135,13 +135,14 @@ nav a {
     font-weight: 500;
     padding: 0.4rem 0.75rem;
     border-radius: 5px;
-    transition: color 0.15s, background 0.15s;
+    transition: color 0.05s, background 0.05s;
     position: relative;
 }
 
 nav a:hover {
     color: var(--text);
     background: var(--surface-hover);
+    transition: color 0.15s, background 0.15s;
 }
 
 nav a::after {
@@ -184,7 +185,7 @@ nav a.active::after {
     padding: 0.4rem 0.75rem;
     border-radius: 5px;
     cursor: pointer;
-    transition: color 0.15s, background 0.15s;
+    transition: color 0.05s, background 0.05s;
     user-select: none;
     position: relative;
 }
@@ -192,6 +193,7 @@ nav a.active::after {
 .nav-group-label:hover {
     color: var(--text);
     background: var(--surface-hover);
+    transition: color 0.15s, background 0.15s;
 }
 
 .nav-group.active .nav-group-label {
@@ -237,7 +239,7 @@ nav a:hover .nav-icon, nav a.active .nav-icon,
     opacity: 0;
     visibility: hidden;
     transform: translateY(-4px);
-    transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+    transition: opacity 0.05s, transform 0.05s, visibility 0s 0.05s;
     z-index: 100;
 }
 
@@ -246,6 +248,7 @@ nav a:hover .nav-icon, nav a.active .nav-icon,
     opacity: 1;
     visibility: visible;
     transform: translateY(0);
+    transition: opacity 0.15s, transform 0.15s, visibility 0s;
 }
 
 .nav-dropdown a {
