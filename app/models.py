@@ -258,6 +258,35 @@ class PersonCreate(BaseModel):
     role: str
 
 
+# --- Scripts ---
+
+class ScriptOut(BaseModel):
+    id: int
+    path: str
+    display_name: str
+    owner: str | None = None
+    last_modified: str | None = None
+    last_scanned: str | None = None
+    file_size: int | None = None
+    tables_read: list[str] = []
+    tables_written: list[str] = []
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ScriptUpdate(BaseModel):
+    owner: str | None = None
+
+
+class ScriptTableOut(BaseModel):
+    id: int
+    script_id: int
+    table_name: str
+    direction: str
+    source_id: int | None = None
+    source_name: str | None = None
+
+
 # --- Event Log ---
 
 class EventLogOut(BaseModel):

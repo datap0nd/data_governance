@@ -2954,6 +2954,212 @@ function bindExportPage() {
 }
 
 
+// ── Scripts ──
+
+function formatFileSize(bytes) {
+    if (bytes == null) return "-";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+function truncatePath(path, maxLen) {
+    if (!path) return "-";
+    if (path.length <= maxLen) return path;
+    return "..." + path.slice(path.length - maxLen + 3);
+}
+
+async function renderScripts() {
+    const [scripts, options] = await Promise.all([
+        api("/api/scripts"),
+        api("/api/create/options"),
+    ]);
+    const people = options.people || [];
+
+    const cols = [
+        { key: "display_name", label: "Script", render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
+        { key: "path", label: "Path", resizable: true, render: s => {
+            const short = truncatePath(s.path, 60);
+            const escaped = (s.path || "").replace(/"/g, '&quot;');
+            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(short)}</span>`;
+        }, sortVal: s => s.path || "" },
+        { key: "owner", label: "Owner", render: s => {
+            const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
+        }, sortVal: s => s.owner || "" },
+        { key: "tables_written", label: "Writes To", render: s => {
+            if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
+            return s.tables_written.map(t => `<span class="badge badge-red" style="font-size:0.68rem;margin:1px">${esc(t)}</span>`).join(" ");
+        }, sortVal: s => (s.tables_written || []).join(",") },
+        { key: "tables_read", label: "Reads From", render: s => {
+            if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
+            return s.tables_read.map(t => `<span class="badge badge-blue" style="font-size:0.68rem;margin:1px">${esc(t)}</span>`).join(" ");
+        }, sortVal: s => (s.tables_read || []).join(",") },
+        { key: "last_modified", label: "Modified", render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
+        { key: "last_scanned", label: "Scanned", render: s => `<span style="color:var(--text-muted)" title="${s.last_scanned || ''}">${s.last_scanned ? timeAgo(s.last_scanned) : "-"}</span>`, sortVal: s => s.last_scanned || "" },
+    ];
+
+    return `
+        <div class="page-header">
+            <h1>Scripts</h1>
+            <span class="subtitle">${scripts.length} Python scripts tracked</span>
+            <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
+        </div>
+        ${dataTable("dt-scripts", cols, scripts, { onRowClick: showScriptDetail })}
+    `;
+}
+
+async function showScriptDetail(script) {
+    const existing = $("#script-detail");
+    if (existing) existing.remove();
+
+    const [tables, options] = await Promise.all([
+        api(`/api/scripts/${script.id}/tables`),
+        api("/api/create/options"),
+    ]);
+    const people = options.people || [];
+
+    const panel = document.createElement("div");
+    panel.id = "script-detail";
+    panel.className = "source-detail-panel";
+
+    const writeRows = tables.filter(t => t.direction === "write");
+    const readRows = tables.filter(t => t.direction === "read");
+
+    const writeBadges = writeRows.length > 0
+        ? writeRows.map(t => {
+            if (t.source_id) {
+                return `<span class="badge badge-red script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(t.table_name)}</span>`;
+            }
+            return `<span class="badge badge-red" style="margin:2px">${esc(t.table_name)}</span>`;
+        }).join(" ")
+        : '<span style="color:var(--text-dim)">None detected</span>';
+
+    const readBadges = readRows.length > 0
+        ? readRows.map(t => {
+            if (t.source_id) {
+                return `<span class="badge badge-blue script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(t.table_name)}</span>`;
+            }
+            return `<span class="badge badge-blue" style="margin:2px">${esc(t.table_name)}</span>`;
+        }).join(" ")
+        : '<span style="color:var(--text-dim)">None detected</span>';
+
+    const ownerOpts = people.map(p => `<option value="${esc(p.name)}"${script.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${esc(script.display_name)}</h2>
+            <button class="btn-outline" id="btn-close-script-detail">&times; Close</button>
+        </div>
+        <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)}</span></div>
+            <div class="detail-item"><div class="detail-label">Owner</div>
+                <select class="freq-select-inline script-detail-owner-select" data-script-id="${script.id}">
+                    <option value="">--</option>${ownerOpts}
+                </select>
+            </div>
+            <div class="detail-item"><div class="detail-label">File Size</div><span style="color:var(--text)">${formatFileSize(script.file_size)}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Modified</div><span style="color:var(--text)">${script.last_modified ? formatDate(script.last_modified) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Scanned</div><span style="color:var(--text)">${script.last_scanned ? formatDate(script.last_scanned) : "-"}</span></div>
+        </div>
+
+        <h2>Writes To (${writeRows.length})</h2>
+        <div style="padding:0.25rem 0">${writeBadges}</div>
+
+        <h2>Reads From (${readRows.length})</h2>
+        <div style="padding:0.25rem 0">${readBadges}</div>
+    `;
+
+    $("#app").appendChild(panel);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    // Close button
+    document.getElementById("btn-close-script-detail").addEventListener("click", () => panel.remove());
+
+    // Owner dropdown in detail panel
+    const ownerSelect = panel.querySelector(".script-detail-owner-select");
+    if (ownerSelect) {
+        ownerSelect.addEventListener("change", async () => {
+            try {
+                await apiPatch(`/api/scripts/${script.id}`, { owner: ownerSelect.value });
+                toast("Owner updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    }
+
+    // Clickable table badges that link to sources
+    panel.querySelectorAll(".script-table-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const srcId = parseInt(el.dataset.sourceId);
+            try {
+                const source = await api(`/api/sources/${srcId}`);
+                await navigate("sources");
+                showSourceDetail(source);
+            } catch (err) {
+                toast("Source not found");
+            }
+        });
+    });
+}
+
+function bindScriptsPage() {
+    // Scan button
+    const btnScan = document.getElementById("btn-scan-scripts");
+    if (btnScan) {
+        btnScan.addEventListener("click", async () => {
+            btnScan.disabled = true;
+            btnScan.textContent = "Scanning...";
+            try {
+                const result = await apiPost("/api/scripts/scan");
+                if (result.status === "completed") {
+                    toast(`Scan complete - ${result.scripts_total} scripts found`);
+                } else {
+                    toast("Scan failed: " + (result.error || "unknown error"));
+                }
+                await navigate("scripts");
+            } catch (err) {
+                toast("Scan failed: " + err.message);
+                btnScan.disabled = false;
+                btnScan.textContent = "Scan Scripts";
+            }
+        });
+    }
+
+    // Inline owner select dropdowns
+    document.querySelectorAll(".script-owner-select").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const scriptId = sel.dataset.scriptId;
+            try {
+                await apiPatch(`/api/scripts/${scriptId}`, { owner: sel.value });
+                toast("Owner updated");
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+
+    // Click-to-copy on path cells
+    document.querySelectorAll(".cell-copyable").forEach(el => {
+        el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const path = el.dataset.copy;
+            if (!path || path === "-") return;
+            navigator.clipboard.writeText(path).then(() => {
+                toast("Path copied to clipboard");
+            }).catch(() => {
+                toast("Failed to copy path");
+            });
+        });
+    });
+}
+
+
 // ── Lineage Diagram ──
 
 async function renderLineageDiagram() {
@@ -3818,6 +4024,7 @@ const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
     reports: renderReports,
+    scripts: renderScripts,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -4003,6 +4210,7 @@ async function navigate(page) {
         if (page === "sources") bindSourcesPage();
         if (page === "actions") bindActionsTab();
         if (page === "reports") bindReportsPage();
+        if (page === "scripts") bindScriptsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();

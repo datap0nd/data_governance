@@ -195,6 +195,31 @@ CREATE TABLE IF NOT EXISTS event_log (
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS scripts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    path            TEXT UNIQUE NOT NULL,
+    display_name    TEXT NOT NULL,
+    owner           TEXT,
+    last_modified   DATETIME,
+    last_scanned    DATETIME,
+    file_size       INTEGER,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS script_tables (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    script_id       INTEGER NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+    table_name      TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    source_id       INTEGER REFERENCES sources(id),
+    UNIQUE(script_id, table_name, direction)
+);
+
+CREATE INDEX IF NOT EXISTS idx_script_tables_script_id ON script_tables(script_id);
+CREATE INDEX IF NOT EXISTS idx_script_tables_source_id ON script_tables(source_id);
+CREATE INDEX IF NOT EXISTS idx_scripts_path ON scripts(path);
+
 CREATE VIEW IF NOT EXISTS lineage AS
     SELECT DISTINCT source_id, report_id
     FROM report_tables
