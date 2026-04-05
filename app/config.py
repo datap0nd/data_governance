@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
-_default_reports = r"\\\\MX-SHARE\\Users\\METOMX\\Desktop\\BI Report Originals"
+_default_reports = r"\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 
 # If the default path doesn't exist, fall back to test_data inside the project
 if not os.path.isdir(_default_reports):
@@ -25,7 +25,7 @@ TMDL_ROOT = _tmdl_root_raw
 
 
 # Folder where Python scripts live (shared drive or fallback to test data)
-_default_scripts = r"\\\\MX-SHARE\\Users\\METOMX\\Desktop"
+_default_scripts = r"\\MX-SHARE\Users\METOMX\Desktop"
 if not os.path.isdir(_default_scripts):
     _default_scripts = str(BASE_DIR / "test_data" / "scripts")
 SCRIPTS_PATH = os.environ.get("DG_SCRIPTS_PATH", _default_scripts)

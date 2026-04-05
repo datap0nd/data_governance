@@ -23,6 +23,7 @@ $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
+$ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop"
 $Port        = 8000
 $ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
 $ZipPath     = "$ProjectDir\_update.zip"
@@ -209,6 +210,7 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
 & $NssmExe set $ServiceName AppEnvironmentExtra `
     "DG_DB_PATH=$DbPath" `
     "DG_REPORTS_PATH=$ReportsPath" `
+    "DG_SCRIPTS_PATH=$ScriptsPath" `
     "DG_SIMULATE_FRESHNESS=false" `
     "DG_AI_MOCK=true"
 
