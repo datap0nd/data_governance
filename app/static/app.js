@@ -3825,6 +3825,7 @@ function _renderLineageDiagram(data) {
         sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
             ${statusDot(s.status)}
             <span class="lineage-node-label">${esc(s.name)}</span>
+            <button class="btn-lineage-view" data-source-id="${s.id}" onclick="event.stopPropagation()">View</button>
         </div>`;
     }
     sourcesHtml += '</div>';
@@ -3989,6 +3990,17 @@ function _bindLineageClicks() {
                     line.classList.toggle("lineage-dimmed", !isConn);
                 });
             }
+        });
+    });
+
+    // View button on source nodes -> navigate to Sources tab and show detail
+    wrap.querySelectorAll(".btn-lineage-view").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const sourceId = parseInt(btn.dataset.sourceId);
+            const sources = await api("/api/sources");
+            const src = sources.find(s => s.id === sourceId);
+            if (src) { await navigate("sources"); showSourceDetail(src); }
         });
     });
 

@@ -2800,6 +2800,23 @@ button.btn-danger-outline:hover {
 .btn-lineage { color: var(--accent); border-color: var(--blue-border); }
 .btn-lineage:hover { border-color: var(--accent); }
 
+.btn-lineage-view {
+    display: none;
+    margin-left: auto;
+    padding: 0.15rem 0.45rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--blue-border);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-lineage-view:hover { border-color: var(--accent); background: var(--accent-bg); }
+.lineage-node-source:hover .btn-lineage-view,
+.lineage-node-source.lineage-highlighted .btn-lineage-view { display: inline-block; }
+
 /* ================================================================
    Lineage Diagram
    ================================================================ */
