@@ -5,6 +5,7 @@ from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe, probe_debug
+from app.scanner.pbi_sync import run_pbi_sync
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 
@@ -24,6 +25,13 @@ def trigger_scan():
     except Exception as e:
         logger.exception("Probe failed after scan")
         result["probe"] = {"status": "failed", "error": str(e)}
+    # After probe, sync PBI refresh schedules
+    try:
+        pbi_result = run_pbi_sync()
+        result["pbi_sync"] = pbi_result
+    except Exception as e:
+        logger.exception("PBI sync failed after scan")
+        result["pbi_sync"] = {"status": "failed", "error": str(e)}
     return result
 
 
@@ -47,6 +55,12 @@ def list_probe_runs():
             "SELECT * FROM probe_runs ORDER BY started_at DESC LIMIT 20"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+@router.post("/pbi-sync")
+def trigger_pbi_sync():
+    """Sync Power BI refresh schedules and status from PBI Service."""
+    return run_pbi_sync()
 
 
 @router.get("/runs", response_model=list[ScanRunOut])

@@ -50,3 +50,6 @@ if _endpoint_file.exists():
 else:
     AI_API_URL = os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
+
+# Power BI workspace name for refresh schedule sync
+PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "mx executive")

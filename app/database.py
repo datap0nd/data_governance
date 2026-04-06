@@ -284,6 +284,12 @@ MIGRATIONS = [
         updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
+    # Power BI refresh sync
+    "ALTER TABLE reports ADD COLUMN pbi_dataset_id TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_refresh_schedule TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_last_refresh_at TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_refresh_status TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_refresh_error TEXT",
     # Archive support
     "ALTER TABLE sources ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE reports ADD COLUMN archived INTEGER DEFAULT 0",

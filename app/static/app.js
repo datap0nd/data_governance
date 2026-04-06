@@ -768,6 +768,9 @@ async function showReportDetail(report) {
                     <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner) || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${esc(report.business_owner) || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${esc(report.frequency) || "-"}</span></div>
+                    ${report.pbi_refresh_schedule ? `<div class="detail-item"><div class="detail-label">PBI Schedule</div><span style="color:var(--text)">${esc(report.pbi_refresh_schedule)}</span></div>` : ''}
+                    ${report.pbi_refresh_status ? `<div class="detail-item"><div class="detail-label">Last Refresh</div>${report.pbi_refresh_status.toLowerCase() === 'completed' ? '<span class="badge badge-green">completed</span>' : report.pbi_refresh_status.toLowerCase() === 'failed' ? '<span class="badge badge-red">failed</span>' : statusBadge(report.pbi_refresh_status)} ${report.pbi_last_refresh_at ? `<span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.3rem">${timeAgo(report.pbi_last_refresh_at)}</span>` : ''}</div>` : ''}
+                    ${report.pbi_refresh_error ? `<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Refresh Error</div><span style="color:var(--red);font-size:0.78rem">${esc(report.pbi_refresh_error)}</span></div>` : ''}
                 </div>
             </div>
             <div class="report-expand-label">Data Sources (${tables.length})</div>
@@ -1465,6 +1468,14 @@ async function renderReports() {
         { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
             ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
             : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
+        { key: "pbi_refresh_schedule", label: "PBI Schedule", render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
+        { key: "pbi_refresh_status", label: "PBI Status", render: r => {
+            if (!r.pbi_refresh_status) return '-';
+            const s = r.pbi_refresh_status.toLowerCase();
+            const cls = s === 'completed' ? 'badge-green' : s === 'failed' ? 'badge-red' : 'badge-yellow';
+            return `<span class="badge ${cls}">${esc(r.pbi_refresh_status)}</span>`;
+        }},
+        { key: "pbi_last_refresh_at", label: "Last Refresh", render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
         { key: "_lineage", label: "Lineage", filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
         _archiveColDef("report"),
@@ -1482,6 +1493,7 @@ async function renderReports() {
             <h1>Reports</h1>
             <span class="subtitle">${active.length} Power BI reports  - ${healthy} healthy, ${atRisk} need attention</span>
             ${_archiveToggleHtml("reports")}
+            <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
@@ -1561,6 +1573,28 @@ function bindReportsPage() {
         });
     });
     _bindArchiveButtons(() => navigate("reports"));
+
+    // Sync PBI button
+    const btnPbi = document.getElementById("btn-pbi-sync");
+    if (btnPbi) {
+        btnPbi.addEventListener("click", async () => {
+            btnPbi.disabled = true;
+            btnPbi.textContent = "Syncing PBI...";
+            try {
+                const result = await apiPost("/api/scanner/pbi-sync");
+                if (result.status === "completed") {
+                    toast(`PBI sync: ${result.matched} matched, ${result.unmatched.length} unmatched`);
+                    navigate("reports");
+                } else {
+                    toast("PBI sync: " + (result.message || result.status));
+                }
+            } catch (err) {
+                toast("PBI sync failed: " + err.message);
+            }
+            btnPbi.disabled = false;
+            btnPbi.textContent = "Sync PBI";
+        });
+    }
 }
 
 async function renderScanner() {

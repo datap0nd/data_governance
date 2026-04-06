@@ -55,6 +55,11 @@ class ReportOut(BaseModel):
     source_count: int = 0
     worst_source_updated: str | None = None  # oldest source last_data_at
     unused_pct: int | None = None  # % of measures+columns not used in visuals
+    pbi_dataset_id: str | None = None
+    pbi_refresh_schedule: str | None = None
+    pbi_last_refresh_at: str | None = None
+    pbi_refresh_status: str | None = None
+    pbi_refresh_error: str | None = None
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
