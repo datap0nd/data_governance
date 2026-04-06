@@ -275,7 +275,7 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
         logger.info("Parsing: %s", pbix_path.name)
         report = parse_pbix_file(pbix_path)
         if report:
-            discovered.append(DiscoveredReport(
+            dr = DiscoveredReport(
                 name=report.name,
                 tmdl_path=report.file_path,
                 tables=report.tables,
@@ -283,7 +283,9 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
                 business_owner=report.business_owner,
                 report_owner=report.report_owner,
                 layout=report.layout,
-            ))
+            )
+            dr.layout_diagnostic = getattr(report, "layout_diagnostic", None)
+            discovered.append(dr)
         else:
             logger.warning("Could not parse: %s", pbix_path.name)
 

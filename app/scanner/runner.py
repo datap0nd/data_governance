@@ -79,9 +79,11 @@ def run_scan(reports_path: str | None = None) -> dict:
                     f"{len(layout.pages)} pages, {vis_count} visuals, {field_count} field refs"
                 )
             else:
+                diag = getattr(report, "layout_diagnostic", None)
+                diag_suffix = f" [{diag}]" if diag else ""
                 log_lines.append(
                     f"REPORT: {report.name} - {tables_count} tables, {measures_count} measures, "
-                    f"NO LAYOUT (visuals not detected)"
+                    f"NO LAYOUT (visuals not detected){diag_suffix}"
                 )
 
         with get_db() as db:

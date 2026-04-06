@@ -201,11 +201,16 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
 
     # Extract visual layout (pages, visuals, field references)
     layout = None
+    layout_diagnostic = None
     try:
         from app.scanner.layout_parser import parse_pbix_layout
-        layout = parse_pbix_layout(file_path)
+        diag = []
+        layout = parse_pbix_layout(file_path, diagnostics=diag)
+        if not layout and diag:
+            layout_diagnostic = "; ".join(diag)
     except Exception as e:
         logger.warning("Could not parse layout from %s: %s", file_path.name, e)
+        layout_diagnostic = f"Exception: {e}"
 
     # Per-report summary for debugging
     vis_count = sum(len(p.visuals) for p in layout.pages) if layout else 0
@@ -215,7 +220,7 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
                 report_name, len(tables), col_count, len(measures), vis_count, field_count,
                 f"{len(layout.pages)} pages" if layout else "NONE")
 
-    return PbixReport(
+    report = PbixReport(
         name=report_name,
         file_path=str(file_path),
         tables=tables,
@@ -224,3 +229,5 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
         report_owner=report_owner,
         layout=layout,
     )
+    report.layout_diagnostic = layout_diagnostic
+    return report
