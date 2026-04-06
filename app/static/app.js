@@ -1437,7 +1437,9 @@ async function renderReports() {
     const people = options.people || [];
 
     const cols = [
-        { key: "name", label: "Report", render: r => `<strong>${esc(r.name)}</strong>` },
+        { key: "name", label: "Report", render: r => r.powerbi_url
+            ? `<strong><a href="${r.powerbi_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
+            : `<strong>${esc(r.name)}</strong>` },
         { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
         { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", render: r => {
@@ -1450,9 +1452,6 @@ async function renderReports() {
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
-        { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
-            ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
-            : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
         { key: "pbi_refresh_schedule", label: "PBI Schedule", render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
         { key: "pbi_refresh_status", label: "PBI Status", render: r => {
             if (!r.pbi_refresh_status) return '-';

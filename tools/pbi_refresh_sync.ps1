@@ -51,13 +51,15 @@ $reportsRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/reports" -Method Get |
 # Get all datasets
 $datasetsRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/datasets" -Method Get | ConvertFrom-Json
 
-# Build dataset ID -> report names map
+# Build dataset ID -> report info map (name + webUrl)
 $datasetReports = @{}
+$reportUrls = @{}
 foreach ($r in $reportsRaw.value) {
     if (-not $datasetReports.ContainsKey($r.datasetId)) {
         $datasetReports[$r.datasetId] = @()
     }
     $datasetReports[$r.datasetId] += $r.name
+    $reportUrls[$r.name] = $r.webUrl
 }
 
 $results = @()
@@ -102,6 +104,7 @@ foreach ($ds in $datasetsRaw.value) {
             report_name  = $rptName
             dataset_name = $ds.name
             dataset_id   = $ds.id
+            web_url      = $reportUrls[$rptName]
             schedule     = $schedule
             last_refresh = $lastRefresh
         }

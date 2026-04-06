@@ -100,16 +100,24 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
 
 
 def import_pbi_data(data: dict) -> dict:
-    """Import PBI data received from the PS1 script and update the reports table."""
+    """Import PBI data received from the PS1 script and update the reports table.
+
+    Also auto-archives reports not found in PBI and sets powerbi_url.
+    """
     reports_data = data.get("reports") or []
     matched = 0
     unmatched = []
+    archived_count = 0
     log_lines = []
+
+    now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
         # Build a lookup map: lowercase name -> (id, original name)
         all_reports = db.execute("SELECT id, name FROM reports").fetchall()
         name_map = {r["name"].strip().lower(): (r["id"], r["name"]) for r in all_reports}
+
+        matched_ids = set()
 
         for entry in reports_data:
             report_name = entry.get("report_name")
@@ -125,6 +133,7 @@ def import_pbi_data(data: dict) -> dict:
                 continue
 
             report_id = match[0]
+            matched_ids.add(report_id)
             schedule = entry.get("schedule") or {}
             last_refresh = entry.get("last_refresh") or {}
 
@@ -143,6 +152,8 @@ def import_pbi_data(data: dict) -> dict:
                     pbi_last_refresh_at = ?,
                     pbi_refresh_status = ?,
                     pbi_refresh_error = ?,
+                    powerbi_url = ?,
+                    archived = 0,
                     updated_at = ?
                 WHERE id = ?""",
                 (
@@ -151,13 +162,26 @@ def import_pbi_data(data: dict) -> dict:
                     last_refresh_at,
                     refresh_status,
                     refresh_error,
-                    datetime.now(timezone.utc).isoformat(),
+                    entry.get("web_url"),
+                    now,
                     report_id,
                 ),
             )
             matched += 1
             status_str = refresh_status or "no history"
             log_lines.append(f"OK: {report_name} - {status_str} ({schedule_str or 'no schedule'})")
+
+        # Auto-archive reports NOT found in PBI workspace
+        if matched_ids:
+            for r in all_reports:
+                if r["id"] not in matched_ids:
+                    db.execute(
+                        "UPDATE reports SET archived = 1, updated_at = ? WHERE id = ? AND archived = 0",
+                        (now, r["id"]),
+                    )
+                    if db.total_changes:
+                        archived_count += 1
+                        log_lines.append(f"ARCHIVE: {r['name']} (not in PBI workspace)")
 
     summary = {
         "status": "completed",
@@ -166,7 +190,8 @@ def import_pbi_data(data: dict) -> dict:
         "total_pbi_reports": len(reports_data),
         "matched": matched,
         "unmatched": unmatched,
+        "archived": archived_count,
         "log": "\n".join(log_lines),
     }
-    logger.info("PBI sync completed: %s matched, %s unmatched", matched, len(unmatched))
+    logger.info("PBI sync completed: %s matched, %s unmatched, %s archived", matched, len(unmatched), archived_count)
     return summary
