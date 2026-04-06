@@ -107,21 +107,24 @@ def import_pbi_data(data: dict) -> dict:
     log_lines = []
 
     with get_db() as db:
+        # Build a lookup map: lowercase name -> (id, original name)
+        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
+        name_map = {r["name"].strip().lower(): (r["id"], r["name"]) for r in all_reports}
+
         for entry in reports_data:
             report_name = entry.get("report_name")
             if not report_name:
                 continue
 
-            row = db.execute(
-                "SELECT id FROM reports WHERE name = ?", (report_name,)
-            ).fetchone()
+            # Case-insensitive match with trimmed whitespace
+            match = name_map.get(report_name.strip().lower())
 
-            if not row:
+            if not match:
                 unmatched.append(report_name)
                 log_lines.append(f"SKIP: {report_name} (not in DB)")
                 continue
 
-            report_id = row["id"]
+            report_id = match[0]
             schedule = entry.get("schedule") or {}
             last_refresh = entry.get("last_refresh") or {}
 

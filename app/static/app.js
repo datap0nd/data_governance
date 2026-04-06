@@ -767,7 +767,6 @@ async function showReportDetail(report) {
                     <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(report.status)}</div>
                     <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner) || "-"}</span></div>
                     <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${esc(report.business_owner) || "-"}</span></div>
-                    <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${esc(report.frequency) || "-"}</span></div>
                     ${report.pbi_refresh_schedule ? `<div class="detail-item"><div class="detail-label">PBI Schedule</div><span style="color:var(--text)">${esc(report.pbi_refresh_schedule)}</span></div>` : ''}
                     ${report.pbi_refresh_status ? `<div class="detail-item"><div class="detail-label">Last Refresh</div>${report.pbi_refresh_status.toLowerCase() === 'completed' ? '<span class="badge badge-green">completed</span>' : report.pbi_refresh_status.toLowerCase() === 'failed' ? '<span class="badge badge-red">failed</span>' : statusBadge(report.pbi_refresh_status)} ${report.pbi_last_refresh_at ? `<span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.3rem">${timeAgo(report.pbi_last_refresh_at)}</span>` : ''}</div>` : ''}
                     ${report.pbi_refresh_error ? `<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Refresh Error</div><span style="color:var(--red);font-size:0.78rem">${esc(report.pbi_refresh_error)}</span></div>` : ''}
@@ -1451,20 +1450,6 @@ async function renderReports() {
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
-        { key: "frequency", label: "Frequency", render: r => {
-            const cur = r.frequency || "";
-            const curType = cur.startsWith("Monthly") ? "Monthly" : cur.startsWith("Weekly") ? "Weekly" : "";
-            const curDetail = cur.replace(/^(Weekly|Monthly) - /, "");
-            return `<span class="freq-pair" data-report-id="${r.id}">` +
-                `<select class="freq-select-inline freq-type" data-report-id="${r.id}">` +
-                `<option value="">--</option>` +
-                `<option value="Weekly"${curType === "Weekly" ? " selected" : ""}>Weekly</option>` +
-                `<option value="Monthly"${curType === "Monthly" ? " selected" : ""}>Monthly</option>` +
-                `</select>` +
-                `<select class="freq-select-inline freq-detail" data-report-id="${r.id}" ${!curType ? 'style="display:none"' : ""}>` +
-                _freqDetailOpts(curType, curDetail) +
-                `</select></span>`;
-        }},
         { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
             ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
             : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
@@ -1530,36 +1515,6 @@ function bindReportsPage() {
         });
         sel.addEventListener("click", (e) => e.stopPropagation());
     });
-    // Linked frequency dropdowns (type + detail)
-    document.querySelectorAll(".freq-type").forEach(sel => {
-        sel.addEventListener("change", (e) => {
-            e.stopPropagation();
-            const reportId = sel.dataset.reportId;
-            const detail = sel.closest(".freq-pair").querySelector(".freq-detail");
-            detail.innerHTML = _freqDetailOpts(sel.value, "");
-            detail.style.display = sel.value ? "" : "none";
-        });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
-    document.querySelectorAll(".freq-detail").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
-            e.stopPropagation();
-            const pair = sel.closest(".freq-pair");
-            const reportId = pair.dataset.reportId;
-            const type = pair.querySelector(".freq-type").value;
-            const detail = sel.value;
-            if (!type || !detail) return;
-            const freq = `${type} - ${detail}`;
-            try {
-                await apiPatch(`/api/reports/${reportId}`, { frequency: freq });
-                toast("Frequency updated");
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
-
     // Lineage button — navigate to Lineage tab with report pre-selected
     document.querySelectorAll(".btn-lineage[data-lineage-report]").forEach(btn => {
         btn.addEventListener("click", async () => {
