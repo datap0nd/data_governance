@@ -611,7 +611,7 @@ h2 {
 }
 
 table {
-    width: 100%;
+    min-width: 100%;
     border-collapse: collapse;
 }
 
@@ -621,6 +621,8 @@ th, td {
     border-bottom: 1px solid var(--border);
     font-size: 0.8rem;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 thead tr:first-child th {
@@ -679,17 +681,17 @@ tbody tr:nth-child(even) td { background: rgba(0,0,0,0.01); }
     word-break: break-all;
 }
 
-/* Column resizer */
+/* Column resizer - all columns are resizable */
 th.resizable { position: relative; }
 th .col-resizer {
     position: absolute;
     right: 0; top: 0; bottom: 0;
-    width: 4px;
+    width: 5px;
     cursor: col-resize;
     background: transparent;
-    z-index: 3;
+    z-index: 4;
 }
-th .col-resizer:hover, th .col-resizer.dragging { background: var(--accent); }
+th .col-resizer:hover, th .col-resizer.dragging { background: var(--accent); width: 3px; }
 
 /* Sortable headers */
 th.sortable {

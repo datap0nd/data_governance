@@ -135,28 +135,37 @@ function _archiveToggleHtml(page) {
 }
 function _archiveColDef(entityType) {
     return {
-        key: "_archive", label: "", filterable: false, sortable: false,
+        key: "_archive", label: "", width: COL_W.xs, filterable: false, sortable: false,
         render: item => {
             const isArchived = item.archived;
             return `<button class="btn-archive-action" data-entity-type="${entityType}" data-entity-id="${item.id}" data-archived="${isArchived ? '1' : '0'}" title="${isArchived ? 'Unarchive' : 'Archive'}" onclick="event.stopPropagation()">${isArchived ? 'Restore' : 'Archive'}</button>`;
         },
     };
 }
-function _bindArchiveButtons(reloadFn) {
-    document.querySelectorAll(".btn-archive-action").forEach(btn => {
-        btn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const entityType = btn.dataset.entityType;
-            const entityId = btn.dataset.entityId;
-            try {
-                await apiPost(`/api/archive/${entityType}/${entityId}`);
-                toast(btn.dataset.archived === "1" ? "Restored" : "Archived");
-                reloadFn();
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
+// Global event delegation for archive action buttons.
+// Bound once on document so it survives tbody rebuilds from sort/filter.
+let _archiveDelegated = false;
+function _initArchiveDelegation() {
+    if (_archiveDelegated) return;
+    _archiveDelegated = true;
+    document.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".btn-archive-action");
+        if (!btn) return;
+        e.stopPropagation();
+        const entityType = btn.dataset.entityType;
+        const entityId = btn.dataset.entityId;
+        try {
+            await apiPost(`/api/archive/${entityType}/${entityId}`);
+            toast(btn.dataset.archived === "1" ? "Restored" : "Archived");
+            if (typeof currentPage !== "undefined") navigate(currentPage);
+        } catch (err) {
+            toast("Failed: " + err.message);
+        }
     });
+}
+
+function _bindArchiveButtons(reloadFn) {
+    _initArchiveDelegation();
     const toggleBtn = document.getElementById("btn-toggle-archived");
     if (toggleBtn) {
         toggleBtn.addEventListener("click", () => {
@@ -326,6 +335,9 @@ function parseSourceName(s) {
 
 // ── DataTable ──
 
+// Standard column widths by type
+const COL_W = { xs: 50, sm: 75, md: 110, lg: 170, xl: 300 };
+
 function dataTable(tableId, columns, rows, opts) {
     window._dt = window._dt || {};
     window._dt[tableId] = { columns, rows, sortCol: null, sortDir: "asc", filters: {}, opts: opts || {} };
@@ -336,6 +348,7 @@ function _filterAndSortDT(dt) {
     const { columns, sortCol, sortDir, filters } = dt;
     let rows = dt.rows.filter(r => {
         for (const col of columns) {
+            if (col.filterable === false) continue;
             const f = (filters[col.key] || "").toLowerCase();
             if (!f) continue;
             const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
@@ -346,17 +359,25 @@ function _filterAndSortDT(dt) {
 
     if (sortCol) {
         const col = columns.find(c => c.key === sortCol);
-        rows = [...rows].sort((a, b) => {
-            let va = col && col.sortVal ? col.sortVal(a) : (a[sortCol] ?? "");
-            let vb = col && col.sortVal ? col.sortVal(b) : (b[sortCol] ?? "");
-            if (typeof va === "string") va = va.toLowerCase();
-            if (typeof vb === "string") vb = vb.toLowerCase();
-            if (va < vb) return sortDir === "asc" ? -1 : 1;
-            if (va > vb) return sortDir === "asc" ? 1 : -1;
-            return 0;
-        });
+        if (col && col.sortable !== false) {
+            rows = [...rows].sort((a, b) => {
+                let va = col.sortVal ? col.sortVal(a) : (a[sortCol] ?? "");
+                let vb = col.sortVal ? col.sortVal(b) : (b[sortCol] ?? "");
+                if (typeof va === "string") va = va.toLowerCase();
+                if (typeof vb === "string") vb = vb.toLowerCase();
+                if (va < vb) return sortDir === "asc" ? -1 : 1;
+                if (va > vb) return sortDir === "asc" ? 1 : -1;
+                return 0;
+            });
+        }
     }
     return rows;
+}
+
+function _colStyle(c) {
+    const w = c.width || 0;
+    if (!w) return "";
+    return ` style="min-width:${w}px;width:${w}px"`;
 }
 
 function _renderDT(tableId) {
@@ -372,14 +393,17 @@ function _renderDT(tableId) {
     };
 
     const headerCells = columns.map(c => {
-        const resizable = c.resizable ? ' resizable' : '';
-        const resizer = c.resizable ? '<div class="col-resizer"></div>' : '';
-        return `<th class="sortable${resizable} ${sortCol === c.key ? 'sort-' + sortDir : ''}" data-dt="${tableId}" data-col="${c.key}">${c.label}${arrow(c.key)}${resizer}</th>`;
+        const isSortable = c.sortable !== false;
+        const sortCls = isSortable ? 'sortable' : '';
+        const activeCls = isSortable && sortCol === c.key ? ' sort-' + sortDir : '';
+        const sortArrow = isSortable ? arrow(c.key) : '';
+        return `<th class="resizable ${sortCls}${activeCls}" data-dt="${tableId}" data-col="${c.key}"${_colStyle(c)}>${c.label}${sortArrow}<div class="col-resizer"></div></th>`;
     }).join("");
 
-    const filterCells = columns.map(c =>
-        `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`
-    ).join("");
+    const filterCells = columns.map(c => {
+        if (c.filterable === false) return '<th></th>';
+        return `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`;
+    }).join("");
 
     const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
     const bodyRows = rows.map((r, i) => {
@@ -406,7 +430,6 @@ function _renderDT(tableId) {
 function bindDataTables() {
     document.querySelectorAll("th.sortable[data-dt]").forEach(th => {
         th.addEventListener("click", (e) => {
-            // Don't sort when clicking resizer
             if (e.target.classList.contains("col-resizer")) return;
             const id = th.dataset.dt;
             const col = th.dataset.col;
@@ -448,7 +471,10 @@ function bindDataTables() {
         });
     });
 
-    // Column resizers
+    _bindColumnResizers();
+}
+
+function _bindColumnResizers() {
     document.querySelectorAll(".col-resizer").forEach(resizer => {
         resizer.addEventListener("mousedown", (e) => {
             e.preventDefault();
@@ -462,23 +488,19 @@ function bindDataTables() {
             resizer.classList.add("dragging");
 
             function onMouseMove(e) {
-                const newWidth = Math.max(60, startWidth + (e.pageX - startX));
+                const newWidth = Math.max(40, startWidth + (e.pageX - startX));
                 th.style.width = newWidth + "px";
                 th.style.minWidth = newWidth + "px";
-                // Also set width on filter row th and all body cells in this column
                 const filterTh = table.querySelector("tr.filter-row")?.children[colIdx];
                 if (filterTh) {
                     filterTh.style.width = newWidth + "px";
                     filterTh.style.minWidth = newWidth + "px";
                 }
-                // Update expandable cells max-width in this column
                 table.querySelectorAll("tbody tr").forEach(row => {
                     const cell = row.children[colIdx];
                     if (cell) {
                         const expandable = cell.querySelector(".cell-expandable");
-                        if (expandable) {
-                            expandable.style.maxWidth = (newWidth - 20) + "px";
-                        }
+                        if (expandable) expandable.style.maxWidth = (newWidth - 20) + "px";
                     }
                 });
             }
@@ -511,12 +533,10 @@ function _refreshDT(tableId) {
     const table = document.getElementById(tableId);
     if (!table) return;
 
-    // Filter and sort rows
     const { columns, sortCol, sortDir } = dt;
     let rows = _filterAndSortDT(dt);
     dt._displayRows = rows;
 
-    // Only replace tbody (preserves thead/filter inputs/focus)
     const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
     const bodyHTML = rows.map((r, i) =>
         `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
@@ -525,10 +545,12 @@ function _refreshDT(tableId) {
     const tbody = table.querySelector("tbody");
     if (tbody) tbody.innerHTML = bodyHTML;
 
-    // Update sort arrows in header (without replacing elements)
-    table.querySelectorAll("thead tr:first-child th.sortable").forEach(th => {
+    // Update sort arrows in header
+    table.querySelectorAll("thead tr:first-child th[data-dt]").forEach(th => {
         const col = th.dataset.col;
-        th.className = `sortable${columns.find(c => c.key === col)?.resizable ? ' resizable' : ''} ${sortCol === col ? 'sort-' + sortDir : ''}`;
+        const cDef = columns.find(c => c.key === col);
+        const isSortable = cDef && cDef.sortable !== false;
+        th.className = `resizable${isSortable ? ' sortable' : ''}${isSortable && sortCol === col ? ' sort-' + sortDir : ''}`;
         const arrow = th.querySelector(".sort-arrow");
         if (arrow) arrow.innerHTML = sortCol === col && sortDir === "desc" ? "&#9660;" : "&#9650;";
     });
@@ -1309,30 +1331,30 @@ async function renderSources() {
     });
 
     const cols = [
-        { key: "type", label: "Type", render: s => typeBadge(s.type) },
-        { key: "_shortName", label: "File / Table", render: s => `<strong>${esc(s._shortName)}</strong>`, sortVal: s => s._shortName || "" },
-        { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
-        { key: "_fullLocation", label: "Full Location", resizable: true, render: s => {
+        { key: "type", label: "Type", width: COL_W.sm, render: s => typeBadge(s.type) },
+        { key: "_shortName", label: "File / Table", width: COL_W.lg, render: s => `<strong>${esc(s._shortName)}</strong>`, sortVal: s => s._shortName || "" },
+        { key: "_folderSchema", label: "Folder / Schema", width: COL_W.md, render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
+        { key: "_fullLocation", label: "Full Location", width: COL_W.xl, render: s => {
             const loc = s._fullLocation || "-";
             const escaped = loc.replace(/"/g, '&quot;');
             return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}">${loc}</span>`;
         }, sortVal: s => s._fullLocation || "" },
-        { key: "status", label: "Status", render: s => {
+        { key: "status", label: "Status", width: COL_W.sm, render: s => {
             let b = statusBadge(s.status);
             if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
             return b;
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_at risk", outdated: "2_degraded", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
-        { key: "last_updated", label: "Last Updated", render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
-        { key: "report_count", label: "Reports", sortVal: s => s.report_count || 0 },
-        { key: "owner", label: "Owner", render: s => {
+        { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
+        { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
+        { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "linked_scripts", label: "Scripts", render: s => {
+        { key: "linked_scripts", label: "Scripts", width: COL_W.sm, render: s => {
             if (!s.linked_scripts) return '-';
             return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
         }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no" },
-        { key: "upstream_id", label: "Upstream", render: s => {
+        { key: "upstream_id", label: "Upstream", width: COL_W.md, render: s => {
             const opts = upstreams.map(u => `<option value="${u.id}"${s.upstream_id === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join("");
             return `<select class="freq-select-inline source-upstream-select" data-source-id="${s.id}"><option value="">None</option>${opts}</select>`;
         }, sortVal: s => {
@@ -1340,7 +1362,7 @@ async function renderSources() {
             const u = upstreams.find(u => u.id === s.upstream_id);
             return u ? u.name : "";
         }},
-        { key: "refresh_schedule", label: "Frequency", render: s => {
+        { key: "refresh_schedule", label: "Frequency", width: COL_W.md, render: s => {
             const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
             const current = s.refresh_schedule ? `Weekly - ${s.refresh_schedule}` : "";
             const opts = days.map(d => {
@@ -1459,23 +1481,23 @@ async function renderReports() {
     const people = options.people || [];
 
     const cols = [
-        { key: "name", label: "Report", render: r => r.powerbi_url
+        { key: "name", label: "Report", width: COL_W.lg, render: r => r.powerbi_url
             ? `<strong><a href="${r.powerbi_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
             : `<strong>${esc(r.name)}</strong>` },
-        { key: "status", label: "Status", render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
-        { key: "source_count", label: "Sources", sortVal: r => r.source_count || 0 },
-        { key: "owner", label: "Report Owner", render: r => {
+        { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
+        { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
+        { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
             const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
             const opts = biFirst.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-owner-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.owner || "" },
-        { key: "business_owner", label: "Business Owner", render: r => {
+        { key: "business_owner", label: "Business Owner", width: COL_W.md, render: r => {
             const bizFirst = [...people].sort((a, b) => a.role === "Business" && b.role !== "Business" ? -1 : a.role !== "Business" && b.role === "Business" ? 1 : 0);
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
-        { key: "pbi_refresh_schedule", label: "PBI Schedule", render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
-        { key: "pbi_refresh_status", label: "PBI Status", render: r => {
+        { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
+        { key: "pbi_refresh_status", label: "PBI Status", width: COL_W.sm, render: r => {
             if (!r.pbi_refresh_status) return '-';
             const overdue = _isPbiOverdue(r);
             if (overdue) return `<span class="badge badge-red" title="Refresh is overdue based on schedule">overdue</span>`;
@@ -1483,8 +1505,8 @@ async function renderReports() {
             const cls = s === 'completed' ? 'badge-green' : s === 'failed' ? 'badge-red' : 'badge-yellow';
             return `<span class="badge ${cls}">${esc(r.pbi_refresh_status)}</span>`;
         }, sortVal: r => _isPbiOverdue(r) ? "0_overdue" : r.pbi_refresh_status === "Failed" ? "1_failed" : "2_ok" },
-        { key: "pbi_last_refresh_at", label: "Last Refresh", render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
-        { key: "_lineage", label: "Lineage", filterable: false, sortable: false, render: r =>
+        { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
+        { key: "_lineage", label: "Lineage", width: COL_W.xs, filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
         _archiveColDef("report"),
     ];
@@ -1645,22 +1667,22 @@ async function renderScanner() {
             <div class="section">
                 <h2>Scan History</h2>
                 ${dataTable("dt-scans", [
-                    { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
-                    { key: "status", label: "Status", render: r => statusBadge(r.status) },
-                    { key: "reports_scanned", label: "Reports", render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
-                    { key: "sources_found", label: "Sources", render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
-                    { key: "new_sources", label: "New", render: r => r.new_sources ? `<span style="color:var(--green)">+${r.new_sources}</span>` : '-', sortVal: r => r.new_sources ?? 0 },
+                    { key: "started_at", label: "When", width: COL_W.md, render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
+                    { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
+                    { key: "reports_scanned", label: "Reports", width: COL_W.sm, render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
+                    { key: "sources_found", label: "Sources", width: COL_W.sm, render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
+                    { key: "new_sources", label: "New", width: COL_W.sm, render: r => r.new_sources ? `<span style="color:var(--green)">+${r.new_sources}</span>` : '-', sortVal: r => r.new_sources ?? 0 },
                 ], runs)}
             </div>
             <div class="section">
                 <h2>Probe History</h2>
                 ${probeRuns.length > 0 ? dataTable("dt-probes", [
-                    { key: "started_at", label: "When", render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
-                    { key: "status", label: "Status", render: r => statusBadge(r.status) },
-                    { key: "sources_probed", label: "Probed", render: r => `${r.sources_probed ?? "-"}` },
-                    { key: "fresh", label: "Healthy", render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
-                    { key: "stale", label: "At Risk", render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
-                    { key: "outdated", label: "Degraded", render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
+                    { key: "started_at", label: "When", width: COL_W.md, render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
+                    { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
+                    { key: "sources_probed", label: "Probed", width: COL_W.sm, render: r => `${r.sources_probed ?? "-"}` },
+                    { key: "fresh", label: "Healthy", width: COL_W.sm, render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
+                    { key: "stale", label: "At Risk", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
+                    { key: "outdated", label: "Degraded", width: COL_W.sm, render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
                 ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
             </div>
         </div>
@@ -1676,12 +1698,12 @@ async function renderAlerts() {
     window._alertOwners = owners;
 
     const cols = [
-        { key: "severity", label: "Severity", render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
-        { key: "message", label: "Message", render: a => {
+        { key: "severity", label: "Severity", width: COL_W.sm, render: a => statusBadge(a.severity), sortVal: a => ({ critical: "0_critical", warning: "1_warning" })[a.severity] ?? "2_" + a.severity },
+        { key: "message", label: "Message", width: COL_W.xl, render: a => {
             const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
             return srcShort ? `<strong>${esc(srcShort)}</strong>  - ${esc(a.message)}` : esc(a.message);
         }},
-        { key: "assigned_to", label: "Owner", render: a => {
+        { key: "assigned_to", label: "Owner", width: COL_W.md, render: a => {
             const opts = (window._alertOwners || []).map(o =>
                 `<option value="${o}"${a.assigned_to === o ? ' selected' : ''}>${o}</option>`
             ).join("");
@@ -1689,8 +1711,8 @@ async function renderAlerts() {
                 <option value="">Unassigned</option>${opts}
             </select>`;
         }, sortVal: a => a.assigned_to || "zzz_unassigned" },
-        { key: "created_at", label: "When", render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
-        { key: "resolution_status", label: "Status", render: a => {
+        { key: "created_at", label: "When", width: COL_W.md, render: a => `<span style="color:var(--text-muted)" title="${formatDate(a.created_at)}">${timeAgo(a.created_at)}</span>`, sortVal: a => a.created_at || "" },
+        { key: "resolution_status", label: "Status", width: COL_W.lg, render: a => {
             const reasonHtml = a.resolution_reason ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.2rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.resolution_reason.replace(/"/g, '&quot;')}">${a.resolution_reason}</div>` : "";
             if (a.resolution_status === "acknowledged") {
                 return `<span class="badge badge-blue">acknowledged</span> <button class="btn-sm btn-outline btn-reopen-alert" data-alert-id="${a.id}">Reopen</button>${reasonHtml}`;
@@ -2348,11 +2370,11 @@ async function renderCreate() {
     window._createOptions = options;
 
     const entryTable = customEntries.length > 0 ? dataTable("dt-custom-entries", [
-        { key: "entity_type", label: "Type", render: e => _entityTypeBadge(e.entity_type) },
-        { key: "name", label: "Name", render: e => '<strong>' + e.name + '</strong>' },
-        { key: "detail", label: "Detail", render: e => '<span style="color:var(--text-muted)">' + (e.detail || '-') + '</span>' },
-        { key: "created_at", label: "Created", render: e => '<span style="color:var(--text-muted)" title="' + formatDate(e.created_at) + '">' + timeAgo(e.created_at) + '</span>', sortVal: e => e.created_at || '' },
-        { key: "actions", label: "", render: e => `<div class="ce-actions">
+        { key: "entity_type", label: "Type", width: COL_W.sm, render: e => _entityTypeBadge(e.entity_type) },
+        { key: "name", label: "Name", width: COL_W.lg, render: e => '<strong>' + e.name + '</strong>' },
+        { key: "detail", label: "Detail", width: COL_W.xl, render: e => '<span style="color:var(--text-muted)">' + (e.detail || '-') + '</span>' },
+        { key: "created_at", label: "Created", width: COL_W.md, render: e => '<span style="color:var(--text-muted)" title="' + formatDate(e.created_at) + '">' + timeAgo(e.created_at) + '</span>', sortVal: e => e.created_at || '' },
+        { key: "actions", label: "", width: COL_W.md, filterable: false, sortable: false, render: e => `<div class="ce-actions">
             <button class="btn-sm btn-outline ce-edit-btn" data-id="${e.id}" data-type="${e.entity_type}">Edit</button>
             <button class="btn-sm btn-outline btn-danger-outline ce-delete-btn" data-id="${e.id}" data-type="${e.entity_type}">Delete</button>
         </div>` },
@@ -2700,12 +2722,12 @@ async function renderBestPractices() {
     findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
 
     const cols = [
-        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
-        { key: "report", label: "Report" },
-        { key: "owner", label: "Owner" },
-        { key: "table", label: "Table" },
-        { key: "rule", label: "Rule" },
-        { key: "issue", label: "Issue", render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
+        { key: "severity", label: "Severity", width: COL_W.sm, render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
+        { key: "report", label: "Report", width: COL_W.lg },
+        { key: "owner", label: "Owner", width: COL_W.md },
+        { key: "table", label: "Table", width: COL_W.lg },
+        { key: "rule", label: "Rule", width: COL_W.lg },
+        { key: "issue", label: "Issue", width: COL_W.xl, render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
     ];
 
     const noIssues = findings.length === 0
@@ -2767,12 +2789,12 @@ async function renderBestPractices() {
 
 function _rebuildBpTable(filtered) {
     const cols = [
-        { key: "severity", label: "Severity", render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
-        { key: "report", label: "Report" },
-        { key: "owner", label: "Owner" },
-        { key: "table", label: "Table" },
-        { key: "rule", label: "Rule" },
-        { key: "issue", label: "Issue", render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
+        { key: "severity", label: "Severity", width: COL_W.sm, render: f => _bpSevBadge(f.severity), sortVal: f => ({ high: "0_high", medium: "1_medium", low: "2_low" })[f.severity] || "3" },
+        { key: "report", label: "Report", width: COL_W.lg },
+        { key: "owner", label: "Owner", width: COL_W.md },
+        { key: "table", label: "Table", width: COL_W.lg },
+        { key: "rule", label: "Rule", width: COL_W.lg },
+        { key: "issue", label: "Issue", width: COL_W.xl, render: f => `<span style="white-space:normal;color:var(--text-secondary)">${f.issue}</span>` },
     ];
     const container = document.getElementById("bp-table-container");
     if (container) {
@@ -3239,40 +3261,40 @@ async function renderScripts() {
     const people = options.people || [];
 
     const cols = [
-        { key: "machine_alias", label: "Machine", render: s => {
+        { key: "machine_alias", label: "Machine", width: COL_W.sm, render: s => {
             const alias = s.machine_alias || s.hostname || "Local";
             return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(s.hostname || '')}">${esc(alias)}</span>`;
         }, sortVal: s => s.machine_alias || s.hostname || "" },
-        { key: "category", label: "Category", render: s => {
+        { key: "category", label: "Category", width: COL_W.sm, render: s => {
             const cat = _scriptCategory(s.path);
             const cls = _CATEGORY_COLORS[cat] || "badge-muted";
             return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
         }, sortVal: s => _scriptCategory(s.path) },
-        { key: "display_name", label: "Script", render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
-        { key: "path", label: "Path", resizable: true, render: s => {
+        { key: "display_name", label: "Script", width: COL_W.lg, render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
+        { key: "path", label: "Path", width: COL_W.xl, render: s => {
             const short = truncatePath(s.path, 60);
             const escaped = (s.path || "").replace(/"/g, '&quot;');
             return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(short)}</span>`;
         }, sortVal: s => s.path || "" },
-        { key: "owner", label: "Owner", render: s => {
+        { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "tables_written", label: "Writes To", render: s => {
+        { key: "tables_written", label: "Writes To", width: COL_W.lg, render: s => {
             if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             return s.tables_written.map(t => {
                 const c = _classifyTable(t);
                 return `<span class="badge badge-red" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
             }).join(" ");
         }, sortVal: s => (s.tables_written || []).join(",") },
-        { key: "tables_read", label: "Reads From", render: s => {
+        { key: "tables_read", label: "Reads From", width: COL_W.lg, render: s => {
             if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             return s.tables_read.map(t => {
                 const c = _classifyTable(t);
                 return `<span class="badge ${c.cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
             }).join(" ");
         }, sortVal: s => (s.tables_read || []).join(",") },
-        { key: "last_modified", label: "Modified", render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
+        { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         _archiveColDef("script"),
     ];
 
@@ -3591,41 +3613,41 @@ async function renderScheduledTasks() {
     const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
 
     const cols = [
-        { key: "machine_alias", label: "Machine", render: t => {
+        { key: "machine_alias", label: "Machine", width: COL_W.sm, render: t => {
             const alias = t.machine_alias || t.hostname || "Local";
             return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(t.hostname || '')}">${esc(alias)}</span>`;
         }, sortVal: t => t.machine_alias || t.hostname || "" },
-        { key: "category", label: "Category", render: t => {
+        { key: "category", label: "Category", width: COL_W.sm, render: t => {
             const cat = _taskCategory(t);
             const cls = _CATEGORY_COLORS[cat] || "badge-muted";
             return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
         }, sortVal: t => _taskCategory(t) },
-        { key: "task_name", label: "Task", render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
-        { key: "status", label: "Status", render: t => {
+        { key: "task_name", label: "Task", width: COL_W.xl, render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
+        { key: "status", label: "Status", width: COL_W.sm, render: t => {
             if (!t.status) return '<span style="color:var(--text-dim)">-</span>';
             const cls = t.status === "Ready" ? "badge-green" : t.status === "Running" ? "badge-yellow" : t.status === "Disabled" ? "badge-dim" : "badge-yellow";
             return `<span class="badge ${cls}">${esc(t.status)}</span>`;
         }, sortVal: t => t.status || "" },
-        { key: "last_run_time", label: "Last Run", render: t => t.last_run_time
+        { key: "last_run_time", label: "Last Run", width: COL_W.md, render: t => t.last_run_time
             ? `<span style="color:var(--text-muted)" title="${esc(t.last_run_time)}">${timeAgo(t.last_run_time)}</span>`
             : '<span style="color:var(--text-dim)">Never</span>',
           sortVal: t => t.last_run_time || "" },
-        { key: "last_result", label: "Result", render: t => {
+        { key: "last_result", label: "Result", width: COL_W.sm, render: t => {
             if (!t.last_result) return '<span style="color:var(--text-dim)">-</span>';
             const ok = t.last_result === "0";
             return `<span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'OK' : 'Failed'}</span>`;
         }, sortVal: t => t.last_result || "" },
-        { key: "next_run_time", label: "Next Run", render: t => t.next_run_time
+        { key: "next_run_time", label: "Next Run", width: COL_W.md, render: t => t.next_run_time
             ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${timeAgo(t.next_run_time)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
           sortVal: t => t.next_run_time || "" },
-        { key: "schedule_type", label: "Schedule", render: t => {
+        { key: "schedule_type", label: "Schedule", width: COL_W.sm, render: t => {
             if (!t.schedule_type) return '<span style="color:var(--text-dim)">-</span>';
             const s = t.schedule_type.toLowerCase();
             const cls = s.includes("daily") ? "badge-green" : s.includes("weekly") ? "badge-blue" : s.includes("monthly") ? "badge-yellow" : "badge-muted";
             return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(t.schedule_type)}</span>`;
         }, sortVal: t => t.schedule_type || "" },
-        { key: "script_name", label: "Linked Script", render: t => t.script_id
+        { key: "script_name", label: "Linked Script", width: COL_W.lg, render: t => t.script_id
             ? `<span class="badge badge-blue schtask-script-link" style="cursor:pointer" data-script-id="${t.script_id}">${esc(t.script_name)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
           sortVal: t => t.script_name || "" },
@@ -4510,11 +4532,11 @@ function bindTasksPage() {
 async function renderEventLog() {
     const events = await api("/api/eventlog");
     const cols = [
-        { key: "created_at", label: "When", render: e => `<span title="${esc(e.created_at || "")}">${timeAgo(e.created_at)}</span>` },
-        { key: "entity_type", label: "Type", render: e => `<span class="eventlog-type-badge type-${esc(e.entity_type)}">${esc(e.entity_type)}</span>` },
-        { key: "entity_name", label: "Entity", render: e => esc(e.entity_name) || `#${e.entity_id || "—"}` },
-        { key: "action", label: "Action", render: e => `<span class="eventlog-action action-${esc(e.action)}">${esc(e.action)}</span>` },
-        { key: "detail", label: "Detail", render: e => esc(e.detail) || "" },
+        { key: "created_at", label: "When", width: COL_W.md, render: e => `<span title="${esc(e.created_at || "")}">${timeAgo(e.created_at)}</span>` },
+        { key: "entity_type", label: "Type", width: COL_W.sm, render: e => `<span class="eventlog-type-badge type-${esc(e.entity_type)}">${esc(e.entity_type)}</span>` },
+        { key: "entity_name", label: "Entity", width: COL_W.lg, render: e => esc(e.entity_name) || `#${e.entity_id || "—"}` },
+        { key: "action", label: "Action", width: COL_W.sm, render: e => `<span class="eventlog-action action-${esc(e.action)}">${esc(e.action)}</span>` },
+        { key: "detail", label: "Detail", width: COL_W.xl, render: e => esc(e.detail) || "" },
     ];
 
     return `
