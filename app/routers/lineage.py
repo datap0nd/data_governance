@@ -159,6 +159,60 @@ def get_lineage_diagram(report_id: int):
                 for r in up_rows
             ]
 
+        # 6. Scripts that write to these sources
+        scripts = []
+        if source_ids:
+            src_ph = ",".join("?" * len(source_ids))
+            script_rows = db.execute(f"""
+                SELECT DISTINCT sc.id, sc.display_name, sc.hostname, sc.machine_alias,
+                       st.source_id
+                FROM script_tables st
+                JOIN scripts sc ON sc.id = st.script_id
+                WHERE st.direction = 'write' AND st.source_id IN ({src_ph})
+            """, source_ids).fetchall()
+            script_map = {}
+            for r in script_rows:
+                sid = r["id"]
+                if sid not in script_map:
+                    script_map[sid] = {
+                        "id": r["id"],
+                        "display_name": r["display_name"],
+                        "hostname": r["hostname"],
+                        "machine_alias": r["machine_alias"],
+                        "source_ids": [],
+                    }
+                src_id = r["source_id"]
+                if src_id not in script_map[sid]["source_ids"]:
+                    script_map[sid]["source_ids"].append(src_id)
+            scripts = list(script_map.values())
+
+        # 7. Scheduled tasks linked to these scripts
+        scheduled_tasks = []
+        script_id_list = [s["id"] for s in scripts]
+        if script_id_list:
+            task_ph = ",".join("?" * len(script_id_list))
+            task_rows = db.execute(f"""
+                SELECT id, task_name, status, last_run_time, last_result,
+                       schedule_type, enabled, script_id,
+                       hostname, machine_alias
+                FROM scheduled_tasks
+                WHERE script_id IN ({task_ph})
+            """, script_id_list).fetchall()
+            scheduled_tasks = [
+                {
+                    "id": r["id"],
+                    "task_name": r["task_name"],
+                    "status": r["status"],
+                    "last_run_time": r["last_run_time"],
+                    "last_result": r["last_result"],
+                    "schedule_type": r["schedule_type"],
+                    "enabled": bool(r["enabled"]),
+                    "script_id": r["script_id"],
+                    "machine_alias": r["machine_alias"],
+                }
+                for r in task_rows
+            ]
+
     return {
         "report": {
             "id": report["id"],
@@ -170,4 +224,6 @@ def get_lineage_diagram(report_id: int):
         "tables": tables,
         "sources": sources,
         "upstreams": upstreams,
+        "scripts": scripts,
+        "scheduled_tasks": scheduled_tasks,
     }

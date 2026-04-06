@@ -2821,7 +2821,10 @@ button.btn-danger-outline:hover {
 /* ================================================================
    Lineage Diagram
    ================================================================ */
-.lineage-controls { margin-bottom: 0.75rem; }
+.lineage-controls {
+    margin-bottom: 0.75rem;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem;
+}
 
 .lineage-dropdown {
     padding: 0.4rem 0.55rem;
@@ -2892,114 +2895,160 @@ button.btn-danger-outline:hover {
 .lineage-report-status-current { background: var(--green-bg); color: var(--green); }
 .lineage-report-owner { color: var(--text-dim); font-size: 0.75rem; }
 
-/* Vertical tier layout */
-.lineage-diagram-wrap {
-    display: flex; flex-direction: column; gap: 0;
-    overflow-y: auto; max-height: 72vh; padding-bottom: 0.5rem;
+/* Column toggle buttons */
+.lineage-col-toggles {
+    display: inline-flex; gap: 0.25rem; margin-left: 0.75rem; flex-wrap: wrap;
+}
+.lineage-col-toggle {
+    padding: 0.22rem 0.55rem; font-size: 0.7rem; font-weight: 500;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface-2); color: var(--text-muted);
+    cursor: pointer; transition: all 0.12s; font-family: inherit;
+}
+.lineage-col-toggle:hover { color: var(--text); border-color: var(--accent-border); }
+.lineage-col-toggle.active {
+    background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent);
 }
 
-.lineage-tier { margin-bottom: 0.5rem; }
-
-.lineage-tier-header {
-    font-size: 0.65rem; text-transform: uppercase;
+/* Horizontal DAG layout */
+.lin-wrap {
+    position: relative; overflow-x: auto; padding: 0.5rem 0 1rem;
+}
+.lin-grid {
+    display: grid; gap: 2rem; min-width: 700px;
+    align-items: start; position: relative;
+}
+.lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.lin-col-hdr {
+    font-size: 0.62rem; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--text-dim);
-    font-weight: 600; padding: 0.3rem 0.15rem;
+    font-weight: 600; padding-bottom: 0.3rem;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.05rem;
     display: flex; align-items: center; gap: 0.4rem;
 }
-.lineage-tier-count {
-    font-size: 0.6rem; color: var(--text-dim); font-weight: 400;
+.lin-col-cnt { font-weight: 400; }
+.lin-empty { font-size: 0.7rem; color: var(--text-dim); font-style: italic; padding: 0.3rem 0; }
+
+/* Cards (nodes) */
+.lin-card {
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); font-size: 0.73rem;
+    cursor: pointer; transition: all 0.15s; overflow: hidden;
+}
+.lin-card:hover { border-color: var(--accent); }
+.lin-card-hdr {
+    display: flex; align-items: center; gap: 0.3rem;
+    padding: 0.35rem 0.5rem; min-height: 1.9rem;
+}
+.lin-card-lbl {
+    flex: 1; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-weight: 500;
+}
+.lin-card-meta {
+    font-size: 0.6rem; color: var(--text-dim); white-space: nowrap; flex-shrink: 0;
+}
+.lin-hint { font-size: 0.6rem; color: var(--text-dim); font-style: italic; }
+
+/* Chevron for expandable cards */
+.lin-chev {
+    font-size: 0.5rem; color: var(--text-dim);
+    transition: transform 0.2s; flex-shrink: 0; width: 0.7rem; text-align: center;
+}
+.lin-card.expanded > .lin-card-hdr .lin-chev,
+.lin-card.expanded > [data-lin-toggle] .lin-chev,
+.lin-subgroup.expanded > .lin-subgroup-hdr .lin-chev { transform: rotate(90deg); }
+
+/* Expandable body */
+.lin-card-body {
+    display: none; border-top: 1px solid var(--border);
+    max-height: 280px; overflow-y: auto;
+}
+.lin-card.expanded > .lin-card-body { display: block; }
+
+/* Sub-rows (fields inside tables, visuals inside type groups) */
+.lin-subrow {
+    display: flex; align-items: center; gap: 0.3rem;
+    padding: 0.2rem 0.5rem 0.2rem 0.6rem;
+    font-size: 0.68rem; color: var(--text-secondary);
+    border-bottom: 1px solid rgba(214,211,203,0.3);
+    cursor: pointer; transition: background 0.1s;
+}
+.lin-subrow:last-child { border-bottom: none; }
+.lin-subrow:hover { background: var(--surface-2); }
+.lin-subrow-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Visual type badge */
+.lin-vtype {
+    font-size: 0.58rem; padding: 0.05rem 0.3rem;
+    border-radius: 2px; flex-shrink: 0; font-weight: 600;
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text-dim); min-width: 2.8rem; text-align: center;
 }
 
-.lineage-tier-nodes {
-    display: flex; flex-wrap: wrap; gap: 0.3rem; padding: 0.15rem 0;
+/* Field icon & badge */
+.lin-ficon { font-size: 0.55rem; color: var(--text-dim); width: 1rem; text-align: center; flex-shrink: 0; }
+.lin-fbadge {
+    font-size: 0.55rem; padding: 0.02rem 0.3rem;
+    border-radius: 2px; background: var(--purple-bg);
+    color: var(--purple); flex-shrink: 0;
 }
 
-/* Flow arrow between tiers */
-.lineage-flow-arrow {
-    display: flex; justify-content: center; padding: 0.1rem 0;
-    color: var(--text-dim); opacity: 0.35; font-size: 0.55rem;
-}
-.lineage-flow-arrow::after { content: "\25BE"; }
-
-/* Power BI section wrapper */
-.lineage-pbi-section {
-    border: 1px solid var(--accent-dim, var(--border));
-    border-radius: 6px; background: var(--surface);
-    padding: 0.6rem; margin-top: 0.15rem;
-}
-.lineage-pbi-label {
-    font-size: 0.6rem; text-transform: uppercase;
-    letter-spacing: 0.08em; color: var(--accent);
-    font-weight: 700; margin-bottom: 0.5rem;
-    padding-bottom: 0.3rem; border-bottom: 1px solid var(--border);
-}
-
-/* Nodes */
-.lineage-node {
-    padding: 0.3rem 0.45rem; border-radius: 5px;
-    border: 1px solid var(--border); background: var(--bg);
-    font-size: 0.72rem; cursor: pointer; transition: all 0.12s;
-    display: flex; align-items: flex-start; gap: 0.3rem;
-    min-height: 1.6rem; max-width: 260px;
-}
-.lineage-node:hover { border-color: var(--accent); }
-
-.lineage-node-label {
-    overflow: hidden; text-overflow: ellipsis; flex: 1;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    line-height: 1.3; max-height: 2.6em; word-break: break-word;
-}
-.lineage-table-hint { font-size: 0.62rem; color: var(--text-dim); white-space: nowrap; }
-.lineage-no-link { font-size: 0.6rem; color: var(--text-dim); font-style: italic; }
-.lineage-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 0.35em; }
-
-/* Source status */
-.lineage-node-source { border-left: 3px solid var(--text-dim); }
-.lineage-status-current { border-left-color: var(--green); }
-.lineage-status-stale { border-left-color: var(--yellow); }
-.lineage-status-error { border-left-color: var(--red); }
-
-/* Collapsible groups */
-.lineage-group {
-    margin-bottom: 0.3rem; border: 1px solid var(--border);
-    border-radius: 5px; background: var(--bg); overflow: hidden;
-}
-.lineage-group-header {
-    display: flex; align-items: center; gap: 0.35rem;
-    padding: 0.3rem 0.5rem; cursor: pointer; user-select: none;
-    font-size: 0.72rem; font-weight: 500; color: var(--text-secondary);
+/* Subgroups (visual type groups inside page cards) */
+.lin-subgroup { border-top: 1px solid var(--border); }
+.lin-subgroup:first-child { border-top: none; }
+.lin-subgroup-hdr {
+    display: flex; align-items: center; gap: 0.3rem;
+    padding: 0.25rem 0.5rem; cursor: pointer; user-select: none;
+    font-size: 0.68rem; font-weight: 500; color: var(--text-secondary);
     transition: color 0.12s;
 }
-.lineage-group-header:hover { color: var(--accent); }
-.lineage-group-chevron {
-    font-size: 0.5rem; color: var(--text-dim);
-    transition: transform 0.15s; flex-shrink: 0;
-    width: 0.7rem; text-align: center;
-}
-.lineage-group-header.expanded .lineage-group-chevron { transform: rotate(90deg); }
-.lineage-group-count {
-    font-size: 0.6rem; color: var(--text-dim); margin-left: auto;
-}
-.lineage-group-body {
-    display: none; padding: 0.2rem 0.4rem 0.4rem;
-}
-.lineage-group-body.visible {
-    display: flex; flex-wrap: wrap; gap: 0.25rem;
-}
+.lin-subgroup-hdr:hover { color: var(--accent); }
+.lin-cnt { font-size: 0.58rem; color: var(--text-dim); margin-left: auto; }
+.lin-subgroup-body { display: none; }
+.lin-subgroup.expanded > .lin-subgroup-body { display: block; }
 
-/* Page sub-labels inside visual groups */
-.lineage-page-sublabel {
-    width: 100%; font-size: 0.58rem; color: var(--text-dim);
-    text-transform: uppercase; letter-spacing: 0.04em;
-    padding: 0.2rem 0 0.05rem 0.1rem;
+/* Status dot */
+.lin-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+/* Source status indicators */
+.lin-src { border-left: 3px solid var(--text-dim); }
+.lin-st-ok { border-left-color: var(--green); }
+.lin-st-warn { border-left-color: var(--yellow); }
+.lin-st-err { border-left-color: var(--red); }
+.lin-st-off { border-left-color: var(--text-dim); opacity: 0.6; }
+
+/* Upstream card */
+.lin-upstream { background: var(--surface-2); }
+
+/* SVG edges */
+.lin-svg {
+    position: absolute; top: 0; left: 0;
+    pointer-events: none; overflow: visible;
 }
+.lin-edge {
+    fill: none; stroke: var(--border); stroke-width: 1.2; opacity: 0.18;
+    transition: all 0.2s;
+}
+.lin-edge-hl {
+    stroke: var(--accent); stroke-width: 2; opacity: 0.7;
+    stroke-dasharray: 6 3;
+    animation: lin-flow 1s linear infinite;
+}
+.lin-edge-dim { opacity: 0.04; }
+@keyframes lin-flow { to { stroke-dashoffset: -9; } }
 
 /* Highlight / dim */
-.lineage-node.lineage-highlighted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.lineage-node.lineage-dimmed { opacity: 0.2; }
-.lineage-group.lineage-dimmed { opacity: 0.25; }
+[data-lin-id].lin-highlighted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+[data-lin-id].lin-dimmed { opacity: 0.15; }
+.lin-subrow.lin-highlighted { background: var(--accent-bg); color: var(--text); opacity: 1; border-color: transparent; box-shadow: none; }
+.lin-subrow.lin-dimmed { opacity: 0.15; box-shadow: none; border-color: transparent; }
+
+/* Hint bar */
+.lin-hint-bar {
+    text-align: center; padding: 0.6rem;
+    font-size: 0.68rem; color: var(--text-dim);
+}
 
 /* ================================================================
    Kanban Board

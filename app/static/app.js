@@ -3792,18 +3792,37 @@ function bindScheduledTasksPage() {
 
 // ── Lineage Diagram ──
 
+const LINEAGE_COLS = [
+    { key: "visuals", label: "Visuals" },
+    { key: "tables", label: "Tables" },
+    { key: "sources", label: "Sources" },
+    { key: "scripts", label: "Scripts" },
+    { key: "tasks", label: "Tasks" },
+    { key: "upstreams", label: "Upstream" },
+];
+
+function _getLineageCols() {
+    try { const s = sessionStorage.getItem("lineage_cols"); if (s) return JSON.parse(s); } catch (_) {}
+    return Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
+}
+function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
+
 async function renderLineageDiagram() {
     const reports = await api("/api/reports");
+    const colState = _getLineageCols();
     return `
         <div class="page-header">
             <h2>Lineage Diagram</h2>
-            <p class="page-subtitle">Trace data flow from upstream systems to report visuals</p>
+            <p class="page-subtitle">Trace data flow from visuals to upstream systems</p>
         </div>
         <div class="lineage-controls">
             <select id="lineage-report-select" class="lineage-dropdown">
                 <option value="">Select a report...</option>
-                ${reports.map(r => `<option value="${r.id}">${r.name}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
+                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
             </select>
+            <div class="lineage-col-toggles" id="lineage-col-toggles">
+                ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
+            </div>
         </div>
         <div id="lineage-container" class="lineage-container">
             <div class="lineage-placeholder">Select a report above to view its data lineage</div>
@@ -3825,33 +3844,52 @@ function bindLineageDiagramPage() {
             '<div class="lineage-placeholder">Loading lineage...</div>';
         try {
             const data = await api(`/api/lineage/report/${id}/diagram`);
+            window._lineageData = data;
             _renderLineageDiagram(data);
         } catch (e) {
             document.getElementById("lineage-container").innerHTML =
                 `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
         }
     });
+    document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const key = btn.dataset.col;
+            const state = _getLineageCols();
+            state[key] = !state[key];
+            if (Object.values(state).filter(Boolean).length === 0) { state[key] = true; return; }
+            _setLineageCols(state);
+            btn.classList.toggle("active", state[key]);
+            if (window._lineageData) _renderLineageDiagram(window._lineageData);
+        });
+    });
+}
+
+// Visual type classification
+const _linChartTypes = new Set(["barChart","clusteredBarChart","stackedBarChart","columnChart","clusteredColumnChart","stackedColumnChart","lineChart","areaChart","lineClusteredColumnComboChart","lineStackedColumnComboChart","pieChart","donutChart","treemap","waterfallChart","funnel","ribbonChart","scatterChart","decompositionTreeVisual","gauge"]);
+const _linCardTypes = new Set(["card","multiRowCard","cardVisual","kpi"]);
+const _linSlicerTypes = new Set(["slicer","advancedSlicerVisual"]);
+const _linMatrixTypes = new Set(["tableEx","pivotTable","table"]);
+function _linCat(t) {
+    if (_linChartTypes.has(t)) return "Charts";
+    if (_linCardTypes.has(t)) return "Cards";
+    if (_linSlicerTypes.has(t)) return "Slicers";
+    if (_linMatrixTypes.has(t)) return "Tables & Matrices";
+    return "Other";
 }
 
 function _renderLineageDiagram(data) {
     const container = document.getElementById("lineage-container");
+    const colState = _getLineageCols();
+    const enabledCols = LINEAGE_COLS.filter(c => colState[c.key]).map(c => c.key);
 
-    // Build unique nodes for each column
-    const fieldMap = new Map(); // "Table.Field" -> { table, field }
-    const visualNodes = [];     // { id, type, title, fields: ["T.F", ...], page }
-
-    // Collect visuals with fields (skip empty visuals)
+    // === Process data ===
+    const visualNodes = [];
+    const fieldMap = new Map();
     for (const page of data.pages) {
         for (const v of page.visuals) {
             if (!v.fields || v.fields.length === 0) continue;
             const fieldKeys = v.fields.map(f => `${f.table}.${f.field}`);
-            visualNodes.push({
-                id: `visual-${v.visual_db_id}`,
-                type: v.visual_type,
-                title: v.title,
-                fields: fieldKeys,
-                page: page.page_name,
-            });
+            visualNodes.push({ id: `visual-${v.visual_db_id}`, type: v.visual_type, title: v.title, fields: fieldKeys, page: page.page_name });
             for (const f of v.fields) {
                 const key = `${f.table}.${f.field}`;
                 if (!fieldMap.has(key)) fieldMap.set(key, { table: f.table, field: f.field });
@@ -3859,400 +3897,297 @@ function _renderLineageDiagram(data) {
         }
     }
 
-    // Table nodes
-    const tableMap = new Map();
-    for (const t of data.tables) {
-        tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
+    // Group visuals: page -> type -> visuals
+    const pageGroups = new Map();
+    for (const v of visualNodes) {
+        if (!pageGroups.has(v.page)) pageGroups.set(v.page, new Map());
+        const cat = _linCat(v.type);
+        const pg = pageGroups.get(v.page);
+        if (!pg.has(cat)) pg.set(cat, []);
+        pg.get(cat).push(v);
     }
 
-    // Source nodes
-    const sourceMap = new Map();
-    for (const s of data.sources) {
-        sourceMap.set(s.id, s);
-    }
-
-    // Upstream nodes
-    const upstreamMap = new Map();
-    for (const u of data.upstreams) {
-        upstreamMap.set(u.id, u);
-    }
-
-    // Only keep fields that reference tables in this report
-    const fieldNodes = [];
+    // Fields grouped by table
+    const fieldsByTable = new Map();
     for (const [key, f] of fieldMap) {
-        fieldNodes.push({ id: `field-${key}`, key, table: f.table, field: f.field });
+        if (!fieldsByTable.has(f.table)) fieldsByTable.set(f.table, []);
+        fieldsByTable.get(f.table).push({ id: `field-${key}`, key, table: f.table, field: f.field });
     }
 
-    // Only keep tables referenced by fields
-    const usedTableNames = new Set(fieldNodes.map(f => f.table));
-    const tableNodes = [];
-    for (const [name, t] of tableMap) {
-        if (usedTableNames.has(name) || t.source_id) {
-            tableNodes.push({ id: `table-${name}`, name, source_id: t.source_id });
-        }
-    }
+    // Tables, sources, scripts, tasks, upstreams
+    const tableMap = new Map();
+    for (const t of data.tables) tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
+    const sourceMap = new Map();
+    for (const s of data.sources) sourceMap.set(s.id, s);
+    const scriptMap = new Map();
+    for (const s of (data.scripts || [])) scriptMap.set(s.id, s);
+    const taskMap = new Map();
+    for (const t of (data.scheduled_tasks || [])) taskMap.set(t.id, t);
+    const upstreamMap = new Map();
+    for (const u of data.upstreams) upstreamMap.set(u.id, u);
 
-    // Only keep sources referenced by tables
+    // Filter to used items only
+    const usedTableNames = new Set([...fieldMap.values()].map(f => f.table));
+    const tableNodes = [...tableMap.values()].filter(t => usedTableNames.has(t.name) || t.source_id);
     const usedSourceIds = new Set(tableNodes.map(t => t.source_id).filter(Boolean));
-    const sourceNodes = [];
-    for (const [id, s] of sourceMap) {
-        if (usedSourceIds.has(id)) sourceNodes.push(s);
-    }
-
-    // Only keep upstreams referenced by sources
+    const sourceNodes = [...sourceMap.values()].filter(s => usedSourceIds.has(s.id));
     const usedUpstreamIds = new Set(sourceNodes.map(s => s.upstream_id).filter(Boolean));
-    const upstreamNodes = [];
-    for (const [id, u] of upstreamMap) {
-        if (usedUpstreamIds.has(id)) upstreamNodes.push(u);
-    }
+    const upstreamNodes = [...upstreamMap.values()].filter(u => usedUpstreamIds.has(u.id));
+    const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => usedSourceIds.has(sid)));
+    const usedScriptIds = new Set(scriptNodes.map(s => s.id));
+    const taskNodes = [...taskMap.values()].filter(t => usedScriptIds.has(t.script_id));
 
     if (visualNodes.length === 0 && tableNodes.length === 0) {
-        container.innerHTML = '<div class="lineage-placeholder">No visual lineage data for this report. Run a scan from Admin to parse layout data.</div>';
+        container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Admin.</div>';
         return;
     }
 
-    // === Visual type classification ===
-    const _chartTypes = new Set(["barChart","clusteredBarChart","stackedBarChart","columnChart","clusteredColumnChart","stackedColumnChart","lineChart","areaChart","lineClusteredColumnComboChart","lineStackedColumnComboChart","pieChart","donutChart","treemap","waterfallChart","funnel","ribbonChart","scatterChart","decompositionTreeVisual","gauge"]);
-    const _cardTypes = new Set(["card","multiRowCard","cardVisual","kpi"]);
-    const _slicerTypes = new Set(["slicer","advancedSlicerVisual"]);
-    const _matrixTypes = new Set(["tableEx","pivotTable","table"]);
-    function _vcategory(t) {
-        if (_chartTypes.has(t)) return "Charts";
-        if (_cardTypes.has(t)) return "Cards";
-        if (_slicerTypes.has(t)) return "Slicers";
-        if (_matrixTypes.has(t)) return "Tables & Matrices";
-        return "Other";
-    }
-
-    // === Group fields by table ===
-    const fieldsByTable = new Map();
-    for (const f of fieldNodes) {
-        if (!fieldsByTable.has(f.table)) fieldsByTable.set(f.table, []);
-        fieldsByTable.get(f.table).push(f);
-    }
-
-    // === Group visuals by type category, then by page within each category ===
-    const typeCatGroups = new Map(); // category -> Map(page -> [visuals])
-    for (const v of visualNodes) {
-        const cat = _vcategory(v.type);
-        if (!typeCatGroups.has(cat)) typeCatGroups.set(cat, new Map());
-        const pages = typeCatGroups.get(cat);
-        if (!pages.has(v.page)) pages.set(v.page, []);
-        pages.get(v.page).push(v);
-    }
-
-    // === Status helpers ===
-    const statusClass = s => {
-        if (s === "current" || s === "fresh") return "lineage-status-current";
-        if (s === "stale") return "lineage-status-stale";
-        if (s === "outdated" || s === "error") return "lineage-status-error";
-        return "lineage-status-unknown";
-    };
-    const statusDot = s => {
-        const colors = { current: "var(--green)", fresh: "var(--green)", stale: "var(--yellow)", outdated: "var(--red)", error: "var(--red)" };
-        return `<span class="lineage-dot" style="background:${colors[s] || "var(--text-dim)"}"></span>`;
+    // Status helpers
+    const stCls = s => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-warn", outdated: "lin-st-err", error: "lin-st-err" }[s] || "");
+    const stDot = s => {
+        const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--yellow)", outdated: "var(--red)", error: "var(--red)" };
+        return `<span class="lin-dot" style="background:${c[s] || "var(--text-dim)"}"></span>`;
     };
 
-    // === Report header ===
-    const reportHeader = `<div class="lineage-report-header">
-        <strong>${esc(data.report.name)}</strong>
-        <span class="lineage-report-status lineage-report-status-${(data.report.status || "").replace(/\s+/g, "-")}">${data.report.status}</span>
-        ${data.report.owner ? `<span class="lineage-report-owner">${esc(data.report.owner)}</span>` : ""}
-    </div>`;
+    // === Column HTML builders ===
+    const colHtml = {};
+    const catOrder = ["Charts", "Cards", "Slicers", "Tables & Matrices", "Other"];
+    let visCount = 0;
 
-    // === TIER: Upstream Systems ===
-    let upstreamHtml = "";
-    if (upstreamNodes.length > 0) {
-        upstreamHtml = `<div class="lineage-tier">
-            <div class="lineage-tier-header">Upstream Systems <span class="lineage-tier-count">${upstreamNodes.length}</span></div>
-            <div class="lineage-tier-nodes">${upstreamNodes.map(u =>
-                `<div class="lineage-node lineage-node-upstream" data-lineage-id="upstream-${u.id}">
-                    <span class="lineage-node-label">${esc(u.name)}</span>
-                    ${u.refresh_day ? `<span class="lineage-table-hint">${u.refresh_day}</span>` : ""}
-                </div>`
-            ).join("")}</div>
-        </div><div class="lineage-flow-arrow"></div>`;
-    }
-
-    // === TIER: Data Sources ===
-    let sourcesHtml = "";
-    if (sourceNodes.length > 0) {
-        sourcesHtml = `<div class="lineage-tier">
-            <div class="lineage-tier-header">Data Sources <span class="lineage-tier-count">${sourceNodes.length}</span></div>
-            <div class="lineage-tier-nodes">${sourceNodes.map(s =>
-                `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
-                    ${statusDot(s.status)}
-                    <span class="lineage-node-label">${esc(s.name)}</span>
-                    <button class="btn-lineage-view" data-source-id="${s.id}" onclick="event.stopPropagation()">View</button>
-                </div>`
-            ).join("")}</div>
-        </div><div class="lineage-flow-arrow"></div>`;
-    }
-
-    // === POWER BI SECTION ===
-
-    // Sub-tier: Tables
-    let pbiTablesHtml = `<div class="lineage-tier">
-        <div class="lineage-tier-header">Tables <span class="lineage-tier-count">${tableNodes.length}</span></div>
-        <div class="lineage-tier-nodes">${tableNodes.map(t => {
-            const badge = t.source_id ? "" : ' <span class="lineage-no-link">no source</span>';
-            return `<div class="lineage-node lineage-node-table" data-lineage-id="${t.id}">
-                <span class="lineage-node-label">${t.name}</span>${badge}
-            </div>`;
-        }).join("")}</div>
-    </div>`;
-
-    // Sub-tier: Fields & Measures (grouped by table, collapsed)
-    let pbiFieldsHtml = "";
-    if (fieldsByTable.size > 0) {
-        let fGroups = "";
-        for (const [tbl, fields] of fieldsByTable) {
-            fGroups += `<div class="lineage-group">
-                <div class="lineage-group-header">
-                    <span class="lineage-group-chevron">&#9654;</span>
-                    <span>${tbl}</span>
-                    <span class="lineage-group-count">${fields.length}</span>
-                </div>
-                <div class="lineage-group-body">${fields.map(f =>
-                    `<div class="lineage-node lineage-node-field" data-lineage-id="${f.id}">
-                        <span class="lineage-node-label">${f.field.replace(/_/g, " ")}</span>
-                    </div>`
-                ).join("")}</div>
-            </div>`;
-        }
-        pbiFieldsHtml = `<div class="lineage-flow-arrow"></div>
-        <div class="lineage-tier">
-            <div class="lineage-tier-header">Fields & Measures <span class="lineage-tier-count">${fieldNodes.length}</span></div>
-            ${fGroups}
-        </div>`;
-    }
-
-    // Sub-tier: Visuals (grouped by type category, pages inside)
-    let pbiVisualsHtml = "";
-    if (typeCatGroups.size > 0) {
-        const catOrder = ["Charts", "Cards", "Slicers", "Tables & Matrices", "Other"];
-        let vGroups = "";
+    // -- Visuals --
+    let visH = "";
+    for (const [pageName, typeMap] of pageGroups) {
+        let pCount = 0;
+        for (const arr of typeMap.values()) pCount += arr.length;
+        visCount += pCount;
+        let typeH = "";
         for (const cat of catOrder) {
-            const pages = typeCatGroups.get(cat);
-            if (!pages) continue;
-            let totalInCat = 0;
-            for (const arr of pages.values()) totalInCat += arr.length;
-
-            let innerHtml = "";
-            const multiPage = pages.size > 1;
-            for (const [pageName, visuals] of pages) {
-                if (multiPage) innerHtml += `<div class="lineage-page-sublabel">${pageName}</div>`;
-                for (const v of visuals) {
-                    const autoLabel = v.fields.length > 0
-                        ? v.fields.slice(0, 3).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") + (v.fields.length > 3 ? ` +${v.fields.length - 3}` : "")
-                        : null;
-                    const label = v.title || autoLabel || _visualTypeLabel(v.type);
-                    innerHtml += `<div class="lineage-node lineage-node-visual" data-lineage-id="${v.id}" title="${(v.title || "").replace(/"/g, "&quot;")}">
-                        <span class="visual-type-badge">${_visualTypeLabel(v.type)}</span>
-                        <span class="lineage-node-label">${label}</span>
-                    </div>`;
-                }
+            const vs = typeMap.get(cat);
+            if (!vs) continue;
+            let vr = "";
+            for (const v of vs) {
+                const label = v.title || v.fields.slice(0, 2).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") || _visualTypeLabel(v.type);
+                vr += `<div class="lin-subrow" data-lin-id="${v.id}"><span class="lin-vtype">${_visualTypeLabel(v.type)}</span><span class="lin-subrow-label">${esc(label)}</span></div>`;
             }
-
-            vGroups += `<div class="lineage-group">
-                <div class="lineage-group-header">
-                    <span class="lineage-group-chevron">&#9654;</span>
-                    <span>${cat}</span>
-                    <span class="lineage-group-count">${totalInCat}</span>
-                </div>
-                <div class="lineage-group-body">${innerHtml}</div>
-            </div>`;
+            typeH += `<div class="lin-subgroup"><div class="lin-subgroup-hdr" data-lin-toggle><span class="lin-chev">&#9654;</span><span>${cat}</span><span class="lin-cnt">${vs.length}</span></div><div class="lin-subgroup-body">${vr}</div></div>`;
         }
-        pbiVisualsHtml = `<div class="lineage-flow-arrow"></div>
-        <div class="lineage-tier">
-            <div class="lineage-tier-header">Visuals <span class="lineage-tier-count">${visualNodes.length}</span></div>
-            ${vGroups}
-        </div>`;
+        visH += `<div class="lin-card" data-lin-id="page-${pageName.replace(/"/g, "&quot;")}"><div class="lin-card-hdr" data-lin-toggle><span class="lin-chev">&#9654;</span><span class="lin-card-lbl">${esc(pageName)}</span><span class="lin-card-meta">${pCount}</span></div><div class="lin-card-body">${typeH}</div></div>`;
+    }
+    colHtml.visuals = visH;
+
+    // -- Tables --
+    let tblH = "";
+    for (const t of tableNodes) {
+        const fields = fieldsByTable.get(t.name) || [];
+        const noSrc = t.source_id ? "" : ' <span class="lin-hint">no source</span>';
+        let fH = "";
+        if (fields.length > 0) {
+            const fRows = fields.map(f => {
+                const isMeasure = /^[A-Z]/.test(f.field) && /\s/.test(f.field);
+                return `<div class="lin-subrow" data-lin-id="${f.id}"><span class="lin-ficon">${isMeasure ? "fx" : "&#9632;"}</span><span class="lin-subrow-label">${esc(f.field)}</span>${isMeasure ? '<span class="lin-fbadge">measure</span>' : ""}</div>`;
+            }).join("");
+            fH = `<div class="lin-card-body">${fRows}</div>`;
+        }
+        tblH += `<div class="lin-card" data-lin-id="table-${t.name}"><div class="lin-card-hdr"${fields.length ? ' data-lin-toggle' : ''}>${fields.length ? '<span class="lin-chev">&#9654;</span>' : ''}<span class="lin-card-lbl">${esc(t.name)}</span>${fields.length ? `<span class="lin-card-meta">${fields.length} fields</span>` : ""}${noSrc}</div>${fH}</div>`;
+    }
+    colHtml.tables = tblH;
+
+    // -- Sources --
+    let srcH = "";
+    for (const s of sourceNodes) {
+        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span></div></div>`;
+    }
+    colHtml.sources = srcH;
+
+    // -- Scripts --
+    let scrH = "";
+    for (const s of scriptNodes) {
+        const m = s.machine_alias || s.hostname || "";
+        scrH += `<div class="lin-card" data-lin-id="script-${s.id}"><div class="lin-card-hdr"><span class="lin-card-lbl">${esc(s.display_name)}</span>${m ? `<span class="lin-card-meta">${esc(m)}</span>` : ""}</div></div>`;
+    }
+    colHtml.scripts = scrH;
+
+    // -- Tasks --
+    let tskH = "";
+    for (const t of taskNodes) {
+        const ok = t.enabled && t.last_result === "0";
+        const warn = t.enabled && t.last_result && t.last_result !== "0";
+        const cls = !t.enabled ? "lin-st-off" : warn ? "lin-st-warn" : ok ? "lin-st-ok" : "";
+        tskH += `<div class="lin-card ${cls}" data-lin-id="task-${t.id}"><div class="lin-card-hdr"><span class="lin-card-lbl">${esc(t.task_name)}</span>${t.schedule_type ? `<span class="lin-card-meta">${esc(t.schedule_type)}</span>` : ""}</div></div>`;
+    }
+    colHtml.tasks = tskH;
+
+    // -- Upstreams --
+    let upH = "";
+    for (const u of upstreamNodes) {
+        upH += `<div class="lin-card lin-upstream" data-lin-id="upstream-${u.id}"><div class="lin-card-hdr"><span class="lin-card-lbl">${esc(u.name)}</span>${u.refresh_day ? `<span class="lin-card-meta">${esc(u.refresh_day)}</span>` : ""}</div></div>`;
+    }
+    colHtml.upstreams = upH;
+
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+
+    // Build grid
+    const activeCols = enabledCols.filter(k => colHtml[k] || k === "visuals" || k === "tables");
+    const gridCols = activeCols.map(() => "minmax(150px, 1fr)").join(" ");
+    let gridH = "";
+    for (const key of activeCols) {
+        const col = LINEAGE_COLS.find(c => c.key === key);
+        const empty = !colHtml[key];
+        gridH += `<div class="lin-col" data-lin-col="${key}"><div class="lin-col-hdr">${col.label} <span class="lin-col-cnt">${colCounts[key] || 0}</span></div>${empty ? '<div class="lin-empty">None linked</div>' : colHtml[key]}</div>`;
     }
 
+    const stLabel = data.report.status || "unknown";
     container.innerHTML = `
-        ${reportHeader}
-        <div class="lineage-diagram-wrap">
-            ${upstreamHtml}
-            ${sourcesHtml}
-            <div class="lineage-pbi-section">
-                <div class="lineage-pbi-label">Power BI</div>
-                ${pbiTablesHtml}
-                ${pbiFieldsHtml}
-                ${pbiVisualsHtml}
-            </div>
+        <div class="lineage-report-header">
+            <strong>${esc(data.report.name)}</strong>
+            <span class="lineage-report-status lineage-report-status-${stLabel.replace(/\s+/g, "-")}">${stLabel}</span>
+            ${data.report.owner ? `<span class="lineage-report-owner">${esc(data.report.owner)}</span>` : ""}
         </div>
+        <div class="lin-wrap" id="lin-wrap">
+            <div class="lin-grid" id="lin-grid" style="grid-template-columns:${gridCols}">${gridH}</div>
+            <svg class="lin-svg" id="lin-svg"></svg>
+        </div>
+        <div class="lin-hint-bar">Click any node to trace its lineage. Click empty space to reset.</div>
     `;
 
-    // Build connections graph (no SVG lines)
-    const { connections, forward, backward } = _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes);
-    window._lineageFwd = forward;
-    window._lineageBwd = backward;
-
-    // Bind click interactions and group toggles
-    _bindLineageClicks();
-    _bindLineageGroups();
+    _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes);
+    setTimeout(() => { _drawLinEdges(); _bindLinInteractions(); }, 60);
 }
 
-function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes) {
-    const connections = [];
-    // Directed graphs: forward = left-to-right (visual→field→table→source→upstream)
-    //                  backward = right-to-left (upstream→source→table→field→visual)
-    const forward = new Map();
-    const backward = new Map();
-
-    function addEdge(a, b) {
-        connections.push({ from: a, to: b });
-        if (!forward.has(a)) forward.set(a, new Set());
-        forward.get(a).add(b);
-        if (!backward.has(b)) backward.set(b, new Set());
-        backward.get(b).add(a);
+function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes) {
+    const fwd = new Map(), bwd = new Map(), svgEdges = [];
+    function add(a, b, svg) {
+        if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
+        if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
+        if (svg) svgEdges.push({ from: a, to: b });
     }
-
-    // Visual -> Field
-    for (const v of visualNodes) {
-        for (const fk of v.fields) {
-            addEdge(v.id, `field-${fk}`);
-        }
+    // Visual -> Field (detail)
+    for (const v of visualNodes) for (const fk of v.fields) add(v.id, `field-${fk}`, false);
+    // Page -> Table (SVG)
+    const ptDone = new Set();
+    for (const v of visualNodes) for (const fk of v.fields) {
+        const tbl = fk.split(".")[0];
+        const k = `page-${v.page}|table-${tbl}`;
+        if (!ptDone.has(k)) { ptDone.add(k); add(`page-${v.page}`, `table-${tbl}`, true); }
     }
+    // Field -> Table (detail)
+    for (const [tbl, fields] of fieldsByTable) for (const f of fields) add(f.id, `table-${tbl}`, false);
+    // Table -> Source (SVG)
+    for (const t of tableNodes) if (t.source_id) add(`table-${t.name}`, `source-${t.source_id}`, true);
+    // Source -> Script (SVG)
+    for (const s of scriptNodes) for (const sid of (s.source_ids || [])) add(`source-${sid}`, `script-${s.id}`, true);
+    // Script -> Task (SVG)
+    for (const t of taskNodes) add(`script-${t.script_id}`, `task-${t.id}`, true);
+    // Source -> Upstream (SVG)
+    for (const s of sourceNodes) if (s.upstream_id) add(`source-${s.id}`, `upstream-${s.upstream_id}`, true);
 
-    // Field -> Table
-    const ftDone = new Set();
-    for (const f of fieldNodes) {
-        const key = `${f.id}->table-${f.table}`;
-        if (!ftDone.has(key)) {
-            ftDone.add(key);
-            addEdge(f.id, `table-${f.table}`);
-        }
-    }
-
-    // Table -> Source
-    for (const t of tableNodes) {
-        if (t.source_id) addEdge(t.id, `source-${t.source_id}`);
-    }
-
-    // Source -> Upstream
-    for (const s of sourceNodes) {
-        if (s.upstream_id) addEdge(`source-${s.id}`, `upstream-${s.upstream_id}`);
-    }
-
-    return { connections, forward, backward };
+    window._linFwd = fwd;
+    window._linBwd = bwd;
+    window._linSvgEdges = svgEdges;
 }
 
-function _bindLineageGroups() {
-    document.querySelectorAll(".lineage-group-header").forEach(header => {
-        header.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const body = header.nextElementSibling;
-            if (!body) return;
-            const isOpen = header.classList.contains("expanded");
-            if (isOpen) {
-                header.classList.remove("expanded");
-                body.classList.remove("visible");
-            } else {
-                header.classList.add("expanded");
-                body.classList.add("visible");
-            }
-        });
-    });
+function _drawLinEdges() {
+    const svg = document.getElementById("lin-svg");
+    const wrap = document.getElementById("lin-wrap");
+    if (!svg || !wrap) return;
+    const wr = wrap.getBoundingClientRect();
+    svg.innerHTML = "";
+    svg.setAttribute("width", wrap.scrollWidth);
+    svg.setAttribute("height", wrap.scrollHeight);
+    for (const e of (window._linSvgEdges || [])) {
+        const fromEl = wrap.querySelector(`[data-lin-id="${CSS.escape(e.from)}"]`);
+        const toEl = wrap.querySelector(`[data-lin-id="${CSS.escape(e.to)}"]`);
+        if (!fromEl || !toEl) continue;
+        const fc = fromEl.closest(".lin-col"), tc = toEl.closest(".lin-col");
+        if (!fc || !tc || fc.offsetParent === null || tc.offsetParent === null) continue;
+        const fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
+        if (fr.width === 0 || tr.width === 0) continue;
+        const x1 = fr.right - wr.left + wrap.scrollLeft;
+        const y1 = fr.top + fr.height / 2 - wr.top + wrap.scrollTop;
+        const x2 = tr.left - wr.left + wrap.scrollLeft;
+        const y2 = tr.top + tr.height / 2 - wr.top + wrap.scrollTop;
+        const mx = (x1 + x2) / 2;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`);
+        path.setAttribute("class", "lin-edge");
+        path.dataset.from = e.from; path.dataset.to = e.to;
+        svg.appendChild(path);
+    }
 }
 
-function _bindLineageClicks() {
-    const wrap = document.querySelector(".lineage-diagram-wrap");
+function _bindLinInteractions() {
+    const wrap = document.getElementById("lin-wrap");
     if (!wrap) return;
-
-    wrap.querySelectorAll(".lineage-node").forEach(node => {
+    // Expand/collapse
+    wrap.querySelectorAll("[data-lin-toggle]").forEach(toggle => {
+        toggle.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const card = toggle.closest(".lin-card") || toggle.closest(".lin-subgroup");
+            if (!card) return;
+            card.classList.toggle("expanded");
+            setTimeout(_drawLinEdges, 30);
+        });
+    });
+    // Click to highlight
+    wrap.querySelectorAll("[data-lin-id]").forEach(node => {
         node.addEventListener("click", (e) => {
+            if (e.target.closest("[data-lin-toggle]") && !e.target.closest(".lin-subrow")) return;
             e.stopPropagation();
-            const id = node.dataset.lineageId;
-
-            // Toggle off if already highlighted
-            if (node.classList.contains("lineage-highlighted")) {
-                _resetLineageHighlight(wrap);
-                return;
-            }
-
-            // BFS to find all connected nodes
-            const connected = _traceConnections(id);
-
-            wrap.querySelectorAll(".lineage-node").forEach(n => {
-                const isConn = connected.has(n.dataset.lineageId);
-                n.classList.toggle("lineage-highlighted", isConn);
-                n.classList.toggle("lineage-dimmed", !isConn);
+            const id = node.dataset.linId;
+            if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
+            const connected = _traceLinLineage(id);
+            wrap.querySelectorAll("[data-lin-id]").forEach(n => {
+                const c = connected.has(n.dataset.linId);
+                n.classList.toggle("lin-highlighted", c);
+                n.classList.toggle("lin-dimmed", !c);
             });
-
-            // Auto-expand collapsed groups containing highlighted nodes
-            wrap.querySelectorAll(".lineage-group").forEach(group => {
-                const hasHighlighted = group.querySelector(".lineage-node.lineage-highlighted");
-                if (hasHighlighted) {
-                    const header = group.querySelector(".lineage-group-header");
-                    const body = group.querySelector(".lineage-group-body");
-                    if (header && body && !body.classList.contains("visible")) {
-                        header.classList.add("expanded");
-                        body.classList.add("visible");
-                    }
-                }
+            wrap.querySelectorAll(".lin-edge").forEach(edge => {
+                const hit = connected.has(edge.dataset.from) && connected.has(edge.dataset.to);
+                edge.classList.toggle("lin-edge-hl", hit);
+                edge.classList.toggle("lin-edge-dim", !hit);
             });
+            // Auto-expand groups with highlighted items
+            wrap.querySelectorAll(".lin-card, .lin-subgroup").forEach(card => {
+                if (card.querySelector(".lin-highlighted")) card.classList.add("expanded");
+            });
+            setTimeout(_drawLinEdges, 40);
         });
     });
-
-    // View button on source nodes -> navigate to Sources tab and show detail
-    wrap.querySelectorAll(".btn-lineage-view").forEach(btn => {
-        btn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const sourceId = parseInt(btn.dataset.sourceId);
-            const sources = await api("/api/sources");
-            const src = sources.find(s => s.id === sourceId);
-            if (src) { await navigate("sources"); showSourceDetail(src); }
-        });
-    });
-
-    // Click empty space to reset
-    wrap.addEventListener("click", () => _resetLineageHighlight(wrap));
+    wrap.addEventListener("click", (e) => { if (!e.target.closest("[data-lin-id]")) _resetLinHL(); });
+    window._linResize = () => _drawLinEdges();
+    window.addEventListener("resize", window._linResize);
 }
 
-function _traceConnections(startId) {
-    const fwd = window._lineageFwd;
-    const bwd = window._lineageBwd;
+function _traceLinLineage(startId) {
+    const fwd = window._linFwd, bwd = window._linBwd;
     if (!fwd || !bwd) return new Set([startId]);
-
-    // Determine node type from prefix
-    const isVisual = startId.startsWith("visual-");
-    const isField = startId.startsWith("field-");
-
-    // Always trace forward (left→right: toward upstream)
     const visited = new Set();
-    const fwdQueue = [startId];
-    while (fwdQueue.length > 0) {
-        const cur = fwdQueue.shift();
-        if (visited.has(cur)) continue;
-        visited.add(cur);
-        const neighbors = fwd.get(cur);
-        if (neighbors) for (const n of neighbors) if (!visited.has(n)) fwdQueue.push(n);
-    }
-
-    // Only trace backward (right→left: toward visuals) when clicking
-    // on tables, sources, or upstreams — NOT visuals or fields
-    if (!isVisual && !isField) {
-        const bwdQueue = [startId];
-        while (bwdQueue.length > 0) {
-            const cur = bwdQueue.shift();
-            if (visited.has(cur)) continue;
-            visited.add(cur);
-            const neighbors = bwd.get(cur);
-            if (neighbors) for (const n of neighbors) if (!visited.has(n)) bwdQueue.push(n);
+    // Forward (toward upstream)
+    const q1 = [startId];
+    while (q1.length) { const c = q1.shift(); if (visited.has(c)) continue; visited.add(c); const n = fwd.get(c); if (n) for (const x of n) if (!visited.has(x)) q1.push(x); }
+    // Backward (toward visuals)
+    const q2 = [startId];
+    while (q2.length) { const c = q2.shift(); if (visited.has(c)) continue; visited.add(c); const n = bwd.get(c); if (n) for (const x of n) if (!visited.has(x)) q2.push(x); }
+    // Include parent containers
+    for (const id of [...visited]) {
+        if (id.startsWith("visual-")) {
+            const el = document.querySelector(`[data-lin-id="${CSS.escape(id)}"]`);
+            if (el) { const p = el.closest(".lin-card[data-lin-id^='page-']"); if (p) visited.add(p.dataset.linId); }
+        }
+        if (id.startsWith("field-")) {
+            const tbl = id.replace("field-", "").split(".")[0];
+            visited.add(`table-${tbl}`);
         }
     }
-
     return visited;
 }
 
-function _resetLineageHighlight(wrap) {
-    wrap.querySelectorAll(".lineage-node").forEach(n => {
-        n.classList.remove("lineage-highlighted", "lineage-dimmed");
-    });
+function _resetLinHL() {
+    const wrap = document.getElementById("lin-wrap");
+    if (!wrap) return;
+    wrap.querySelectorAll("[data-lin-id]").forEach(n => n.classList.remove("lin-highlighted", "lin-dimmed"));
+    wrap.querySelectorAll(".lin-edge").forEach(e => e.classList.remove("lin-edge-hl", "lin-edge-dim"));
 }
-
 
 
 // ── Tasks / Kanban ──
