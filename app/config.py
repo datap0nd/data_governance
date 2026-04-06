@@ -63,3 +63,11 @@ else:
 
 # Power BI workspace name for refresh schedule sync
 PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "mx executive")
+
+# PostgreSQL credentials for READ-ONLY freshness probing
+# WARNING: These credentials must ONLY be used for SELECT queries.
+# NEVER use them for INSERT, UPDATE, DELETE, DROP, or any write operation.
+PGHOST = os.environ.get("PGHOST", "")
+PGUSER = os.environ.get("PGUSER", "")
+PGPASSWORD = os.environ.get("PGPASSWORD", "")
+PGDATABASE = os.environ.get("PGDATABASE", "postgres")

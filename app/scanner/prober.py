@@ -1,16 +1,22 @@
 """
-Source prober — checks freshness of data sources.
+Source prober - checks freshness of data sources.
 
 Supports:
 1. File-based sources (CSV, Excel): checks file modification time at the path
-2. PostgreSQL/DB sources: marked as unknown (no direct connection)
+2. PostgreSQL sources: READ-ONLY queries against pg_stat_user_tables
+
+WARNING: PostgreSQL probing uses PGUSER/PGPASSWORD/PGHOST environment variables.
+These credentials must ONLY be used for SELECT queries.
+NEVER use them for INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE,
+or ANY other write/DDL operation. This is a strict, non-negotiable constraint.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.config import BASE_DIR
+from app.config import BASE_DIR, PGHOST, PGUSER, PGPASSWORD, PGDATABASE
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -21,6 +27,9 @@ STALE_MAX_DAYS = 90
 
 # Source types that reference local/network files
 FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
+
+# PostgreSQL source types
+PG_SOURCE_TYPES = {"postgresql"}
 
 
 def _compute_status(last_activity_str: str | None,
@@ -71,7 +80,7 @@ def _find_file(file_path: str) -> Path | None:
     if p.exists():
         return p
 
-    # Extract filename — handle both Unix and Windows path separators
+    # Extract filename - handle both Unix and Windows path separators
     # On Linux, Path("C:\Data\file.xlsx").name returns the whole string with backslashes
     name = file_path.replace("\\", "/").split("/")[-1]
 
@@ -96,7 +105,7 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
     """
     p = _find_file(file_path)
     if not p:
-        # File not accessible — mark as unknown (can't determine freshness)
+        # File not accessible - mark as unknown (can't determine freshness)
         db.execute(
             "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
             (source_id, now, f"File not accessible: {file_path}"),
@@ -111,6 +120,175 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
         (source_id, now, mod_time.isoformat(), status, f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"),
     )
     return status
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL probing - READ-ONLY
+#
+# WARNING: All queries below are strictly SELECT-only.
+# NEVER add INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, or TRUNCATE here.
+# This constraint is non-negotiable. The credentials used here may have
+# write access but this tool must NEVER exercise it.
+# ---------------------------------------------------------------------------
+
+def _get_pg_connection():
+    """Get a PostgreSQL connection using environment credentials.
+
+    Returns None if credentials are not configured.
+    Connection is opened in READ-ONLY mode via SET default_transaction_read_only.
+    """
+    if not PGHOST or not PGUSER or not PGPASSWORD:
+        return None
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=PGHOST,
+            user=PGUSER,
+            password=PGPASSWORD,
+            database=PGDATABASE,
+            connect_timeout=10,
+        )
+        # Force read-only at the session level as an extra safeguard
+        conn.set_session(readonly=True, autocommit=True)
+        return conn
+    except Exception as e:
+        logger.warning("PostgreSQL connection failed: %s", e)
+        return None
+
+
+def _parse_pg_table_ref(connection_info: str, source_name: str):
+    """Parse schema and table name from a source's connection_info or name.
+
+    connection_info is typically: server/database/schema.table
+    source_name is typically: server/database/schema.table
+
+    Returns (schema, table) or None if unparseable.
+    """
+    ref = connection_info or source_name or ""
+    # Extract the last segment which should be schema.table
+    parts = ref.replace("\\", "/").split("/")
+    if not parts:
+        return None
+
+    table_part = parts[-1]  # e.g. "bi_reporting.daily_sales"
+    if "." in table_part:
+        schema, table = table_part.split(".", 1)
+        return (schema.strip(), table.strip())
+
+    # No schema prefix - try as public.table
+    if table_part.strip():
+        return ("public", table_part.strip())
+
+    return None
+
+
+def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
+    """Probe PostgreSQL sources by checking pg_stat_user_tables.
+
+    READ-ONLY: Only SELECT queries are used. No data is modified in PostgreSQL.
+
+    Returns dict of status counts.
+    """
+    statuses = {"fresh": 0, "stale": 0, "outdated": 0, "unknown": 0}
+    pg_conn = _get_pg_connection()
+
+    if pg_conn is None:
+        # No PG credentials - mark all as unknown
+        for src in pg_sources:
+            db.execute(
+                "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+                (src["id"], now, "PostgreSQL credentials not configured"),
+            )
+            statuses["unknown"] += 1
+            short = src["name"].replace("\\", "/").split("/")[-1]
+            log_lines.append(f"PG: {short} - unknown (no credentials)")
+        return statuses
+
+    try:
+        pg_cur = pg_conn.cursor()
+
+        for src in pg_sources:
+            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            sm = src["custom_stale_days"] or STALE_MAX_DAYS
+            parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
+
+            if not parsed:
+                db.execute(
+                    "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+                    (src["id"], now, f"Cannot parse table reference: {src['connection_info']}"),
+                )
+                statuses["unknown"] += 1
+                short = src["name"].replace("\\", "/").split("/")[-1]
+                log_lines.append(f"PG: {short} - unknown (bad ref)")
+                continue
+
+            schema, table = parsed
+            short = f"{schema}.{table}"
+
+            try:
+                # READ-ONLY: SELECT from pg_stat_user_tables for activity timestamps
+                pg_cur.execute(
+                    """SELECT last_analyze, last_autoanalyze,
+                              last_vacuum, last_autovacuum,
+                              n_tup_ins, n_tup_upd, n_tup_del,
+                              n_live_tup
+                       FROM pg_stat_user_tables
+                       WHERE schemaname = %s AND relname = %s""",
+                    (schema, table),
+                )
+                row = pg_cur.fetchone()
+
+                if not row:
+                    db.execute(
+                        "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+                        (src["id"], now, f"Table not found in pg_stat: {short}"),
+                    )
+                    statuses["unknown"] += 1
+                    log_lines.append(f"PG: {short} - unknown (not in pg_stat)")
+                    continue
+
+                last_analyze, last_autoanalyze, last_vacuum, last_autovacuum, n_ins, n_upd, n_del, n_live = row
+
+                # Pick the most recent activity timestamp
+                timestamps = [t for t in [last_analyze, last_autoanalyze, last_vacuum, last_autovacuum] if t]
+                if timestamps:
+                    latest = max(timestamps)
+                    if latest.tzinfo is None:
+                        latest = latest.replace(tzinfo=timezone.utc)
+                    latest_iso = latest.isoformat()
+                    status = _compute_status(latest_iso, fm, sm)
+                    msg = f"PG last activity: {latest.strftime('%Y-%m-%d %H:%M')} ({n_live:,} rows)"
+                    db.execute(
+                        "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
+                        (src["id"], now, latest_iso, n_live, status, msg),
+                    )
+                else:
+                    # Table exists but no activity timestamps
+                    status = "unknown"
+                    msg = f"PG table exists but no activity timestamps ({n_live:,} rows)"
+                    db.execute(
+                        "INSERT INTO source_probes (source_id, probed_at, row_count, status, message) VALUES (?, ?, ?, 'unknown', ?)",
+                        (src["id"], now, n_live, msg),
+                    )
+
+                statuses[status] = statuses.get(status, 0) + 1
+                _create_action_and_alert(db, src["id"], status, now, fm, sm)
+                log_lines.append(f"PG: {short} - {status} ({msg})")
+
+            except Exception as e:
+                logger.warning("PG probe failed for %s: %s", short, e)
+                db.execute(
+                    "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+                    (src["id"], now, f"Query failed: {e}"),
+                )
+                statuses["unknown"] += 1
+                log_lines.append(f"PG: {short} - unknown (error: {e})")
+
+    finally:
+        pg_conn.close()
+
+    return statuses
 
 
 def _create_action_and_alert(db, source_id: int, status: str, now: str,
@@ -183,13 +361,15 @@ def run_probe() -> dict:
     """Probe all sources for freshness.
 
     1. File-based sources (Excel): check file modification time
-    2. DB sources (PostgreSQL, etc.): mark as unknown (no direct connection)
+    2. PostgreSQL sources: READ-ONLY query against pg_stat_user_tables
+    3. Other DB sources: mark as unknown (no direct connection)
 
     Returns a summary dict.
     """
     now = datetime.now(timezone.utc).isoformat()
     probed = 0
     file_probed = 0
+    pg_probed = 0
     skipped = 0
     statuses = {"fresh": 0, "stale": 0, "outdated": 0, "unknown": 0}
     log_lines = []
@@ -210,14 +390,25 @@ def run_probe() -> dict:
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
-            log_lines.append(f"FILE: {short} → {status}")
+            log_lines.append(f"FILE: {short} - {status}")
 
-        # 2. Mark DB sources not yet probed this run as unknown
-        #    (PostgreSQL not matched by CSV, SQL Server, etc. - no direct connection)
+        # 2. Probe PostgreSQL sources (READ-ONLY)
+        pg_sources = db.execute(
+            "SELECT id, name, type, connection_info, custom_fresh_days, custom_stale_days FROM sources WHERE type = 'postgresql'"
+        ).fetchall()
+
+        if pg_sources:
+            pg_statuses = _probe_pg_sources(db, pg_sources, now, log_lines)
+            for k, v in pg_statuses.items():
+                statuses[k] = statuses.get(k, 0) + v
+            pg_probed = len(pg_sources)
+            probed += pg_probed
+
+        # 3. Mark remaining DB sources (non-file, non-PG) as unknown
         unprobed_db = db.execute(
             """SELECT s.id, s.name, s.type
                FROM sources s
-               WHERE s.type NOT IN ('csv', 'excel', 'folder')
+               WHERE s.type NOT IN ('csv', 'excel', 'folder', 'postgresql')
                AND NOT EXISTS (
                    SELECT 1 FROM source_probes sp
                    WHERE sp.source_id = s.id AND sp.probed_at = ?
@@ -254,6 +445,7 @@ def run_probe() -> dict:
         "probed_at": now,
         "probed": probed,
         "file_probed": file_probed,
+        "pg_probed": pg_probed,
         "skipped": skipped,
         "statuses": statuses,
         "status": "completed",
@@ -261,6 +453,3 @@ def run_probe() -> dict:
     }
     logger.info("Probe completed: %s", summary)
     return summary
-
-
-

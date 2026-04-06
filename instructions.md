@@ -71,7 +71,20 @@ Place in the project root (next to `governance.db`, one level above the code fol
 ## Data source freshness
 
 - **File sources** (CSV, Excel): probed by checking the file's last modified time at the path extracted from the Power BI report. Paths must be accessible from this machine.
-- **Database sources** (PostgreSQL, SQL Server): simulated. No database connection is attempted.
+- **PostgreSQL sources**: probed by connecting to the database and reading `pg_stat_user_tables` for activity timestamps. Requires `PGHOST`, `PGUSER`, `PGPASSWORD` environment variables (set in `setup.ps1`).
+- **Other database sources** (SQL Server, etc.): marked as unknown. No connection attempted.
+
+## PostgreSQL connection - READ-ONLY CONSTRAINT
+
+**WARNING: The PostgreSQL credentials configured in this tool must ONLY be used for READ operations (SELECT queries). NEVER use them for INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE, or any other write/DDL operation. This is a strict, non-negotiable constraint.**
+
+Environment variables:
+- `PGHOST` - PostgreSQL server IP/hostname
+- `PGUSER` - PostgreSQL username
+- `PGPASSWORD` - PostgreSQL password
+- `PGDATABASE` - Database name (default: `postgres`)
+
+The prober enforces read-only at the connection level via `SET default_transaction_read_only = ON`. Even so, the code must never contain any write queries against PostgreSQL. All probing is done via `pg_stat_user_tables` metadata only.
 
 ## Running manually (without the service)
 
