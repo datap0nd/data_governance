@@ -3196,12 +3196,12 @@ function _scriptCategory(path) {
     if (p.includes("/data to sql/")) return "Data to SQL";
     if (p.includes("/psi/") || p.includes("/psi warning") || p.includes("/sql data/")) return "PSI";
     if (p.includes("/excel upload to sql") || p.includes("/menarhq")) return "Excel Upload";
-    // Fallback: use first folder after Desktop
+    // Fallback: use first meaningful folder after Desktop (or Users/*/Desktop)
     const parts = p.split("/");
     const dIdx = parts.findIndex(s => s === "desktop");
     if (dIdx >= 0 && parts.length > dIdx + 1) {
         const folder = parts[dIdx + 1];
-        if (folder && folder.length > 1) return folder.charAt(0).toUpperCase() + folder.slice(1);
+        if (folder && folder.length > 1 && folder !== "(general)") return folder.charAt(0).toUpperCase() + folder.slice(1);
     }
     return "Other";
 }

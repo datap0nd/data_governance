@@ -24,11 +24,21 @@ if not os.path.isabs(_tmdl_root_raw):
 TMDL_ROOT = _tmdl_root_raw
 
 
-# Folder where Python scripts live (shared drive or fallback to test data)
-_default_scripts = r"\\MX-SHARE\Users\METOMX\Desktop"
-if not os.path.isdir(_default_scripts):
-    _default_scripts = str(BASE_DIR / "test_data" / "scripts")
-SCRIPTS_PATH = os.environ.get("DG_SCRIPTS_PATH", _default_scripts)
+# Folders where Python scripts live (semicolon-separated for multiple paths)
+_default_script_paths = [
+    r"\\MX-SHARE\Users\METOMX\Desktop",
+    r"\\MX-SHARE\Users\meto.mx\Desktop",
+    r"\\METO-MX02\Users\METOMX\Desktop",
+]
+_env_scripts = os.environ.get("DG_SCRIPTS_PATH", "")
+if _env_scripts:
+    SCRIPTS_PATHS = [p.strip() for p in _env_scripts.split(";") if p.strip()]
+else:
+    # Use defaults, filtering to those that actually exist
+    _existing = [p for p in _default_script_paths if os.path.isdir(p)]
+    SCRIPTS_PATHS = _existing if _existing else [str(BASE_DIR / "test_data" / "scripts")]
+# Keep single-path compat
+SCRIPTS_PATH = SCRIPTS_PATHS[0] if SCRIPTS_PATHS else str(BASE_DIR / "test_data" / "scripts")
 
 # How often to run scheduled scans and checks (in hours)
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))

@@ -11,7 +11,7 @@ Script runner - orchestrates script scanning and database storage.
 import logging
 from datetime import datetime, timezone
 
-from app.config import SCRIPTS_PATH
+from app.config import SCRIPTS_PATH, SCRIPTS_PATHS
 from app.database import get_db
 from app.scanner.script_scanner import walk_scripts
 
@@ -36,17 +36,22 @@ def _match_source(db, table_name: str) -> int | None:
 def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
     """Run a full script scan and store results.
 
+    Scans all configured paths (SCRIPTS_PATHS) unless a single path is given.
     *on_progress* is an optional callback(message: str) for live logging.
     Returns a summary dict with scan statistics.
     """
-    root = scripts_path or SCRIPTS_PATH
+    roots = [scripts_path] if scripts_path else SCRIPTS_PATHS
     now = datetime.now(timezone.utc).isoformat()
 
     if on_progress:
-        on_progress(f"Starting script scan: {root}")
+        on_progress(f"Starting script scan across {len(roots)} path(s)")
 
     try:
-        results = walk_scripts(root, on_progress=on_progress)
+        results = []
+        for root in roots:
+            if on_progress:
+                on_progress(f"Scanning: {root}")
+            results.extend(walk_scripts(root, on_progress=on_progress))
 
         if on_progress:
             on_progress(f"Storing {len(results)} scripts in database...")
@@ -120,7 +125,7 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
             "scripts_updated": scripts_updated,
             "scripts_total": len(results),
             "tables_linked": tables_linked,
-            "scanned_path": root,
+            "scanned_paths": roots,
         }
         logger.info("Script scan completed: %s", summary)
         return summary
