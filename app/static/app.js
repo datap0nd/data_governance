@@ -3887,10 +3887,9 @@ function _renderLineageDiagram(data) {
     const fieldMap = new Map();
     for (const page of data.pages) {
         for (const v of page.visuals) {
-            if (!v.fields || v.fields.length === 0) continue;
-            const fieldKeys = v.fields.map(f => `${f.table}.${f.field}`);
+            const fieldKeys = (v.fields || []).map(f => `${f.table}.${f.field}`);
             visualNodes.push({ id: `visual-${v.visual_db_id}`, type: v.visual_type, title: v.title, fields: fieldKeys, page: page.page_name });
-            for (const f of v.fields) {
+            for (const f of (v.fields || [])) {
                 const key = `${f.table}.${f.field}`;
                 if (!fieldMap.has(key)) fieldMap.set(key, { table: f.table, field: f.field });
             }
@@ -3966,7 +3965,7 @@ function _renderLineageDiagram(data) {
             if (!vs) continue;
             let vr = "";
             for (const v of vs) {
-                const label = v.title || v.fields.slice(0, 2).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") || _visualTypeLabel(v.type);
+                const label = v.title || (v.fields.length > 0 ? v.fields.slice(0, 2).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") : "") || _visualTypeLabel(v.type);
                 vr += `<div class="lin-subrow" data-lin-id="${v.id}"><span class="lin-vtype">${_visualTypeLabel(v.type)}</span><span class="lin-subrow-label">${esc(label)}</span></div>`;
             }
             typeH += `<div class="lin-subgroup"><div class="lin-subgroup-hdr" data-lin-toggle><span class="lin-chev">&#9654;</span><span>${cat}</span><span class="lin-cnt">${vs.length}</span></div><div class="lin-subgroup-body">${vr}</div></div>`;
@@ -4162,12 +4161,13 @@ function _traceLinLineage(startId) {
     const fwd = window._linFwd, bwd = window._linBwd;
     if (!fwd || !bwd) return new Set([startId]);
     const visited = new Set();
-    // Forward (toward upstream)
+    // Forward (toward upstream/right)
     const q1 = [startId];
     while (q1.length) { const c = q1.shift(); if (visited.has(c)) continue; visited.add(c); const n = fwd.get(c); if (n) for (const x of n) if (!visited.has(x)) q1.push(x); }
-    // Backward (toward visuals)
+    // Backward (toward visuals/left) - separate seen set so startId gets reprocessed
+    const bwdSeen = new Set();
     const q2 = [startId];
-    while (q2.length) { const c = q2.shift(); if (visited.has(c)) continue; visited.add(c); const n = bwd.get(c); if (n) for (const x of n) if (!visited.has(x)) q2.push(x); }
+    while (q2.length) { const c = q2.shift(); if (bwdSeen.has(c)) continue; bwdSeen.add(c); visited.add(c); const n = bwd.get(c); if (n) for (const x of n) if (!bwdSeen.has(x)) q2.push(x); }
     // Include parent containers
     for (const id of [...visited]) {
         if (id.startsWith("visual-")) {
