@@ -1574,25 +1574,49 @@ function bindReportsPage() {
     });
     _bindArchiveButtons(() => navigate("reports"));
 
-    // Sync PBI button
+    // Sync PBI button - launches PS1 in user's session, then polls for results
     const btnPbi = document.getElementById("btn-pbi-sync");
     if (btnPbi) {
         btnPbi.addEventListener("click", async () => {
             btnPbi.disabled = true;
-            btnPbi.textContent = "Syncing PBI...";
+            btnPbi.textContent = "Launching...";
             try {
                 const result = await apiPost("/api/scanner/pbi-sync");
-                if (result.status === "completed") {
-                    toast(`PBI sync: ${result.matched} matched, ${result.unmatched.length} unmatched`);
-                    navigate("reports");
+                if (result.status === "launched") {
+                    toast("PBI sync launched - check the PowerShell window on your desktop");
+                    btnPbi.textContent = "Waiting for sync...";
+                    // Poll until the PS1 script POSTs back (check updated_at on reports)
+                    let attempts = 0;
+                    const poll = setInterval(async () => {
+                        attempts++;
+                        if (attempts > 60) { // 2 minutes max
+                            clearInterval(poll);
+                            btnPbi.disabled = false;
+                            btnPbi.textContent = "Sync PBI";
+                            return;
+                        }
+                        try {
+                            const reports = await api("/api/reports");
+                            const hasPbi = reports.some(r => r.pbi_refresh_status);
+                            if (hasPbi && attempts > 3) {
+                                clearInterval(poll);
+                                toast("PBI sync complete - refreshing reports");
+                                btnPbi.disabled = false;
+                                btnPbi.textContent = "Sync PBI";
+                                navigate("reports");
+                            }
+                        } catch (_) {}
+                    }, 2000);
                 } else {
                     toast("PBI sync: " + (result.message || result.status));
+                    btnPbi.disabled = false;
+                    btnPbi.textContent = "Sync PBI";
                 }
             } catch (err) {
                 toast("PBI sync failed: " + err.message);
+                btnPbi.disabled = false;
+                btnPbi.textContent = "Sync PBI";
             }
-            btnPbi.disabled = false;
-            btnPbi.textContent = "Sync PBI";
         });
     }
 }

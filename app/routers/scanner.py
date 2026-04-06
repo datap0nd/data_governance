@@ -1,11 +1,11 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe, probe_debug
-from app.scanner.pbi_sync import run_pbi_sync
+from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 
 @router.post("/run")
-def trigger_scan():
+def do_scan():
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
     result = run_scan()
     # After scan, probe sources for freshness
@@ -25,9 +25,9 @@ def trigger_scan():
     except Exception as e:
         logger.exception("Probe failed after scan")
         result["probe"] = {"status": "failed", "error": str(e)}
-    # After probe, sync PBI refresh schedules
+    # After probe, launch PBI sync in user's session
     try:
-        pbi_result = run_pbi_sync()
+        pbi_result = trigger_pbi_sync()
         result["pbi_sync"] = pbi_result
     except Exception as e:
         logger.exception("PBI sync failed after scan")
@@ -36,7 +36,7 @@ def trigger_scan():
 
 
 @router.post("/probe")
-def trigger_probe():
+def do_probe():
     """Probe all sources for freshness (file mod times, PostgreSQL CSV, etc.)."""
     return run_probe()
 
@@ -58,9 +58,16 @@ def list_probe_runs():
 
 
 @router.post("/pbi-sync")
-def trigger_pbi_sync():
-    """Sync Power BI refresh schedules and status from PBI Service."""
-    return run_pbi_sync()
+def do_pbi_sync():
+    """Launch PBI sync in the user's interactive session."""
+    return trigger_pbi_sync()
+
+
+@router.post("/pbi-import")
+async def do_pbi_import(request: Request):
+    """Receive PBI data from the PS1 script and update the DB."""
+    data = await request.json()
+    return import_pbi_data(data)
 
 
 @router.get("/runs", response_model=list[ScanRunOut])
