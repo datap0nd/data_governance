@@ -3911,120 +3911,187 @@ function _renderLineageDiagram(data) {
         return;
     }
 
-    // Group visuals by page
-    const pageGroups = new Map();
-    for (const v of visualNodes) {
-        if (!pageGroups.has(v.page)) pageGroups.set(v.page, []);
-        pageGroups.get(v.page).push(v);
+    // === Visual type classification ===
+    const _chartTypes = new Set(["barChart","clusteredBarChart","stackedBarChart","columnChart","clusteredColumnChart","stackedColumnChart","lineChart","areaChart","lineClusteredColumnComboChart","lineStackedColumnComboChart","pieChart","donutChart","treemap","waterfallChart","funnel","ribbonChart","scatterChart","decompositionTreeVisual","gauge"]);
+    const _cardTypes = new Set(["card","multiRowCard","cardVisual","kpi"]);
+    const _slicerTypes = new Set(["slicer","advancedSlicerVisual"]);
+    const _matrixTypes = new Set(["tableEx","pivotTable","table"]);
+    function _vcategory(t) {
+        if (_chartTypes.has(t)) return "Charts";
+        if (_cardTypes.has(t)) return "Cards";
+        if (_slicerTypes.has(t)) return "Slicers";
+        if (_matrixTypes.has(t)) return "Tables & Matrices";
+        return "Other";
     }
 
-    // Build HTML
+    // === Group fields by table ===
+    const fieldsByTable = new Map();
+    for (const f of fieldNodes) {
+        if (!fieldsByTable.has(f.table)) fieldsByTable.set(f.table, []);
+        fieldsByTable.get(f.table).push(f);
+    }
+
+    // === Group visuals by type category, then by page within each category ===
+    const typeCatGroups = new Map(); // category -> Map(page -> [visuals])
+    for (const v of visualNodes) {
+        const cat = _vcategory(v.type);
+        if (!typeCatGroups.has(cat)) typeCatGroups.set(cat, new Map());
+        const pages = typeCatGroups.get(cat);
+        if (!pages.has(v.page)) pages.set(v.page, []);
+        pages.get(v.page).push(v);
+    }
+
+    // === Status helpers ===
     const statusClass = s => {
         if (s === "current" || s === "fresh") return "lineage-status-current";
         if (s === "stale") return "lineage-status-stale";
         if (s === "outdated" || s === "error") return "lineage-status-error";
         return "lineage-status-unknown";
     };
-
     const statusDot = s => {
         const colors = { current: "var(--green)", fresh: "var(--green)", stale: "var(--yellow)", outdated: "var(--red)", error: "var(--red)" };
-        const c = colors[s] || "var(--text-dim)";
-        return `<span class="lineage-dot" style="background:${c}"></span>`;
+        return `<span class="lineage-dot" style="background:${colors[s] || "var(--text-dim)"}"></span>`;
     };
 
-    // Visuals column
-    let visualsHtml = '<div class="lineage-col" data-col="visuals"><div class="lineage-col-header">Visuals</div>';
-    for (const [pageName, visuals] of pageGroups) {
-        visualsHtml += `<div class="lineage-page-group"><div class="lineage-page-label">${pageName}</div>`;
-        for (const v of visuals) {
-            const autoLabel = v.fields.length > 0 ? v.fields.slice(0, 3).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") + (v.fields.length > 3 ? ` +${v.fields.length - 3}` : "") : null;
-            const label = v.title || autoLabel || _visualTypeLabel(v.type);
-            visualsHtml += `<div class="lineage-node lineage-node-visual" data-lineage-id="${v.id}" title="${(v.title || "").replace(/"/g, "&quot;")}">
-                <span class="visual-type-badge">${_visualTypeLabel(v.type)}</span>
-                <span class="lineage-node-label">${label}</span>
-            </div>`;
-        }
-        visualsHtml += '</div>';
-    }
-    visualsHtml += '</div>';
-
-    // Fields column
-    let fieldsHtml = '<div class="lineage-col" data-col="fields"><div class="lineage-col-header">Fields / Measures</div>';
-    for (const f of fieldNodes) {
-        fieldsHtml += `<div class="lineage-node lineage-node-field" data-lineage-id="${f.id}">
-            <span class="lineage-node-label">${f.field.replace(/_/g, " ")}</span>
-            <span class="lineage-table-hint">${f.table}</span>
-        </div>`;
-    }
-    fieldsHtml += '</div>';
-
-    // Tables column
-    let tablesHtml = '<div class="lineage-col" data-col="tables"><div class="lineage-col-header">Tables</div>';
-    for (const t of tableNodes) {
-        const srcBadge = t.source_id ? "" : ' <span class="lineage-no-link">no source</span>';
-        tablesHtml += `<div class="lineage-node lineage-node-table" data-lineage-id="${t.id}">
-            <span class="lineage-node-label">${t.name}</span>${srcBadge}
-        </div>`;
-    }
-    tablesHtml += '</div>';
-
-    // Sources column
-    let sourcesHtml = '<div class="lineage-col" data-col="sources"><div class="lineage-col-header">Sources</div>';
-    for (const s of sourceNodes) {
-        sourcesHtml += `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
-            ${statusDot(s.status)}
-            <span class="lineage-node-label">${esc(s.name)}</span>
-            <button class="btn-lineage-view" data-source-id="${s.id}" onclick="event.stopPropagation()">View</button>
-        </div>`;
-    }
-    sourcesHtml += '</div>';
-
-    // Upstream column
-    let upstreamHtml = '<div class="lineage-col" data-col="upstreams"><div class="lineage-col-header">Upstream Systems</div>';
-    for (const u of upstreamNodes) {
-        upstreamHtml += `<div class="lineage-node lineage-node-upstream" data-lineage-id="upstream-${u.id}">
-            <span class="lineage-node-label">${u.name}</span>
-            <span class="lineage-table-hint">${u.refresh_day || ""}</span>
-        </div>`;
-    }
-    upstreamHtml += '</div>';
-
-    // Report header
+    // === Report header ===
     const reportHeader = `<div class="lineage-report-header">
         <strong>${esc(data.report.name)}</strong>
         <span class="lineage-report-status lineage-report-status-${(data.report.status || "").replace(/\s+/g, "-")}">${data.report.status}</span>
         ${data.report.owner ? `<span class="lineage-report-owner">${esc(data.report.owner)}</span>` : ""}
     </div>`;
 
+    // === TIER: Upstream Systems ===
+    let upstreamHtml = "";
+    if (upstreamNodes.length > 0) {
+        upstreamHtml = `<div class="lineage-tier">
+            <div class="lineage-tier-header">Upstream Systems <span class="lineage-tier-count">${upstreamNodes.length}</span></div>
+            <div class="lineage-tier-nodes">${upstreamNodes.map(u =>
+                `<div class="lineage-node lineage-node-upstream" data-lineage-id="upstream-${u.id}">
+                    <span class="lineage-node-label">${esc(u.name)}</span>
+                    ${u.refresh_day ? `<span class="lineage-table-hint">${u.refresh_day}</span>` : ""}
+                </div>`
+            ).join("")}</div>
+        </div><div class="lineage-flow-arrow"></div>`;
+    }
+
+    // === TIER: Data Sources ===
+    let sourcesHtml = "";
+    if (sourceNodes.length > 0) {
+        sourcesHtml = `<div class="lineage-tier">
+            <div class="lineage-tier-header">Data Sources <span class="lineage-tier-count">${sourceNodes.length}</span></div>
+            <div class="lineage-tier-nodes">${sourceNodes.map(s =>
+                `<div class="lineage-node lineage-node-source ${statusClass(s.status)}" data-lineage-id="source-${s.id}" title="${esc(s.name)}">
+                    ${statusDot(s.status)}
+                    <span class="lineage-node-label">${esc(s.name)}</span>
+                    <button class="btn-lineage-view" data-source-id="${s.id}" onclick="event.stopPropagation()">View</button>
+                </div>`
+            ).join("")}</div>
+        </div><div class="lineage-flow-arrow"></div>`;
+    }
+
+    // === POWER BI SECTION ===
+
+    // Sub-tier: Tables
+    let pbiTablesHtml = `<div class="lineage-tier">
+        <div class="lineage-tier-header">Tables <span class="lineage-tier-count">${tableNodes.length}</span></div>
+        <div class="lineage-tier-nodes">${tableNodes.map(t => {
+            const badge = t.source_id ? "" : ' <span class="lineage-no-link">no source</span>';
+            return `<div class="lineage-node lineage-node-table" data-lineage-id="${t.id}">
+                <span class="lineage-node-label">${t.name}</span>${badge}
+            </div>`;
+        }).join("")}</div>
+    </div>`;
+
+    // Sub-tier: Fields & Measures (grouped by table, collapsed)
+    let pbiFieldsHtml = "";
+    if (fieldsByTable.size > 0) {
+        let fGroups = "";
+        for (const [tbl, fields] of fieldsByTable) {
+            fGroups += `<div class="lineage-group">
+                <div class="lineage-group-header">
+                    <span class="lineage-group-chevron">&#9654;</span>
+                    <span>${tbl}</span>
+                    <span class="lineage-group-count">${fields.length}</span>
+                </div>
+                <div class="lineage-group-body">${fields.map(f =>
+                    `<div class="lineage-node lineage-node-field" data-lineage-id="${f.id}">
+                        <span class="lineage-node-label">${f.field.replace(/_/g, " ")}</span>
+                    </div>`
+                ).join("")}</div>
+            </div>`;
+        }
+        pbiFieldsHtml = `<div class="lineage-flow-arrow"></div>
+        <div class="lineage-tier">
+            <div class="lineage-tier-header">Fields & Measures <span class="lineage-tier-count">${fieldNodes.length}</span></div>
+            ${fGroups}
+        </div>`;
+    }
+
+    // Sub-tier: Visuals (grouped by type category, pages inside)
+    let pbiVisualsHtml = "";
+    if (typeCatGroups.size > 0) {
+        const catOrder = ["Charts", "Cards", "Slicers", "Tables & Matrices", "Other"];
+        let vGroups = "";
+        for (const cat of catOrder) {
+            const pages = typeCatGroups.get(cat);
+            if (!pages) continue;
+            let totalInCat = 0;
+            for (const arr of pages.values()) totalInCat += arr.length;
+
+            let innerHtml = "";
+            const multiPage = pages.size > 1;
+            for (const [pageName, visuals] of pages) {
+                if (multiPage) innerHtml += `<div class="lineage-page-sublabel">${pageName}</div>`;
+                for (const v of visuals) {
+                    const autoLabel = v.fields.length > 0
+                        ? v.fields.slice(0, 3).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") + (v.fields.length > 3 ? ` +${v.fields.length - 3}` : "")
+                        : null;
+                    const label = v.title || autoLabel || _visualTypeLabel(v.type);
+                    innerHtml += `<div class="lineage-node lineage-node-visual" data-lineage-id="${v.id}" title="${(v.title || "").replace(/"/g, "&quot;")}">
+                        <span class="visual-type-badge">${_visualTypeLabel(v.type)}</span>
+                        <span class="lineage-node-label">${label}</span>
+                    </div>`;
+                }
+            }
+
+            vGroups += `<div class="lineage-group">
+                <div class="lineage-group-header">
+                    <span class="lineage-group-chevron">&#9654;</span>
+                    <span>${cat}</span>
+                    <span class="lineage-group-count">${totalInCat}</span>
+                </div>
+                <div class="lineage-group-body">${innerHtml}</div>
+            </div>`;
+        }
+        pbiVisualsHtml = `<div class="lineage-flow-arrow"></div>
+        <div class="lineage-tier">
+            <div class="lineage-tier-header">Visuals <span class="lineage-tier-count">${visualNodes.length}</span></div>
+            ${vGroups}
+        </div>`;
+    }
+
     container.innerHTML = `
         ${reportHeader}
         <div class="lineage-diagram-wrap">
-            <div class="lineage-diagram-grid">
-                ${visualsHtml}${fieldsHtml}${tablesHtml}${sourcesHtml}${upstreamHtml}
+            ${upstreamHtml}
+            ${sourcesHtml}
+            <div class="lineage-pbi-section">
+                <div class="lineage-pbi-label">Power BI</div>
+                ${pbiTablesHtml}
+                ${pbiFieldsHtml}
+                ${pbiVisualsHtml}
             </div>
-            <svg class="lineage-svg" id="lineage-svg"></svg>
         </div>
     `;
 
-    // Build connections and draw lines
+    // Build connections graph (no SVG lines)
     const { connections, forward, backward } = _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes);
     window._lineageFwd = forward;
     window._lineageBwd = backward;
-    _drawLineageLines(connections);
 
-    // Bind click interactions
+    // Bind click interactions and group toggles
     _bindLineageClicks();
-
-    // Redraw on resize
-    if (window._lineageResizeObs) window._lineageResizeObs.disconnect();
-    const wrap = container.querySelector(".lineage-diagram-wrap");
-    if (wrap) {
-        window._lineageResizeObs = new ResizeObserver(() => {
-            clearTimeout(window._lineageResizeTimer);
-            window._lineageResizeTimer = setTimeout(() => _drawLineageLines(connections), 50);
-        });
-        window._lineageResizeObs.observe(wrap);
-    }
+    _bindLineageGroups();
 }
 
 function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNodes, upstreamNodes) {
@@ -4072,45 +4139,27 @@ function _buildLineageGraph(data, visualNodes, fieldNodes, tableNodes, sourceNod
     return { connections, forward, backward };
 }
 
-function _drawLineageLines(connections) {
-    const svg = document.getElementById("lineage-svg");
-    if (!svg) return;
-    const wrap = svg.parentElement;
-    if (!wrap) return;
-
-    svg.innerHTML = "";
-    svg.setAttribute("width", wrap.scrollWidth);
-    svg.setAttribute("height", wrap.scrollHeight);
-
-    const wrapRect = wrap.getBoundingClientRect();
-
-    for (const conn of connections) {
-        const fromEl = wrap.querySelector(`[data-lineage-id="${conn.from}"]`);
-        const toEl = wrap.querySelector(`[data-lineage-id="${conn.to}"]`);
-        if (!fromEl || !toEl) continue;
-
-        const fromRect = fromEl.getBoundingClientRect();
-        const toRect = toEl.getBoundingClientRect();
-
-        const x1 = fromRect.right - wrapRect.left;
-        const y1 = fromRect.top + fromRect.height / 2 - wrapRect.top;
-        const x2 = toRect.left - wrapRect.left;
-        const y2 = toRect.top + toRect.height / 2 - wrapRect.top;
-
-        const midX = (x1 + x2) / 2;
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`);
-        path.setAttribute("class", "lineage-line");
-        path.dataset.from = conn.from;
-        path.dataset.to = conn.to;
-        svg.appendChild(path);
-    }
+function _bindLineageGroups() {
+    document.querySelectorAll(".lineage-group-header").forEach(header => {
+        header.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const body = header.nextElementSibling;
+            if (!body) return;
+            const isOpen = header.classList.contains("expanded");
+            if (isOpen) {
+                header.classList.remove("expanded");
+                body.classList.remove("visible");
+            } else {
+                header.classList.add("expanded");
+                body.classList.add("visible");
+            }
+        });
+    });
 }
 
 function _bindLineageClicks() {
     const wrap = document.querySelector(".lineage-diagram-wrap");
     if (!wrap) return;
-    const svg = document.getElementById("lineage-svg");
 
     wrap.querySelectorAll(".lineage-node").forEach(node => {
         node.addEventListener("click", (e) => {
@@ -4119,7 +4168,7 @@ function _bindLineageClicks() {
 
             // Toggle off if already highlighted
             if (node.classList.contains("lineage-highlighted")) {
-                _resetLineageHighlight(wrap, svg);
+                _resetLineageHighlight(wrap);
                 return;
             }
 
@@ -4132,13 +4181,18 @@ function _bindLineageClicks() {
                 n.classList.toggle("lineage-dimmed", !isConn);
             });
 
-            if (svg) {
-                svg.querySelectorAll(".lineage-line").forEach(line => {
-                    const isConn = connected.has(line.dataset.from) && connected.has(line.dataset.to);
-                    line.classList.toggle("lineage-highlighted", isConn);
-                    line.classList.toggle("lineage-dimmed", !isConn);
-                });
-            }
+            // Auto-expand collapsed groups containing highlighted nodes
+            wrap.querySelectorAll(".lineage-group").forEach(group => {
+                const hasHighlighted = group.querySelector(".lineage-node.lineage-highlighted");
+                if (hasHighlighted) {
+                    const header = group.querySelector(".lineage-group-header");
+                    const body = group.querySelector(".lineage-group-body");
+                    if (header && body && !body.classList.contains("visible")) {
+                        header.classList.add("expanded");
+                        body.classList.add("visible");
+                    }
+                }
+            });
         });
     });
 
@@ -4154,7 +4208,7 @@ function _bindLineageClicks() {
     });
 
     // Click empty space to reset
-    wrap.addEventListener("click", () => _resetLineageHighlight(wrap, svg));
+    wrap.addEventListener("click", () => _resetLineageHighlight(wrap));
 }
 
 function _traceConnections(startId) {
@@ -4193,15 +4247,10 @@ function _traceConnections(startId) {
     return visited;
 }
 
-function _resetLineageHighlight(wrap, svg) {
+function _resetLineageHighlight(wrap) {
     wrap.querySelectorAll(".lineage-node").forEach(n => {
         n.classList.remove("lineage-highlighted", "lineage-dimmed");
     });
-    if (svg) {
-        svg.querySelectorAll(".lineage-line").forEach(l => {
-            l.classList.remove("lineage-highlighted", "lineage-dimmed");
-        });
-    }
 }
 
 
