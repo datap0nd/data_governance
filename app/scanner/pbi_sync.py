@@ -68,20 +68,17 @@ def run_pbi_sync(workspace: str | None = None, on_progress=None) -> dict:
         if on_progress:
             on_progress("Running PowerShell script...")
 
-        # CREATE_NEW_CONSOLE lets the PBI login popup appear
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120,
-            creationflags=subprocess.CREATE_NEW_CONSOLE if platform.system() == "Windows" else 0,
-        )
+        # No capture_output - let PowerShell run in a visible console
+        # so the browser login popup can appear. Output goes to the JSON file.
+        creation = subprocess.CREATE_NEW_CONSOLE if platform.system() == "Windows" else 0
+        result = subprocess.run(cmd, timeout=120, creationflags=creation)
 
         if result.returncode != 0:
-            stderr = result.stderr.strip()
             if on_progress:
-                on_progress(f"PowerShell failed: {stderr}")
+                on_progress("PowerShell script failed")
             return {
                 "status": "error",
-                "message": stderr or "PowerShell script failed",
-                "stdout": result.stdout.strip(),
+                "message": "PowerShell script failed (check the console window for details)",
             }
 
         if on_progress:
