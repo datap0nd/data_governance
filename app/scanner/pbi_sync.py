@@ -78,7 +78,7 @@ def run_pbi_sync(workspace: str | None = None, on_progress=None) -> dict:
                 on_progress("PowerShell script failed")
             return {
                 "status": "error",
-                "message": "PowerShell script failed (check the console window for details)",
+                "message": "PowerShell script failed - login may have been cancelled or timed out",
             }
 
         if on_progress:
