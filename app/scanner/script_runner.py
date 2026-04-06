@@ -24,15 +24,27 @@ logger = logging.getLogger(__name__)
 def _derive_machine(script_path: str) -> tuple[str, str]:
     """Derive hostname and alias from a script's file path.
 
-    UNC paths like \\\\MX-SHARE\\Users\\... -> hostname=MX-SHARE, alias from MACHINE_ALIASES.
-    Local paths -> hostname=local machine name.
+    UNC paths are distinguished by both hostname AND user folder:
+      \\\\MX-SHARE\\Users\\METOMX\\...  -> "Shared" (shared network drive)
+      \\\\MX-SHARE\\Users\\meto.mx\\... -> "Admin"  (admin PC via network)
+      \\\\METO-MX02\\...               -> "BI Desktop"
+    Local paths -> local machine name.
     """
-    # Match UNC path: \\server\share\...
+    p = script_path.lower().replace("/", "\\")
+
+    # Check path-based aliases first (more specific than hostname alone)
+    if "\\mx-share\\users\\meto.mx\\" in p:
+        return "MX-Share", "Admin"
+    if "\\mx-share\\users\\metomx\\" in p:
+        return "MX-Share", "Shared"
+
+    # Fall back to hostname-only matching
     m = re.match(r'^\\\\([^\\]+)\\', script_path)
     if m:
         hostname = m.group(1)
         alias = MACHINE_ALIASES.get(hostname.lower(), hostname)
         return hostname, alias
+
     # Local path
     hostname = socket.gethostname()
     alias = MACHINE_ALIASES.get(hostname.lower(), "BI Desktop")

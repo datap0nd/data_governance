@@ -21,6 +21,7 @@ SCHTASKS_CMD = ["schtasks.exe", "/query", "/fo", "CSV", "/v"]
 # Also configurable via DG_MACHINE_ALIASES env var: "hostname1=Alias1,hostname2=Alias2"
 _builtin_aliases = {
     "mx-share": "Admin",
+    "meto-mx02": "BI Desktop",
 }
 _env_aliases = os.environ.get("DG_MACHINE_ALIASES", "")
 MACHINE_ALIASES = dict(_builtin_aliases)
