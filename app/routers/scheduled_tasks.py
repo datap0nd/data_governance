@@ -64,6 +64,6 @@ def get_scheduled_task(task_id: int):
 
 
 @router.post("/scan")
-def trigger_task_scheduler_scan():
+def trigger_task_scheduler_scan(new_only: bool = Query(False)):
     """Trigger a scan of Windows Task Scheduler."""
-    return run_task_scheduler_scan()
+    return run_task_scheduler_scan(new_only=new_only)

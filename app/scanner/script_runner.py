@@ -54,18 +54,20 @@ def _match_source(db, table_name: str) -> int | None:
     return None
 
 
-def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
-    """Run a full script scan and store results.
+def run_script_scan(scripts_path: str | None = None, on_progress=None, new_only: bool = False) -> dict:
+    """Run a script scan and store results.
 
     Scans all configured paths (SCRIPTS_PATHS) unless a single path is given.
+    If *new_only* is True, skip files already in the DB (faster).
     *on_progress* is an optional callback(message: str) for live logging.
     Returns a summary dict with scan statistics.
     """
     roots = [scripts_path] if scripts_path else SCRIPTS_PATHS
     now = datetime.now(timezone.utc).isoformat()
+    mode = "new only" if new_only else "full"
 
     if on_progress:
-        on_progress(f"Starting script scan across {len(roots)} path(s)")
+        on_progress(f"Starting {mode} script scan across {len(roots)} path(s)")
 
     try:
         results = []
@@ -82,12 +84,22 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
         tables_linked = 0
 
         with get_db() as db:
+            # Pre-load known paths for new_only mode
+            known_paths = set()
+            if new_only:
+                known_paths = {r["path"] for r in db.execute("SELECT path FROM scripts").fetchall()}
+                if on_progress:
+                    on_progress(f"{len(known_paths)} scripts already in DB, skipping those")
+
             for result in results:
                 # Upsert script record
                 existing = db.execute(
                     "SELECT id FROM scripts WHERE path = ?",
                     (result.path,),
                 ).fetchone()
+
+                if new_only and existing:
+                    continue  # Skip existing in new-only mode
 
                 last_mod = result.last_modified.isoformat() if result.last_modified else None
                 hostname, machine_alias = _derive_machine(result.path)

@@ -28,10 +28,10 @@ def _append_log(message: str):
     _scan_state["log"].append(f"[{ts}] {message}")
 
 
-def _run_scan_background():
+def _run_scan_background(new_only: bool = False):
     """Run script scan in background thread, updating _scan_state."""
     try:
-        result = run_script_scan(on_progress=_append_log)
+        result = run_script_scan(on_progress=_append_log, new_only=new_only)
         _scan_state["result"] = result
         _scan_state["status"] = "completed" if result.get("status") == "completed" else "failed"
         _append_log(f"Scan finished: {result.get('scripts_total', 0)} scripts, {result.get('tables_linked', 0)} tables linked")
@@ -141,7 +141,7 @@ def delete_script(script_id: int):
 
 
 @router.post("/scan")
-def trigger_script_scan():
+def trigger_script_scan(new_only: bool = Query(False)):
     """Trigger an async scan of the scripts directory."""
     with _scan_lock:
         if _scan_state["status"] == "running":
@@ -153,8 +153,9 @@ def trigger_script_scan():
         _scan_state["finished_at"] = None
         _scan_state["result"] = None
 
-    _append_log("Scan started")
-    thread = threading.Thread(target=_run_scan_background, daemon=True)
+    mode = "new only" if new_only else "full"
+    _append_log(f"Scan started ({mode})")
+    thread = threading.Thread(target=_run_scan_background, args=(new_only,), daemon=True)
     thread.start()
 
     return {"status": "started"}

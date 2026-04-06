@@ -56,8 +56,11 @@ def _match_script(db, action_command: str | None, action_args: str | None) -> in
     return None
 
 
-def run_task_scheduler_scan() -> dict:
-    """Run a full Task Scheduler scan and store results."""
+def run_task_scheduler_scan(new_only: bool = False) -> dict:
+    """Run a Task Scheduler scan and store results.
+
+    If *new_only* is True, skip tasks already in the DB.
+    """
     now = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -83,6 +86,9 @@ def run_task_scheduler_scan() -> dict:
                     "SELECT id FROM scheduled_tasks WHERE task_name = ? AND COALESCE(hostname, '') = ?",
                     (task.task_name, task.hostname or ""),
                 ).fetchone()
+
+                if new_only and existing:
+                    continue  # Skip existing in new-only mode
 
                 script_id = _match_script(db, task.action_command, task.action_args)
                 if script_id:

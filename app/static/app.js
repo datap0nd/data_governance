@@ -3295,7 +3295,8 @@ async function renderScripts() {
         <div class="page-header">
             <h1>Scripts</h1>
             <span class="subtitle">${activeCount}${sqlOnly || catFilter || machineFilter ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}${catFilter ? ` (${catFilter})` : ''}${machineFilter ? ` on ${machineFilter}` : ''}</span>
-            <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
@@ -3437,8 +3438,9 @@ function bindScriptsPage() {
         });
     }
 
-    // Scan button - async with live log polling
-    const btnScan = document.getElementById("btn-scan-scripts");
+    // Scan buttons - async with live log polling
+    const btnFull = document.getElementById("btn-scan-scripts-full");
+    const btnNew = document.getElementById("btn-scan-scripts-new");
     const logWrap = document.getElementById("script-scan-log-wrap");
     const logPre = document.getElementById("script-scan-log");
     const logStatus = document.getElementById("script-scan-log-status");
@@ -3453,6 +3455,15 @@ function bindScriptsPage() {
         });
     }
 
+    function _disableScanBtns(label) {
+        if (btnFull) { btnFull.disabled = true; btnFull.textContent = label; }
+        if (btnNew) { btnNew.disabled = true; }
+    }
+    function _enableScanBtns() {
+        if (btnFull) { btnFull.disabled = false; btnFull.textContent = "Full Scan"; }
+        if (btnNew) { btnNew.disabled = false; }
+    }
+
     // Check if a scan is already running on page load
     (async () => {
         try {
@@ -3461,16 +3472,15 @@ function bindScriptsPage() {
                 logWrap.style.display = "";
                 logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
                 logPre.textContent = (st.log || []).join("\n");
-                if (btnScan) { btnScan.disabled = true; btnScan.textContent = "Scanning..."; }
+                _disableScanBtns("Scanning...");
                 _pollScriptScanLog();
             }
         } catch (_) {}
     })();
 
-    if (btnScan) {
-        btnScan.addEventListener("click", async () => {
-            btnScan.disabled = true;
-            btnScan.textContent = "Scanning...";
+    function _startScriptScan(newOnly) {
+        return async () => {
+            _disableScanBtns("Scanning...");
             logWrap.style.display = "";
             logPre.textContent = "";
             logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
@@ -3479,7 +3489,8 @@ function bindScriptsPage() {
             btnToggle.querySelector(".nav-arrow").innerHTML = "&#9652;";
 
             try {
-                const result = await apiPost("/api/scripts/scan");
+                const url = "/api/scripts/scan" + (newOnly ? "?new_only=true" : "");
+                const result = await apiPost(url);
                 if (result.status === "already_running") {
                     toast("Scan already running");
                     logPre.textContent = (result.log || []).join("\n");
@@ -3488,11 +3499,12 @@ function bindScriptsPage() {
             } catch (err) {
                 toast("Scan failed: " + err.message);
                 logStatus.innerHTML = '<span class="badge badge-red">Failed</span>';
-                btnScan.disabled = false;
-                btnScan.textContent = "Scan Scripts";
+                _enableScanBtns();
             }
-        });
+        };
     }
+    if (btnFull) btnFull.addEventListener("click", _startScriptScan(false));
+    if (btnNew) btnNew.addEventListener("click", _startScriptScan(true));
 
     function _pollScriptScanLog() {
         const interval = setInterval(async () => {
@@ -3512,13 +3524,9 @@ function bindScriptsPage() {
                     } else {
                         logStatus.innerHTML = `<span class="badge badge-red">Failed</span> ${(st.result || {}).error || ""}`;
                     }
-                    if (btnScan) { btnScan.disabled = false; btnScan.textContent = "Scan Scripts"; }
-                    // Refresh table with new data
-                    try {
-                        const scripts = await api("/api/scripts");
-                        const subtitle = document.querySelector(".page-header .subtitle");
-                        if (subtitle) subtitle.textContent = `${scripts.length} Python scripts tracked`;
-                    } catch (_) {}
+                    _enableScanBtns();
+                    // Refresh the whole page to show new data
+                    navigate("scripts");
                 }
             } catch (_) {
                 clearInterval(interval);
@@ -3635,7 +3643,8 @@ async function renderScheduledTasks() {
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
             <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            <button class="btn-outline" id="btn-scan-schtasks" style="margin-left:0.5rem">Scan Task Scheduler</button>
+            <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
             <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
@@ -3738,27 +3747,30 @@ function bindScheduledTasksPage() {
         });
     }
 
-    // Scan button
-    const btnScan = document.getElementById("btn-scan-schtasks");
-    if (btnScan) {
-        btnScan.addEventListener("click", async () => {
-            btnScan.disabled = true;
-            btnScan.textContent = "Scanning...";
-            try {
-                const result = await apiPost("/api/scheduled-tasks/scan");
-                if (result.status === "completed") {
-                    toast(`Scan complete - ${result.tasks_total || 0} tasks found, ${result.scripts_linked || 0} linked to scripts`);
-                } else {
-                    toast("Scan failed: " + (result.error || "unknown error"));
-                }
-                await navigate("scheduledtasks");
-            } catch (err) {
-                toast("Scan failed: " + err.message);
-                btnScan.disabled = false;
-                btnScan.textContent = "Scan Task Scheduler";
+    // Scan buttons
+    const btnSchFull = document.getElementById("btn-scan-schtasks-full");
+    const btnSchNew = document.getElementById("btn-scan-schtasks-new");
+
+    async function _runSchScan(newOnly) {
+        if (btnSchFull) { btnSchFull.disabled = true; btnSchFull.textContent = "Scanning..."; }
+        if (btnSchNew) btnSchNew.disabled = true;
+        try {
+            const url = "/api/scheduled-tasks/scan" + (newOnly ? "?new_only=true" : "");
+            const result = await apiPost(url);
+            if (result.status === "completed") {
+                toast(`Scan complete - ${result.tasks_total || 0} tasks found, ${result.scripts_linked || 0} linked`);
+            } else {
+                toast("Scan failed: " + (result.error || "unknown error"));
             }
-        });
+            await navigate("scheduledtasks");
+        } catch (err) {
+            toast("Scan failed: " + err.message);
+            if (btnSchFull) { btnSchFull.disabled = false; btnSchFull.textContent = "Full Scan"; }
+            if (btnSchNew) btnSchNew.disabled = false;
+        }
     }
+    if (btnSchFull) btnSchFull.addEventListener("click", () => _runSchScan(false));
+    if (btnSchNew) btnSchNew.addEventListener("click", () => _runSchScan(true));
 
     // Clickable script badges in table rows
     document.querySelectorAll(".schtask-script-link").forEach(el => {
