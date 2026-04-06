@@ -296,6 +296,10 @@ MIGRATIONS = [
     "ALTER TABLE scripts ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE upstream_systems ADD COLUMN archived INTEGER DEFAULT 0",
     "ALTER TABLE scheduled_tasks ADD COLUMN archived INTEGER DEFAULT 0",
+    # Normalize source types: csv/folder -> excel
+    "UPDATE sources SET type = 'excel' WHERE type IN ('csv', 'folder')",
+    # Clear upstream_id (reset for manual population)
+    "UPDATE sources SET upstream_id = NULL WHERE upstream_id IS NOT NULL",
 ]
 
 

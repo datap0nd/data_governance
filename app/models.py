@@ -22,6 +22,7 @@ class SourceOut(BaseModel):
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
+    linked_scripts: str | None = None
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None

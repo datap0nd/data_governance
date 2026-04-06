@@ -1309,6 +1309,7 @@ async function renderSources() {
     });
 
     const cols = [
+        { key: "type", label: "Type", render: s => typeBadge(s.type) },
         { key: "_shortName", label: "File / Table", render: s => `<strong>${esc(s._shortName)}</strong>`, sortVal: s => s._shortName || "" },
         { key: "_folderSchema", label: "Folder / Schema", render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "_fullLocation", label: "Full Location", resizable: true, render: s => {
@@ -1316,7 +1317,6 @@ async function renderSources() {
             const escaped = loc.replace(/"/g, '&quot;');
             return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}">${loc}</span>`;
         }, sortVal: s => s._fullLocation || "" },
-        { key: "type", label: "Type", render: s => typeBadge(s.type) },
         { key: "status", label: "Status", render: s => {
             let b = statusBadge(s.status);
             if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
@@ -1328,6 +1328,10 @@ async function renderSources() {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
+        { key: "linked_scripts", label: "Scripts", render: s => {
+            if (!s.linked_scripts) return '-';
+            return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
+        }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no" },
         { key: "upstream_id", label: "Upstream", render: s => {
             const opts = upstreams.map(u => `<option value="${u.id}"${s.upstream_id === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join("");
             return `<select class="freq-select-inline source-upstream-select" data-source-id="${s.id}"><option value="">None</option>${opts}</select>`;

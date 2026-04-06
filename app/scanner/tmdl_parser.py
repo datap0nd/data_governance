@@ -29,7 +29,7 @@ class SourceInfo:
     # Source types that are database connections
     DB_TYPES = {"sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"}
     # Source types that use file paths
-    FILE_TYPES = {"csv", "excel", "sharepoint", "web", "folder"}
+    FILE_TYPES = {"excel", "sharepoint", "web"}
 
     @property
     def connection_key(self) -> str:
@@ -344,7 +344,7 @@ def _parse_m_expression(expr: str) -> SourceInfo:
 
     # Detect CSV source: Csv.Document(File.Contents("path"), ...)
     if re.search(r'Csv\.Document\s*\(', expr):
-        source.source_type = "csv"
+        source.source_type = "excel"
         file_match = re.search(r'File\.Contents\s*\(\s*"([^"]+)"', expr)
         if file_match:
             source.file_path = file_match.group(1)
@@ -416,9 +416,9 @@ def _parse_m_expression(expr: str) -> SourceInfo:
             source.file_path = url_match.group(1)
         return source
 
-    # Detect folder sources
+    # Detect folder sources (loads files from a directory)
     if re.search(r'Folder\.Files\s*\(', expr):
-        source.source_type = "folder"
+        source.source_type = "excel"
         path_match = re.search(r'Folder\.Files\s*\(\s*"([^"]+)"', expr)
         if path_match:
             source.file_path = path_match.group(1)
