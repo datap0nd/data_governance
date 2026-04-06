@@ -1503,7 +1503,7 @@ async function renderReports() {
             <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
             ${_archiveToggleHtml("reports")}
             <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
-            <span class="info-tooltip" tabindex="0" style="cursor:help;font-size:0.82rem;color:var(--text-dim);margin-left:0.25rem" title="PBI Status checks if a report's last refresh matches its schedule cadence.\n\nDaily (7 days/week): overdue after 2 days\nBusiness days (5/week): overdue after ~2.5 days\n3x/week: overdue after ~3.5 days\n2x/week: overdue after ~4.5 days\nWeekly (1/week): overdue after 8 days\n\nOverdue reports generate alerts automatically.">?</span>
+            <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
