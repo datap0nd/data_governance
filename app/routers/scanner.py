@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.runner import run_scan
-from app.scanner.prober import run_probe, probe_debug
+from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
@@ -37,14 +37,8 @@ def do_scan():
 
 @router.post("/probe")
 def do_probe():
-    """Probe all sources for freshness (file mod times, PostgreSQL CSV, etc.)."""
+    """Probe all sources for freshness (file mod times)."""
     return run_probe()
-
-
-@router.get("/probe/debug")
-def probe_diagnostics():
-    """Show CSV samples and PostgreSQL source names side-by-side for debugging."""
-    return probe_debug()
 
 
 @router.get("/probe/runs")
