@@ -310,6 +310,7 @@ def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:
     rows = db.execute("""
         SELECT rt.report_id, sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
         FROM report_tables rt
+        JOIN sources s ON s.id = rt.source_id
         JOIN source_probes sp ON sp.source_id = rt.source_id
         WHERE sp.id = (
             SELECT sp2.id FROM source_probes sp2
@@ -317,6 +318,7 @@ def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:
             ORDER BY sp2.probed_at DESC LIMIT 1
         )
         AND COALESCE(sp.status, 'unknown') NOT IN ('unknown', 'no_connection')
+        AND COALESCE(s.archived, 0) = 0
     """).fetchall()
 
     # Group by report_id

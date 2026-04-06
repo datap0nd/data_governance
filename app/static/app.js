@@ -98,6 +98,24 @@ async function apiDelete(path) {
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
+// PBI refresh overdue detection (mirrors backend logic)
+const _PBI_WEEKDAYS = new Set(["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]);
+function _pbiScheduleDays(schedule) {
+    if (!schedule) return 0;
+    const dayPart = schedule.includes(" @ ") ? schedule.split(" @ ")[0] : schedule;
+    return dayPart.split(",").filter(d => _PBI_WEEKDAYS.has(d.trim().toLowerCase())).length;
+}
+function _isPbiOverdue(r) {
+    const dpw = _pbiScheduleDays(r.pbi_refresh_schedule);
+    if (dpw === 0) return false;
+    if (!r.pbi_last_refresh_at) return true;
+    try {
+        const last = new Date(r.pbi_last_refresh_at);
+        const hours = (Date.now() - last.getTime()) / 3600000;
+        return hours > (7 / dpw + 1) * 24;
+    } catch (_) { return false; }
+}
+
 // Archive state per page (persisted in sessionStorage)
 const _archiveShow = {};
 function _isShowingArchived(page) {
@@ -1455,10 +1473,12 @@ async function renderReports() {
         { key: "pbi_refresh_schedule", label: "PBI Schedule", render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
         { key: "pbi_refresh_status", label: "PBI Status", render: r => {
             if (!r.pbi_refresh_status) return '-';
+            const overdue = _isPbiOverdue(r);
+            if (overdue) return `<span class="badge badge-red" title="Refresh is overdue based on schedule">overdue</span>`;
             const s = r.pbi_refresh_status.toLowerCase();
             const cls = s === 'completed' ? 'badge-green' : s === 'failed' ? 'badge-red' : 'badge-yellow';
             return `<span class="badge ${cls}">${esc(r.pbi_refresh_status)}</span>`;
-        }},
+        }, sortVal: r => _isPbiOverdue(r) ? "0_overdue" : r.pbi_refresh_status === "Failed" ? "1_failed" : "2_ok" },
         { key: "pbi_last_refresh_at", label: "Last Refresh", render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
         { key: "_lineage", label: "Lineage", filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
@@ -1468,6 +1488,7 @@ async function renderReports() {
     const active = reports.filter(r => !r.archived);
     const healthy = active.filter(r => r.status === "healthy").length;
     const atRisk = active.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
+    const overdue = active.filter(r => _isPbiOverdue(r)).length;
 
     // Store sources for inline expansion lookups
     window._reportPageSources = sources;
@@ -1475,9 +1496,10 @@ async function renderReports() {
     return `
         <div class="page-header">
             <h1>Reports</h1>
-            <span class="subtitle">${active.length} Power BI reports  - ${healthy} healthy, ${atRisk} need attention</span>
+            <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
             ${_archiveToggleHtml("reports")}
             <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
+            <span class="info-tooltip" tabindex="0" style="cursor:help;font-size:0.82rem;color:var(--text-dim);margin-left:0.25rem" title="PBI Status checks if a report's last refresh matches its schedule cadence.\n\nDaily (7 days/week): overdue after 2 days\nBusiness days (5/week): overdue after ~2.5 days\n3x/week: overdue after ~3.5 days\n2x/week: overdue after ~4.5 days\nWeekly (1/week): overdue after 8 days\n\nOverdue reports generate alerts automatically.">?</span>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 

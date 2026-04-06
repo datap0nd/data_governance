@@ -12,7 +12,7 @@ import logging
 import os
 import platform
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import BASE_DIR, PBI_WORKSPACE
@@ -183,6 +183,9 @@ def import_pbi_data(data: dict) -> dict:
                         archived_count += 1
                         log_lines.append(f"ARCHIVE: {r['name']} (not in PBI workspace)")
 
+        # Check for overdue refreshes and create alerts
+        overdue_count = _check_refresh_alerts(db, now)
+
     summary = {
         "status": "completed",
         "workspace": data.get("workspace"),
@@ -191,7 +194,97 @@ def import_pbi_data(data: dict) -> dict:
         "matched": matched,
         "unmatched": unmatched,
         "archived": archived_count,
+        "overdue_alerts": overdue_count,
         "log": "\n".join(log_lines),
     }
-    logger.info("PBI sync completed: %s matched, %s unmatched, %s archived", matched, len(unmatched), archived_count)
+    logger.info("PBI sync completed: %s matched, %s unmatched, %s archived, %s overdue", matched, len(unmatched), archived_count, overdue_count)
     return summary
+
+
+WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+
+
+def _schedule_days_per_week(schedule_str: str | None) -> int:
+    """Parse number of refresh days per week from schedule string."""
+    if not schedule_str:
+        return 0
+    day_part = schedule_str.split(" @ ")[0] if " @ " in schedule_str else schedule_str
+    days = [d.strip().lower() for d in day_part.split(",")]
+    return sum(1 for d in days if d in WEEKDAYS)
+
+
+def _max_gap_hours(days_per_week: int) -> float:
+    """Max expected hours between refreshes, with buffer.
+
+    Formula: (7 / days_per_week + 1) * 24
+    - Daily (7): 48h (2 days)
+    - Business days (5): ~58h (~2.4 days)
+    - 3x/week: ~80h (~3.3 days)
+    - 2x/week: ~108h (~4.5 days)
+    - Weekly (1): 192h (8 days)
+    """
+    if days_per_week <= 0:
+        return 0
+    return (7 / days_per_week + 1) * 24
+
+
+def is_refresh_overdue(schedule_str: str | None, last_refresh_at: str | None) -> bool:
+    """Check if a report's refresh is overdue based on its schedule."""
+    dpw = _schedule_days_per_week(schedule_str)
+    if dpw == 0:
+        return False
+    if not last_refresh_at:
+        return True  # has a schedule but never refreshed
+
+    try:
+        # Handle various timestamp formats
+        ts = last_refresh_at.replace("Z", "+00:00")
+        last_dt = datetime.fromisoformat(ts)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+    now = datetime.now(timezone.utc)
+    hours_since = (now - last_dt).total_seconds() / 3600
+    return hours_since > _max_gap_hours(dpw)
+
+
+def _check_refresh_alerts(db, now: str) -> int:
+    """Create alerts for reports with overdue PBI refreshes.
+
+    Avoids duplicates by checking for existing unresolved alerts.
+    """
+    reports = db.execute(
+        """SELECT id, name, pbi_refresh_schedule, pbi_last_refresh_at
+           FROM reports WHERE archived = 0 AND pbi_refresh_schedule IS NOT NULL"""
+    ).fetchall()
+
+    created = 0
+    for r in reports:
+        if not is_refresh_overdue(r["pbi_refresh_schedule"], r["pbi_last_refresh_at"]):
+            continue
+
+        # Check for existing unresolved alert for this report
+        existing = db.execute(
+            """SELECT id FROM alerts
+               WHERE message LIKE ? AND resolution_status IS NULL""",
+            (f"PBI refresh overdue: {r['name']}%",)
+        ).fetchone()
+
+        if existing:
+            continue
+
+        last_str = r["pbi_last_refresh_at"] or "never"
+        db.execute(
+            """INSERT INTO alerts (severity, message, created_at)
+               VALUES (?, ?, ?)""",
+            (
+                "warning",
+                f"PBI refresh overdue: {r['name']} (schedule: {r['pbi_refresh_schedule']}, last refresh: {last_str})",
+                now,
+            ),
+        )
+        created += 1
+
+    return created
