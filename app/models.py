@@ -22,6 +22,7 @@ class SourceOut(BaseModel):
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
+    archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -54,6 +55,7 @@ class ReportOut(BaseModel):
     source_count: int = 0
     worst_source_updated: str | None = None  # oldest source last_data_at
     unused_pct: int | None = None  # % of measures+columns not used in visuals
+    archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -270,6 +272,7 @@ class ScriptOut(BaseModel):
     file_size: int | None = None
     tables_read: list[str] = []
     tables_written: list[str] = []
+    archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -317,6 +320,7 @@ class ScheduledTaskOut(BaseModel):
     enabled: bool = True
     script_id: int | None = None
     script_name: str | None = None
+    archived: bool = False
     last_scanned: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

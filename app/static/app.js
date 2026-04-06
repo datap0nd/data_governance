@@ -98,6 +98,56 @@ async function apiDelete(path) {
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
+// Archive state per page (persisted in sessionStorage)
+const _archiveShow = {};
+function _isShowingArchived(page) {
+    if (_archiveShow[page] === undefined) {
+        _archiveShow[page] = sessionStorage.getItem("archive_" + page) === "1";
+    }
+    return _archiveShow[page];
+}
+function _toggleShowArchived(page) {
+    _archiveShow[page] = !_isShowingArchived(page);
+    sessionStorage.setItem("archive_" + page, _archiveShow[page] ? "1" : "0");
+    return _archiveShow[page];
+}
+function _archiveToggleHtml(page) {
+    const on = _isShowingArchived(page);
+    return `<button class="btn-archive-toggle${on ? ' active' : ''}" id="btn-toggle-archived" data-page="${page}" title="Show/hide archived items">${on ? 'Hide Archived' : 'Show Archived'}</button>`;
+}
+function _archiveColDef(entityType) {
+    return {
+        key: "_archive", label: "", filterable: false, sortable: false,
+        render: item => {
+            const isArchived = item.archived;
+            return `<button class="btn-archive-action" data-entity-type="${entityType}" data-entity-id="${item.id}" data-archived="${isArchived ? '1' : '0'}" title="${isArchived ? 'Unarchive' : 'Archive'}" onclick="event.stopPropagation()">${isArchived ? 'Restore' : 'Archive'}</button>`;
+        },
+    };
+}
+function _bindArchiveButtons(reloadFn) {
+    document.querySelectorAll(".btn-archive-action").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const entityType = btn.dataset.entityType;
+            const entityId = btn.dataset.entityId;
+            try {
+                await apiPost(`/api/archive/${entityType}/${entityId}`);
+                toast(btn.dataset.archived === "1" ? "Restored" : "Archived");
+                reloadFn();
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    });
+    const toggleBtn = document.getElementById("btn-toggle-archived");
+    if (toggleBtn) {
+        toggleBtn.addEventListener("click", () => {
+            _toggleShowArchived(toggleBtn.dataset.page);
+            reloadFn();
+        });
+    }
+}
+
 function statusBadge(status) {
     if (!status) return '<span class="badge badge-muted">not probed</span>';
     const s = status.toLowerCase();
@@ -314,9 +364,10 @@ function _renderDT(tableId) {
     ).join("");
 
     const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
-    const bodyRows = rows.map((r, i) =>
-        `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
-    ).join("");
+    const bodyRows = rows.map((r, i) => {
+        const archivedCls = r.archived ? ' class="row-archived"' : '';
+        return `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}${archivedCls}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`;
+    }).join("");
 
     dt._displayRows = rows;
 
@@ -1222,8 +1273,9 @@ async function renderDashboardAlerts() {
 }
 
 async function renderSources() {
+    const showArchived = _isShowingArchived("sources");
     const [sources, options] = await Promise.all([
-        api("/api/sources"),
+        api("/api/sources" + (showArchived ? "?include_archived=true" : "")),
         api("/api/create/options"),
     ]);
     const people = options.people || [];
@@ -1275,16 +1327,19 @@ async function renderSources() {
                 ${s.refresh_schedule ? '' : '<option value="">-</option>'}${opts}
             </select>`;
         }},
+        _archiveColDef("source"),
     ];
 
-    const healthy = sources.filter(s => s.status === "fresh").length;
-    const atRiskCount = sources.filter(s => s.status === "stale").length;
-    const degradedCount = sources.filter(s => s.status === "outdated").length;
+    const active = sources.filter(s => !s.archived);
+    const healthy = active.filter(s => s.status === "fresh").length;
+    const atRiskCount = active.filter(s => s.status === "stale").length;
+    const degradedCount = active.filter(s => s.status === "outdated").length;
 
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${sources.length} data sources tracked  - ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
+            <span class="subtitle">${active.length} data sources tracked  - ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
+            ${_archiveToggleHtml("sources")}
             <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
@@ -1356,6 +1411,7 @@ function bindSourcesPage() {
             });
         });
     });
+    _bindArchiveButtons(() => navigate("sources"));
 }
 
 function _freqDetailOpts(type, selected) {
@@ -1369,8 +1425,9 @@ function _freqDetailOpts(type, selected) {
 }
 
 async function renderReports() {
+    const showArchived = _isShowingArchived("reports");
     const [reports, edges, sources, options] = await Promise.all([
-        api("/api/reports"),
+        api("/api/reports" + (showArchived ? "?include_archived=true" : "")),
         api("/api/lineage"),
         api("/api/sources"),
         api("/api/create/options"),
@@ -1410,10 +1467,12 @@ async function renderReports() {
             : `<span class="btn-table-link btn-table-link-disabled">-</span>` },
         { key: "_lineage", label: "Lineage", filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
+        _archiveColDef("report"),
     ];
 
-    const healthy = reports.filter(r => r.status === "healthy").length;
-    const atRisk = reports.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
+    const active = reports.filter(r => !r.archived);
+    const healthy = active.filter(r => r.status === "healthy").length;
+    const atRisk = active.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
 
     // Store sources for inline expansion lookups
     window._reportPageSources = sources;
@@ -1421,7 +1480,8 @@ async function renderReports() {
     return `
         <div class="page-header">
             <h1>Reports</h1>
-            <span class="subtitle">${reports.length} Power BI reports  - ${healthy} healthy, ${atRisk} need attention</span>
+            <span class="subtitle">${active.length} Power BI reports  - ${healthy} healthy, ${atRisk} need attention</span>
+            ${_archiveToggleHtml("reports")}
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
@@ -1500,6 +1560,7 @@ function bindReportsPage() {
             }
         });
     });
+    _bindArchiveButtons(() => navigate("reports"));
 }
 
 async function renderScanner() {
@@ -2749,6 +2810,15 @@ async function renderExport() {
                 <input type="checkbox" class="export-opt" data-section="lineage"> Lineage map (source -> report edges)
             </label>
         </fieldset>
+        <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
+            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Scripts & Tasks</legend>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="scripts"> Python scripts (path, owner, tables read/written)
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="scheduled-tasks"> Scheduled tasks (task scheduler entries)
+            </label>
+        </fieldset>
     </div>
     <div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
         <button class="btn-export" id="btn-generate-export" style="float:none">Generate Export</button>
@@ -2803,6 +2873,8 @@ function bindExportPage() {
             const needVisuals = selected.has("visuals-fields") || selected.has("reports-overview");
             const needMeasures = selected.has("measures-dax");
             const needColumns = selected.has("columns");
+            const needScripts = selected.has("scripts");
+            const needSchTasks = selected.has("scheduled-tasks");
 
             // Fetch base data in parallel
             status.textContent = "Fetching base data...";
@@ -2812,6 +2884,8 @@ function bindExportPage() {
             if (needLineage) fetches.edges = api("/api/lineage");
             if (needMeasures) fetches.measures = api("/api/reports/all-measures");
             if (needColumns) fetches.columns = api("/api/reports/all-columns");
+            if (needScripts) fetches.scripts = api("/api/scripts");
+            if (needSchTasks) fetches.schTasks = api("/api/scheduled-tasks");
 
             const keys = Object.keys(fetches);
             const values = await Promise.all(Object.values(fetches));
@@ -2981,6 +3055,46 @@ function bindExportPage() {
                 sections.push(`${edges.length} edges`);
             }
 
+            // ── Python Scripts ──
+            if (selected.has("scripts")) {
+                const scripts = data.scripts || [];
+                md += `## Python Scripts (${scripts.length})\n\n`;
+                for (const s of scripts) {
+                    md += `**${s.display_name}**\n`;
+                    md += `- Path: ${s.path || "-"}\n`;
+                    md += `- Owner: ${s.owner || "-"}\n`;
+                    md += `- Modified: ${s.last_modified || "-"}\n`;
+                    md += `- Size: ${s.file_size ? Math.round(s.file_size / 1024) + " KB" : "-"}\n`;
+                    if (s.tables_written && s.tables_written.length > 0)
+                        md += `- Writes to: ${s.tables_written.join(", ")}\n`;
+                    if (s.tables_read && s.tables_read.length > 0)
+                        md += `- Reads from: ${s.tables_read.join(", ")}\n`;
+                    md += "\n";
+                }
+                sections.push(`${scripts.length} scripts`);
+            }
+
+            // ── Scheduled Tasks ──
+            if (selected.has("scheduled-tasks")) {
+                const tasks = data.schTasks || [];
+                md += `## Scheduled Tasks (${tasks.length})\n\n`;
+                for (const t of tasks) {
+                    md += `**${t.task_name}**\n`;
+                    md += `- Path: ${t.task_path || "-"}\n`;
+                    md += `- Status: ${t.status || "-"}\n`;
+                    md += `- Enabled: ${t.enabled ? "Yes" : "No"}\n`;
+                    md += `- Schedule: ${t.schedule_type || "-"}\n`;
+                    md += `- Last Run: ${t.last_run_time || "Never"}\n`;
+                    md += `- Last Result: ${t.last_result || "-"}\n`;
+                    md += `- Next Run: ${t.next_run_time || "-"}\n`;
+                    md += `- Command: ${t.action_command || "-"}\n`;
+                    if (t.action_args) md += `- Args: ${t.action_args}\n`;
+                    if (t.script_name) md += `- Linked Script: ${t.script_name}\n`;
+                    md += "\n";
+                }
+                sections.push(`${tasks.length} scheduled tasks`);
+            }
+
             textarea.value = md;
             btnCopy.style.display = "";
             status.textContent = `Done - ${sections.join(", ")}`;
@@ -3027,8 +3141,9 @@ function truncatePath(path, maxLen) {
 }
 
 async function renderScripts() {
+    const showArchived = _isShowingArchived("scripts");
     const [scripts, options] = await Promise.all([
-        api("/api/scripts"),
+        api("/api/scripts" + (showArchived ? "?include_archived=true" : "")),
         api("/api/create/options"),
     ]);
     const people = options.people || [];
@@ -3054,13 +3169,17 @@ async function renderScripts() {
         }, sortVal: s => (s.tables_read || []).join(",") },
         { key: "last_modified", label: "Modified", render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         { key: "last_scanned", label: "Scanned", render: s => `<span style="color:var(--text-muted)" title="${s.last_scanned || ''}">${s.last_scanned ? timeAgo(s.last_scanned) : "-"}</span>`, sortVal: s => s.last_scanned || "" },
+        _archiveColDef("script"),
     ];
+
+    const activeCount = scripts.filter(s => !s.archived).length;
 
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${scripts.length} Python scripts tracked</span>
+            <span class="subtitle">${activeCount} Python scripts tracked</span>
             <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
         </div>
         <div id="script-scan-log-wrap" class="scan-log-wrap" style="display:none">
@@ -3286,13 +3405,15 @@ function bindScriptsPage() {
             });
         });
     });
+    _bindArchiveButtons(() => navigate("scripts"));
 }
 
 
 // ── Scheduled Tasks (Windows Task Scheduler) ──
 
 async function renderScheduledTasks() {
-    const tasks = await api("/api/scheduled-tasks");
+    const showArchived = _isShowingArchived("scheduledtasks");
+    const tasks = await api("/api/scheduled-tasks" + (showArchived ? "?include_archived=true" : ""));
 
     const cols = [
         { key: "task_name", label: "Task", render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
@@ -3326,17 +3447,20 @@ async function renderScheduledTasks() {
             ? `<span class="badge badge-blue schtask-script-link" style="cursor:pointer" data-script-id="${t.script_id}">${esc(t.script_name)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
           sortVal: t => t.script_name || "" },
+        _archiveColDef("scheduled_task"),
     ];
 
-    const failedCount = tasks.filter(t => t.last_result && t.last_result !== "0").length;
-    const linkedCount = tasks.filter(t => t.script_id).length;
+    const active = tasks.filter(t => !t.archived);
+    const failedCount = active.filter(t => t.last_result && t.last_result !== "0").length;
+    const linkedCount = active.filter(t => t.script_id).length;
     const failedNote = failedCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${failedCount} failed</span>` : "";
 
     return `
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
-            <span class="subtitle">${tasks.length} tasks tracked, ${linkedCount} linked to scripts${failedNote}</span>
+            <span class="subtitle">${active.length} tasks tracked, ${linkedCount} linked to scripts${failedNote}</span>
             <button class="btn-outline" id="btn-scan-schtasks" style="margin-left:0.5rem">Scan Task Scheduler</button>
+            ${_archiveToggleHtml("scheduledtasks")}
             <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
         </div>
         ${tasks.length === 0
@@ -3452,6 +3576,7 @@ function bindScheduledTasksPage() {
             }
         });
     });
+    _bindArchiveButtons(() => navigate("scheduledtasks"));
 }
 
 

@@ -3565,3 +3565,45 @@ button.btn-danger-outline:hover {
     background: var(--surface-hover);
     opacity: 1;
 }
+
+/* ── Archive ── */
+tr.row-archived td {
+    opacity: 0.45;
+}
+tr.row-archived td:last-child {
+    opacity: 1;
+}
+.btn-archive-action {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-archive-action:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--text-dim);
+}
+.btn-archive-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    cursor: pointer;
+    margin-left: 0.5rem;
+}
+.btn-archive-toggle:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+.btn-archive-toggle.active {
+    background: var(--blue-bg, rgba(59,130,246,0.08));
+    border-color: var(--blue, #3b82f6);
+    color: var(--blue, #3b82f6);
+}

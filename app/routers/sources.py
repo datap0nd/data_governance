@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.routers.eventlog import log_event
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
@@ -7,9 +7,10 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 
 @router.get("", response_model=list[SourceOut])
-def list_sources():
+def list_sources(include_archived: bool = Query(False)):
     with get_db() as db:
-        rows = db.execute("""
+        archive_filter = "" if include_archived else "WHERE s.archived = 0"
+        rows = db.execute(f"""
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
@@ -23,6 +24,7 @@ def list_sources():
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
             LEFT JOIN upstream_systems us ON us.id = s.upstream_id
+            {archive_filter}
             ORDER BY s.name
         """).fetchall()
 
@@ -45,6 +47,7 @@ def list_sources():
             upstream_id=r["upstream_id"],
             upstream_name=r["upstream_name"],
             upstream_refresh_day=r["upstream_refresh_day"],
+            archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -94,6 +97,7 @@ def get_source(source_id: int):
         upstream_id=r["upstream_id"],
         upstream_name=r["upstream_name"],
         upstream_refresh_day=r["upstream_refresh_day"],
+        archived=bool(r["archived"]),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
 
@@ -6,14 +6,16 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
 @router.get("", response_model=list[ReportOut])
-def list_reports():
+def list_reports(include_archived: bool = Query(False)):
     with get_db() as db:
-        rows = db.execute("""
+        archive_filter = "" if include_archived else "WHERE r.archived = 0"
+        rows = db.execute(f"""
             SELECT r.*,
                    (SELECT COUNT(DISTINCT rt.source_id)
                     FROM report_tables rt WHERE rt.report_id = r.id AND rt.source_id IS NOT NULL
                    ) AS source_count
             FROM reports r
+            {archive_filter}
             ORDER BY r.name
         """).fetchall()
 
@@ -41,6 +43,7 @@ def list_reports():
             source_count=r["source_count"],
             worst_source_updated=worst_date,
             unused_pct=unused_pct_map.get(rid),
+            archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         ))
@@ -104,6 +107,7 @@ def get_report(report_id: int):
         status=status,
         source_count=r["source_count"],
         worst_source_updated=worst_date,
+        archived=bool(r["archived"]),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )

@@ -1,6 +1,6 @@
 """Scheduled Tasks API - scan and list Windows Task Scheduler entries."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models import ScheduledTaskOut
 from app.scanner.task_scheduler_runner import run_task_scheduler_scan
@@ -25,6 +25,7 @@ def _build_task_out(row) -> ScheduledTaskOut:
         enabled=bool(row["enabled"]),
         script_id=row["script_id"],
         script_name=row["script_name"] if "script_name" in row.keys() else None,
+        archived=bool(row["archived"]),
         last_scanned=row["last_scanned"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -32,12 +33,14 @@ def _build_task_out(row) -> ScheduledTaskOut:
 
 
 @router.get("", response_model=list[ScheduledTaskOut])
-def list_scheduled_tasks():
+def list_scheduled_tasks(include_archived: bool = Query(False)):
     with get_db() as db:
-        rows = db.execute("""
+        archive_filter = "" if include_archived else "WHERE st.archived = 0"
+        rows = db.execute(f"""
             SELECT st.*, s.display_name AS script_name
             FROM scheduled_tasks st
             LEFT JOIN scripts s ON s.id = st.script_id
+            {archive_filter}
             ORDER BY st.task_name
         """).fetchall()
     return [_build_task_out(r) for r in rows]

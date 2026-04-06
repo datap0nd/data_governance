@@ -3,7 +3,7 @@
 import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.routers.eventlog import log_event
 from app.models import ScriptOut, ScriptUpdate, ScriptTableOut
@@ -64,15 +64,17 @@ def _build_script_out(db, row) -> ScriptOut:
         file_size=row["file_size"],
         tables_read=sorted(tables_read),
         tables_written=sorted(tables_written),
+        archived=bool(row["archived"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
 @router.get("", response_model=list[ScriptOut])
-def list_scripts():
+def list_scripts(include_archived: bool = Query(False)):
     with get_db() as db:
-        rows = db.execute("SELECT * FROM scripts ORDER BY display_name").fetchall()
+        archive_filter = "" if include_archived else "WHERE archived = 0"
+        rows = db.execute(f"SELECT * FROM scripts {archive_filter} ORDER BY display_name").fetchall()
         return [_build_script_out(db, r) for r in rows]
 
 

@@ -284,6 +284,12 @@ MIGRATIONS = [
         updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
+    # Archive support
+    "ALTER TABLE sources ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE reports ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE scripts ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE upstream_systems ADD COLUMN archived INTEGER DEFAULT 0",
+    "ALTER TABLE scheduled_tasks ADD COLUMN archived INTEGER DEFAULT 0",
 ]
 
 

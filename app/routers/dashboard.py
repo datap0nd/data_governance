@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 def get_dashboard():
     with get_db() as db:
         # Total source count
-        sources_total = db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"]
+        sources_total = db.execute("SELECT COUNT(*) AS c FROM sources WHERE archived = 0").fetchone()["c"]
 
         # Source status counts from latest probes
         probe_statuses = db.execute("""
@@ -20,6 +20,7 @@ def get_dashboard():
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
+            WHERE s.archived = 0
             GROUP BY eff_status
         """).fetchall()
 
@@ -30,7 +31,7 @@ def get_dashboard():
         sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0)
 
         # Report counts
-        reports_total = db.execute("SELECT COUNT(*) AS c FROM reports").fetchone()["c"]
+        reports_total = db.execute("SELECT COUNT(*) AS c FROM reports WHERE archived = 0").fetchone()["c"]
 
         # Alert count
         alerts_active = db.execute(

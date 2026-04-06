@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from app.database import get_db
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
@@ -36,13 +36,15 @@ def _next_weekday_date(day_name: str, with_iso: bool = False) -> str | dict:
 
 
 @router.get("/upstream-systems")
-def list_upstream_systems():
+def list_upstream_systems(include_archived: bool = Query(False)):
     """List all upstream systems with source counts."""
     with get_db() as db:
-        rows = db.execute("""
+        archive_filter = "" if include_archived else "WHERE us.archived = 0"
+        rows = db.execute(f"""
             SELECT us.*,
                    (SELECT COUNT(*) FROM sources s WHERE s.upstream_id = us.id) AS source_count
             FROM upstream_systems us
+            {archive_filter}
             ORDER BY us.name
         """).fetchall()
     return [dict(r) for r in rows]
