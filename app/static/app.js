@@ -1358,6 +1358,16 @@ function bindSourcesPage() {
     });
 }
 
+function _freqDetailOpts(type, selected) {
+    const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+    const monthDays = [...Array.from({length: 31}, (_, i) => String(i + 1)), "First working day", "Last working day"];
+    let items = [];
+    if (type === "Weekly") items = days;
+    else if (type === "Monthly") items = monthDays;
+    else return '<option value="">--</option>';
+    return items.map(d => `<option value="${d}"${d === selected ? " selected" : ""}>${d}</option>`).join("");
+}
+
 async function renderReports() {
     const [reports, edges, sources, options] = await Promise.all([
         api("/api/reports"),
@@ -1382,14 +1392,18 @@ async function renderReports() {
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
         { key: "frequency", label: "Frequency", render: r => {
-            const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-            const opts = days.map(d => {
-                const val = `Weekly - ${d}`;
-                return `<option value="${val}"${r.frequency === val ? ' selected' : ''}>${val}</option>`;
-            }).join("");
-            return `<select class="freq-select-inline" data-report-id="${r.id}">
-                ${r.frequency ? '' : '<option value="">Choose...</option>'}${opts}
-            </select>`;
+            const cur = r.frequency || "";
+            const curType = cur.startsWith("Monthly") ? "Monthly" : cur.startsWith("Weekly") ? "Weekly" : "";
+            const curDetail = cur.replace(/^(Weekly|Monthly) - /, "");
+            return `<span class="freq-pair" data-report-id="${r.id}">` +
+                `<select class="freq-select-inline freq-type" data-report-id="${r.id}">` +
+                `<option value="">--</option>` +
+                `<option value="Weekly"${curType === "Weekly" ? " selected" : ""}>Weekly</option>` +
+                `<option value="Monthly"${curType === "Monthly" ? " selected" : ""}>Monthly</option>` +
+                `</select>` +
+                `<select class="freq-select-inline freq-detail" data-report-id="${r.id}" ${!curType ? 'style="display:none"' : ""}>` +
+                _freqDetailOpts(curType, curDetail) +
+                `</select></span>`;
         }},
         { key: "powerbi_url", label: "Power BI", filterable: false, sortable: false, render: r => r.powerbi_url
             ? `<a href="${r.powerbi_url}" target="_blank" rel="noopener" class="btn-table-link btn-pbi" title="Open in Power BI" onclick="event.stopPropagation()">Open</a>`
@@ -1444,13 +1458,26 @@ function bindReportsPage() {
         });
         sel.addEventListener("click", (e) => e.stopPropagation());
     });
-    // Inline frequency select dropdowns
-    document.querySelectorAll(".freq-select-inline").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
+    // Linked frequency dropdowns (type + detail)
+    document.querySelectorAll(".freq-type").forEach(sel => {
+        sel.addEventListener("change", (e) => {
             e.stopPropagation();
             const reportId = sel.dataset.reportId;
-            const freq = sel.value;
-            if (!freq) return;
+            const detail = sel.closest(".freq-pair").querySelector(".freq-detail");
+            detail.innerHTML = _freqDetailOpts(sel.value, "");
+            detail.style.display = sel.value ? "" : "none";
+        });
+        sel.addEventListener("click", (e) => e.stopPropagation());
+    });
+    document.querySelectorAll(".freq-detail").forEach(sel => {
+        sel.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const pair = sel.closest(".freq-pair");
+            const reportId = pair.dataset.reportId;
+            const type = pair.querySelector(".freq-type").value;
+            const detail = sel.value;
+            if (!type || !detail) return;
+            const freq = `${type} - ${detail}`;
             try {
                 await apiPatch(`/api/reports/${reportId}`, { frequency: freq });
                 toast("Frequency updated");
@@ -2124,7 +2151,6 @@ function _renderCreateForm(entity) {
             </div>
         `;
     } else if (entity === 'report') {
-        const freqOpts = (opts.report_frequencies || []).map(f => `<option value="${f}">${f}</option>`).join('');
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
                 <input type="text" id="cf-name" placeholder="e.g. Weekly Sales Report" required></div>
@@ -2133,7 +2159,10 @@ function _renderCreateForm(entity) {
             <div class="create-field"><label>Business Owner</label>
                 <select id="cf-business_owner"><option value="">Choose...</option>${ownerOpts}</select></div>
             <div class="create-field"><label>Frequency</label>
-                <select id="cf-frequency"><option value="">Choose...</option>${freqOpts}</select></div>
+                <span class="freq-pair-create">
+                    <select id="cf-freq-type"><option value="">--</option><option value="Weekly">Weekly</option><option value="Monthly">Monthly</option></select>
+                    <select id="cf-freq-detail" style="display:none"><option value="">--</option></select>
+                </span></div>
             <div class="create-field"><label>Power BI URL</label>
                 <input type="url" id="cf-powerbi_url" placeholder="https://app.powerbi.com/..."></div>
         `;
@@ -2186,7 +2215,9 @@ async function _handleCreateSubmit(e) {
     } else if (entity === 'report') {
         body.owner = document.getElementById('cf-owner')?.value || null;
         body.business_owner = document.getElementById('cf-business_owner')?.value || null;
-        body.frequency = document.getElementById('cf-frequency')?.value || null;
+        const fType = document.getElementById('cf-freq-type')?.value;
+        const fDetail = document.getElementById('cf-freq-detail')?.value;
+        body.frequency = (fType && fDetail) ? `${fType} - ${fDetail}` : null;
         body.powerbi_url = document.getElementById('cf-powerbi_url')?.value || null;
     } else if (entity === 'upstream') {
         const code = document.getElementById('cf-code')?.value;
@@ -2299,6 +2330,15 @@ function bindCreatePage() {
             const container = document.getElementById('create-form-container');
             container.innerHTML = _renderCreateForm(btn.dataset.entity);
             document.getElementById('btn-create-submit').addEventListener('click', _handleCreateSubmit);
+            // Wire linked frequency dropdowns in create form
+            const cfType = document.getElementById('cf-freq-type');
+            const cfDetail = document.getElementById('cf-freq-detail');
+            if (cfType && cfDetail) {
+                cfType.addEventListener('change', () => {
+                    cfDetail.innerHTML = _freqDetailOpts(cfType.value, "");
+                    cfDetail.style.display = cfType.value ? "" : "none";
+                });
+            }
             document.getElementById('btn-create-cancel').addEventListener('click', () => {
                 container.innerHTML = '';
                 document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));
@@ -2429,8 +2469,10 @@ function _showEditForm(type, id, entity) {
                 <select id="cf-upstream_id"><option value="">None</option>${upOpts}</select></div>
         `;
     } else if (type === 'report') {
-        const freqOpts = (opts.report_frequencies || []).map(f => `<option value="${f}" ${entity.frequency === f ? 'selected' : ''}>${f}</option>`).join('');
         const boOpts = (opts.owners || []).map(o => `<option value="${o}" ${entity.business_owner === o ? 'selected' : ''}>${o}</option>`).join('');
+        const editFreq = entity.frequency || "";
+        const editType = editFreq.startsWith("Monthly") ? "Monthly" : editFreq.startsWith("Weekly") ? "Weekly" : "";
+        const editDetail = editFreq.replace(/^(Weekly|Monthly) - /, "");
         fields = `
             <div class="create-field"><label>Name <span class="required">*</span></label>
                 <input type="text" id="cf-name" value="${esc(entity.name)}" required></div>
@@ -2439,7 +2481,10 @@ function _showEditForm(type, id, entity) {
             <div class="create-field"><label>Business Owner</label>
                 <select id="cf-business_owner"><option value="">Choose...</option>${boOpts}</select></div>
             <div class="create-field"><label>Frequency</label>
-                <select id="cf-frequency"><option value="">Choose...</option>${freqOpts}</select></div>
+                <span class="freq-pair-create">
+                    <select id="cf-freq-type"><option value="">--</option><option value="Weekly"${editType === "Weekly" ? " selected" : ""}>Weekly</option><option value="Monthly"${editType === "Monthly" ? " selected" : ""}>Monthly</option></select>
+                    <select id="cf-freq-detail" ${!editType ? 'style="display:none"' : ""}>${_freqDetailOpts(editType, editDetail)}</select>
+                </span></div>
             <div class="create-field"><label>Power BI URL</label>
                 <input type="url" id="cf-powerbi_url" value="${entity.powerbi_url || ''}"></div>
         `;
@@ -2468,6 +2513,16 @@ function _showEditForm(type, id, entity) {
     `;
     container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
+    // Wire linked frequency dropdowns in edit form
+    const efType = document.getElementById('cf-freq-type');
+    const efDetail = document.getElementById('cf-freq-detail');
+    if (efType && efDetail) {
+        efType.addEventListener('change', () => {
+            efDetail.innerHTML = _freqDetailOpts(efType.value, "");
+            efDetail.style.display = efType.value ? "" : "none";
+        });
+    }
+
     document.getElementById('btn-edit-submit').addEventListener('click', async (e) => {
         const entType = e.target.dataset.entity;
         const entId = e.target.dataset.id;
@@ -2487,7 +2542,9 @@ function _showEditForm(type, id, entity) {
             body.name = document.getElementById('cf-name')?.value || null;
             body.owner = document.getElementById('cf-owner')?.value || null;
             body.business_owner = document.getElementById('cf-business_owner')?.value || null;
-            body.frequency = document.getElementById('cf-frequency')?.value || null;
+            const efType = document.getElementById('cf-freq-type')?.value;
+            const efDetail = document.getElementById('cf-freq-detail')?.value;
+            body.frequency = (efType && efDetail) ? `${efType} - ${efDetail}` : null;
             body.powerbi_url = document.getElementById('cf-powerbi_url')?.value || null;
         } else if (entType === 'upstream') {
             body.name = document.getElementById('cf-name')?.value || null;

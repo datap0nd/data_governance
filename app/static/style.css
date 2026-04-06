@@ -2418,6 +2418,9 @@ body.ai-panel-open main {
     max-width: 150px;
 }
 .freq-select-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); color: var(--text); }
+.freq-pair, .freq-pair-create { display: inline-flex; gap: 0.25rem; align-items: center; }
+.freq-pair .freq-type { max-width: 80px; }
+.freq-pair .freq-detail { max-width: 110px; }
 
 /* Delete button */
 button.btn-danger-outline {

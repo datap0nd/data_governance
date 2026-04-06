@@ -42,10 +42,12 @@ def get_create_options():
         people = db.execute("SELECT id, name, role FROM people ORDER BY name").fetchall()
 
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    monthly_days = [str(d) for d in range(1, 32)] + ["First working day", "Last working day"]
     return {
         "source_types": ["postgresql", "csv", "excel", "sql server", "folder", "sql", "mysql", "oracle"],
         "weekdays": weekdays,
-        "report_frequencies": [f"Weekly - {d}" for d in weekdays],
+        "monthly_days": monthly_days,
+        "report_frequencies": [f"Weekly - {d}" for d in weekdays] + [f"Monthly - {d}" for d in monthly_days],
         "owners": [r["owner"] for r in owners],
         "upstream_systems": [dict(r) for r in upstreams],
         "upstream_codes": [r["code"] for r in upstream_codes],

@@ -87,9 +87,11 @@ def get_schedule_discrepancies():
         upstream_info = _next_weekday_date(row["upstream_refresh_day"], with_iso=True)
         source_info = _next_weekday_date(row["source_refresh_day"], with_iso=True)
 
-        # Parse report refresh day from frequency field (e.g. "Weekly - Tuesday")
-        report_day_name = "Sunday"  # default
+        # Parse report frequency (e.g. "Weekly - Tuesday" or "Monthly - 15")
         freq = row["report_frequency"] or ""
+        is_monthly = freq.startswith("Monthly - ")
+
+        report_day_name = "Sunday"  # default for weekly
         if freq.startswith("Weekly - "):
             parsed_day = freq.replace("Weekly - ", "").strip()
             if parsed_day in DAY_ORDER:
@@ -103,15 +105,15 @@ def get_schedule_discrepancies():
             issues.append({
                 "type": "upstream_after_source",
                 "severity": "warning",
-                "message": f"Upstream \u2265 source ({row['upstream_refresh_day']} \u2265 {row['source_refresh_day']})",
+                "message": f"Upstream >= source ({row['upstream_refresh_day']} >= {row['source_refresh_day']})",
             })
 
-        # Source must refresh BEFORE report
-        if source_day >= report_day:
+        # Source must refresh BEFORE report (only applicable for weekly reports)
+        if not is_monthly and source_day >= report_day:
             issues.append({
                 "type": "source_after_report",
                 "severity": "critical",
-                "message": f"Source on report day ({row['source_refresh_day']} \u2265 {report_day_name})",
+                "message": f"Source on report day ({row['source_refresh_day']} >= {report_day_name})",
             })
 
         if issues:
