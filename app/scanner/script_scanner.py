@@ -42,6 +42,13 @@ FALSE_POSITIVES = {
     "dual", "sysibm",
     # Common non-table identifiers
     "public", "dbo", "main", "temp", "tmp",
+    # Common false positives from FROM regex matching Python code
+    "your", "the", "this", "that", "here", "there", "where", "each",
+    "google", "selenium", "webdriver", "selenium.webdriver",
+    "aggregatedata", "current_date", "current_timestamp",
+    "flask", "django", "fastapi", "uvicorn", "starlette",
+    "dotenv", "openpyxl", "xlrd", "xlsxwriter", "boto3",
+    "azure", "aws", "paramiko", "fabric", "celery",
 }
 
 # Qualified name pattern: schema.table or "schema"."table"

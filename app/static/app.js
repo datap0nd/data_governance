@@ -3199,24 +3199,37 @@ async function renderScripts() {
         }, sortVal: s => s.owner || "" },
         { key: "tables_written", label: "Writes To", render: s => {
             if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return s.tables_written.map(t => `<span class="badge badge-red" style="font-size:0.68rem;margin:1px">${esc(t)}</span>`).join(" ");
+            return s.tables_written.map(t => `<span class="badge badge-red" style="font-size:0.68rem;margin:1px" title="${esc(t)}">${esc(t)}</span>`).join(" ");
         }, sortVal: s => (s.tables_written || []).join(",") },
         { key: "tables_read", label: "Reads From", render: s => {
             if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return s.tables_read.map(t => `<span class="badge badge-blue" style="font-size:0.68rem;margin:1px">${esc(t)}</span>`).join(" ");
+            return s.tables_read.map(t => {
+                const tl = t.toLowerCase();
+                let label, cls;
+                if (tl.includes("mdscm")) { label = "GSCM"; cls = "badge-green"; }
+                else if (tl.includes("asap")) { label = "ASAP"; cls = "badge-yellow"; }
+                else if (/\.csv$/i.test(t) || /csv/i.test(t)) { label = "CSV"; cls = "badge-muted"; }
+                else if (t.includes(".") && !t.includes("/") && !t.includes("\\")) { label = "POSTGRES"; cls = "badge-blue"; }
+                else { label = "other"; cls = "badge-muted"; }
+                return `<span class="badge ${cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${label}</span>`;
+            }).join(" ");
         }, sortVal: s => (s.tables_read || []).join(",") },
         { key: "last_modified", label: "Modified", render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         { key: "last_scanned", label: "Scanned", render: s => `<span style="color:var(--text-muted)" title="${s.last_scanned || ''}">${s.last_scanned ? timeAgo(s.last_scanned) : "-"}</span>`, sortVal: s => s.last_scanned || "" },
         _archiveColDef("script"),
     ];
 
-    const activeCount = scripts.filter(s => !s.archived).length;
+    const sqlOnly = sessionStorage.getItem("scripts_sql_only") !== "0";
+    const filtered = sqlOnly ? scripts.filter(s => s.tables_written && s.tables_written.length > 0) : scripts;
+    const activeCount = filtered.filter(s => !s.archived).length;
+    const totalCount = scripts.filter(s => !s.archived).length;
 
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${activeCount} Python scripts tracked</span>
+            <span class="subtitle">${activeCount}${sqlOnly ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}</span>
             <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
             ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
         </div>
@@ -3225,7 +3238,7 @@ async function renderScripts() {
             <div id="script-scan-log-status" class="scan-log-status"></div>
             <pre id="script-scan-log" class="scan-log-pre" style="display:none"></pre>
         </div>
-        ${dataTable("dt-scripts", cols, scripts, { onRowClick: showScriptDetail })}
+        ${dataTable("dt-scripts", cols, filtered, { onRowClick: showScriptDetail })}
     `;
 }
 
@@ -3326,6 +3339,16 @@ async function showScriptDetail(script) {
 }
 
 function bindScriptsPage() {
+    // SQL-only filter toggle
+    const btnSqlOnly = document.getElementById("btn-sql-only");
+    if (btnSqlOnly) {
+        btnSqlOnly.addEventListener("click", () => {
+            const current = sessionStorage.getItem("scripts_sql_only") !== "0";
+            sessionStorage.setItem("scripts_sql_only", current ? "0" : "1");
+            navigate("scripts");
+        });
+    }
+
     // Scan button - async with live log polling
     const btnScan = document.getElementById("btn-scan-scripts");
     const logWrap = document.getElementById("script-scan-log-wrap");
