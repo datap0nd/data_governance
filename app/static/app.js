@@ -3239,6 +3239,10 @@ async function renderScripts() {
     const people = options.people || [];
 
     const cols = [
+        { key: "machine_alias", label: "Machine", render: s => {
+            const alias = s.machine_alias || s.hostname || "Local";
+            return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(s.hostname || '')}">${esc(alias)}</span>`;
+        }, sortVal: s => s.machine_alias || s.hostname || "" },
         { key: "category", label: "Category", render: s => {
             const cat = _scriptCategory(s.path);
             const cls = _CATEGORY_COLORS[cat] || "badge-muted";
@@ -3274,20 +3278,25 @@ async function renderScripts() {
 
     const sqlOnly = sessionStorage.getItem("scripts_sql_only") !== "0";
     const catFilter = sessionStorage.getItem("scripts_category") || "";
+    const machineFilter = sessionStorage.getItem("scripts_machine") || "";
     let filtered = sqlOnly ? scripts.filter(s => s.tables_written && s.tables_written.length > 0) : scripts;
     if (catFilter) filtered = filtered.filter(s => _scriptCategory(s.path) === catFilter);
+    if (machineFilter) filtered = filtered.filter(s => (s.machine_alias || s.hostname || "Local") === machineFilter);
     const activeCount = filtered.filter(s => !s.archived).length;
     const totalCount = scripts.filter(s => !s.archived).length;
 
-    // Collect unique categories for filter dropdown
+    // Collect unique categories and machines for filter dropdowns
     const allCats = [...new Set(scripts.map(s => _scriptCategory(s.path)))].sort();
     const catOpts = allCats.map(c => `<option value="${esc(c)}"${catFilter === c ? ' selected' : ''}>${esc(c)}</option>`).join("");
+    const allMachines = [...new Set(scripts.map(s => s.machine_alias || s.hostname || "Local"))].sort();
+    const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
 
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${activeCount}${sqlOnly || catFilter ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}${catFilter ? ` (${catFilter})` : ''}</span>
+            <span class="subtitle">${activeCount}${sqlOnly || catFilter || machineFilter ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}${catFilter ? ` (${catFilter})` : ''}${machineFilter ? ` on ${machineFilter}` : ''}</span>
             <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
             ${_archiveToggleHtml("scripts")}
@@ -3400,6 +3409,15 @@ async function showScriptDetail(script) {
 }
 
 function bindScriptsPage() {
+    // Machine filter dropdown
+    const machSel = document.getElementById("scripts-machine-filter");
+    if (machSel) {
+        machSel.addEventListener("change", () => {
+            sessionStorage.setItem("scripts_machine", machSel.value);
+            navigate("scripts");
+        });
+    }
+
     // Category filter dropdown
     const catSel = document.getElementById("scripts-cat-filter");
     if (catSel) {
@@ -3554,13 +3572,21 @@ async function renderScheduledTasks() {
     const showArchived = _isShowingArchived("scheduledtasks");
     const tasks = await api("/api/scheduled-tasks" + (showArchived ? "?include_archived=true" : ""));
     const catFilter = sessionStorage.getItem("schtasks_category") || "";
+    const machineFilter = sessionStorage.getItem("schtasks_machine") || "";
     let filtered = catFilter ? tasks.filter(t => _taskCategory(t) === catFilter) : tasks;
+    if (machineFilter) filtered = filtered.filter(t => (t.machine_alias || t.hostname || "Local") === machineFilter);
 
-    // Collect unique categories
+    // Collect unique categories and machines
     const allCats = [...new Set(tasks.map(t => _taskCategory(t)))].sort();
     const catOpts = allCats.map(c => `<option value="${esc(c)}"${catFilter === c ? ' selected' : ''}>${esc(c)}</option>`).join("");
+    const allMachines = [...new Set(tasks.map(t => t.machine_alias || t.hostname || "Local"))].sort();
+    const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
 
     const cols = [
+        { key: "machine_alias", label: "Machine", render: t => {
+            const alias = t.machine_alias || t.hostname || "Local";
+            return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(t.hostname || '')}">${esc(alias)}</span>`;
+        }, sortVal: t => t.machine_alias || t.hostname || "" },
         { key: "category", label: "Category", render: t => {
             const cat = _taskCategory(t);
             const cls = _CATEGORY_COLORS[cat] || "badge-muted";
@@ -3610,6 +3636,7 @@ async function renderScheduledTasks() {
             <h1>Scheduled Tasks</h1>
             <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
             <button class="btn-outline" id="btn-scan-schtasks" style="margin-left:0.5rem">Scan Task Scheduler</button>
+            <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
             <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
@@ -3654,6 +3681,7 @@ async function showScheduledTaskDetail(task) {
             <button class="btn-outline" id="btn-close-schtask-detail">&times; Close</button>
         </div>
         <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Machine</div><span class="badge badge-muted">${esc(task.machine_alias || task.hostname || 'Local')}</span> <span style="color:var(--text-dim);font-size:0.75rem">${task.hostname ? esc(task.hostname) : ''}</span></div>
             <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_taskCategory(task)] || 'badge-muted'}">${esc(_taskCategory(task))}</span></div>
             <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(task.task_path)}</span></div>
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge}</div>
@@ -3692,6 +3720,15 @@ async function showScheduledTaskDetail(task) {
 }
 
 function bindScheduledTasksPage() {
+    // Machine filter
+    const machSel = document.getElementById("schtasks-machine-filter");
+    if (machSel) {
+        machSel.addEventListener("change", () => {
+            sessionStorage.setItem("schtasks_machine", machSel.value);
+            navigate("scheduledtasks");
+        });
+    }
+
     // Category filter
     const catSel = document.getElementById("schtasks-cat-filter");
     if (catSel) {

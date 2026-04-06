@@ -54,6 +54,7 @@ def _build_script_out(db, row) -> ScriptOut:
     tables_read = [t["table_name"] for t in table_rows if t["direction"] == "read"]
     tables_written = [t["table_name"] for t in table_rows if t["direction"] == "write"]
 
+    keys = row.keys()
     return ScriptOut(
         id=row["id"],
         path=row["path"],
@@ -64,6 +65,8 @@ def _build_script_out(db, row) -> ScriptOut:
         file_size=row["file_size"],
         tables_read=sorted(tables_read),
         tables_written=sorted(tables_written),
+        hostname=row["hostname"] if "hostname" in keys else None,
+        machine_alias=row["machine_alias"] if "machine_alias" in keys else None,
         archived=bool(row["archived"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],

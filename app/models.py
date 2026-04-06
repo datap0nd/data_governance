@@ -278,6 +278,8 @@ class ScriptOut(BaseModel):
     file_size: int | None = None
     tables_read: list[str] = []
     tables_written: list[str] = []
+    hostname: str | None = None
+    machine_alias: str | None = None
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
@@ -326,6 +328,8 @@ class ScheduledTaskOut(BaseModel):
     enabled: bool = True
     script_id: int | None = None
     script_name: str | None = None
+    hostname: str | None = None
+    machine_alias: str | None = None
     archived: bool = False
     last_scanned: str | None = None
     created_at: str | None = None

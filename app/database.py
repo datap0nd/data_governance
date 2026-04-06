@@ -300,6 +300,12 @@ MIGRATIONS = [
     "UPDATE sources SET type = 'excel' WHERE type IN ('csv', 'folder')",
     # Clear upstream_id (reset for manual population)
     "UPDATE sources SET upstream_id = NULL WHERE upstream_id IS NOT NULL",
+    # Machine tracking for scheduled tasks
+    "ALTER TABLE scheduled_tasks ADD COLUMN hostname TEXT",
+    "ALTER TABLE scheduled_tasks ADD COLUMN machine_alias TEXT",
+    # Machine tracking for scripts
+    "ALTER TABLE scripts ADD COLUMN hostname TEXT",
+    "ALTER TABLE scripts ADD COLUMN machine_alias TEXT",
 ]
 
 

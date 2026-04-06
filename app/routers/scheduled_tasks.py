@@ -9,6 +9,7 @@ router = APIRouter(prefix="/api/scheduled-tasks", tags=["scheduled-tasks"])
 
 
 def _build_task_out(row) -> ScheduledTaskOut:
+    keys = row.keys()
     return ScheduledTaskOut(
         id=row["id"],
         task_name=row["task_name"],
@@ -24,7 +25,9 @@ def _build_task_out(row) -> ScheduledTaskOut:
         schedule_type=row["schedule_type"],
         enabled=bool(row["enabled"]),
         script_id=row["script_id"],
-        script_name=row["script_name"] if "script_name" in row.keys() else None,
+        script_name=row["script_name"] if "script_name" in keys else None,
+        hostname=row["hostname"] if "hostname" in keys else None,
+        machine_alias=row["machine_alias"] if "machine_alias" in keys else None,
         archived=bool(row["archived"]),
         last_scanned=row["last_scanned"],
         created_at=row["created_at"],

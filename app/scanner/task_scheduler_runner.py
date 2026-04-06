@@ -78,9 +78,10 @@ def run_task_scheduler_scan() -> dict:
 
         with get_db() as db:
             for task in results:
+                # Use task_name + hostname as unique key (same name can exist on different machines)
                 existing = db.execute(
-                    "SELECT id FROM scheduled_tasks WHERE task_name = ?",
-                    (task.task_name,),
+                    "SELECT id FROM scheduled_tasks WHERE task_name = ? AND COALESCE(hostname, '') = ?",
+                    (task.task_name, task.hostname or ""),
                 ).fetchone()
 
                 script_id = _match_script(db, task.action_command, task.action_args)
@@ -94,12 +95,14 @@ def run_task_scheduler_scan() -> dict:
                                last_result = ?, next_run_time = ?, author = ?,
                                run_as_user = ?, action_command = ?, action_args = ?,
                                schedule_type = ?, enabled = ?, script_id = ?,
+                               hostname = ?, machine_alias = ?,
                                last_scanned = ?, updated_at = ?
                            WHERE id = ?""",
                         (task.task_path, task.status, task.last_run_time,
                          task.last_result, task.next_run_time, task.author,
                          task.run_as_user, task.action_command, task.action_args,
                          task.schedule_type, int(task.enabled), script_id,
+                         task.hostname, task.machine_alias,
                          now, now, existing["id"]),
                     )
                     tasks_updated += 1
@@ -109,13 +112,15 @@ def run_task_scheduler_scan() -> dict:
                            (task_name, task_path, status, last_run_time,
                             last_result, next_run_time, author, run_as_user,
                             action_command, action_args, schedule_type, enabled,
-                            script_id, last_scanned, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            script_id, hostname, machine_alias,
+                            last_scanned, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (task.task_name, task.task_path, task.status,
                          task.last_run_time, task.last_result, task.next_run_time,
                          task.author, task.run_as_user, task.action_command,
                          task.action_args, task.schedule_type, int(task.enabled),
-                         script_id, now, now, now),
+                         script_id, task.hostname, task.machine_alias,
+                         now, now, now),
                     )
                     tasks_new += 1
 

@@ -211,6 +211,7 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "DG_DB_PATH=$DbPath" `
     "DG_REPORTS_PATH=$ReportsPath" `
     "DG_SCRIPTS_PATH=$ScriptsPath" `
+    "DG_SCHTASK_REMOTES=MX-Share" `
     "DG_PBI_WORKSPACE=mx executive" `
     "DG_AI_MOCK=true"
 

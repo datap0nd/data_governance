@@ -9,13 +9,34 @@ Script runner - orchestrates script scanning and database storage.
 """
 
 import logging
+import re
+import socket
 from datetime import datetime, timezone
 
 from app.config import SCRIPTS_PATH, SCRIPTS_PATHS
 from app.database import get_db
 from app.scanner.script_scanner import walk_scripts
+from app.scanner.task_scheduler_scanner import MACHINE_ALIASES
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_machine(script_path: str) -> tuple[str, str]:
+    """Derive hostname and alias from a script's file path.
+
+    UNC paths like \\\\MX-SHARE\\Users\\... -> hostname=MX-SHARE, alias from MACHINE_ALIASES.
+    Local paths -> hostname=local machine name.
+    """
+    # Match UNC path: \\server\share\...
+    m = re.match(r'^\\\\([^\\]+)\\', script_path)
+    if m:
+        hostname = m.group(1)
+        alias = MACHINE_ALIASES.get(hostname.lower(), hostname)
+        return hostname, alias
+    # Local path
+    hostname = socket.gethostname()
+    alias = MACHINE_ALIASES.get(hostname.lower(), "BI Desktop")
+    return hostname, alias
 
 
 def _match_source(db, table_name: str) -> int | None:
@@ -69,25 +90,30 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
                 ).fetchone()
 
                 last_mod = result.last_modified.isoformat() if result.last_modified else None
+                hostname, machine_alias = _derive_machine(result.path)
 
                 if existing:
                     script_id = existing["id"]
                     db.execute(
                         """UPDATE scripts
                            SET display_name = ?, last_modified = ?, last_scanned = ?,
-                               file_size = ?, updated_at = ?
+                               file_size = ?, hostname = ?, machine_alias = ?,
+                               updated_at = ?
                            WHERE id = ?""",
                         (result.display_name, last_mod, now,
-                         result.file_size, now, script_id),
+                         result.file_size, hostname, machine_alias,
+                         now, script_id),
                     )
                     scripts_updated += 1
                 else:
                     cursor = db.execute(
                         """INSERT INTO scripts (path, display_name, last_modified, last_scanned,
-                                               file_size, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                               file_size, hostname, machine_alias,
+                                               created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (result.path, result.display_name, last_mod, now,
-                         result.file_size, now, now),
+                         result.file_size, hostname, machine_alias,
+                         now, now),
                     )
                     script_id = cursor.lastrowid
                     scripts_found += 1
