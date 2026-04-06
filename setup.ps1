@@ -211,7 +211,6 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "DG_DB_PATH=$DbPath" `
     "DG_REPORTS_PATH=$ReportsPath" `
     "DG_SCRIPTS_PATH=$ScriptsPath" `
-    "DG_SIMULATE_FRESHNESS=false" `
     "DG_AI_MOCK=true"
 
 # Run service as current user (needed for network share access)

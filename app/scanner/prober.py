@@ -12,7 +12,6 @@ Expected CSV columns: schema_name, table_name, last_activity
 import csv
 import logging
 import os
-import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -258,10 +257,10 @@ def run_probe() -> dict:
                 probed += 1
                 log_lines.append(f"PG: {schema_name}.{table_name} → {status}")
 
-        # 3. Simulate freshness for DB sources not yet probed this run
+        # 3. Mark DB sources not yet probed this run as unknown
         #    (PostgreSQL not matched by CSV, SQL Server, etc. - no direct connection)
         unprobed_db = db.execute(
-            """SELECT s.id, s.name, s.type, s.custom_fresh_days, s.custom_stale_days
+            """SELECT s.id, s.name, s.type
                FROM sources s
                WHERE s.type NOT IN ('csv', 'excel', 'folder')
                AND NOT EXISTS (
@@ -272,31 +271,14 @@ def run_probe() -> dict:
         ).fetchall()
 
         for src in unprobed_db:
-            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
-            sm = src["custom_stale_days"] or STALE_MAX_DAYS
-            # Simulate: DB sources typically have good refresh rates
-            weights = [0.70, 0.20, 0.10]
-            bucket = random.choices(["fresh", "stale", "outdated"], weights=weights, k=1)[0]
-            if bucket == "fresh":
-                days_ago = random.randint(0, fm)
-            elif bucket == "stale":
-                days_ago = random.randint(fm + 1, sm)
-            else:
-                days_ago = random.randint(sm + 1, max(sm + 2, 365))
-            hours_ago = random.randint(0, 23)
-            mins_ago = random.randint(0, 59)
-            dt = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=hours_ago, minutes=mins_ago)
-            status = _compute_status(dt.isoformat(), fm, sm)
-
             db.execute(
-                "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
-                (src["id"], now, dt.isoformat(), status, f"simulated ({src['type']} - no db connection)"),
+                "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+                (src["id"], now, f"No direct connection ({src['type']})"),
             )
-            statuses[status] = statuses.get(status, 0) + 1
-            _create_action_and_alert(db, src["id"], status, now, fm, sm)
+            statuses["unknown"] = statuses.get("unknown", 0) + 1
             probed += 1
             short = src["name"].replace("\\", "/").split("/")[-1]
-            log_lines.append(f"SIM: {short} → {status} ({src['type']})")
+            log_lines.append(f"SKIP: {short} - unknown ({src['type']}, no connection)")
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()
@@ -326,97 +308,6 @@ def run_probe() -> dict:
     logger.info("Probe completed: %s", summary)
     return summary
 
-
-def simulate_probe() -> dict:
-    """Generate simulated source_probes entries with randomized freshness.
-
-    Uses source type to weight probabilities realistically:
-    - Database sources: 70% fresh, 20% stale, 10% outdated
-    - File sources (csv, excel): 50% fresh, 30% stale, 20% outdated
-    - Other sources: 60% fresh, 25% stale, 15% outdated
-    """
-    now = datetime.now(timezone.utc)
-    now_str = now.isoformat()
-    probed = 0
-    statuses = {"fresh": 0, "stale": 0, "outdated": 0}
-    log_lines = []
-
-    # Weights: (fresh, stale, outdated)
-    DB_TYPES = {"postgresql", "sql", "sqlserver", "mysql", "oracle", "sql server"}
-    FILE_TYPES = {"csv", "excel", "folder"}
-
-    def _random_last_data(source_type: str,
-                          fresh_max: int = FRESH_MAX_DAYS,
-                          stale_max: int = STALE_MAX_DAYS) -> tuple[str, str]:
-        src_t = (source_type or "").lower()
-        if src_t in DB_TYPES:
-            weights = [0.70, 0.20, 0.10]
-        elif src_t in FILE_TYPES:
-            weights = [0.50, 0.30, 0.20]
-        else:
-            weights = [0.60, 0.25, 0.15]
-
-        bucket = random.choices(["fresh", "stale", "outdated"], weights=weights, k=1)[0]
-        if bucket == "fresh":
-            days_ago = random.randint(0, fresh_max)
-        elif bucket == "stale":
-            days_ago = random.randint(fresh_max + 1, stale_max)
-        else:
-            days_ago = random.randint(stale_max + 1, max(stale_max + 2, 365))
-
-        # Add some hour/minute variation
-        hours_ago = random.randint(0, 23)
-        mins_ago = random.randint(0, 59)
-        dt = now - timedelta(days=days_ago, hours=hours_ago, minutes=mins_ago)
-        status = _compute_status(dt.isoformat(), fresh_max, stale_max)
-        return dt.isoformat(), status
-
-    with get_db() as db:
-        # Delete previous simulated probes
-        db.execute("DELETE FROM source_probes WHERE message = 'simulated'")
-
-        sources = db.execute("SELECT id, name, type, custom_fresh_days, custom_stale_days FROM sources").fetchall()
-
-        for src in sources:
-            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
-            sm = src["custom_stale_days"] or STALE_MAX_DAYS
-            last_data_str, status = _random_last_data(src["type"], fm, sm)
-            db.execute(
-                "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, 'simulated')",
-                (src["id"], now_str, last_data_str, status),
-            )
-            _create_action_and_alert(db, src["id"], status, now_str, fm, sm)
-            statuses[status] = statuses.get(status, 0) + 1
-            probed += 1
-            short = src["name"].replace("\\", "/").split("/")[-1]
-            log_lines.append(f"SIM: {short} → {status}")
-
-    log_text = "\n".join(log_lines) if log_lines else "No sources to simulate."
-    finished = datetime.now(timezone.utc).isoformat()
-
-    # Record probe run
-    with get_db() as db:
-        db.execute(
-            """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, status, log)
-               VALUES (?, ?, ?, ?, ?, ?, 0, 'completed', ?)""",
-            (now_str, finished, probed, statuses.get("fresh", 0), statuses.get("stale", 0),
-             statuses.get("outdated", 0), log_text),
-        )
-
-        # Backfill: assign owners to alerts that don't have one yet
-        _backfill_alert_owners(db)
-
-    summary = {
-        "probed_at": now_str,
-        "probed": probed,
-        "matched": probed,
-        "skipped": 0,
-        "statuses": statuses,
-        "status": "completed",
-        "log": log_text,
-    }
-    logger.info("Simulated probe completed: %s", summary)
-    return summary
 
 
 def probe_debug() -> dict:

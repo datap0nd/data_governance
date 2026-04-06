@@ -307,22 +307,12 @@ def run_scan(reports_path: str | None = None) -> dict:
             )
 
         # Run freshness probe after scan
-        from app.config import SIMULATE_FRESHNESS
-        if SIMULATE_FRESHNESS:
-            from app.scanner.prober import simulate_probe
-            try:
-                simulate_probe()
-                logger.info("Simulated freshness probe completed after scan")
-            except Exception as e:
-                logger.exception("Simulated probe failed after scan: %s", e)
-        else:
-            # Real mode: probe file sources for real, simulate DB sources
-            from app.scanner.prober import run_probe
-            try:
-                run_probe()
-                logger.info("Real freshness probe completed after scan")
-            except Exception as e:
-                logger.exception("Probe failed after scan: %s", e)
+        from app.scanner.prober import run_probe
+        try:
+            run_probe()
+            logger.info("Freshness probe completed after scan")
+        except Exception as e:
+            logger.exception("Probe failed after scan: %s", e)
 
         summary = {
             "scan_id": scan_id,

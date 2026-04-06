@@ -12,7 +12,6 @@ if str(project_root) not in sys.path:
 # Force DB to /tmp on Vercel (read-only filesystem elsewhere)
 if "VERCEL" in os.environ or "VERCEL_ENV" in os.environ:
     os.environ.setdefault("DG_DB_PATH", "/tmp/governance.db")
-    os.environ.setdefault("DG_SIMULATE_FRESHNESS", "true")
     os.environ.setdefault("DG_AI_MOCK", "true")
 
 from app.main import app  # noqa: E402

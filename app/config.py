@@ -50,8 +50,3 @@ if _endpoint_file.exists():
 else:
     AI_API_URL = os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
-
-# Simulated freshness — when true, ALL sources get randomized probe data (demo mode).
-# When false, file-based sources are probed for real; DB sources without
-# a connection are simulated individually.
-SIMULATE_FRESHNESS = os.environ.get("DG_SIMULATE_FRESHNESS", "false").lower() in ("true", "1", "yes")

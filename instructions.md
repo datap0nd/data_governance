@@ -81,7 +81,6 @@ Stop the service first, then run directly:
 cd path\to\data_governance-main
 $env:DG_REPORTS_PATH = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $env:DG_DB_PATH = "..\governance.db"
-$env:DG_SIMULATE_FRESHNESS = "false"
 $env:DG_AI_MOCK = "true"
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
