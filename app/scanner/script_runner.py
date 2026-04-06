@@ -47,7 +47,7 @@ def _derive_machine(script_path: str) -> tuple[str, str]:
 
     # Local path
     hostname = socket.gethostname()
-    alias = MACHINE_ALIASES.get(hostname.lower(), "BI Desktop")
+    alias = MACHINE_ALIASES.get(hostname.lower(), hostname)
     return hostname, alias
 
 
