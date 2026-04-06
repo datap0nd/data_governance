@@ -3178,6 +3178,58 @@ function truncatePath(path, maxLen) {
     return "..." + path.slice(path.length - maxLen + 3);
 }
 
+// Derive script category from its file path
+function _scriptCategory(path) {
+    if (!path) return "Other";
+    const p = path.toLowerCase().replace(/\\/g, "/");
+    if (p.includes("/gscm_download/") || p.includes("/gscm")) return "GSCM";
+    if (p.includes("/it voc")) return "IT VOC";
+    if (p.includes("/samsung health") || p.includes("/samsung_health")) return "Samsung Health";
+    if (p.includes("/actual_sales/") || p.includes("/mena_sales")) return "Sales ETL";
+    if (p.includes("/fact_tables/")) return "PSI Facts";
+    if (p.includes("/imei_sold_to/") || p.includes("/imei")) return "IMEI";
+    if (p.includes("/channel mapping")) return "Channel Mapping";
+    if (p.includes("/volatile deal") || p.includes("/alert_from_sql")) return "Alerts";
+    if (p.includes("/rag/") || p.includes("/qna pipeline")) return "RAG/AI";
+    if (p.includes("/monitoring/")) return "Monitoring";
+    if (p.includes("/report tracker")) return "Report Tracker";
+    if (p.includes("/data to sql/")) return "Data to SQL";
+    if (p.includes("/psi/") || p.includes("/psi warning") || p.includes("/sql data/")) return "PSI";
+    if (p.includes("/excel upload to sql") || p.includes("/menarhq")) return "Excel Upload";
+    // Fallback: use first folder after Desktop
+    const parts = p.split("/");
+    const dIdx = parts.findIndex(s => s === "desktop");
+    if (dIdx >= 0 && parts.length > dIdx + 1) {
+        const folder = parts[dIdx + 1];
+        if (folder && folder.length > 1) return folder.charAt(0).toUpperCase() + folder.slice(1);
+    }
+    return "Other";
+}
+
+const _CATEGORY_COLORS = {
+    "GSCM": "badge-green", "PSI": "badge-blue", "PSI Facts": "badge-blue",
+    "IT VOC": "badge-yellow", "Samsung Health": "badge-purple",
+    "Sales ETL": "badge-green", "Data to SQL": "badge-green",
+    "Channel Mapping": "badge-yellow", "IMEI": "badge-blue",
+    "Alerts": "badge-red", "RAG/AI": "badge-purple",
+    "Monitoring": "badge-dim", "Report Tracker": "badge-yellow",
+    "Excel Upload": "badge-yellow",
+};
+
+// Classify a table reference by its PostgreSQL schema or pattern
+function _classifyTable(tableName) {
+    const t = tableName.toLowerCase();
+    if (t.startsWith("bi_reporting.")) return { label: "BI Reporting", cls: "badge-blue" };
+    if (t.startsWith("smartswitch.")) return { label: "SmartSwitch", cls: "badge-purple" };
+    if (t.startsWith("samsung_health.")) return { label: "Samsung Health", cls: "badge-purple" };
+    if (t.startsWith("do_not_use_tables.")) return { label: "Internal", cls: "badge-dim" };
+    if (t.includes("mdscm") || t.includes("gscm")) return { label: "GSCM", cls: "badge-green" };
+    if (t.includes("asap")) return { label: "ASAP", cls: "badge-yellow" };
+    if (/\.csv$/i.test(t) || /csv/i.test(t)) return { label: "CSV", cls: "badge-muted" };
+    if (t.includes(".") && !t.includes("/") && !t.includes("\\")) return { label: "Postgres", cls: "badge-blue" };
+    return { label: "Other", cls: "badge-muted" };
+}
+
 async function renderScripts() {
     const showArchived = _isShowingArchived("scripts");
     const [scripts, options] = await Promise.all([
@@ -3187,6 +3239,11 @@ async function renderScripts() {
     const people = options.people || [];
 
     const cols = [
+        { key: "category", label: "Category", render: s => {
+            const cat = _scriptCategory(s.path);
+            const cls = _CATEGORY_COLORS[cat] || "badge-muted";
+            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
+        }, sortVal: s => _scriptCategory(s.path) },
         { key: "display_name", label: "Script", render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
         { key: "path", label: "Path", resizable: true, render: s => {
             const short = truncatePath(s.path, 60);
@@ -3199,36 +3256,39 @@ async function renderScripts() {
         }, sortVal: s => s.owner || "" },
         { key: "tables_written", label: "Writes To", render: s => {
             if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return s.tables_written.map(t => `<span class="badge badge-red" style="font-size:0.68rem;margin:1px" title="${esc(t)}">${esc(t)}</span>`).join(" ");
+            return s.tables_written.map(t => {
+                const c = _classifyTable(t);
+                return `<span class="badge badge-red" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
+            }).join(" ");
         }, sortVal: s => (s.tables_written || []).join(",") },
         { key: "tables_read", label: "Reads From", render: s => {
             if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             return s.tables_read.map(t => {
-                const tl = t.toLowerCase();
-                let label, cls;
-                if (tl.includes("mdscm")) { label = "GSCM"; cls = "badge-green"; }
-                else if (tl.includes("asap")) { label = "ASAP"; cls = "badge-yellow"; }
-                else if (/\.csv$/i.test(t) || /csv/i.test(t)) { label = "CSV"; cls = "badge-muted"; }
-                else if (t.includes(".") && !t.includes("/") && !t.includes("\\")) { label = "POSTGRES"; cls = "badge-blue"; }
-                else { label = "other"; cls = "badge-muted"; }
-                return `<span class="badge ${cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${label}</span>`;
+                const c = _classifyTable(t);
+                return `<span class="badge ${c.cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
             }).join(" ");
         }, sortVal: s => (s.tables_read || []).join(",") },
         { key: "last_modified", label: "Modified", render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
-        { key: "last_scanned", label: "Scanned", render: s => `<span style="color:var(--text-muted)" title="${s.last_scanned || ''}">${s.last_scanned ? timeAgo(s.last_scanned) : "-"}</span>`, sortVal: s => s.last_scanned || "" },
         _archiveColDef("script"),
     ];
 
     const sqlOnly = sessionStorage.getItem("scripts_sql_only") !== "0";
-    const filtered = sqlOnly ? scripts.filter(s => s.tables_written && s.tables_written.length > 0) : scripts;
+    const catFilter = sessionStorage.getItem("scripts_category") || "";
+    let filtered = sqlOnly ? scripts.filter(s => s.tables_written && s.tables_written.length > 0) : scripts;
+    if (catFilter) filtered = filtered.filter(s => _scriptCategory(s.path) === catFilter);
     const activeCount = filtered.filter(s => !s.archived).length;
     const totalCount = scripts.filter(s => !s.archived).length;
+
+    // Collect unique categories for filter dropdown
+    const allCats = [...new Set(scripts.map(s => _scriptCategory(s.path)))].sort();
+    const catOpts = allCats.map(c => `<option value="${esc(c)}"${catFilter === c ? ' selected' : ''}>${esc(c)}</option>`).join("");
 
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${activeCount}${sqlOnly ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}</span>
+            <span class="subtitle">${activeCount}${sqlOnly || catFilter ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}${catFilter ? ` (${catFilter})` : ''}</span>
             <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
+            <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
             ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
@@ -3285,6 +3345,7 @@ async function showScriptDetail(script) {
             <button class="btn-outline" id="btn-close-script-detail">&times; Close</button>
         </div>
         <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_scriptCategory(script.path)] || 'badge-muted'}">${esc(_scriptCategory(script.path))}</span></div>
             <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)}</span></div>
             <div class="detail-item"><div class="detail-label">Owner</div>
                 <select class="freq-select-inline script-detail-owner-select" data-script-id="${script.id}">
@@ -3339,6 +3400,15 @@ async function showScriptDetail(script) {
 }
 
 function bindScriptsPage() {
+    // Category filter dropdown
+    const catSel = document.getElementById("scripts-cat-filter");
+    if (catSel) {
+        catSel.addEventListener("change", () => {
+            sessionStorage.setItem("scripts_category", catSel.value);
+            navigate("scripts");
+        });
+    }
+
     // SQL-only filter toggle
     const btnSqlOnly = document.getElementById("btn-sql-only");
     if (btnSqlOnly) {
@@ -3472,38 +3542,55 @@ function bindScriptsPage() {
 
 // ── Scheduled Tasks (Windows Task Scheduler) ──
 
+// Derive category for a scheduled task from its linked script path or action command
+function _taskCategory(task) {
+    // If linked to a script, use script category logic on action_args (which often has the script path)
+    const path = task.action_args || task.action_command || task.task_path || "";
+    if (!path) return "Other";
+    return _scriptCategory(path);
+}
+
 async function renderScheduledTasks() {
     const showArchived = _isShowingArchived("scheduledtasks");
     const tasks = await api("/api/scheduled-tasks" + (showArchived ? "?include_archived=true" : ""));
+    const catFilter = sessionStorage.getItem("schtasks_category") || "";
+    let filtered = catFilter ? tasks.filter(t => _taskCategory(t) === catFilter) : tasks;
+
+    // Collect unique categories
+    const allCats = [...new Set(tasks.map(t => _taskCategory(t)))].sort();
+    const catOpts = allCats.map(c => `<option value="${esc(c)}"${catFilter === c ? ' selected' : ''}>${esc(c)}</option>`).join("");
 
     const cols = [
+        { key: "category", label: "Category", render: t => {
+            const cat = _taskCategory(t);
+            const cls = _CATEGORY_COLORS[cat] || "badge-muted";
+            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
+        }, sortVal: t => _taskCategory(t) },
         { key: "task_name", label: "Task", render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
         { key: "status", label: "Status", render: t => {
             if (!t.status) return '<span style="color:var(--text-dim)">-</span>';
             const cls = t.status === "Ready" ? "badge-green" : t.status === "Running" ? "badge-yellow" : t.status === "Disabled" ? "badge-dim" : "badge-yellow";
             return `<span class="badge ${cls}">${esc(t.status)}</span>`;
         }, sortVal: t => t.status || "" },
-        { key: "enabled", label: "Enabled", render: t => t.enabled
-            ? '<span class="badge badge-green">Yes</span>'
-            : '<span class="badge badge-dim">No</span>',
-          sortVal: t => t.enabled ? "1" : "0" },
         { key: "last_run_time", label: "Last Run", render: t => t.last_run_time
-            ? `<span style="color:var(--text-muted)" title="${esc(t.last_run_time)}">${esc(t.last_run_time)}</span>`
+            ? `<span style="color:var(--text-muted)" title="${esc(t.last_run_time)}">${timeAgo(t.last_run_time)}</span>`
             : '<span style="color:var(--text-dim)">Never</span>',
           sortVal: t => t.last_run_time || "" },
         { key: "last_result", label: "Result", render: t => {
             if (!t.last_result) return '<span style="color:var(--text-dim)">-</span>';
             const ok = t.last_result === "0";
-            return `<span class="badge ${ok ? 'badge-green' : 'badge-red'}">${esc(t.last_result)}</span>`;
+            return `<span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'OK' : 'Failed'}</span>`;
         }, sortVal: t => t.last_result || "" },
         { key: "next_run_time", label: "Next Run", render: t => t.next_run_time
-            ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${esc(t.next_run_time)}</span>`
+            ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${timeAgo(t.next_run_time)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
           sortVal: t => t.next_run_time || "" },
-        { key: "schedule_type", label: "Schedule", render: t => t.schedule_type
-            ? `<span style="color:var(--text)">${esc(t.schedule_type)}</span>`
-            : '<span style="color:var(--text-dim)">-</span>',
-          sortVal: t => t.schedule_type || "" },
+        { key: "schedule_type", label: "Schedule", render: t => {
+            if (!t.schedule_type) return '<span style="color:var(--text-dim)">-</span>';
+            const s = t.schedule_type.toLowerCase();
+            const cls = s.includes("daily") ? "badge-green" : s.includes("weekly") ? "badge-blue" : s.includes("monthly") ? "badge-yellow" : "badge-muted";
+            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(t.schedule_type)}</span>`;
+        }, sortVal: t => t.schedule_type || "" },
         { key: "script_name", label: "Linked Script", render: t => t.script_id
             ? `<span class="badge badge-blue schtask-script-link" style="cursor:pointer" data-script-id="${t.script_id}">${esc(t.script_name)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
@@ -3511,22 +3598,25 @@ async function renderScheduledTasks() {
         _archiveColDef("scheduled_task"),
     ];
 
-    const active = tasks.filter(t => !t.archived);
+    const active = filtered.filter(t => !t.archived);
     const failedCount = active.filter(t => t.last_result && t.last_result !== "0").length;
     const linkedCount = active.filter(t => t.script_id).length;
+    const disabledCount = active.filter(t => !t.enabled).length;
     const failedNote = failedCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${failedCount} failed</span>` : "";
+    const disabledNote = disabledCount > 0 ? ` <span class="badge badge-dim" style="font-size:0.72rem">${disabledCount} disabled</span>` : "";
 
     return `
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
-            <span class="subtitle">${active.length} tasks tracked, ${linkedCount} linked to scripts${failedNote}</span>
+            <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
             <button class="btn-outline" id="btn-scan-schtasks" style="margin-left:0.5rem">Scan Task Scheduler</button>
+            <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
             <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
         </div>
-        ${tasks.length === 0
+        ${filtered.length === 0
             ? '<div class="empty-state" style="margin-top:2rem">No scheduled tasks found. Click <strong>Scan Task Scheduler</strong> to import from Windows Task Scheduler.<br><span style="color:var(--text-dim);font-size:0.8rem">This feature only works on Windows.</span></div>'
-            : dataTable("dt-schtasks", cols, tasks, { onRowClick: showScheduledTaskDetail })
+            : dataTable("dt-schtasks", cols, filtered, { onRowClick: showScheduledTaskDetail })
         }
     `;
 }
@@ -3564,6 +3654,7 @@ async function showScheduledTaskDetail(task) {
             <button class="btn-outline" id="btn-close-schtask-detail">&times; Close</button>
         </div>
         <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_taskCategory(task)] || 'badge-muted'}">${esc(_taskCategory(task))}</span></div>
             <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(task.task_path)}</span></div>
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge}</div>
             <div class="detail-item"><div class="detail-label">Enabled</div>${enabledBadge}</div>
@@ -3601,6 +3692,15 @@ async function showScheduledTaskDetail(task) {
 }
 
 function bindScheduledTasksPage() {
+    // Category filter
+    const catSel = document.getElementById("schtasks-cat-filter");
+    if (catSel) {
+        catSel.addEventListener("change", () => {
+            sessionStorage.setItem("schtasks_category", catSel.value);
+            navigate("scheduledtasks");
+        });
+    }
+
     // Scan button
     const btnScan = document.getElementById("btn-scan-schtasks");
     if (btnScan) {

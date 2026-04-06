@@ -540,6 +540,7 @@ h2 {
 .badge-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid var(--red-border); }
 .badge-blue   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid var(--blue-border); }
 .badge-muted  { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+.badge-dim    { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
 
 /* Dashboard attention badges */
 .badge-flat {
