@@ -300,9 +300,44 @@ MIGRATIONS = [
     "UPDATE sources SET type = 'excel' WHERE type IN ('csv', 'folder')",
     # Clear upstream_id (reset for manual population)
     "UPDATE sources SET upstream_id = NULL WHERE upstream_id IS NOT NULL",
-    # Machine tracking for scheduled tasks
+    # Machine tracking for scheduled tasks - add columns and rebuild table to drop UNIQUE on task_name
     "ALTER TABLE scheduled_tasks ADD COLUMN hostname TEXT",
     "ALTER TABLE scheduled_tasks ADD COLUMN machine_alias TEXT",
+    # Rebuild scheduled_tasks to replace UNIQUE(task_name) with UNIQUE(task_name, hostname)
+    """CREATE TABLE IF NOT EXISTS scheduled_tasks_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_name       TEXT NOT NULL,
+        task_path       TEXT NOT NULL,
+        status          TEXT,
+        last_run_time   DATETIME,
+        last_result     TEXT,
+        next_run_time   DATETIME,
+        author          TEXT,
+        run_as_user     TEXT,
+        action_command  TEXT,
+        action_args     TEXT,
+        schedule_type   TEXT,
+        enabled         INTEGER DEFAULT 1,
+        script_id       INTEGER REFERENCES scripts(id),
+        hostname        TEXT,
+        machine_alias   TEXT,
+        archived        INTEGER DEFAULT 0,
+        last_scanned    DATETIME,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(task_name, hostname)
+    )""",
+    """INSERT OR IGNORE INTO scheduled_tasks_new
+        (id, task_name, task_path, status, last_run_time, last_result, next_run_time,
+         author, run_as_user, action_command, action_args, schedule_type, enabled,
+         script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at)
+        SELECT id, task_name, task_path, status, last_run_time, last_result, next_run_time,
+               author, run_as_user, action_command, action_args, schedule_type, enabled,
+               script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at
+        FROM scheduled_tasks""",
+    "DROP TABLE scheduled_tasks",
+    "ALTER TABLE scheduled_tasks_new RENAME TO scheduled_tasks",
+    "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
     # Machine tracking for scripts
     "ALTER TABLE scripts ADD COLUMN hostname TEXT",
     "ALTER TABLE scripts ADD COLUMN machine_alias TEXT",
