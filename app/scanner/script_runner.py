@@ -33,16 +33,23 @@ def _match_source(db, table_name: str) -> int | None:
     return None
 
 
-def run_script_scan(scripts_path: str | None = None) -> dict:
+def run_script_scan(scripts_path: str | None = None, on_progress=None) -> dict:
     """Run a full script scan and store results.
 
+    *on_progress* is an optional callback(message: str) for live logging.
     Returns a summary dict with scan statistics.
     """
     root = scripts_path or SCRIPTS_PATH
     now = datetime.now(timezone.utc).isoformat()
 
+    if on_progress:
+        on_progress(f"Starting script scan: {root}")
+
     try:
-        results = walk_scripts(root)
+        results = walk_scripts(root, on_progress=on_progress)
+
+        if on_progress:
+            on_progress(f"Storing {len(results)} scripts in database...")
 
         scripts_found = 0
         scripts_updated = 0

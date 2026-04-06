@@ -237,30 +237,45 @@ def parse_script(filepath: Path) -> ScriptResult | None:
         return None
 
 
-def walk_scripts(root_path: str) -> list[ScriptResult]:
+def walk_scripts(root_path: str, on_progress=None) -> list[ScriptResult]:
     """Walk a directory tree for .py files and parse each one.
 
     Skips directories in SKIP_DIRS.
+    *on_progress* is an optional callback(message: str) for live logging.
     Returns a list of ScriptResult objects (only scripts with table references).
     """
     root = Path(root_path)
     if not root.exists():
-        logger.warning("Scripts path does not exist: %s", root)
+        msg = f"Scripts path does not exist: {root}"
+        logger.warning(msg)
+        if on_progress:
+            on_progress(msg)
         return []
 
+    if on_progress:
+        on_progress(f"Walking {root} ...")
+
     results = []
+    files_checked = 0
     for dirpath, dirnames, filenames in os.walk(root):
         # Filter out skip directories (modifying dirnames in-place)
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
 
-        for filename in filenames:
-            if not filename.endswith(".py"):
-                continue
+        py_files = [f for f in filenames if f.endswith(".py")]
+        if py_files and on_progress:
+            on_progress(f"Scanning {dirpath} ({len(py_files)} .py files)")
 
+        for filename in py_files:
             filepath = Path(dirpath) / filename
+            files_checked += 1
             result = parse_script(filepath)
             if result and (result.tables_read or result.tables_written):
                 results.append(result)
+                if on_progress:
+                    tables = len(result.tables_read) + len(result.tables_written)
+                    on_progress(f"  Found: {filename} ({tables} table refs)")
 
     logger.info("Scanned %s - found %d scripts with table references", root, len(results))
+    if on_progress:
+        on_progress(f"Walk complete: {files_checked} files checked, {len(results)} with table refs")
     return results

@@ -2815,6 +2815,38 @@ button.btn-danger-outline:hover {
 .lineage-dropdown option { background: var(--surface); color: var(--text); }
 .lineage-dropdown:focus { border-color: var(--accent); outline: none; }
 
+/* Scan log panel (used by scripts, etc.) */
+.scan-log-wrap {
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    overflow: hidden;
+}
+.scan-log-toggle {
+    display: flex; align-items: center; gap: 0.3rem;
+    width: 100%; padding: 0.4rem 0.7rem;
+    background: none; border: none; cursor: pointer;
+    font-size: 0.75rem; font-weight: 600;
+    color: var(--text-muted); text-align: left;
+}
+.scan-log-toggle:hover { color: var(--text); }
+.scan-log-toggle .nav-arrow { font-size: 0.65rem; }
+.scan-log-status {
+    padding: 0 0.7rem 0.35rem;
+    font-size: 0.75rem; color: var(--text-muted);
+    display: flex; align-items: center; gap: 0.4rem;
+}
+.scan-log-pre {
+    margin: 0; padding: 0.5rem 0.7rem;
+    font-size: 0.7rem; line-height: 1.45;
+    color: var(--text-muted);
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    max-height: 300px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all;
+}
+
 .lineage-container {
     background: var(--surface);
     border: 1px solid var(--border);

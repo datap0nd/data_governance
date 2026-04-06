@@ -1,5 +1,8 @@
 """Scripts API - scan, list, update, and delete Python scripts."""
 
+import threading
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
 from app.routers.eventlog import log_event
@@ -7,6 +10,37 @@ from app.models import ScriptOut, ScriptUpdate, ScriptTableOut
 from app.scanner.script_runner import run_script_scan
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
+
+# In-memory scan state for async scanning with live log
+_scan_state = {
+    "status": "idle",  # idle | running | completed | failed
+    "log": [],
+    "started_at": None,
+    "finished_at": None,
+    "result": None,
+}
+_scan_lock = threading.Lock()
+
+
+def _append_log(message: str):
+    """Append a timestamped log line to the scan state."""
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    _scan_state["log"].append(f"[{ts}] {message}")
+
+
+def _run_scan_background():
+    """Run script scan in background thread, updating _scan_state."""
+    try:
+        result = run_script_scan(on_progress=_append_log)
+        _scan_state["result"] = result
+        _scan_state["status"] = "completed" if result.get("status") == "completed" else "failed"
+        _append_log(f"Scan finished: {result.get('scripts_total', 0)} scripts, {result.get('tables_linked', 0)} tables linked")
+    except Exception as e:
+        _scan_state["status"] = "failed"
+        _scan_state["result"] = {"status": "failed", "error": str(e)}
+        _append_log(f"ERROR: {e}")
+    finally:
+        _scan_state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def _build_script_out(db, row) -> ScriptOut:
@@ -40,6 +74,18 @@ def list_scripts():
     with get_db() as db:
         rows = db.execute("SELECT * FROM scripts ORDER BY display_name").fetchall()
         return [_build_script_out(db, r) for r in rows]
+
+
+@router.get("/scan/status")
+def get_scan_status():
+    """Get current script scan status and log lines."""
+    return {
+        "status": _scan_state["status"],
+        "log": _scan_state["log"],
+        "started_at": _scan_state["started_at"],
+        "finished_at": _scan_state["finished_at"],
+        "result": _scan_state["result"],
+    }
 
 
 @router.get("/{script_id}", response_model=ScriptOut)
@@ -91,9 +137,22 @@ def delete_script(script_id: int):
 
 @router.post("/scan")
 def trigger_script_scan():
-    """Trigger a scan of the scripts directory."""
-    result = run_script_scan()
-    return result
+    """Trigger an async scan of the scripts directory."""
+    with _scan_lock:
+        if _scan_state["status"] == "running":
+            return {"status": "already_running", "log": _scan_state["log"]}
+
+        _scan_state["status"] = "running"
+        _scan_state["log"] = []
+        _scan_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _scan_state["finished_at"] = None
+        _scan_state["result"] = None
+
+    _append_log("Scan started")
+    thread = threading.Thread(target=_run_scan_background, daemon=True)
+    thread.start()
+
+    return {"status": "started"}
 
 
 @router.get("/{script_id}/tables", response_model=list[ScriptTableOut])

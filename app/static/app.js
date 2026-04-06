@@ -3006,6 +3006,11 @@ async function renderScripts() {
             <button class="btn-outline" id="btn-scan-scripts" style="margin-left:0.5rem">Scan Scripts</button>
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
         </div>
+        <div id="script-scan-log-wrap" class="scan-log-wrap" style="display:none">
+            <button class="scan-log-toggle" id="btn-toggle-scan-log">Scan Log <span class="nav-arrow">&#9662;</span></button>
+            <div id="script-scan-log-status" class="scan-log-status"></div>
+            <pre id="script-scan-log" class="scan-log-pre" style="display:none"></pre>
+        </div>
         ${dataTable("dt-scripts", cols, scripts, { onRowClick: showScriptDetail })}
     `;
 }
@@ -3107,26 +3112,93 @@ async function showScriptDetail(script) {
 }
 
 function bindScriptsPage() {
-    // Scan button
+    // Scan button - async with live log polling
     const btnScan = document.getElementById("btn-scan-scripts");
+    const logWrap = document.getElementById("script-scan-log-wrap");
+    const logPre = document.getElementById("script-scan-log");
+    const logStatus = document.getElementById("script-scan-log-status");
+    const btnToggle = document.getElementById("btn-toggle-scan-log");
+    let logExpanded = false;
+
+    if (btnToggle) {
+        btnToggle.addEventListener("click", () => {
+            logExpanded = !logExpanded;
+            logPre.style.display = logExpanded ? "" : "none";
+            btnToggle.querySelector(".nav-arrow").innerHTML = logExpanded ? "&#9652;" : "&#9662;";
+        });
+    }
+
+    // Check if a scan is already running on page load
+    (async () => {
+        try {
+            const st = await api("/api/scripts/scan/status");
+            if (st.status === "running") {
+                logWrap.style.display = "";
+                logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
+                logPre.textContent = (st.log || []).join("\n");
+                if (btnScan) { btnScan.disabled = true; btnScan.textContent = "Scanning..."; }
+                _pollScriptScanLog();
+            }
+        } catch (_) {}
+    })();
+
     if (btnScan) {
         btnScan.addEventListener("click", async () => {
             btnScan.disabled = true;
             btnScan.textContent = "Scanning...";
+            logWrap.style.display = "";
+            logPre.textContent = "";
+            logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
+            logExpanded = true;
+            logPre.style.display = "";
+            btnToggle.querySelector(".nav-arrow").innerHTML = "&#9652;";
+
             try {
                 const result = await apiPost("/api/scripts/scan");
-                if (result.status === "completed") {
-                    toast(`Scan complete - ${result.scripts_total} scripts found`);
-                } else {
-                    toast("Scan failed: " + (result.error || "unknown error"));
+                if (result.status === "already_running") {
+                    toast("Scan already running");
+                    logPre.textContent = (result.log || []).join("\n");
                 }
-                await navigate("scripts");
+                _pollScriptScanLog();
             } catch (err) {
                 toast("Scan failed: " + err.message);
+                logStatus.innerHTML = '<span class="badge badge-red">Failed</span>';
                 btnScan.disabled = false;
                 btnScan.textContent = "Scan Scripts";
             }
         });
+    }
+
+    function _pollScriptScanLog() {
+        const interval = setInterval(async () => {
+            // Stop polling if user navigated away
+            if (currentPage !== "scripts") { clearInterval(interval); return; }
+            try {
+                const st = await api("/api/scripts/scan/status");
+                logPre.textContent = (st.log || []).join("\n");
+                logPre.scrollTop = logPre.scrollHeight;
+
+                if (st.status !== "running") {
+                    clearInterval(interval);
+                    if (st.status === "completed") {
+                        const r = st.result || {};
+                        logStatus.innerHTML = `<span class="badge badge-green">Complete</span> ${r.scripts_total || 0} scripts, ${r.tables_linked || 0} linked`;
+                        toast(`Scan complete - ${r.scripts_total || 0} scripts found`);
+                    } else {
+                        logStatus.innerHTML = `<span class="badge badge-red">Failed</span> ${(st.result || {}).error || ""}`;
+                    }
+                    if (btnScan) { btnScan.disabled = false; btnScan.textContent = "Scan Scripts"; }
+                    // Refresh table with new data
+                    try {
+                        const scripts = await api("/api/scripts");
+                        const subtitle = document.querySelector(".page-header .subtitle");
+                        if (subtitle) subtitle.textContent = `${scripts.length} Python scripts tracked`;
+                    } catch (_) {}
+                }
+            } catch (_) {
+                clearInterval(interval);
+            }
+        }, 2000);
     }
 
     // Inline owner select dropdowns
