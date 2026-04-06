@@ -68,8 +68,10 @@ def run_pbi_sync(workspace: str | None = None, on_progress=None) -> dict:
         if on_progress:
             on_progress("Running PowerShell script...")
 
+        # CREATE_NEW_CONSOLE lets the PBI login popup appear
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120,
+            creationflags=subprocess.CREATE_NEW_CONSOLE if platform.system() == "Windows" else 0,
         )
 
         if result.returncode != 0:
