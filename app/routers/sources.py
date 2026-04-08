@@ -21,7 +21,12 @@ def list_sources(include_archived: bool = Query(False)):
                     FROM script_tables st
                     JOIN scripts sc ON sc.id = st.script_id
                     WHERE st.source_id = s.id AND COALESCE(sc.archived, 0) = 0
-                   ) AS linked_scripts
+                   ) AS linked_scripts,
+                   (SELECT COUNT(*) FROM task_links tl
+                    JOIN tasks t ON t.id = tl.task_id
+                    WHERE tl.entity_type = 'source' AND tl.entity_id = s.id
+                    AND t.status != 'done'
+                   ) AS linked_task_count
             FROM sources s
             LEFT JOIN (
                 SELECT source_id, status, last_data_at,
@@ -53,6 +58,7 @@ def list_sources(include_archived: bool = Query(False)):
             upstream_name=r["upstream_name"],
             upstream_refresh_day=r["upstream_refresh_day"],
             linked_scripts=r["linked_scripts"],
+            linked_task_count=r["linked_task_count"],
             archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],

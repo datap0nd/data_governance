@@ -341,6 +341,17 @@ MIGRATIONS = [
     # Machine tracking for scripts
     "ALTER TABLE scripts ADD COLUMN hostname TEXT",
     "ALTER TABLE scripts ADD COLUMN machine_alias TEXT",
+    # Task-entity linking
+    """CREATE TABLE IF NOT EXISTS task_links (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        entity_type TEXT NOT NULL,
+        entity_id   INTEGER NOT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(task_id, entity_type, entity_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_task_links_task_id ON task_links(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_links_entity ON task_links(entity_type, entity_id)",
 ]
 
 

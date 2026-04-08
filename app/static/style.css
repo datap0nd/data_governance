@@ -3203,6 +3203,25 @@ button.btn-danger-outline:hover {
 .kanban-card-meta .due-date { font-size: 0.62rem; }
 .kanban-card-meta .due-date.overdue { color: var(--red); font-weight: 600; }
 
+/* Task card linked entity chips */
+.kanban-card-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 4px;
+}
+.task-link-chip {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--blue);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
 /* Task modal */
 .task-modal-overlay {
     position: fixed;
@@ -3363,6 +3382,86 @@ button.btn-danger-outline:hover {
     accent-color: var(--accent);
     width: 15px;
     height: 15px;
+}
+
+/* Task entity linking */
+.task-links-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 0.5rem;
+    max-height: 140px;
+    overflow-y: auto;
+}
+.task-link-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--surface-hover);
+    border-radius: 5px;
+    font-size: 0.78rem;
+}
+.task-link-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(96, 165, 250, 0.15);
+    color: var(--blue);
+    white-space: nowrap;
+}
+.task-link-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.task-link-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+}
+.task-link-remove:hover { color: var(--red); }
+.task-link-add-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 0.75rem;
+}
+.task-link-add-row select {
+    flex: 1;
+    font-size: 0.78rem;
+    padding: 4px 6px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+}
+.task-link-add-row .btn-outline {
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    white-space: nowrap;
+}
+
+/* Linked tasks in report detail */
+.linked-task-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    font-size: 0.78rem;
+}
+.linked-task-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Impact toggle */

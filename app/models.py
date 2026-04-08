@@ -23,6 +23,7 @@ class SourceOut(BaseModel):
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
     linked_scripts: str | None = None
+    linked_task_count: int = 0
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
@@ -61,6 +62,7 @@ class ReportOut(BaseModel):
     pbi_last_refresh_at: str | None = None
     pbi_refresh_status: str | None = None
     pbi_refresh_error: str | None = None
+    linked_task_count: int = 0
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
@@ -214,6 +216,17 @@ class DashboardStats(BaseModel):
 
 # --- Tasks ---
 
+class TaskLinkInfo(BaseModel):
+    entity_type: str
+    entity_id: int
+    entity_name: str | None = None
+
+
+class TaskLinkRequest(BaseModel):
+    entity_type: str
+    entity_id: int
+
+
 class TaskOut(BaseModel):
     id: int
     title: str
@@ -224,6 +237,7 @@ class TaskOut(BaseModel):
     due_date: str | None = None
     position: int = 0
     email_owner: bool = False
+    linked_entities: list[TaskLinkInfo] = []
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -236,6 +250,7 @@ class TaskCreate(BaseModel):
     assigned_to: str | None = None
     due_date: str | None = None
     email_owner: bool = False
+    linked_entities: list[TaskLinkRequest] = []
 
 
 class TaskUpdate(BaseModel):
@@ -246,6 +261,7 @@ class TaskUpdate(BaseModel):
     assigned_to: str | None = None
     due_date: str | None = None
     email_owner: bool | None = None
+    linked_entities: list[TaskLinkRequest] | None = None
 
 
 class TaskMove(BaseModel):

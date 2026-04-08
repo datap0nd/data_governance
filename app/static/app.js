@@ -710,10 +710,11 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, visuals, unusedData] = await Promise.all([
+    const [tables, visuals, unusedData, linkedTasks] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/visuals`).catch(() => []),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
+        api(`/api/tasks/for-entity?entity_type=report&entity_id=${report.id}`).catch(() => []),
     ]);
 
     // Look up full source objects from the sources we fetched
@@ -800,6 +801,37 @@ async function showReportDetail(report) {
         </div>
     ` : '';
 
+    // Build linked tasks section
+    const activeTasks = linkedTasks.filter(t => t.status !== "done");
+    const doneTasks = linkedTasks.filter(t => t.status === "done");
+    const linkedTasksSection = linkedTasks.length > 0 ? `
+        <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="linked-tasks-list">
+            Linked Tasks (${activeTasks.length} active${doneTasks.length ? `, ${doneTasks.length} completed` : ''})
+            ${activeTasks.length > 0
+                ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.62rem">${activeTasks.length}</span>`
+                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all done</span>`}
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
+        </div>
+        <div class="unused-measures-list" id="linked-tasks-list" style="display:none">
+            ${activeTasks.map(t => `
+                <div class="linked-task-item">
+                    <span class="priority-tag ${t.priority}" style="font-size:0.65rem">${t.priority}</span>
+                    <span class="linked-task-title">${esc(t.title)}</span>
+                    ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
+                    <span class="badge badge-${t.status === 'in_progress' ? 'yellow' : 'muted'}" style="font-size:0.62rem">${t.status}</span>
+                </div>`).join('')}
+            ${doneTasks.length > 0 ? `
+                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">Completed (${doneTasks.length})</div>
+                ${doneTasks.map(t => `
+                    <div class="linked-task-item" style="opacity:0.6">
+                        <span class="linked-task-title">${esc(t.title)}</span>
+                        ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
+                        <span class="badge badge-green" style="font-size:0.62rem">done</span>
+                    </div>`).join('')}
+            ` : ''}
+        </div>
+    ` : '';
+
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
             <div class="report-expand-header">
@@ -815,6 +847,7 @@ async function showReportDetail(report) {
             <div class="report-expand-label">Data Sources (${tables.length})</div>
             <div class="report-source-list">${sourceRows}</div>
             ${unusedSection}
+            ${linkedTasksSection}
         </div>
     </td>`;
 
@@ -1373,6 +1406,10 @@ async function renderSources() {
                 ${s.refresh_schedule ? '' : '<option value="">-</option>'}${opts}
             </select>`;
         }},
+        { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: s => {
+            if (!s.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
+            return `<span class="badge badge-blue" style="cursor:help" title="${s.linked_task_count} active task${s.linked_task_count !== 1 ? 's' : ''}">${s.linked_task_count}</span>`;
+        }, sortVal: s => s.linked_task_count || 0 },
         _archiveColDef("source"),
     ];
 
@@ -1506,6 +1543,10 @@ async function renderReports() {
             return `<span class="badge ${cls}">${esc(r.pbi_refresh_status)}</span>`;
         }, sortVal: r => _isPbiOverdue(r) ? "0_overdue" : r.pbi_refresh_status === "Failed" ? "1_failed" : "2_ok" },
         { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
+        { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: r => {
+            if (!r.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
+            return `<span class="badge badge-blue" style="cursor:help" title="${r.linked_task_count} active task${r.linked_task_count !== 1 ? 's' : ''}">${r.linked_task_count}</span>`;
+        }, sortVal: r => r.linked_task_count || 0 },
         { key: "_lineage", label: "Lineage", width: COL_W.xs, filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
         _archiveColDef("report"),
@@ -4221,12 +4262,25 @@ const TASK_STATUSES = [
     { key: "done", label: "Done" },
 ];
 
+const ENTITY_TYPE_LABELS = {
+    report: "Report",
+    source: "Data Source",
+    script: "Script",
+    upstream_system: "Upstream System",
+    scheduled_task: "Scheduled Task",
+};
+
 function _taskCard(task) {
     const today = new Date().toISOString().slice(0, 10);
     const overdue = task.due_date && task.due_date < today && task.status !== "done";
     const dueFmt = task.due_date ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
+    const linkBadges = (task.linked_entities || []).map(le => {
+        const typeShort = { report: "RPT", source: "SRC", script: "SCR", upstream_system: "UPS", scheduled_task: "SCH" }[le.entity_type] || le.entity_type;
+        return `<span class="task-link-chip" title="${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}: ${esc(le.entity_name || '')}">${typeShort}: ${esc(le.entity_name || "ID " + le.entity_id)}</span>`;
+    }).join("");
     return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}" tabindex="0" role="listitem" aria-label="Task: ${esc(task.title)}, Priority: ${task.priority}${task.assigned_to ? ', Assigned to: ' + esc(task.assigned_to) : ''}">
         <div class="kanban-card-title">${esc(task.title)}</div>
+        ${linkBadges ? `<div class="kanban-card-links">${linkBadges}</div>` : ""}
         <div class="kanban-card-meta">
             <span class="priority-tag ${task.priority}">${task.priority}</span>
             ${task.assigned_to ? `<span class="assignee-chip" title="${esc(task.assigned_to)}">${esc(task.assigned_to)}</span>` : ""}
@@ -4307,12 +4361,20 @@ function _buildKanbanBoard(tasks, filterOwner) {
 function _taskModalHtml(task, owners) {
     const isEdit = !!task;
     const title = isEdit ? "Edit Task" : "New Task";
-    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "", email_owner: false };
+    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "", email_owner: false, linked_entities: [] };
     const ownerOptions = owners.map(o =>
         `<option value="${o}" ${t.assigned_to === o ? "selected" : ""}>${o}</option>`
     ).join("");
     const statusOptions = TASK_STATUSES.map(s =>
         `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}</option>`
+    ).join("");
+
+    const existingLinks = (t.linked_entities || []).map(le =>
+        `<div class="task-link-row" data-entity-type="${esc(le.entity_type)}" data-entity-id="${le.entity_id}">
+            <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}</span>
+            <span class="task-link-name">${esc(le.entity_name || "ID " + le.entity_id)}</span>
+            <button type="button" class="task-link-remove" title="Remove">&times;</button>
+        </div>`
     ).join("");
 
     return `<div class="task-modal-overlay" id="task-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
@@ -4341,6 +4403,18 @@ function _taskModalHtml(task, owners) {
                 <input type="checkbox" id="task-email-owner" ${t.email_owner ? "checked" : ""} />
                 Email owner on assignment
             </label>
+            <label>Linked Entities</label>
+            <div id="task-links-list" class="task-links-list">${existingLinks}</div>
+            <div class="task-link-add-row">
+                <select id="task-link-type">
+                    <option value="">Select type...</option>
+                    ${Object.entries(ENTITY_TYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+                </select>
+                <select id="task-link-entity" disabled>
+                    <option value="">Select entity...</option>
+                </select>
+                <button type="button" class="btn-outline" id="task-link-add-btn" disabled>Add</button>
+            </div>
             <div class="task-modal-actions">
                 ${isEdit ? `<button class="btn-danger" id="task-delete-btn">Delete</button>` : ""}
                 <button id="task-cancel-btn">Cancel</button>
@@ -4350,7 +4424,7 @@ function _taskModalHtml(task, owners) {
     </div>`;
 }
 
-function _openTaskModal(task) {
+async function _openTaskModal(task) {
     const owners = window._tasksOwners || [];
     const existing = document.getElementById("task-modal-overlay");
     if (existing) existing.remove();
@@ -4371,11 +4445,75 @@ function _openTaskModal(task) {
     // Clear validation error on typing
     titleInput.addEventListener("input", () => titleInput.classList.remove("input-error"));
 
+    // --- Entity linking ---
+    let linkableEntities = {};
+    try { linkableEntities = await api("/api/tasks/linkable-entities"); } catch (_) {}
+
+    const linkTypeSelect = document.getElementById("task-link-type");
+    const linkEntitySelect = document.getElementById("task-link-entity");
+    const linkAddBtn = document.getElementById("task-link-add-btn");
+    const linksList = document.getElementById("task-links-list");
+
+    linkTypeSelect.addEventListener("change", () => {
+        const etype = linkTypeSelect.value;
+        linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
+        linkEntitySelect.disabled = !etype;
+        linkAddBtn.disabled = true;
+        if (etype && linkableEntities[etype]) {
+            linkableEntities[etype].forEach(e => {
+                linkEntitySelect.insertAdjacentHTML("beforeend",
+                    `<option value="${e.id}">${esc(e.name)}</option>`);
+            });
+        }
+    });
+
+    linkEntitySelect.addEventListener("change", () => {
+        linkAddBtn.disabled = !linkEntitySelect.value;
+    });
+
+    linkAddBtn.addEventListener("click", () => {
+        const etype = linkTypeSelect.value;
+        const eid = parseInt(linkEntitySelect.value);
+        if (!etype || !eid) return;
+        // Check for duplicates
+        const existingLink = linksList.querySelector(`[data-entity-type="${etype}"][data-entity-id="${eid}"]`);
+        if (existingLink) { toast("Already linked"); return; }
+        const ename = linkEntitySelect.options[linkEntitySelect.selectedIndex].text;
+        linksList.insertAdjacentHTML("beforeend",
+            `<div class="task-link-row" data-entity-type="${esc(etype)}" data-entity-id="${eid}">
+                <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[etype] || etype)}</span>
+                <span class="task-link-name">${esc(ename)}</span>
+                <button type="button" class="task-link-remove" title="Remove">&times;</button>
+            </div>`);
+        // Reset selectors
+        linkTypeSelect.value = "";
+        linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
+        linkEntitySelect.disabled = true;
+        linkAddBtn.disabled = true;
+    });
+
+    linksList.addEventListener("click", (e) => {
+        if (e.target.classList.contains("task-link-remove")) {
+            e.target.closest(".task-link-row").remove();
+        }
+    });
+
+    // --- Save ---
     saveBtn.addEventListener("click", async () => {
         const title = titleInput.value.trim();
         if (!title) { titleInput.classList.add("input-error"); titleInput.focus(); return; }
 
         saveBtn.disabled = true;
+
+        // Collect linked entities from the DOM
+        const linked_entities = [];
+        linksList.querySelectorAll(".task-link-row").forEach(row => {
+            linked_entities.push({
+                entity_type: row.dataset.entityType,
+                entity_id: parseInt(row.dataset.entityId),
+            });
+        });
+
         const body = {
             title,
             description: document.getElementById("task-desc").value.trim() || null,
@@ -4384,6 +4522,7 @@ function _openTaskModal(task) {
             assigned_to: document.getElementById("task-assign").value || null,
             due_date: document.getElementById("task-due").value || null,
             email_owner: document.getElementById("task-email-owner").checked,
+            linked_entities,
         };
 
         try {

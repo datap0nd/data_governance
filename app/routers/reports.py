@@ -13,7 +13,12 @@ def list_reports(include_archived: bool = Query(False)):
             SELECT r.*,
                    (SELECT COUNT(DISTINCT rt.source_id)
                     FROM report_tables rt WHERE rt.report_id = r.id AND rt.source_id IS NOT NULL
-                   ) AS source_count
+                   ) AS source_count,
+                   (SELECT COUNT(*) FROM task_links tl
+                    JOIN tasks t ON t.id = tl.task_id
+                    WHERE tl.entity_type = 'report' AND tl.entity_id = r.id
+                    AND t.status != 'done'
+                   ) AS linked_task_count
             FROM reports r
             {archive_filter}
             ORDER BY r.name
@@ -48,6 +53,7 @@ def list_reports(include_archived: bool = Query(False)):
             pbi_last_refresh_at=r["pbi_last_refresh_at"],
             pbi_refresh_status=r["pbi_refresh_status"],
             pbi_refresh_error=r["pbi_refresh_error"],
+            linked_task_count=r["linked_task_count"],
             archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],
