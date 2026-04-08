@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fetch Power BI refresh schedules and POST to the governance API.
-    Caches the access token to avoid repeated login prompts.
+    Uses MSAL.NET for token caching with refresh tokens (~90 day persistence).
 .PARAMETER WorkspaceName
     Name of the Power BI workspace to scan. Default: mx executive
 .PARAMETER ApiBase
@@ -13,84 +13,127 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$TokenFile = Join-Path $PSScriptRoot "pbi_token.json"
 $PbiBase = "https://api.powerbi.com/v1.0/myorg"
+$CacheFile = Join-Path $PSScriptRoot "msal_token_cache.bin"
 
-function Get-CachedToken {
-    if (-not (Test-Path $TokenFile)) { return $null }
-    try {
-        $cache = Get-Content $TokenFile -Raw | ConvertFrom-Json
-        $expiry = [datetime]::Parse($cache.expires_at).ToUniversalTime()
-        # Allow 5 min buffer before expiry
-        if ($expiry -gt (Get-Date).ToUniversalTime().AddMinutes(5)) {
-            return $cache.access_token
-        }
-    } catch {}
+# Power BI public client ID (same one the PBI PowerShell module uses)
+$ClientId = "ea0616ba-638b-4df5-95eb-564571f60a21"
+$Authority = "https://login.microsoftonline.com/organizations"
+$Scopes = @("https://analysis.windows.net/powerbi/api/.default")
+
+# ── Load MSAL.NET from the PBI module ──
+
+function Find-MsalAssembly {
+    $pbiModule = Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt.Profile |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $pbiModule) {
+        $pbiModule = Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt |
+            Sort-Object Version -Descending | Select-Object -First 1
+    }
+    if (-not $pbiModule) { return $null }
+
+    $moduleBase = $pbiModule.ModuleBase
+    # Search for MSAL DLL in module directory tree
+    $dll = Get-ChildItem -Path $moduleBase -Recurse -Filter "Microsoft.Identity.Client.dll" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($dll) { return $dll.FullName }
+
+    # Also check parent module folder (for nested modules)
+    $parentBase = Split-Path $moduleBase -Parent
+    $dll = Get-ChildItem -Path $parentBase -Recurse -Filter "Microsoft.Identity.Client.dll" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($dll) { return $dll.FullName }
+
     return $null
 }
 
-function Save-Token {
-    param([string]$Token)
-    # Access tokens typically expire in 60-90 min; save with 60 min expiry
-    $expiry = (Get-Date).ToUniversalTime().AddMinutes(55).ToString("o")
-    @{ access_token = $Token; expires_at = $expiry } | ConvertTo-Json | Set-Content $TokenFile -Force
+$msalDll = Find-MsalAssembly
+if (-not $msalDll) {
+    Write-Error "Cannot find MSAL assembly. Ensure MicrosoftPowerBIMgmt is installed: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
+    Read-Host "Press Enter to exit"
+    exit 1
 }
 
-function Get-PbiToken {
-    # Try cached token first
-    $cached = Get-CachedToken
-    if ($cached) {
-        Write-Host "Using cached token." -ForegroundColor Green
-        return $cached
+try {
+    Add-Type -Path $msalDll -ErrorAction Stop
+} catch [System.Reflection.ReflectionTypeLoadException] {
+    # Already loaded - this is fine
+} catch {
+    # Try loading anyway, might already be in memory
+}
+
+# ── MSAL token acquisition with file-based cache ──
+
+function Get-MsalToken {
+    # Build the public client app
+    $appBuilder = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId)
+    $appBuilder = $appBuilder.WithAuthority($Authority)
+    $appBuilder = $appBuilder.WithDefaultRedirectUri()
+    $app = $appBuilder.Build()
+
+    # Attach file-based token cache
+    # MSAL serializes both access tokens AND refresh tokens to this cache
+    if (Test-Path $CacheFile) {
+        $cacheData = [System.IO.File]::ReadAllBytes($CacheFile)
+        $app.UserTokenCache.DeserializeMsalV3($cacheData)
     }
 
-    # Need interactive login
-    Write-Host "Token expired or not found - logging in..." -ForegroundColor Yellow
+    $token = $null
 
-    if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
-        Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
-        Read-Host "Press Enter to exit"
-        exit 1
-    }
-
-    Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
-
+    # Try silent acquisition first (uses cached refresh token)
     try {
-        Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
-        Write-Host "Connected." -ForegroundColor Green
+        $accounts = $app.GetAccountsAsync().GetAwaiter().GetResult()
+        if ($accounts.Count -gt 0) {
+            $account = $accounts | Select-Object -First 1
+            Write-Host "Attempting silent login for $($account.Username)..." -ForegroundColor Cyan
+            $result = $app.AcquireTokenSilent($Scopes, $account).ExecuteAsync().GetAwaiter().GetResult()
+            $token = $result.AccessToken
+            Write-Host "Silent login successful." -ForegroundColor Green
+        }
     } catch {
-        Write-Error "Failed to connect to Power BI: $_"
-        Read-Host "Press Enter to exit"
-        exit 1
+        Write-Host "Silent login failed - interactive login required." -ForegroundColor Yellow
     }
 
-    # Extract and cache the access token
-    $tokenResult = Get-PowerBIAccessToken -AsString
-    # Returns "Bearer <token>" - strip the prefix
-    $token = $tokenResult.Replace("Bearer ", "").Trim()
-    Save-Token -Token $token
+    # Fall back to interactive login
+    if (-not $token) {
+        Write-Host "Opening browser for login..." -ForegroundColor Yellow
+        try {
+            $result = $app.AcquireTokenInteractive($Scopes).ExecuteAsync().GetAwaiter().GetResult()
+            $token = $result.AccessToken
+            Write-Host "Login successful." -ForegroundColor Green
+        } catch {
+            Write-Error "Login failed: $_"
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+    }
+
+    # Save updated cache (includes refresh token for next time)
+    $cacheData = $app.UserTokenCache.SerializeMsalV3()
+    [System.IO.File]::WriteAllBytes($CacheFile, $cacheData)
+
     return $token
 }
 
 function Invoke-PbiApi {
     param([string]$Url, [string]$Token)
     $headers = @{ Authorization = "Bearer $Token" }
-    $response = Invoke-RestMethod -Uri "$PbiBase/$Url" -Headers $headers -Method Get
-    return $response
+    return Invoke-RestMethod -Uri "$PbiBase/$Url" -Headers $headers -Method Get
 }
 
-# Get token (cached or interactive)
-$token = Get-PbiToken
+# ── Main ──
+
+$token = Get-MsalToken
 
 # Find workspace
 Write-Host "Finding workspace '$WorkspaceName'..." -ForegroundColor Cyan
 try {
     $workspaces = Invoke-PbiApi -Url "groups" -Token $token
 } catch {
-    # Token might be invalid despite cache - retry with fresh login
-    Write-Host "Cached token rejected, re-authenticating..." -ForegroundColor Yellow
-    if (Test-Path $TokenFile) { Remove-Item $TokenFile -Force }
-    $token = Get-PbiToken
+    # Token might be invalid - clear cache and retry
+    Write-Host "Token rejected, clearing cache and re-authenticating..." -ForegroundColor Yellow
+    if (Test-Path $CacheFile) { Remove-Item $CacheFile -Force }
+    $token = Get-MsalToken
     $workspaces = Invoke-PbiApi -Url "groups" -Token $token
 }
 
