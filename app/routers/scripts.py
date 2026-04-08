@@ -93,6 +93,32 @@ def get_scan_status():
     }
 
 
+@router.get("/export-code")
+def export_all_script_code():
+    """Return the full source code of every tracked script, concatenated."""
+    from pathlib import Path
+
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT display_name, path FROM scripts WHERE COALESCE(archived, 0) = 0 ORDER BY path"
+        ).fetchall()
+
+    parts = []
+    for row in rows:
+        filepath = Path(row["path"])
+        header = f"{'=' * 80}\n# FILE: {row['display_name']}\n# PATH: {row['path']}\n{'=' * 80}"
+        try:
+            if filepath.exists() and filepath.stat().st_size <= 1_048_576:
+                code = filepath.read_text(encoding="utf-8", errors="replace")
+            else:
+                code = "# [File not accessible or too large]"
+        except Exception as e:
+            code = f"# [Error reading file: {e}]"
+        parts.append(f"{header}\n{code}")
+
+    return {"count": len(rows), "code": "\n\n\n".join(parts)}
+
+
 @router.get("/{script_id}", response_model=ScriptOut)
 def get_script(script_id: int):
     with get_db() as db:
@@ -138,32 +164,6 @@ def delete_script(script_id: int, request: Request):
         db.execute("DELETE FROM scripts WHERE id = ?", (script_id,))
         log_event(db, "script", script_id, row["display_name"], "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": script_id}
-
-
-@router.get("/export-code")
-def export_all_script_code():
-    """Return the full source code of every tracked script, concatenated."""
-    from pathlib import Path
-
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT display_name, path FROM scripts WHERE COALESCE(archived, 0) = 0 ORDER BY path"
-        ).fetchall()
-
-    parts = []
-    for row in rows:
-        filepath = Path(row["path"])
-        header = f"{'=' * 80}\n# FILE: {row['display_name']}\n# PATH: {row['path']}\n{'=' * 80}"
-        try:
-            if filepath.exists() and filepath.stat().st_size <= 1_048_576:
-                code = filepath.read_text(encoding="utf-8", errors="replace")
-            else:
-                code = "# [File not accessible or too large]"
-        except Exception as e:
-            code = f"# [Error reading file: {e}]"
-        parts.append(f"{header}\n{code}")
-
-    return {"count": len(rows), "code": "\n\n\n".join(parts)}
 
 
 @router.post("/scan")
