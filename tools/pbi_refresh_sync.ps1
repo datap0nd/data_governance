@@ -65,17 +65,38 @@ try {
 # ── MSAL token acquisition with file-based cache ──
 
 function Get-MsalToken {
-    # Build the public client app
-    $appBuilder = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId)
-    try { $appBuilder = $appBuilder.WithAuthority($Authority, $true) } catch {
-        try { $appBuilder = $appBuilder.WithAuthority($Authority) } catch {
-            # Older MSAL - skip, uses default authority (common)
+    # Build the public client app - keep it simple for MSAL compat
+    $app = $null
+
+    # Try full builder chain first
+    try {
+        $app = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId).WithAuthority($Authority, $true).WithDefaultRedirectUri().Build()
+    } catch {}
+
+    # Fallback: authority without validate param
+    if (-not $app) {
+        try {
+            $app = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId).WithAuthority($Authority).WithDefaultRedirectUri().Build()
+        } catch {}
+    }
+
+    # Fallback: no authority, custom redirect
+    if (-not $app) {
+        try {
+            $app = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId).WithRedirectUri("http://localhost").Build()
+        } catch {}
+    }
+
+    # Last resort: bare minimum
+    if (-not $app) {
+        try {
+            $app = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId).Build()
+        } catch {
+            Write-Error "Failed to create MSAL app: $_"
+            Read-Host "Press Enter to exit"
+            exit 1
         }
     }
-    try { $appBuilder = $appBuilder.WithDefaultRedirectUri() } catch {
-        $appBuilder = $appBuilder.WithRedirectUri("http://localhost")
-    }
-    $app = $appBuilder.Build()
 
     # Attach file-based token cache
     # MSAL serializes both access tokens AND refresh tokens to this cache
