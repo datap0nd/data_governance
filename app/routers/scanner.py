@@ -33,13 +33,6 @@ def do_scan(request: Request):
     except Exception as e:
         logger.exception("Probe failed after scan")
         result["probe"] = {"status": "failed", "error": str(e)}
-    # After probe, launch PBI sync in user's session
-    try:
-        pbi_result = trigger_pbi_sync()
-        result["pbi_sync"] = pbi_result
-    except Exception as e:
-        logger.exception("PBI sync failed after scan")
-        result["pbi_sync"] = {"status": "failed", "error": str(e)}
     return result
 
 
