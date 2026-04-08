@@ -138,7 +138,7 @@ function _archiveColDef(entityType) {
         key: "_archive", label: "", width: COL_W.xs, filterable: false, sortable: false,
         render: item => {
             const isArchived = item.archived;
-            return `<button class="btn-archive-action" data-entity-type="${entityType}" data-entity-id="${item.id}" data-archived="${isArchived ? '1' : '0'}" title="${isArchived ? 'Unarchive' : 'Archive'}" onclick="event.stopPropagation()">${isArchived ? 'Restore' : 'Archive'}</button>`;
+            return `<button class="btn-archive-action" data-entity-type="${entityType}" data-entity-id="${item.id}" data-archived="${isArchived ? '1' : '0'}" title="${isArchived ? 'Unarchive' : 'Archive'}">${isArchived ? 'Restore' : 'Archive'}</button>`;
         },
     };
 }
@@ -454,7 +454,8 @@ function bindDataTables() {
     });
 
     document.querySelectorAll("tr[data-clickable]").forEach(tr => {
-        tr.addEventListener("click", () => {
+        tr.addEventListener("click", (e) => {
+            if (e.target.closest(".btn-archive-action")) return;
             const id = tr.dataset.dt;
             const idx = parseInt(tr.dataset.rowIdx);
             const dt = window._dt[id];
@@ -566,7 +567,8 @@ function _refreshDT(tableId) {
 
     // Re-bind only tbody row clicks and expandable cells (not filter inputs or sort headers)
     table.querySelectorAll("tr[data-clickable]").forEach(tr => {
-        tr.addEventListener("click", () => {
+        tr.addEventListener("click", (e) => {
+            if (e.target.closest(".btn-archive-action")) return;
             const idx = parseInt(tr.dataset.rowIdx);
             if (dt.opts && dt.opts.onRowClick && dt._displayRows) {
                 dt.opts.onRowClick(dt._displayRows[idx]);
