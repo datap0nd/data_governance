@@ -4248,6 +4248,8 @@ function _bindLinInteractions() {
     wrap.querySelectorAll("[data-lin-id]").forEach(node => {
         node.addEventListener("click", (e) => {
             if (e.target.closest("[data-lin-toggle]") && !e.target.closest(".lin-subrow")) return;
+            // Don't trigger highlight when clicking inside an expanded card body (let inner interactions work)
+            if (node.classList.contains("expanded") && e.target.closest(".lin-card-body") && !e.target.closest(".lin-subrow")) return;
             e.stopPropagation();
             const id = node.dataset.linId;
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
