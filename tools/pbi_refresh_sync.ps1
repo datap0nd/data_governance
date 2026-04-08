@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fetch Power BI refresh schedules and POST to the governance API.
-    Run this from your desktop (taskbar shortcut) - NOT from the service.
+    Caches the access token to avoid repeated login prompts.
 .PARAMETER WorkspaceName
     Name of the Power BI workspace to scan. Default: mx executive
 .PARAMETER ApiBase
@@ -13,45 +13,104 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$TokenFile = Join-Path $PSScriptRoot "pbi_token.json"
+$PbiBase = "https://api.powerbi.com/v1.0/myorg"
 
-# Ensure module is available
-if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
-    Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
-    Read-Host "Press Enter to exit"
-    exit 1
+function Get-CachedToken {
+    if (-not (Test-Path $TokenFile)) { return $null }
+    try {
+        $cache = Get-Content $TokenFile -Raw | ConvertFrom-Json
+        $expiry = [datetime]::Parse($cache.expires_at).ToUniversalTime()
+        # Allow 5 min buffer before expiry
+        if ($expiry -gt (Get-Date).ToUniversalTime().AddMinutes(5)) {
+            return $cache.access_token
+        }
+    } catch {}
+    return $null
 }
 
-Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
-
-# Connect (uses cached token if available, otherwise pops login)
-Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
-try {
-    Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
-    Write-Host "Connected." -ForegroundColor Green
-} catch {
-    Write-Error "Failed to connect to Power BI: $_"
-    Read-Host "Press Enter to exit"
-    exit 1
+function Save-Token {
+    param([string]$Token)
+    # Access tokens typically expire in 60-90 min; save with 60 min expiry
+    $expiry = (Get-Date).ToUniversalTime().AddMinutes(55).ToString("o")
+    @{ access_token = $Token; expires_at = $expiry } | ConvertTo-Json | Set-Content $TokenFile -Force
 }
+
+function Get-PbiToken {
+    # Try cached token first
+    $cached = Get-CachedToken
+    if ($cached) {
+        Write-Host "Using cached token." -ForegroundColor Green
+        return $cached
+    }
+
+    # Need interactive login
+    Write-Host "Token expired or not found - logging in..." -ForegroundColor Yellow
+
+    if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
+        Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+
+    Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
+
+    try {
+        Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
+        Write-Host "Connected." -ForegroundColor Green
+    } catch {
+        Write-Error "Failed to connect to Power BI: $_"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+
+    # Extract and cache the access token
+    $tokenResult = Get-PowerBIAccessToken -AsString
+    # Returns "Bearer <token>" - strip the prefix
+    $token = $tokenResult.Replace("Bearer ", "").Trim()
+    Save-Token -Token $token
+    return $token
+}
+
+function Invoke-PbiApi {
+    param([string]$Url, [string]$Token)
+    $headers = @{ Authorization = "Bearer $Token" }
+    $response = Invoke-RestMethod -Uri "$PbiBase/$Url" -Headers $headers -Method Get
+    return $response
+}
+
+# Get token (cached or interactive)
+$token = Get-PbiToken
 
 # Find workspace
-$ws = Get-PowerBIWorkspace | Where-Object { $_.Name -eq $WorkspaceName }
+Write-Host "Finding workspace '$WorkspaceName'..." -ForegroundColor Cyan
+try {
+    $workspaces = Invoke-PbiApi -Url "groups" -Token $token
+} catch {
+    # Token might be invalid despite cache - retry with fresh login
+    Write-Host "Cached token rejected, re-authenticating..." -ForegroundColor Yellow
+    if (Test-Path $TokenFile) { Remove-Item $TokenFile -Force }
+    $token = Get-PbiToken
+    $workspaces = Invoke-PbiApi -Url "groups" -Token $token
+}
+
+$ws = $workspaces.value | Where-Object { $_.name -eq $WorkspaceName }
 if (-not $ws) {
     Write-Error "Workspace '$WorkspaceName' not found"
     Read-Host "Press Enter to exit"
     exit 1
 }
 
-$wsId = $ws.Id
+$wsId = $ws.id
 Write-Host "Workspace: $WorkspaceName ($wsId)" -ForegroundColor Cyan
 
-# Get all reports (to map report name -> dataset ID)
-$reportsRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/reports" -Method Get | ConvertFrom-Json
+# Get all reports
+$reportsRaw = Invoke-PbiApi -Url "groups/$wsId/reports" -Token $token
 
 # Get all datasets
-$datasetsRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/datasets" -Method Get | ConvertFrom-Json
+$datasetsRaw = Invoke-PbiApi -Url "groups/$wsId/datasets" -Token $token
 
-# Build dataset ID -> report info map (name + webUrl)
+# Build dataset ID -> report info map
 $datasetReports = @{}
 $reportUrls = @{}
 foreach ($r in $reportsRaw.value) {
@@ -71,7 +130,7 @@ foreach ($ds in $datasetsRaw.value) {
     # Get refresh schedule
     $schedule = $null
     try {
-        $schedRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/datasets/$($ds.id)/refreshSchedule" -Method Get | ConvertFrom-Json
+        $schedRaw = Invoke-PbiApi -Url "groups/$wsId/datasets/$($ds.id)/refreshSchedule" -Token $token
         $schedule = @{
             enabled  = $schedRaw.enabled
             days     = @($schedRaw.days)
@@ -85,7 +144,7 @@ foreach ($ds in $datasetsRaw.value) {
     # Get last refresh from history
     $lastRefresh = $null
     try {
-        $histRaw = Invoke-PowerBIRestMethod -Url "groups/$wsId/datasets/$($ds.id)/refreshes?`$top=1" -Method Get | ConvertFrom-Json
+        $histRaw = Invoke-PbiApi -Url "groups/$wsId/datasets/$($ds.id)/refreshes?`$top=1" -Token $token
         if ($histRaw.value -and $histRaw.value.Count -gt 0) {
             $entry = $histRaw.value[0]
             $lastRefresh = @{

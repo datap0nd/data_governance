@@ -4,3 +4,4 @@ __pycache__/
 governance.db
 *.db.bak
 node_modules/
+pbi_token.json
