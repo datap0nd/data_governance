@@ -363,12 +363,23 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_source_deps_source ON source_dependencies(source_id)",
     "CREATE INDEX IF NOT EXISTS idx_source_deps_depends ON source_dependencies(depends_on_id)",
+    # Multi-user: IP-to-user mapping
+    """CREATE TABLE IF NOT EXISTS user_ips (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip_address  TEXT NOT NULL UNIQUE,
+        person_name TEXT NOT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    # Multi-user: actor tracking in event log
+    "ALTER TABLE event_log ADD COLUMN actor TEXT",
 ]
 
 
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     for migration in MIGRATIONS:
@@ -388,6 +399,8 @@ def get_db():
     """Yield a database connection with row_factory set for dict-like access."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn

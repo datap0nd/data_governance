@@ -3953,3 +3953,89 @@ tr.row-archived td:last-child {
 .info-tip-wrap:focus-within .info-tip-box {
     display: block;
 }
+
+/* ── Connected user badge in nav ── */
+#connected-user {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-right: 0.35rem;
+    white-space: nowrap;
+}
+#connected-user .user-name {
+    color: var(--accent);
+    font-weight: 500;
+}
+#connected-user .user-local {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    margin-left: 0.2rem;
+    opacity: 0.7;
+}
+
+/* ── Registration modal overlay ── */
+.register-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.register-modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    max-width: 380px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+.register-modal h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+}
+.register-modal p {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+}
+.register-modal input[type="text"] {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.88rem;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--text);
+    margin-bottom: 1rem;
+}
+.register-modal input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-bg);
+}
+.register-modal button {
+    width: 100%;
+    padding: 0.55rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.88rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+}
+.register-modal button:hover {
+    opacity: 0.9;
+}
+.register-modal button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

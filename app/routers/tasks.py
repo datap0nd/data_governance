@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
 from app.models import TaskOut, TaskCreate, TaskUpdate, TaskMove, TaskLinkInfo
-from app.routers.eventlog import log_event
+from app.routers.eventlog import log_event, get_actor
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -99,7 +99,7 @@ def tasks_for_entity(entity_type: str, entity_id: int):
 
 
 @router.post("", response_model=TaskOut)
-def create_task(task: TaskCreate):
+def create_task(task: TaskCreate, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as db:
         # Set position to end of target column
@@ -117,13 +117,13 @@ def create_task(task: TaskCreate):
         task_id = cursor.lastrowid
         if task.linked_entities:
             _sync_links(db, task_id, task.linked_entities)
-        log_event(db, "task", task_id, task.title, "created")
+        log_event(db, "task", task_id, task.title, "created", actor=get_actor(request))
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return _row_to_task(row, db)
 
 
 @router.patch("/{task_id}", response_model=TaskOut)
-def update_task(task_id: int, update: TaskUpdate):
+def update_task(task_id: int, update: TaskUpdate, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as db:
         existing = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -148,7 +148,7 @@ def update_task(task_id: int, update: TaskUpdate):
         changed = ", ".join(k for k in data)
         if links is not None:
             changed = (changed + ", linked_entities") if changed else "linked_entities"
-        log_event(db, "task", task_id, None, "updated", changed)
+        log_event(db, "task", task_id, None, "updated", changed, get_actor(request))
         row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return _row_to_task(row, db)
 
@@ -188,13 +188,13 @@ def move_task(task_id: int, move: TaskMove):
 
 
 @router.delete("/{task_id}")
-def delete_task(task_id: int):
+def delete_task(task_id: int, request: Request):
     with get_db() as db:
         existing = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Task not found")
         db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        log_event(db, "task", task_id, None, "deleted")
+        log_event(db, "task", task_id, None, "deleted", actor=get_actor(request))
     return {"status": "deleted"}
 
 

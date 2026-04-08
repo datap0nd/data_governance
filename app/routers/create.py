@@ -4,10 +4,10 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
 from app.database import get_db
-from app.routers.eventlog import log_event
+from app.routers.eventlog import log_event, get_actor
 from app.models import (
     CreateSourceRequest,
     CreateReportRequest,
@@ -57,7 +57,7 @@ def get_create_options():
 
 
 @router.post("/source")
-def create_source(req: CreateSourceRequest):
+def create_source(req: CreateSourceRequest, request: Request):
     """Create a new data source manually."""
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -78,7 +78,7 @@ def create_source(req: CreateSourceRequest):
                            VALUES (?, ?, ?, 'manual entry', ?)""",
                         (report_id, req.name, source_id, now),
                     )
-            log_event(db, "source", source_id, req.name, "created", f"type={req.type}")
+            log_event(db, "source", source_id, req.name, "created", f"type={req.type}", get_actor(request))
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="A source with that name already exists")
 
@@ -86,7 +86,7 @@ def create_source(req: CreateSourceRequest):
 
 
 @router.post("/report")
-def create_report(req: CreateReportRequest):
+def create_report(req: CreateReportRequest, request: Request):
     """Create a new report manually."""
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -98,7 +98,7 @@ def create_report(req: CreateReportRequest):
                  req.powerbi_url, now, now),
             )
             report_id = cursor.lastrowid
-            log_event(db, "report", report_id, req.name, "created")
+            log_event(db, "report", report_id, req.name, "created", actor=get_actor(request))
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="A report with that name already exists")
 
@@ -106,7 +106,7 @@ def create_report(req: CreateReportRequest):
 
 
 @router.post("/upstream")
-def create_upstream(req: CreateUpstreamRequest):
+def create_upstream(req: CreateUpstreamRequest, request: Request):
     """Create a new upstream data source manually."""
     now = datetime.now(timezone.utc).isoformat()
     try:
@@ -117,7 +117,7 @@ def create_upstream(req: CreateUpstreamRequest):
                 (req.name, req.code, req.refresh_day, now),
             )
             upstream_id = cursor.lastrowid
-            log_event(db, "upstream", upstream_id, req.name, "created", f"code={req.code}")
+            log_event(db, "upstream", upstream_id, req.name, "created", f"code={req.code}", get_actor(request))
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="An upstream system with that name already exists")
 
@@ -156,7 +156,7 @@ def list_custom_entries():
 
 
 @router.delete("/source/{source_id}")
-def delete_source(source_id: int):
+def delete_source(source_id: int, request: Request):
     """Delete a manually-created source and clean up FK references."""
     with get_db() as db:
         row = db.execute(
@@ -170,12 +170,12 @@ def delete_source(source_id: int):
         db.execute("UPDATE alerts SET source_id = NULL WHERE source_id = ?", (source_id,))
         db.execute("UPDATE actions SET source_id = NULL WHERE source_id = ?", (source_id,))
         db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-        log_event(db, "source", source_id, None, "deleted")
+        log_event(db, "source", source_id, None, "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": source_id}
 
 
 @router.delete("/report/{report_id}")
-def delete_report(report_id: int):
+def delete_report(report_id: int, request: Request):
     """Delete a manually-created report and clean up FK references."""
     with get_db() as db:
         row = db.execute(
@@ -186,12 +186,12 @@ def delete_report(report_id: int):
             raise HTTPException(status_code=404, detail="Manual report not found")
         db.execute("DELETE FROM report_tables WHERE report_id = ?", (report_id,))
         db.execute("DELETE FROM reports WHERE id = ?", (report_id,))
-        log_event(db, "report", report_id, None, "deleted")
+        log_event(db, "report", report_id, None, "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": report_id}
 
 
 @router.delete("/upstream/{upstream_id}")
-def delete_upstream(upstream_id: int):
+def delete_upstream(upstream_id: int, request: Request):
     """Delete a manually-created upstream system and clean up FK references."""
     with get_db() as db:
         row = db.execute(
@@ -202,7 +202,7 @@ def delete_upstream(upstream_id: int):
             raise HTTPException(status_code=404, detail="Manual upstream system not found")
         db.execute("UPDATE sources SET upstream_id = NULL WHERE upstream_id = ?", (upstream_id,))
         db.execute("DELETE FROM upstream_systems WHERE id = ?", (upstream_id,))
-        log_event(db, "upstream", upstream_id, None, "deleted")
+        log_event(db, "upstream", upstream_id, None, "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": upstream_id}
 
 
@@ -214,7 +214,7 @@ _UPSTREAM_FIELDS = {"name", "code", "refresh_day"}
 
 
 @router.patch("/source/{source_id}")
-def update_source(source_id: int, body: dict[str, Any] = Body(...)):
+def update_source(source_id: int, request: Request, body: dict[str, Any] = Body(...)):
     """Partially update a manually-created source."""
     updates = {k: v for k, v in body.items() if k in _SOURCE_FIELDS}
     if not updates:
@@ -230,12 +230,12 @@ def update_source(source_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual source not found")
-        log_event(db, "source", source_id, None, "updated", ", ".join(updates.keys()))
+        log_event(db, "source", source_id, None, "updated", ", ".join(updates.keys()), get_actor(request))
     return {"status": "updated", "id": source_id}
 
 
 @router.patch("/report/{report_id}")
-def update_report(report_id: int, body: dict[str, Any] = Body(...)):
+def update_report(report_id: int, request: Request, body: dict[str, Any] = Body(...)):
     """Partially update a manually-created report."""
     updates = {k: v for k, v in body.items() if k in _REPORT_FIELDS}
     if not updates:
@@ -251,12 +251,12 @@ def update_report(report_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual report not found")
-        log_event(db, "report", report_id, None, "updated", ", ".join(updates.keys()))
+        log_event(db, "report", report_id, None, "updated", ", ".join(updates.keys()), get_actor(request))
     return {"status": "updated", "id": report_id}
 
 
 @router.patch("/upstream/{upstream_id}")
-def update_upstream(upstream_id: int, body: dict[str, Any] = Body(...)):
+def update_upstream(upstream_id: int, request: Request, body: dict[str, Any] = Body(...)):
     """Partially update a manually-created upstream system."""
     updates = {k: v for k, v in body.items() if k in _UPSTREAM_FIELDS}
     if not updates:
@@ -270,5 +270,5 @@ def update_upstream(upstream_id: int, body: dict[str, Any] = Body(...)):
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Manual upstream system not found")
-        log_event(db, "upstream", upstream_id, None, "updated", ", ".join(updates.keys()))
+        log_event(db, "upstream", upstream_id, None, "updated", ", ".join(updates.keys()), get_actor(request))
     return {"status": "updated", "id": upstream_id}

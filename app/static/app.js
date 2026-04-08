@@ -1567,7 +1567,7 @@ async function renderReports() {
             <h1>Reports</h1>
             <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
             ${_archiveToggleHtml("reports")}
-            <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
+            ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
             <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
@@ -1681,8 +1681,8 @@ async function renderScanner() {
         </div>
 
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
-            <button id="btn-scan">Run Scan Now</button>
-            <button id="btn-probe" class="btn-outline">Probe Sources</button>
+            ${_isLocal() ? '<button id="btn-scan">Run Scan Now</button>' : ''}
+            ${_isLocal() ? '<button id="btn-probe" class="btn-outline">Probe Sources</button>' : ''}
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
@@ -3363,8 +3363,8 @@ async function renderScripts() {
         <div class="page-header">
             <h1>Scripts</h1>
             <span class="subtitle">${activeCount}${sqlOnly || catFilter || machineFilter ? ` of ${totalCount}` : ''} Python scripts${sqlOnly ? ' with SQL writes' : ' tracked'}${catFilter ? ` (${catFilter})` : ''}${machineFilter ? ` on ${machineFilter}` : ''}</span>
-            <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
-            <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
+            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
+            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             <button class="btn-outline btn-archive-toggle ${showFullTables ? 'active' : ''}" id="btn-full-tables" style="font-size:0.75rem">${showFullTables ? 'Table Names' : 'Schema Labels'}</button>
@@ -3722,8 +3722,8 @@ async function renderScheduledTasks() {
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
             <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
-            <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
+            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
+            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>' : ''}
             <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
@@ -4914,6 +4914,7 @@ async function renderEventLog() {
     const events = await api("/api/eventlog");
     const cols = [
         { key: "created_at", label: "When", width: COL_W.md, render: e => `<span title="${esc(e.created_at || "")}">${timeAgo(e.created_at)}</span>` },
+        { key: "actor", label: "User", width: COL_W.sm, render: e => e.actor ? `<span style="color:var(--accent)">${esc(e.actor)}</span>` : '<span style="color:var(--text-dim)">system</span>' },
         { key: "entity_type", label: "Type", width: COL_W.sm, render: e => `<span class="eventlog-type-badge type-${esc(e.entity_type)}">${esc(e.entity_type)}</span>` },
         { key: "entity_name", label: "Entity", width: COL_W.lg, render: e => esc(e.entity_name) || `#${e.entity_id || "—"}` },
         { key: "action", label: "Action", width: COL_W.sm, render: e => `<span class="eventlog-action action-${esc(e.action)}">${esc(e.action)}</span>` },
@@ -5624,6 +5625,60 @@ function getInitialPage() {
     return "dashboard";
 }
 
+function _isLocal() {
+    return window._currentUser && window._currentUser.is_local;
+}
+
+function _showConnectedUser(user) {
+    const el = document.getElementById("connected-user");
+    if (!el) return;
+    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>${user.is_local ? '<span class="user-local">(local)</span>' : ''}`;
+}
+
+function _showRegistrationModal(ip) {
+    const overlay = document.createElement("div");
+    overlay.className = "register-overlay";
+    overlay.innerHTML = `
+        <div class="register-modal">
+            <h2>Welcome to MX Analytics</h2>
+            <p>Enter your name to get started. This will be linked to your IP address (${esc(ip)}) so the system knows who you are.</p>
+            <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
+            <button id="register-submit">Continue</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const input = document.getElementById("register-name");
+    const btn = document.getElementById("register-submit");
+
+    function doRegister() {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        btn.disabled = true;
+        btn.textContent = "Saving...";
+        fetch("/api/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+        })
+        .then(r => r.json())
+        .then(me => {
+            window._currentUser = me;
+            _showConnectedUser(me);
+            overlay.remove();
+        })
+        .catch(() => {
+            btn.disabled = false;
+            btn.textContent = "Continue";
+            toast("Registration failed - try again");
+        });
+    }
+
+    btn.addEventListener("click", doRegister);
+    input.addEventListener("keydown", e => { if (e.key === "Enter") doRegister(); });
+    setTimeout(() => input.focus(), 50);
+}
+
 function updateThemeIcon() {
     const btn = document.getElementById("theme-toggle");
     if (!btn) return;
@@ -5681,6 +5736,17 @@ document.addEventListener("DOMContentLoaded", () => {
         const page = location.hash.length > 1 ? location.hash.substring(1) : "dashboard";
         if (pages[page] && page !== currentPage) navigate(page);
     });
+
+    // ── Identity check: fetch /api/me, show registration if needed ──
+    window._currentUser = null;
+    fetch("/api/me").then(r => r.json()).then(me => {
+        if (me.name) {
+            window._currentUser = me;
+            _showConnectedUser(me);
+        } else {
+            _showRegistrationModal(me.ip);
+        }
+    }).catch(() => {});
 
     initAIChatPanel();
     navigate(getInitialPage());

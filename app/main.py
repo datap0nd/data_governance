@@ -1,16 +1,19 @@
 import logging
 import re
+import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 from pathlib import Path
+from pydantic import BaseModel
 
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+from starlette.requests import Request as StarletteRequest
 
+from app.config import DB_PATH
 from app.database import init_db
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive
 from app.ai.router import router as ai_router
@@ -18,10 +21,47 @@ from app.ai.router import router as ai_router
 # Show scanner logs in the console
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
+# In-memory cache for IP -> user resolution (cleared on register)
+_ip_cache: dict[str, str | None] = {}
+
+
+def _resolve_ip(ip: str) -> str | None:
+    """Look up person_name for an IP address, with caching."""
+    if ip in _ip_cache:
+        return _ip_cache[ip]
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT person_name FROM user_ips WHERE ip_address = ?", (ip,)
+        ).fetchone()
+        conn.close()
+        name = row["person_name"] if row else None
+        _ip_cache[ip] = name
+        return name
+    except Exception:
+        return None
+
+
+def _is_localhost(ip: str) -> bool:
+    """Check if an IP is localhost (IPv4, IPv6, or IPv4-mapped IPv6)."""
+    return ip in ("127.0.0.1", "::1") or ip.startswith("::ffff:127.0.0.1")
+
+
+class UserIdentityMiddleware(BaseHTTPMiddleware):
+    """Resolve client IP to user identity on every request."""
+    async def dispatch(self, request: StarletteRequest, call_next):
+        ip = request.client.host if request.client else "unknown"
+        request.state.client_ip = ip
+        request.state.is_local = _is_localhost(ip)
+        request.state.actor = _resolve_ip(ip)
+        response = await call_next(request)
+        return response
+
 
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
     """Prevent browser from caching static JS/CSS files."""
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: StarletteRequest, call_next):
         response = await call_next(request)
         if request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -31,7 +71,6 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app):
-    from app.config import DB_PATH
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
     yield
@@ -39,6 +78,7 @@ async def lifespan(app):
 
 app = FastAPI(title="MX Analytics", version="0.1.0", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(UserIdentityMiddleware)
 
 # Register API routers
 app.include_router(dashboard.router)
@@ -106,6 +146,51 @@ def get_version():
     return {"version": _APP_VERSION}
 
 
+# ── Multi-user identity endpoints ──
+
+class RegisterRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/me")
+def get_me(request: Request):
+    """Return the current user's identity based on IP."""
+    ip = request.state.client_ip
+    name = request.state.actor
+    return {
+        "ip": ip,
+        "name": name,
+        "is_local": request.state.is_local,
+    }
+
+
+@app.post("/api/register")
+def register_user(body: RegisterRequest, request: Request):
+    """Register or update the current IP's user identity."""
+    ip = request.state.client_ip
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        conn.execute(
+            """INSERT INTO user_ips (ip_address, person_name)
+               VALUES (?, ?)
+               ON CONFLICT(ip_address) DO UPDATE SET person_name = ?""",
+            (ip, name, name),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Clear cache for this IP
+    _ip_cache.pop(ip, None)
+
+    return {"ip": ip, "name": name, "is_local": _is_localhost(ip)}
+
+
 @app.get("/")
 def serve_panel():
     """Serve the main panel page."""
@@ -114,7 +199,7 @@ def serve_panel():
 
 @app.get("/{path:path}")
 def spa_catch_all(path: str):
-    """Catch-all route for SPA — serve index.html for non-API, non-static paths."""
+    """Catch-all route for SPA - serve index.html for non-API, non-static paths."""
     if path.startswith("api/") or path.startswith("static/"):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=404, content={"detail": "Not Found"})

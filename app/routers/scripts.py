@@ -3,9 +3,9 @@
 import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
-from app.routers.eventlog import log_event
+from app.routers.eventlog import log_event, get_actor
 from app.models import ScriptOut, ScriptUpdate, ScriptTableOut
 from app.scanner.script_runner import run_script_scan
 
@@ -103,7 +103,7 @@ def get_script(script_id: int):
 
 
 @router.patch("/{script_id}", response_model=ScriptOut)
-def update_script(script_id: int, update: ScriptUpdate):
+def update_script(script_id: int, update: ScriptUpdate, request: Request):
     with get_db() as db:
         existing = db.execute("SELECT id FROM scripts WHERE id = ?", (script_id,)).fetchone()
         if not existing:
@@ -123,26 +123,28 @@ def update_script(script_id: int, update: ScriptUpdate):
                 values,
             )
             changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
-            log_event(db, "script", script_id, None, "updated", changed)
+            log_event(db, "script", script_id, None, "updated", changed, get_actor(request))
 
     return get_script(script_id)
 
 
 @router.delete("/{script_id}")
-def delete_script(script_id: int):
+def delete_script(script_id: int, request: Request):
     with get_db() as db:
         row = db.execute("SELECT id, display_name FROM scripts WHERE id = ?", (script_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Script not found")
         db.execute("DELETE FROM script_tables WHERE script_id = ?", (script_id,))
         db.execute("DELETE FROM scripts WHERE id = ?", (script_id,))
-        log_event(db, "script", script_id, row["display_name"], "deleted")
+        log_event(db, "script", script_id, row["display_name"], "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": script_id}
 
 
 @router.post("/scan")
-def trigger_script_scan(new_only: bool = Query(False)):
+def trigger_script_scan(request: Request, new_only: bool = Query(False)):
     """Trigger an async scan of the scripts directory."""
+    from app.routers.scanner import _require_local
+    _require_local(request)
     with _scan_lock:
         if _scan_state["status"] == "running":
             return {"status": "already_running", "log": _scan_state["log"]}

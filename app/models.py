@@ -323,6 +323,7 @@ class EventLogOut(BaseModel):
     entity_name: str | None = None
     action: str
     detail: str | None = None
+    actor: str | None = None
     created_at: str | None = None
 
 

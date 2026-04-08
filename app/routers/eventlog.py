@@ -1,4 +1,4 @@
-"""Event log — audit trail for entity changes."""
+"""Event log - audit trail for entity changes."""
 
 from fastapi import APIRouter
 from app.database import get_db
@@ -8,13 +8,18 @@ router = APIRouter(prefix="/api/eventlog", tags=["eventlog"])
 
 
 def log_event(db, entity_type: str, entity_id: int | None, entity_name: str | None,
-              action: str, detail: str | None = None):
+              action: str, detail: str | None = None, actor: str | None = None):
     """Insert an event log row. Call within an existing get_db() context."""
     db.execute(
-        """INSERT INTO event_log (entity_type, entity_id, entity_name, action, detail)
-           VALUES (?, ?, ?, ?, ?)""",
-        (entity_type, entity_id, entity_name, action, detail),
+        """INSERT INTO event_log (entity_type, entity_id, entity_name, action, detail, actor)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (entity_type, entity_id, entity_name, action, detail, actor),
     )
+
+
+def get_actor(request) -> str | None:
+    """Extract actor name from request state (set by middleware)."""
+    return getattr(getattr(request, "state", None), "actor", None)
 
 
 @router.get("", response_model=list[EventLogOut])
@@ -44,6 +49,7 @@ def list_events(entity_type: str | None = None, action: str | None = None, limit
             entity_name=r["entity_name"],
             action=r["action"],
             detail=r["detail"],
+            actor=r["actor"],
             created_at=r["created_at"],
         )
         for r in rows

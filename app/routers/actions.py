@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
-from app.routers.eventlog import log_event
+from app.routers.eventlog import log_event, get_actor
 from app.models import ActionOut, ActionUpdate
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
@@ -44,7 +44,7 @@ def list_actions(status: str | None = None):
 
 
 @router.patch("/{action_id}", response_model=ActionOut)
-def update_action(action_id: int, update: ActionUpdate):
+def update_action(action_id: int, update: ActionUpdate, request: Request):
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
@@ -71,7 +71,7 @@ def update_action(action_id: int, update: ActionUpdate):
         )
 
         changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
-        log_event(db, "action", action_id, None, "updated", changed)
+        log_event(db, "action", action_id, None, "updated", changed, get_actor(request))
 
         r = db.execute("""
             SELECT a.*, s.name AS source_name, r.name AS report_name

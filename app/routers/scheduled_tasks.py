@@ -1,6 +1,6 @@
 """Scheduled Tasks API - scan and list Windows Task Scheduler entries."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
 from app.models import ScheduledTaskOut
 from app.scanner.task_scheduler_runner import run_task_scheduler_scan
@@ -64,6 +64,8 @@ def get_scheduled_task(task_id: int):
 
 
 @router.post("/scan")
-def trigger_task_scheduler_scan(new_only: bool = Query(False)):
+def trigger_task_scheduler_scan(request: Request, new_only: bool = Query(False)):
     """Trigger a scan of Windows Task Scheduler."""
+    from app.routers.scanner import _require_local
+    _require_local(request)
     return run_task_scheduler_scan(new_only=new_only)

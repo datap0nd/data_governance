@@ -1,9 +1,9 @@
 """People management - BI and Business roles."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.database import get_db
-from app.routers.eventlog import log_event
+from app.routers.eventlog import log_event, get_actor
 from app.models import PersonOut, PersonCreate
 
 router = APIRouter(prefix="/api/people", tags=["people"])
@@ -26,7 +26,7 @@ def list_people():
 
 
 @router.post("", response_model=PersonOut, status_code=201)
-def create_person(req: PersonCreate):
+def create_person(req: PersonCreate, request: Request):
     """Create a new person with a validated role."""
     if req.role not in VALID_ROLES:
         raise HTTPException(
@@ -40,17 +40,17 @@ def create_person(req: PersonCreate):
         )
         person_id = cursor.lastrowid
         row = db.execute("SELECT id, name, role, created_at FROM people WHERE id = ?", (person_id,)).fetchone()
-        log_event(db, "person", person_id, req.name, "created", f"role={req.role}")
+        log_event(db, "person", person_id, req.name, "created", f"role={req.role}", get_actor(request))
     return PersonOut(**dict(row))
 
 
 @router.delete("/{person_id}")
-def delete_person(person_id: int):
+def delete_person(person_id: int, request: Request):
     """Delete a person by ID."""
     with get_db() as db:
         row = db.execute("SELECT id, name FROM people WHERE id = ?", (person_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Person not found")
         db.execute("DELETE FROM people WHERE id = ?", (person_id,))
-        log_event(db, "person", person_id, row["name"], "deleted")
+        log_event(db, "person", person_id, row["name"], "deleted", actor=get_actor(request))
     return {"status": "deleted", "id": person_id}

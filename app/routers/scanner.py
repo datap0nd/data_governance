@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from app.config import TMDL_ROOT
 from app.database import get_db
 from app.scanner.runner import run_scan
@@ -14,9 +14,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 
+def _require_local(request: Request):
+    """Raise 403 if request is not from localhost."""
+    ip = request.client.host if request.client else ""
+    if ip not in ("127.0.0.1", "::1") and not ip.startswith("::ffff:127.0.0.1"):
+        raise HTTPException(status_code=403, detail="Scanner restricted to server machine")
+
+
 @router.post("/run")
-def do_scan():
+def do_scan(request: Request):
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
+    _require_local(request)
     result = run_scan()
     # After scan, probe sources for freshness
     try:
@@ -36,8 +44,9 @@ def do_scan():
 
 
 @router.post("/probe")
-def do_probe():
+def do_probe(request: Request):
     """Probe all sources for freshness (file mod times)."""
+    _require_local(request)
     return run_probe()
 
 
@@ -52,14 +61,16 @@ def list_probe_runs():
 
 
 @router.post("/pbi-sync")
-def do_pbi_sync():
+def do_pbi_sync(request: Request):
     """Launch PBI sync in the user's interactive session."""
+    _require_local(request)
     return trigger_pbi_sync()
 
 
 @router.post("/pbi-import")
 async def do_pbi_import(request: Request):
     """Receive PBI data from the PS1 script and update the DB."""
+    _require_local(request)
     data = await request.json()
     return import_pbi_data(data)
 
@@ -76,11 +87,7 @@ def list_scan_runs():
 
 @router.get("/diagnose")
 def diagnose_scan():
-    """Step-by-step diagnostics of the scanner discovery logic.
-
-    Shows the resolved path, directory listing, what .pbix/.tmdl files
-    were found, and why each subfolder was accepted or skipped.
-    """
+    """Step-by-step diagnostics of the scanner discovery logic."""
     return diagnose_reports_root(TMDL_ROOT)
 
 
@@ -94,14 +101,16 @@ def get_scan_run(run_id: int):
 
 
 @router.post("/pg-deps")
-def do_pg_deps():
+def do_pg_deps(request: Request):
     """Scan PostgreSQL for materialized view dependencies."""
+    _require_local(request)
     from app.scanner.pg_deps import scan_pg_dependencies
     return scan_pg_dependencies()
 
 
 @router.post("/pg-cron")
-def do_pg_cron():
+def do_pg_cron(request: Request):
     """Scan pg_cron for MV refresh schedules."""
+    _require_local(request)
     from app.scanner.pg_cron import scan_pg_cron
     return scan_pg_cron()
