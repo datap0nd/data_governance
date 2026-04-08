@@ -200,10 +200,20 @@ def trigger_update(request: Request):
     setup_path = Path(__file__).parent.parent / "setup.ps1"
     if not setup_path.exists():
         raise HTTPException(status_code=404, detail="setup.ps1 not found")
-    subprocess.Popen(
-        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(setup_path)],
-        creationflags=0x00000008,  # DETACHED_PROCESS
-    )
+    # Launch via schtasks so it runs in the logged-in user's interactive session
+    # (the NSSM service runs in session 0 which is non-interactive)
+    task_name = "DG_Update"
+    ps_cmd = f'powershell.exe -ExecutionPolicy Bypass -NoExit -File "{setup_path}"'
+    try:
+        subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
+                       capture_output=True, timeout=10)
+        subprocess.run(["schtasks", "/create", "/tn", task_name, "/tr", ps_cmd,
+                        "/sc", "once", "/st", "00:00", "/it", "/f"],
+                       capture_output=True, text=True, timeout=10, check=True)
+        subprocess.run(["schtasks", "/run", "/tn", task_name],
+                       capture_output=True, text=True, timeout=10, check=True)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to launch update: {e.stderr or e}")
     return {"status": "launched"}
 
 
