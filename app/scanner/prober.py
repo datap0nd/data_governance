@@ -3,7 +3,10 @@ Source prober - checks freshness of data sources.
 
 Supports:
 1. File-based sources (CSV, Excel): checks file modification time at the path
-2. PostgreSQL sources: READ-ONLY queries against pg_stat_user_tables
+2. PostgreSQL sources: READ-ONLY queries using track_commit_timestamp
+   (MAX(pg_xact_commit_timestamp(xmin)) per table for real last-write time)
+
+Requires: track_commit_timestamp = on in postgresql.conf
 
 WARNING: PostgreSQL probing uses PGUSER/PGPASSWORD/PGHOST environment variables.
 These credentials must ONLY be used for SELECT queries.
@@ -123,12 +126,13 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
 
 
 # ---------------------------------------------------------------------------
-# PostgreSQL probing - READ-ONLY
+# PostgreSQL probing - READ-ONLY via track_commit_timestamp
+#
+# Uses MAX(pg_xact_commit_timestamp(xmin)) to get real last-write time.
+# Requires: track_commit_timestamp = on in postgresql.conf
 #
 # WARNING: All queries below are strictly SELECT-only.
 # NEVER add INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, or TRUNCATE here.
-# This constraint is non-negotiable. The credentials used here may have
-# write access but this tool must NEVER exercise it.
 # ---------------------------------------------------------------------------
 
 def _get_pg_connection():
@@ -184,7 +188,11 @@ def _parse_pg_table_ref(connection_info: str, source_name: str):
 
 
 def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
-    """Probe PostgreSQL sources by checking pg_stat_user_tables.
+    """Probe PostgreSQL sources using track_commit_timestamp.
+
+    Queries MAX(pg_xact_commit_timestamp(xmin)) per table to get the
+    real last-write time. Requires track_commit_timestamp = on in
+    postgresql.conf.
 
     READ-ONLY: Only SELECT queries are used. No data is modified in PostgreSQL.
 
@@ -194,7 +202,6 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
     pg_conn = _get_pg_connection()
 
     if pg_conn is None:
-        # No PG credentials - mark all as unknown
         for src in pg_sources:
             db.execute(
                 "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
@@ -227,49 +234,43 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
             short = f"{schema}.{table}"
 
             try:
-                # READ-ONLY: SELECT from pg_stat_user_tables for activity timestamps
+                # READ-ONLY: get last write time via track_commit_timestamp
+                # Also grab row count from pg_stat for context
                 pg_cur.execute(
-                    """SELECT last_analyze, last_autoanalyze,
-                              last_vacuum, last_autovacuum,
-                              n_tup_ins, n_tup_upd, n_tup_del,
-                              n_live_tup
-                       FROM pg_stat_user_tables
-                       WHERE schemaname = %s AND relname = %s""",
-                    (schema, table),
+                    f"""SELECT MAX(pg_xact_commit_timestamp(xmin)) AS last_write,
+                               COUNT(*) AS row_count
+                        FROM "{schema}"."{table}" """
                 )
                 row = pg_cur.fetchone()
 
-                if not row:
+                if row is None:
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-                        (src["id"], now, f"Table not found in pg_stat: {short}"),
+                        (src["id"], now, f"Table not found: {short}"),
                     )
                     statuses["unknown"] += 1
-                    log_lines.append(f"PG: {short} - unknown (not in pg_stat)")
+                    log_lines.append(f"PG: {short} - unknown (not found)")
                     continue
 
-                last_analyze, last_autoanalyze, last_vacuum, last_autovacuum, n_ins, n_upd, n_del, n_live = row
+                last_write, row_count = row
 
-                # Pick the most recent activity timestamp
-                timestamps = [t for t in [last_analyze, last_autoanalyze, last_vacuum, last_autovacuum] if t]
-                if timestamps:
-                    latest = max(timestamps)
-                    if latest.tzinfo is None:
-                        latest = latest.replace(tzinfo=timezone.utc)
-                    latest_iso = latest.isoformat()
+                if last_write:
+                    if last_write.tzinfo is None:
+                        last_write = last_write.replace(tzinfo=timezone.utc)
+                    latest_iso = last_write.isoformat()
                     status = _compute_status(latest_iso, fm, sm)
-                    msg = f"PG last activity: {latest.strftime('%Y-%m-%d %H:%M')} ({n_live:,} rows)"
+                    msg = f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} ({row_count:,} rows)"
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
-                        (src["id"], now, latest_iso, n_live, status, msg),
+                        (src["id"], now, latest_iso, row_count, status, msg),
                     )
                 else:
-                    # Table exists but no activity timestamps
+                    # Table exists but empty or no commit timestamps
                     status = "unknown"
-                    msg = f"PG table exists but no activity timestamps ({n_live:,} rows)"
+                    msg = f"No commit timestamps ({row_count:,} rows)"
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, row_count, status, message) VALUES (?, ?, ?, 'unknown', ?)",
-                        (src["id"], now, n_live, msg),
+                        (src["id"], now, row_count, msg),
                     )
 
                 statuses[status] = statuses.get(status, 0) + 1
