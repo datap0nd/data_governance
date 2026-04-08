@@ -395,6 +395,14 @@ def run_scan(reports_path: str | None = None) -> dict:
         except Exception as e:
             logger.exception("pg_cron scan failed: %s", e)
 
+        # Scan Python scripts for table references
+        from app.scanner.script_runner import run_script_scan
+        try:
+            script_result = run_script_scan()
+            logger.info("Script scan completed: %s", script_result.get("status"))
+        except Exception as e:
+            logger.exception("Script scan failed: %s", e)
+
         summary = {
             "scan_id": scan_id,
             "reports_scanned": len(reports),
