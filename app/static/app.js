@@ -3394,22 +3394,16 @@ async function renderScripts() {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "tables_written", label: "Writes To", width: COL_W.lg, render: s => {
-            if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return s.tables_written.map(t => {
-                const c = _classifyTable(t);
-                if (showFullTables) return `<span class="badge badge-red" style="font-size:0.65rem;margin:1px" title="${c.label}">${esc(t)}</span>`;
-                return `<span class="badge badge-red" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
-            }).join(" ");
-        }, sortVal: s => (s.tables_written || []).join(",") },
-        { key: "tables_read", label: "Reads From", width: COL_W.lg, render: s => {
-            if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return s.tables_read.map(t => {
-                const c = _classifyTable(t);
-                if (showFullTables) return `<span class="badge ${c.cls}" style="font-size:0.65rem;margin:1px" title="${c.label}">${esc(t)}</span>`;
-                return `<span class="badge ${c.cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
-            }).join(" ");
-        }, sortVal: s => (s.tables_read || []).join(",") },
+        { key: "tables_written", label: "Writes to / Refreshes", width: COL_W.md, render: s => {
+            const n = (s.tables_written || []).length;
+            if (n === 0) return '<span style="color:var(--text-dim)">-</span>';
+            return `<span class="badge badge-red" style="font-size:0.72rem">${n} table${n !== 1 ? "s" : ""}/MVs</span>`;
+        }, sortVal: s => (s.tables_written || []).length },
+        { key: "tables_read", label: "Reads From", width: COL_W.md, render: s => {
+            const n = (s.tables_read || []).length;
+            if (n === 0) return '<span style="color:var(--text-dim)">-</span>';
+            return `<span class="badge badge-blue" style="font-size:0.72rem">${n} table${n !== 1 ? "s" : ""}/MVs</span>`;
+        }, sortVal: s => (s.tables_read || []).length },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         _archiveColDef("script"),
     ];
@@ -3438,7 +3432,6 @@ async function renderScripts() {
             ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
-            <button class="btn-outline btn-archive-toggle ${showFullTables ? 'active' : ''}" id="btn-full-tables" style="font-size:0.75rem">${showFullTables ? 'Table Names' : 'Schema Labels'}</button>
             <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
             ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
@@ -3507,7 +3500,7 @@ async function showScriptDetail(script) {
             <div class="detail-item"><div class="detail-label">Last Scanned</div><span style="color:var(--text)">${script.last_scanned ? formatDate(script.last_scanned) : "-"}</span></div>
         </div>
 
-        <h2>Writes To (${writeRows.length})</h2>
+        <h2>Writes to / Refreshes (${writeRows.length})</h2>
         <div style="padding:0.25rem 0">${writeBadges}</div>
 
         <h2>Reads From (${readRows.length})</h2>
@@ -3564,16 +3557,6 @@ function bindScriptsPage() {
     if (catSel) {
         catSel.addEventListener("change", () => {
             sessionStorage.setItem("scripts_category", catSel.value);
-            navigate("scripts");
-        });
-    }
-
-    // Full table names toggle
-    const btnFullTables = document.getElementById("btn-full-tables");
-    if (btnFullTables) {
-        btnFullTables.addEventListener("click", () => {
-            const current = sessionStorage.getItem("scripts_full_tables") === "1";
-            sessionStorage.setItem("scripts_full_tables", current ? "0" : "1");
             navigate("scripts");
         });
     }
