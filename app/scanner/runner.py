@@ -87,6 +87,44 @@ def run_scan(reports_path: str | None = None) -> dict:
                 )
 
         with get_db() as db:
+            # Normalize PostgreSQL source names BEFORE upsert so matches work
+            # e.g. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
+            if PGHOST:
+                prefix = f"{PGHOST}/"
+                if PGDATABASE:
+                    prefix += f"{PGDATABASE}/"
+                old_rows = db.execute(
+                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    (f"{PGHOST}/%",),
+                ).fetchall()
+                for row in old_rows:
+                    new_name = row["name"].replace(prefix, "", 1)
+                    dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
+                                    (new_name, row["id"])).fetchone()
+                    if dup:
+                        # Merge: move all references from old source to the existing short-name source
+                        old_id, new_id = row["id"], dup["id"]
+                        db.execute("UPDATE report_tables SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE script_tables SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE source_dependencies SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE source_dependencies SET depends_on_id = ? WHERE depends_on_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE checks SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE alerts SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("UPDATE actions SET source_id = ? WHERE source_id = ?",
+                                   (new_id, old_id))
+                        db.execute("DELETE FROM source_probes WHERE source_id = ?", (old_id,))
+                        db.execute("DELETE FROM sources WHERE id = ?", (old_id,))
+                        log_lines.append(f"MERGED: {row['name']} -> {new_name} (source {old_id} into {new_id})")
+                    else:
+                        db.execute("UPDATE sources SET name = ? WHERE id = ?",
+                                   (new_name, row["id"]))
+
             # Upsert sources
             for key, source_info in all_sources.items():
                 existing = db.execute(
@@ -286,25 +324,6 @@ def run_scan(reports_path: str | None = None) -> dict:
                     "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', 'Initial scan — no probe data yet')",
                     (row["id"], now),
                 )
-
-            # Normalize PostgreSQL source names: strip server/database prefix
-            # e.g. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
-            if PGHOST:
-                prefix = f"{PGHOST}/"
-                if PGDATABASE:
-                    prefix += f"{PGDATABASE}/"
-                rows = db.execute(
-                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
-                    (f"{PGHOST}/%",),
-                ).fetchall()
-                for row in rows:
-                    new_name = row["name"].replace(prefix, "", 1)
-                    # Check no duplicate exists with the clean name
-                    dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
-                                    (new_name, row["id"])).fetchone()
-                    if not dup:
-                        db.execute("UPDATE sources SET name = ? WHERE id = ?",
-                                   (new_name, row["id"]))
 
             # Update scan run record
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
