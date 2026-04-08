@@ -159,6 +159,14 @@ def _extract_write_tables(content: str) -> set[str]:
     ):
         tables.add(_normalize_table(m.group(1)))
 
+    # Wrapper functions: Write_to_SQL_wo(df, "schema.table"),
+    # SQL_insert_loop("schema.table", ...), write_df_to_pg(df, "schema.table"), etc.
+    for m in re.finditer(
+        r'\b\w*(?:write|insert|load|upload|to_sql)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w*\.[a-zA-Z_]\w*)["\']',
+        content, re.IGNORECASE
+    ):
+        tables.add(_normalize_table(m.group(1)))
+
     return {t for t in tables if not _is_false_positive(t)}
 
 
