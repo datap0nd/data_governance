@@ -352,7 +352,11 @@ function _filterAndSortDT(dt) {
             const f = (filters[col.key] || "").toLowerCase();
             if (!f) continue;
             const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
-            if (!val.includes(f)) return false;
+            if (f.includes("|")) {
+                if (!f.split("|").some(p => val.includes(p))) return false;
+            } else {
+                if (!val.includes(f)) return false;
+            }
         }
         return true;
     });
@@ -1420,6 +1424,11 @@ async function renderSources() {
     const atRiskCount = active.filter(s => s.status === "stale").length;
     const degradedCount = active.filter(s => s.status === "outdated").length;
 
+    const scriptCount = sources.filter(s => !s.archived && s.linked_scripts).length;
+    const excelCount = sources.filter(s => !s.archived && (s.type === "excel" || s.type === "csv")).length;
+    const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
+    const unhealthyCount = atRiskCount + degradedCount;
+
     return `
         <div class="page-header">
             <h1>Sources</h1>
@@ -1427,11 +1436,57 @@ async function renderSources() {
             ${_archiveToggleHtml("sources")}
             <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
+        <div class="source-filters" style="display:flex;gap:0.4rem;margin-bottom:0.75rem;flex-wrap:wrap">
+            <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
+            <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
+            <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
+            <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
+            <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy" style="${unhealthyCount > 0 ? 'color:var(--red);border-color:var(--red)' : ''}">Not Healthy (${unhealthyCount})</button>
+        </div>
         ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
     `;
 }
 
 function bindSourcesPage() {
+    // Source filter buttons
+    document.querySelectorAll(".source-filter-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const filter = btn.dataset.filter;
+            const dt = window._dt["dt-sources"];
+            if (!dt) return;
+
+            // Reset all column filters
+            for (const k in dt.filters) dt.filters[k] = "";
+            // Clear all filter inputs
+            document.querySelectorAll('tr.filter-row input[data-dt="dt-sources"]').forEach(inp => { inp.value = ""; });
+
+            if (filter === "excel") {
+                dt.filters["type"] = "excel|csv";
+            } else if (filter === "postgresql") {
+                dt.filters["type"] = "postgresql";
+            } else if (filter === "has-script") {
+                dt.filters["linked_scripts"] = "python";
+            } else if (filter === "unhealthy") {
+                dt.filters["status"] = "stale|outdated|unknown";
+            }
+            // else "all" - no filter
+
+            // Sync filter inputs with applied filter
+            for (const [col, val] of Object.entries(dt.filters)) {
+                if (!val) continue;
+                const inp = document.querySelector(`tr.filter-row input[data-dt="dt-sources"][data-fcol="${col}"]`);
+                if (inp) inp.value = val;
+            }
+
+            // Update button styles
+            document.querySelectorAll(".source-filter-btn").forEach(b => {
+                b.classList.toggle("btn-outline", b !== btn);
+            });
+
+            _refreshDT("dt-sources");
+        });
+    });
+
     // Inline owner select dropdowns for sources
     document.querySelectorAll(".source-owner-select").forEach(sel => {
         sel.addEventListener("change", async (e) => {
