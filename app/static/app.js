@@ -4238,7 +4238,7 @@ function _bindLinInteractions() {
     wrap.querySelectorAll("[data-lin-toggle]").forEach(toggle => {
         toggle.addEventListener("click", (e) => {
             e.stopPropagation();
-            const card = toggle.closest(".lin-card") || toggle.closest(".lin-subgroup");
+            const card = toggle.closest(".lin-subgroup") || toggle.closest(".lin-card");
             if (!card) return;
             card.classList.toggle("expanded");
             setTimeout(_drawLinEdges, 30);
