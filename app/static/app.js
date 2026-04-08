@@ -802,27 +802,27 @@ async function showReportDetail(report) {
     ` : '';
 
     // Build linked tasks section
-    const activeTasks = linkedTasks.filter(t => t.status !== "done");
-    const doneTasks = linkedTasks.filter(t => t.status === "done");
+    const activeLinked = linkedTasks.filter(t => t.status !== "done");
+    const archivedLinked = linkedTasks.filter(t => t.status === "done");
     const linkedTasksSection = linkedTasks.length > 0 ? `
         <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="linked-tasks-list">
-            Linked Tasks (${activeTasks.length} active${doneTasks.length ? `, ${doneTasks.length} completed` : ''})
-            ${activeTasks.length > 0
-                ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.62rem">${activeTasks.length}</span>`
+            Linked Tasks (${activeLinked.length} active${archivedLinked.length ? `, ${archivedLinked.length} archived` : ''})
+            ${activeLinked.length > 0
+                ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.62rem">${activeLinked.length}</span>`
                 : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all done</span>`}
             <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
         </div>
         <div class="unused-measures-list" id="linked-tasks-list" style="display:none">
-            ${activeTasks.map(t => `
+            ${activeLinked.map(t => `
                 <div class="linked-task-item">
                     <span class="priority-tag ${t.priority}" style="font-size:0.65rem">${t.priority}</span>
                     <span class="linked-task-title">${esc(t.title)}</span>
                     ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
                     <span class="badge badge-${t.status === 'in_progress' ? 'yellow' : 'muted'}" style="font-size:0.62rem">${t.status}</span>
                 </div>`).join('')}
-            ${doneTasks.length > 0 ? `
-                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">Completed (${doneTasks.length})</div>
-                ${doneTasks.map(t => `
+            ${archivedLinked.length > 0 ? `
+                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">Archived (${archivedLinked.length})</div>
+                ${archivedLinked.map(t => `
                     <div class="linked-task-item" style="opacity:0.6">
                         <span class="linked-task-title">${esc(t.title)}</span>
                         ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
@@ -4259,8 +4259,8 @@ const TASK_STATUSES = [
     { key: "backlog", label: "Backlog" },
     { key: "todo", label: "To Do" },
     { key: "in_progress", label: "In Progress" },
-    { key: "done", label: "Done" },
 ];
+const TASK_ALL_STATUSES = [...TASK_STATUSES, { key: "done", label: "Done" }];
 
 const ENTITY_TYPE_LABELS = {
     report: "Report",
@@ -4298,13 +4298,17 @@ async function renderTasks() {
     window._tasksData = tasks;
     window._tasksOwners = owners;
 
+    const activeTasks = tasks.filter(t => t.status !== "done");
+    const archivedTasks = tasks.filter(t => t.status === "done");
+
     const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
-    const boardHtml = _buildKanbanBoard(tasks);
+    const boardHtml = _buildKanbanBoard(activeTasks);
 
     return `
         <div class="page-header">
             <h1>Tasks</h1>
             <button class="btn-new-task" id="btn-new-task">+ New Task</button>
+            <button class="btn-outline" id="btn-export-tasks" style="font-size:0.78rem">Export</button>
         </div>
         <div class="kanban-toolbar">
             <span class="owner-filter-label">View:</span>
@@ -4316,7 +4320,126 @@ async function renderTasks() {
         <div id="kanban-board-container">
             ${boardHtml}
         </div>
+        <div class="tasks-archive-section">
+            <button class="btn-outline tasks-archive-toggle" id="btn-archive-toggle" style="font-size:0.78rem">
+                ${archivedTasks.length > 0 ? `Show Archive (${archivedTasks.length})` : 'Archive (empty)'}
+            </button>
+            <div id="tasks-archive-list" style="display:none">
+                ${_buildArchiveList(archivedTasks)}
+            </div>
+        </div>
     `;
+}
+
+function _buildArchiveList(tasks) {
+    if (tasks.length === 0) return '<div class="kanban-empty" style="padding:0.75rem">No archived tasks</div>';
+    return `<div class="tasks-archive-cards">
+        ${tasks.map(t => {
+            const links = (t.linked_entities || []).map(le =>
+                `<span class="task-link-chip">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}: ${esc(le.entity_name || "ID " + le.entity_id)}</span>`
+            ).join("");
+            const updated = t.updated_at ? timeAgo(t.updated_at) : "";
+            return `<div class="archive-task-card" data-task-id="${t.id}" tabindex="0">
+                <div class="archive-task-title">${esc(t.title)}</div>
+                <div class="archive-task-meta">
+                    ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
+                    ${updated ? `<span style="color:var(--text-dim);font-size:0.68rem">completed ${updated}</span>` : ''}
+                    ${links ? `<span class="kanban-card-links" style="display:inline-flex;margin-left:0.25rem">${links}</span>` : ''}
+                </div>
+            </div>`;
+        }).join("")}
+    </div>`;
+}
+
+function _exportTasksEmail() {
+    const tasks = window._tasksData || [];
+    const activeTasks = tasks.filter(t => t.status !== "done");
+    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+
+    // Group by status
+    const grouped = {};
+    TASK_STATUSES.forEach(s => grouped[s.key] = []);
+    activeTasks.forEach(t => {
+        if (grouped[t.status]) grouped[t.status].push(t);
+        else grouped.backlog.push(t);
+    });
+
+    // Build HTML table
+    let html = `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:800px">`;
+    html += `<h2 style="margin:0 0 4px;font-size:16px">Task Board Summary</h2>`;
+    html += `<p style="margin:0 0 16px;color:#666;font-size:13px">${today} - ${activeTasks.length} active task${activeTasks.length !== 1 ? 's' : ''}</p>`;
+
+    for (const s of TASK_STATUSES) {
+        const list = grouped[s.key];
+        if (list.length === 0) continue;
+        html += `<h3 style="margin:16px 0 6px;font-size:14px;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px">${s.label} (${list.length})</h3>`;
+        html += `<table style="width:100%;border-collapse:collapse;font-size:13px">`;
+        html += `<tr style="background:#f5f5f5;text-align:left">
+            <th style="padding:5px 8px;border:1px solid #ddd">Task</th>
+            <th style="padding:5px 8px;border:1px solid #ddd;width:70px">Priority</th>
+            <th style="padding:5px 8px;border:1px solid #ddd;width:100px">Assigned To</th>
+            <th style="padding:5px 8px;border:1px solid #ddd;width:80px">Due Date</th>
+            <th style="padding:5px 8px;border:1px solid #ddd">Linked To</th>
+        </tr>`;
+        for (const t of list) {
+            const prioColor = t.priority === "high" ? "#e74c3c" : t.priority === "low" ? "#999" : "#333";
+            const dueFmt = t.due_date ? new Date(t.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "-";
+            const isOverdue = t.due_date && t.due_date < new Date().toISOString().slice(0, 10);
+            const dueStyle = isOverdue ? 'color:#e74c3c;font-weight:600' : '';
+            const links = (t.linked_entities || []).map(le => {
+                const label = ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type;
+                return `${label}: ${le.entity_name || "ID " + le.entity_id}`;
+            }).join(", ");
+            html += `<tr>
+                <td style="padding:5px 8px;border:1px solid #ddd"><strong>${esc(t.title)}</strong>${t.description ? `<br><span style="color:#888;font-size:12px">${esc(t.description)}</span>` : ''}</td>
+                <td style="padding:5px 8px;border:1px solid #ddd;color:${prioColor}">${t.priority}</td>
+                <td style="padding:5px 8px;border:1px solid #ddd">${esc(t.assigned_to) || '-'}</td>
+                <td style="padding:5px 8px;border:1px solid #ddd;${dueStyle}">${dueFmt}</td>
+                <td style="padding:5px 8px;border:1px solid #ddd;font-size:12px;color:#666">${links || '-'}</td>
+            </tr>`;
+        }
+        html += `</table>`;
+    }
+    html += `</div>`;
+
+    // Copy to clipboard
+    const blob = new Blob([html], { type: "text/html" });
+    const plainText = _tasksToPlainText(grouped);
+    const item = new ClipboardItem({
+        "text/html": blob,
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+    });
+    navigator.clipboard.write([item]).then(() => {
+        toast("Task summary copied to clipboard - paste into email");
+    }).catch(() => {
+        // Fallback: open in new window
+        const w = window.open("", "_blank");
+        if (w) { w.document.write(html); w.document.close(); }
+    });
+}
+
+function _tasksToPlainText(grouped) {
+    let text = "TASK BOARD SUMMARY\n";
+    text += new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) + "\n\n";
+    for (const s of TASK_STATUSES) {
+        const list = grouped[s.key];
+        if (list.length === 0) continue;
+        text += `--- ${s.label.toUpperCase()} (${list.length}) ---\n`;
+        for (const t of list) {
+            const links = (t.linked_entities || []).map(le => {
+                const label = ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type;
+                return `${label}: ${le.entity_name || "ID " + le.entity_id}`;
+            }).join(", ");
+            text += `  [${t.priority.toUpperCase()}] ${t.title}`;
+            if (t.assigned_to) text += ` (${t.assigned_to})`;
+            if (t.due_date) text += ` due: ${t.due_date}`;
+            if (links) text += ` | ${links}`;
+            text += "\n";
+            if (t.description) text += `    ${t.description}\n`;
+        }
+        text += "\n";
+    }
+    return text;
 }
 
 function _buildKanbanBoard(tasks, filterOwner) {
@@ -4330,6 +4453,7 @@ function _buildKanbanBoard(tasks, filterOwner) {
     const grouped = {};
     TASK_STATUSES.forEach(s => grouped[s.key] = []);
     filtered.forEach(t => {
+        if (t.status === "done") return; // archived, skip
         if (grouped[t.status]) grouped[t.status].push(t);
         else grouped.backlog.push(t);
     });
@@ -4365,8 +4489,8 @@ function _taskModalHtml(task, owners) {
     const ownerOptions = owners.map(o =>
         `<option value="${o}" ${t.assigned_to === o ? "selected" : ""}>${o}</option>`
     ).join("");
-    const statusOptions = TASK_STATUSES.map(s =>
-        `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}</option>`
+    const statusOptions = TASK_ALL_STATUSES.map(s =>
+        `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}${s.key === "done" ? " (archive)" : ""}</option>`
     ).join("");
 
     const existingLinks = (t.linked_entities || []).map(le =>
@@ -4562,9 +4686,21 @@ async function _refreshTaskBoard() {
         const tasks = await api("/api/tasks");
         window._tasksData = tasks;
         const filterOwner = document.getElementById("task-owner-filter")?.value || "";
+        const activeTasks = tasks.filter(t => t.status !== "done");
+        const archivedTasks = tasks.filter(t => t.status === "done");
         const container = document.getElementById("kanban-board-container");
         if (container) {
-            container.innerHTML = _buildKanbanBoard(tasks, filterOwner || null);
+            container.innerHTML = _buildKanbanBoard(activeTasks, filterOwner || null);
+        }
+        // Update archive section
+        const archiveList = document.getElementById("tasks-archive-list");
+        if (archiveList) archiveList.innerHTML = _buildArchiveList(archivedTasks);
+        const archiveBtn = document.getElementById("btn-archive-toggle");
+        if (archiveBtn) {
+            const isOpen = archiveList && archiveList.style.display !== "none";
+            archiveBtn.textContent = archivedTasks.length > 0
+                ? `${isOpen ? "Hide" : "Show"} Archive (${archivedTasks.length})`
+                : "Archive (empty)";
         }
     } catch (err) {
         toast("Failed to refresh tasks: " + err.message);
@@ -4576,11 +4712,40 @@ function bindTasksPage() {
     const newBtn = document.getElementById("btn-new-task");
     if (newBtn) newBtn.addEventListener("click", () => _openTaskModal(null));
 
+    // Export button
+    const exportBtn = document.getElementById("btn-export-tasks");
+    if (exportBtn) exportBtn.addEventListener("click", _exportTasksEmail);
+
+    // Archive toggle
+    const archiveBtn = document.getElementById("btn-archive-toggle");
+    const archiveList = document.getElementById("tasks-archive-list");
+    if (archiveBtn && archiveList) {
+        archiveBtn.addEventListener("click", () => {
+            const isHidden = archiveList.style.display === "none";
+            archiveList.style.display = isHidden ? "" : "none";
+            const archivedTasks = (window._tasksData || []).filter(t => t.status === "done");
+            archiveBtn.textContent = archivedTasks.length > 0
+                ? `${isHidden ? "Hide" : "Show"} Archive (${archivedTasks.length})`
+                : "Archive (empty)";
+        });
+    }
+
+    // Archive card clicks
+    if (archiveList) {
+        archiveList.addEventListener("click", (e) => {
+            const card = e.target.closest(".archive-task-card");
+            if (!card) return;
+            const taskId = parseInt(card.dataset.taskId);
+            const task = (window._tasksData || []).find(t => t.id === taskId);
+            if (task) _openTaskModal(task);
+        });
+    }
+
     // Owner filter
     const filter = document.getElementById("task-owner-filter");
     if (filter) {
         filter.addEventListener("change", () => {
-            const tasks = window._tasksData || [];
+            const tasks = (window._tasksData || []).filter(t => t.status !== "done");
             const filterOwner = filter.value || null;
             const container = document.getElementById("kanban-board-container");
             if (container) {

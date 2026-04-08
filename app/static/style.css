@@ -3384,6 +3384,43 @@ button.btn-danger-outline:hover {
     height: 15px;
 }
 
+/* Task archive section */
+.tasks-archive-section {
+    margin-top: 1.25rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+.tasks-archive-toggle {
+    margin-bottom: 0.5rem;
+}
+.tasks-archive-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 0.5rem;
+}
+.archive-task-card {
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.12s;
+}
+.archive-task-card:hover { opacity: 1; }
+.archive-task-title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+.archive-task-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 /* Task entity linking */
 .task-links-list {
     display: flex;
