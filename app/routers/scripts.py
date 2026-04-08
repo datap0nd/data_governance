@@ -140,6 +140,32 @@ def delete_script(script_id: int, request: Request):
     return {"status": "deleted", "id": script_id}
 
 
+@router.get("/export-code")
+def export_all_script_code():
+    """Return the full source code of every tracked script, concatenated."""
+    from pathlib import Path
+
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT display_name, path FROM scripts WHERE COALESCE(archived, 0) = 0 ORDER BY path"
+        ).fetchall()
+
+    parts = []
+    for row in rows:
+        filepath = Path(row["path"])
+        header = f"{'=' * 80}\n# FILE: {row['display_name']}\n# PATH: {row['path']}\n{'=' * 80}"
+        try:
+            if filepath.exists() and filepath.stat().st_size <= 1_048_576:
+                code = filepath.read_text(encoding="utf-8", errors="replace")
+            else:
+                code = "# [File not accessible or too large]"
+        except Exception as e:
+            code = f"# [Error reading file: {e}]"
+        parts.append(f"{header}\n{code}")
+
+    return {"count": len(rows), "code": "\n\n\n".join(parts)}
+
+
 @router.post("/scan")
 def trigger_script_scan(request: Request, new_only: bool = Query(False)):
     """Trigger an async scan of the scripts directory."""

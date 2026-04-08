@@ -2990,6 +2990,9 @@ async function renderExport() {
                 <input type="checkbox" class="export-opt" data-section="scripts"> Python scripts (path, owner, tables read/written)
             </label>
             <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="script-code"> Python scripts - full source code
+            </label>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
                 <input type="checkbox" class="export-opt" data-section="scheduled-tasks"> Scheduled tasks (task scheduler entries)
             </label>
         </fieldset>
@@ -3048,6 +3051,7 @@ function bindExportPage() {
             const needMeasures = selected.has("measures-dax");
             const needColumns = selected.has("columns");
             const needScripts = selected.has("scripts");
+            const needScriptCode = selected.has("script-code");
             const needSchTasks = selected.has("scheduled-tasks");
 
             // Fetch base data in parallel
@@ -3059,6 +3063,7 @@ function bindExportPage() {
             if (needMeasures) fetches.measures = api("/api/reports/all-measures");
             if (needColumns) fetches.columns = api("/api/reports/all-columns");
             if (needScripts) fetches.scripts = api("/api/scripts");
+            if (needScriptCode) fetches.scriptCode = api("/api/scripts/export-code");
             if (needSchTasks) fetches.schTasks = api("/api/scheduled-tasks");
 
             const keys = Object.keys(fetches);
@@ -3246,6 +3251,14 @@ function bindExportPage() {
                     md += "\n";
                 }
                 sections.push(`${scripts.length} scripts`);
+            }
+
+            // ── Script Source Code ──
+            if (selected.has("script-code")) {
+                const codeData = data.scriptCode || {};
+                md += `## Python Script Source Code (${codeData.count || 0} files)\n\n`;
+                md += "```\n" + (codeData.code || "No scripts found") + "\n```\n\n";
+                sections.push(`${codeData.count || 0} script source files`);
             }
 
             // ── Scheduled Tasks ──
