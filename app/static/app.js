@@ -3871,7 +3871,7 @@ function _getLineageCols() {
 function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
 
 async function renderLineageDiagram() {
-    const reports = await api("/api/reports");
+    const reports = await api("/api/reports?include_archived=true");
     const colState = _getLineageCols();
     return `
         <div class="page-header">
@@ -3881,7 +3881,7 @@ async function renderLineageDiagram() {
         <div class="lineage-controls">
             <select id="lineage-report-select" class="lineage-dropdown">
                 <option value="">Select a report...</option>
-                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
+                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
             </select>
             <div class="lineage-col-toggles" id="lineage-col-toggles">
                 ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
