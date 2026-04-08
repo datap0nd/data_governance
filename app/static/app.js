@@ -5757,6 +5757,11 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             _showRegistrationModal(me.ip);
         }
+        // Show Update App button for local users only
+        if (me.is_local) {
+            const updateBtn = document.getElementById("btn-update-app");
+            if (updateBtn) updateBtn.style.display = "";
+        }
     }).catch(() => {});
 
     initAIChatPanel();
@@ -5767,6 +5772,23 @@ document.addEventListener("DOMContentLoaded", () => {
         const el = document.getElementById("app-version");
         if (el && v.version) el.textContent = "#" + v.version;
     }).catch(() => {});
+
+    // Update App button
+    const updateBtn = document.getElementById("btn-update-app");
+    if (updateBtn) {
+        updateBtn.addEventListener("click", async (e) => {
+            e.preventDefault();
+            if (!confirm("This will download the latest version and restart the service. Continue?")) return;
+            try {
+                await apiPost("/api/update");
+                window.close();
+                // window.close() may be blocked by the browser - show fallback
+                document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:inherit;color:var(--text)"><div style="text-align:center"><h2>Updating...</h2><p style="color:var(--text-muted);margin-top:0.5rem">Setup is running. You can close this tab.</p></div></div>';
+            } catch (err) {
+                toast("Update failed: " + err.message);
+            }
+        });
+    }
 
     // Theme toggle
     const themeToggle = document.getElementById("theme-toggle");

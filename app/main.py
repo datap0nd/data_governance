@@ -191,6 +191,22 @@ def register_user(body: RegisterRequest, request: Request):
     return {"ip": ip, "name": name, "is_local": _is_localhost(ip)}
 
 
+@app.post("/api/update")
+def trigger_update(request: Request):
+    """Launch setup.ps1 to update the app. Localhost only."""
+    ip = request.client.host if request.client else ""
+    if not _is_localhost(ip):
+        raise HTTPException(status_code=403, detail="Update restricted to server machine")
+    setup_path = Path(__file__).parent.parent / "setup.ps1"
+    if not setup_path.exists():
+        raise HTTPException(status_code=404, detail="setup.ps1 not found")
+    subprocess.Popen(
+        ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(setup_path)],
+        creationflags=0x00000008,  # DETACHED_PROCESS
+    )
+    return {"status": "launched"}
+
+
 @app.get("/")
 def serve_panel():
     """Serve the main panel page."""
