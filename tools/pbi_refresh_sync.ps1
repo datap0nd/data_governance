@@ -21,46 +21,15 @@ $ClientId = "ea0616ba-638b-4df5-95eb-564571f60a21"
 $Authority = "https://login.microsoftonline.com/organizations"
 $Scopes = @("https://analysis.windows.net/powerbi/api/.default")
 
-# ── Load MSAL.NET from the PBI module ──
+# ── Load PBI module (this loads all MSAL dependencies properly) ──
 
-function Find-MsalAssembly {
-    $pbiModule = Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt.Profile |
-        Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $pbiModule) {
-        $pbiModule = Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt |
-            Sort-Object Version -Descending | Select-Object -First 1
-    }
-    if (-not $pbiModule) { return $null }
-
-    $moduleBase = $pbiModule.ModuleBase
-    # Search for MSAL DLL in module directory tree
-    $dll = Get-ChildItem -Path $moduleBase -Recurse -Filter "Microsoft.Identity.Client.dll" -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($dll) { return $dll.FullName }
-
-    # Also check parent module folder (for nested modules)
-    $parentBase = Split-Path $moduleBase -Parent
-    $dll = Get-ChildItem -Path $parentBase -Recurse -Filter "Microsoft.Identity.Client.dll" -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($dll) { return $dll.FullName }
-
-    return $null
-}
-
-$msalDll = Find-MsalAssembly
-if (-not $msalDll) {
-    Write-Error "Cannot find MSAL assembly. Ensure MicrosoftPowerBIMgmt is installed: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
+if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
+    Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
     Read-Host "Press Enter to exit"
     exit 1
 }
 
-try {
-    Add-Type -Path $msalDll -ErrorAction Stop
-} catch [System.Reflection.ReflectionTypeLoadException] {
-    # Already loaded - this is fine
-} catch {
-    # Try loading anyway, might already be in memory
-}
+Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
 
 # ── MSAL token acquisition with file-based cache ──
 
