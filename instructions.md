@@ -40,12 +40,23 @@ When there is a new version, run `setup.ps1` again (as Administrator). It downlo
 
 ## Network access
 
-Others on the same network can open the panel at:
-```
-http://YOUR_PC_IP:8000
+To allow others on the network to access the panel, open port 8000 in Windows Firewall. Run this once in an admin PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "MX Analytics" -Direction Inbound -Port 8000 -Protocol TCP -Action Allow
 ```
 
-Run `ipconfig` to find your IP.
+Find the server's IP:
+```powershell
+(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' }).IPAddress
+```
+
+Others can then open:
+```
+http://<server-ip>:8000
+```
+
+First-time visitors will be prompted to enter their name. Scanning and updates can only be triggered from the server machine (localhost).
 
 ## Managing the service
 
