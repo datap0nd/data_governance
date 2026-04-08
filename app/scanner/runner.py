@@ -13,7 +13,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import TMDL_ROOT, DB_PATH
+from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE
 from app.database import get_db
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
@@ -286,6 +286,25 @@ def run_scan(reports_path: str | None = None) -> dict:
                     "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', 'Initial scan — no probe data yet')",
                     (row["id"], now),
                 )
+
+            # Normalize PostgreSQL source names: strip server/database prefix
+            # e.g. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
+            if PGHOST:
+                prefix = f"{PGHOST}/"
+                if PGDATABASE:
+                    prefix += f"{PGDATABASE}/"
+                rows = db.execute(
+                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    (f"{PGHOST}/%",),
+                ).fetchall()
+                for row in rows:
+                    new_name = row["name"].replace(prefix, "", 1)
+                    # Check no duplicate exists with the clean name
+                    dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
+                                    (new_name, row["id"])).fetchone()
+                    if not dup:
+                        db.execute("UPDATE sources SET name = ? WHERE id = ?",
+                                   (new_name, row["id"]))
 
             # Update scan run record
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."

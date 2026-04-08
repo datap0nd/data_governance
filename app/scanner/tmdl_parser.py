@@ -55,6 +55,11 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return Path(self.file_path).name
         elif self.source_type in self.DB_TYPES and self.server:
+            # For PostgreSQL, just show database.table (skip server IP)
+            if self.source_type == "postgresql" and self.sql_table:
+                if self.database:
+                    return f"{self.database}.{self.sql_table}"
+                return self.sql_table
             parts = []
             if self.database:
                 parts.append(self.database)
