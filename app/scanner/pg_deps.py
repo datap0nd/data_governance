@@ -1,94 +1,20 @@
 """
 PostgreSQL materialized view dependency scanner.
 
-Queries pg_matviews for MV definitions, parses SQL to extract
-referenced tables, registers upstream tables as sources, and
-stores dependency edges in source_dependencies.
+Uses pg_depend + pg_rewrite to find real table dependencies for each
+materialized view, registers upstream tables as sources, and stores
+dependency edges in source_dependencies.
 
 READ-ONLY: Only SELECT queries are used against PostgreSQL.
 """
 
 import logging
-import re
 from datetime import datetime, timezone
 
 from app.database import get_db
 from app.scanner.prober import _get_pg_connection
 
 logger = logging.getLogger(__name__)
-
-# Regex to find table references in SQL: schema.table or just table
-# Matches after FROM, JOIN, and comma-separated table lists
-# Excludes common SQL keywords that could be mistaken for table names
-_SQL_KEYWORDS = {
-    "select", "from", "where", "and", "or", "not", "in", "on",
-    "as", "is", "null", "true", "false", "case", "when", "then",
-    "else", "end", "group", "by", "order", "having", "limit",
-    "offset", "union", "all", "intersect", "except", "join",
-    "inner", "outer", "left", "right", "full", "cross", "natural",
-    "using", "lateral", "with", "recursive", "distinct", "into",
-    "values", "insert", "update", "delete", "create", "alter",
-    "drop", "index", "table", "view", "materialized", "exists",
-    "between", "like", "ilike", "similar", "any", "some",
-    "coalesce", "nullif", "cast", "extract", "interval",
-    "current_date", "current_timestamp", "now", "generate_series",
-    "row_number", "rank", "dense_rank", "over", "partition",
-    "filter", "within", "array", "unnest", "lateral",
-    "pg_stat_user_tables", "information_schema",
-}
-
-
-def _parse_table_refs_from_sql(sql: str) -> list[tuple[str, str]]:
-    """Extract (schema, table) references from a SQL string.
-
-    Returns list of (schema, table) tuples. Unqualified tables
-    get schema='public'.
-    """
-    if not sql:
-        return []
-
-    refs = set()
-
-    # Normalize: collapse whitespace, remove comments
-    clean = re.sub(r'--[^\n]*', ' ', sql)
-    clean = re.sub(r'/\*.*?\*/', ' ', clean, flags=re.DOTALL)
-    clean = re.sub(r'\s+', ' ', clean).strip()
-
-    # Pattern: schema.table or just table after FROM/JOIN keywords
-    # Match schema.table (with optional quoting)
-    pattern = r'(?:FROM|JOIN)\s+((?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*)\.(?:"[^"]+"|[a-zA-Z_][a-zA-Z0-9_]*))'
-    for m in re.finditer(pattern, clean, re.IGNORECASE):
-        full = m.group(1)
-        parts = full.replace('"', '').split('.', 1)
-        if len(parts) == 2:
-            schema, table = parts[0].strip(), parts[1].strip()
-            if schema.lower() not in _SQL_KEYWORDS and table.lower() not in _SQL_KEYWORDS:
-                refs.add((schema, table))
-
-    # Also match unqualified table names after FROM/JOIN
-    pattern2 = r'(?:FROM|JOIN)\s+(?!"[^"]+"\.|[a-zA-Z_][a-zA-Z0-9_]*\.)("?[a-zA-Z_][a-zA-Z0-9_]*"?)'
-    for m in re.finditer(pattern2, clean, re.IGNORECASE):
-        name = m.group(1).replace('"', '').strip()
-        if name.lower() not in _SQL_KEYWORDS:
-            refs.add(("public", name))
-
-    # Also handle comma-separated tables in FROM: FROM a, b, c
-    from_pattern = r'FROM\s+(.+?)(?:WHERE|GROUP|ORDER|HAVING|LIMIT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|UNION|INTERSECT|EXCEPT|;|\)|\s*$)'
-    for m in re.finditer(from_pattern, clean, re.IGNORECASE):
-        from_clause = m.group(1)
-        for part in from_clause.split(','):
-            part = part.strip().split()[0] if part.strip() else ""
-            part = part.replace('"', '')
-            if not part or part.lower() in _SQL_KEYWORDS:
-                continue
-            if '.' in part:
-                s, t = part.split('.', 1)
-                if s.lower() not in _SQL_KEYWORDS and t.lower() not in _SQL_KEYWORDS:
-                    refs.add((s, t))
-            elif part.lower() not in _SQL_KEYWORDS:
-                refs.add(("public", part))
-
-    return list(refs)
 
 
 def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
@@ -131,11 +57,14 @@ def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
 def scan_pg_dependencies() -> dict:
     """Scan PostgreSQL for materialized view dependencies.
 
-    For each source that is a materialized view:
-    1. Get its SQL definition from pg_matviews
-    2. Parse referenced tables
-    3. Register upstream tables as sources
-    4. Create dependency edges
+    Uses pg_depend/pg_rewrite catalog tables to find real table dependencies
+    for each MV (no SQL text parsing). This gives accurate results even for
+    complex MVs with CTEs, subqueries, dblink, string literals, etc.
+
+    For each MV that is tracked as a source:
+    1. Query pg_depend for its table/MV dependencies
+    2. Register upstream tables as sources
+    3. Create dependency edges
 
     READ-ONLY: Only SELECT queries against PostgreSQL.
 
@@ -150,56 +79,69 @@ def scan_pg_dependencies() -> dict:
     try:
         pg_cur = pg_conn.cursor()
 
-        # Get all materialized views and their definitions
-        # READ-ONLY: SELECT from pg_matviews
-        pg_cur.execute(
-            "SELECT schemaname, matviewname, definition FROM pg_matviews ORDER BY schemaname, matviewname"
-        )
-        mv_rows = pg_cur.fetchall()
+        # Get all MV dependencies via pg_depend + pg_rewrite.
+        # This returns (mv_schema, mv_name, dep_schema, dep_name, dep_kind)
+        # where dep_kind is 'r' (table), 'm' (materialized view), or 'v' (view).
+        # READ-ONLY: SELECT from system catalogs only.
+        pg_cur.execute("""
+            SELECT DISTINCT
+                ns_mv.nspname  AS mv_schema,
+                c_mv.relname   AS mv_name,
+                ns_dep.nspname AS dep_schema,
+                c_dep.relname  AS dep_name,
+                c_dep.relkind  AS dep_kind
+            FROM pg_depend d
+            JOIN pg_rewrite rw  ON rw.oid = d.objid
+            JOIN pg_class c_mv  ON c_mv.oid = rw.ev_class
+            JOIN pg_namespace ns_mv ON ns_mv.oid = c_mv.relnamespace
+            JOIN pg_class c_dep ON c_dep.oid = d.refobjid
+            JOIN pg_namespace ns_dep ON ns_dep.oid = c_dep.relnamespace
+            WHERE c_mv.relkind = 'm'
+              AND d.deptype = 'n'
+              AND d.classid = 'pg_rewrite'::regclass
+              AND c_dep.relkind IN ('r', 'm', 'v')
+              AND c_dep.oid != c_mv.oid
+              AND ns_dep.nspname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY ns_mv.nspname, c_mv.relname, ns_dep.nspname, c_dep.relname
+        """)
+        dep_rows = pg_cur.fetchall()
 
-        if not mv_rows:
+        if not dep_rows:
             return {"status": "completed", "mvs_found": 0, "deps_created": 0}
+
+        # Group by MV
+        mv_deps = {}
+        for mv_schema, mv_name, dep_schema, dep_name, dep_kind in dep_rows:
+            mv_key = f"{mv_schema}.{mv_name}"
+            if mv_key not in mv_deps:
+                mv_deps[mv_key] = []
+            mv_deps[mv_key].append((dep_schema, dep_name))
 
         mvs_found = 0
         deps_created = 0
-        sources_created = 0
         log_lines = []
 
         with get_db() as db:
             # Clear old dependency edges (rebuild each time)
             db.execute("DELETE FROM source_dependencies WHERE discovered_by = 'pg_matviews'")
 
-            for schema, mvname, definition in mv_rows:
-                full_mv_name = f"{schema}.{mvname}"
-
+            for full_mv_name, refs in mv_deps.items():
                 # Find this MV in our sources table
                 mv_source = db.execute(
                     "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
                     (f"%{full_mv_name}",),
                 ).fetchone()
                 if not mv_source:
-                    # Also try connection_info
                     mv_source = db.execute(
                         "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
                         (f"%{full_mv_name}%",),
                     ).fetchone()
 
                 if not mv_source:
-                    # This MV isn't tracked as a source - skip it
                     continue
 
                 mv_source_id = mv_source["id"]
                 mvs_found += 1
-
-                # Parse SQL definition for table references
-                refs = _parse_table_refs_from_sql(definition)
-
-                # Filter out self-references
-                refs = [(s, t) for s, t in refs if f"{s}.{t}" != full_mv_name]
-
-                if not refs:
-                    log_lines.append(f"MV: {full_mv_name} - no upstream tables found")
-                    continue
 
                 for dep_schema, dep_table in refs:
                     dep_source_id = _find_or_create_source(db, dep_schema, dep_table, now)
@@ -212,12 +154,19 @@ def scan_pg_dependencies() -> dict:
                             )
                             deps_created += 1
                         except Exception:
-                            pass  # UNIQUE constraint - already exists
+                            pass  # UNIQUE constraint
 
                 ref_names = [f"{s}.{t}" for s, t in refs]
                 log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
 
-            # Count newly created sources
+            # Clean up orphaned pg_deps sources that no longer have any dependency edges
+            db.execute("""
+                DELETE FROM sources
+                WHERE discovered_by = 'pg_deps'
+                  AND id NOT IN (SELECT depends_on_id FROM source_dependencies)
+                  AND id NOT IN (SELECT source_id FROM source_dependencies)
+            """)
+
             sources_created = db.execute(
                 "SELECT COUNT(*) FROM sources WHERE discovered_by = 'pg_deps' AND created_at = ?",
                 (now,),
