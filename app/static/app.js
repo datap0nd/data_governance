@@ -3325,6 +3325,7 @@ async function renderScripts() {
             if (!s.tables_written || s.tables_written.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             return s.tables_written.map(t => {
                 const c = _classifyTable(t);
+                if (showFullTables) return `<span class="badge badge-red" style="font-size:0.65rem;margin:1px" title="${c.label}">${esc(t)}</span>`;
                 return `<span class="badge badge-red" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
             }).join(" ");
         }, sortVal: s => (s.tables_written || []).join(",") },
@@ -3332,6 +3333,7 @@ async function renderScripts() {
             if (!s.tables_read || s.tables_read.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             return s.tables_read.map(t => {
                 const c = _classifyTable(t);
+                if (showFullTables) return `<span class="badge ${c.cls}" style="font-size:0.65rem;margin:1px" title="${c.label}">${esc(t)}</span>`;
                 return `<span class="badge ${c.cls}" style="font-size:0.68rem;margin:1px;cursor:help" title="${esc(t)}">${c.label}</span>`;
             }).join(" ");
         }, sortVal: s => (s.tables_read || []).join(",") },
@@ -3340,6 +3342,7 @@ async function renderScripts() {
     ];
 
     const sqlOnly = sessionStorage.getItem("scripts_sql_only") !== "0";
+    const showFullTables = sessionStorage.getItem("scripts_full_tables") === "1";
     const catFilter = sessionStorage.getItem("scripts_category") || "";
     const machineFilter = sessionStorage.getItem("scripts_machine") || "";
     let filtered = sqlOnly ? scripts.filter(s => s.tables_written && s.tables_written.length > 0) : scripts;
@@ -3362,6 +3365,7 @@ async function renderScripts() {
             <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="scripts-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
+            <button class="btn-outline btn-archive-toggle ${showFullTables ? 'active' : ''}" id="btn-full-tables" style="font-size:0.75rem">${showFullTables ? 'Table Names' : 'Schema Labels'}</button>
             <button class="btn-outline btn-archive-toggle ${sqlOnly ? 'active' : ''}" id="btn-sql-only" style="font-size:0.75rem">${sqlOnly ? 'SQL Scripts Only' : 'Show All Scripts'}</button>
             ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
@@ -3487,6 +3491,16 @@ function bindScriptsPage() {
     if (catSel) {
         catSel.addEventListener("change", () => {
             sessionStorage.setItem("scripts_category", catSel.value);
+            navigate("scripts");
+        });
+    }
+
+    // Full table names toggle
+    const btnFullTables = document.getElementById("btn-full-tables");
+    if (btnFullTables) {
+        btnFullTables.addEventListener("click", () => {
+            const current = sessionStorage.getItem("scripts_full_tables") === "1";
+            sessionStorage.setItem("scripts_full_tables", current ? "0" : "1");
             navigate("scripts");
         });
     }
