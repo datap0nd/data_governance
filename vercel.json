@@ -25,7 +25,6 @@
   ],
   "env": {
     "DG_DB_PATH": "/tmp/governance.db",
-    "DG_TMDL_ROOT": "test_data/reports",
     "DG_AI_MOCK": "true"
   }
 }

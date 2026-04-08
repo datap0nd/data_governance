@@ -1,8 +1,0 @@
-table Measures_table
-	lineageTag: d4e5f6a7-4444-5555-6666-777788889999
-
-	measure 'Total Sales' = SUM('Main'[oe_total_sales_price])
-		lineageTag: 99999999-aaaa-bbbb-cccc-ddddeeee5555
-
-	measure 'Total Quantity' = SUM('Main'[oe_final_quantity])
-		lineageTag: aabbccdd-aaaa-bbbb-cccc-ddddeeee6666

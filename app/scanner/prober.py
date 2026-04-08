@@ -89,8 +89,6 @@ def _find_file(file_path: str) -> Path | None:
 
     search_dirs = [
         BASE_DIR,
-        BASE_DIR / "test_data" / "sample_files",
-        BASE_DIR / "test_data",
     ]
     for d in search_dirs:
         candidate = d / name

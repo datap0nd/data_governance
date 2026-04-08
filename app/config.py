@@ -10,10 +10,6 @@ DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 # Folder where .pbix reports live (or TMDL exports as fallback)
 _default_reports = r"\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 
-# If the default path doesn't exist, fall back to test_data inside the project
-if not os.path.isdir(_default_reports):
-    _default_reports = str(BASE_DIR / "test_data")
-
 REPORTS_PATH = os.environ.get("DG_REPORTS_PATH", _default_reports)
 
 # DG_TMDL_ROOT is the documented env var — prefer it over REPORTS_PATH
@@ -36,9 +32,9 @@ if _env_scripts:
 else:
     # Use defaults, filtering to those that actually exist
     _existing = [p for p in _default_script_paths if os.path.isdir(p)]
-    SCRIPTS_PATHS = _existing if _existing else [str(BASE_DIR / "test_data" / "scripts")]
+    SCRIPTS_PATHS = _existing if _existing else []
 # Keep single-path compat
-SCRIPTS_PATH = SCRIPTS_PATHS[0] if SCRIPTS_PATHS else str(BASE_DIR / "test_data" / "scripts")
+SCRIPTS_PATH = SCRIPTS_PATHS[0] if SCRIPTS_PATHS else ""
 
 # How often to run scheduled scans and checks (in hours)
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
