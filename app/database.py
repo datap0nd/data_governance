@@ -352,6 +352,17 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_task_links_task_id ON task_links(task_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_links_entity ON task_links(entity_type, entity_id)",
+    # Source-to-source dependencies (MV -> upstream tables)
+    """CREATE TABLE IF NOT EXISTS source_dependencies (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        depends_on_id   INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        discovered_by   TEXT DEFAULT 'pg_matviews',
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_id, depends_on_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_source_deps_source ON source_dependencies(source_id)",
+    "CREATE INDEX IF NOT EXISTS idx_source_deps_depends ON source_dependencies(depends_on_id)",
 ]
 
 

@@ -4068,10 +4068,30 @@ function _renderLineageDiagram(data) {
     }
     colHtml.tables = tblH;
 
-    // -- Sources --
+    // -- Sources (including MV dependencies) --
+    // Build dep map: source_id -> list of upstream source objects
+    const depMap = new Map();
+    const depSourceMap = new Map();
+    for (const d of (data.source_deps || [])) {
+        if (!depMap.has(d.source_id)) depMap.set(d.source_id, []);
+        depMap.get(d.source_id).push(d);
+        depSourceMap.set(d.depends_on_id, d);
+    }
+
     let srcH = "";
     for (const s of sourceNodes) {
-        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span></div></div>`;
+        const hasDeps = depMap.has(s.id);
+        const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
+        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}</div></div>`;
+    }
+    // Add upstream dependency sources (not already in sourceNodes)
+    const existingSourceIds = new Set(sourceNodes.map(s => s.id));
+    const depSources = [];
+    for (const [depId, d] of depSourceMap) {
+        if (!existingSourceIds.has(depId)) {
+            depSources.push(d);
+            srcH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span><span class="lin-hint">upstream</span></div></div>`;
+        }
     }
     colHtml.sources = srcH;
 
@@ -4100,7 +4120,7 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length + depSources.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
 
     // Build grid
     const activeCols = enabledCols.filter(k => colHtml[k] || k === "visuals" || k === "tables");
@@ -4154,7 +4174,11 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const s of scriptNodes) for (const sid of (s.source_ids || [])) add(`source-${sid}`, `script-${s.id}`, true);
     // Script -> Task (SVG)
     for (const t of taskNodes) add(`script-${t.script_id}`, `task-${t.id}`, true);
-    // Source -> Upstream (SVG)
+    // Source -> Upstream dependency (MV -> upstream table) (SVG)
+    for (const d of (data.source_deps || [])) {
+        add(`source-${d.source_id}`, `source-${d.depends_on_id}`, true);
+    }
+    // Source -> Upstream system (SVG)
     for (const s of sourceNodes) if (s.upstream_id) add(`source-${s.id}`, `upstream-${s.upstream_id}`, true);
 
     window._linFwd = fwd;

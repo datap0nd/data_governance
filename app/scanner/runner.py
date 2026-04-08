@@ -316,6 +316,14 @@ def run_scan(reports_path: str | None = None) -> dict:
         except Exception as e:
             logger.exception("Probe failed after scan: %s", e)
 
+        # Scan PostgreSQL MV dependencies
+        from app.scanner.pg_deps import scan_pg_dependencies
+        try:
+            dep_result = scan_pg_dependencies()
+            logger.info("PG dependency scan completed: %s", dep_result.get("status"))
+        except Exception as e:
+            logger.exception("PG dependency scan failed: %s", e)
+
         summary = {
             "scan_id": scan_id,
             "reports_scanned": len(reports),

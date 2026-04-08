@@ -91,3 +91,10 @@ def get_scan_run(run_id: int):
     if not r:
         return {"error": "Scan run not found"}
     return ScanRunOut(**dict(r))
+
+
+@router.post("/pg-deps")
+def do_pg_deps():
+    """Scan PostgreSQL for materialized view dependencies."""
+    from app.scanner.pg_deps import scan_pg_dependencies
+    return scan_pg_dependencies()

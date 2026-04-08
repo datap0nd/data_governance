@@ -159,17 +159,48 @@ def get_lineage_diagram(report_id: int):
                 for r in up_rows
             ]
 
-        # 6. Scripts that write to these sources
-        scripts = []
+        # 6. Source dependencies (MV -> upstream tables)
+        source_deps = []
         if source_ids:
-            src_ph = ",".join("?" * len(source_ids))
+            dep_ph = ",".join("?" * len(source_ids))
+            dep_rows = db.execute(f"""
+                SELECT sd.source_id, sd.depends_on_id,
+                       s.name AS depends_on_name, s.type AS depends_on_type,
+                       sp.status AS depends_on_status,
+                       CAST(sp.last_data_at AS TEXT) AS depends_on_last_data_at
+                FROM source_dependencies sd
+                JOIN sources s ON s.id = sd.depends_on_id
+                LEFT JOIN (
+                    SELECT source_id, status, last_data_at,
+                           ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                    FROM source_probes
+                ) sp ON sp.source_id = sd.depends_on_id AND sp.rn = 1
+                WHERE sd.source_id IN ({dep_ph})
+            """, source_ids).fetchall()
+            source_deps = [
+                {
+                    "source_id": r["source_id"],
+                    "depends_on_id": r["depends_on_id"],
+                    "depends_on_name": r["depends_on_name"],
+                    "depends_on_type": r["depends_on_type"],
+                    "depends_on_status": r["depends_on_status"] or "unknown",
+                    "depends_on_last_data_at": r["depends_on_last_data_at"],
+                }
+                for r in dep_rows
+            ]
+
+        # 7. Scripts that write to these sources (including upstream deps)
+        scripts = []
+        all_source_ids = list(set(source_ids + [d["depends_on_id"] for d in source_deps]))
+        if all_source_ids:
+            src_ph = ",".join("?" * len(all_source_ids))
             script_rows = db.execute(f"""
                 SELECT DISTINCT sc.id, sc.display_name, sc.hostname, sc.machine_alias,
                        st.source_id
                 FROM script_tables st
                 JOIN scripts sc ON sc.id = st.script_id
                 WHERE st.direction = 'write' AND st.source_id IN ({src_ph})
-            """, source_ids).fetchall()
+            """, all_source_ids).fetchall()
             script_map = {}
             for r in script_rows:
                 sid = r["id"]
@@ -186,7 +217,7 @@ def get_lineage_diagram(report_id: int):
                     script_map[sid]["source_ids"].append(src_id)
             scripts = list(script_map.values())
 
-        # 7. Scheduled tasks linked to these scripts
+        # 8. Scheduled tasks linked to these scripts
         scheduled_tasks = []
         script_id_list = [s["id"] for s in scripts]
         if script_id_list:
@@ -223,6 +254,7 @@ def get_lineage_diagram(report_id: int):
         "pages": pages_list,
         "tables": tables,
         "sources": sources,
+        "source_deps": source_deps,
         "upstreams": upstreams,
         "scripts": scripts,
         "scheduled_tasks": scheduled_tasks,

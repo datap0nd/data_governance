@@ -64,7 +64,7 @@ def list_sources(include_archived: bool = Query(False)):
             updated_at=r["updated_at"],
         )
         for r in rows
-        if (r["latest_status"] or "unknown") not in ("unknown", "no_connection") or r["discovered_by"] == "manual"
+        if (r["latest_status"] or "unknown") not in ("unknown", "no_connection") or r["discovered_by"] in ("manual", "pg_deps")
     ]
 
 

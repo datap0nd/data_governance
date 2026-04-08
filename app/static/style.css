@@ -3020,7 +3020,25 @@ button.btn-danger-outline:hover {
 .lin-st-err { border-left-color: var(--red); }
 .lin-st-off { border-left-color: var(--text-dim); opacity: 0.6; }
 
-/* Upstream card */
+/* MV badge on source cards */
+.lin-mv-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: rgba(168, 85, 247, 0.15);
+    color: #a855f7;
+    margin-left: 0.25rem;
+}
+/* Upstream dependency source cards */
+.lin-src-upstream {
+    border-left-style: dashed;
+    opacity: 0.85;
+}
+
+/* Upstream system card */
 .lin-upstream { background: var(--surface-2); }
 
 /* SVG edges */
