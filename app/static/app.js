@@ -4011,9 +4011,12 @@ function _renderLineageDiagram(data) {
     const tableNodes = [...tableMap.values()].filter(t => usedTableNames.has(t.name) || t.source_id);
     const usedSourceIds = new Set(tableNodes.map(t => t.source_id).filter(Boolean));
     const sourceNodes = [...sourceMap.values()].filter(s => usedSourceIds.has(s.id));
+    // Include MV upstream dependency source IDs so scripts/tasks linked to them also show
+    const allSourceIds = new Set(usedSourceIds);
+    for (const d of (data.source_deps || [])) allSourceIds.add(d.depends_on_id);
     const usedUpstreamIds = new Set(sourceNodes.map(s => s.upstream_id).filter(Boolean));
     const upstreamNodes = [...upstreamMap.values()].filter(u => usedUpstreamIds.has(u.id));
-    const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => usedSourceIds.has(sid)));
+    const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => allSourceIds.has(sid)));
     const usedScriptIds = new Set(scriptNodes.map(s => s.id));
     const taskNodes = [...taskMap.values()].filter(t => usedScriptIds.has(t.script_id));
 
