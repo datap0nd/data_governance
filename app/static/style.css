@@ -2920,7 +2920,7 @@ button.btn-danger-outline:hover {
     display: grid; gap: 2rem; min-width: 700px;
     align-items: start; position: relative;
 }
-.lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; transition: opacity 0.3s ease; }
 .lin-col-hdr {
     font-size: 0.62rem; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--text-dim);
@@ -2936,7 +2936,11 @@ button.btn-danger-outline:hover {
 .lin-card {
     border-radius: 6px; border: 1px solid var(--border);
     background: var(--surface); font-size: 0.73rem;
-    cursor: pointer; transition: all 0.15s; overflow: hidden;
+    cursor: pointer; overflow: hidden;
+    transition: opacity 0.3s ease, max-height 0.35s ease, margin 0.35s ease,
+                padding 0.35s ease, border-color 0.15s ease, border-width 0.35s ease,
+                box-shadow 0.15s ease;
+    max-height: 500px; /* large enough for any card */
 }
 .lin-card:hover { border-color: var(--accent); }
 .lin-card-hdr {
@@ -2974,7 +2978,10 @@ button.btn-danger-outline:hover {
     padding: 0.2rem 0.5rem 0.2rem 0.6rem;
     font-size: 0.68rem; color: var(--text-secondary);
     border-bottom: 1px solid rgba(214,211,203,0.3);
-    cursor: pointer; transition: background 0.1s;
+    cursor: pointer;
+    transition: background 0.1s, opacity 0.3s ease, max-height 0.35s ease,
+                margin 0.35s ease, padding 0.35s ease, border-width 0.35s ease;
+    max-height: 100px;
 }
 .lin-subrow:last-child { border-bottom: none; }
 .lin-subrow:hover { background: var(--surface-2); }
@@ -3078,14 +3085,36 @@ button.btn-danger-outline:hover {
     stroke-dasharray: 6 3;
     animation: lin-flow 1s linear infinite;
 }
-.lin-edge-dim { opacity: 0.04; }
+.lin-edge-dim { opacity: 0; }
 @keyframes lin-flow { to { stroke-dashoffset: -9; } }
 
-/* Highlight / dim */
-[data-lin-id].lin-highlighted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-[data-lin-id].lin-dimmed { opacity: 0.15; }
-.lin-subrow.lin-highlighted { background: var(--accent-bg); color: var(--text); opacity: 1; border-color: transparent; box-shadow: none; }
-.lin-subrow.lin-dimmed { opacity: 0.15; box-shadow: none; border-color: transparent; }
+/* Highlight / collapse */
+[data-lin-id].lin-highlighted {
+    border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+    opacity: 1;
+}
+[data-lin-id].lin-dimmed {
+    opacity: 0;
+    max-height: 0;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+.lin-subrow.lin-highlighted {
+    background: var(--accent-bg); color: var(--text);
+    opacity: 1; border-color: transparent; box-shadow: none;
+}
+.lin-subrow.lin-dimmed {
+    opacity: 0; max-height: 0; margin: 0; padding: 0;
+    border-width: 0; overflow: hidden; pointer-events: none;
+}
+/* Also collapse empty column headers when all cards are dimmed */
+.lin-col.lin-col-empty .lin-col-hdr {
+    opacity: 0.3;
+    transition: opacity 0.3s ease;
+}
 
 /* Hint bar */
 .lin-hint-bar {

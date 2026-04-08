@@ -4244,7 +4244,7 @@ function _bindLinInteractions() {
             setTimeout(_drawLinEdges, 30);
         });
     });
-    // Click to highlight
+    // Click to highlight and collapse
     wrap.querySelectorAll("[data-lin-id]").forEach(node => {
         node.addEventListener("click", (e) => {
             if (e.target.closest("[data-lin-toggle]") && !e.target.closest(".lin-subrow")) return;
@@ -4252,21 +4252,35 @@ function _bindLinInteractions() {
             const id = node.dataset.linId;
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
             const connected = _traceLinLineage(id);
+            // Hide SVG immediately so stale edges don't show during transition
+            const svg = document.getElementById("lin-svg");
+            if (svg) svg.style.opacity = "0";
             wrap.querySelectorAll("[data-lin-id]").forEach(n => {
                 const c = connected.has(n.dataset.linId);
                 n.classList.toggle("lin-highlighted", c);
                 n.classList.toggle("lin-dimmed", !c);
             });
-            wrap.querySelectorAll(".lin-edge").forEach(edge => {
-                const hit = connected.has(edge.dataset.from) && connected.has(edge.dataset.to);
-                edge.classList.toggle("lin-edge-hl", hit);
-                edge.classList.toggle("lin-edge-dim", !hit);
+            // Mark columns that have no highlighted cards
+            wrap.querySelectorAll(".lin-col").forEach(col => {
+                const hasHL = col.querySelector(".lin-highlighted");
+                col.classList.toggle("lin-col-empty", !hasHL);
             });
             // Auto-expand groups with highlighted items
             wrap.querySelectorAll(".lin-card, .lin-subgroup").forEach(card => {
                 if (card.querySelector(".lin-highlighted")) card.classList.add("expanded");
             });
-            setTimeout(_drawLinEdges, 40);
+            // Redraw edges after collapse transition finishes
+            setTimeout(() => {
+                _drawLinEdges();
+                // Fade SVG back in
+                if (svg) { svg.style.transition = "opacity 0.2s ease"; svg.style.opacity = "1"; }
+                // Apply edge styles after redraw
+                wrap.querySelectorAll(".lin-edge").forEach(edge => {
+                    const hit = connected.has(edge.dataset.from) && connected.has(edge.dataset.to);
+                    edge.classList.toggle("lin-edge-hl", hit);
+                    edge.classList.toggle("lin-edge-dim", !hit);
+                });
+            }, 380);
         });
     });
     wrap.addEventListener("click", (e) => { if (!e.target.closest("[data-lin-id]")) _resetLinHL(); });
@@ -4302,8 +4316,17 @@ function _traceLinLineage(startId) {
 function _resetLinHL() {
     const wrap = document.getElementById("lin-wrap");
     if (!wrap) return;
+    // Hide SVG during layout shift
+    const svg = document.getElementById("lin-svg");
+    if (svg) svg.style.opacity = "0";
     wrap.querySelectorAll("[data-lin-id]").forEach(n => n.classList.remove("lin-highlighted", "lin-dimmed"));
+    wrap.querySelectorAll(".lin-col").forEach(col => col.classList.remove("lin-col-empty"));
     wrap.querySelectorAll(".lin-edge").forEach(e => e.classList.remove("lin-edge-hl", "lin-edge-dim"));
+    // Redraw edges after expand transition finishes
+    setTimeout(() => {
+        _drawLinEdges();
+        if (svg) { svg.style.transition = "opacity 0.2s ease"; svg.style.opacity = "1"; }
+    }, 380);
 }
 
 
