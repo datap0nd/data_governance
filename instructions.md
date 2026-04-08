@@ -43,7 +43,7 @@ When there is a new version, run `setup.ps1` again (as Administrator). It downlo
 To allow others on the network to access the panel, open port 8000 in Windows Firewall. Run this once in an admin PowerShell:
 
 ```powershell
-New-NetFirewallRule -DisplayName "MX Analytics" -Direction Inbound -Port 8000 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "MX Analytics" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
 ```
 
 Find the server's IP:
