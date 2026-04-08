@@ -2918,7 +2918,7 @@ button.btn-danger-outline:hover {
 }
 .lin-grid {
     display: grid; gap: 2rem; min-width: 700px;
-    align-items: start; position: relative;
+    align-items: start; position: relative; z-index: 1;
 }
 .lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; transition: opacity 0.3s ease; }
 .lin-col-hdr {

@@ -3875,14 +3875,16 @@ const LINEAGE_COLS = [
     { key: "visuals", label: "Visuals" },
     { key: "tables", label: "Tables" },
     { key: "sources", label: "Sources" },
+    { key: "mv_upstream", label: "MV Upstream" },
     { key: "scripts", label: "Scripts" },
     { key: "tasks", label: "Tasks" },
     { key: "upstreams", label: "Upstream" },
 ];
 
 function _getLineageCols() {
-    try { const s = sessionStorage.getItem("lineage_cols"); if (s) return JSON.parse(s); } catch (_) {}
-    return Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
+    const defaults = Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
+    try { const s = sessionStorage.getItem("lineage_cols"); if (s) return { ...defaults, ...JSON.parse(s) }; } catch (_) {}
+    return defaults;
 }
 function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
 
@@ -4100,16 +4102,20 @@ function _renderLineageDiagram(data) {
         const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
         srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sched}</div>`;
     }
-    // Add upstream dependency sources (not already in sourceNodes)
+    colHtml.sources = srcH;
+
+    // -- MV Upstream (tables that feed materialized views, not directly used by report) --
     const existingSourceIds = new Set(sourceNodes.map(s => s.id));
-    const depSources = [];
+    let mvUpH = "";
+    const mvUpSources = [];
     for (const [depId, d] of depSourceMap) {
         if (!existingSourceIds.has(depId)) {
-            depSources.push(d);
-            srcH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span><span class="lin-hint">upstream</span></div></div>`;
+            // This upstream table only feeds the MV, not directly used by the report
+            mvUpSources.push(d);
+            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div></div>`;
         }
     }
-    colHtml.sources = srcH;
+    colHtml.mv_upstream = mvUpH;
 
     // -- Scripts --
     let scrH = "";
@@ -4136,7 +4142,7 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length + depSources.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, mv_upstream: mvUpSources.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
 
     // Build grid
     const activeCols = enabledCols.filter(k => colHtml[k] || k === "visuals" || k === "tables");
