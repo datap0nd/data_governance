@@ -168,13 +168,14 @@ def scan_pg_dependencies() -> dict:
                 log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
 
             # Clean up orphaned sources created by pg_deps or pg_matviews
-            # that no longer have any dependency edges
+            # that no longer have any dependency edges or script references
             db.execute("""
                 DELETE FROM sources
                 WHERE discovered_by IN ('pg_deps', 'pg_matviews')
                   AND id NOT IN (SELECT depends_on_id FROM source_dependencies)
                   AND id NOT IN (SELECT source_id FROM source_dependencies)
-                  AND id NOT IN (SELECT source_id FROM report_tables)
+                  AND id NOT IN (SELECT source_id FROM report_tables WHERE source_id IS NOT NULL)
+                  AND id NOT IN (SELECT source_id FROM script_tables WHERE source_id IS NOT NULL)
             """)
 
             sources_created = db.execute(

@@ -87,8 +87,32 @@ def run_scan(reports_path: str | None = None) -> dict:
                 )
 
         with get_db() as db:
-            # Normalize PostgreSQL source names BEFORE upsert so matches work
-            # e.g. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
+            # Normalize PostgreSQL source names BEFORE upsert so matches work.
+            # Handles two legacy naming patterns:
+            #   1. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
+            #   2. "postgres.bi_reporting.table" -> "bi_reporting.table"
+            # Canonical form is just schema.table (e.g. "bi_reporting.psi_combined").
+            def _merge_source(db, old_id, new_id, old_name, new_name, log_lines):
+                """Migrate all FK references from old_id to new_id, then delete old."""
+                db.execute("UPDATE report_tables SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE script_tables SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE source_dependencies SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE source_dependencies SET depends_on_id = ? WHERE depends_on_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE checks SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE alerts SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("UPDATE actions SET source_id = ? WHERE source_id = ?",
+                           (new_id, old_id))
+                db.execute("DELETE FROM source_probes WHERE source_id = ?", (old_id,))
+                db.execute("DELETE FROM sources WHERE id = ?", (old_id,))
+                log_lines.append(f"MERGED: {old_name} -> {new_name} (source {old_id} into {new_id})")
+
+            # Pass 1: Strip "PGHOST/PGDATABASE/" prefix
             if PGHOST:
                 prefix = f"{PGHOST}/"
                 if PGDATABASE:
@@ -102,25 +126,26 @@ def run_scan(reports_path: str | None = None) -> dict:
                     dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
                                     (new_name, row["id"])).fetchone()
                     if dup:
-                        # Merge: move all references from old source to the existing short-name source
-                        old_id, new_id = row["id"], dup["id"]
-                        db.execute("UPDATE report_tables SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE script_tables SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE source_dependencies SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE source_dependencies SET depends_on_id = ? WHERE depends_on_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE checks SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE alerts SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("UPDATE actions SET source_id = ? WHERE source_id = ?",
-                                   (new_id, old_id))
-                        db.execute("DELETE FROM source_probes WHERE source_id = ?", (old_id,))
-                        db.execute("DELETE FROM sources WHERE id = ?", (old_id,))
-                        log_lines.append(f"MERGED: {row['name']} -> {new_name} (source {old_id} into {new_id})")
+                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
+                    else:
+                        db.execute("UPDATE sources SET name = ? WHERE id = ?",
+                                   (new_name, row["id"]))
+
+            # Pass 2: Strip "PGDATABASE." prefix (e.g. "postgres.bi_reporting.table")
+            if PGDATABASE:
+                db_prefix = f"{PGDATABASE}."
+                old_rows = db.execute(
+                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    (f"{PGDATABASE}.%",),
+                ).fetchall()
+                for row in old_rows:
+                    new_name = row["name"].replace(db_prefix, "", 1)
+                    if new_name == row["name"]:
+                        continue
+                    dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
+                                    (new_name, row["id"])).fetchone()
+                    if dup:
+                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
                     else:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
