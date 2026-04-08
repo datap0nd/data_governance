@@ -4080,11 +4080,25 @@ function _renderLineageDiagram(data) {
         depSourceMap.set(d.depends_on_id, d);
     }
 
+    // Check which MVs have stale upstream data
+    const mvStaleUpstream = new Set();
+    for (const s of sourceNodes) {
+        const deps = depMap.get(s.id);
+        if (!deps) continue;
+        for (const d of deps) {
+            if (s.last_data_at && d.depends_on_last_data_at && d.depends_on_last_data_at > s.last_data_at) {
+                mvStaleUpstream.add(s.id);
+            }
+        }
+    }
+
     let srcH = "";
     for (const s of sourceNodes) {
         const hasDeps = depMap.has(s.id);
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}</div></div>`;
+        const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
+        const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
+        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sched}</div>`;
     }
     // Add upstream dependency sources (not already in sourceNodes)
     const existingSourceIds = new Set(sourceNodes.map(s => s.id));

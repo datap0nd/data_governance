@@ -98,3 +98,10 @@ def do_pg_deps():
     """Scan PostgreSQL for materialized view dependencies."""
     from app.scanner.pg_deps import scan_pg_dependencies
     return scan_pg_dependencies()
+
+
+@router.post("/pg-cron")
+def do_pg_cron():
+    """Scan pg_cron for MV refresh schedules."""
+    from app.scanner.pg_cron import scan_pg_cron
+    return scan_pg_cron()

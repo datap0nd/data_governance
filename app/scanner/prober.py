@@ -358,12 +358,99 @@ def _backfill_alert_owners(db):
             )
 
 
+def _check_dependency_freshness(db, now: str, log_lines: list):
+    """Check if any MV's upstream sources have newer data than the MV itself.
+
+    For each source that has dependencies (via source_dependencies),
+    compare the MV's last_data_at with each upstream source's last_data_at.
+    If upstream is newer, create a warning alert.
+    """
+    deps = db.execute("""
+        SELECT sd.source_id, sd.depends_on_id,
+               s_mv.name AS mv_name,
+               s_up.name AS upstream_name,
+               sp_mv.last_data_at AS mv_last_data,
+               sp_up.last_data_at AS upstream_last_data
+        FROM source_dependencies sd
+        JOIN sources s_mv ON s_mv.id = sd.source_id
+        JOIN sources s_up ON s_up.id = sd.depends_on_id
+        LEFT JOIN (
+            SELECT source_id, last_data_at,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+            FROM source_probes WHERE last_data_at IS NOT NULL
+        ) sp_mv ON sp_mv.source_id = sd.source_id AND sp_mv.rn = 1
+        LEFT JOIN (
+            SELECT source_id, last_data_at,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+            FROM source_probes WHERE last_data_at IS NOT NULL
+        ) sp_up ON sp_up.source_id = sd.depends_on_id AND sp_up.rn = 1
+        WHERE s_mv.archived = 0 AND s_up.archived = 0
+    """).fetchall()
+
+    for dep in deps:
+        mv_data = dep["mv_last_data"]
+        up_data = dep["upstream_last_data"]
+
+        if not mv_data or not up_data:
+            continue
+
+        try:
+            mv_dt = datetime.fromisoformat(mv_data)
+            up_dt = datetime.fromisoformat(up_data)
+            if mv_dt.tzinfo is None:
+                mv_dt = mv_dt.replace(tzinfo=timezone.utc)
+            if up_dt.tzinfo is None:
+                up_dt = up_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+
+        if up_dt > mv_dt:
+            mv_name = dep["mv_name"].replace("\\", "/").split("/")[-1]
+            up_name = dep["upstream_name"].replace("\\", "/").split("/")[-1]
+            delta = up_dt - mv_dt
+            hours = int(delta.total_seconds() / 3600)
+
+            msg = (
+                f"Upstream {up_name} has data from "
+                f"{up_dt.strftime('%Y-%m-%d %H:%M')} but MV {mv_name} "
+                f"last refreshed {mv_dt.strftime('%Y-%m-%d %H:%M')} "
+                f"({hours}h behind)"
+            )
+
+            # Only create alert if no existing unresolved one for this MV
+            existing = db.execute(
+                """SELECT id FROM alerts
+                   WHERE source_id = ? AND severity = 'warning'
+                   AND message LIKE '%behind%'
+                   AND acknowledged = 0 AND resolution_status IS NULL""",
+                (dep["source_id"],),
+            ).fetchone()
+            if not existing:
+                # Find owner from linked report
+                owner_row = db.execute(
+                    """SELECT r.owner FROM report_tables rt
+                       JOIN reports r ON r.id = rt.report_id
+                       WHERE rt.source_id = ? AND r.owner IS NOT NULL
+                       LIMIT 1""",
+                    (dep["source_id"],),
+                ).fetchone()
+                assigned = owner_row["owner"] if owner_row else None
+
+                db.execute(
+                    "INSERT INTO alerts (source_id, severity, message, assigned_to, created_at) VALUES (?, 'warning', ?, ?, ?)",
+                    (dep["source_id"], msg, assigned, now),
+                )
+
+            log_lines.append(f"DEP: {mv_name} <- {up_name} ({hours}h behind)")
+
+
 def run_probe() -> dict:
     """Probe all sources for freshness.
 
     1. File-based sources (Excel): check file modification time
-    2. PostgreSQL sources: READ-ONLY query against pg_stat_user_tables
+    2. PostgreSQL sources: READ-ONLY query using track_commit_timestamp
     3. Other DB sources: mark as unknown (no direct connection)
+    4. Dependency freshness: flag MVs with stale upstream data
 
     Returns a summary dict.
     """
@@ -426,6 +513,9 @@ def run_probe() -> dict:
             probed += 1
             short = src["name"].replace("\\", "/").split("/")[-1]
             log_lines.append(f"SKIP: {short} - unknown ({src['type']}, no connection)")
+
+        # 4. Dependency freshness check: flag MVs whose upstream data is newer
+        _check_dependency_freshness(db, now, log_lines)
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()

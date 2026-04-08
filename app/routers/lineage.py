@@ -122,6 +122,7 @@ def get_lineage_diagram(report_id: int):
             placeholders = ",".join("?" * len(source_ids))
             source_rows = db.execute(f"""
                 SELECT s.id, s.name, s.type, s.owner, s.upstream_id,
+                       s.refresh_schedule,
                        sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
                 FROM sources s
                 LEFT JOIN (
@@ -140,6 +141,7 @@ def get_lineage_diagram(report_id: int):
                     "last_data_at": r["last_data_at"],
                     "owner": r["owner"],
                     "upstream_id": r["upstream_id"],
+                    "refresh_schedule": r["refresh_schedule"],
                 }
                 for r in source_rows
             ]

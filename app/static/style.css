@@ -3037,6 +3037,29 @@ button.btn-danger-outline:hover {
     border-left-style: dashed;
     opacity: 0.85;
 }
+/* Dependency stale warning indicator */
+.lin-dep-warn {
+    display: inline-block;
+    width: 16px; height: 16px;
+    line-height: 16px;
+    text-align: center;
+    font-size: 0.6rem;
+    font-weight: 800;
+    border-radius: 50%;
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    margin-left: 0.25rem;
+    cursor: help;
+}
+/* Refresh schedule on source card */
+.lin-card-sched {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    padding: 0 8px 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
 /* Upstream system card */
 .lin-upstream { background: var(--surface-2); }

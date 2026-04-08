@@ -324,6 +324,14 @@ def run_scan(reports_path: str | None = None) -> dict:
         except Exception as e:
             logger.exception("PG dependency scan failed: %s", e)
 
+        # Scan pg_cron for MV refresh schedules
+        from app.scanner.pg_cron import scan_pg_cron
+        try:
+            cron_result = scan_pg_cron()
+            logger.info("pg_cron scan completed: %s", cron_result.get("status"))
+        except Exception as e:
+            logger.exception("pg_cron scan failed: %s", e)
+
         summary = {
             "scan_id": scan_id,
             "reports_scanned": len(reports),
