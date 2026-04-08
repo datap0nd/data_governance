@@ -40,6 +40,14 @@ def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
     if row:
         return row["id"]
 
+    # Try matching just the table name (scanner may use db.table instead of schema.table)
+    row = db.execute(
+        "SELECT id FROM sources WHERE (name LIKE ? OR connection_info LIKE ?) AND archived = 0",
+        (f"%.{table}", f"%.{table}%"),
+    ).fetchone()
+    if row:
+        return row["id"]
+
     # Create new source for this upstream table
     cursor = db.execute(
         """INSERT INTO sources (name, type, connection_info, discovered_by, created_at, updated_at)
