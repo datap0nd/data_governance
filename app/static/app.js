@@ -2342,7 +2342,7 @@ function _renderCreateForm(entity) {
         `;
     }
 
-    const entityLabels = { source: 'Data Source', report: 'Report', upstream: 'Upstream Data Source' };
+    const entityLabels = { source: 'Data Source', report: 'Report', upstream: 'Upstream System' };
     return `
         <div class="create-form">
             <h2>New ${entityLabels[entity]}</h2>
@@ -2432,47 +2432,37 @@ async function renderCreate() {
         <td style="padding:0.35rem 0.5rem"><button class="btn-sm btn-outline btn-danger-outline people-delete-btn" data-person-id="${p.id}">Delete</button></td>
     </tr>`).join("");
 
-    const peopleSection = `
-        <div class="section" style="margin-top:1.5rem;margin-bottom:2rem">
-            <h2>People</h2>
-            <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
-                <input type="text" id="people-name-input" placeholder="Name" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
-                <select id="people-role-input" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
-                    <option value="">Role...</option>${roleOpts}
-                </select>
-                <button id="btn-add-person" class="btn-sm">Add</button>
-            </div>
-            ${people.length > 0 ? `<table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-                <thead><tr style="border-bottom:1px solid var(--border)">
-                    <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Name</th>
-                    <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Role</th>
-                    <th style="padding:0.35rem 0.5rem;width:60px"></th>
-                </tr></thead>
-                <tbody>${peopleRows}</tbody>
-            </table>` : '<div style="color:var(--text-dim);font-size:0.82rem">No people added yet</div>'}
+    const peopleContent = `
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem">
+            <input type="text" id="people-name-input" placeholder="Name" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
+            <select id="people-role-input" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.5rem;font-size:0.82rem">
+                <option value="">Role...</option>${roleOpts}
+            </select>
+            <button id="btn-add-person" class="btn-sm">Add</button>
         </div>
+        ${people.length > 0 ? `<table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+            <thead><tr style="border-bottom:1px solid var(--border)">
+                <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Name</th>
+                <th style="text-align:left;padding:0.35rem 0.5rem;color:var(--text-dim);font-weight:500">Role</th>
+                <th style="padding:0.35rem 0.5rem;width:60px"></th>
+            </tr></thead>
+            <tbody>${peopleRows}</tbody>
+        </table>` : '<div style="color:var(--text-dim);font-size:0.82rem">No people added yet</div>'}
     `;
 
-    return `
-        <div class="page-header">
-            <h1>Create Entry</h1>
-            <span class="subtitle">Manually add reports, data sources, and upstream systems</span>
-        </div>
-
+    const assetsContent = `
         <div class="create-type-selector">
-            <button class="create-type-btn" data-entity="report">&#128196; Report</button>
-            <button class="create-type-btn" data-entity="source">&#128451; Data Source</button>
-            <button class="create-type-btn" data-entity="upstream">&#9650; Upstream System</button>
+            <button class="create-type-btn" data-entity="report">Report</button>
+            <button class="create-type-btn" data-entity="source">Data Source</button>
+            <button class="create-type-btn" data-entity="upstream">Upstream System</button>
         </div>
 
         <div id="create-form-container">
             <div class="create-prompt" style="text-align:center;padding:2.5rem 1rem;color:var(--text-muted);font-size:0.9rem">
-                <div style="font-size:1.8rem;margin-bottom:0.75rem;opacity:0.4">&#10010;</div>
-                <div>Select a type above to create a new entry</div>
+                <div style="font-size:1.2rem;margin-bottom:0.75rem;opacity:0.4">+</div>
+                <div>Select an asset type above to create a new entry</div>
             </div>
         </div>
-
-        ${peopleSection}
 
         <div class="section" style="margin-top:2rem">
             <h2 class="create-history-toggle" style="cursor:pointer;user-select:none">
@@ -2484,9 +2474,35 @@ async function renderCreate() {
             </div>
         </div>
     `;
+
+    return `
+        <div class="page-header">
+            <h1>Create</h1>
+            <span class="subtitle">Manually add assets and people</span>
+        </div>
+
+        <div class="create-tabs">
+            <button class="create-tab active" data-tab="assets">Assets</button>
+            <button class="create-tab" data-tab="people">People</button>
+        </div>
+
+        <div id="create-tab-assets" class="create-tab-content">${assetsContent}</div>
+        <div id="create-tab-people" class="create-tab-content" style="display:none">${peopleContent}</div>
+    `;
 }
 
 function bindCreatePage() {
+    // Tab switching
+    document.querySelectorAll('.create-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.create-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            document.querySelectorAll('.create-tab-content').forEach(c => c.style.display = 'none');
+            const target = document.getElementById('create-tab-' + tab.dataset.tab);
+            if (target) target.style.display = '';
+        });
+    });
+
     document.querySelectorAll('.create-type-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.create-type-btn').forEach(b => b.classList.remove('active'));

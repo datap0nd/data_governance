@@ -2284,6 +2284,34 @@ body.ai-panel-open main {
 /* ================================================================
    Create Page
    ================================================================ */
+.create-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.create-tab {
+    padding: 0.6rem 1.25rem;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.create-tab:hover {
+    color: var(--text);
+}
+
+.create-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
 .create-type-selector {
     display: flex;
     gap: 0.6rem;
