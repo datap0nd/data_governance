@@ -67,15 +67,25 @@ try {
 function Get-MsalToken {
     # Build the public client app
     $appBuilder = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($ClientId)
-    $appBuilder = $appBuilder.WithAuthority($Authority)
-    $appBuilder = $appBuilder.WithDefaultRedirectUri()
+    try { $appBuilder = $appBuilder.WithAuthority($Authority, $true) } catch {
+        try { $appBuilder = $appBuilder.WithAuthority($Authority) } catch {
+            # Older MSAL - skip, uses default authority (common)
+        }
+    }
+    try { $appBuilder = $appBuilder.WithDefaultRedirectUri() } catch {
+        $appBuilder = $appBuilder.WithRedirectUri("http://localhost")
+    }
     $app = $appBuilder.Build()
 
     # Attach file-based token cache
     # MSAL serializes both access tokens AND refresh tokens to this cache
     if (Test-Path $CacheFile) {
-        $cacheData = [System.IO.File]::ReadAllBytes($CacheFile)
-        $app.UserTokenCache.DeserializeMsalV3($cacheData)
+        try {
+            $cacheData = [System.IO.File]::ReadAllBytes($CacheFile)
+            $app.UserTokenCache.DeserializeMsalV3($cacheData)
+        } catch {
+            Write-Host "Could not load token cache, will require login." -ForegroundColor Yellow
+        }
     }
 
     $token = $null
@@ -109,8 +119,12 @@ function Get-MsalToken {
     }
 
     # Save updated cache (includes refresh token for next time)
-    $cacheData = $app.UserTokenCache.SerializeMsalV3()
-    [System.IO.File]::WriteAllBytes($CacheFile, $cacheData)
+    try {
+        $cacheData = $app.UserTokenCache.SerializeMsalV3()
+        [System.IO.File]::WriteAllBytes($CacheFile, $cacheData)
+    } catch {
+        Write-Host "Could not save token cache: $_" -ForegroundColor Yellow
+    }
 
     return $token
 }
