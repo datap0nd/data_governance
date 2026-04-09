@@ -156,14 +156,42 @@ def _extract_cte_names(sql_text: str) -> set[str]:
     return names
 
 
+def _resolve_table_variables(content: str) -> dict[str, str]:
+    """Find variable assignments that look like table name definitions.
+
+    Returns a dict mapping variable name -> table name string value.
+    Handles: table_name = "schema.table", sql_Table = "my_table", etc.
+    """
+    var_map = {}
+    # Common variable names used for table targets
+    for m in re.finditer(
+        r'\b(table_name|sql_[Tt]able|sql_actual_table_name|actual_table_name|'
+        r'target_table|dest_table|tbl_name|tbl|sql_table_name)\s*=\s*'
+        r'["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']',
+        content
+    ):
+        var_map[m.group(1)] = m.group(2)
+    # Also match schema variables
+    for m in re.finditer(
+        r'\b(schema|sql_schema|actual_schema|target_schema)\s*=\s*'
+        r'["\']([a-zA-Z_]\w*)["\']',
+        content
+    ):
+        var_map[m.group(1)] = m.group(2)
+    return var_map
+
+
 def _extract_to_sql_targets(content: str) -> set[str]:
     """Extract table names from to_sql() calls with positional and keyword args.
 
     Handles: .to_sql("table"), .to_sql(name="table"), and schema= keyword arg.
+    Also resolves variable references for name= and schema= when possible.
     """
     tables = set()
+    var_map = _resolve_table_variables(content)
     for m in re.finditer(r'\.to_sql\s*\(', content):
         call_text = content[m.end():m.end() + 500]
+        # Try string literal for name
         name_m = re.search(r'\bname\s*=\s*["\']([^"\']+)["\']', call_text)
         if not name_m:
             name_m = re.match(r'\s*["\']([^"\']+)["\']', call_text)
@@ -174,6 +202,25 @@ def _extract_to_sql_targets(content: str) -> set[str]:
                 tables.add(_normalize_table(f"{schema_m.group(1)}.{table_name}"))
             else:
                 tables.add(_normalize_table(table_name))
+        else:
+            # Try variable resolution for name=var or positional var
+            name_var_m = re.search(r'\bname\s*=\s*([a-zA-Z_]\w*)', call_text)
+            if not name_var_m:
+                name_var_m = re.match(r'\s*([a-zA-Z_]\w*)\s*,', call_text)
+            if name_var_m:
+                var_name = name_var_m.group(1)
+                if var_name in var_map:
+                    table_name = var_map[var_name]
+                    schema_m = re.search(r'\bschema\s*=\s*["\']([^"\']+)["\']', call_text)
+                    if not schema_m:
+                        schema_var_m = re.search(r'\bschema\s*=\s*([a-zA-Z_]\w*)', call_text)
+                        if schema_var_m and schema_var_m.group(1) in var_map:
+                            schema_val = var_map[schema_var_m.group(1)]
+                            tables.add(_normalize_table(f"{schema_val}.{table_name}"))
+                        else:
+                            tables.add(_normalize_table(table_name))
+                    else:
+                        tables.add(_normalize_table(f"{schema_m.group(1)}.{table_name}"))
     return tables
 
 
@@ -228,13 +275,55 @@ def _extract_write_tables(content: str) -> set[str]:
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # Wrapper functions: Write_to_SQL_wo(df, "schema.table"),
+    # Wrapper functions with qualified table names: Write_to_SQL(df, "schema.table"),
     # SQL_insert_loop("schema.table", ...), write_df_to_pg(df, "schema.table"), etc.
     for m in re.finditer(
         r'\b\w*(?:write|insert|load|upload|to_sql)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w*\.[a-zA-Z_]\w*)["\']',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
+
+    # Wrapper functions with bare table names (no schema prefix):
+    # SQL_insert_loop(path, "channel_mappings"), Write_to_SQL(df, "my_table")
+    for m in re.finditer(
+        r'\b\w*(?:write|insert|load|upload)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w{3,})["\']',
+        content, re.IGNORECASE
+    ):
+        candidate = m.group(1)
+        # Only accept if it doesn't look like a file path or URL
+        if not re.search(r'[/\\:]', candidate):
+            tables.add(_normalize_table(candidate))
+
+    # Variable resolution: resolve table name variables used in f-string SQL
+    # e.g. f"COPY {sql_Table} FROM STDIN", f"DELETE FROM {sql_Table}"
+    var_map = _resolve_table_variables(content)
+    for m in re.finditer(
+        r'(?:COPY|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|INSERT\s+INTO)\s+\{(\w+)\}',
+        content, re.IGNORECASE
+    ):
+        var_name = m.group(1)
+        if var_name in var_map:
+            tables.add(_normalize_table(var_map[var_name]))
+
+    # Resolve write_df_to_pg(df, schema_var, table_var) calls via variable lookup
+    for m in re.finditer(
+        r'\bwrite_df_to_pg\s*\(\s*\w+\s*,\s*(\w+)\s*,\s*(\w+)',
+        content
+    ):
+        schema_var, table_var = m.group(1), m.group(2)
+        if schema_var in var_map and table_var in var_map:
+            tables.add(_normalize_table(f"{var_map[schema_var]}.{var_map[table_var]}"))
+        elif table_var in var_map:
+            tables.add(_normalize_table(var_map[table_var]))
+
+    # copy_expert with COPY SQL in a nearby variable assignment
+    # Catches: copy_sql = f"COPY schema.table FROM STDIN ..."; cursor.copy_expert(copy_sql, ...)
+    if 'copy_expert' in content:
+        for m in re.finditer(
+            r'COPY\s+((?:[a-zA-Z_]\w*\.)?[a-zA-Z_]\w+)\s+FROM\s+STDIN',
+            content, re.IGNORECASE
+        ):
+            tables.add(_normalize_table(m.group(1)))
 
     return {t for t in tables if not _is_false_positive(t)}
 
@@ -273,9 +362,16 @@ def _extract_read_tables(content: str) -> set[str]:
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # read_sql (already context-aware via function name prefix)
+    # read_sql / read_sql_query - extract table refs from SQL inside the call
     for m in re.finditer(
-        r'read_sql[^"\']*["\'][^"\']*\b((?:[a-zA-Z_]\w*)(?:\.[a-zA-Z_]\w*)+)',
+        r'read_sql(?:_query|_table)?\s*\([^)]*["\'][^"\']*\b((?:[a-zA-Z_]\w*)(?:\.[a-zA-Z_]\w*)+)',
+        content, re.IGNORECASE
+    ):
+        tables.add(_normalize_table(m.group(1)))
+
+    # pd.read_sql_table("table_name", ...) - reads directly from a table
+    for m in re.finditer(
+        r'read_sql_table\s*\(\s*["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
