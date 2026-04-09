@@ -2996,6 +2996,12 @@ async function renderExport() {
                 <input type="checkbox" class="export-opt" data-section="scheduled-tasks"> Scheduled tasks (task scheduler entries)
             </label>
         </fieldset>
+        <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
+            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Diagnostics</legend>
+            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" class="export-opt" data-section="diagnostic"> Diagnostic report (debugging info for troubleshooting)
+            </label>
+        </fieldset>
     </div>
     <div style="margin-bottom:0.75rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
         <button class="btn-export" id="btn-generate-export" style="float:none">Generate Export</button>
@@ -3053,6 +3059,7 @@ function bindExportPage() {
             const needScripts = selected.has("scripts");
             const needScriptCode = selected.has("script-code");
             const needSchTasks = selected.has("scheduled-tasks");
+            const needDiagnostic = selected.has("diagnostic");
 
             // Fetch base data in parallel
             status.textContent = "Fetching base data...";
@@ -3065,6 +3072,7 @@ function bindExportPage() {
             if (needScripts) fetches.scripts = api("/api/scripts");
             if (needScriptCode) fetches.scriptCode = api("/api/scripts/export-code");
             if (needSchTasks) fetches.schTasks = api("/api/scheduled-tasks");
+            if (needDiagnostic) fetches.diagnostic = api("/api/scanner/diagnostic");
 
             const keys = Object.keys(fetches);
             const values = await Promise.all(Object.values(fetches));
@@ -3280,6 +3288,124 @@ function bindExportPage() {
                     md += "\n";
                 }
                 sections.push(`${tasks.length} scheduled tasks`);
+            }
+
+            // ── Diagnostic Report ──
+            if (selected.has("diagnostic")) {
+                const d = data.diagnostic || {};
+                md += `## Diagnostic Report\n\n`;
+
+                // Environment
+                md += `### Environment\n\n`;
+                const env = d.environment || {};
+                for (const [k, v] of Object.entries(env)) {
+                    md += `- **${k}:** ${v}\n`;
+                }
+                md += "\n";
+
+                // Row counts
+                md += `### Table Row Counts\n\n`;
+                md += `| Table | Rows |\n|-------|------|\n`;
+                for (const [t, c] of Object.entries(d.row_counts || {})) {
+                    md += `| ${t} | ${c} |\n`;
+                }
+                md += "\n";
+
+                // Source type distribution
+                md += `### Source Type Distribution\n\n`;
+                for (const [t, c] of Object.entries(d.source_type_distribution || {})) {
+                    md += `- ${t}: ${c}\n`;
+                }
+                md += "\n";
+
+                // Probe status distribution
+                md += `### Probe Status Distribution\n\n`;
+                for (const [s, c] of Object.entries(d.probe_status_distribution || {})) {
+                    md += `- ${s}: ${c}\n`;
+                }
+                md += "\n";
+
+                // Sources with IP prefix
+                const ipSrcs = d.sources_with_ip_prefix || [];
+                md += `### Sources with IP Prefix Still in Name (${ipSrcs.length})\n\n`;
+                if (ipSrcs.length > 0) {
+                    for (const s of ipSrcs) md += `- [${s.id}] ${s.name}\n`;
+                } else {
+                    md += `None found (good).\n`;
+                }
+                md += "\n";
+
+                // Potential duplicates
+                const dups = d.potential_duplicate_sources || [];
+                md += `### Potential Duplicate Sources (${dups.length})\n\n`;
+                if (dups.length > 0) {
+                    for (const d2 of dups) md += `- [${d2.id1}] ${d2.name1} <-> [${d2.id2}] ${d2.name2}\n`;
+                } else {
+                    md += `None found.\n`;
+                }
+                md += "\n";
+
+                // Broken FK references
+                const fks = d.broken_fk_references || {};
+                md += `### Broken FK References\n\n`;
+                for (const [table, rows] of Object.entries(fks)) {
+                    md += `**${table}:** ${rows.length} broken\n`;
+                    for (const r of rows.slice(0, 20)) {
+                        md += `  - ${JSON.stringify(r)}\n`;
+                    }
+                    if (rows.length > 20) md += `  - ... and ${rows.length - 20} more\n`;
+                }
+                md += "\n";
+
+                // All sources
+                md += `### All Sources (${(d.sources || []).length})\n\n`;
+                md += `| ID | Name | Type | Discovered By | Status | Reports | Scripts | Dep From | Dep To |\n`;
+                md += `|----|------|------|---------------|--------|---------|---------|----------|--------|\n`;
+                for (const s of (d.sources || [])) {
+                    md += `| ${s.id} | ${s.name} | ${s.type} | ${s.discovered_by} | ${s.probe_status} | ${s.report_count} | ${s.script_ref_count} | ${s.dep_from_count} | ${s.dep_to_count} |\n`;
+                }
+                md += "\n";
+
+                // Source dependencies
+                const deps = d.source_dependencies || [];
+                md += `### Source Dependencies (${deps.length})\n\n`;
+                if (deps.length > 0) {
+                    md += `| Source | Depends On | Discovered By |\n|--------|------------|---------------|\n`;
+                    for (const dep of deps) {
+                        md += `| ${dep.source_name || dep.source_id} | ${dep.depends_on_name || dep.depends_on_id} | ${dep.discovered_by} |\n`;
+                    }
+                }
+                md += "\n";
+
+                // Script tables
+                const stAll = d.script_tables || [];
+                const stUnlinked = d.unlinked_script_tables || [];
+                md += `### Script-to-Table Mappings (${stAll.length} total, ${stUnlinked.length} unlinked)\n\n`;
+                md += `| Script | Table | Direction | Source ID | Matched Source |\n`;
+                md += `|--------|-------|-----------|----------|----------------|\n`;
+                for (const st of stAll) {
+                    md += `| ${st.script} | ${st.table} | ${st.direction} | ${st.source_id || "-"} | ${st.matched_source || "UNLINKED"} |\n`;
+                }
+                md += "\n";
+
+                // Reports with no sources
+                const noSrc = d.reports_with_no_sources || [];
+                md += `### Reports with No Sources (${noSrc.length})\n\n`;
+                for (const r of noSrc) md += `- [${r.id}] ${r.name}\n`;
+                md += "\n";
+
+                // Recent scans
+                md += `### Recent Scan Runs\n\n`;
+                for (const scan of (d.recent_scans || [])) {
+                    md += `**Scan #${scan.id}** (${scan.status})\n`;
+                    md += `- Started: ${scan.started_at || "-"}\n`;
+                    md += `- Finished: ${scan.finished_at || "-"}\n`;
+                    md += `- Reports: ${scan.reports_scanned}, Sources: ${scan.sources_found}, New: ${scan.new_sources}, Changed: ${scan.changed_queries}, Broken: ${scan.broken_refs}\n`;
+                    if (scan.log) md += `- Log:\n\`\`\`\n${scan.log}\n\`\`\`\n`;
+                    md += "\n";
+                }
+
+                sections.push("diagnostic");
             }
 
             textarea.value = md;
