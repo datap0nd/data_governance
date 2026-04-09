@@ -14,6 +14,11 @@ router = APIRouter(prefix="/api/power-automate-flows", tags=["power-automate"])
 
 def _build_flow_out(row) -> PowerAutomateFlowOut:
     keys = row.keys()
+    # Derive last_run_time from output source probe data if available,
+    # fall back to manually entered value
+    last_run = row["last_run_time"]
+    if "probe_last_data_at" in keys and row["probe_last_data_at"]:
+        last_run = row["probe_last_data_at"]
     return PowerAutomateFlowOut(
         id=row["id"],
         name=row["name"],
@@ -26,7 +31,7 @@ def _build_flow_out(row) -> PowerAutomateFlowOut:
         output_description=row["output_description"],
         status=row["status"],
         account=row["account"],
-        last_run_time=row["last_run_time"],
+        last_run_time=last_run,
         notes=row["notes"],
         archived=bool(row["archived"]),
         created_at=row["created_at"],
@@ -39,9 +44,16 @@ def list_flows(include_archived: bool = Query(False)):
     with get_db() as db:
         archive_filter = "" if include_archived else "WHERE pa.archived = 0"
         rows = db.execute(f"""
-            SELECT pa.*, s.name AS output_source_name
+            SELECT pa.*, s.name AS output_source_name,
+                   CAST(sp.last_data_at AS TEXT) AS probe_last_data_at,
+                   sp.status AS probe_status
             FROM power_automate_flows pa
             LEFT JOIN sources s ON s.id = pa.output_source_id
+            LEFT JOIN (
+                SELECT source_id, status, last_data_at,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                FROM source_probes
+            ) sp ON sp.source_id = pa.output_source_id AND sp.rn = 1
             {archive_filter}
             ORDER BY pa.name
         """).fetchall()
@@ -81,9 +93,16 @@ def get_flow_options():
 def get_flow(flow_id: int):
     with get_db() as db:
         row = db.execute("""
-            SELECT pa.*, s.name AS output_source_name
+            SELECT pa.*, s.name AS output_source_name,
+                   CAST(sp.last_data_at AS TEXT) AS probe_last_data_at,
+                   sp.status AS probe_status
             FROM power_automate_flows pa
             LEFT JOIN sources s ON s.id = pa.output_source_id
+            LEFT JOIN (
+                SELECT source_id, status, last_data_at,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                FROM source_probes
+            ) sp ON sp.source_id = pa.output_source_id AND sp.rn = 1
             WHERE pa.id = ?
         """, (flow_id,)).fetchone()
     if not row:
@@ -110,9 +129,16 @@ def create_flow(req: PowerAutomateFlowCreate, request: Request):
             log_event(db, "power_automate", flow_id, req.name, "created",
                       f"status={req.status}", get_actor(request))
             row = db.execute("""
-                SELECT pa.*, s.name AS output_source_name
+                SELECT pa.*, s.name AS output_source_name,
+                       CAST(sp.last_data_at AS TEXT) AS probe_last_data_at,
+                       sp.status AS probe_status
                 FROM power_automate_flows pa
                 LEFT JOIN sources s ON s.id = pa.output_source_id
+                LEFT JOIN (
+                    SELECT source_id, status, last_data_at,
+                           ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                    FROM source_probes
+                ) sp ON sp.source_id = pa.output_source_id AND sp.rn = 1
                 WHERE pa.id = ?
             """, (flow_id,)).fetchone()
     except sqlite3.IntegrityError:
@@ -139,9 +165,16 @@ def update_flow(flow_id: int, req: PowerAutomateFlowUpdate, request: Request):
         log_event(db, "power_automate", flow_id, None, "updated",
                   ", ".join(k for k in updates if k != "updated_at"), get_actor(request))
         row = db.execute("""
-            SELECT pa.*, s.name AS output_source_name
+            SELECT pa.*, s.name AS output_source_name,
+                   CAST(sp.last_data_at AS TEXT) AS probe_last_data_at,
+                   sp.status AS probe_status
             FROM power_automate_flows pa
             LEFT JOIN sources s ON s.id = pa.output_source_id
+            LEFT JOIN (
+                SELECT source_id, status, last_data_at,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                FROM source_probes
+            ) sp ON sp.source_id = pa.output_source_id AND sp.rn = 1
             WHERE pa.id = ?
         """, (flow_id,)).fetchone()
     return _build_flow_out(row)

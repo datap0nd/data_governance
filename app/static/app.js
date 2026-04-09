@@ -4134,7 +4134,7 @@ async function showPowerAutomateDetail(flow) {
             <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(flow.owner || "-")}</span></div>
             <div class="detail-item"><div class="detail-label">Account</div><span style="color:var(--text)">${esc(flow.account || "-")}</span></div>
             <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(flow.schedule || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${flow.last_run_time ? formatDate(flow.last_run_time) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${flow.last_run_time ? formatDate(flow.last_run_time) : "-"}</span>${flow.output_source_id ? ' <span style="color:var(--text-dim);font-size:0.7rem">(from output source)</span>' : ''}</div>
             <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Source URL</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${flow.source_url ? esc(flow.source_url) : "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Output</div>${outputDisplay}</div>
             <div class="detail-item"><div class="detail-label">Output Description</div><span style="color:var(--text)">${esc(flow.output_description || "-")}</span></div>
