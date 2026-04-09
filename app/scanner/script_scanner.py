@@ -107,13 +107,70 @@ def _is_false_positive(table: str) -> bool:
     return False
 
 
+# SQL keywords that indicate a string literal contains SQL
+_SQL_INDICATORS = re.compile(
+    r'\b(SELECT|INSERT|UPDATE|DELETE|WITH|COPY|REFRESH|CREATE|DROP|TRUNCATE)\b',
+    re.IGNORECASE
+)
+
+# Pattern to extract Python string literals (triple-quoted first for priority)
+_STRING_LITERAL = re.compile(
+    r'"""(.*?)"""|\'\'\'(.*?)\'\'\'|"([^"\n]*)"|\'([^\'\n]*)\'',
+    re.DOTALL
+)
+
+
+def _extract_sql_strings(content: str) -> list[str]:
+    """Extract contents of string literals that contain SQL keywords.
+
+    Restricts pattern matching to SQL context only, avoiding false
+    positives from comments, log messages, HTML, and other non-SQL text.
+    """
+    sql_strings = []
+    for m in _STRING_LITERAL.finditer(content):
+        text = m.group(1) or m.group(2) or m.group(3) or m.group(4) or ""
+        if text and _SQL_INDICATORS.search(text):
+            sql_strings.append(text)
+    return sql_strings
+
+
+def _extract_cte_names(sql_text: str) -> set[str]:
+    """Extract CTE names from WITH...AS patterns to exclude from read results."""
+    names = set()
+    for m in re.finditer(r'\bWITH\s+(\w+)\s+AS\s*\(', sql_text, re.IGNORECASE):
+        names.add(m.group(1).lower())
+    for m in re.finditer(r',\s*(\w+)\s+AS\s*\(', sql_text, re.IGNORECASE):
+        names.add(m.group(1).lower())
+    return names
+
+
+def _extract_to_sql_targets(content: str) -> set[str]:
+    """Extract table names from to_sql() calls with positional and keyword args.
+
+    Handles: .to_sql("table"), .to_sql(name="table"), and schema= keyword arg.
+    """
+    tables = set()
+    for m in re.finditer(r'\.to_sql\s*\(', content):
+        call_text = content[m.end():m.end() + 500]
+        name_m = re.search(r'\bname\s*=\s*["\']([^"\']+)["\']', call_text)
+        if not name_m:
+            name_m = re.match(r'\s*["\']([^"\']+)["\']', call_text)
+        if name_m:
+            table_name = name_m.group(1)
+            schema_m = re.search(r'\bschema\s*=\s*["\']([^"\']+)["\']', call_text)
+            if schema_m:
+                tables.add(_normalize_table(f"{schema_m.group(1)}.{table_name}"))
+            else:
+                tables.add(_normalize_table(table_name))
+    return tables
+
+
 def _extract_write_tables(content: str) -> set[str]:
     """Extract table names from write operations in the script content."""
     tables = set()
 
-    # to_sql('table_name' or to_sql("table_name"
-    for m in re.finditer(r'\.to_sql\s*\(\s*["\']([^"\']+)["\']', content):
-        tables.add(_normalize_table(m.group(1)))
+    # to_sql - handles positional and keyword name=/schema= args
+    tables |= _extract_to_sql_targets(content)
 
     # INSERT INTO [schema.]table
     for m in re.finditer(
@@ -171,41 +228,48 @@ def _extract_write_tables(content: str) -> set[str]:
 
 
 def _extract_read_tables(content: str) -> set[str]:
-    """Extract table names from read operations in the script content."""
+    """Extract table names from read operations in the script content.
+
+    FROM/JOIN are only matched within SQL-bearing string literals to avoid
+    false positives from comments, log messages, and non-SQL code.
+    """
     tables = set()
+    cte_names = set()
 
-    # FROM [schema.]table (in SQL context)
-    # Exclude Python 'from X import Y' by checking what follows the table name
-    for m in re.finditer(
-        r'\bFROM\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s*',
-        content, re.IGNORECASE
-    ):
-        # Skip if followed by 'import' (Python import statement)
-        after = content[m.end():m.end()+10].strip().lower()
-        if after.startswith("import"):
-            continue
-        tables.add(_normalize_table(m.group(1)))
+    # Only search for FROM/JOIN within string literals that contain SQL
+    for sql_text in _extract_sql_strings(content):
+        cte_names |= _extract_cte_names(sql_text)
 
-    # JOIN [schema.]table
-    for m in re.finditer(
-        r'\bJOIN\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
-        content, re.IGNORECASE
-    ):
-        tables.add(_normalize_table(m.group(1)))
+        # FROM [schema.]table
+        for m in re.finditer(
+            r'\bFROM\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s*',
+            sql_text, re.IGNORECASE
+        ):
+            tables.add(_normalize_table(m.group(1)))
 
-    # COPY schema.table TO (pg COPY export)
+        # JOIN [schema.]table
+        for m in re.finditer(
+            r'\bJOIN\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
+            sql_text, re.IGNORECASE
+        ):
+            tables.add(_normalize_table(m.group(1)))
+
+    # COPY...TO (distinctive enough for full content search)
     for m in re.finditer(
         r'COPY\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s+TO\b',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # read_sql.*schema.table (pandas read)
+    # read_sql (already context-aware via function name prefix)
     for m in re.finditer(
         r'read_sql[^"\']*["\'][^"\']*\b((?:[a-zA-Z_]\w*)(?:\.[a-zA-Z_]\w*)+)',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
+
+    # Remove CTE names - they are query-local, not real tables
+    tables -= cte_names
 
     return {t for t in tables if not _is_false_positive(t)}
 
