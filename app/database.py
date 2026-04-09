@@ -372,6 +372,25 @@ MIGRATIONS = [
     )""",
     # Multi-user: actor tracking in event log
     "ALTER TABLE event_log ADD COLUMN actor TEXT",
+    # Power Automate flows (manual entry)
+    """CREATE TABLE IF NOT EXISTS power_automate_flows (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                TEXT UNIQUE NOT NULL,
+        description         TEXT,
+        owner               TEXT,
+        schedule            TEXT,
+        source_url          TEXT,
+        output_source_id    INTEGER REFERENCES sources(id),
+        output_description  TEXT,
+        status              TEXT DEFAULT 'active',
+        account             TEXT,
+        last_run_time       DATETIME,
+        notes               TEXT,
+        archived            INTEGER DEFAULT 0,
+        created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pa_flows_status ON power_automate_flows(status)",
 ]
 
 

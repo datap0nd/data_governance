@@ -305,6 +305,55 @@ class ScriptUpdate(BaseModel):
     owner: str | None = None
 
 
+# --- Power Automate Flows ---
+
+class PowerAutomateFlowOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    owner: str | None = None
+    schedule: str | None = None
+    source_url: str | None = None
+    output_source_id: int | None = None
+    output_source_name: str | None = None
+    output_description: str | None = None
+    status: str | None = "active"
+    account: str | None = None
+    last_run_time: str | None = None
+    notes: str | None = None
+    archived: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class PowerAutomateFlowCreate(BaseModel):
+    name: str
+    description: str | None = None
+    owner: str | None = None
+    schedule: str | None = None
+    source_url: str | None = None
+    output_source_id: int | None = None
+    output_description: str | None = None
+    status: str = "active"
+    account: str | None = None
+    last_run_time: str | None = None
+    notes: str | None = None
+
+
+class PowerAutomateFlowUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    owner: str | None = None
+    schedule: str | None = None
+    source_url: str | None = None
+    output_source_id: int | None = None
+    output_description: str | None = None
+    status: str | None = None
+    account: str | None = None
+    last_run_time: str | None = None
+    notes: str | None = None
+
+
 class ScriptTableOut(BaseModel):
     id: int
     script_id: int

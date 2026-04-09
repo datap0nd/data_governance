@@ -4062,6 +4062,246 @@ function bindScheduledTasksPage() {
 }
 
 
+// ── Power Automate Flows ──
+
+const _PA_STATUS_BADGE = {
+    active: "badge-green",
+    paused: "badge-yellow",
+    error: "badge-red",
+    disabled: "badge-dim",
+};
+
+async function renderPowerAutomate() {
+    const showArchived = _isShowingArchived("powerautomate");
+    const flows = await api("/api/power-automate-flows" + (showArchived ? "?include_archived=true" : ""));
+    const active = flows.filter(f => !f.archived);
+    const errorCount = active.filter(f => f.status === "error").length;
+    const errorNote = errorCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${errorCount} error</span>` : "";
+
+    const cols = [
+        { key: "name", label: "Name", width: COL_W.xl, render: f => `<strong>${esc(f.name)}</strong>`, sortVal: f => f.name || "" },
+        { key: "status", label: "Status", width: COL_W.sm, render: f => {
+            const cls = _PA_STATUS_BADGE[f.status] || "badge-muted";
+            return `<span class="badge ${cls}">${esc(f.status || "unknown")}</span>`;
+        }, sortVal: f => f.status || "" },
+        { key: "owner", label: "Owner", width: COL_W.md, render: f => f.owner ? esc(f.owner) : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.owner || "" },
+        { key: "schedule", label: "Schedule", width: COL_W.md, render: f => f.schedule ? esc(f.schedule) : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.schedule || "" },
+        { key: "account", label: "Account", width: COL_W.md, render: f => f.account ? `<span class="badge badge-muted" style="font-size:0.68rem">${esc(f.account)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.account || "" },
+        { key: "source_url", label: "Source URL", width: COL_W.lg, render: f => f.source_url ? `<span style="color:var(--text-muted);font-size:0.78rem;word-break:break-all" title="${esc(f.source_url)}">${esc(f.source_url.length > 40 ? f.source_url.slice(0, 40) + "..." : f.source_url)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.source_url || "" },
+        { key: "output_source_name", label: "Output", width: COL_W.lg, render: f => f.output_source_id ? `<span class="badge badge-blue pa-source-link" style="cursor:pointer" data-source-id="${f.output_source_id}">${esc(f.output_source_name || "Source #" + f.output_source_id)}</span>` : (f.output_description ? `<span style="color:var(--text-muted);font-size:0.78rem">${esc(f.output_description)}</span>` : '<span style="color:var(--text-dim)">-</span>'), sortVal: f => f.output_source_name || f.output_description || "" },
+        { key: "last_run_time", label: "Last Run", width: COL_W.md, render: f => f.last_run_time ? `<span style="color:var(--text-muted)" title="${esc(f.last_run_time)}">${timeAgo(f.last_run_time)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.last_run_time || "" },
+        _archiveColDef("power_automate"),
+    ];
+
+    return `
+        <div class="page-header">
+            <h1>Power Automate</h1>
+            <span class="subtitle">${active.length} flow${active.length !== 1 ? 's' : ''}${errorNote}</span>
+            <button class="btn-outline" id="btn-pa-new-flow" style="margin-left:0.5rem">+ New Flow</button>
+            ${_archiveToggleHtml("powerautomate")}
+            <button class="btn-export" onclick="exportTableCSV('dt-pa-flows','power_automate_flows.csv')">Export CSV</button>
+        </div>
+        <div id="pa-create-form-area"></div>
+        ${flows.length === 0
+            ? '<div class="empty-state" style="margin-top:2rem">No Power Automate flows registered yet. Click <strong>+ New Flow</strong> to add one.</div>'
+            : dataTable("dt-pa-flows", cols, flows, { onRowClick: showPowerAutomateDetail })
+        }
+    `;
+}
+
+async function showPowerAutomateDetail(flow) {
+    const existing = $("#pa-detail");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.id = "pa-detail";
+    panel.className = "source-detail-panel";
+
+    const statusCls = _PA_STATUS_BADGE[flow.status] || "badge-muted";
+    const outputDisplay = flow.output_source_id
+        ? `<span class="badge badge-blue pa-detail-source-link" style="cursor:pointer" data-source-id="${flow.output_source_id}">${esc(flow.output_source_name || "Source #" + flow.output_source_id)}</span>`
+        : (flow.output_description ? esc(flow.output_description) : '<span style="color:var(--text-dim)">Not linked</span>');
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${esc(flow.name)}</h2>
+            <button class="btn-outline" id="btn-pa-edit" style="margin-right:0.25rem">Edit</button>
+            <button class="btn-outline" id="btn-pa-delete" style="margin-right:0.25rem;color:var(--red)">Delete</button>
+            <button class="btn-outline" id="btn-close-pa-detail">&times; Close</button>
+        </div>
+        <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Status</div><span class="badge ${statusCls}">${esc(flow.status || "unknown")}</span></div>
+            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(flow.owner || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Account</div><span style="color:var(--text)">${esc(flow.account || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(flow.schedule || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${flow.last_run_time ? formatDate(flow.last_run_time) : "-"}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Source URL</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${flow.source_url ? esc(flow.source_url) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Output</div>${outputDisplay}</div>
+            <div class="detail-item"><div class="detail-label">Output Description</div><span style="color:var(--text)">${esc(flow.output_description || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Description</div><span style="color:var(--text)">${esc(flow.description || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Notes</div><span style="color:var(--text);white-space:pre-wrap">${esc(flow.notes || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Created</div><span style="color:var(--text-dim)">${flow.created_at ? formatDate(flow.created_at) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Updated</div><span style="color:var(--text-dim)">${flow.updated_at ? formatDate(flow.updated_at) : "-"}</span></div>
+        </div>
+    `;
+
+    $("#app").appendChild(panel);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    document.getElementById("btn-close-pa-detail").addEventListener("click", () => panel.remove());
+
+    document.getElementById("btn-pa-delete").addEventListener("click", async () => {
+        if (!confirm(`Delete flow "${flow.name}"?`)) return;
+        try {
+            await apiDelete(`/api/power-automate-flows/${flow.id}`);
+            toast("Flow deleted");
+            panel.remove();
+            navigate("powerautomate");
+        } catch (err) {
+            toast("Delete failed: " + err.message);
+        }
+    });
+
+    document.getElementById("btn-pa-edit").addEventListener("click", () => {
+        panel.remove();
+        _showPaEditForm(flow);
+    });
+
+    // Click linked source
+    const srcEl = panel.querySelector(".pa-detail-source-link");
+    if (srcEl) {
+        srcEl.addEventListener("click", async () => {
+            const srcId = parseInt(srcEl.dataset.sourceId);
+            try {
+                const src = await api(`/api/sources/${srcId}`);
+                await navigate("sources");
+                showSourceDetail(src);
+            } catch (err) {
+                toast("Source not found");
+            }
+        });
+    }
+}
+
+async function _renderPaForm(existing) {
+    const opts = await api("/api/power-automate-flows/options");
+    const f = existing || {};
+    const isEdit = !!existing;
+
+    const ownerOptions = opts.people.length > 0
+        ? opts.people.map(p => `<option value="${esc(p.name)}"${f.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("")
+        : opts.owners.map(o => `<option value="${esc(o)}"${f.owner === o ? ' selected' : ''}>${esc(o)}</option>`).join("");
+
+    const sourceOptions = opts.sources.map(s => `<option value="${s.id}"${f.output_source_id === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join("");
+
+    const statusOptions = opts.statuses.map(s => `<option value="${s}"${(f.status || 'active') === s ? ' selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join("");
+
+    return `
+        <div class="create-form" id="pa-form" style="margin-bottom:1.5rem">
+            <h3 style="margin:0 0 0.75rem">${isEdit ? "Edit" : "New"} Power Automate Flow</h3>
+            <div class="create-fields">
+                <div class="create-field"><label>Name *</label><input id="pa-f-name" value="${esc(f.name || "")}" required></div>
+                <div class="create-field"><label>Status</label><select id="pa-f-status">${statusOptions}</select></div>
+                <div class="create-field"><label>Owner</label><select id="pa-f-owner"><option value="">-</option>${ownerOptions}</select></div>
+                <div class="create-field"><label>Account</label><input id="pa-f-account" value="${esc(f.account || "")}" placeholder="e.g. user@samsung.com"></div>
+                <div class="create-field"><label>Schedule</label><input id="pa-f-schedule" value="${esc(f.schedule || "")}" placeholder="e.g. Daily 6:00 AM"></div>
+                <div class="create-field"><label>Source URL</label><input id="pa-f-source-url" value="${esc(f.source_url || "")}" placeholder="Website the flow scrapes"></div>
+                <div class="create-field"><label>Output Source</label><select id="pa-f-output-source"><option value="">- None -</option>${sourceOptions}</select></div>
+                <div class="create-field"><label>Output Description</label><input id="pa-f-output-desc" value="${esc(f.output_description || "")}" placeholder="e.g. C:\\Data\\retailer_x.csv"></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Description</label><textarea id="pa-f-desc" rows="2" style="width:100%">${esc(f.description || "")}</textarea></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Notes</label><textarea id="pa-f-notes" rows="2" style="width:100%">${esc(f.notes || "")}</textarea></div>
+            </div>
+            <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
+                <button class="btn-outline" id="pa-f-save">${isEdit ? "Save Changes" : "Create Flow"}</button>
+                <button class="btn-outline" id="pa-f-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+}
+
+function _collectPaFormData() {
+    const name = document.getElementById("pa-f-name").value.trim();
+    if (!name) { toast("Name is required"); return null; }
+    return {
+        name,
+        status: document.getElementById("pa-f-status").value,
+        owner: document.getElementById("pa-f-owner").value || null,
+        account: document.getElementById("pa-f-account").value.trim() || null,
+        schedule: document.getElementById("pa-f-schedule").value.trim() || null,
+        source_url: document.getElementById("pa-f-source-url").value.trim() || null,
+        output_source_id: parseInt(document.getElementById("pa-f-output-source").value) || null,
+        output_description: document.getElementById("pa-f-output-desc").value.trim() || null,
+        description: document.getElementById("pa-f-desc").value.trim() || null,
+        notes: document.getElementById("pa-f-notes").value.trim() || null,
+    };
+}
+
+async function _showPaCreateForm() {
+    const area = document.getElementById("pa-create-form-area");
+    if (!area) return;
+    area.innerHTML = await _renderPaForm(null);
+
+    document.getElementById("pa-f-cancel").addEventListener("click", () => { area.innerHTML = ""; });
+    document.getElementById("pa-f-save").addEventListener("click", async () => {
+        const data = _collectPaFormData();
+        if (!data) return;
+        try {
+            await apiPostJson("/api/power-automate-flows", data);
+            toast("Flow created");
+            navigate("powerautomate");
+        } catch (err) {
+            toast("Create failed: " + err.message);
+        }
+    });
+}
+
+async function _showPaEditForm(flow) {
+    const area = document.getElementById("pa-create-form-area");
+    if (!area) return;
+    area.innerHTML = await _renderPaForm(flow);
+    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    document.getElementById("pa-f-cancel").addEventListener("click", () => {
+        area.innerHTML = "";
+        showPowerAutomateDetail(flow);
+    });
+    document.getElementById("pa-f-save").addEventListener("click", async () => {
+        const data = _collectPaFormData();
+        if (!data) return;
+        try {
+            const updated = await apiPatch(`/api/power-automate-flows/${flow.id}`, data);
+            toast("Flow updated");
+            area.innerHTML = "";
+            navigate("powerautomate");
+        } catch (err) {
+            toast("Update failed: " + err.message);
+        }
+    });
+}
+
+function bindPowerAutomatePage() {
+    const btnNew = document.getElementById("btn-pa-new-flow");
+    if (btnNew) btnNew.addEventListener("click", () => _showPaCreateForm());
+
+    // Clickable source badges in table rows
+    document.querySelectorAll(".pa-source-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const srcId = parseInt(el.dataset.sourceId);
+            try {
+                const src = await api(`/api/sources/${srcId}`);
+                await navigate("sources");
+                showSourceDetail(src);
+            } catch (err) {
+                toast("Source not found");
+            }
+        });
+    });
+
+    _bindArchiveButtons(() => navigate("powerautomate"));
+}
+
+
 // ── Lineage Diagram ──
 
 const LINEAGE_COLS = [
@@ -5259,6 +5499,7 @@ const pages = {
     reports: renderReports,
     scripts: renderScripts,
     scheduledtasks: renderScheduledTasks,
+    powerautomate: renderPowerAutomate,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -5446,6 +5687,7 @@ async function navigate(page) {
         if (page === "reports") bindReportsPage();
         if (page === "scripts") bindScriptsPage();
         if (page === "scheduledtasks") bindScheduledTasksPage();
+        if (page === "powerautomate") bindPowerAutomatePage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();

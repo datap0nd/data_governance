@@ -12,6 +12,7 @@ _TABLES = {
     "script": "scripts",
     "upstream": "upstream_systems",
     "scheduled_task": "scheduled_tasks",
+    "power_automate": "power_automate_flows",
 }
 
 _NAME_COL = {
@@ -20,6 +21,7 @@ _NAME_COL = {
     "script": "display_name",
     "upstream": "name",
     "scheduled_task": "task_name",
+    "power_automate": "name",
 }
 
 
