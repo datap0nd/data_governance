@@ -49,6 +49,18 @@ FALSE_POSITIVES = {
     "flask", "django", "fastapi", "uvicorn", "starlette",
     "dotenv", "openpyxl", "xlrd", "xlsxwriter", "boto3",
     "azure", "aws", "paramiko", "fabric", "celery",
+    # Single-word non-table identifiers (common in SQL CTEs, dbt, etc.)
+    "base", "staging", "model", "shared", "source", "result", "results",
+    "data", "output", "input", "final", "raw", "clean", "cleaned",
+    "combined", "merged", "filtered", "transformed", "processed",
+    "query", "subquery", "cte", "pivot", "unpivot",
+    # C/Python type names that match FROM patterns
+    "stdint", "stdin", "stdout", "stderr",
+    # Common variable/alias names in SQL
+    "table", "tables", "column", "columns", "row", "rows",
+    "value", "values", "record", "records", "item", "items",
+    "left", "right", "inner", "outer", "cross", "full",
+    "lateral", "unnest", "generate_series",
 }
 
 # Qualified name pattern: schema.table or "schema"."table"
