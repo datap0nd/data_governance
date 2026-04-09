@@ -145,7 +145,7 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None, new_only:
                 # Clear existing table references for this script
                 db.execute("DELETE FROM script_tables WHERE script_id = ?", (script_id,))
 
-                # Insert read references
+                # Insert SQL read references
                 for table_name in result.tables_read:
                     source_id = _match_source(db, table_name)
                     db.execute(
@@ -157,7 +157,7 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None, new_only:
                     if source_id:
                         tables_linked += 1
 
-                # Insert write references
+                # Insert SQL write references
                 for table_name in result.tables_written:
                     source_id = _match_source(db, table_name)
                     db.execute(
@@ -168,6 +168,33 @@ def run_script_scan(scripts_path: str | None = None, on_progress=None, new_only:
                     )
                     if source_id:
                         tables_linked += 1
+
+                # Insert file read references ([excel], [csv], [pdf] prefixed)
+                for ref in result.files_read:
+                    db.execute(
+                        """INSERT INTO script_tables (script_id, table_name, direction)
+                           VALUES (?, ?, 'read')
+                           ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+                        (script_id, ref),
+                    )
+
+                # Insert file write references
+                for ref in result.files_written:
+                    db.execute(
+                        """INSERT INTO script_tables (script_id, table_name, direction)
+                           VALUES (?, ?, 'write')
+                           ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+                        (script_id, ref),
+                    )
+
+                # Insert URL read references ([web] prefixed)
+                for ref in result.urls_read:
+                    db.execute(
+                        """INSERT INTO script_tables (script_id, table_name, direction)
+                           VALUES (?, ?, 'read')
+                           ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+                        (script_id, ref),
+                    )
 
         summary = {
             "status": "completed",

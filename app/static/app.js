@@ -3457,15 +3457,32 @@ function truncatePath(path, maxLen) {
 // SQL = writes to PostgreSQL tables/MVs. Excel = no SQL writes.
 // SQL takes precedence if a script does both.
 function _scriptCategory(script) {
-    if (!script) return "Excel";
+    if (!script) return "Other";
     const writes = script.tables_written || [];
-    if (writes.length > 0) return "SQL";
-    return "Excel";
+    const sqlWrites = writes.filter(t => !t.startsWith("["));
+    const excelWrites = writes.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]"));
+    if (sqlWrites.length > 0) return "Data to SQL";
+    if (excelWrites.length > 0) return "Data to Excel";
+    // Check reads for file/web refs to distinguish from truly empty scripts
+    const reads = script.tables_read || [];
+    const fileReads = reads.filter(t => t.startsWith("["));
+    if (fileReads.length > 0) return "Other";
+    if (writes.length > 0) return "Data to Excel";
+    return "Other";
+}
+
+function _refType(name) {
+    if (name.startsWith("[excel]")) return { label: name.slice(7), type: "excel", cls: "badge-yellow" };
+    if (name.startsWith("[csv]")) return { label: name.slice(5), type: "csv", cls: "badge-purple" };
+    if (name.startsWith("[web]")) return { label: name.slice(5), type: "web", cls: "badge-dim" };
+    if (name.startsWith("[pdf]")) return { label: name.slice(5), type: "pdf", cls: "badge-muted" };
+    return { label: name, type: "sql", cls: "" };
 }
 
 const _CATEGORY_COLORS = {
-    "SQL": "badge-green",
-    "Excel": "badge-yellow",
+    "Data to SQL": "badge-green",
+    "Data to Excel": "badge-yellow",
+    "Other": "badge-muted",
 };
 
 // Classify a table reference by its PostgreSQL schema or pattern
@@ -3510,30 +3527,46 @@ async function renderScripts() {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "tables_written", label: "Writes to / Refreshes", width: COL_W.md, render: s => {
-            const n = (s.tables_written || []).length;
-            if (n === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return `<span class="badge badge-red" style="font-size:0.72rem">${n} table${n !== 1 ? "s" : ""}/MVs</span>`;
+        { key: "tables_written", label: "Writes to", width: COL_W.md, render: s => {
+            const all = s.tables_written || [];
+            if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
+            const sql = all.filter(t => !t.startsWith("["));
+            const excel = all.filter(t => t.startsWith("[excel]"));
+            const csv = all.filter(t => t.startsWith("[csv]"));
+            const parts = [];
+            if (sql.length) parts.push(`<span class="badge badge-red" style="font-size:0.72rem">${sql.length} SQL</span>`);
+            if (excel.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${excel.length} Excel</span>`);
+            if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
+            return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
         }, sortVal: s => (s.tables_written || []).length },
-        { key: "tables_read", label: "Reads From", width: COL_W.md, render: s => {
-            const n = (s.tables_read || []).length;
-            if (n === 0) return '<span style="color:var(--text-dim)">-</span>';
-            return `<span class="badge badge-blue" style="font-size:0.72rem">${n} table${n !== 1 ? "s" : ""}/MVs</span>`;
+        { key: "tables_read", label: "Reads from", width: COL_W.md, render: s => {
+            const all = s.tables_read || [];
+            if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
+            const sql = all.filter(t => !t.startsWith("["));
+            const files = all.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]") || t.startsWith("[pdf]"));
+            const web = all.filter(t => t.startsWith("[web]"));
+            const parts = [];
+            if (sql.length) parts.push(`<span class="badge badge-blue" style="font-size:0.72rem">${sql.length} SQL</span>`);
+            if (files.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${files.length} File</span>`);
+            if (web.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${web.length} Web</span>`);
+            return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
         }, sortVal: s => (s.tables_read || []).length },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         _archiveColDef("script"),
     ];
 
-    const scriptTypeFilter = sessionStorage.getItem("scripts_type_filter") || "sql";
+    const scriptTypeFilter = sessionStorage.getItem("scripts_type_filter") || "all";
     const machineFilter = sessionStorage.getItem("scripts_machine") || "";
     let filtered = scripts;
-    if (scriptTypeFilter === "sql") filtered = filtered.filter(s => _scriptCategory(s) === "SQL");
-    else if (scriptTypeFilter === "excel") filtered = filtered.filter(s => _scriptCategory(s) === "Excel");
+    if (scriptTypeFilter === "sql") filtered = filtered.filter(s => _scriptCategory(s) === "Data to SQL");
+    else if (scriptTypeFilter === "excel") filtered = filtered.filter(s => _scriptCategory(s) === "Data to Excel");
+    else if (scriptTypeFilter === "other") filtered = filtered.filter(s => _scriptCategory(s) === "Other");
     if (machineFilter) filtered = filtered.filter(s => (s.machine_alias || s.hostname || "Local") === machineFilter);
     const activeCount = filtered.filter(s => !s.archived).length;
     const totalCount = scripts.filter(s => !s.archived).length;
-    const sqlCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "SQL").length;
-    const excelCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Excel").length;
+    const sqlCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Data to SQL").length;
+    const excelCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Data to Excel").length;
+    const otherCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Other").length;
 
     const allMachines = [...new Set(scripts.map(s => s.machine_alias || s.hostname || "Local"))].sort();
     const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
@@ -3541,12 +3574,14 @@ async function renderScripts() {
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${activeCount}${machineFilter ? ` of ${totalCount}` : ''} ${scriptTypeFilter === 'sql' ? 'SQL' : 'Excel'} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
+            <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
             ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
             ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">SQL Scripts (${sqlCount})</button>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'excel' ? 'active' : ''}" id="btn-filter-excel" style="font-size:0.75rem">Excel Scripts (${excelCount})</button>
+            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
+            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
+            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'excel' ? 'active' : ''}" id="btn-filter-excel" style="font-size:0.75rem">Data to Excel (${excelCount})</button>
+            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'other' ? 'active' : ''}" id="btn-filter-other" style="font-size:0.75rem">Other (${otherCount})</button>
             ${_archiveToggleHtml("scripts")}
             <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
         </div>
@@ -3578,19 +3613,23 @@ async function showScriptDetail(script) {
 
     const writeBadges = writeRows.length > 0
         ? writeRows.map(t => {
+            const ref = _refType(t.table_name);
+            const cls = ref.type === "sql" ? "badge-red" : ref.cls;
             if (t.source_id) {
-                return `<span class="badge badge-red script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(t.table_name)}</span>`;
+                return `<span class="badge ${cls} script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
             }
-            return `<span class="badge badge-red" style="margin:2px">${esc(t.table_name)}</span>`;
+            return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
         }).join(" ")
         : '<span style="color:var(--text-dim)">None detected</span>';
 
     const readBadges = readRows.length > 0
         ? readRows.map(t => {
+            const ref = _refType(t.table_name);
+            const cls = ref.type === "sql" ? "badge-blue" : ref.cls;
             if (t.source_id) {
-                return `<span class="badge badge-blue script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(t.table_name)}</span>`;
+                return `<span class="badge ${cls} script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
             }
-            return `<span class="badge badge-blue" style="margin:2px">${esc(t.table_name)}</span>`;
+            return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
         }).join(" ")
         : '<span style="color:var(--text-dim)">None detected</span>';
 
@@ -3667,19 +3706,20 @@ function bindScriptsPage() {
     }
 
     // Script type filter buttons
-    const btnSql = document.getElementById("btn-filter-sql");
-    const btnExcel = document.getElementById("btn-filter-excel");
-    if (btnSql) {
-        btnSql.addEventListener("click", () => {
-            sessionStorage.setItem("scripts_type_filter", "sql");
-            navigate("scripts");
-        });
-    }
-    if (btnExcel) {
-        btnExcel.addEventListener("click", () => {
-            sessionStorage.setItem("scripts_type_filter", "excel");
-            navigate("scripts");
-        });
+    const filterBtns = {
+        "btn-filter-all": "all",
+        "btn-filter-sql": "sql",
+        "btn-filter-excel": "excel",
+        "btn-filter-other": "other",
+    };
+    for (const [id, val] of Object.entries(filterBtns)) {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.addEventListener("click", () => {
+                sessionStorage.setItem("scripts_type_filter", val);
+                navigate("scripts");
+            });
+        }
     }
 
     // Scan buttons - async with live log polling
@@ -3814,11 +3854,10 @@ function bindScriptsPage() {
 
 // Derive category for a scheduled task from its linked script path or action command
 function _taskCategory(task) {
-    // If linked to a script, it's a SQL task; otherwise categorize by action
-    if (task.script_id) return "SQL";
+    if (task.script_id) return "Data to SQL";
     const cmd = (task.action_command || "").toLowerCase();
-    if (cmd.includes("python") || cmd.includes(".py")) return "SQL";
-    if (cmd.includes("excel") || cmd.includes(".xlsx") || cmd.includes(".csv")) return "Excel";
+    if (cmd.includes("python") || cmd.includes(".py")) return "Data to SQL";
+    if (cmd.includes("excel") || cmd.includes(".xlsx") || cmd.includes(".csv")) return "Data to Excel";
     return "Other";
 }
 

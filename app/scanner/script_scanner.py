@@ -1,8 +1,16 @@
 """
-Script scanner - walks a directory for .py files and extracts PostgreSQL table references.
+Script scanner - walks a directory for .py files and extracts data I/O references.
 
-Parses Python scripts to find which tables they read from and write to,
-using regex patterns for common pandas, SQLAlchemy, and raw SQL operations.
+Parses Python scripts to find:
+- SQL tables they read from and write to (PostgreSQL)
+- Excel/CSV files they read from and write to
+- Web URLs they scrape or call
+
+References are stored with type prefixes:
+- No prefix: SQL table (e.g. "samsung_health.psi_data")
+- [excel]: Excel file (e.g. "[excel]output.xlsx")
+- [csv]: CSV file (e.g. "[csv]data.csv")
+- [web]: Web scraping/API (e.g. "[web]amazon.ae")
 """
 
 import logging
@@ -21,14 +29,67 @@ SKIP_DIRS = {"site-packages", "__pycache__", ".venv", "node_modules", "RAG",
 # Max file size to read (1 MB)
 MAX_FILE_SIZE = 1_048_576
 
-# Common false positives - Python modules, SQL keywords, built-in names
-FALSE_POSITIVES = {
-    # Python standard library / common modules
+# ── False positive filtering for SQL table names ──
+# Only used for SQL table detection (FROM/JOIN/etc). File and URL refs
+# are handled by their own specific patterns and don't need this.
+_SQL_FALSE_POSITIVES = {
+    # SQL keywords and functions
+    "information_schema", "pg_catalog", "pg_temp", "pg_toast",
+    "dual", "sysibm", "stdin", "stdout", "generate_series",
+    "unnest", "lateral", "current_date", "current_timestamp",
+    "now", "coalesce", "nullif", "cast", "extract", "interval",
+    # SQL structural keywords that appear after FROM/JOIN
+    "select", "where", "group", "order", "having", "limit", "offset",
+    "union", "except", "intersect", "exists", "between", "like",
+    "case", "when", "then", "else", "end", "null", "true", "false",
+    "left", "right", "inner", "outer", "cross", "full", "natural",
+    "table", "tables", "column", "columns", "row", "rows",
+    "value", "values", "record", "records", "item", "items",
+    "index", "constraint", "primary", "foreign", "unique", "check",
+    "default", "cascade", "restrict", "references",
+    # CTE / subquery aliases
+    "base", "staging", "model", "shared", "source", "result", "results",
+    "data", "output", "input", "final", "raw", "clean", "cleaned",
+    "combined", "merged", "filtered", "transformed", "processed",
+    "query", "subquery", "cte", "pivot", "unpivot", "temp", "tmp",
+    # Common non-table identifiers
+    "public", "dbo", "main", "keep", "external",
+    # English words that appear in log/comment strings containing SQL keywords
+    "your", "the", "this", "that", "here", "there", "where", "each",
+    "their", "charts", "chart", "file", "files", "page", "pages",
+    "text", "name", "type", "user", "users", "date", "count",
+    "all", "any", "some", "many", "other", "others", "new", "old",
+    "first", "last", "next", "previous", "above", "below",
+    "start", "stop", "begin", "end", "open", "close",
+    "list", "dict", "set", "map", "array", "object", "buffer",
+    "error", "errors", "exception", "message", "messages",
+    "status", "state", "event", "events", "action", "actions",
+    "config", "settings", "options", "params", "args",
+    "response", "request", "client", "server", "host", "port",
+    "path", "url", "uri", "link", "href", "content",
+    "competing", "promoter", "clipboard", "document", "window",
+    "header", "footer", "body", "title", "label", "description",
+    "field", "fields", "form", "forms", "view", "views",
+    "report", "reports", "script", "scripts", "task", "tasks",
+    "process", "thread", "worker", "job", "queue", "batch",
+    "context", "session", "token", "key", "secret", "password",
+    "email", "phone", "address", "city", "country", "region",
+    "category", "tag", "tags", "group", "groups", "role", "roles",
+    "format", "encoding", "charset", "locale", "timezone",
+    "image", "images", "icon", "logo", "photo", "video", "audio",
+    "size", "width", "height", "length", "depth", "weight",
+    "color", "font", "style", "theme", "layout", "grid",
+    "button", "click", "submit", "cancel", "save", "delete", "update",
+    "total", "average", "minimum", "maximum", "summary", "detail",
+    "success", "failure", "warning", "info", "debug", "trace",
+    "true", "false", "none", "undefined", "nan", "inf",
+    "slides", "slide",
+    # Python modules and packages
     "os", "sys", "datetime", "pathlib", "sqlalchemy", "psycopg2", "pandas",
-    "concurrent", "pil", "json", "requests", "logging", "re", "math",
-    "collections", "functools", "itertools", "typing", "abc", "io",
+    "concurrent", "pil", "json", "requests", "logging", "math",
+    "collections", "functools", "itertools", "typing", "abc",
     "csv", "time", "shutil", "subprocess", "hashlib", "base64",
-    "urllib", "http", "email", "html", "xml", "sqlite3", "decimal",
+    "urllib", "urllib3", "http", "html", "xml", "sqlite3", "decimal",
     "random", "string", "textwrap", "copy", "pickle", "gzip",
     "zipfile", "tarfile", "tempfile", "glob", "fnmatch", "stat",
     "argparse", "configparser", "threading", "multiprocessing",
@@ -36,96 +97,62 @@ FALSE_POSITIVES = {
     "codecs", "unicodedata", "pprint", "traceback", "warnings",
     "contextlib", "importlib", "pkgutil", "unittest", "doctest",
     "numpy", "scipy", "matplotlib", "seaborn", "sklearn",
-    "sqlalchemy.engine", "sqlalchemy.orm", "psycopg2.extras",
-    # SQL / system keywords
-    "information_schema", "pg_catalog", "pg_temp", "pg_toast",
-    "dual", "sysibm",
-    # Common non-table identifiers
-    "public", "dbo", "main", "temp", "tmp",
-    # Common false positives from FROM regex matching Python code
-    "your", "the", "this", "that", "here", "there", "where", "each",
-    "google", "selenium", "webdriver", "selenium.webdriver",
-    "aggregatedata", "current_date", "current_timestamp",
+    "google", "selenium", "webdriver", "beautifulsoup",
     "flask", "django", "fastapi", "uvicorn", "starlette",
     "dotenv", "openpyxl", "xlrd", "xlsxwriter", "boto3",
     "azure", "aws", "paramiko", "fabric", "celery",
-    # Single-word non-table identifiers (common in SQL CTEs, dbt, etc.)
-    "base", "staging", "model", "shared", "source", "result", "results",
-    "data", "output", "input", "final", "raw", "clean", "cleaned",
-    "combined", "merged", "filtered", "transformed", "processed",
-    "query", "subquery", "cte", "pivot", "unpivot",
-    # C/Python type names that match FROM patterns
+    "lxml", "pypac", "qrcode", "win32com",
+    # C / system identifiers
     "stdint", "stdin", "stdout", "stderr",
-    # Common variable/alias names in SQL
-    "table", "tables", "column", "columns", "row", "rows",
-    "value", "values", "record", "records", "item", "items",
-    "left", "right", "inner", "outer", "cross", "full",
-    "lateral", "unnest", "generate_series",
 }
 
-# Qualified name pattern: schema.table or "schema"."table"
-# Matches: schema.table, "schema"."table", schema."table", "schema".table
-_IDENT = r'(?:"[^"]+"|[a-zA-Z_]\w*)'
-_QUAL_TABLE = rf'({_IDENT}\.{_IDENT})'
-_BARE_TABLE = rf'({_IDENT})'
 
-# Combined: prefer qualified, fall back to bare
-_TABLE_REF = rf'(?:{_QUAL_TABLE}|{_BARE_TABLE})'
-
-
-@dataclass
-class ScriptResult:
-    path: str
-    display_name: str
-    last_modified: datetime | None
-    file_size: int
-    tables_read: set[str] = field(default_factory=set)
-    tables_written: set[str] = field(default_factory=set)
-
-
-def _normalize_table(name: str) -> str:
-    """Lowercase and strip quotes from a table name."""
-    name = name.strip().lower()
-    # Strip quotes from each part
-    parts = name.split(".")
-    parts = [p.strip('"').strip("'").strip("`") for p in parts]
-    return ".".join(parts)
-
-
-def _is_false_positive(table: str) -> bool:
-    """Check if a table name is a known false positive."""
+def _is_sql_false_positive(table: str) -> bool:
+    """Check if a SQL table name candidate is a false positive."""
     normalized = table.lower().strip('"').strip("'")
-    # Check the full name
-    if normalized in FALSE_POSITIVES:
+
+    # Direct match
+    if normalized in _SQL_FALSE_POSITIVES:
         return True
+
+    parts = normalized.split(".")
+
     # Check each component
-    for part in normalized.split("."):
+    for part in parts:
         cleaned = part.strip('"').strip("'")
-        if cleaned in FALSE_POSITIVES:
+        if cleaned in _SQL_FALSE_POSITIVES:
             return True
-    # Filter out single-word names that look like Python keywords/builtins
+
+    # Single-word names <= 3 chars are almost never real tables
     if "." not in normalized and len(normalized) <= 3:
         return True
-    # Filter out Python import-style paths (app.module.submodule patterns)
-    # These have 3+ dot-separated parts that look like package paths
-    parts = normalized.split(".")
+
+    # 3+ dot-separated parts are Python import paths, not SQL
     if len(parts) >= 3:
         return True
-    # Filter out names starting with common Python package prefixes
+
+    # Common Python package prefixes
     _python_prefixes = {"app", "src", "lib", "test", "tests", "config", "utils",
                         "helpers", "core", "models", "views", "controllers"}
     if parts[0] in _python_prefixes:
         return True
+
+    # Unqualified names (no dot) without underscores are almost always
+    # English words or variable names, not SQL tables.
+    # Real PostgreSQL tables use underscores: fact_sales, dim_customer, etc.
+    if "." not in normalized and "_" not in normalized and len(normalized) < 15:
+        return True
+
     return False
 
 
-# SQL keywords that indicate a string literal contains SQL
+# ── SQL detection helpers ──
+
 _SQL_INDICATORS = re.compile(
     r'\b(SELECT|INSERT|UPDATE|DELETE|WITH|COPY|REFRESH|CREATE|DROP|TRUNCATE)\b',
     re.IGNORECASE
 )
 
-# Pattern to extract Python string literals (triple-quoted first for priority)
 _STRING_LITERAL = re.compile(
     r'"""(.*?)"""|\'\'\'(.*?)\'\'\'|"([^"\n]*)"|\'([^\'\n]*)\'',
     re.DOTALL
@@ -133,11 +160,7 @@ _STRING_LITERAL = re.compile(
 
 
 def _extract_sql_strings(content: str) -> list[str]:
-    """Extract contents of string literals that contain SQL keywords.
-
-    Restricts pattern matching to SQL context only, avoiding false
-    positives from comments, log messages, HTML, and other non-SQL text.
-    """
+    """Extract string literals that contain SQL keywords."""
     sql_strings = []
     for m in _STRING_LITERAL.finditer(content):
         text = m.group(1) or m.group(2) or m.group(3) or m.group(4) or ""
@@ -147,7 +170,7 @@ def _extract_sql_strings(content: str) -> list[str]:
 
 
 def _extract_cte_names(sql_text: str) -> set[str]:
-    """Extract CTE names from WITH...AS patterns to exclude from read results."""
+    """Extract CTE names from WITH...AS patterns."""
     names = set()
     for m in re.finditer(r'\bWITH\s+(\w+)\s+AS\s*\(', sql_text, re.IGNORECASE):
         names.add(m.group(1).lower())
@@ -156,14 +179,17 @@ def _extract_cte_names(sql_text: str) -> set[str]:
     return names
 
 
-def _resolve_table_variables(content: str) -> dict[str, str]:
-    """Find variable assignments that look like table name definitions.
+def _normalize_table(name: str) -> str:
+    """Lowercase and strip quotes from a table name."""
+    name = name.strip().lower()
+    parts = name.split(".")
+    parts = [p.strip('"').strip("'").strip("`") for p in parts]
+    return ".".join(parts)
 
-    Returns a dict mapping variable name -> table name string value.
-    Handles: table_name = "schema.table", sql_Table = "my_table", etc.
-    """
+
+def _resolve_table_variables(content: str) -> dict[str, str]:
+    """Find variable assignments that look like table name definitions."""
     var_map = {}
-    # Common variable names used for table targets
     for m in re.finditer(
         r'\b(table_name|sql_[Tt]able|sql_actual_table_name|actual_table_name|'
         r'target_table|dest_table|tbl_name|tbl|sql_table_name)\s*=\s*'
@@ -171,7 +197,6 @@ def _resolve_table_variables(content: str) -> dict[str, str]:
         content
     ):
         var_map[m.group(1)] = m.group(2)
-    # Also match schema variables
     for m in re.finditer(
         r'\b(schema|sql_schema|actual_schema|target_schema)\s*=\s*'
         r'["\']([a-zA-Z_]\w*)["\']',
@@ -181,17 +206,14 @@ def _resolve_table_variables(content: str) -> dict[str, str]:
     return var_map
 
 
-def _extract_to_sql_targets(content: str) -> set[str]:
-    """Extract table names from to_sql() calls with positional and keyword args.
+# ── SQL table extraction ──
 
-    Handles: .to_sql("table"), .to_sql(name="table"), and schema= keyword arg.
-    Also resolves variable references for name= and schema= when possible.
-    """
+def _extract_to_sql_targets(content: str) -> set[str]:
+    """Extract table names from to_sql() calls."""
     tables = set()
     var_map = _resolve_table_variables(content)
     for m in re.finditer(r'\.to_sql\s*\(', content):
         call_text = content[m.end():m.end() + 500]
-        # Try string literal for name
         name_m = re.search(r'\bname\s*=\s*["\']([^"\']+)["\']', call_text)
         if not name_m:
             name_m = re.match(r'\s*["\']([^"\']+)["\']', call_text)
@@ -203,7 +225,6 @@ def _extract_to_sql_targets(content: str) -> set[str]:
             else:
                 tables.add(_normalize_table(table_name))
         else:
-            # Try variable resolution for name=var or positional var
             name_var_m = re.search(r'\bname\s*=\s*([a-zA-Z_]\w*)', call_text)
             if not name_var_m:
                 name_var_m = re.match(r'\s*([a-zA-Z_]\w*)\s*,', call_text)
@@ -225,10 +246,9 @@ def _extract_to_sql_targets(content: str) -> set[str]:
 
 
 def _extract_write_tables(content: str) -> set[str]:
-    """Extract table names from write operations in the script content."""
+    """Extract SQL table names from write operations."""
     tables = set()
 
-    # to_sql - handles positional and keyword name=/schema= args
     tables |= _extract_to_sql_targets(content)
 
     # INSERT INTO [schema.]table
@@ -240,7 +260,7 @@ def _extract_write_tables(content: str) -> set[str]:
         table_part = re.sub(r'^INSERT\s+INTO\s+', '', raw, flags=re.IGNORECASE).strip()
         tables.add(_normalize_table(table_part))
 
-    # COPY schema.table FROM (pg COPY import)
+    # COPY schema.table FROM
     for m in re.finditer(
         r'COPY\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s+FROM\b',
         content, re.IGNORECASE
@@ -254,48 +274,44 @@ def _extract_write_tables(content: str) -> set[str]:
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # REFRESH MATERIALIZED VIEW [schema.]table
+    # REFRESH MATERIALIZED VIEW
     for m in re.finditer(
         r'REFRESH\s+MATERIALIZED\s+VIEW\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # CREATE [OR REPLACE] TABLE / MATERIALIZED VIEW [schema.]table
+    # CREATE [OR REPLACE] TABLE / MATERIALIZED VIEW
     for m in re.finditer(
         r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|MATERIALIZED\s+VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # DROP TABLE / MATERIALIZED VIEW [schema.]table
+    # DROP TABLE / MATERIALIZED VIEW
     for m in re.finditer(
         r'DROP\s+(?:TABLE|MATERIALIZED\s+VIEW)\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # Wrapper functions with qualified table names: Write_to_SQL(df, "schema.table"),
-    # SQL_insert_loop("schema.table", ...), write_df_to_pg(df, "schema.table"), etc.
+    # Wrapper functions with qualified table: Write_to_SQL(df, "schema.table")
     for m in re.finditer(
         r'\b\w*(?:write|insert|load|upload|to_sql)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w*\.[a-zA-Z_]\w*)["\']',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # Wrapper functions with bare table names (no schema prefix):
-    # SQL_insert_loop(path, "channel_mappings"), Write_to_SQL(df, "my_table")
+    # Wrapper functions with bare table: SQL_insert_loop(path, "channel_mappings")
     for m in re.finditer(
         r'\b\w*(?:write|insert|load|upload)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w{3,})["\']',
         content, re.IGNORECASE
     ):
         candidate = m.group(1)
-        # Only accept if it doesn't look like a file path or URL
         if not re.search(r'[/\\:]', candidate):
             tables.add(_normalize_table(candidate))
 
-    # Variable resolution: resolve table name variables used in f-string SQL
-    # e.g. f"COPY {sql_Table} FROM STDIN", f"DELETE FROM {sql_Table}"
+    # f-string SQL variable resolution
     var_map = _resolve_table_variables(content)
     for m in re.finditer(
         r'(?:COPY|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|INSERT\s+INTO)\s+\{(\w+)\}',
@@ -305,7 +321,7 @@ def _extract_write_tables(content: str) -> set[str]:
         if var_name in var_map:
             tables.add(_normalize_table(var_map[var_name]))
 
-    # Resolve write_df_to_pg(df, schema_var, table_var) calls via variable lookup
+    # write_df_to_pg(df, schema_var, table_var) variable resolution
     for m in re.finditer(
         r'\bwrite_df_to_pg\s*\(\s*\w+\s*,\s*(\w+)\s*,\s*(\w+)',
         content
@@ -316,8 +332,7 @@ def _extract_write_tables(content: str) -> set[str]:
         elif table_var in var_map:
             tables.add(_normalize_table(var_map[table_var]))
 
-    # copy_expert with COPY SQL in a nearby variable assignment
-    # Catches: copy_sql = f"COPY schema.table FROM STDIN ..."; cursor.copy_expert(copy_sql, ...)
+    # copy_expert with COPY FROM STDIN
     if 'copy_expert' in content:
         for m in re.finditer(
             r'COPY\s+((?:[a-zA-Z_]\w*\.)?[a-zA-Z_]\w+)\s+FROM\s+STDIN',
@@ -325,68 +340,214 @@ def _extract_write_tables(content: str) -> set[str]:
         ):
             tables.add(_normalize_table(m.group(1)))
 
-    return {t for t in tables if not _is_false_positive(t)}
+    return {t for t in tables if not _is_sql_false_positive(t)}
 
 
 def _extract_read_tables(content: str) -> set[str]:
-    """Extract table names from read operations in the script content.
-
-    FROM/JOIN are only matched within SQL-bearing string literals to avoid
-    false positives from comments, log messages, and non-SQL code.
-    """
+    """Extract SQL table names from read operations."""
     tables = set()
     cte_names = set()
 
-    # Only search for FROM/JOIN within string literals that contain SQL
     for sql_text in _extract_sql_strings(content):
         cte_names |= _extract_cte_names(sql_text)
 
-        # FROM [schema.]table
         for m in re.finditer(
             r'\bFROM\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s*',
             sql_text, re.IGNORECASE
         ):
             tables.add(_normalize_table(m.group(1)))
 
-        # JOIN [schema.]table
         for m in re.finditer(
             r'\bJOIN\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)',
             sql_text, re.IGNORECASE
         ):
             tables.add(_normalize_table(m.group(1)))
 
-    # COPY...TO (distinctive enough for full content search)
+    # COPY...TO
     for m in re.finditer(
         r'COPY\s+((?:"[^"]+"|[a-zA-Z_]\w*)(?:\.(?:"[^"]+"|[a-zA-Z_]\w*))?)\s+TO\b',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # read_sql / read_sql_query - extract table refs from SQL inside the call
+    # read_sql / read_sql_query
     for m in re.finditer(
         r'read_sql(?:_query|_table)?\s*\([^)]*["\'][^"\']*\b((?:[a-zA-Z_]\w*)(?:\.[a-zA-Z_]\w*)+)',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # pd.read_sql_table("table_name", ...) - reads directly from a table
+    # pd.read_sql_table("table_name")
     for m in re.finditer(
         r'read_sql_table\s*\(\s*["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']',
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # Remove CTE names - they are query-local, not real tables
     tables -= cte_names
 
-    return {t for t in tables if not _is_false_positive(t)}
+    return {t for t in tables if not _is_sql_false_positive(t)}
+
+
+# ── File I/O detection ──
+
+def _extract_filename(raw: str) -> str:
+    """Extract just the filename from a path string."""
+    # Handle Windows and Unix paths
+    name = raw.replace("\\", "/").split("/")[-1]
+    # Strip f-string braces
+    name = re.sub(r'\{[^}]*\}', '*', name)
+    return name
+
+
+def _extract_file_writes(content: str) -> set[str]:
+    """Detect Excel and CSV file write operations."""
+    files = set()
+
+    # .to_excel("path/file.xlsx")
+    for m in re.finditer(
+        r'\.to_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # ExcelWriter("path/file.xlsx")
+    for m in re.finditer(
+        r'ExcelWriter\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # Workbook().save / workbook.save("file.xlsx")
+    for m in re.finditer(
+        r'\.save\s*\(\s*(?:f)?["\']([^"\']*\.xlsx?)["\']',
+        content, re.IGNORECASE
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # .to_csv("path/file.csv") - but NOT .to_csv(buffer) for COPY operations
+    for m in re.finditer(
+        r'\.to_csv\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        path = m.group(1)
+        # Skip if it's a StringIO buffer pattern (used for COPY to SQL)
+        if 'buffer' not in path.lower() and 'stringio' not in path.lower():
+            fname = _extract_filename(path)
+            if fname.endswith('.csv') or '/' in path or '\\' in path:
+                files.add(f"[csv]{fname}")
+
+    return files
+
+
+def _extract_file_reads(content: str) -> set[str]:
+    """Detect Excel, CSV, and PDF file read operations."""
+    files = set()
+
+    # pd.read_excel("path/file.xlsx")
+    for m in re.finditer(
+        r'read_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # pd.read_excel(variable) - just mark as excel read
+    if re.search(r'read_excel\s*\(', content) and '[excel]' not in ''.join(files):
+        files.add("[excel]Excel files")
+
+    # Workbooks.Open("file.xlsx") - COM automation
+    for m in re.finditer(
+        r'Workbooks\.Open\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
+        content, re.IGNORECASE
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # Workbooks.Open(variable) - COM automation with variable path
+    if re.search(r'Workbooks\.Open\s*\(', content, re.IGNORECASE) and not any('[excel]' in f and f != '[excel]Excel files' for f in files):
+        files.add("[excel]Excel files")
+
+    # load_workbook("file.xlsx")
+    for m in re.finditer(
+        r'load_workbook\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[excel]{fname}")
+
+    # pd.read_csv("path/file.csv")
+    for m in re.finditer(
+        r'read_csv\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[csv]{fname}")
+
+    # pd.read_csv(variable) - just mark as csv read
+    if re.search(r'read_csv\s*\(', content) and not any(f.startswith('[csv]') for f in files):
+        files.add("[csv]CSV files")
+
+    # PDF readers
+    if re.search(r'PdfReader|PdfFileReader|fitz\.open|pdfplumber', content):
+        files.add("[pdf]PDF files")
+
+    return files
+
+
+def _extract_url_reads(content: str) -> set[str]:
+    """Detect web scraping and API call operations."""
+    urls = set()
+
+    # requests.get/post with URL string
+    for m in re.finditer(
+        r'requests\.(?:get|post)\s*\(\s*(?:f)?["\']https?://([^"\'/?]+)',
+        content
+    ):
+        domain = m.group(1)
+        urls.add(f"[web]{domain}")
+
+    # BeautifulSoup usage (web scraping indicator)
+    if re.search(r'BeautifulSoup\s*\(', content):
+        if not urls:
+            urls.add("[web]Web scraping")
+
+    # Selenium WebDriver usage
+    if re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
+        if not urls:
+            urls.add("[web]Web scraping (Selenium)")
+
+    # get_content() or scrape_ functions with URLs
+    for m in re.finditer(
+        r'(?:get_content|scrape_\w+|fetch_\w+)\s*\(\s*(?:f)?["\']https?://([^"\'/?]+)',
+        content
+    ):
+        domain = m.group(1)
+        urls.add(f"[web]{domain}")
+
+    return urls
+
+
+# ── Main data class and parsing ──
+
+@dataclass
+class ScriptResult:
+    path: str
+    display_name: str
+    last_modified: datetime | None
+    file_size: int
+    tables_read: set[str] = field(default_factory=set)
+    tables_written: set[str] = field(default_factory=set)
+    files_read: set[str] = field(default_factory=set)
+    files_written: set[str] = field(default_factory=set)
+    urls_read: set[str] = field(default_factory=set)
 
 
 def parse_script(filepath: Path) -> ScriptResult | None:
-    """Parse a single Python script and extract table references.
-
-    Returns a ScriptResult or None if the file cannot be read.
-    """
+    """Parse a Python script and extract all data I/O references."""
     try:
         stat = filepath.stat()
         file_size = stat.st_size
@@ -403,12 +564,9 @@ def parse_script(filepath: Path) -> ScriptResult | None:
 
         tables_written = _extract_write_tables(content)
         tables_read = _extract_read_tables(content)
-
-        # Remove read tables that are also in write (avoid double counting for
-        # something like INSERT INTO x SELECT FROM x)
-        # Actually keep them - a script can both read from and write to the same table
-        # But remove tables from reads that only appear because of write statements
-        # e.g. INSERT INTO x should not also count x as a read
+        files_written = _extract_file_writes(content)
+        files_read = _extract_file_reads(content)
+        urls_read = _extract_url_reads(content)
 
         return ScriptResult(
             path=str(filepath),
@@ -417,6 +575,9 @@ def parse_script(filepath: Path) -> ScriptResult | None:
             file_size=file_size,
             tables_read=tables_read,
             tables_written=tables_written,
+            files_read=files_read,
+            files_written=files_written,
+            urls_read=urls_read,
         )
 
     except Exception as e:
@@ -427,9 +588,7 @@ def parse_script(filepath: Path) -> ScriptResult | None:
 def walk_scripts(root_path: str, on_progress=None) -> list[ScriptResult]:
     """Walk a directory tree for .py files and parse each one.
 
-    Skips directories in SKIP_DIRS.
-    *on_progress* is an optional callback(message: str) for live logging.
-    Returns a list of ScriptResult objects (only scripts with table references).
+    Returns scripts with ANY detected I/O references (SQL, file, or web).
     """
     root = Path(root_path)
     if not root.exists():
@@ -445,7 +604,6 @@ def walk_scripts(root_path: str, on_progress=None) -> list[ScriptResult]:
     results = []
     files_checked = 0
     for dirpath, dirnames, filenames in os.walk(root):
-        # Filter out skip directories (modifying dirnames in-place)
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
 
         py_files = [f for f in filenames if f.endswith(".py")]
@@ -456,13 +614,22 @@ def walk_scripts(root_path: str, on_progress=None) -> list[ScriptResult]:
             filepath = Path(dirpath) / filename
             files_checked += 1
             result = parse_script(filepath)
-            if result and (result.tables_read or result.tables_written):
+            if result and _has_any_refs(result):
                 results.append(result)
                 if on_progress:
-                    tables = len(result.tables_read) + len(result.tables_written)
-                    on_progress(f"  Found: {filename} ({tables} table refs)")
+                    total = (len(result.tables_read) + len(result.tables_written)
+                             + len(result.files_read) + len(result.files_written)
+                             + len(result.urls_read))
+                    on_progress(f"  Found: {filename} ({total} refs)")
 
-    logger.info("Scanned %s - found %d scripts with table references", root, len(results))
+    logger.info("Scanned %s - found %d scripts with data refs", root, len(results))
     if on_progress:
-        on_progress(f"Walk complete: {files_checked} files checked, {len(results)} with table refs")
+        on_progress(f"Walk complete: {files_checked} files checked, {len(results)} with data refs")
     return results
+
+
+def _has_any_refs(result: ScriptResult) -> bool:
+    """Check if a script result has any detected references."""
+    return bool(result.tables_read or result.tables_written
+                or result.files_read or result.files_written
+                or result.urls_read)
