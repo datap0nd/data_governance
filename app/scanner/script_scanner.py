@@ -406,7 +406,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # .to_excel("path/file.xlsx")
     for m in re.finditer(
-        r'\.to_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'\.to_excel\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -414,7 +414,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # ExcelWriter("path/file.xlsx")
     for m in re.finditer(
-        r'ExcelWriter\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'ExcelWriter\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -422,7 +422,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # Workbook().save / workbook.save("file.xlsx")
     for m in re.finditer(
-        r'\.save\s*\(\s*(?:f)?["\']([^"\']*\.xlsx?)["\']',
+        r'\.save\s*\(\s*(?:f)?(?:r)?["\']([^"\']*\.xlsx?)["\']',
         content, re.IGNORECASE
     ):
         fname = _normalize_file_path(m.group(1))
@@ -430,7 +430,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # .to_csv("path/file.csv") - but NOT .to_csv(buffer) for COPY operations
     for m in re.finditer(
-        r'\.to_csv\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'\.to_csv\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         path = m.group(1)
@@ -442,7 +442,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # .to_parquet("path")
     for m in re.finditer(
-        r'\.to_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'\.to_parquet\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -450,7 +450,7 @@ def _extract_file_writes(content: str) -> set[str]:
 
     # .to_json("path") - only file paths, not URLs
     for m in re.finditer(
-        r'\.to_json\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'\.to_json\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         path = m.group(1)
@@ -489,7 +489,7 @@ def _extract_file_reads(content: str) -> set[str]:
 
     # pd.read_excel("path/file.xlsx")
     for m in re.finditer(
-        r'read_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'read_excel\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -505,7 +505,7 @@ def _extract_file_reads(content: str) -> set[str]:
 
     # load_workbook("file.xlsx")
     for m in re.finditer(
-        r'load_workbook\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'load_workbook\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -522,7 +522,7 @@ def _extract_file_reads(content: str) -> set[str]:
 
     # pd.read_parquet("path")
     for m in re.finditer(
-        r'read_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'read_parquet\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
@@ -530,7 +530,7 @@ def _extract_file_reads(content: str) -> set[str]:
 
     # pd.read_json("path") - only file paths, not URLs
     for m in re.finditer(
-        r'read_json\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'read_json\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         path = m.group(1)
@@ -540,7 +540,7 @@ def _extract_file_reads(content: str) -> set[str]:
 
     # pd.read_fwf("path") - fixed-width format
     for m in re.finditer(
-        r'read_fwf\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        r'read_fwf\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
         fname = _normalize_file_path(m.group(1))
