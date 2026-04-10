@@ -192,11 +192,21 @@ def _normalize_table(name: str) -> str:
 
 
 def _resolve_table_variables(content: str) -> dict[str, str]:
-    """Find variable assignments that look like table name definitions."""
+    """Find variable assignments and function-call arguments that resolve to table names.
+
+    Handles two cases:
+    1. Direct assignment: sql_Table = "channel_mappings"
+    2. Function parameter resolution: def foo(path, sql_Table) called as foo(x, "channel_mappings")
+    """
     var_map = {}
+
+    # Case 1: Direct variable assignments
+    _table_var_names = (
+        r'table_name|sql_[Tt]able|sql_actual_table_name|actual_table_name|'
+        r'target_table|dest_table|tbl_name|tbl|sql_table_name'
+    )
     for m in re.finditer(
-        r'\b(table_name|sql_[Tt]able|sql_actual_table_name|actual_table_name|'
-        r'target_table|dest_table|tbl_name|tbl|sql_table_name)\s*=\s*'
+        r'\b(' + _table_var_names + r')\s*=\s*'
         r'["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']',
         content
     ):
@@ -207,6 +217,35 @@ def _resolve_table_variables(content: str) -> dict[str, str]:
         content
     ):
         var_map[m.group(1)] = m.group(2)
+
+    # Case 2: Function parameter resolution
+    # Find function defs with table-like parameter names, then find calls to those functions
+    _table_param_re = re.compile(r'\b(' + _table_var_names + r')\b')
+    for m in re.finditer(r'def\s+(\w+)\s*\(([^)]*)\)', content):
+        func_name = m.group(1)
+        params = [p.strip().split("=")[0].strip().split(":")[0].strip()
+                  for p in m.group(2).split(",")]
+        # Find which parameter positions have table-like names
+        table_param_indices = []
+        for i, p in enumerate(params):
+            if _table_param_re.match(p):
+                table_param_indices.append((i, p))
+        if not table_param_indices:
+            continue
+        # Find calls to this function
+        for call_m in re.finditer(
+            r'\b' + re.escape(func_name) + r'\s*\(([^)]*)\)',
+            content
+        ):
+            args = [a.strip() for a in call_m.group(1).split(",")]
+            for idx, param_name in table_param_indices:
+                if idx < len(args):
+                    arg = args[idx]
+                    # Extract string literal from argument
+                    str_m = re.match(r'^["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']$', arg)
+                    if str_m:
+                        var_map[param_name] = str_m.group(1)
+
     return var_map
 
 
@@ -305,6 +344,17 @@ def _extract_write_tables(content: str) -> set[str]:
         content, re.IGNORECASE
     ):
         tables.add(_normalize_table(m.group(1)))
+
+    # Functions with "sql" in the name called with a table-name-like string argument
+    # e.g. SQL_insert_loop(path, "channel_mappings") or load_to_sql("fact_sales")
+    for m in re.finditer(
+        r'\b\w*sql\w*\s*\([^)]{0,500}?["\']([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?)["\']',
+        content, re.IGNORECASE
+    ):
+        candidate = m.group(1)
+        # Must look like a table name (has underscore or dot), not a path or URL
+        if not re.search(r'[/\\:]', candidate) and ("_" in candidate or "." in candidate):
+            tables.add(_normalize_table(candidate))
 
     # f-string SQL variable resolution
     var_map = _resolve_table_variables(content)
