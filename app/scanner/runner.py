@@ -150,6 +150,24 @@ def run_scan(reports_path: str | None = None) -> dict:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
 
+            # Pass 3: Strip parenthetical artifacts from source names
+            # e.g. "bi_reporting.table_name (view)" -> "bi_reporting.table_name"
+            import re as _re
+            paren_rows = db.execute(
+                "SELECT id, name FROM sources WHERE name LIKE '%(%'"
+            ).fetchall()
+            for row in paren_rows:
+                new_name = _re.sub(r'\s*\([^)]*\)\s*$', '', row["name"]).strip()
+                if new_name and new_name != row["name"]:
+                    dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
+                                    (new_name, row["id"])).fetchone()
+                    if dup:
+                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
+                    else:
+                        db.execute("UPDATE sources SET name = ? WHERE id = ?",
+                                   (new_name, row["id"]))
+                        log_lines.append(f"CLEANED: {row['name']} -> {new_name}")
+
             # Upsert sources
             for key, source_info in all_sources.items():
                 existing = db.execute(

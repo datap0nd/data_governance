@@ -57,15 +57,15 @@ class SourceInfo:
         elif self.source_type in self.DB_TYPES and self.server:
             # For PostgreSQL, just show schema.table (skip server IP and database name)
             if self.source_type == "postgresql" and self.sql_table:
-                return self.sql_table
+                return _clean_identifier(self.sql_table)
             parts = []
             if self.database:
-                parts.append(self.database)
+                parts.append(_clean_identifier(self.database))
             if self.sql_table:
-                parts.append(self.sql_table)
+                parts.append(_clean_identifier(self.sql_table))
             if parts:
-                return f"{self.server}/{'/'.join(parts)}"
-            return self.server
+                return f"{_clean_identifier(self.server)}/{'/'.join(parts)}"
+            return _clean_identifier(self.server)
         return "Unknown Source"
 
     @property
@@ -74,11 +74,11 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return self.file_path
         elif self.source_type in self.DB_TYPES:
-            parts = [self.server or "?"]
+            parts = [_clean_identifier(self.server) or "?"]
             if self.database:
-                parts.append(self.database)
+                parts.append(_clean_identifier(self.database))
             if self.sql_table:
-                parts.append(self.sql_table)
+                parts.append(_clean_identifier(self.sql_table))
             return "/".join(parts)
         return ""
 
@@ -556,13 +556,31 @@ def _unquote(s: str) -> str:
     return s
 
 
+def _clean_identifier(s: str) -> str:
+    """Clean a database identifier by removing parser artifacts.
+
+    Strips trailing parenthetical content, square brackets, and extra whitespace
+    from server names, database names, and table names.
+    """
+    if not s:
+        return s
+    # Remove M-style quoting: #"Quoted Name" -> Quoted Name
+    if s.startswith('#"') and s.endswith('"'):
+        s = s[2:-1]
+    # Strip SQL Server bracket quoting: [dbo] -> dbo
+    s = re.sub(r'^\[([^\]]+)\]$', r'\1', s)
+    # Strip trailing parenthetical content: "server (instance)" -> "server"
+    s = re.sub(r'\s*\([^)]*\)\s*$', '', s)
+    return s.strip()
+
+
 def resolve_parameters(source: SourceInfo, params: dict[str, str]) -> SourceInfo:
     """Replace parameter references in source info with actual values.
 
     If source.server is a bare identifier (not a path/URL), look it up in params.
     Same for source.database.
     """
-    if source.source_type == "sql":
+    if source.source_type in source.DB_TYPES:
         if source.server and source.server in params:
             source.server = params[source.server]
         if source.database and source.database in params:
