@@ -698,3 +698,49 @@ def _has_any_refs(result: ScriptResult) -> bool:
     return bool(result.tables_read or result.tables_written
                 or result.files_read or result.files_written
                 or result.urls_read)
+
+
+if __name__ == "__main__":
+    import sys
+
+    def _print_set(label, items):
+        if not items:
+            return
+        print(f"\n  {label} ({len(items)}):")
+        for item in sorted(items):
+            print(f"    {item}")
+
+    paths = sys.argv[1:]
+    if not paths:
+        print("Usage: python -m app.scanner.script_scanner <file_or_dir> [...]")
+        print("  Parses .py files and prints detected data I/O references.")
+        print("  Pass a directory to scan all .py files in it recursively.")
+        sys.exit(1)
+
+    for p in paths:
+        target = Path(p)
+        if target.is_dir():
+            results = walk_scripts(str(target))
+        elif target.is_file():
+            r = parse_script(target)
+            results = [r] if r and _has_any_refs(r) else []
+        else:
+            print(f"Not found: {p}")
+            continue
+
+        if not results:
+            print(f"\n{p}: no data references detected")
+            continue
+
+        for r in results:
+            total = (len(r.tables_read) + len(r.tables_written)
+                     + len(r.files_read) + len(r.files_written)
+                     + len(r.urls_read))
+            print(f"\n{'=' * 60}")
+            print(f"{r.path} ({total} refs)")
+            print(f"{'=' * 60}")
+            _print_set("SQL reads", r.tables_read)
+            _print_set("SQL writes", r.tables_written)
+            _print_set("File reads", r.files_read)
+            _print_set("File writes", r.files_written)
+            _print_set("URL reads", r.urls_read)
