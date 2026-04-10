@@ -440,6 +440,36 @@ def _extract_file_writes(content: str) -> set[str]:
             if fname.endswith('.csv') or '/' in path or '\\' in path:
                 files.add(f"[csv]{fname}")
 
+    # .to_parquet("path")
+    for m in re.finditer(
+        r'\.to_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[parquet]{fname}")
+
+    # .to_json("path") - only file paths, not URLs
+    for m in re.finditer(
+        r'\.to_json\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        path = m.group(1)
+        if not path.startswith(('http://', 'https://')):
+            fname = _extract_filename(path)
+            files.add(f"[json]{fname}")
+
+    # win32com .SaveAs("path") - Excel/CSV save
+    for m in re.finditer(
+        r'\.SaveAs\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
+        content, re.IGNORECASE
+    ):
+        fname = _extract_filename(m.group(1))
+        p = fname.lower()
+        if p.endswith(('.xlsx', '.xls', '.xlsb', '.xlsm')):
+            files.add(f"[excel]{fname}")
+        elif p.endswith('.csv'):
+            files.add(f"[csv]{fname}")
+
     return files
 
 
@@ -491,42 +521,78 @@ def _extract_file_reads(content: str) -> set[str]:
     if re.search(r'read_csv\s*\(', content) and not any(f.startswith('[csv]') for f in files):
         files.add("[csv]CSV files")
 
+    # pd.read_parquet("path")
+    for m in re.finditer(
+        r'read_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[parquet]{fname}")
+
+    # pd.read_json("path") - only file paths, not URLs
+    for m in re.finditer(
+        r'read_json\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        path = m.group(1)
+        if not path.startswith(('http://', 'https://')):
+            fname = _extract_filename(path)
+            files.add(f"[json]{fname}")
+
+    # pd.read_fwf("path") - fixed-width format
+    for m in re.finditer(
+        r'read_fwf\s*\(\s*(?:f)?["\']([^"\']+)["\']',
+        content
+    ):
+        fname = _extract_filename(m.group(1))
+        files.add(f"[text]{fname}")
+
     # PDF readers
     if re.search(r'PdfReader|PdfFileReader|fitz\.open|pdfplumber', content):
+        files.add("[pdf]PDF files")
+
+    # Adobe Reader COM automation (win32gui + clipboard PDF reading)
+    if re.search(r'AcrobatSDIWindow|Adobe\s*Reader', content):
         files.add("[pdf]PDF files")
 
     return files
 
 
 def _extract_url_reads(content: str) -> set[str]:
-    """Detect web scraping and API call operations."""
+    """Detect web/API endpoints used by the script.
+
+    Extracts all HTTP/HTTPS domains from the source, deduplicating by
+    domain:port. Catches URLs in requests.get/post, session.get/post,
+    variable assignments, f-strings, and helper functions.
+    """
     urls = set()
+    _skip = frozenset({'localhost', '127.0.0.1', '0.0.0.0'})
 
-    # requests.get/post with URL string
-    for m in re.finditer(
-        r'requests\.(?:get|post)\s*\(\s*(?:f)?["\']https?://([^"\'/?]+)',
-        content
-    ):
-        domain = m.group(1)
+    # Extract ALL HTTP/HTTPS domains from the file content.
+    # This catches URLs in any context: variable assignments, function args,
+    # dict literals, f-strings, comments. Deduplication by domain means
+    # the same API appearing in multiple places only shows once.
+    for m in re.finditer(r'https?://([a-zA-Z0-9._-]+(?::\d+)?)', content):
+        domain = m.group(1).lower()
+        if domain in _skip:
+            continue
+        # Skip PAC proxy config file URLs (.pac, wpad.dat)
+        tail = content[m.end():m.end() + 20]
+        if re.match(r'[/\w]*\.(?:pac|dat)\b', tail):
+            continue
         urls.add(f"[web]{domain}")
 
-    # BeautifulSoup usage (web scraping indicator)
-    if re.search(r'BeautifulSoup\s*\(', content):
-        if not urls:
-            urls.add("[web]Web scraping")
+    # BeautifulSoup without explicit URLs - web scraping indicator
+    if not urls and re.search(r'BeautifulSoup\s*\(', content):
+        urls.add("[web]Web scraping")
 
-    # Selenium WebDriver usage
-    if re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
-        if not urls:
-            urls.add("[web]Web scraping (Selenium)")
+    # Selenium without explicit URLs
+    if not urls and re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
+        urls.add("[web]Web scraping (Selenium)")
 
-    # get_content() or scrape_ functions with URLs
-    for m in re.finditer(
-        r'(?:get_content|scrape_\w+|fetch_\w+)\s*\(\s*(?:f)?["\']https?://([^"\'/?]+)',
-        content
-    ):
-        domain = m.group(1)
-        urls.add(f"[web]{domain}")
+    # Playwright without explicit URLs
+    if not urls and re.search(r'playwright|page\.goto\s*\(', content, re.IGNORECASE):
+        urls.add("[web]Web automation (Playwright)")
 
     return urls
 
