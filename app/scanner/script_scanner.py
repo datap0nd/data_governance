@@ -8,9 +8,13 @@ Parses Python scripts to find:
 
 References are stored with type prefixes:
 - No prefix: SQL table (e.g. "samsung_health.psi_data")
-- [excel]: Excel file (e.g. "[excel]output.xlsx")
-- [csv]: CSV file (e.g. "[csv]data.csv")
-- [web]: Web scraping/API (e.g. "[web]amazon.ae")
+- [excel]: Excel file (e.g. "[excel]C:/Users/Admin/output.xlsx")
+- [csv]: CSV/fixed-width file (e.g. "[csv]C:/data/input.csv")
+- [parquet]: Parquet file
+- [json]: JSON file
+- [pdf]: PDF file (e.g. "[pdf]C:/reports/summary.pdf")
+- [web-scraping]: Web scraping URL (e.g. "[web-scraping]amazon.ae")
+- [web-download]: API/download URL (e.g. "[web-download]api.example.com")
 """
 
 import logging
@@ -140,7 +144,7 @@ def _is_sql_false_positive(table: str) -> bool:
     # Unqualified names (no dot) without underscores are almost always
     # English words or variable names, not SQL tables.
     # Real PostgreSQL tables use underscores: fact_sales, dim_customer, etc.
-    if "." not in normalized and "_" not in normalized and len(normalized) < 15:
+    if "." not in normalized and "_" not in normalized:
         return True
 
     return False
@@ -302,15 +306,6 @@ def _extract_write_tables(content: str) -> set[str]:
     ):
         tables.add(_normalize_table(m.group(1)))
 
-    # Wrapper functions with bare table: SQL_insert_loop(path, "channel_mappings")
-    for m in re.finditer(
-        r'\b\w*(?:write|insert|load|upload)\w*\s*\([^)]{0,300}?["\']([a-zA-Z_]\w{3,})["\']',
-        content, re.IGNORECASE
-    ):
-        candidate = m.group(1)
-        if not re.search(r'[/\\:]', candidate):
-            tables.add(_normalize_table(candidate))
-
     # f-string SQL variable resolution
     var_map = _resolve_table_variables(content)
     for m in re.finditer(
@@ -391,13 +386,18 @@ def _extract_read_tables(content: str) -> set[str]:
 
 # ── File I/O detection ──
 
-def _extract_filename(raw: str) -> str:
-    """Extract just the filename from a path string."""
-    # Handle Windows and Unix paths
-    name = raw.replace("\\", "/").split("/")[-1]
-    # Strip f-string braces
-    name = re.sub(r'\{[^}]*\}', '*', name)
-    return name
+def _normalize_file_path(raw: str) -> str:
+    """Normalize a file path, preserving the full directory structure.
+
+    Converts backslashes to forward slashes and collapses duplicates.
+    F-string template variables like {user} are preserved as-is.
+    """
+    path = raw.strip()
+    # Convert escaped backslashes first, then single backslashes
+    path = path.replace("\\\\", "/").replace("\\", "/")
+    # Collapse repeated slashes
+    path = re.sub(r'/+', '/', path)
+    return path
 
 
 def _extract_file_writes(content: str) -> set[str]:
@@ -409,7 +409,7 @@ def _extract_file_writes(content: str) -> set[str]:
         r'\.to_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # ExcelWriter("path/file.xlsx")
@@ -417,7 +417,7 @@ def _extract_file_writes(content: str) -> set[str]:
         r'ExcelWriter\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # Workbook().save / workbook.save("file.xlsx")
@@ -425,7 +425,7 @@ def _extract_file_writes(content: str) -> set[str]:
         r'\.save\s*\(\s*(?:f)?["\']([^"\']*\.xlsx?)["\']',
         content, re.IGNORECASE
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # .to_csv("path/file.csv") - but NOT .to_csv(buffer) for COPY operations
@@ -436,7 +436,7 @@ def _extract_file_writes(content: str) -> set[str]:
         path = m.group(1)
         # Skip if it's a StringIO buffer pattern (used for COPY to SQL)
         if 'buffer' not in path.lower() and 'stringio' not in path.lower():
-            fname = _extract_filename(path)
+            fname = _normalize_file_path(path)
             if fname.endswith('.csv') or '/' in path or '\\' in path:
                 files.add(f"[csv]{fname}")
 
@@ -445,7 +445,7 @@ def _extract_file_writes(content: str) -> set[str]:
         r'\.to_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[parquet]{fname}")
 
     # .to_json("path") - only file paths, not URLs
@@ -455,7 +455,7 @@ def _extract_file_writes(content: str) -> set[str]:
     ):
         path = m.group(1)
         if not path.startswith(('http://', 'https://')):
-            fname = _extract_filename(path)
+            fname = _normalize_file_path(path)
             files.add(f"[json]{fname}")
 
     # win32com .SaveAs("path") - Excel/CSV save
@@ -463,7 +463,7 @@ def _extract_file_writes(content: str) -> set[str]:
         r'\.SaveAs\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content, re.IGNORECASE
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         p = fname.lower()
         if p.endswith(('.xlsx', '.xls', '.xlsb', '.xlsm')):
             files.add(f"[excel]{fname}")
@@ -477,7 +477,7 @@ def _extract_file_writes(content: str) -> set[str]:
             r'Workbooks\.Open\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
             content, re.IGNORECASE
         ):
-            fname = _extract_filename(m.group(1))
+            fname = _normalize_file_path(m.group(1))
             files.add(f"[excel]{fname}")
 
     return files
@@ -492,7 +492,7 @@ def _extract_file_reads(content: str) -> set[str]:
         r'read_excel\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # Workbooks.Open("file.xlsx") - COM automation
@@ -500,7 +500,7 @@ def _extract_file_reads(content: str) -> set[str]:
         r'Workbooks\.Open\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content, re.IGNORECASE
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # load_workbook("file.xlsx")
@@ -508,7 +508,7 @@ def _extract_file_reads(content: str) -> set[str]:
         r'load_workbook\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[excel]{fname}")
 
     # pd.read_csv("path/file.csv")
@@ -516,7 +516,7 @@ def _extract_file_reads(content: str) -> set[str]:
         r'read_csv\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[csv]{fname}")
 
 
@@ -525,7 +525,7 @@ def _extract_file_reads(content: str) -> set[str]:
         r'read_parquet\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
+        fname = _normalize_file_path(m.group(1))
         files.add(f"[parquet]{fname}")
 
     # pd.read_json("path") - only file paths, not URLs
@@ -535,7 +535,7 @@ def _extract_file_reads(content: str) -> set[str]:
     ):
         path = m.group(1)
         if not path.startswith(('http://', 'https://')):
-            fname = _extract_filename(path)
+            fname = _normalize_file_path(path)
             files.add(f"[json]{fname}")
 
     # pd.read_fwf("path") - fixed-width format
@@ -543,16 +543,23 @@ def _extract_file_reads(content: str) -> set[str]:
         r'read_fwf\s*\(\s*(?:f)?["\']([^"\']+)["\']',
         content
     ):
-        fname = _extract_filename(m.group(1))
-        files.add(f"[text]{fname}")
+        fname = _normalize_file_path(m.group(1))
+        files.add(f"[csv]{fname}")
 
-    # PDF readers
-    if re.search(r'PdfReader|PdfFileReader|fitz\.open|pdfplumber', content):
-        files.add("[pdf]PDF files")
+    # PDF readers with explicit paths
+    for m in re.finditer(
+        r'(?:PdfReader|PdfFileReader|pdfplumber\.open|fitz\.open)\s*\('
+        r'\s*(?:open\s*\(\s*)?(?:(?:fr|rf|f|r))?["\']([^"\']+)["\']',
+        content
+    ):
+        path = _normalize_file_path(m.group(1))
+        files.add(f"[pdf]{path}")
 
-    # Adobe Reader COM automation (win32gui + clipboard PDF reading)
+    # Adobe Reader COM automation - extract .pdf paths from string literals
     if re.search(r'AcrobatSDIWindow|Adobe\s*Reader', content):
-        files.add("[pdf]PDF files")
+        for m in re.finditer(r'["\']([^"\']+\.pdf)["\']', content, re.IGNORECASE):
+            path = _normalize_file_path(m.group(1))
+            files.add(f"[pdf]{path}")
 
     return files
 
@@ -585,15 +592,6 @@ def _extract_url_reads(content: str) -> set[str]:
         if re.match(r'[/\w]*\.(?:pac|dat)\b', tail):
             continue
         urls.add(f"{tag}{domain}")
-
-    # Fallback: scraping/automation detected but no explicit URLs found
-    if not urls:
-        if re.search(r'BeautifulSoup\s*\(', content):
-            urls.add("[web-scraping]Web scraping")
-        elif re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
-            urls.add("[web-scraping]Selenium")
-        elif re.search(r'playwright|page\.goto\s*\(', content, re.IGNORECASE):
-            urls.add("[web-scraping]Playwright")
 
     return urls
 
