@@ -3460,13 +3460,9 @@ function _scriptCategory(script) {
     if (!script) return "Other";
     const writes = script.tables_written || [];
     const sqlWrites = writes.filter(t => !t.startsWith("["));
-    const excelWrites = writes.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]"));
+    const fileWrites = writes.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]") || t.startsWith("[parquet]") || t.startsWith("[json]"));
     if (sqlWrites.length > 0) return "Data to SQL";
-    if (excelWrites.length > 0) return "Data to Excel";
-    // Check reads for file/web refs to distinguish from truly empty scripts
-    const reads = script.tables_read || [];
-    const fileReads = reads.filter(t => t.startsWith("["));
-    if (fileReads.length > 0) return "Other";
+    if (fileWrites.length > 0) return "Data to Excel";
     if (writes.length > 0) return "Data to Excel";
     return "Other";
 }
@@ -3474,8 +3470,13 @@ function _scriptCategory(script) {
 function _refType(name) {
     if (name.startsWith("[excel]")) return { label: name.slice(7), type: "excel", cls: "badge-yellow" };
     if (name.startsWith("[csv]")) return { label: name.slice(5), type: "csv", cls: "badge-purple" };
+    if (name.startsWith("[parquet]")) return { label: name.slice(9), type: "parquet", cls: "badge-purple" };
+    if (name.startsWith("[json]")) return { label: name.slice(6), type: "json", cls: "badge-purple" };
+    if (name.startsWith("[web-scraping]")) return { label: name.slice(14), type: "web-scraping", cls: "badge-dim" };
+    if (name.startsWith("[web-download]")) return { label: name.slice(14), type: "web-download", cls: "badge-dim" };
     if (name.startsWith("[web]")) return { label: name.slice(5), type: "web", cls: "badge-dim" };
     if (name.startsWith("[pdf]")) return { label: name.slice(5), type: "pdf", cls: "badge-muted" };
+    if (name.startsWith("[text]")) return { label: name.slice(6), type: "text", cls: "badge-muted" };
     return { label: name, type: "sql", cls: "" };
 }
 
@@ -3527,28 +3528,36 @@ async function renderScripts() {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "tables_written", label: "Writes to", width: COL_W.md, render: s => {
+        { key: "tables_written", label: "Writes to", width: COL_W.lg, render: s => {
             const all = s.tables_written || [];
             if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             const sql = all.filter(t => !t.startsWith("["));
             const excel = all.filter(t => t.startsWith("[excel]"));
             const csv = all.filter(t => t.startsWith("[csv]"));
+            const parquet = all.filter(t => t.startsWith("[parquet]") || t.startsWith("[json]"));
             const parts = [];
             if (sql.length) parts.push(`<span class="badge badge-red" style="font-size:0.72rem">${sql.length} SQL</span>`);
             if (excel.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${excel.length} Excel</span>`);
             if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
+            if (parquet.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${parquet.length} File</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
         }, sortVal: s => (s.tables_written || []).length },
-        { key: "tables_read", label: "Reads from", width: COL_W.md, render: s => {
+        { key: "tables_read", label: "Reads from", width: COL_W.lg, render: s => {
             const all = s.tables_read || [];
             if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
             const sql = all.filter(t => !t.startsWith("["));
-            const files = all.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]") || t.startsWith("[pdf]"));
-            const web = all.filter(t => t.startsWith("[web]"));
+            const excel = all.filter(t => t.startsWith("[excel]"));
+            const csv = all.filter(t => t.startsWith("[csv]"));
+            const otherFiles = all.filter(t => t.startsWith("[pdf]") || t.startsWith("[parquet]") || t.startsWith("[json]") || t.startsWith("[text]"));
+            const scraping = all.filter(t => t.startsWith("[web-scraping]"));
+            const download = all.filter(t => t.startsWith("[web-download]") || t.startsWith("[web]"));
             const parts = [];
             if (sql.length) parts.push(`<span class="badge badge-blue" style="font-size:0.72rem">${sql.length} SQL</span>`);
-            if (files.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${files.length} File</span>`);
-            if (web.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${web.length} Web</span>`);
+            if (excel.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${excel.length} Excel</span>`);
+            if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
+            if (otherFiles.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${otherFiles.length} File</span>`);
+            if (scraping.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${scraping.length} Web Scrape</span>`);
+            if (download.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${download.length} Web DL</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
         }, sortVal: s => (s.tables_read || []).length },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },

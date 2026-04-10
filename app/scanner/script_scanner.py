@@ -470,6 +470,16 @@ def _extract_file_writes(content: str) -> set[str]:
         elif p.endswith('.csv'):
             files.add(f"[csv]{fname}")
 
+    # win32com RefreshAll/Save pattern: if a file is opened AND refreshed
+    # or saved, it's being written to (data connections updated)
+    if re.search(r'\.RefreshAll\s*\(|\.Save\s*\(\s*\)', content):
+        for m in re.finditer(
+            r'Workbooks\.Open\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
+            content, re.IGNORECASE
+        ):
+            fname = _extract_filename(m.group(1))
+            files.add(f"[excel]{fname}")
+
     return files
 
 
@@ -485,10 +495,6 @@ def _extract_file_reads(content: str) -> set[str]:
         fname = _extract_filename(m.group(1))
         files.add(f"[excel]{fname}")
 
-    # pd.read_excel(variable) - just mark as excel read
-    if re.search(r'read_excel\s*\(', content) and '[excel]' not in ''.join(files):
-        files.add("[excel]Excel files")
-
     # Workbooks.Open("file.xlsx") - COM automation
     for m in re.finditer(
         r'Workbooks\.Open\s*\(\s*(?:f)?(?:r)?["\']([^"\']+)["\']',
@@ -496,10 +502,6 @@ def _extract_file_reads(content: str) -> set[str]:
     ):
         fname = _extract_filename(m.group(1))
         files.add(f"[excel]{fname}")
-
-    # Workbooks.Open(variable) - COM automation with variable path
-    if re.search(r'Workbooks\.Open\s*\(', content, re.IGNORECASE) and not any('[excel]' in f and f != '[excel]Excel files' for f in files):
-        files.add("[excel]Excel files")
 
     # load_workbook("file.xlsx")
     for m in re.finditer(
@@ -517,9 +519,6 @@ def _extract_file_reads(content: str) -> set[str]:
         fname = _extract_filename(m.group(1))
         files.add(f"[csv]{fname}")
 
-    # pd.read_csv(variable) - just mark as csv read
-    if re.search(r'read_csv\s*\(', content) and not any(f.startswith('[csv]') for f in files):
-        files.add("[csv]CSV files")
 
     # pd.read_parquet("path")
     for m in re.finditer(
@@ -562,16 +561,21 @@ def _extract_url_reads(content: str) -> set[str]:
     """Detect web/API endpoints used by the script.
 
     Extracts all HTTP/HTTPS domains from the source, deduplicating by
-    domain:port. Catches URLs in requests.get/post, session.get/post,
-    variable assignments, f-strings, and helper functions.
+    domain:port. Tags as [web-scraping] if BeautifulSoup/Selenium/Playwright
+    is present, otherwise [web-download].
     """
     urls = set()
     _skip = frozenset({'localhost', '127.0.0.1', '0.0.0.0'})
 
-    # Extract ALL HTTP/HTTPS domains from the file content.
-    # This catches URLs in any context: variable assignments, function args,
-    # dict literals, f-strings, comments. Deduplication by domain means
-    # the same API appearing in multiple places only shows once.
+    # Determine if this script does web scraping (HTML parsing / browser automation)
+    is_scraping = bool(re.search(
+        r'BeautifulSoup\s*\(|webdriver\.\w+\s*\(|WebDriver\s*\(|'
+        r'playwright|page\.goto\s*\(|\.select\s*\(\s*["\']|\.find_all\s*\(',
+        content, re.IGNORECASE
+    ))
+    tag = "[web-scraping]" if is_scraping else "[web-download]"
+
+    # Extract ALL HTTP/HTTPS domains from the file content
     for m in re.finditer(r'https?://([a-zA-Z0-9._-]+(?::\d+)?)', content):
         domain = m.group(1).lower()
         if domain in _skip:
@@ -580,19 +584,16 @@ def _extract_url_reads(content: str) -> set[str]:
         tail = content[m.end():m.end() + 20]
         if re.match(r'[/\w]*\.(?:pac|dat)\b', tail):
             continue
-        urls.add(f"[web]{domain}")
+        urls.add(f"{tag}{domain}")
 
-    # BeautifulSoup without explicit URLs - web scraping indicator
-    if not urls and re.search(r'BeautifulSoup\s*\(', content):
-        urls.add("[web]Web scraping")
-
-    # Selenium without explicit URLs
-    if not urls and re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
-        urls.add("[web]Web scraping (Selenium)")
-
-    # Playwright without explicit URLs
-    if not urls and re.search(r'playwright|page\.goto\s*\(', content, re.IGNORECASE):
-        urls.add("[web]Web automation (Playwright)")
+    # Fallback: scraping/automation detected but no explicit URLs found
+    if not urls:
+        if re.search(r'BeautifulSoup\s*\(', content):
+            urls.add("[web-scraping]Web scraping")
+        elif re.search(r'webdriver\.\w+\s*\(|WebDriver\s*\(', content):
+            urls.add("[web-scraping]Selenium")
+        elif re.search(r'playwright|page\.goto\s*\(', content, re.IGNORECASE):
+            urls.add("[web-scraping]Playwright")
 
     return urls
 
