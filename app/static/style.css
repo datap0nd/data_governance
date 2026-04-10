@@ -970,6 +970,14 @@ button.btn-sm {
     border-radius: 4px;
 }
 
+button.btn-xs {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.68rem;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-left: 0.3rem;
+}
+
 button.btn-green { background: var(--green); }
 
 button.btn-ghost {

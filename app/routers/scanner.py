@@ -1,7 +1,10 @@
 import logging
+import subprocess
 import sys
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
 from app.scanner.runner import run_scan
@@ -108,6 +111,38 @@ def do_pg_cron(request: Request):
     _require_local(request)
     from app.scanner.pg_cron import scan_pg_cron
     return scan_pg_cron()
+
+
+class OpenPathRequest(BaseModel):
+    path: str
+
+
+@router.post("/open-path")
+def open_path(body: OpenPathRequest, request: Request):
+    """Open the containing folder of a file path in the OS file explorer."""
+    _require_local(request)
+    target = Path(body.path)
+
+    # If it's a file, open its parent folder; if directory, open it directly
+    folder = target.parent if target.is_file() else target
+    if not folder.exists():
+        # Try the path as-is even if we can't verify (network paths)
+        folder = target.parent if not target.suffix == "" else target
+
+    try:
+        if sys.platform == "win32":
+            if target.is_file():
+                # Select the file in Explorer
+                subprocess.Popen(["explorer", "/select,", str(target)])
+            else:
+                subprocess.Popen(["explorer", str(folder)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
+        return {"status": "ok", "opened": str(folder)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open path: {e}")
 
 
 @router.get("/diagnostic")

@@ -160,6 +160,22 @@ def get_source_reports(source_id: int):
     return [dict(r) for r in rows]
 
 
+@router.get("/{source_id}/scripts")
+def get_source_scripts(source_id: int):
+    """Get scripts linked to this source via script_tables."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT DISTINCT sc.id, sc.display_name, sc.path, sc.owner,
+                   st.direction, st.table_name
+            FROM script_tables st
+            JOIN scripts sc ON sc.id = st.script_id
+            WHERE st.source_id = ? AND COALESCE(sc.archived, 0) = 0
+            ORDER BY sc.display_name
+        """, (source_id,)).fetchall()
+
+    return [dict(r) for r in rows]
+
+
 @router.get("/{source_id}/probes")
 def get_source_probes(source_id: int):
     with get_db() as db:

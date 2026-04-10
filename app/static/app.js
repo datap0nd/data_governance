@@ -478,6 +478,17 @@ function bindDataTables() {
         });
     });
 
+    // View path buttons inside data tables
+    document.querySelectorAll(".view-path-btn").forEach(btn => {
+        if (btn._viewBound) return;
+        btn._viewBound = true;
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            try { await apiPostJson("/api/scanner/open-path", { path: btn.dataset.path }); }
+            catch { toast("Could not open path (only works on server machine)"); }
+        });
+    });
+
     _bindColumnResizers();
 }
 
@@ -592,11 +603,19 @@ function _refreshDT(tableId) {
 
 // ── Source detail panel ──
 
+function _viewPathBtn(filePath) {
+    if (!filePath) return "";
+    return `<button class="btn-xs btn-outline view-path-btn" data-path="${esc(filePath)}" title="Open containing folder">View</button>`;
+}
+
 async function showSourceDetail(source) {
     const existing = $("#source-detail");
     if (existing) existing.remove();
 
-    const reports = await api(`/api/sources/${source.id}/reports`);
+    const [reports, scripts] = await Promise.all([
+        api(`/api/sources/${source.id}/reports`),
+        api(`/api/sources/${source.id}/scripts`),
+    ]);
     const parsed = parseSourceName(source);
 
     const panel = document.createElement("div");
@@ -627,7 +646,7 @@ async function showSourceDetail(source) {
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
             <div class="detail-item"><div class="detail-label">Last Updated</div><span style="color:var(--text)">${source.last_updated ? esc(formatDate(source.last_updated)) : "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Schema</div><span style="color:var(--text)">${esc(parsed.folderSchema)}</span></div>
-            <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(parsed.fullLocation)}</span></div>
+            <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(parsed.fullLocation)} ${_viewPathBtn(source.connection_info || parsed.fullLocation)}</span></div>
             <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${esc(source.upstream_name) || "-"}</span></div>
             <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${esc(source.upstream_refresh_day) || "-"}</span></div>
@@ -638,6 +657,22 @@ async function showSourceDetail(source) {
         <table class="detail-table">
             <thead><tr><th>Report</th><th>Table Name</th><th>Owner</th></tr></thead>
             <tbody>${reportRows}</tbody>
+        </table>
+
+        <h2>Scripts linked to this source (${scripts.length})</h2>
+        <table class="detail-table">
+            <thead><tr><th>Script</th><th>Direction</th><th>Table/File</th><th>Path</th></tr></thead>
+            <tbody>${scripts.length > 0
+                ? scripts.map(sc => `
+                    <tr>
+                        <td><strong>${esc(sc.display_name)}</strong></td>
+                        <td><span class="badge ${sc.direction === 'write' ? 'badge-orange' : 'badge-blue'}" style="font-size:0.7rem">${esc(sc.direction)}</span></td>
+                        <td style="color:var(--text-muted);font-size:0.78rem">${esc(sc.table_name) || "-"}</td>
+                        <td style="font-size:0.75rem;word-break:break-all;color:var(--text-dim)">${esc(sc.path)} ${_viewPathBtn(sc.path)}</td>
+                    </tr>
+                `).join("")
+                : '<tr><td colspan="4" class="empty-state" style="border:none">No scripts linked to this source</td></tr>'
+            }</tbody>
         </table>
 
         <h2>Freshness Rule</h2>
@@ -661,6 +696,19 @@ async function showSourceDetail(source) {
     $("#app").appendChild(panel);
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
     $("#btn-close-detail").addEventListener("click", () => panel.remove());
+
+    // View path buttons
+    panel.querySelectorAll(".view-path-btn").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const p = btn.dataset.path;
+            try {
+                await apiPostJson("/api/scanner/open-path", { path: p });
+            } catch (err) {
+                toast("Could not open path (only works on server machine)");
+            }
+        });
+    });
 
     // Freshness rule bindings
     const saveFreshBtn = document.getElementById("btn-save-freshness");
@@ -3522,9 +3570,9 @@ async function renderScripts() {
         }, sortVal: s => _scriptCategory(s) },
         { key: "display_name", label: "Script", width: COL_W.lg, render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
         { key: "path", label: "Path", width: COL_W.xl, render: s => {
-            const short = truncatePath(s.path, 60);
+            const short = truncatePath(s.path, 55);
             const escaped = (s.path || "").replace(/"/g, '&quot;');
-            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(short)}</span>`;
+            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(short)}</span> ${_viewPathBtn(s.path)}`;
         }, sortVal: s => s.path || "" },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
@@ -3654,7 +3702,7 @@ async function showScriptDetail(script) {
         </div>
         <div class="detail-grid">
             <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_scriptCategory(script)] || 'badge-muted'}">${esc(_scriptCategory(script))}</span></div>
-            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)}</span></div>
+            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)} ${_viewPathBtn(script.path)}</span></div>
             <div class="detail-item"><div class="detail-label">Owner</div>
                 <select class="freq-select-inline script-detail-owner-select" data-script-id="${script.id}">
                     <option value="">--</option>${ownerOpts}
@@ -3677,6 +3725,15 @@ async function showScriptDetail(script) {
 
     // Close button
     document.getElementById("btn-close-script-detail").addEventListener("click", () => panel.remove());
+
+    // View path buttons
+    panel.querySelectorAll(".view-path-btn").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            try { await apiPostJson("/api/scanner/open-path", { path: btn.dataset.path }); }
+            catch { toast("Could not open path (only works on server machine)"); }
+        });
+    });
 
     // Owner dropdown in detail panel
     const ownerSelect = panel.querySelector(".script-detail-owner-select");
