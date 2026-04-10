@@ -4324,6 +4324,481 @@ function bindPowerAutomatePage() {
 }
 
 
+// ── Pipeline Overview (force-directed graph) ──
+
+const OV_COLORS = { report: "#60a5fa", source: "#34d399", upstream: "#fb923c", script: "#c4b5fd", task: "#fbbf24" };
+const OV_LABELS = { report: "Reports", source: "Sources", upstream: "Upstream Systems", script: "Scripts", task: "Scheduled Tasks" };
+const OV_RADIUS = { report: 10, source: 7, upstream: 12, script: 8, task: 6 };
+const OV_LAYER_X = { task: 0.06, script: 0.22, upstream: 0.42, source: 0.65, report: 0.88 };
+
+async function renderOverview() {
+    return `
+        <div class="page-header">
+            <h2>Pipeline Overview</h2>
+            <p class="page-subtitle">Interactive map of all reports, sources, scripts, and upstream systems</p>
+        </div>
+        <div class="ov-toolbar">
+            <div class="ov-legend" id="ov-legend"></div>
+            <div class="ov-stats" id="ov-stats"></div>
+            <div class="ov-actions">
+                <button class="btn-outline btn-sm" id="ov-reset" title="Reset zoom and position">Reset View</button>
+            </div>
+        </div>
+        <div class="ov-container" id="ov-container">
+            <canvas id="ov-canvas"></canvas>
+            <div class="ov-tooltip" id="ov-tooltip" style="display:none"></div>
+        </div>
+        <div class="ov-hint">Scroll to zoom. Drag background to pan. Drag nodes to rearrange. Click a node to trace its connections.</div>
+    `;
+}
+
+function bindOverviewPage() {
+    const container = document.getElementById("ov-container");
+    const canvas = document.getElementById("ov-canvas");
+    if (!container || !canvas) return;
+
+    container.innerHTML = '<canvas id="ov-canvas"></canvas><div class="ov-tooltip" id="ov-tooltip" style="display:none"></div><div class="ov-loading">Loading pipeline data...</div>';
+
+    api("/api/overview/graph").then(data => {
+        const loader = container.querySelector(".ov-loading");
+        if (loader) loader.remove();
+        _initOverviewGraph(data, container);
+    }).catch(err => {
+        container.innerHTML = `<div class="ov-loading" style="color:var(--red)">Failed to load: ${esc(err.message)}</div>`;
+    });
+}
+
+function _initOverviewGraph(data, container) {
+    const canvas = container.querySelector("canvas");
+    const tooltip = container.querySelector(".ov-tooltip");
+    if (!canvas) return;
+
+    // Build legend and stats
+    const legendEl = document.getElementById("ov-legend");
+    const statsEl = document.getElementById("ov-stats");
+    if (legendEl) {
+        const types = ["upstream", "source", "report", "script", "task"];
+        legendEl.innerHTML = types.map(t => {
+            const count = data.nodes.filter(n => n.type === t).length;
+            if (count === 0) return "";
+            return `<span class="ov-legend-item"><span class="ov-legend-dot" style="background:${OV_COLORS[t]}"></span>${OV_LABELS[t]} (${count})</span>`;
+        }).join("");
+    }
+    if (statsEl) {
+        statsEl.innerHTML = `${data.nodes.length} nodes, ${data.edges.length} connections`;
+    }
+
+    // Canvas setup
+    const dpr = window.devicePixelRatio || 1;
+    let W = container.clientWidth;
+    let H = container.clientHeight;
+
+    function resizeCanvas() {
+        W = container.clientWidth;
+        H = container.clientHeight;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.width = W + "px";
+        canvas.style.height = H + "px";
+    }
+    resizeCanvas();
+
+    const ctx = canvas.getContext("2d");
+
+    // Initialize nodes with layered positions
+    const byType = {};
+    data.nodes.forEach(n => { if (!byType[n.type]) byType[n.type] = []; byType[n.type].push(n); });
+
+    const nodes = data.nodes.map(n => {
+        const peers = byType[n.type];
+        const idx = peers.indexOf(n);
+        const spacing = H / (peers.length + 1);
+        const lx = OV_LAYER_X[n.type] || 0.5;
+        return {
+            ...n,
+            x: lx * W + (Math.random() - 0.5) * 60,
+            y: spacing * (idx + 1) + (Math.random() - 0.5) * 30,
+            vx: 0, vy: 0, fx: null, fy: null,
+            r: OV_RADIUS[n.type] || 7,
+            color: OV_COLORS[n.type] || "#888",
+        };
+    });
+
+    // Node index for fast lookup
+    const nodeIdx = new Map();
+    nodes.forEach(n => nodeIdx.set(n.id, n));
+
+    // Build edges (only valid ones)
+    const edges = data.edges.map(e => ({
+        source: nodeIdx.get(e.source),
+        target: nodeIdx.get(e.target),
+    })).filter(e => e.source && e.target);
+
+    // Adjacency for highlight tracing
+    const adjFwd = new Map();
+    const adjBwd = new Map();
+    edges.forEach(e => {
+        if (!adjFwd.has(e.source.id)) adjFwd.set(e.source.id, []);
+        adjFwd.get(e.source.id).push(e.target.id);
+        if (!adjBwd.has(e.target.id)) adjBwd.set(e.target.id, []);
+        adjBwd.get(e.target.id).push(e.source.id);
+    });
+
+    // Transform state (pan/zoom)
+    let tx = 0, ty = 0, scale = 1;
+
+    // Interaction state
+    let dragNode = null;
+    let dragOffset = { x: 0, y: 0 };
+    let isPanning = false;
+    let panStart = { x: 0, y: 0 };
+    let hoveredNode = null;
+    let selectedId = null;
+    let highlightSet = null;
+
+    // Convert screen coords to world coords
+    function toWorld(sx, sy) {
+        return { x: (sx - tx) / scale, y: (sy - ty) / scale };
+    }
+
+    // Find node under screen coords
+    function hitTest(sx, sy) {
+        const w = toWorld(sx, sy);
+        for (let i = nodes.length - 1; i >= 0; i--) {
+            const n = nodes[i];
+            const dx = w.x - n.x, dy = w.y - n.y;
+            if (dx * dx + dy * dy < (n.r + 4) * (n.r + 4)) return n;
+        }
+        return null;
+    }
+
+    // Trace all connected nodes from a start node
+    function traceConnections(startId) {
+        const visited = new Set();
+        // Forward
+        const q = [startId];
+        while (q.length) {
+            const c = q.pop();
+            if (visited.has(c)) continue;
+            visited.add(c);
+            const fwd = adjFwd.get(c);
+            if (fwd) fwd.forEach(id => { if (!visited.has(id)) q.push(id); });
+        }
+        // Backward
+        const q2 = [startId];
+        const bwdSeen = new Set();
+        while (q2.length) {
+            const c = q2.pop();
+            if (bwdSeen.has(c)) continue;
+            bwdSeen.add(c);
+            visited.add(c);
+            const bwd = adjBwd.get(c);
+            if (bwd) bwd.forEach(id => { if (!bwdSeen.has(id)) q2.push(id); });
+        }
+        return visited;
+    }
+
+    // ── Force simulation ──
+    let simAlpha = 1.0;
+    const SIM_DECAY = 0.985;
+    const SIM_MIN = 0.001;
+
+    function simTick() {
+        const N = nodes.length;
+        // Repulsion (charge)
+        for (let i = 0; i < N; i++) {
+            for (let j = i + 1; j < N; j++) {
+                const a = nodes[i], b = nodes[j];
+                let dx = b.x - a.x, dy = b.y - a.y;
+                let d2 = dx * dx + dy * dy;
+                if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+                const d = Math.sqrt(d2);
+                const force = 800 / d2 * simAlpha;
+                const fx = dx / d * force, fy = dy / d * force;
+                a.vx -= fx; a.vy -= fy;
+                b.vx += fx; b.vy += fy;
+            }
+        }
+        // Spring (edges)
+        const idealLen = 120;
+        for (const e of edges) {
+            const dx = e.target.x - e.source.x;
+            const dy = e.target.y - e.source.y;
+            const d = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = (d - idealLen) * 0.003 * simAlpha;
+            const fx = dx / d * force, fy = dy / d * force;
+            e.source.vx += fx; e.source.vy += fy;
+            e.target.vx -= fx; e.target.vy -= fy;
+        }
+        // Layer force (pull toward preferred X)
+        for (const n of nodes) {
+            const targetX = (OV_LAYER_X[n.type] || 0.5) * W;
+            n.vx += (targetX - n.x) * 0.005 * simAlpha;
+        }
+        // Center Y
+        for (const n of nodes) {
+            n.vy += (H / 2 - n.y) * 0.0005 * simAlpha;
+        }
+        // Apply velocity
+        for (const n of nodes) {
+            if (n.fx != null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
+            n.vx *= 0.85;
+            n.vy *= 0.85;
+            n.x += n.vx;
+            n.y += n.vy;
+        }
+        simAlpha *= SIM_DECAY;
+    }
+
+    // ── Rendering ──
+    function _isDark() {
+        const html = document.documentElement;
+        return html.classList.contains("dark") ||
+            (!html.classList.contains("light") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    }
+
+    function draw() {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        ctx.save();
+        ctx.translate(tx, ty);
+        ctx.scale(scale, scale);
+
+        const dark = _isDark();
+        const dimming = highlightSet != null;
+
+        // Draw edges
+        for (const e of edges) {
+            const hl = highlightSet && highlightSet.has(e.source.id) && highlightSet.has(e.target.id);
+            ctx.beginPath();
+            const mx = (e.source.x + e.target.x) / 2;
+            ctx.moveTo(e.source.x, e.source.y);
+            ctx.bezierCurveTo(mx, e.source.y, mx, e.target.y, e.target.x, e.target.y);
+            if (dimming && !hl) {
+                ctx.strokeStyle = dark ? "rgba(100,100,100,0.06)" : "rgba(150,150,150,0.06)";
+                ctx.lineWidth = 0.5;
+            } else if (hl) {
+                ctx.strokeStyle = dark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.3)";
+                ctx.lineWidth = 1.5;
+            } else {
+                ctx.strokeStyle = dark ? "rgba(150,150,150,0.15)" : "rgba(100,100,100,0.18)";
+                ctx.lineWidth = 0.8;
+            }
+            ctx.stroke();
+        }
+
+        // Draw nodes
+        for (const n of nodes) {
+            const hl = highlightSet ? highlightSet.has(n.id) : true;
+            const isHovered = hoveredNode === n;
+
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, n.r + (isHovered ? 2 : 0), 0, Math.PI * 2);
+
+            if (dimming && !hl) {
+                ctx.fillStyle = dark ? "rgba(100,100,100,0.15)" : "rgba(180,180,180,0.25)";
+            } else {
+                ctx.fillStyle = n.color;
+                if (isHovered) {
+                    ctx.shadowColor = n.color;
+                    ctx.shadowBlur = 12;
+                }
+            }
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Border
+            if (hl || !dimming) {
+                ctx.strokeStyle = dark
+                    ? (dimming ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.2)")
+                    : (dimming ? "rgba(0,0,0,0.4)" : "rgba(0,0,0,0.12)");
+                ctx.lineWidth = isHovered ? 2 : 0.5;
+                ctx.stroke();
+            }
+
+            // Label
+            if (scale > 0.5 || isHovered || (highlightSet && hl)) {
+                const showLabel = scale > 0.7 || isHovered || (highlightSet && hl);
+                if (showLabel) {
+                    const fontSize = Math.max(9, Math.min(11, 11 / scale));
+                    ctx.font = `${fontSize}px 'Outfit', sans-serif`;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "top";
+                    if (dimming && !hl) {
+                        ctx.fillStyle = dark ? "rgba(100,100,100,0.2)" : "rgba(180,180,180,0.3)";
+                    } else {
+                        ctx.fillStyle = dark ? "rgba(255,255,255,0.85)" : "rgba(30,30,30,0.85)";
+                    }
+                    let label = n.name;
+                    if (label.length > 30) label = label.substring(0, 28) + "...";
+                    ctx.fillText(label, n.x, n.y + n.r + 4);
+                }
+            }
+        }
+
+        ctx.restore();
+    }
+
+    // ── Animation loop ──
+    let animId = null;
+    function animate() {
+        if (simAlpha > SIM_MIN) simTick();
+        draw();
+        animId = requestAnimationFrame(animate);
+    }
+
+    // ── Mouse events ──
+    canvas.addEventListener("mousedown", e => {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const node = hitTest(sx, sy);
+        if (node) {
+            dragNode = node;
+            const w = toWorld(sx, sy);
+            dragOffset.x = node.x - w.x;
+            dragOffset.y = node.y - w.y;
+            node.fx = node.x;
+            node.fy = node.y;
+            simAlpha = Math.max(simAlpha, 0.1);
+        } else {
+            isPanning = true;
+            panStart.x = e.clientX - tx;
+            panStart.y = e.clientY - ty;
+        }
+    });
+
+    canvas.addEventListener("mousemove", e => {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+
+        if (dragNode) {
+            const w = toWorld(sx, sy);
+            dragNode.fx = w.x + dragOffset.x;
+            dragNode.fy = w.y + dragOffset.y;
+            dragNode.x = dragNode.fx;
+            dragNode.y = dragNode.fy;
+            return;
+        }
+        if (isPanning) {
+            tx = e.clientX - panStart.x;
+            ty = e.clientY - panStart.y;
+            return;
+        }
+
+        // Hover
+        const node = hitTest(sx, sy);
+        if (node !== hoveredNode) {
+            hoveredNode = node;
+            canvas.style.cursor = node ? "grab" : "default";
+            if (node && tooltip) {
+                let html = `<strong>${esc(node.name)}</strong><br><span style="color:${node.color}">${OV_LABELS[node.type] || node.type}</span>`;
+                if (node.detail) html += `<br>${esc(node.detail)}`;
+                if (node.status && node.status !== "unknown") html += `<br>Status: ${esc(node.status)}`;
+                tooltip.innerHTML = html;
+                tooltip.style.display = "";
+                tooltip.style.left = (e.clientX - rect.left + 14) + "px";
+                tooltip.style.top = (e.clientY - rect.top - 10) + "px";
+            } else if (tooltip) {
+                tooltip.style.display = "none";
+            }
+        } else if (node && tooltip) {
+            tooltip.style.left = (e.clientX - rect.left + 14) + "px";
+            tooltip.style.top = (e.clientY - rect.top - 10) + "px";
+        }
+    });
+
+    canvas.addEventListener("mouseup", e => {
+        if (dragNode) {
+            // Keep pinned if dragged significantly, else release
+            dragNode.fx = null;
+            dragNode.fy = null;
+            simAlpha = Math.max(simAlpha, 0.15);
+            dragNode = null;
+        }
+        if (isPanning) {
+            isPanning = false;
+        }
+    });
+
+    canvas.addEventListener("click", e => {
+        if (dragNode) return;
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const node = hitTest(sx, sy);
+        if (node) {
+            if (selectedId === node.id) {
+                selectedId = null;
+                highlightSet = null;
+            } else {
+                selectedId = node.id;
+                highlightSet = traceConnections(node.id);
+            }
+        } else {
+            selectedId = null;
+            highlightSet = null;
+        }
+    });
+
+    canvas.addEventListener("wheel", e => {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        const newScale = Math.min(5, Math.max(0.1, scale * delta));
+        // Zoom toward mouse position
+        tx = sx - (sx - tx) * (newScale / scale);
+        ty = sy - (sy - ty) * (newScale / scale);
+        scale = newScale;
+    }, { passive: false });
+
+    canvas.addEventListener("mouseleave", () => {
+        hoveredNode = null;
+        canvas.style.cursor = "default";
+        if (tooltip) tooltip.style.display = "none";
+    });
+
+    // Reset button
+    const resetBtn = document.getElementById("ov-reset");
+    if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+            tx = 0; ty = 0; scale = 1;
+            selectedId = null;
+            highlightSet = null;
+            // Re-randomize positions and restart sim
+            nodes.forEach(n => {
+                const peers = byType[n.type];
+                const idx = peers.indexOf(n);
+                const spacing = H / (peers.length + 1);
+                n.x = (OV_LAYER_X[n.type] || 0.5) * W + (Math.random() - 0.5) * 60;
+                n.y = spacing * (idx + 1) + (Math.random() - 0.5) * 30;
+                n.vx = 0; n.vy = 0; n.fx = null; n.fy = null;
+            });
+            simAlpha = 1.0;
+        });
+    }
+
+    // Resize handling
+    const resizeObs = new ResizeObserver(() => {
+        W = container.clientWidth;
+        H = container.clientHeight;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.width = W + "px";
+        canvas.style.height = H + "px";
+    });
+    resizeObs.observe(container);
+
+    // Start animation
+    animate();
+
+    // Store cleanup ref
+    window._ovCleanup = () => {
+        if (animId) cancelAnimationFrame(animId);
+        resizeObs.disconnect();
+    };
+}
+
+
 // ── Lineage Diagram ──
 
 const LINEAGE_COLS = [
@@ -5517,6 +5992,7 @@ function bindFaqPage() {
 
 const pages = {
     dashboard: renderDashboard,
+    overview: renderOverview,
     sources: renderSources,
     reports: renderReports,
     scripts: renderScripts,
@@ -5551,6 +6027,7 @@ async function navigate(page) {
 
     // Reset lazy-init flags
     window._lineageBound = false;
+    if (window._ovCleanup) { window._ovCleanup(); window._ovCleanup = null; }
 
     $$("nav a[data-page]").forEach(a => {
         a.classList.toggle("active", a.dataset.page === page);
@@ -5718,6 +6195,7 @@ async function navigate(page) {
         if (page === "eventlog") bindEventLogPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
+        if (page === "overview") bindOverviewPage();
     } catch (err) {
         app.innerHTML = '<div class="empty-state" style="margin-top:2rem"><strong>Failed to load page</strong><br><span style="color:var(--text-dim);font-size:0.8rem">' + esc(err.message) + '</span><br><br><button onclick="navigate(\'' + page + '\')" class="btn-outline" style="font-size:0.8rem">Retry</button></div>';
     }
