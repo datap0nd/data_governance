@@ -3586,6 +3586,7 @@ async function renderScripts() {
             <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
             ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
             ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
+            ${_isLocal() ? '<button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>' : ''}
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
@@ -3734,6 +3735,7 @@ function bindScriptsPage() {
     // Scan buttons - async with live log polling
     const btnFull = document.getElementById("btn-scan-scripts-full");
     const btnNew = document.getElementById("btn-scan-scripts-new");
+    const btnReparse = document.getElementById("btn-reparse-scripts");
     const logWrap = document.getElementById("script-scan-log-wrap");
     const logPre = document.getElementById("script-scan-log");
     const logStatus = document.getElementById("script-scan-log-status");
@@ -3751,10 +3753,12 @@ function bindScriptsPage() {
     function _disableScanBtns(label) {
         if (btnFull) { btnFull.disabled = true; btnFull.textContent = label; }
         if (btnNew) { btnNew.disabled = true; }
+        if (btnReparse) { btnReparse.disabled = true; }
     }
     function _enableScanBtns() {
         if (btnFull) { btnFull.disabled = false; btnFull.textContent = "Full Scan"; }
         if (btnNew) { btnNew.disabled = false; }
+        if (btnReparse) { btnReparse.disabled = false; }
     }
 
     // Check if a scan is already running on page load
@@ -3798,6 +3802,27 @@ function bindScriptsPage() {
     }
     if (btnFull) btnFull.addEventListener("click", _startScriptScan(false));
     if (btnNew) btnNew.addEventListener("click", _startScriptScan(true));
+    if (btnReparse) btnReparse.addEventListener("click", async () => {
+        _disableScanBtns("Re-parsing...");
+        logWrap.style.display = "";
+        logPre.textContent = "";
+        logStatus.innerHTML = '<span class="badge badge-yellow">Re-parsing...</span>';
+        logExpanded = true;
+        logPre.style.display = "";
+        btnToggle.querySelector(".nav-arrow").innerHTML = "&#9652;";
+        try {
+            const result = await apiPost("/api/scripts/reparse");
+            if (result.status === "already_running") {
+                toast("Scan already running");
+                logPre.textContent = (result.log || []).join("\n");
+            }
+            _pollScriptScanLog();
+        } catch (err) {
+            toast("Re-parse failed: " + err.message);
+            logStatus.innerHTML = '<span class="badge badge-red">Failed</span>';
+            _enableScanBtns();
+        }
+    });
 
     function _pollScriptScanLog() {
         const interval = setInterval(async () => {

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from app.config import SCRIPTS_PATH, SCRIPTS_PATHS
 from app.database import get_db
-from app.scanner.script_scanner import walk_scripts
+from app.scanner.script_scanner import parse_script, walk_scripts
 from app.scanner.task_scheduler_scanner import MACHINE_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,152 @@ def _match_source(db, table_name: str) -> int | None:
         if source_name.endswith(table_lower):
             return row["id"]
     return None
+
+
+def _store_script_refs(db, script_id, result, now, source_cache=None):
+    """Clear and re-insert script_tables for a single script.
+
+    *source_cache* is an optional pre-loaded dict for _match_source lookups.
+    Returns the number of tables successfully linked to sources.
+    """
+    tables_linked = 0
+
+    db.execute("DELETE FROM script_tables WHERE script_id = ?", (script_id,))
+
+    def _cached_match(table_name):
+        if source_cache is not None:
+            tl = table_name.lower()
+            for sid, sname in source_cache.items():
+                if sname.endswith(tl):
+                    return sid
+            return None
+        return _match_source(db, table_name)
+
+    for table_name in result.tables_read:
+        source_id = _cached_match(table_name)
+        db.execute(
+            """INSERT INTO script_tables (script_id, table_name, direction, source_id)
+               VALUES (?, ?, 'read', ?)
+               ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+            (script_id, table_name, source_id),
+        )
+        if source_id:
+            tables_linked += 1
+
+    for table_name in result.tables_written:
+        source_id = _cached_match(table_name)
+        db.execute(
+            """INSERT INTO script_tables (script_id, table_name, direction, source_id)
+               VALUES (?, ?, 'write', ?)
+               ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+            (script_id, table_name, source_id),
+        )
+        if source_id:
+            tables_linked += 1
+
+    for ref in result.files_read:
+        db.execute(
+            """INSERT INTO script_tables (script_id, table_name, direction)
+               VALUES (?, ?, 'read')
+               ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+            (script_id, ref),
+        )
+
+    for ref in result.files_written:
+        db.execute(
+            """INSERT INTO script_tables (script_id, table_name, direction)
+               VALUES (?, ?, 'write')
+               ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+            (script_id, ref),
+        )
+
+    for ref in result.urls_read:
+        db.execute(
+            """INSERT INTO script_tables (script_id, table_name, direction)
+               VALUES (?, ?, 'read')
+               ON CONFLICT(script_id, table_name, direction) DO NOTHING""",
+            (script_id, ref),
+        )
+
+    return tables_linked
+
+
+def reparse_scripts(on_progress=None) -> dict:
+    """Re-parse all known scripts without walking directories.
+
+    Reads file paths from the scripts table, re-reads and re-parses each file,
+    and updates script_tables with fresh detection results. Skips the slow
+    network directory walk entirely.
+    """
+    if on_progress:
+        on_progress("Starting re-parse (no directory walk)")
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        scripts_parsed = 0
+        scripts_failed = 0
+        scripts_removed = 0
+        tables_linked = 0
+
+        with get_db() as db:
+            rows = db.execute(
+                "SELECT id, path FROM scripts WHERE COALESCE(archived, 0) = 0"
+            ).fetchall()
+
+            if on_progress:
+                on_progress(f"Re-parsing {len(rows)} scripts from database...")
+
+            # Pre-load sources for matching
+            source_rows = db.execute("SELECT id, name FROM sources").fetchall()
+            source_cache = {r["id"]: (r["name"] or "").lower() for r in source_rows}
+
+            from pathlib import Path
+
+            for row in rows:
+                script_id = row["id"]
+                filepath = Path(row["path"])
+
+                if not filepath.exists():
+                    scripts_failed += 1
+                    if on_progress:
+                        on_progress(f"  Missing: {filepath.name}")
+                    continue
+
+                result = parse_script(filepath)
+                if not result:
+                    scripts_failed += 1
+                    continue
+
+                # Update last_scanned timestamp
+                last_mod = result.last_modified.isoformat() if result.last_modified else None
+                db.execute(
+                    """UPDATE scripts SET last_modified = ?, last_scanned = ?,
+                       file_size = ?, updated_at = ? WHERE id = ?""",
+                    (last_mod, now, result.file_size, now, script_id),
+                )
+
+                linked = _store_script_refs(db, script_id, result, now, source_cache)
+                tables_linked += linked
+                scripts_parsed += 1
+
+                if on_progress and scripts_parsed % 20 == 0:
+                    on_progress(f"  Parsed {scripts_parsed}/{len(rows)}...")
+
+        summary = {
+            "status": "completed",
+            "scripts_parsed": scripts_parsed,
+            "scripts_failed": scripts_failed,
+            "scripts_total": len(rows),
+            "tables_linked": tables_linked,
+        }
+        logger.info("Script re-parse completed: %s", summary)
+        if on_progress:
+            on_progress(f"Re-parse done: {scripts_parsed} parsed, {scripts_failed} failed, {tables_linked} linked")
+        return summary
+
+    except Exception as e:
+        logger.exception("Script re-parse failed")
+        return {"status": "failed", "error": str(e)}
 
 
 def run_script_scan(scripts_path: str | None = None, on_progress=None, new_only: bool = False) -> dict:

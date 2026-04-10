@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import ScriptOut, ScriptUpdate, ScriptTableOut
-from app.scanner.script_runner import run_script_scan
+from app.scanner.script_runner import reparse_scripts, run_script_scan
 
 router = APIRouter(prefix="/api/scripts", tags=["scripts"])
 
@@ -184,6 +184,47 @@ def trigger_script_scan(request: Request, new_only: bool = Query(False)):
     mode = "new only" if new_only else "full"
     _append_log(f"Scan started ({mode})")
     thread = threading.Thread(target=_run_scan_background, args=(new_only,), daemon=True)
+    thread.start()
+
+    return {"status": "started"}
+
+
+def _run_reparse_background():
+    """Run script re-parse in background thread, updating _scan_state."""
+    try:
+        result = reparse_scripts(on_progress=_append_log)
+        _scan_state["result"] = result
+        _scan_state["status"] = "completed" if result.get("status") == "completed" else "failed"
+        _append_log(f"Re-parse finished: {result.get('scripts_parsed', 0)} parsed, {result.get('tables_linked', 0)} linked")
+    except Exception as e:
+        _scan_state["status"] = "failed"
+        _scan_state["result"] = {"status": "failed", "error": str(e)}
+        _append_log(f"ERROR: {e}")
+    finally:
+        _scan_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+@router.post("/reparse")
+def trigger_reparse(request: Request):
+    """Re-parse all known scripts without walking directories.
+
+    Reads file content from already-known paths, re-runs detection logic,
+    and updates script_tables. Skips the slow network directory walk.
+    """
+    from app.routers.scanner import _require_local
+    _require_local(request)
+    with _scan_lock:
+        if _scan_state["status"] == "running":
+            return {"status": "already_running", "log": _scan_state["log"]}
+
+        _scan_state["status"] = "running"
+        _scan_state["log"] = []
+        _scan_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _scan_state["finished_at"] = None
+        _scan_state["result"] = None
+
+    _append_log("Re-parse started (no directory walk)")
+    thread = threading.Thread(target=_run_reparse_background, daemon=True)
     thread.start()
 
     return {"status": "started"}
