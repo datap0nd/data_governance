@@ -351,7 +351,8 @@ function _filterAndSortDT(dt) {
             if (col.filterable === false) continue;
             const f = (filters[col.key] || "").toLowerCase();
             if (!f) continue;
-            const val = String(col.sortVal ? col.sortVal(r) : (r[col.key] ?? "")).toLowerCase();
+            const rawVal = col.filterVal ? col.filterVal(r) : col.sortVal ? col.sortVal(r) : (r[col.key] ?? "");
+            const val = String(rawVal).toLowerCase();
             if (f.includes("|")) {
                 if (!f.split("|").some(p => val.includes(p))) return false;
             } else {
@@ -406,7 +407,8 @@ function _renderDT(tableId) {
 
     const filterCells = columns.map(c => {
         if (c.filterable === false) return '<th></th>';
-        return `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="Filter..." value="${filters[c.key] || ""}"></th>`;
+        const ph = c.filterPlaceholder || "Filter...";
+        return `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="${ph}" value="${filters[c.key] || ""}"></th>`;
     }).join("");
 
     const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
@@ -3541,7 +3543,7 @@ async function renderScripts() {
             if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
             if (parquet.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${parquet.length} File</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_written || []).join(" ") },
+        }, sortVal: s => (s.tables_written || []).length, filterVal: s => (s.tables_written || []).join(" "), filterPlaceholder: "Search tables..." },
         { key: "tables_read", label: "Reads from", width: COL_W.lg, render: s => {
             const all = s.tables_read || [];
             if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
@@ -3559,7 +3561,7 @@ async function renderScripts() {
             if (scraping.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${scraping.length} Web Scrape</span>`);
             if (download.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${download.length} Web DL</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_read || []).join(" ") },
+        }, sortVal: s => (s.tables_read || []).length, filterVal: s => (s.tables_read || []).join(" "), filterPlaceholder: "Search tables..." },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         _archiveColDef("script"),
     ];
