@@ -3541,7 +3541,7 @@ async function renderScripts() {
             if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
             if (parquet.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${parquet.length} File</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_written || []).length },
+        }, sortVal: s => (s.tables_written || []).join(" ") },
         { key: "tables_read", label: "Reads from", width: COL_W.lg, render: s => {
             const all = s.tables_read || [];
             if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
@@ -3559,7 +3559,7 @@ async function renderScripts() {
             if (scraping.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${scraping.length} Web Scrape</span>`);
             if (download.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${download.length} Web DL</span>`);
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_read || []).length },
+        }, sortVal: s => (s.tables_read || []).join(" ") },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
         _archiveColDef("script"),
     ];
