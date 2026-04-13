@@ -243,7 +243,12 @@ function daysOld(dateStr) {
 function timeAgo(dateStr) {
     if (!dateStr) return "-";
     const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr; // return raw if unparseable
+    if (isNaN(d.getTime())) {
+        // Handle DD/MM/YYYY format that JS can't parse natively
+        if (/1999/.test(dateStr)) return "-";
+        return dateStr;
+    }
+    if (d.getFullYear() < 2000) return "-";
     const now = new Date();
     const diffMs = now - d;
     const mins = Math.floor(diffMs / 60000);
@@ -1402,6 +1407,10 @@ async function renderSources() {
             return b;
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
+        { key: "custom_fresh_days", label: "Freshness", width: COL_W.sm, render: s => {
+            const days = s.custom_fresh_days ?? 0;
+            return `<span style="color:var(--text-muted)">${days}d</span>`;
+        }, sortVal: s => s.custom_fresh_days ?? 0 },
         { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
             const d = daysOld(s.last_updated);
             if (d === null) return '<span style="color:var(--text-dim)">-</span>';
@@ -2196,10 +2205,8 @@ async function renderChangelog() {
         const d = new Date(day + "T00:00:00Z");
         const label = d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
         const items = grouped[day].map(e => {
-            const time = e.date ? new Date(e.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "";
             return `
                 <div class="changelog-item">
-                    <div class="changelog-time">${time}</div>
                     <div class="changelog-body">
                         <div class="changelog-title">${esc(e.title)}</div>
                         <div class="changelog-desc">${esc(e.description)}</div>
@@ -3303,7 +3310,7 @@ function bindExportPage() {
                     md += `- Status: ${t.status || "-"}\n`;
                     md += `- Enabled: ${t.enabled ? "Yes" : "No"}\n`;
                     md += `- Schedule: ${t.schedule_type || "-"}\n`;
-                    md += `- Last Run: ${t.last_run_time || "Never"}\n`;
+                    md += `- Last Run: ${t.last_run_time && !/1999/.test(t.last_run_time) ? t.last_run_time : "Never"}\n`;
                     md += `- Last Result: ${t.last_result || "-"}\n`;
                     md += `- Next Run: ${t.next_run_time || "-"}\n`;
                     md += `- Command: ${t.action_command || "-"}\n`;
@@ -3544,9 +3551,8 @@ async function renderScripts() {
         }, sortVal: s => _scriptCategory(s) },
         { key: "display_name", label: "Script", width: COL_W.lg, render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
         { key: "path", label: "Path", width: COL_W.xl, render: s => {
-            const short = truncatePath(s.path, 55);
             const escaped = (s.path || "").replace(/"/g, '&quot;');
-            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(short)}</span> ${_viewPathBtn(s.path)}`;
+            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(s.path || "-")}</span> ${_viewPathBtn(s.path)}`;
         }, sortVal: s => s.path || "" },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
@@ -4053,7 +4059,7 @@ async function showScheduledTaskDetail(task) {
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge}</div>
             <div class="detail-item"><div class="detail-label">Enabled</div>${enabledBadge}</div>
             <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(task.schedule_type || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${esc(task.last_run_time || "Never")}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${task.last_run_time && !/1999/.test(task.last_run_time) ? esc(task.last_run_time) : "Never"}</span></div>
             <div class="detail-item"><div class="detail-label">Last Result</div>${resultBadge}</div>
             <div class="detail-item"><div class="detail-label">Next Run</div><span style="color:var(--text)">${esc(task.next_run_time || "-")}</span></div>
             <div class="detail-item"><div class="detail-label">Author</div><span style="color:var(--text)">${esc(task.author || "-")}</span></div>
@@ -5948,7 +5954,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "Where does the data come from?",
-        a: "The scanner reads .pbix files and TMDL exports from a shared folder you configure (DG_TMDL_ROOT). It extracts all tables, data sources, measures, and columns automatically — no manual entry needed."
+        a: "The scanner reads .pbix files and TMDL exports from a shared folder you configure (DG_TMDL_ROOT). It extracts all tables, data sources, measures, and columns automatically. It also scans Python scripts, Windows Task Scheduler, Power Automate flows, and PostgreSQL materialized view dependencies."
     },
     {
         q: "What data source types are supported?",
@@ -5956,11 +5962,11 @@ const FAQ_ITEMS = [
     },
     {
         q: "How does freshness monitoring work?",
-        a: "After a scan, the prober checks when each data source was last updated. Sources are classified as Fresh, Stale, or Outdated based on configurable thresholds (default: fresh < 3 days, stale 3–7 days, outdated > 7 days). You can set custom thresholds per source."
+        a: "After a scan, the prober checks when each data source was last updated. PostgreSQL sources are probed directly via track_commit_timestamp. Sources are classified as Healthy or Degraded based on configurable thresholds per source. Default freshness threshold is 0 days (any age is acceptable unless overridden)."
     },
     {
         q: "What are Report Owner and Business Owner?",
-        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans."
+        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans. You can also assign owners manually from the People list under Management."
     },
     {
         q: "How do alerts work?",
@@ -5968,39 +5974,67 @@ const FAQ_ITEMS = [
     },
     {
         q: "What is the TMDL Checker?",
-        a: "It scans all reports against a set of best-practice rules: no local file paths, required owner metadata, proper date types, avoiding DirectQuery mode, excessive columns, and duplicate sources. Findings are shown by severity with filtering by report owner."
+        a: "Under Tools, the TMDL Checker scans all reports against best-practice rules: no local file paths, required owner metadata, proper date types, avoiding DirectQuery mode, excessive columns, duplicate sources, unused measures, and visual density. Findings are shown by severity with filtering by report owner."
+    },
+    {
+        q: "What is the Scripts page?",
+        a: "The Scripts page discovers and tracks all Python ETL scripts on the BI desktop and shared drives. It detects which SQL tables each script writes to and reads from, links scripts to data sources in the lineage, and shows modification dates. Scripts are categorized as Data to SQL, Data to Excel, or Other. Use Full Scan to discover new scripts or Re-parse to re-analyze existing ones."
+    },
+    {
+        q: "What is the Scheduled Tasks page?",
+        a: "Under Data, Scheduled Tasks shows all Windows Task Scheduler entries across scanned machines. Tasks can be linked to scripts, giving you end-to-end visibility from schedule to data refresh. Failed tasks and their schedules (daily, weekly, monthly) are highlighted."
+    },
+    {
+        q: "What is the Power Automate page?",
+        a: "Under Data, Power Automate lets you manually register Power Automate flows that feed data into your pipeline. Flows can be linked to output sources, and their last run time is derived from the linked source's probe data."
     },
     {
         q: "How does the Kanban task board work?",
-        a: "Create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Filter by analyst to see individual workloads."
+        a: "Under Management, create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Tasks can be linked to specific reports, sources, or scripts for traceability."
     },
     {
         q: "What is the Lineage view?",
-        a: "Lineage shows the full dependency chain: Visuals → Fields → Tables → Data Sources → Upstream Systems. Select a report to see exactly which sources feed into which visuals, helping you trace data quality issues upstream."
+        a: "Lineage shows the full dependency chain as a horizontal DAG: Visuals, Tables, Sources, MV Upstream, Scripts, and Tasks. Select a report to see exactly which sources feed into which visuals, which materialized views sit upstream, and which scripts refresh the data."
+    },
+    {
+        q: "What is the Pipeline Overview?",
+        a: "Under Tools, the Pipeline Overview shows an interactive force-directed graph of the entire data pipeline, with nodes for reports, sources, scripts, and tasks connected by their relationships."
     },
     {
         q: "How do upstream systems work?",
-        a: "Upstream systems (like GSCM or ASAP) represent the parent data platforms that feed your sources. Linking sources to upstream systems enables schedule discrepancy detection — flagging when the refresh chain timing is broken."
+        a: "Upstream systems (like GSCM or ASAP) represent the parent data platforms that feed your sources. Linking sources to upstream systems enables schedule discrepancy detection. PostgreSQL materialized view dependencies are detected automatically via pg_depend."
     },
     {
         q: "What does the Schedule Discrepancies check do?",
-        a: "It validates that data flows in the right order: Upstream System refreshes before Source, which refreshes before Report. If the timing is wrong (e.g., a report refreshes before its source), it flags a warning or critical issue."
+        a: "It validates that data flows in the right order: Upstream System refreshes before Source, which refreshes before Report. If the timing is wrong (e.g., a report refreshes before its source), it flags a warning or critical issue. pg_cron schedules are also scanned for mismatches."
+    },
+    {
+        q: "How does multi-machine support work?",
+        a: "The platform can scan scripts and scheduled tasks from multiple machines. Each script and task is tagged with its hostname. The Sources page filter buttons let you focus on specific machines."
+    },
+    {
+        q: "What is the Archive feature?",
+        a: "Reports, sources, scripts, and scheduled tasks can be archived to remove them from active views without deleting data. Archived items are hidden by default but can be shown with the Show Archived toggle."
     },
     {
         q: "Can I add sources and reports manually?",
-        a: "Yes. Use the Create page to add sources, reports, or upstream systems manually. These appear alongside scanned entries and can be linked together."
+        a: "Yes. Under Management, the Create page has Assets and People tabs. Assets lets you add reports, sources, or upstream systems manually. People lets you manage team members who can be assigned as owners."
+    },
+    {
+        q: "What is the Full Export?",
+        a: "Under Tools, Full Export generates a structured text dump of all platform data (sources, reports, scripts, tasks, lineage) with section checkboxes. Includes a diagnostic report and optional Python source code export."
     },
     {
         q: "What is the AI Assistant?",
-        a: "The AI chat (bottom-right button) lets you ask questions about your data ecosystem — risks, source health, specific reports, or general governance questions. It uses live data from the database to give contextual answers."
+        a: "The AI chat (bottom-right button) lets you ask questions about your data ecosystem - risks, source health, specific reports, or general governance questions. It uses live data from the database to give contextual answers."
     },
     {
         q: "What database does the platform use?",
-        a: "A single SQLite file (governance.db). No external database server needed. This is the only file you need to back up to preserve all state."
+        a: "A single SQLite file (governance.db). No external database server needed. A daily backup runs automatically at 6 AM. This file is the only thing you need to back up to preserve all state."
     },
     {
         q: "How do I set up the platform?",
-        a: "Install Python 3.11+, run pip install -r requirements.txt, then run install_service.ps1 as Administrator. The app installs as a Windows service and starts automatically. Open http://localhost:8000 in your browser. See instructions.md for the full guide."
+        a: "Run setup.ps1 as Administrator. It installs portable Python, dependencies, and registers the app as a Windows service. The app starts automatically and is accessible at http://localhost:8000. Multiple users on the network can connect via the machine's IP address."
     },
 ];
 

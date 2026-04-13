@@ -11,6 +11,71 @@ router = APIRouter(prefix="/api/changelog", tags=["changelog"])
 
 # Curated feature descriptions keyed by commit hash prefix.
 FEATURES = {
+    # ── Apr 13 ──
+    "6c92ac9": ("Scheduled Backup & Scan", "Daily automated backup at 6 AM and full scan at 7 AM"),
+    "2f20f33": ("Simplified Health Status", "Removed at-risk tier, sources are now either healthy or degraded"),
+
+    # ── Apr 10 ──
+    "872924a": ("Pipeline Overview", "Interactive force-directed graph showing the full data pipeline at a glance"),
+    "53d3085": ("Re-parse Button", "Re-run detection logic on existing scripts without a full directory walk"),
+
+    # ── Apr 9 ──
+    "d110237": ("Power Automate Flows", "Track Power Automate flows alongside scripts and scheduled tasks"),
+    "9315ee3": ("Script Scanner Overhaul", "File and web source detection, variable resolution, reduced false positives"),
+
+    # ── Apr 8 ──
+    "2679b72": ("MV Dependency Scanning", "Automatic PostgreSQL materialized view dependency detection via pg_depend"),
+    "891ed79": ("Multi-User Network Access", "IP-based identity so multiple team members can use the platform simultaneously"),
+    "d1959db": ("Source Filter Buttons", "Quick filter tabs on Sources page: Excel/CSV, PostgreSQL, Has Script, Not Healthy"),
+    "7452f5d": ("Task-Entity Linking", "Associate Kanban tasks with reports, sources, scripts, and other pipeline entities"),
+    "c6a796a": ("MV Upstream in Lineage", "Materialized view upstream column added to lineage diagram"),
+    "e897e39": ("pg_cron Schedule Scanning", "Detect pg_cron jobs and flag dependency freshness mismatches"),
+
+    # ── Apr 6 ──
+    "d80b0bb": ("Lineage Redesign", "Horizontal DAG layout with scripts and tasks columns replacing vertical tree"),
+    "9567dc0": ("Multi-Machine Support", "Scripts and scheduled tasks tracked across multiple machines"),
+    "bc9ba54": ("Direct PostgreSQL Probing", "Source freshness checked directly from PostgreSQL instead of CSV lookup"),
+    "0da2bdc": ("PBI Refresh Sync", "Sync Power BI Service refresh schedules and detect overdue refreshes"),
+    "1eef9c9": ("Archive Feature", "Archive stale reports, sources, scripts, and tasks to reduce noise"),
+
+    # ── Apr 5 ──
+    "491e9b0": ("Script Scanner", "Discover and track Python ETL scripts, detect SQL writes and file reads automatically"),
+    "a8ccb29": ("Task Scheduler Integration", "Scan Windows Task Scheduler and link tasks to scripts for end-to-end tracking"),
+
+    # ── Apr 3 ──
+    "477a6af": ("Full Export", "Export all platform data as structured text under Tools menu"),
+
+    # ── Apr 1 ──
+    "bbe4b65": ("People Management", "Manage team members and assign owners to reports and sources from a central list"),
+    "6668100": ("Version Display", "Commit hash shown in nav bar so you always know which version is running"),
+    "8461935": ("Scanner Diagnostics", "Debug zero-report scans with detailed per-report parsing output"),
+
+    # ── Mar 23 ──
+    "963e729": ("Windows Service Installer", "One-click setup.ps1 installs the platform as a Windows service"),
+    "1cdcfe1": ("UI Redesign", "Outfit font, teal accent, warm dark palette, bolder typography"),
+
+    # ── Mar 16 ──
+    "9699e5e": ("Accessibility & Dark Mode Audit", "ARIA attributes, keyboard navigation, contrast fixes, responsive improvements"),
+
+    # ── Mar 10 ──
+    "0a2bc01": ("Tasks Under Management", "Kanban board moved under Management nav group"),
+
+    # ── Mar 9 ──
+    "7115534": ("Kanban Task Manager", "Drag-and-drop task board with priorities, due dates, and assignees"),
+    "1899135": ("Event Log", "Track all platform changes with user, entity, action, and detail columns"),
+    "748732c": ("Renamed to MX Analytics", "Platform renamed from Data Governance Panel to MX Analytics"),
+    "2dc3912": ("FAQ Page", "Frequently asked questions page under Admin dropdown"),
+    "87131d6": ("TMDL Checker", "Best practices scanner renamed, with report owner filter"),
+
+    # ── Mar 5 ──
+    "25c0eea": ("Interactive Lineage Diagram", "Visual-to-source lineage with directed traversal and collapsible groups"),
+    "5aac9c1": ("Best Practices Checker", "Automated report quality checks for local paths, missing owners, DirectQuery, and more"),
+    "f4907bf": ("Unused Measures Detection", "Flag unused measures and columns in Power BI reports"),
+
+    # ── Mar 4 ──
+    "4959860": ("Create Page", "Manually add reports, sources, and upstream systems"),
+    "08fe1ea": ("Owner Table Instructions", "Step-by-step guide for adding Report Owner and Business Owner tables to PBI reports"),
+
     # ── Mar 3 ──
     "f40456a": ("Power BI Button Always Visible", "Open in Power BI button now always shows in report details, greyed out when no link is configured"),
     "a827af5": ("CSV Export", "Export button on Sources, Reports, and Issues pages to download filtered data as CSV"),
@@ -92,6 +157,43 @@ def _static_changelog():
     """Fallback when git is unavailable — uses same FEATURES dict."""
     # Hardcoded dates for when git isn't available
     dates = {
+        "6c92ac9": "2026-04-13T13:16:23+00:00",
+        "2f20f33": "2026-04-13T13:12:28+00:00",
+        "872924a": "2026-04-10T12:58:24+00:00",
+        "53d3085": "2026-04-10T13:09:08+00:00",
+        "d110237": "2026-04-09T15:50:41+00:00",
+        "9315ee3": "2026-04-09T18:07:18+00:00",
+        "2679b72": "2026-04-08T10:05:09+00:00",
+        "891ed79": "2026-04-08T13:17:07+00:00",
+        "d1959db": "2026-04-08T17:54:59+00:00",
+        "7452f5d": "2026-04-08T09:06:34+00:00",
+        "c6a796a": "2026-04-08T14:12:35+00:00",
+        "e897e39": "2026-04-08T12:48:30+00:00",
+        "d80b0bb": "2026-04-06T15:43:42+00:00",
+        "9567dc0": "2026-04-06T12:38:15+00:00",
+        "bc9ba54": "2026-04-06T13:46:06+00:00",
+        "0da2bdc": "2026-04-06T08:02:46+00:00",
+        "1eef9c9": "2026-04-06T07:38:19+00:00",
+        "491e9b0": "2026-04-05T22:11:21+00:00",
+        "a8ccb29": "2026-04-05T23:24:04+00:00",
+        "477a6af": "2026-04-03T19:19:02+00:00",
+        "bbe4b65": "2026-04-01T16:31:55+00:00",
+        "6668100": "2026-04-01T14:57:31+00:00",
+        "8461935": "2026-04-01T14:29:38+00:00",
+        "963e729": "2026-03-23T16:41:24+00:00",
+        "1cdcfe1": "2026-03-23T15:57:40+00:00",
+        "9699e5e": "2026-03-16T12:50:15+00:00",
+        "0a2bc01": "2026-03-10T13:51:39+00:00",
+        "7115534": "2026-03-09T09:06:01+00:00",
+        "1899135": "2026-03-09T12:50:30+00:00",
+        "748732c": "2026-03-09T12:26:51+00:00",
+        "2dc3912": "2026-03-09T10:59:13+00:00",
+        "87131d6": "2026-03-09T10:54:49+00:00",
+        "25c0eea": "2026-03-05T12:25:21+00:00",
+        "5aac9c1": "2026-03-05T11:08:41+00:00",
+        "f4907bf": "2026-03-05T14:01:40+00:00",
+        "4959860": "2026-03-04T05:26:45+00:00",
+        "08fe1ea": "2026-03-04T07:30:25+00:00",
         "f40456a": "2026-03-03T08:22:53+00:00",
         "a827af5": "2026-03-03T08:14:17+00:00",
         "eca5812": "2026-03-03T08:10:28+00:00",

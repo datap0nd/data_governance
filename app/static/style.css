@@ -657,7 +657,7 @@ tbody tr:nth-child(even) td { background: rgba(0,0,0,0.01); }
 /* Expandable cell */
 .cell-expandable {
     display: inline-block;
-    max-width: 200px;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
