@@ -321,15 +321,16 @@ function parseSourceName(s) {
     if (DB_TYPES.has(type)) {
         const lastSlash = name.lastIndexOf("/");
         const afterSlash = lastSlash >= 0 ? name.substring(lastSlash + 1) : name;
+        const strip = v => v.replace(/\s*\([^)]*\)\s*$/, "").trim();
         const dotIdx = afterSlash.indexOf(".");
         if (dotIdx >= 0) {
             return {
-                shortName: afterSlash.substring(dotIdx + 1),
-                folderSchema: afterSlash.substring(0, dotIdx),
+                shortName: strip(afterSlash.substring(dotIdx + 1)),
+                folderSchema: strip(afterSlash.substring(0, dotIdx)),
                 fullLocation: name
             };
         }
-        return { shortName: afterSlash, folderSchema: "-", fullLocation: name };
+        return { shortName: strip(afterSlash), folderSchema: "-", fullLocation: name };
     }
 
     const fileName = name.includes("/") ? name.substring(name.lastIndexOf("/") + 1)
