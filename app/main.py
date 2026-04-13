@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -69,11 +70,47 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_scheduler = BackgroundScheduler()
+
+
+def _scheduled_backup():
+    """Daily 6 AM backup of governance.db."""
+    from app.scanner.runner import _backup_db
+    log = logging.getLogger("scheduler")
+    log.info("Running scheduled backup")
+    _backup_db()
+    log.info("Scheduled backup complete")
+
+
+def _scheduled_scan():
+    """Daily 7 AM full scan + probe."""
+    from app.scanner.runner import run_scan
+    from app.scanner.prober import run_probe
+    log = logging.getLogger("scheduler")
+    log.info("Running scheduled full scan")
+    try:
+        result = run_scan()
+        log.info("Scan result: %s", result.get("status"))
+        probe_result = run_probe()
+        log.info("Probe result: %s", probe_result.get("statuses"))
+    except Exception as e:
+        log.exception("Scheduled scan failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+
+    # Daily backup at 6:00 AM, full scan at 7:00 AM
+    _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup")
+    _scheduler.add_job(_scheduled_scan, "cron", hour=7, minute=0, id="daily_scan")
+    _scheduler.start()
+    logging.getLogger(__name__).info("Scheduler started: backup at 06:00, scan at 07:00")
+
     yield
+
+    _scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="MX Analytics", version="0.1.0", lifespan=lifespan)
