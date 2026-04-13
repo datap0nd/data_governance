@@ -31,7 +31,7 @@ class BriefingResponse(BaseModel):
 class ReportRiskResponse(BaseModel):
     risk_level: str
     assessment: str
-    at_risk_sources: list = []
+    at_risk_sources: list = []  # kept for API compat, contains degraded sources
 
 
 @router.post("/chat", response_model=ChatResponse)

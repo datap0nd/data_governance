@@ -1575,7 +1575,7 @@ button.btn-blue { background: var(--accent); }
 }
 
 .status-dot-fresh, .status-dot-current { background: var(--green); }
-.status-dot-stale { background: var(--yellow); }
+.status-dot-stale { background: var(--red); }
 .status-dot-outdated, .status-dot-error { background: var(--red); }
 .status-dot-unknown, .status-dot-no_connection { background: var(--text-dim); }
 
@@ -2929,7 +2929,7 @@ button.btn-danger-outline:hover {
 }
 .lineage-report-status-healthy { background: var(--green-bg); color: var(--green); }
 .lineage-report-status-degraded { background: var(--red-bg); color: var(--red); }
-.lineage-report-status-at-risk { background: var(--yellow-bg); color: var(--yellow); }
+.lineage-report-status-at-risk { background: var(--red-bg); color: var(--red); }
 .lineage-report-status-current { background: var(--green-bg); color: var(--green); }
 .lineage-report-owner { color: var(--text-dim); font-size: 0.75rem; }
 

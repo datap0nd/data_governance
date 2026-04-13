@@ -181,7 +181,7 @@ function statusBadge(status) {
     if (s === "fresh" || s === "healthy" || s === "current" || s === "pass" || s === "completed")
         return `<span class="badge badge-green">healthy</span>`;
     if (s === "stale" || s === "at risk" || s === "stale sources" || s === "warn" || s === "warning")
-        return `<span class="badge badge-yellow">at risk</span>`;
+        return `<span class="badge badge-red">degraded</span>`;
     if (s === "outdated" || s === "degraded" || s === "outdated sources")
         return `<span class="badge badge-red">degraded</span>`;
     if (s === "error" || s === "fail" || s === "failed" || s === "critical")
@@ -206,14 +206,14 @@ function actionStatusBadge(status) {
 
 function actionTypeBadge(type) {
     const labels = {
-        stale_source: "At Risk",
+        stale_source: "Degraded",
         outdated_source: "Degraded",
         error_source: "Degraded",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
     };
     const colors = {
-        stale_source: "badge-yellow",
+        stale_source: "badge-red",
         outdated_source: "badge-red",
         error_source: "badge-red",
         broken_ref: "badge-red",
@@ -634,7 +634,6 @@ async function showSourceDetail(source) {
 
     const hasCustomRule = source.custom_fresh_days != null;
     const freshVal = source.custom_fresh_days || "";
-    const staleVal = source.custom_stale_days || "";
 
     panel.innerHTML = `
         <div class="source-detail-header">
@@ -679,17 +678,13 @@ async function showSourceDetail(source) {
         <div class="freshness-rule-form">
             <label class="freshness-label">Healthy up to
                 <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="31" min="1" max="9999" class="input-sm">
-                days
-            </label>
-            <label class="freshness-label">At risk up to
-                <input type="number" id="stale-days-input" value="${staleVal}" placeholder="90" min="1" max="9999" class="input-sm">
-                days
+                days (degraded after)
             </label>
             <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
             ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Reset to default</button>' : ''}
             ${hasCustomRule
                 ? '<span class="badge badge-blue" style="font-size:0.72rem">custom rule active</span>'
-                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global defaults (31 / 90 days)</span>'}
+                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global default (31 days)</span>'}
         </div>
     `;
 
@@ -715,14 +710,13 @@ async function showSourceDetail(source) {
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
             const fd = parseInt(document.getElementById("fresh-days-input").value);
-            const sd = parseInt(document.getElementById("stale-days-input").value);
-            if (!fd || !sd || fd >= sd) {
-                toast("Fresh days must be less than stale days");
+            if (!fd || fd < 1) {
+                toast("Enter a valid number of days");
                 return;
             }
             try {
-                await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd, stale_days: sd });
-                toast("Freshness rule saved — re-probe to apply");
+                await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd });
+                toast("Freshness rule saved - re-probe to apply");
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -735,7 +729,6 @@ async function showSourceDetail(source) {
                 await apiDelete(`/api/sources/${source.id}/freshness-rule`);
                 toast("Freshness rule reset to defaults");
                 document.getElementById("fresh-days-input").value = "";
-                document.getElementById("stale-days-input").value = "";
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -800,7 +793,7 @@ async function showReportDetail(report) {
             const srcStatus = src ? src.status : "unknown";
             const vCount = tableVisualCount.get(t.table_name) || 0;
             return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
-                <span class="dot dot-${srcStatus === 'fresh' || srcStatus === 'healthy' ? 'green' : srcStatus === 'stale' || srcStatus === 'at risk' ? 'yellow' : srcStatus === 'outdated' || srcStatus === 'degraded' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
+                <span class="dot dot-${srcStatus === 'fresh' || srcStatus === 'healthy' ? 'green' : srcStatus === 'stale' || srcStatus === 'outdated' || srcStatus === 'degraded' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
                 <span class="report-source-table">${t.table_name}</span>
                 ${vCount > 0 ? `<span class="badge badge-muted" style="margin-left:0.25rem;font-size:0.65rem">${vCount} visual${vCount !== 1 ? 's' : ''}</span>` : ''}
                 <span class="report-source-arrow">&rarr;</span>
@@ -995,9 +988,8 @@ async function renderDashboard() {
     const hasSources = total > 0;
     const allUnknown = hasSources && data.sources_fresh === 0 && data.sources_stale === 0 && data.sources_outdated === 0;
     const freshPct = hasSources ? pct(data.sources_fresh, total) : 0;
-    const stalePct = hasSources ? pct(data.sources_stale, total) : 0;
     const outdatedPct = hasSources ? pct(data.sources_outdated, total) : 0;
-    const unknownPct = hasSources ? 100 - freshPct - stalePct - outdatedPct : 0;
+    const unknownPct = hasSources ? 100 - freshPct - outdatedPct : 0;
 
     // Health label
     let healthLabel;
@@ -1007,36 +999,36 @@ async function renderDashboard() {
 
     // Build unified "Needs Attention" list from problem sources, reports, and alerts
     const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated");
-    const problemReports = reports.filter(r => r.status === "degraded" || r.status === "at risk");
+    const problemReports = reports.filter(r => r.status === "degraded");
     const needsAttention = [];
     problemSources.forEach(s => {
         const parsed = parseSourceName(s);
         needsAttention.push({
-            severity: s.status === "outdated" ? "red" : "yellow",
+            severity: "red",
             kind: "source", name: parsed.shortName,
-            description: s.status === "outdated" ? "degraded — data older than 90 days" : "at risk — data is 31\u201390 days old",
+            description: "degraded - past freshness threshold",
             timestamp: s.last_updated, id: s.id, data: s,
         });
     });
     problemReports.forEach(r => {
         needsAttention.push({
-            severity: r.status === "degraded" ? "red" : "yellow",
+            severity: "red",
             kind: "report", name: r.name,
-            description: "has " + (r.status === "degraded" ? "degraded" : "at-risk") + " sources",
+            description: "has degraded sources",
             timestamp: r.worst_source_updated, id: r.id, data: r,
         });
     });
     alerts.forEach(a => {
         const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
         needsAttention.push({
-            severity: a.severity === "critical" ? "red" : "yellow",
+            severity: a.severity === "critical" ? "red" : "red",
             kind: "alert", name: srcShort || "Alert",
             description: a.message, timestamp: a.created_at, id: a.id, data: a,
         });
     });
     needsAttention.sort((a, b) => {
-        const sev = { red: 0, yellow: 1 };
-        if (sev[a.severity] !== sev[b.severity]) return sev[a.severity] - sev[b.severity];
+        const sev = { red: 0 };
+        if ((sev[a.severity] ?? 1) !== (sev[b.severity] ?? 1)) return (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1);
         const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
         const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
         return tb - ta;
@@ -1054,19 +1046,17 @@ async function renderDashboard() {
                 <div class="stat-value">${data.reports_total}</div>
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green" title="All data sources are fresh and up to date">${reports.filter(r => r.status === "healthy").length} healthy</span>
-                    <span class="stat-dot dot-yellow" title="Some data sources are 31–90 days old">${reports.filter(r => r.status === "at risk").length} at risk</span>
-                    <span class="stat-dot dot-red" title="Data sources are older than 90 days">${reports.filter(r => r.status === "degraded").length} degraded</span>
+                    <span class="stat-dot dot-red" title="Data sources are past freshness threshold">${reports.filter(r => r.status === "degraded" || r.status === "at risk").length} degraded</span>
                     ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted" title="Status has not been probed yet">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources" role="button" tabindex="0" aria-label="Total Sources: ${data.sources_total}, ${data.sources_fresh} healthy, ${data.sources_stale} at risk, ${data.sources_outdated} degraded">
+            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources" role="button" tabindex="0" aria-label="Total Sources: ${data.sources_total}, ${data.sources_fresh} healthy, ${data.sources_outdated} degraded">
                 <div class="stat-label">Total Sources</div>
                 <div class="stat-value">${data.sources_total}</div>
                 <div class="stat-breakdown">
-                    <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within the last 30 days">${data.sources_fresh} healthy</span>
-                    <span class="stat-dot dot-yellow stat-filter" data-filter="at risk" title="Data is 31–90 days old — may need refresh">${data.sources_stale} at risk</span>
-                    <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data is older than 90 days — action required">${data.sources_outdated} degraded</span>
+                    <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within freshness threshold">${data.sources_fresh} healthy</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data past freshness threshold">${data.sources_outdated} degraded</span>
                     ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown" title="Source has not been probed yet">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
@@ -1087,7 +1077,7 @@ async function renderDashboard() {
         <div class="health-bar-container">
             <div style="display:flex;justify-content:space-between;align-items:center">
                 <h2 style="margin-bottom:0" title="Freshness status of all registered data sources">Source Health</h2>
-                <span style="color:var(--text-dim);font-size:0.78rem" title="Healthy = updated within 30 days. At risk = 31–90 days. Degraded = 90+ days.">${healthLabel}</span>
+                <span style="color:var(--text-dim);font-size:0.78rem" title="Healthy = within freshness threshold. Degraded = past threshold.">${healthLabel}</span>
             </div>
             ${!hasSources ? `
             <div class="health-bar">
@@ -1102,14 +1092,12 @@ async function renderDashboard() {
             ` : `
             <div class="health-bar">
                 ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} healthy (${freshPct}%)" data-filter="healthy" style="width:${freshPct}%"></div>` : ""}
-                ${stalePct > 0 ? `<div class="segment segment-yellow segment-clickable" data-tooltip="${data.sources_stale} at risk (${stalePct}%)" data-filter="at risk" style="width:${stalePct}%"></div>` : ""}
                 ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} degraded (${outdatedPct}%)" data-filter="degraded" style="width:${outdatedPct}%"></div>` : ""}
                 ${unknownPct > 0 ? `<div class="segment segment-muted" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
             </div>
             <div class="health-tooltip" id="health-tooltip"></div>
             <div class="health-legend">
                 <span class="stat-dot dot-green">${data.sources_fresh} Healthy</span>
-                <span class="stat-dot dot-yellow">${data.sources_stale} At Risk</span>
                 <span class="stat-dot dot-red">${data.sources_outdated} Degraded</span>
                 ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} Unknown</span>` : ""}
             </div>
@@ -1149,7 +1137,7 @@ async function renderDashboard() {
                     ${impactData.map(item => `
                         <div class="impact-item impact-clickable" data-source-id="${item.source_id}">
                             <div class="impact-header">
-                                <div class="dot dot-${item.status === "outdated" || item.status === "error" ? "red" : "yellow"}"></div>
+                                <div class="dot dot-red"></div>
                                 <strong>${esc(item.source_name)}</strong>
                                 <span class="impact-status">${esc(item.status)}</span>
                                 <span class="impact-badge">${item.affected_reports} report${item.affected_reports !== 1 ? "s" : ""}</span>
@@ -1195,7 +1183,7 @@ function drawHealthTrendChart() {
     const chartH = H - padT - padB;
 
     // Compute max total (stacked)
-    const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.at_risk || 0) + (t.degraded || 0)), 1);
+    const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.degraded || 0)), 1);
 
     // Grid lines
     ctx.strokeStyle = gridColor;
@@ -1216,24 +1204,14 @@ function drawHealthTrendChart() {
 
     // Build stacked y-values per point
     const series = trend.map(t => ({
-        degraded: t.degraded || 0,
-        at_risk: t.at_risk || 0,
+        degraded: (t.degraded || 0) + (t.at_risk || 0),
         healthy: t.healthy || 0,
     }));
 
-    // Draw stacked areas (bottom to top: degraded, at_risk, healthy)
-    // degraded: from 0 to degraded
-    // at_risk: from degraded to degraded+at_risk
-    // healthy: from degraded+at_risk to total
-
     const colors = {
         healthy: { fill: "rgba(22, 128, 61, 0.12)", stroke: "#15803d" },
-        at_risk: { fill: "rgba(161, 98, 7, 0.12)", stroke: "#a16207" },
         degraded: { fill: "rgba(185, 28, 28, 0.12)", stroke: "#b91c1c" },
     };
-
-    // Draw areas (in order: healthy on top, then at_risk, then degraded at bottom)
-    // But for stacked area, draw bottom-most first (degraded), then at_risk, then healthy
 
     // Degraded area (bottom)
     ctx.beginPath();
@@ -1248,30 +1226,16 @@ function drawHealthTrendChart() {
     ctx.fillStyle = colors.degraded.fill;
     ctx.fill();
 
-    // At risk area (middle)
-    ctx.beginPath();
-    for (let i = 0; i < trend.length; i++) {
-        const x = xAt(i);
-        const y = yAt(series[i].degraded + series[i].at_risk);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    for (let i = trend.length - 1; i >= 0; i--) {
-        ctx.lineTo(xAt(i), yAt(series[i].degraded));
-    }
-    ctx.closePath();
-    ctx.fillStyle = colors.at_risk.fill;
-    ctx.fill();
-
     // Healthy area (top)
     ctx.beginPath();
     for (let i = 0; i < trend.length; i++) {
         const x = xAt(i);
-        const total = series[i].degraded + series[i].at_risk + series[i].healthy;
+        const total = series[i].degraded + series[i].healthy;
         const y = yAt(total);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     for (let i = trend.length - 1; i >= 0; i--) {
-        ctx.lineTo(xAt(i), yAt(series[i].degraded + series[i].at_risk));
+        ctx.lineTo(xAt(i), yAt(series[i].degraded));
     }
     ctx.closePath();
     ctx.fillStyle = colors.healthy.fill;
@@ -1289,8 +1253,7 @@ function drawHealthTrendChart() {
         ctx.lineWidth = 1.5;
         ctx.stroke();
     }
-    drawLine(i => series[i].degraded + series[i].at_risk + series[i].healthy, colors.healthy.stroke);
-    drawLine(i => series[i].degraded + series[i].at_risk, colors.at_risk.stroke);
+    drawLine(i => series[i].degraded + series[i].healthy, colors.healthy.stroke);
     drawLine(i => series[i].degraded, colors.degraded.stroke);
 
     // X-axis labels (every 7 days)
@@ -1311,7 +1274,6 @@ function drawHealthTrendChart() {
     const legendY = padT + 10;
     [
         { color: colors.healthy.stroke, label: "Healthy" },
-        { color: colors.at_risk.stroke, label: "At Risk" },
         { color: colors.degraded.stroke, label: "Degraded" },
     ].forEach((item, idx) => {
         const x = legendX + idx * 72;
@@ -1355,13 +1317,12 @@ function _healthChartMouseMove(e) {
 
     const t = g.trend[idx];
     const s = g.series[idx];
-    const total = s.healthy + s.at_risk + s.degraded;
+    const total = s.healthy + s.degraded;
     const parts = t.day.split("-");
     const dayLabel = `${parts[2]}/${parts[1]}/${parts[0]}`;
 
     tip.innerHTML = `<div style="font-weight:600;margin-bottom:3px">${dayLabel}</div>
         <div><span style="color:#15803d">&#9679;</span> Healthy: ${s.healthy}</div>
-        <div><span style="color:#a16207">&#9679;</span> At Risk: ${s.at_risk}</div>
         <div><span style="color:#b91c1c">&#9679;</span> Degraded: ${s.degraded}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.15);margin-top:3px;padding-top:3px;color:var(--text-dim)">Total: ${total}</div>`;
     tip.style.display = "block";
@@ -1394,7 +1355,7 @@ async function renderDashboardAlerts() {
             ${alerts.slice(0, 8).map(a => {
                 const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
                 return `<div class="alert-item">
-                    <div class="dot ${a.severity === 'critical' ? 'dot-red' : 'dot-yellow'}"></div>
+                    <div class="dot dot-red"></div>
                     <span>${srcShort ? `<strong>${esc(srcShort)}</strong>  - ` : ""}${esc(a.message)}</span>
                     <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${timeAgo(a.created_at)}</span>
                 </div>`;
@@ -1432,7 +1393,7 @@ async function renderSources() {
             let b = statusBadge(s.status);
             if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
             return b;
-        }, sortVal: s => ({ fresh: "0_healthy", stale: "1_at risk", outdated: "2_degraded", unknown: "3_unknown", no_connection: "3_no_connection" })[s.status] ?? "4_" + s.status },
+        }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
@@ -1471,18 +1432,17 @@ async function renderSources() {
 
     const active = sources.filter(s => !s.archived);
     const healthy = active.filter(s => s.status === "fresh").length;
-    const atRiskCount = active.filter(s => s.status === "stale").length;
-    const degradedCount = active.filter(s => s.status === "outdated").length;
+    const degradedCount = active.filter(s => s.status === "outdated" || s.status === "stale").length;
 
     const scriptCount = sources.filter(s => !s.archived && s.linked_scripts).length;
     const excelCount = sources.filter(s => !s.archived && (s.type === "excel" || s.type === "csv")).length;
     const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
-    const unhealthyCount = atRiskCount + degradedCount;
+    const unhealthyCount = degradedCount;
 
     return `
         <div class="page-header">
             <h1>Sources</h1>
-            <span class="subtitle">${active.length} data sources tracked  - ${healthy} healthy, ${atRiskCount} at risk, ${degradedCount} degraded</span>
+            <span class="subtitle">${active.length} data sources tracked - ${healthy} healthy, ${degradedCount} degraded</span>
             ${_archiveToggleHtml("sources")}
             <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
         </div>
@@ -1517,7 +1477,7 @@ function bindSourcesPage() {
             } else if (filter === "has-script") {
                 dt.filters["linked_scripts"] = "python";
             } else if (filter === "unhealthy") {
-                dt.filters["status"] = "stale|outdated|unknown";
+                dt.filters["status"] = "outdated|degraded|unknown";
             }
             // else "all" - no filter
 
@@ -1628,7 +1588,7 @@ async function renderReports() {
         { key: "name", label: "Report", width: COL_W.lg, render: r => r.powerbi_url
             ? `<strong><a href="${r.powerbi_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
             : `<strong>${esc(r.name)}</strong>` },
-        { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", "at risk": "1_at risk", degraded: "2_degraded" })[r.status] ?? "3_" + r.status },
+        { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
         { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
             const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
@@ -1829,7 +1789,7 @@ async function renderScanner() {
                     { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
                     { key: "sources_probed", label: "Probed", width: COL_W.sm, render: r => `${r.sources_probed ?? "-"}` },
                     { key: "fresh", label: "Healthy", width: COL_W.sm, render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
-                    { key: "stale", label: "At Risk", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
+                    { key: "stale", label: "Degraded", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--red)">${r.stale}</span>` : '-' },
                     { key: "outdated", label: "Degraded", width: COL_W.sm, render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
                 ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
             </div>
@@ -1977,7 +1937,7 @@ async function renderActionsContent() {
 
         return `<div class="action-cards">${filtered.map(a => {
             const indColor = a.type.includes("outdated") || a.type.includes("error") || a.type.includes("degraded") ? "ind-red"
-                           : a.type.includes("stale") || a.type.includes("at_risk") ? "ind-yellow"
+                           : a.type.includes("stale") || a.type.includes("at_risk") ? "ind-red"
                            : a.type.includes("broken") ? "ind-red"
                            : "ind-blue";
 
@@ -2034,7 +1994,7 @@ async function renderActionsContent() {
                 <button class="action-filter-btn" data-filter="acknowledged">Acknowledged (${acknowledged})</button>
                 <button class="action-filter-btn" data-filter="investigating">Investigating (${investigating})</button>
                 <button class="action-filter-btn" data-filter="resolved">Resolved (${resolved})</button>
-                <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally at-risk/degraded (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
+                <button class="action-filter-btn" data-filter="expected" title="Sources that are intentionally degraded (e.g. quarterly data)">Expected (${actions.filter(a => a.status === "expected").length})</button>
             </div>
             <select id="action-owner-filter" class="action-owner-filter">
                 <option value="all">All owners</option>
@@ -4913,7 +4873,7 @@ async function renderLineageDiagram() {
         <div class="lineage-controls">
             <select id="lineage-report-select" class="lineage-dropdown">
                 <option value="">Select a report...</option>
-                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" || r.status === "at risk" ? " \u26a0" : ""}</option>`).join("")}
+                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
             <div class="lineage-col-toggles" id="lineage-col-toggles">
                 ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
@@ -5042,7 +5002,7 @@ function _renderLineageDiagram(data) {
     // Status helpers
     const stCls = s => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-warn", outdated: "lin-st-err", error: "lin-st-err" }[s] || "");
     const stDot = s => {
-        const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--yellow)", outdated: "var(--red)", error: "var(--red)" };
+        const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--red)", outdated: "var(--red)", error: "var(--red)" };
         return `<span class="lin-dot" style="background:${c[s] || "var(--text-dim)"}"></span>`;
     };
 
@@ -6137,7 +6097,7 @@ async function navigate(page) {
             const dd = window._dashboardData;
             if (navDot && dd) {
                 if (dd.sources_outdated > 0 || dd.alerts_active > 5) navDot.style.background = "var(--red)"; // degraded
-                else if (dd.sources_stale > 0) navDot.style.background = "var(--yellow)"; // at risk
+                else if (dd.sources_stale > 0) navDot.style.background = "var(--red)"; // degraded (legacy stale)
                 else navDot.style.background = "var(--green)"; // healthy
             }
             // Clickable stat card sub-labels — filter navigation
@@ -6475,9 +6435,9 @@ function initAIChatPanel() {
             </div>
         </div>
         <div class="ai-chat-quick" id="ai-chat-quick">
-            <button class="ai-quick-chip" data-q="What's at risk?">What's at risk?</button>
+            <button class="ai-quick-chip" data-q="What's degraded?">What's degraded?</button>
             <button class="ai-quick-chip" data-q="Summarize dashboard">Summarize dashboard</button>
-            <button class="ai-quick-chip" data-q="Show at-risk sources">Show at-risk sources</button>
+            <button class="ai-quick-chip" data-q="Show degraded sources">Show degraded sources</button>
             <button class="ai-quick-chip" data-q="Audit report queries">Audit report queries</button>
         </div>
         <div class="ai-chat-input-area">

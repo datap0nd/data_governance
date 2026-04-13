@@ -26,8 +26,8 @@ def get_dashboard():
 
         status_counts = {r["eff_status"]: r["c"] for r in probe_statuses}
         sources_fresh = status_counts.get("fresh", 0)
-        sources_stale = status_counts.get("stale", 0)
-        sources_outdated = status_counts.get("outdated", 0) + status_counts.get("error", 0)
+        sources_stale = 0  # no longer used, always 0
+        sources_outdated = status_counts.get("outdated", 0) + status_counts.get("stale", 0) + status_counts.get("error", 0)
         sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0)
 
         # Report counts
@@ -72,7 +72,7 @@ def get_impact_hierarchy():
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
             JOIN report_tables rt ON rt.source_id = s.id
-            WHERE sp.status IN ('stale', 'outdated', 'error')
+            WHERE sp.status IN ('outdated', 'error')
             GROUP BY s.id
             ORDER BY affected_reports DESC, CASE sp.status WHEN 'outdated' THEN 0 WHEN 'error' THEN 0 ELSE 1 END
         """).fetchall()

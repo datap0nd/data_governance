@@ -338,10 +338,8 @@ def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:
         dates = [p["last_data_at"] for p in probes if p["last_data_at"]]
         worst_date = min(dates) if dates else None
 
-        if "outdated" in statuses or "error" in statuses:
+        if "outdated" in statuses or "error" in statuses or "stale" in statuses:
             result[rid] = ("degraded", worst_date)
-        elif "stale" in statuses:
-            result[rid] = ("at risk", worst_date)
         else:
             result[rid] = ("healthy", worst_date)
 

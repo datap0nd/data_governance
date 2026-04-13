@@ -52,12 +52,10 @@ def mock_chat(message: str, context: dict) -> dict:
 
     # Categorize sources by status
     fresh = [s for s in sources if s.get("probe_status") == "fresh"]
-    stale = [s for s in sources if s.get("probe_status") == "stale"]
-    outdated = [s for s in sources if s.get("probe_status") == "outdated"]
+    outdated = [s for s in sources if s.get("probe_status") in ("outdated", "stale")]
     no_conn = [s for s in sources if s.get("probe_status") == "no_connection"]
     unknown = [s for s in sources if s.get("probe_status") in (None, "unknown")]
-    # Display labels
-    healthy, at_risk, degraded = fresh, stale, outdated
+    healthy, degraded = fresh, outdated
 
     # Build report-source map
     report_sources = {}
@@ -70,13 +68,12 @@ def mock_chat(message: str, context: dict) -> dict:
     sources_referenced = []
     reports_referenced = []
 
-    # ── "risk" / "at risk" / "what's wrong" ──
+    # ── "risk" / "what's wrong" ──
     if any(kw in msg_lower for kw in ["risk", "at risk", "wrong", "problem", "issue", "concern"]):
         lines = ["## Risk Summary\n"]
         if no_conn:
             names = ", ".join(f"**{_short_name(s['name'])}**" for s in no_conn[:8])
             lines.append(f"**{len(no_conn)} SQL sources have NO CONNECTION status:** {names}")
-            # Find affected reports
             no_conn_ids = {s["id"] for s in no_conn}
             affected = set()
             for e in edges:
@@ -91,13 +88,10 @@ def mock_chat(message: str, context: dict) -> dict:
                 lines.append(f"\nThese feed into **{len(affected)} reports**: {', '.join(affected_names[:6])}")
             sources_referenced = [s["id"] for s in no_conn]
             lines.append("")
-        if at_risk:
-            names = ", ".join(f"**{_short_name(s['name'])}**" for s in at_risk[:5])
-            lines.append(f"**{len(at_risk)} at-risk sources:** {names}")
         if degraded:
             names = ", ".join(f"**{_short_name(s['name'])}**" for s in degraded[:5])
             lines.append(f"**{len(degraded)} degraded sources:** {names}")
-        if not no_conn and not at_risk and not degraded:
+        if not no_conn and not degraded:
             lines.append("No significant risks detected. All monitored sources are healthy.")
 
         open_actions = [a for a in actions if a.get("status") == "open"]
@@ -115,7 +109,6 @@ def mock_chat(message: str, context: dict) -> dict:
         lines.append("| Status | Count |")
         lines.append("|--------|-------|")
         lines.append(f"| Healthy | {len(healthy)} |")
-        lines.append(f"| At Risk | {len(at_risk)} |")
         lines.append(f"| Degraded | {len(degraded)} |")
         lines.append(f"| No Connection | {len(no_conn)} |")
         lines.append(f"| Unknown | {len(unknown)} |")
@@ -127,16 +120,16 @@ def mock_chat(message: str, context: dict) -> dict:
             lines.append(f"\n**Note:** {len(no_conn)} SQL sources have no connection — these should be investigated.")
         return {"response": "\n".join(lines), "sources_referenced": [], "reports_referenced": []}
 
-    # ── "at risk" / "stale" ──
-    if "at risk" in msg_lower or "stale" in msg_lower:
-        if at_risk:
-            lines = [f"## {len(at_risk)} At-Risk Sources\n"]
-            lines.append("These sources have data that is 31-90 days old:\n")
-            for s in at_risk:
-                lines.append(f"- **{_short_name(s['name'])}** ({s.get('type', '?')}) — last updated {_time_ago(s.get('last_updated'))}")
+    # ── "degraded" / "stale" ──
+    if "degraded" in msg_lower or "stale" in msg_lower:
+        if degraded:
+            lines = [f"## {len(degraded)} Degraded Sources\n"]
+            lines.append("These sources have data older than the freshness threshold:\n")
+            for s in degraded:
+                lines.append(f"- **{_short_name(s['name'])}** ({s.get('type', '?')}) - last updated {_time_ago(s.get('last_updated'))}")
                 sources_referenced.append(s["id"])
             return {"response": "\n".join(lines), "sources_referenced": sources_referenced, "reports_referenced": []}
-        return {"response": "No at-risk sources detected. All monitored sources are either healthy, degraded, or have no connection.", "sources_referenced": [], "reports_referenced": []}
+        return {"response": "No degraded sources detected. All monitored sources are healthy.", "sources_referenced": [], "reports_referenced": []}
 
     # ── asking about a specific report ──
     for r in reports:
@@ -217,9 +210,9 @@ def mock_chat(message: str, context: dict) -> dict:
     # ── generic fallback ──
     lines = [
         "I can help you understand your analytics ecosystem. Try asking:\n",
-        "- **\"What's at risk?\"** — risk analysis across sources and reports",
-        "- **\"Summarize the dashboard\"** — overview of all sources and reports",
-        "- **\"Show stale sources\"** — list sources with aging data",
+        "- **\"What's degraded?\"** - risk analysis across sources and reports",
+        "- **\"Summarize the dashboard\"** - overview of all sources and reports",
+        "- **\"Show degraded sources\"** - list sources past freshness threshold",
         f"- **\"Tell me about [report name]\"** — details on any of your {len(reports)} reports",
         "- **\"What has no connection?\"** — SQL sources that can't be probed",
         "- **\"Show alerts\"** — active alerts",
@@ -241,8 +234,7 @@ def mock_briefing(summary: dict) -> dict:
 
     sources_list = summary["sources"]
     no_conn = [s for s in sources_list if s.get("probe_status") == "no_connection"]
-    at_risk = [s for s in sources_list if s.get("probe_status") == "stale"]
-    degraded = [s for s in sources_list if s.get("probe_status") == "outdated"]
+    degraded = [s for s in sources_list if s.get("probe_status") in ("outdated", "stale")]
     healthy = [s for s in sources_list if s.get("probe_status") == "fresh"]
 
     parts = []
@@ -264,22 +256,19 @@ def mock_briefing(summary: dict) -> dict:
             parts.append(f"Tracking **{total} sources** and **{len(reports)} reports**.")
 
         # Issues
-        if at_risk:
-            names = ", ".join(_short_name(s["name"]) for s in at_risk[:3])
-            parts.append(f"**{len(at_risk)} at-risk source{'s' if len(at_risk) != 1 else ''}** (data 31-90 days old): {names}.")
         if degraded:
             names = ", ".join(_short_name(s["name"]) for s in degraded[:3])
-            parts.append(f"**{len(degraded)} degraded source{'s' if len(degraded) != 1 else ''}** (data >90 days old): {names}.")
+            parts.append(f"**{len(degraded)} degraded source{'s' if len(degraded) != 1 else ''}** (past freshness threshold): {names}.")
 
         if alerts:
             parts.append(f"**{alerts} active alert{'s' if alerts != 1 else ''}** need attention.")
-        elif not at_risk and not degraded and not no_conn:
+        elif not degraded and not no_conn:
             parts.append("No active alerts.")
 
         parts.append(f"Last scan: **{scan_ago}**.")
 
-        # Risk level — any at_risk/degraded = high; any no_connection = medium; all healthy = low
-        if at_risk or degraded:
+        # Risk level
+        if degraded:
             risk = "high"
         elif no_conn:
             risk = "medium"
@@ -309,13 +298,12 @@ def mock_report_risk(report_ctx: dict) -> dict:
         }
 
     healthy = [t for t in tables if t.get("probe_status") == "fresh"]
-    at_risk_src = [t for t in tables if t.get("probe_status") == "stale"]
     no_conn = [t for t in tables if t.get("probe_status") == "no_connection"]
-    degraded = [t for t in tables if t.get("probe_status") == "outdated"]
+    degraded = [t for t in tables if t.get("probe_status") in ("outdated", "stale")]
     unknown = [t for t in tables if t.get("probe_status") in (None, "unknown")]
 
     unique_sources = {t["source_id"] for t in tables if t.get("source_id")}
-    at_risk = []
+    flagged = []
     parts = []
 
     if no_conn:
@@ -323,17 +311,12 @@ def mock_report_risk(report_ctx: dict) -> dict:
         names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in no_conn)
         parts.append(f"This report has **HIGH risk**. {len(no_conn)} of {len(unique_sources)} sources ({names}) have no SQL connection. "
                      f"If this persists, the report will show degraded or missing data.")
-        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "no_connection"} for t in no_conn]
+        flagged = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "no_connection"} for t in no_conn]
     elif degraded:
         risk = "high"
         names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in degraded)
-        parts.append(f"This report has **HIGH risk**. {len(degraded)} source{'s are' if len(degraded) != 1 else ' is'} degraded ({names}) with data older than 90 days.")
-        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "degraded"} for t in degraded]
-    elif at_risk_src:
-        risk = "medium"
-        names = ", ".join(f"**{_short_name(t.get('source_name', ''))}**" for t in at_risk_src)
-        parts.append(f"This report has **MEDIUM risk**. {len(at_risk_src)} source{'s have' if len(at_risk_src) != 1 else ' has'} at-risk data ({names}).")
-        at_risk = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "at_risk"} for t in at_risk_src]
+        parts.append(f"This report has **HIGH risk**. {len(degraded)} source{'s are' if len(degraded) != 1 else ' is'} degraded ({names}) - past freshness threshold.")
+        flagged = [{"source_id": t["source_id"], "source_name": t.get("source_name"), "reason": "degraded"} for t in degraded]
     elif unknown and not healthy:
         risk = "medium"
         parts.append(f"This report has **MEDIUM risk**. None of its {len(unique_sources)} sources have been probed yet — run a probe to verify freshness.")
@@ -348,7 +331,7 @@ def mock_report_risk(report_ctx: dict) -> dict:
     return {
         "risk_level": risk,
         "assessment": " ".join(parts),
-        "at_risk_sources": at_risk,
+        "at_risk_sources": flagged,
     }
 
 

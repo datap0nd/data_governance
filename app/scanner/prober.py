@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 # Staleness thresholds (in days)
 FRESH_MAX_DAYS = 31
-STALE_MAX_DAYS = 90
 
 # Source types that reference local/network files
 FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
@@ -37,24 +36,21 @@ PG_SOURCE_TYPES = {"postgresql"}
 
 def _compute_status(last_activity_str: str | None,
                     fresh_max: int = FRESH_MAX_DAYS,
-                    stale_max: int = STALE_MAX_DAYS) -> str:
+                    stale_max: int = 0) -> str:
     """Compute freshness status based on age of last_activity.
 
     <= fresh_max days: fresh
-    fresh_max-stale_max days: stale
-    > stale_max days: outdated
+    > fresh_max days: outdated
     Unparseable or missing: unknown
     """
     if not last_activity_str:
         return "unknown"
 
     try:
-        # Try fromisoformat first (handles full ISO 8601 with microseconds and timezone)
         dt = None
         try:
             dt = datetime.fromisoformat(last_activity_str)
         except (ValueError, TypeError):
-            # Fall back to common date formats
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
                 try:
                     dt = datetime.strptime(last_activity_str, fmt)
@@ -69,8 +65,6 @@ def _compute_status(last_activity_str: str | None,
         age_days = (datetime.now(timezone.utc) - dt).days
         if age_days <= fresh_max:
             return "fresh"
-        elif age_days <= stale_max:
-            return "stale"
         else:
             return "outdated"
     except Exception:
@@ -99,7 +93,7 @@ def _find_file(file_path: str) -> Path | None:
 
 
 def _probe_file_source(db, source_id: int, file_path: str, now: str,
-                       fresh_max: int = FRESH_MAX_DAYS, stale_max: int = STALE_MAX_DAYS) -> str:
+                       fresh_max: int = FRESH_MAX_DAYS) -> str:
     """Probe a file-based source by checking file existence and modification time.
 
     Returns the computed status.
@@ -114,7 +108,7 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
         return "unknown"
 
     mod_time = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
-    status = _compute_status(mod_time.isoformat(), fresh_max, stale_max)
+    status = _compute_status(mod_time.isoformat(), fresh_max)
 
     db.execute(
         "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
@@ -196,7 +190,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
     Returns dict of status counts.
     """
-    statuses = {"fresh": 0, "stale": 0, "outdated": 0, "unknown": 0}
+    statuses = {"fresh": 0, "outdated": 0, "unknown": 0}
     pg_conn = _get_pg_connection()
 
     if pg_conn is None:
@@ -215,7 +209,6 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
         for src in pg_sources:
             fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
-            sm = src["custom_stale_days"] or STALE_MAX_DAYS
             parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
 
             if not parsed:
@@ -256,7 +249,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                     if last_write.tzinfo is None:
                         last_write = last_write.replace(tzinfo=timezone.utc)
                     latest_iso = last_write.isoformat()
-                    status = _compute_status(latest_iso, fm, sm)
+                    status = _compute_status(latest_iso, fm)
                     msg = f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} ({row_count:,} rows)"
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
@@ -272,7 +265,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                     )
 
                 statuses[status] = statuses.get(status, 0) + 1
-                _create_action_and_alert(db, src["id"], status, now, fm, sm)
+                _create_action_and_alert(db, src["id"], status, now, fm)
                 log_lines.append(f"PG: {short} - {status} ({msg})")
 
             except Exception as e:
@@ -291,15 +284,14 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
 
 def _create_action_and_alert(db, source_id: int, status: str, now: str,
-                             fresh_max: int = FRESH_MAX_DAYS, stale_max: int = STALE_MAX_DAYS):
-    """Create an action item and alert for stale/outdated sources if not already open."""
-    if status not in ("stale", "outdated"):
+                             fresh_max: int = FRESH_MAX_DAYS):
+    """Create an action item and alert for outdated sources if not already open."""
+    if status != "outdated":
         return
 
-    action_type = f"{status}_source"
-    severity = "critical" if status == "outdated" else "warning"
-    msg = (f"Source data is older than {stale_max} days" if status == "outdated"
-           else f"Source data is {fresh_max}-{stale_max} days old")
+    action_type = "stale_source"
+    severity = "critical"
+    msg = f"Source data is older than {fresh_max} days"
 
     # Find owner for assignment (from linked report)
     owner_row = db.execute(
@@ -457,22 +449,21 @@ def run_probe() -> dict:
     file_probed = 0
     pg_probed = 0
     skipped = 0
-    statuses = {"fresh": 0, "stale": 0, "outdated": 0, "unknown": 0}
+    statuses = {"fresh": 0, "outdated": 0, "unknown": 0}
     log_lines = []
 
     with get_db() as db:
         # 1. Probe file-based sources
         file_sources = db.execute(
-            "SELECT id, name, type, connection_info, custom_fresh_days, custom_stale_days FROM sources WHERE type IN ('csv', 'excel', 'folder')"
+            "SELECT id, name, type, connection_info, custom_fresh_days FROM sources WHERE type IN ('csv', 'excel', 'folder')"
         ).fetchall()
 
         for src in file_sources:
             file_path = src["connection_info"] or src["name"]
             fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
-            sm = src["custom_stale_days"] or STALE_MAX_DAYS
-            status = _probe_file_source(db, src["id"], file_path, now, fm, sm)
+            status = _probe_file_source(db, src["id"], file_path, now, fm)
             statuses[status] = statuses.get(status, 0) + 1
-            _create_action_and_alert(db, src["id"], status, now, fm, sm)
+            _create_action_and_alert(db, src["id"], status, now, fm)
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
@@ -480,7 +471,7 @@ def run_probe() -> dict:
 
         # 2. Probe PostgreSQL sources (READ-ONLY)
         pg_sources = db.execute(
-            "SELECT id, name, type, connection_info, custom_fresh_days, custom_stale_days FROM sources WHERE type = 'postgresql'"
+            "SELECT id, name, type, connection_info, custom_fresh_days FROM sources WHERE type = 'postgresql'"
         ).fetchall()
 
         if pg_sources:
@@ -522,8 +513,8 @@ def run_probe() -> dict:
     with get_db() as db:
         db.execute(
             """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, status, log)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?)""",
-            (now, finished, probed, statuses.get("fresh", 0), statuses.get("stale", 0),
+               VALUES (?, ?, ?, ?, 0, ?, ?, 'completed', ?)""",
+            (now, finished, probed, statuses.get("fresh", 0),
              statuses.get("outdated", 0), statuses.get("unknown", 0), log_text),
         )
 

@@ -18,7 +18,6 @@ class SourceOut(BaseModel):
     last_updated: str | None = None
     report_count: int = 0
     custom_fresh_days: int | None = None
-    custom_stale_days: int | None = None
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
@@ -31,7 +30,6 @@ class SourceOut(BaseModel):
 
 class FreshnessRuleRequest(BaseModel):
     fresh_days: int
-    stale_days: int
 
 
 class SourceUpdate(BaseModel):
@@ -199,7 +197,7 @@ class CustomEntryOut(BaseModel):
 class DashboardStats(BaseModel):
     sources_total: int = 0
     sources_fresh: int = 0
-    sources_stale: int = 0
+    sources_stale: int = 0  # kept for API compat, always 0
     sources_outdated: int = 0
     sources_unknown: int = 0
     reports_total: int = 0

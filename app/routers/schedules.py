@@ -193,13 +193,12 @@ def get_health_trend():
     for r in rows:
         daily[r["day"]] = {
             "healthy": r["fresh"] or 0,
-            "at_risk": r["stale"] or 0,
-            "degraded": r["outdated"] or 0,
+            "degraded": (r["stale"] or 0) + (r["outdated"] or 0),
         }
 
     today = datetime.now(timezone.utc).date()
     trend = []
-    last_known = {"healthy": 0, "at_risk": 0, "degraded": 0}
+    last_known = {"healthy": 0, "degraded": 0}
     for i in range(29, -1, -1):
         day = (today - timedelta(days=i)).isoformat()
         if day in daily:
