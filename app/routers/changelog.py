@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/changelog", tags=["changelog"])
 # Curated feature descriptions keyed by commit hash prefix.
 FEATURES = {
     # ── Apr 13 ──
+    "679835a": ("Custom Reports", "Document recurring tasks with stakeholders, frequency, steps, and estimated hours"),
     "6c92ac9": ("Scheduled Backup & Scan", "Daily automated backup at 6 AM and full scan at 7 AM"),
     "2f20f33": ("Simplified Health Status", "Removed at-risk tier, sources are now either healthy or degraded"),
 
@@ -157,6 +158,7 @@ def _static_changelog():
     """Fallback when git is unavailable — uses same FEATURES dict."""
     # Hardcoded dates for when git isn't available
     dates = {
+        "679835a": "2026-04-13T18:00:00+00:00",
         "6c92ac9": "2026-04-13T13:16:23+00:00",
         "2f20f33": "2026-04-13T13:12:28+00:00",
         "872924a": "2026-04-10T12:58:24+00:00",
