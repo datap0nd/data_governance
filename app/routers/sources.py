@@ -190,8 +190,8 @@ def get_source_probes(source_id: int):
 @router.put("/{source_id}/freshness-rule")
 def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Request):
     """Set custom freshness thresholds for a source."""
-    if body.fresh_days < 1:
-        raise HTTPException(status_code=400, detail="fresh_days must be at least 1")
+    if body.fresh_days < 0:
+        raise HTTPException(status_code=400, detail="fresh_days must be at least 0")
     with get_db() as db:
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:

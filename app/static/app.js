@@ -233,6 +233,13 @@ function typeBadge(type) {
     return `<span class="badge badge-type ${colors[type] || "badge-muted"}">${type}</span>`;
 }
 
+function daysOld(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    return Math.floor((Date.now() - d.getTime()) / 86400000);
+}
+
 function timeAgo(dateStr) {
     if (!dateStr) return "-";
     const d = new Date(dateStr);
@@ -677,14 +684,14 @@ async function showSourceDetail(source) {
         <h2>Freshness Rule</h2>
         <div class="freshness-rule-form">
             <label class="freshness-label">Healthy up to
-                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="31" min="1" max="9999" class="input-sm">
+                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="0" min="0" max="9999" class="input-sm">
                 days (degraded after)
             </label>
             <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
             ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Reset to default</button>' : ''}
             ${hasCustomRule
                 ? '<span class="badge badge-blue" style="font-size:0.72rem">custom rule active</span>'
-                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global default (31 days)</span>'}
+                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global default (0 days - always degraded unless set)</span>'}
         </div>
     `;
 
@@ -710,7 +717,7 @@ async function showSourceDetail(source) {
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
             const fd = parseInt(document.getElementById("fresh-days-input").value);
-            if (!fd || fd < 1) {
+            if (isNaN(fd) || fd < 0) {
                 toast("Enter a valid number of days");
                 return;
             }
@@ -1395,6 +1402,13 @@ async function renderSources() {
             return b;
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
+        { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
+            const d = daysOld(s.last_updated);
+            if (d === null) return '<span style="color:var(--text-dim)">-</span>';
+            const threshold = s.custom_fresh_days ?? 0;
+            const color = d <= threshold ? "var(--green)" : "var(--red)";
+            return `<span style="color:${color};font-weight:600">${d}</span>`;
+        }, sortVal: s => daysOld(s.last_updated) ?? 9999 },
         { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
@@ -3571,6 +3585,11 @@ async function renderScripts() {
             return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
         }, sortVal: s => (s.tables_read || []).length, filterVal: s => (s.tables_read || []).join(" "), filterPlaceholder: "Search tables..." },
         { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
+        { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
+            const d = daysOld(s.last_modified);
+            if (d === null) return '<span style="color:var(--text-dim)">-</span>';
+            return `<span style="font-weight:600">${d}</span>`;
+        }, sortVal: s => daysOld(s.last_modified) ?? 9999 },
         _archiveColDef("script"),
     ];
 

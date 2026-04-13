@@ -25,7 +25,7 @@ from app.database import get_db
 logger = logging.getLogger(__name__)
 
 # Staleness thresholds (in days)
-FRESH_MAX_DAYS = 31
+FRESH_MAX_DAYS = 0
 
 # Source types that reference local/network files
 FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
