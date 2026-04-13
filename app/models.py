@@ -361,6 +361,57 @@ class ScriptTableOut(BaseModel):
     source_name: str | None = None
 
 
+# --- Custom Reports ---
+
+class CustomReportOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    frequency: str | None = None
+    owner: str | None = None
+    stakeholders: str | None = None
+    steps: str | None = None
+    data_sources: str | None = None
+    output_description: str | None = None
+    estimated_hours: float | None = None
+    status: str | None = "active"
+    last_completed: str | None = None
+    tags: str | None = None
+    archived: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CustomReportCreate(BaseModel):
+    name: str
+    description: str | None = None
+    frequency: str | None = None
+    owner: str | None = None
+    stakeholders: str | None = None
+    steps: str | None = None
+    data_sources: str | None = None
+    output_description: str | None = None
+    estimated_hours: float | None = None
+    status: str = "active"
+    last_completed: str | None = None
+    tags: str | None = None
+
+
+class CustomReportUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    frequency: str | None = None
+    owner: str | None = None
+    stakeholders: str | None = None
+    steps: str | None = None
+    data_sources: str | None = None
+    output_description: str | None = None
+    estimated_hours: float | None = None
+    status: str | None = None
+    last_completed: str | None = None
+    tags: str | None = None
+
+
 # --- Event Log ---
 
 class EventLogOut(BaseModel):

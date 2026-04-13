@@ -4393,6 +4393,212 @@ function bindPowerAutomatePage() {
 }
 
 
+// ── Custom Reports ──
+
+const _CR_STATUS_BADGE = { active: "badge-green", paused: "badge-yellow", archived: "badge-muted" };
+
+async function renderCustomReports() {
+    const showArchived = _isShowingArchived("customreports");
+    const reports = await api("/api/custom-reports" + (showArchived ? "?include_archived=true" : ""));
+    const active = reports.filter(r => !r.archived);
+
+    const cols = [
+        { key: "name", label: "Name", width: COL_W.xl, render: r => `<strong>${esc(r.name)}</strong>`, sortVal: r => r.name || "" },
+        { key: "status", label: "Status", width: COL_W.sm, render: r => {
+            const cls = _CR_STATUS_BADGE[r.status] || "badge-muted";
+            return `<span class="badge ${cls}">${esc(r.status || "unknown")}</span>`;
+        }, sortVal: r => r.status || "" },
+        { key: "frequency", label: "Frequency", width: COL_W.md, render: r => r.frequency ? esc(r.frequency) : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.frequency || "" },
+        { key: "owner", label: "Owner", width: COL_W.md, render: r => r.owner ? esc(r.owner) : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.owner || "" },
+        { key: "stakeholders", label: "Stakeholders", width: COL_W.lg, render: r => r.stakeholders ? `<span style="color:var(--text-muted);font-size:0.78rem">${esc(r.stakeholders)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.stakeholders || "" },
+        { key: "estimated_hours", label: "Est. Hours", width: COL_W.sm, render: r => r.estimated_hours != null ? `<span style="color:var(--text-muted)">${r.estimated_hours}h</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.estimated_hours ?? 0 },
+        { key: "last_completed", label: "Last Completed", width: COL_W.md, render: r => r.last_completed ? `<span style="color:var(--text-muted)" title="${esc(r.last_completed)}">${timeAgo(r.last_completed)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.last_completed || "" },
+        { key: "tags", label: "Tags", width: COL_W.md, render: r => r.tags ? r.tags.split(",").map(t => `<span class="badge badge-muted" style="font-size:0.68rem;margin-right:0.2rem">${esc(t.trim())}</span>`).join("") : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.tags || "" },
+        _archiveColDef("custom_report"),
+    ];
+
+    return `
+        <div class="page-header">
+            <h1>Custom Reports</h1>
+            <span class="subtitle">${active.length} report${active.length !== 1 ? 's' : ''}</span>
+            <button class="btn-outline" id="btn-cr-new" style="margin-left:0.5rem">+ New Report</button>
+            ${_archiveToggleHtml("customreports")}
+            <button class="btn-export" onclick="exportTableCSV('dt-custom-reports','custom_reports.csv')">Export CSV</button>
+        </div>
+        <div id="cr-create-form-area"></div>
+        ${reports.length === 0
+            ? '<div class="empty-state" style="margin-top:2rem">No custom reports yet. Click <strong>+ New Report</strong> to document a recurring task.</div>'
+            : dataTable("dt-custom-reports", cols, reports, { onRowClick: showCustomReportDetail })
+        }
+    `;
+}
+
+async function showCustomReportDetail(report) {
+    const existing = $("#cr-detail");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.id = "cr-detail";
+    panel.className = "source-detail-panel";
+
+    const statusCls = _CR_STATUS_BADGE[report.status] || "badge-muted";
+    const tagsHtml = report.tags
+        ? report.tags.split(",").map(t => `<span class="badge badge-muted" style="font-size:0.72rem;margin-right:0.2rem">${esc(t.trim())}</span>`).join("")
+        : '<span style="color:var(--text-dim)">-</span>';
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${esc(report.name)}</h2>
+            <button class="btn-outline" id="btn-cr-edit" style="margin-right:0.25rem">Edit</button>
+            <button class="btn-outline" id="btn-cr-delete" style="margin-right:0.25rem;color:var(--red)">Delete</button>
+            <button class="btn-outline" id="btn-close-cr-detail">&times; Close</button>
+        </div>
+        <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Status</div><span class="badge ${statusCls}">${esc(report.status || "unknown")}</span></div>
+            <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${esc(report.frequency || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Est. Hours</div><span style="color:var(--text)">${report.estimated_hours != null ? report.estimated_hours + "h" : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Last Completed</div><span style="color:var(--text)">${report.last_completed ? formatDate(report.last_completed) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Tags</div>${tagsHtml}</div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Stakeholders</div><span style="color:var(--text)">${esc(report.stakeholders || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Description</div><span style="color:var(--text)">${esc(report.description || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Data Sources</div><span style="color:var(--text)">${esc(report.data_sources || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Output</div><span style="color:var(--text)">${esc(report.output_description || "-")}</span></div>
+            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Steps / Documentation</div><span style="color:var(--text);white-space:pre-wrap">${esc(report.steps || "-")}</span></div>
+            <div class="detail-item"><div class="detail-label">Created</div><span style="color:var(--text-dim)">${report.created_at ? formatDate(report.created_at) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Updated</div><span style="color:var(--text-dim)">${report.updated_at ? formatDate(report.updated_at) : "-"}</span></div>
+        </div>
+    `;
+
+    $("#app").appendChild(panel);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    document.getElementById("btn-close-cr-detail").addEventListener("click", () => panel.remove());
+
+    document.getElementById("btn-cr-delete").addEventListener("click", async () => {
+        if (!confirm(`Delete custom report "${report.name}"?`)) return;
+        try {
+            await apiDelete(`/api/custom-reports/${report.id}`);
+            toast("Report deleted");
+            panel.remove();
+            navigate("customreports");
+        } catch (err) {
+            toast("Delete failed: " + err.message);
+        }
+    });
+
+    document.getElementById("btn-cr-edit").addEventListener("click", () => {
+        panel.remove();
+        _showCrEditForm(report);
+    });
+}
+
+async function _renderCrForm(existing) {
+    const opts = await api("/api/custom-reports/options");
+    const r = existing || {};
+    const isEdit = !!existing;
+
+    const ownerOptions = opts.people.length > 0
+        ? opts.people.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("")
+        : opts.owners.map(o => `<option value="${esc(o)}"${r.owner === o ? ' selected' : ''}>${esc(o)}</option>`).join("");
+
+    const statusOptions = opts.statuses.map(s => `<option value="${s}"${(r.status || 'active') === s ? ' selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join("");
+
+    const freqOptions = opts.frequencies.map(f => `<option value="${f}"${r.frequency === f ? ' selected' : ''}>${f}</option>`).join("");
+
+    return `
+        <div class="create-form" id="cr-form" style="margin-bottom:1.5rem">
+            <h3 style="margin:0 0 0.75rem">${isEdit ? "Edit" : "New"} Custom Report</h3>
+            <div class="create-fields">
+                <div class="create-field"><label>Name *</label><input id="cr-f-name" value="${esc(r.name || "")}" required></div>
+                <div class="create-field"><label>Status</label><select id="cr-f-status">${statusOptions}</select></div>
+                <div class="create-field"><label>Owner</label><select id="cr-f-owner"><option value="">-</option>${ownerOptions}</select></div>
+                <div class="create-field"><label>Frequency</label><select id="cr-f-frequency"><option value="">-</option>${freqOptions}</select></div>
+                <div class="create-field"><label>Est. Hours</label><input id="cr-f-hours" type="number" step="0.5" min="0" value="${r.estimated_hours != null ? r.estimated_hours : ""}"></div>
+                <div class="create-field"><label>Tags</label><input id="cr-f-tags" value="${esc(r.tags || "")}" placeholder="comma-separated"></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Stakeholders</label><input id="cr-f-stakeholders" value="${esc(r.stakeholders || "")}" placeholder="e.g. SETK, SEMAG, Finance team"></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Description</label><textarea id="cr-f-desc" rows="2" style="width:100%">${esc(r.description || "")}</textarea></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Data Sources</label><textarea id="cr-f-data-sources" rows="2" style="width:100%" placeholder="Where does the data come from?">${esc(r.data_sources || "")}</textarea></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Output</label><textarea id="cr-f-output" rows="2" style="width:100%" placeholder="What gets produced?">${esc(r.output_description || "")}</textarea></div>
+                <div class="create-field" style="grid-column:1/-1"><label>Steps / Documentation</label><textarea id="cr-f-steps" rows="6" style="width:100%" placeholder="Document the process, steps, or any relevant notes...">${esc(r.steps || "")}</textarea></div>
+            </div>
+            <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
+                <button class="btn-outline" id="cr-f-save">${isEdit ? "Save Changes" : "Create Report"}</button>
+                <button class="btn-outline" id="cr-f-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+}
+
+function _collectCrFormData() {
+    const name = document.getElementById("cr-f-name").value.trim();
+    if (!name) { toast("Name is required"); return null; }
+    const hoursVal = document.getElementById("cr-f-hours").value;
+    return {
+        name,
+        status: document.getElementById("cr-f-status").value,
+        owner: document.getElementById("cr-f-owner").value || null,
+        frequency: document.getElementById("cr-f-frequency").value || null,
+        estimated_hours: hoursVal ? parseFloat(hoursVal) : null,
+        tags: document.getElementById("cr-f-tags").value.trim() || null,
+        stakeholders: document.getElementById("cr-f-stakeholders").value.trim() || null,
+        description: document.getElementById("cr-f-desc").value.trim() || null,
+        data_sources: document.getElementById("cr-f-data-sources").value.trim() || null,
+        output_description: document.getElementById("cr-f-output").value.trim() || null,
+        steps: document.getElementById("cr-f-steps").value.trim() || null,
+    };
+}
+
+async function _showCrCreateForm() {
+    const area = document.getElementById("cr-create-form-area");
+    if (!area) return;
+    area.innerHTML = await _renderCrForm(null);
+
+    document.getElementById("cr-f-cancel").addEventListener("click", () => { area.innerHTML = ""; });
+    document.getElementById("cr-f-save").addEventListener("click", async () => {
+        const data = _collectCrFormData();
+        if (!data) return;
+        try {
+            await apiPostJson("/api/custom-reports", data);
+            toast("Report created");
+            navigate("customreports");
+        } catch (err) {
+            toast("Create failed: " + err.message);
+        }
+    });
+}
+
+async function _showCrEditForm(report) {
+    const area = document.getElementById("cr-create-form-area");
+    if (!area) return;
+    area.innerHTML = await _renderCrForm(report);
+    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    document.getElementById("cr-f-cancel").addEventListener("click", () => {
+        area.innerHTML = "";
+        showCustomReportDetail(report);
+    });
+    document.getElementById("cr-f-save").addEventListener("click", async () => {
+        const data = _collectCrFormData();
+        if (!data) return;
+        try {
+            const updated = await apiPatch(`/api/custom-reports/${report.id}`, data);
+            toast("Report updated");
+            area.innerHTML = "";
+            navigate("customreports");
+        } catch (err) {
+            toast("Update failed: " + err.message);
+        }
+    });
+}
+
+function bindCustomReportsPage() {
+    const btnNew = document.getElementById("btn-cr-new");
+    if (btnNew) btnNew.addEventListener("click", () => _showCrCreateForm());
+    _bindArchiveButtons(() => navigate("customreports"));
+}
+
+
 // ── Pipeline Overview (force-directed graph) ──
 
 const OV_COLORS = { report: "#60a5fa", source: "#34d399", upstream: "#fb923c", script: "#c4b5fd", task: "#fbbf24" };
@@ -5989,6 +6195,10 @@ const FAQ_ITEMS = [
         a: "Under Data, Power Automate lets you manually register Power Automate flows that feed data into your pipeline. Flows can be linked to output sources, and their last run time is derived from the linked source's probe data."
     },
     {
+        q: "What are Custom Reports?",
+        a: "Under Management, Custom Reports lets you document recurring tasks - things like business trip reports, monthly reconciliations, or ad-hoc data requests. Each entry tracks the owner, stakeholders, frequency, estimated hours, data sources, output, and step-by-step documentation."
+    },
+    {
         q: "How does the Kanban task board work?",
         a: "Under Management, create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Tasks can be linked to specific reports, sources, or scripts for traceability."
     },
@@ -6095,6 +6305,7 @@ const pages = {
     scripts: renderScripts,
     scheduledtasks: renderScheduledTasks,
     powerautomate: renderPowerAutomate,
+    customreports: renderCustomReports,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -6284,6 +6495,7 @@ async function navigate(page) {
         if (page === "scripts") bindScriptsPage();
         if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "powerautomate") bindPowerAutomatePage();
+        if (page === "customreports") bindCustomReportsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();

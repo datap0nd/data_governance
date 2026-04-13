@@ -391,6 +391,25 @@ MIGRATIONS = [
         updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pa_flows_status ON power_automate_flows(status)",
+    # Custom Reports (recurring tasks with stakeholders/documentation)
+    """CREATE TABLE IF NOT EXISTS custom_reports (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                TEXT UNIQUE NOT NULL,
+        description         TEXT,
+        frequency           TEXT,
+        owner               TEXT,
+        stakeholders        TEXT,
+        steps               TEXT,
+        data_sources        TEXT,
+        output_description  TEXT,
+        estimated_hours     REAL,
+        status              TEXT DEFAULT 'active',
+        last_completed      DATETIME,
+        tags                TEXT,
+        archived            INTEGER DEFAULT 0,
+        created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
 ]
 
 
