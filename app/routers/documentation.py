@@ -356,11 +356,10 @@ def ai_suggest_doc(report_id: int):
 
     sources_text = ", ".join(f"{k}: {len(v)} ({', '.join(v)})" for k, v in source_types.items())
 
-    # Include short DAX snippets for AI to understand what measures do
+    # Send measure NAMES only - the small model parrots raw DAX back if we include it
     measure_details = []
     for m in measures[:25]:
-        dax = (m["measure_dax"] or "")[:200]
-        measure_details.append(f"- {m['measure_name']}: {dax}")
+        measure_details.append(f"- {m['measure_name']}")
 
     script_names = [s["display_name"] for s in scripts]
     schedule_names = [s["task_name"] for s in sched_tasks]
@@ -392,9 +391,13 @@ def ai_suggest_doc(report_id: int):
         "- audience: 1-2 sentences. Who uses this and for what decisions.\n"
         "- cadence: Match to the frequency field. If daily, say which days. "
         "If monthly, note typical timing.\n"
-        "- formulas: One line per key measure. Format: \"Metric Name = plain English "
-        "explanation\". For ratios, state numerator and denominator. For comparisons "
-        "(vs LY, vs Plan), explain what's being compared. Max 15 measures.\n"
+        "- formulas: One line per key measure, separated by newlines. "
+        "Format each line as: \"Metric Name = simple definition\". "
+        "Example: \"Gross Margin = Gross Sales minus Cost of Goods Sold\". "
+        "Example: \"SD% = Sales Deduction divided by Gross Sales\". "
+        "Example: \"vs LY = Current year value divided by last year value\". "
+        "NEVER reference DAX, table names, column filters, or P2 codes. "
+        "Max 15 measures.\n"
         "- info_tab: If the report has multiple pages/tabs, describe what each page "
         "shows and its key visuals. Format: \"Page Name: description\". This helps "
         "users navigate the report.\n"

@@ -854,7 +854,7 @@ async function showReportDetail(report) {
     _ds("Purpose", "doc-s-purpose", doc?.business_purpose ? renderMd(doc.business_purpose) : null);
     _ds("Audience", "doc-s-audience", doc?.business_audience ? renderMd(doc.business_audience) : null);
     _ds("Cadence", "doc-s-cadence", doc?.business_cadence ? esc(doc.business_cadence) : null);
-    _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? renderMd(doc.technical_transformations) : null);
+    _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.technical_transformations)}</div>` : null);
     _ds("Information Tab", "doc-s-info", doc?.information_tab ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div>` : null);
     _ds("Known Issues", "doc-s-issues", doc?.technical_known_issues ? renderMd(doc.technical_known_issues) : null);
 
