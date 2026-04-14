@@ -61,6 +61,8 @@ class ReportOut(BaseModel):
     pbi_refresh_status: str | None = None
     pbi_refresh_error: str | None = None
     linked_task_count: int = 0
+    views_30d: int | None = None
+    unique_users_30d: int | None = None
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None

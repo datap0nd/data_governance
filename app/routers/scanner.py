@@ -1,15 +1,17 @@
 import logging
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import fastapi
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
-from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data
+from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data, trigger_pbi_usage_sync
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 
@@ -355,3 +357,61 @@ def diagnostic_report():
         report["probe_status_distribution"] = {r["status"]: r["count"] for r in probe_dist}
 
     return report
+
+
+@router.get("/pbi-usage-days")
+def get_usage_days():
+    """Return list of days already synced for PBI usage."""
+    with get_db() as db:
+        rows = db.execute("SELECT date FROM pbi_usage_days ORDER BY date").fetchall()
+    return [r["date"] for r in rows]
+
+
+@router.post("/pbi-usage-import")
+def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
+    """Import PBI usage data from PS1 script."""
+    _require_local(request)
+    entries = data.get("entries") or []
+    days_synced = data.get("days_synced") or []
+
+    matched = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db() as db:
+        # Build name -> id lookup
+        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
+        name_map = {r["name"].strip().lower(): r["id"] for r in all_reports}
+
+        # Record synced days
+        for day in days_synced:
+            db.execute(
+                "INSERT OR IGNORE INTO pbi_usage_days (date, synced_at) VALUES (?, ?)",
+                (day, now),
+            )
+
+        # Insert view counts
+        for entry in entries:
+            report_name = entry.get("report_name", "").strip()
+            if not report_name:
+                continue
+            report_id = name_map.get(report_name.lower())
+            db.execute(
+                """INSERT INTO pbi_report_views (report_name, report_id, view_date, view_count, unique_users)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(report_name, view_date) DO UPDATE SET
+                       view_count = excluded.view_count,
+                       unique_users = excluded.unique_users,
+                       report_id = COALESCE(excluded.report_id, report_id)""",
+                (report_name, report_id, entry.get("date"), entry.get("view_count", 0), entry.get("unique_users", 0)),
+            )
+            if report_id:
+                matched += 1
+
+    return {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
+
+
+@router.post("/pbi-usage-sync")
+def do_pbi_usage_sync(request: Request):
+    """Launch PBI usage sync in the user's interactive session."""
+    _require_local(request)
+    return trigger_pbi_usage_sync()

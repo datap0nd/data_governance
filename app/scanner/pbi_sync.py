@@ -288,3 +288,43 @@ def _check_refresh_alerts(db, now: str) -> int:
         created += 1
 
     return created
+
+
+PS1_USAGE_SCRIPT = BASE_DIR / "tools" / "pbi_usage_sync.ps1"
+USAGE_TASK_NAME = "DG_PBI_Usage_Sync"
+
+
+def trigger_pbi_usage_sync(port: int = 8000) -> dict:
+    """Launch PBI usage sync in the user's interactive session."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "message": "PBI usage sync only available on Windows"}
+
+    if not PS1_USAGE_SCRIPT.exists():
+        return {"status": "error", "message": f"PowerShell script not found: {PS1_USAGE_SCRIPT}"}
+
+    ps_cmd = (
+        f'powershell -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '
+        f'-ApiBase "http://localhost:{port}"'
+    )
+
+    try:
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", USAGE_TASK_NAME, "/f"],
+            capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["schtasks", "/create", "/tn", USAGE_TASK_NAME,
+             "/tr", ps_cmd, "/sc", "once", "/st", "00:00", "/it", "/f"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        subprocess.run(
+            ["schtasks", "/run", "/tn", USAGE_TASK_NAME],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else str(e)
+        return {"status": "error", "message": f"Failed to launch usage sync: {stderr}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "launched", "message": "Usage sync started - check the PowerShell window."}

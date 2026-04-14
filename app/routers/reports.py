@@ -1,3 +1,5 @@
+from datetime import datetime, timezone, timedelta
+
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
@@ -30,10 +32,22 @@ def list_reports(include_archived: bool = Query(False)):
         # Batch: derive report status for all reports in one query
         status_map = _batch_report_statuses(db)
 
+        # Attach 30-day view counts
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+        view_counts = db.execute(
+            """SELECT report_id, SUM(view_count) as views, SUM(unique_users) as users
+               FROM pbi_report_views
+               WHERE view_date >= ? AND report_id IS NOT NULL
+               GROUP BY report_id""",
+            (cutoff,)
+        ).fetchall()
+        views_map = {r["report_id"]: {"views_30d": r["views"], "unique_users_30d": r["users"]} for r in view_counts}
+
     results = []
     for r in rows:
         rid = r["id"]
         status, worst_date = status_map.get(rid, ("current", None))
+        view_data = views_map.get(rid, {})
         results.append(ReportOut(
             id=rid,
             name=r["name"],
@@ -54,6 +68,8 @@ def list_reports(include_archived: bool = Query(False)):
             pbi_refresh_status=r["pbi_refresh_status"],
             pbi_refresh_error=r["pbi_refresh_error"],
             linked_task_count=r["linked_task_count"],
+            views_30d=view_data.get("views_30d"),
+            unique_users_30d=view_data.get("unique_users_30d"),
             archived=bool(r["archived"]),
             created_at=r["created_at"],
             updated_at=r["updated_at"],

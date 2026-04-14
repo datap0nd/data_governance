@@ -439,6 +439,22 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_doc_entity_links_doc_id ON doc_entity_links(doc_id)",
     "CREATE INDEX IF NOT EXISTS idx_doc_entity_links_entity ON doc_entity_links(entity_type, entity_id)",
+    # PBI usage / view count tracking
+    """CREATE TABLE IF NOT EXISTS pbi_usage_days (
+    date TEXT PRIMARY KEY,
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)""",
+    """CREATE TABLE IF NOT EXISTS pbi_report_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_name TEXT NOT NULL,
+    report_id INTEGER REFERENCES reports(id),
+    view_date TEXT NOT NULL,
+    view_count INTEGER DEFAULT 0,
+    unique_users INTEGER DEFAULT 0,
+    UNIQUE(report_name, view_date)
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date)""",
 ]
 
 

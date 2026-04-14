@@ -1868,6 +1868,11 @@ async function renderReports() {
             const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
             return fields.filter(f => f && f.trim()).length;
         }},
+        { key: "views_30d", label: "Views (30d)", width: COL_W.sm, render: r => {
+            if (!r.views_30d) return '<span style="color:var(--text-dim)">-</span>';
+            const title = r.unique_users_30d ? `${r.views_30d} views by ${r.unique_users_30d} user${r.unique_users_30d !== 1 ? 's' : ''}` : `${r.views_30d} views`;
+            return `<span style="cursor:help" title="${title}">${r.views_30d}</span>`;
+        }, sortVal: r => r.views_30d || 0 },
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
             const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
             const opts = biFirst.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
@@ -1903,6 +1908,7 @@ async function renderReports() {
             <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
             ${_archiveToggleHtml("reports")}
             ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
+            ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
             <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
             <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
@@ -2023,6 +2029,50 @@ function bindReportsPage() {
             } finally {
                 btnGenDocs.disabled = false;
                 btnGenDocs.textContent = "Generate All Docs";
+            }
+        });
+    }
+
+    // Sync Usage button
+    const btnUsage = document.getElementById("btn-pbi-usage-sync");
+    if (btnUsage) {
+        btnUsage.addEventListener("click", async () => {
+            btnUsage.disabled = true;
+            btnUsage.textContent = "Launching...";
+            try {
+                const result = await apiPost("/api/scanner/pbi-usage-sync");
+                if (result.status === "launched") {
+                    toast("Usage sync launched - check the PowerShell window");
+                    btnUsage.textContent = "Syncing...";
+                    let attempts = 0;
+                    const poll = setInterval(async () => {
+                        attempts++;
+                        if (attempts > 90) {
+                            clearInterval(poll);
+                            btnUsage.disabled = false;
+                            btnUsage.textContent = "Sync Usage";
+                            return;
+                        }
+                        try {
+                            const days = await api("/api/scanner/pbi-usage-days");
+                            if (days.length > 0 && attempts > 5) {
+                                clearInterval(poll);
+                                toast("Usage sync complete - refreshing");
+                                btnUsage.disabled = false;
+                                btnUsage.textContent = "Sync Usage";
+                                navigate("reports");
+                            }
+                        } catch (_) {}
+                    }, 2000);
+                } else {
+                    toast("Usage sync: " + (result.message || result.status));
+                    btnUsage.disabled = false;
+                    btnUsage.textContent = "Sync Usage";
+                }
+            } catch (err) {
+                toast("Usage sync failed: " + err.message);
+                btnUsage.disabled = false;
+                btnUsage.textContent = "Sync Usage";
             }
         });
     }
