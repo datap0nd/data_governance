@@ -351,9 +351,30 @@ function parseSourceName(s) {
 // Standard column widths by type
 const COL_W = { xs: 50, sm: 75, md: 110, lg: 170, xl: 300 };
 
+function _saveDTState(tableId) {
+    const dt = window._dt[tableId];
+    if (!dt) return;
+    const state = { filters: dt.filters, sortCol: dt.sortCol, sortDir: dt.sortDir };
+    try { sessionStorage.setItem("dt_state_" + tableId, JSON.stringify(state)); } catch (_) {}
+}
+
+function _loadDTState(tableId) {
+    try {
+        const raw = sessionStorage.getItem("dt_state_" + tableId);
+        return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+}
+
 function dataTable(tableId, columns, rows, opts) {
     window._dt = window._dt || {};
-    window._dt[tableId] = { columns, rows, sortCol: null, sortDir: "asc", filters: {}, opts: opts || {} };
+    const saved = _loadDTState(tableId);
+    window._dt[tableId] = {
+        columns, rows,
+        sortCol: saved ? saved.sortCol : null,
+        sortDir: saved ? saved.sortDir : "asc",
+        filters: saved ? saved.filters : {},
+        opts: opts || {},
+    };
     return _renderDT(tableId);
 }
 
@@ -459,6 +480,7 @@ function bindDataTables() {
                 dt.sortCol = col;
                 dt.sortDir = "asc";
             }
+            _saveDTState(id);
             _refreshDT(id);
         });
     });
@@ -468,6 +490,7 @@ function bindDataTables() {
             const id = inp.dataset.dt;
             const col = inp.dataset.fcol;
             window._dt[id].filters[col] = inp.value;
+            _saveDTState(id);
             _refreshDT(id);
         });
     });
@@ -1517,6 +1540,7 @@ function bindSourcesPage() {
                 b.classList.toggle("btn-outline", b !== btn);
             });
 
+            _saveDTState("dt-sources");
             _refreshDT("dt-sources");
         });
     });
@@ -6347,6 +6371,14 @@ async function navigate(page) {
         g.classList.toggle("active", childPages.includes(page));
     });
 
+    // Save scroll position before destroying the page
+    const prevPage = window._prevNavPage;
+    const scrollY = window.scrollY;
+    if (prevPage) {
+        try { sessionStorage.setItem("scroll_" + prevPage, String(scrollY)); } catch (_) {}
+    }
+    window._prevNavPage = page;
+
     const app = $("#app");
     app.innerHTML = '<div class="loading">Loading...</div>';
 
@@ -6356,6 +6388,12 @@ async function navigate(page) {
 
         bindDataTables();
         detectTableScroll();
+
+        // Restore scroll position if returning to same page
+        if (prevPage === page) {
+            const savedScroll = sessionStorage.getItem("scroll_" + page);
+            if (savedScroll) requestAnimationFrame(() => window.scrollTo(0, parseInt(savedScroll)));
+        }
         if (page === "dashboard") {
             // Update nav health dot
             const navDot = document.getElementById("nav-health-dot");
