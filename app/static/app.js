@@ -4624,6 +4624,534 @@ function bindCustomReportsPage() {
 }
 
 
+// ── Documentation ──
+
+const _DOC_STATUS_BADGE = { draft: "badge-yellow", published: "badge-green" };
+
+async function renderDocumentation() {
+    const showArchived = _isShowingArchived("documentation");
+    const docs = await api("/api/documentation" + (showArchived ? "?include_archived=true" : ""));
+    const active = docs.filter(d => !d.archived);
+
+    const cols = [
+        { key: "title", label: "Title", width: COL_W.xl, render: d => `<strong>${esc(d.title)}</strong>`, sortVal: d => d.title || "" },
+        { key: "status", label: "Status", width: COL_W.sm, render: d => {
+            const cls = _DOC_STATUS_BADGE[d.status] || "badge-muted";
+            return `<span class="badge ${cls}">${esc(d.status || "draft")}</span>`;
+        }, sortVal: d => d.status || "" },
+        { key: "report_name", label: "Report", width: COL_W.lg, render: d => d.report_name ? esc(d.report_name) : '<span style="color:var(--text-dim)">Standalone</span>', sortVal: d => d.report_name || "" },
+        { key: "business_cadence", label: "Cadence", width: COL_W.md, render: d => d.business_cadence ? esc(d.business_cadence) : '<span style="color:var(--text-dim)">-</span>', sortVal: d => d.business_cadence || "" },
+        { key: "created_by", label: "Author", width: COL_W.md, render: d => d.created_by ? esc(d.created_by) : '<span style="color:var(--text-dim)">-</span>', sortVal: d => d.created_by || "" },
+        { key: "linked_entities", label: "Links", width: COL_W.sm, render: d => `<span style="color:var(--text-muted)">${(d.linked_entities || []).length}</span>`, sortVal: d => (d.linked_entities || []).length },
+        { key: "updated_at", label: "Updated", width: COL_W.md, render: d => d.updated_at ? `<span style="color:var(--text-muted)" title="${esc(d.updated_at)}">${timeAgo(d.updated_at)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: d => d.updated_at || "" },
+        _archiveColDef("documentation"),
+    ];
+
+    return `
+        <div class="page-header">
+            <h1>Documentation</h1>
+            <span class="subtitle">${active.length} pipeline doc${active.length !== 1 ? 's' : ''}</span>
+            <button class="btn-outline" id="btn-doc-new" style="margin-left:0.5rem">+ New Documentation</button>
+            ${_archiveToggleHtml("documentation")}
+            <button class="btn-export" onclick="exportTableCSV('dt-documentation','documentation.csv')">Export CSV</button>
+        </div>
+        <div id="doc-form-area"></div>
+        ${docs.length === 0
+            ? '<div class="empty-state" style="margin-top:2rem">No documentation yet. Click <strong>+ New Documentation</strong> to document a pipeline.</div>'
+            : dataTable("dt-documentation", cols, docs, { onRowClick: showDocDetail })
+        }
+    `;
+}
+
+async function showDocDetail(doc) {
+    const existing = $("#doc-detail");
+    if (existing) existing.remove();
+
+    const panel = document.createElement("div");
+    panel.id = "doc-detail";
+    panel.className = "source-detail-panel";
+
+    const statusCls = _DOC_STATUS_BADGE[doc.status] || "badge-muted";
+    const linksHtml = (doc.linked_entities || []).map(le =>
+        `<span class="task-link-chip">${esc(le.entity_type)}: ${esc(le.entity_name || "ID " + le.entity_id)}</span>`
+    ).join("") || '<span style="color:var(--text-dim)">None</span>';
+
+    // Parse technical_sources JSON if possible
+    let sourcesTableHtml = '<span style="color:var(--text-dim)">-</span>';
+    if (doc.technical_sources) {
+        try {
+            const srcs = JSON.parse(doc.technical_sources);
+            if (Array.isArray(srcs) && srcs.length > 0) {
+                sourcesTableHtml = `<table class="doc-sources-table">
+                    <tr><th>Source</th><th>Type</th><th>Table</th><th>Upstream</th></tr>
+                    ${srcs.map(s => `<tr><td>${esc(s.name || "")}</td><td>${esc(s.type || "")}</td><td>${esc(s.table || "")}</td><td>${esc(s.upstream || "")}</td></tr>`).join("")}
+                </table>`;
+            }
+        } catch (_) {
+            sourcesTableHtml = `<span style="color:var(--text);white-space:pre-wrap">${esc(doc.technical_sources)}</span>`;
+        }
+    }
+
+    panel.innerHTML = `
+        <div class="source-detail-header">
+            <h2>${esc(doc.title)}</h2>
+            <span class="badge ${statusCls}" style="margin-left:0.5rem">${esc(doc.status || "draft")}</span>
+            <span style="flex:1"></span>
+            <button class="btn-outline" id="btn-doc-edit" style="margin-right:0.25rem">Edit</button>
+            <button class="btn-outline" id="btn-doc-delete" style="margin-right:0.25rem;color:var(--red)">Delete</button>
+            <button class="btn-outline" id="btn-doc-print" style="margin-right:0.25rem">Print</button>
+            <button class="btn-outline" id="btn-close-doc-detail">&times; Close</button>
+        </div>
+
+        <div class="doc-view-section">
+            <h3>Business Context</h3>
+            <div class="detail-grid">
+                <div class="detail-item"><div class="detail-label">Report</div><span>${esc(doc.report_name || "Standalone")}</span></div>
+                <div class="detail-item"><div class="detail-label">Cadence</div><span>${esc(doc.business_cadence || "-")}</span></div>
+                <div class="detail-item"><div class="detail-label">Author</div><span>${esc(doc.created_by || "-")}</span></div>
+                <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Purpose</div><div class="doc-text-block">${doc.business_purpose ? renderMd(doc.business_purpose) : '<span style="color:var(--text-dim)">Not documented</span>'}</div></div>
+                <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Audience</div><div class="doc-text-block">${doc.business_audience ? renderMd(doc.business_audience) : '<span style="color:var(--text-dim)">Not documented</span>'}</div></div>
+            </div>
+        </div>
+
+        <div class="doc-view-section">
+            <h3>Technical Lineage</h3>
+            <div id="doc-mermaid-container" class="doc-mermaid-container">
+                ${doc.technical_lineage_mermaid
+                    ? `<pre class="doc-mermaid-source" style="display:none">${esc(doc.technical_lineage_mermaid)}</pre><div class="doc-mermaid-render">Loading diagram...</div>`
+                    : '<span style="color:var(--text-dim)">No lineage diagram</span>'}
+            </div>
+        </div>
+
+        <div class="doc-view-section">
+            <h3>Data Sources</h3>
+            ${sourcesTableHtml}
+        </div>
+
+        <div class="doc-view-section">
+            <h3>Key Formulas &amp; Transformations</h3>
+            <div class="doc-text-block">${doc.technical_transformations ? renderMd(doc.technical_transformations) : '<span style="color:var(--text-dim)">Not documented</span>'}</div>
+        </div>
+
+        ${doc.information_tab ? `<div class="doc-view-section">
+            <h3>Information Tab</h3>
+            <div class="doc-text-block" style="white-space:pre-wrap">${esc(doc.information_tab)}</div>
+        </div>` : ''}
+
+        ${doc.technical_known_issues ? `<div class="doc-view-section">
+            <h3>Known Issues</h3>
+            <div class="doc-text-block">${renderMd(doc.technical_known_issues)}</div>
+        </div>` : ''}
+
+        <div class="doc-view-section">
+            <h3>Linked Entities</h3>
+            <div>${linksHtml}</div>
+        </div>
+
+        <div style="margin-top:1rem;color:var(--text-dim);font-size:0.72rem">
+            Created ${doc.created_at ? formatDate(doc.created_at) : "-"} | Updated ${doc.updated_at ? formatDate(doc.updated_at) : "-"}
+        </div>
+    `;
+
+    $("#app").appendChild(panel);
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    // Render Mermaid diagram if present
+    if (doc.technical_lineage_mermaid) {
+        _renderDocMermaid(panel);
+    }
+
+    document.getElementById("btn-close-doc-detail").addEventListener("click", () => panel.remove());
+
+    document.getElementById("btn-doc-delete").addEventListener("click", async () => {
+        if (!confirm(`Delete documentation "${doc.title}"?`)) return;
+        try {
+            await apiDelete(`/api/documentation/${doc.id}`);
+            toast("Documentation deleted");
+            panel.remove();
+            navigate("documentation");
+        } catch (err) {
+            toast("Delete failed: " + err.message);
+        }
+    });
+
+    document.getElementById("btn-doc-edit").addEventListener("click", () => {
+        panel.remove();
+        _showDocEditForm(doc);
+    });
+
+    document.getElementById("btn-doc-print").addEventListener("click", () => {
+        const printWin = window.open("", "_blank");
+        printWin.document.write(`<html><head><title>${esc(doc.title)}</title>
+            <style>body{font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;color:#222}
+            h2{margin-bottom:0.5rem}h3{color:#555;border-bottom:1px solid #ddd;padding-bottom:0.25rem;margin-top:1.5rem}
+            .badge{padding:0.15rem 0.5rem;border-radius:4px;font-size:0.75rem;background:#eee}
+            table{border-collapse:collapse;width:100%;margin:0.5rem 0}th,td{border:1px solid #ddd;padding:0.35rem 0.5rem;text-align:left;font-size:0.82rem}
+            th{background:#f5f5f5}pre{background:#f5f5f5;padding:0.75rem;border-radius:4px;overflow-x:auto;font-size:0.8rem}</style></head><body>`);
+        printWin.document.write(panel.innerHTML);
+        printWin.document.write("</body></html>");
+        printWin.document.close();
+        printWin.print();
+    });
+}
+
+async function _renderDocMermaid(panel) {
+    const container = panel.querySelector(".doc-mermaid-render");
+    const source = panel.querySelector(".doc-mermaid-source");
+    if (!container || !source) return;
+
+    const code = source.textContent;
+    if (!code.trim()) { container.innerHTML = '<span style="color:var(--text-dim)">Empty diagram</span>'; return; }
+
+    // Load mermaid from CDN if not already loaded
+    if (!window.mermaid) {
+        try {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+            window.mermaid.initialize({ startOnLoad: false, theme: document.body.classList.contains("dark") ? "dark" : "default" });
+        } catch (_) {
+            container.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.8rem">${esc(code)}</pre>`;
+            return;
+        }
+    }
+
+    try {
+        const id = "doc-mermaid-" + Date.now();
+        const { svg } = await window.mermaid.render(id, code);
+        container.innerHTML = svg;
+    } catch (err) {
+        container.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.8rem">${esc(code)}</pre>
+            <div style="color:var(--red);font-size:0.75rem;margin-top:0.25rem">Mermaid render error: ${esc(err.message || "")}</div>`;
+    }
+}
+
+async function _renderDocForm(existing) {
+    const opts = await api("/api/documentation/options");
+    const d = existing || {};
+    const isEdit = !!existing;
+
+    const reportOptions = opts.reports.map(r =>
+        `<option value="${r.id}"${d.report_id === r.id ? ' selected' : ''}>${esc(r.name)}</option>`
+    ).join("");
+
+    const statusOptions = opts.statuses.map(s =>
+        `<option value="${s}"${(d.status || 'draft') === s ? ' selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`
+    ).join("");
+
+    const cadenceOptions = opts.cadences.map(c =>
+        `<option value="${c}"${d.business_cadence === c ? ' selected' : ''}>${c}</option>`
+    ).join("");
+
+    const existingLinks = (d.linked_entities || []).map(le =>
+        `<div class="task-link-row" data-entity-type="${esc(le.entity_type)}" data-entity-id="${le.entity_id}">
+            <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}</span>
+            <span class="task-link-name">${esc(le.entity_name || "ID " + le.entity_id)}</span>
+            <button type="button" class="task-link-remove" title="Remove">&times;</button>
+        </div>`
+    ).join("");
+
+    return `
+        <div class="create-form" id="doc-form" style="margin-bottom:1.5rem">
+            <h3 style="margin:0 0 0.75rem">${isEdit ? "Edit" : "New"} Documentation</h3>
+
+            <div style="margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+                <strong style="font-size:0.82rem">Basics</strong>
+                <div class="create-fields" style="margin-top:0.5rem">
+                    <div class="create-field"><label>Report (optional)</label>
+                        <select id="doc-f-report"><option value="">Standalone</option>${reportOptions}</select>
+                        ${!isEdit ? '<button class="btn-outline" id="doc-f-suggest" type="button" style="margin-top:0.25rem;font-size:0.72rem">Auto-fill from report</button>' : ''}
+                    </div>
+                    <div class="create-field"><label>Title *</label><input id="doc-f-title" value="${esc(d.title || "")}" required></div>
+                    <div class="create-field"><label>Status</label><select id="doc-f-status">${statusOptions}</select></div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+                <strong style="font-size:0.82rem">Business Context</strong>
+                <div class="create-fields" style="margin-top:0.5rem">
+                    <div class="create-field" style="grid-column:1/-1"><label>Purpose - Why does this report exist?</label><textarea id="doc-f-purpose" rows="3" style="width:100%">${esc(d.business_purpose || "")}</textarea></div>
+                    <div class="create-field" style="grid-column:1/-1"><label>Audience - Who uses it and how?</label><textarea id="doc-f-audience" rows="2" style="width:100%">${esc(d.business_audience || "")}</textarea></div>
+                    <div class="create-field"><label>Cadence</label><select id="doc-f-cadence"><option value="">-</option>${cadenceOptions}</select></div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+                <strong style="font-size:0.82rem">Technical</strong>
+                <div class="create-fields" style="margin-top:0.5rem">
+                    <div class="create-field" style="grid-column:1/-1"><label>Lineage Diagram (Mermaid)</label><textarea id="doc-f-mermaid" rows="8" style="width:100%;font-family:monospace;font-size:0.78rem">${esc(d.technical_lineage_mermaid || "")}</textarea>
+                        <button class="btn-outline" id="doc-f-preview-mermaid" type="button" style="margin-top:0.25rem;font-size:0.72rem">Preview Diagram</button>
+                        <div id="doc-f-mermaid-preview" style="margin-top:0.5rem"></div>
+                    </div>
+                    <div class="create-field" style="grid-column:1/-1"><label>Data Sources (JSON or text)</label><textarea id="doc-f-sources" rows="4" style="width:100%;font-family:monospace;font-size:0.78rem">${esc(d.technical_sources || "")}</textarea></div>
+                    <div class="create-field" style="grid-column:1/-1"><label>Key Formulas &amp; Transformations</label><textarea id="doc-f-transforms" rows="6" style="width:100%">${esc(d.technical_transformations || "")}</textarea></div>
+                    <div class="create-field" style="grid-column:1/-1"><label>Known Issues</label><textarea id="doc-f-issues" rows="3" style="width:100%">${esc(d.technical_known_issues || "")}</textarea></div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+                <strong style="font-size:0.82rem">Information Tab</strong>
+                <div class="create-fields" style="margin-top:0.5rem">
+                    <div class="create-field" style="grid-column:1/-1"><label>Paste PBI Information tab content here</label><textarea id="doc-f-info" rows="6" style="width:100%">${esc(d.information_tab || "")}</textarea></div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:6px">
+                <strong style="font-size:0.82rem">Linked Entities</strong>
+                <div id="doc-links-list" class="task-links-list" style="margin-top:0.5rem">${existingLinks}</div>
+                <div class="task-link-add-row" style="margin-top:0.25rem">
+                    <select id="doc-link-type">
+                        <option value="">Select type...</option>
+                        ${Object.entries(ENTITY_TYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+                    </select>
+                    <select id="doc-link-entity" disabled>
+                        <option value="">Select entity...</option>
+                    </select>
+                    <button type="button" class="btn-outline" id="doc-link-add-btn" disabled>Add</button>
+                </div>
+            </div>
+
+            <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
+                <button class="btn-outline" id="doc-f-save">${isEdit ? "Save Changes" : "Create Documentation"}</button>
+                <button class="btn-outline" id="doc-f-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+}
+
+function _collectDocFormData() {
+    const title = document.getElementById("doc-f-title").value.trim();
+    if (!title) { toast("Title is required"); return null; }
+
+    const reportVal = document.getElementById("doc-f-report").value;
+
+    // Collect linked entities from DOM
+    const linked_entities = [];
+    document.querySelectorAll("#doc-links-list .task-link-row").forEach(row => {
+        linked_entities.push({
+            entity_type: row.dataset.entityType,
+            entity_id: parseInt(row.dataset.entityId),
+        });
+    });
+
+    return {
+        report_id: reportVal ? parseInt(reportVal) : null,
+        title,
+        status: document.getElementById("doc-f-status").value,
+        business_purpose: document.getElementById("doc-f-purpose").value.trim() || null,
+        business_audience: document.getElementById("doc-f-audience").value.trim() || null,
+        business_cadence: document.getElementById("doc-f-cadence").value || null,
+        technical_lineage_mermaid: document.getElementById("doc-f-mermaid").value.trim() || null,
+        technical_sources: document.getElementById("doc-f-sources").value.trim() || null,
+        technical_transformations: document.getElementById("doc-f-transforms").value.trim() || null,
+        technical_known_issues: document.getElementById("doc-f-issues").value.trim() || null,
+        information_tab: document.getElementById("doc-f-info").value.trim() || null,
+        linked_entities,
+    };
+}
+
+async function _bindDocFormEvents(opts) {
+    // Entity linking (reuse task pattern)
+    let linkableEntities = {};
+    try { linkableEntities = await api("/api/tasks/linkable-entities"); } catch (_) {}
+
+    const linkTypeSelect = document.getElementById("doc-link-type");
+    const linkEntitySelect = document.getElementById("doc-link-entity");
+    const linkAddBtn = document.getElementById("doc-link-add-btn");
+    const linksList = document.getElementById("doc-links-list");
+
+    if (linkTypeSelect) {
+        linkTypeSelect.addEventListener("change", () => {
+            const etype = linkTypeSelect.value;
+            linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
+            linkEntitySelect.disabled = !etype;
+            linkAddBtn.disabled = true;
+            if (etype && linkableEntities[etype]) {
+                linkableEntities[etype].forEach(e => {
+                    linkEntitySelect.insertAdjacentHTML("beforeend",
+                        `<option value="${e.id}">${esc(e.name)}</option>`);
+                });
+            }
+        });
+
+        linkEntitySelect.addEventListener("change", () => {
+            linkAddBtn.disabled = !linkEntitySelect.value;
+        });
+
+        linkAddBtn.addEventListener("click", () => {
+            const etype = linkTypeSelect.value;
+            const eid = parseInt(linkEntitySelect.value);
+            if (!etype || !eid) return;
+            const existingLink = linksList.querySelector(`[data-entity-type="${etype}"][data-entity-id="${eid}"]`);
+            if (existingLink) { toast("Already linked"); return; }
+            const ename = linkEntitySelect.options[linkEntitySelect.selectedIndex].text;
+            linksList.insertAdjacentHTML("beforeend",
+                `<div class="task-link-row" data-entity-type="${esc(etype)}" data-entity-id="${eid}">
+                    <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[etype] || etype)}</span>
+                    <span class="task-link-name">${esc(ename)}</span>
+                    <button type="button" class="task-link-remove" title="Remove">&times;</button>
+                </div>`);
+            linkTypeSelect.value = "";
+            linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
+            linkEntitySelect.disabled = true;
+            linkAddBtn.disabled = true;
+        });
+
+        linksList.addEventListener("click", (e) => {
+            if (e.target.classList.contains("task-link-remove")) {
+                e.target.closest(".task-link-row").remove();
+            }
+        });
+    }
+
+    // Auto-suggest button: pre-fill form from report data
+    const suggestBtn = document.getElementById("doc-f-suggest");
+    if (suggestBtn) {
+        suggestBtn.addEventListener("click", async () => {
+            const reportId = document.getElementById("doc-f-report").value;
+            if (!reportId) { toast("Select a report first"); return; }
+            suggestBtn.disabled = true;
+            suggestBtn.textContent = "Loading...";
+            try {
+                const suggestion = await api(`/api/documentation/suggest/${reportId}`);
+                if (suggestion.title && !document.getElementById("doc-f-title").value.trim()) {
+                    document.getElementById("doc-f-title").value = suggestion.title;
+                }
+                if (suggestion.business_cadence) {
+                    const cadSel = document.getElementById("doc-f-cadence");
+                    for (const opt of cadSel.options) {
+                        if (opt.value === suggestion.business_cadence) { opt.selected = true; break; }
+                    }
+                }
+                if (suggestion.technical_lineage_mermaid) {
+                    document.getElementById("doc-f-mermaid").value = suggestion.technical_lineage_mermaid;
+                }
+                if (suggestion.technical_sources) {
+                    document.getElementById("doc-f-sources").value = suggestion.technical_sources;
+                }
+                if (suggestion.technical_transformations) {
+                    document.getElementById("doc-f-transforms").value = suggestion.technical_transformations;
+                }
+                // Auto-add report as linked entity
+                if (suggestion.linked_entities) {
+                    suggestion.linked_entities.forEach(le => {
+                        const exists = linksList.querySelector(`[data-entity-type="${le.entity_type}"][data-entity-id="${le.entity_id}"]`);
+                        if (!exists) {
+                            const rptName = opts.reports.find(r => r.id === le.entity_id)?.name || "ID " + le.entity_id;
+                            linksList.insertAdjacentHTML("beforeend",
+                                `<div class="task-link-row" data-entity-type="${esc(le.entity_type)}" data-entity-id="${le.entity_id}">
+                                    <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}</span>
+                                    <span class="task-link-name">${esc(rptName)}</span>
+                                    <button type="button" class="task-link-remove" title="Remove">&times;</button>
+                                </div>`);
+                        }
+                    });
+                }
+                toast("Form pre-filled from report data");
+            } catch (err) {
+                toast("Auto-suggest failed: " + err.message);
+            } finally {
+                suggestBtn.disabled = false;
+                suggestBtn.textContent = "Auto-fill from report";
+            }
+        });
+    }
+
+    // Mermaid preview button
+    const previewBtn = document.getElementById("doc-f-preview-mermaid");
+    if (previewBtn) {
+        previewBtn.addEventListener("click", async () => {
+            const code = document.getElementById("doc-f-mermaid").value.trim();
+            const previewDiv = document.getElementById("doc-f-mermaid-preview");
+            if (!code) { previewDiv.innerHTML = '<span style="color:var(--text-dim)">Nothing to preview</span>'; return; }
+
+            if (!window.mermaid) {
+                try {
+                    await new Promise((resolve, reject) => {
+                        const script = document.createElement("script");
+                        script.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+                        script.onload = resolve;
+                        script.onerror = reject;
+                        document.head.appendChild(script);
+                    });
+                    window.mermaid.initialize({ startOnLoad: false, theme: document.body.classList.contains("dark") ? "dark" : "default" });
+                } catch (_) {
+                    previewDiv.innerHTML = '<span style="color:var(--red)">Failed to load Mermaid</span>';
+                    return;
+                }
+            }
+
+            try {
+                const id = "doc-preview-" + Date.now();
+                const { svg } = await window.mermaid.render(id, code);
+                previewDiv.innerHTML = svg;
+            } catch (err) {
+                previewDiv.innerHTML = `<span style="color:var(--red)">Render error: ${esc(err.message || "")}</span>`;
+            }
+        });
+    }
+}
+
+async function _showDocCreateForm() {
+    const area = document.getElementById("doc-form-area");
+    if (!area) return;
+    const opts = await api("/api/documentation/options");
+    area.innerHTML = await _renderDocForm(null);
+
+    _bindDocFormEvents(opts);
+
+    document.getElementById("doc-f-cancel").addEventListener("click", () => { area.innerHTML = ""; });
+    document.getElementById("doc-f-save").addEventListener("click", async () => {
+        const data = _collectDocFormData();
+        if (!data) return;
+        try {
+            await apiPostJson("/api/documentation", data);
+            toast("Documentation created");
+            navigate("documentation");
+        } catch (err) {
+            toast("Create failed: " + err.message);
+        }
+    });
+}
+
+async function _showDocEditForm(doc) {
+    const area = document.getElementById("doc-form-area");
+    if (!area) return;
+    const opts = await api("/api/documentation/options");
+    area.innerHTML = await _renderDocForm(doc);
+    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    _bindDocFormEvents(opts);
+
+    document.getElementById("doc-f-cancel").addEventListener("click", () => {
+        area.innerHTML = "";
+        showDocDetail(doc);
+    });
+    document.getElementById("doc-f-save").addEventListener("click", async () => {
+        const data = _collectDocFormData();
+        if (!data) return;
+        try {
+            await apiPatch(`/api/documentation/${doc.id}`, data);
+            toast("Documentation updated");
+            area.innerHTML = "";
+            navigate("documentation");
+        } catch (err) {
+            toast("Update failed: " + err.message);
+        }
+    });
+}
+
+function bindDocumentationPage() {
+    const btnNew = document.getElementById("btn-doc-new");
+    if (btnNew) btnNew.addEventListener("click", () => _showDocCreateForm());
+    _bindArchiveButtons(() => navigate("documentation"));
+}
+
+
 // ── Pipeline Overview (force-directed graph) ──
 
 const OV_COLORS = { report: "#60a5fa", source: "#34d399", upstream: "#fb923c", script: "#c4b5fd", task: "#fbbf24" };
@@ -6331,6 +6859,7 @@ const pages = {
     scheduledtasks: renderScheduledTasks,
     powerautomate: renderPowerAutomate,
     customreports: renderCustomReports,
+    documentation: renderDocumentation,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -6535,6 +7064,7 @@ async function navigate(page) {
         if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "powerautomate") bindPowerAutomatePage();
         if (page === "customreports") bindCustomReportsPage();
+        if (page === "documentation") bindDocumentationPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();

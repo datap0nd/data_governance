@@ -4156,3 +4156,15 @@ tr.row-archived td:last-child {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* ── Documentation ── */
+.doc-view-section { margin-top: 1.25rem; }
+.doc-view-section h3 { font-size: 0.88rem; color: var(--text-secondary); border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; margin: 0 0 0.5rem; }
+.doc-text-block { color: var(--text); font-size: 0.84rem; line-height: 1.55; }
+.doc-text-block p { margin: 0.35rem 0; }
+.doc-mermaid-container { min-height: 3rem; overflow-x: auto; }
+.doc-mermaid-render { text-align: center; padding: 0.5rem 0; }
+.doc-mermaid-render svg { max-width: 100%; height: auto; }
+.doc-sources-table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; font-size: 0.8rem; }
+.doc-sources-table th, .doc-sources-table td { border: 1px solid var(--border); padding: 0.3rem 0.5rem; text-align: left; }
+.doc-sources-table th { background: var(--surface-2); font-weight: 600; font-size: 0.75rem; }

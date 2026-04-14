@@ -410,6 +410,35 @@ MIGRATIONS = [
         created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
+    # Documentation pages (pipeline docs with entity linking)
+    """CREATE TABLE IF NOT EXISTS documentation (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_id       INTEGER REFERENCES reports(id),
+        title           TEXT UNIQUE NOT NULL,
+        business_purpose TEXT,
+        business_audience TEXT,
+        business_cadence TEXT,
+        technical_lineage_mermaid TEXT,
+        technical_sources TEXT,
+        technical_transformations TEXT,
+        technical_known_issues TEXT,
+        information_tab TEXT,
+        status          TEXT DEFAULT 'draft',
+        created_by      TEXT,
+        archived        INTEGER DEFAULT 0,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS doc_entity_links (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id      INTEGER NOT NULL REFERENCES documentation(id) ON DELETE CASCADE,
+        entity_type TEXT NOT NULL,
+        entity_id   INTEGER NOT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(doc_id, entity_type, entity_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_doc_entity_links_doc_id ON doc_entity_links(doc_id)",
+    "CREATE INDEX IF NOT EXISTS idx_doc_entity_links_entity ON doc_entity_links(entity_type, entity_id)",
 ]
 
 

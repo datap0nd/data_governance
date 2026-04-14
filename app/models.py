@@ -412,6 +412,70 @@ class CustomReportUpdate(BaseModel):
     tags: str | None = None
 
 
+# --- Documentation ---
+
+class DocEntityLinkInfo(BaseModel):
+    entity_type: str
+    entity_id: int
+    entity_name: str | None = None
+
+
+class DocEntityLinkRequest(BaseModel):
+    entity_type: str
+    entity_id: int
+
+
+class DocumentationOut(BaseModel):
+    id: int
+    report_id: int | None = None
+    report_name: str | None = None
+    title: str
+    business_purpose: str | None = None
+    business_audience: str | None = None
+    business_cadence: str | None = None
+    technical_lineage_mermaid: str | None = None
+    technical_sources: str | None = None
+    technical_transformations: str | None = None
+    technical_known_issues: str | None = None
+    information_tab: str | None = None
+    status: str | None = "draft"
+    created_by: str | None = None
+    linked_entities: list[DocEntityLinkInfo] = []
+    archived: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class DocumentationCreate(BaseModel):
+    report_id: int | None = None
+    title: str
+    business_purpose: str | None = None
+    business_audience: str | None = None
+    business_cadence: str | None = None
+    technical_lineage_mermaid: str | None = None
+    technical_sources: str | None = None
+    technical_transformations: str | None = None
+    technical_known_issues: str | None = None
+    information_tab: str | None = None
+    status: str = "draft"
+    linked_entities: list[DocEntityLinkRequest] = []
+
+
+class DocumentationUpdate(BaseModel):
+    report_id: int | None = None
+    title: str | None = None
+    business_purpose: str | None = None
+    business_audience: str | None = None
+    business_cadence: str | None = None
+    technical_lineage_mermaid: str | None = None
+    technical_sources: str | None = None
+    technical_transformations: str | None = None
+    technical_known_issues: str | None = None
+    information_tab: str | None = None
+    status: str | None = None
+    linked_entities: list[DocEntityLinkRequest] | None = None
+
+
 # --- Event Log ---
 
 class EventLogOut(BaseModel):
