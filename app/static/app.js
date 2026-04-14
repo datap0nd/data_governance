@@ -853,10 +853,7 @@ async function showReportDetail(report) {
     };
     _ds("Purpose", "doc-s-purpose", doc?.business_purpose ? renderMd(doc.business_purpose) : null);
     _ds("Audience", "doc-s-audience", doc?.business_audience ? renderMd(doc.business_audience) : null);
-    _ds("Cadence", "doc-s-cadence", doc?.business_cadence ? esc(doc.business_cadence) : null);
     _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.technical_transformations)}</div>` : null);
-    _ds("Information Tab", "doc-s-info", doc?.information_tab ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div>` : null);
-    _ds("Known Issues", "doc-s-issues", doc?.technical_known_issues ? renderMd(doc.technical_known_issues) : null);
 
     const docFieldsHtml = docSections.length > 0
         ? docSections.map(s => `
@@ -871,28 +868,22 @@ async function showReportDetail(report) {
         : '<div class="rx-l2" style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No documentation yet.</div>';
 
     // Count unfilled for context
-    const allDocLabels = ["Purpose", "Audience", "Cadence", "Key Formulas", "Information Tab", "Known Issues"];
+    const allDocLabels = ["Purpose", "Audience", "Key Formulas"];
     const filledCount = docSections.length;
     const unfilledCount = allDocLabels.length - filledCount;
 
     // Doc %
-    const docPct = Math.round((filledCount / 6) * 100);
+    const docPct = Math.round((filledCount / 3) * 100);
     const docPctCls = docPct === 100 ? 'badge-green' : docPct >= 50 ? 'badge-yellow' : 'badge-muted';
+
+    // Known Issues (separate from documentation)
+    const hasKnownIssues = doc?.technical_known_issues && doc.technical_known_issues.trim();
 
     const docEditHtml = `
         <div class="doc-inline-edit">
             <label>Purpose - Why does this report exist?</label><textarea id="doc-e-purpose" rows="2">${esc(doc?.business_purpose || "")}</textarea>
             <label>Audience - Who uses it and how?</label><textarea id="doc-e-audience" rows="2">${esc(doc?.business_audience || "")}</textarea>
-            <label>Cadence</label>
-            <select id="doc-e-cadence">
-                <option value="">-</option>
-                ${["Daily","Weekly","Bi-weekly","Monthly","Quarterly","Yearly","Ad-hoc"].map(c =>
-                    `<option value="${c}"${(doc?.business_cadence || "") === c ? " selected" : ""}>${c}</option>`
-                ).join("")}
-            </select>
             <label>Key Formulas - Plain English, not DAX</label><textarea id="doc-e-transforms" rows="4">${esc(doc?.technical_transformations || "")}</textarea>
-            <label>Information Tab</label><textarea id="doc-e-info" rows="4">${esc(doc?.information_tab || "")}</textarea>
-            <label>Known Issues</label><textarea id="doc-e-issues" rows="2">${esc(doc?.technical_known_issues || "")}</textarea>
             <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
                 <button class="btn-outline" id="doc-e-save">Save</button>
                 <button class="btn-outline" id="doc-e-cancel">Cancel</button>
@@ -944,6 +935,10 @@ async function showReportDetail(report) {
     // ── Assemble ──
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
+            <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem">
+                ${report.powerbi_url ? `<a href="${esc(report.powerbi_url)}" target="_blank" rel="noopener" class="btn-outline" style="font-size:0.72rem;text-decoration:none" onclick="event.stopPropagation()">View in Power BI</a>` : ''}
+                <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.72rem">View Lineage</button>
+            </div>
             <div class="rx-section rx-l1">
                 <div class="rx-toggle" data-target="ds-list">
                     <span class="rx-arrow">&#9656;</span> Data Sources <span class="rx-count">(${tables.length})</span>
@@ -964,10 +959,33 @@ async function showReportDetail(report) {
                             <button class="btn-outline" id="btn-doc-inline-edit" style="font-size:0.72rem">Edit</button>
                             <button class="btn-outline" id="btn-doc-inline-suggest" style="font-size:0.72rem" title="Pre-fill with Python extraction">Auto-fill</button>
                             <button class="btn-outline" id="btn-doc-ai-suggest" style="font-size:0.72rem" title="Generate with AI">AI Suggest</button>
-                            <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.72rem">View Lineage</button>
                         </div>
                     </div>
                     <div id="doc-edit-area" style="display:none">${docEditHtml}</div>
+                </div>
+            </div>
+
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="known-issues-section">
+                    <span class="rx-arrow">&#9656;</span> Known Issues
+                    ${hasKnownIssues
+                        ? '<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.58rem">flagged</span>'
+                        : '<span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">none</span>'}
+                </div>
+                <div class="rx-body" id="known-issues-section" style="display:none">
+                    ${hasKnownIssues
+                        ? `<div class="rx-l2 doc-text-block">${renderMd(doc.technical_known_issues)}</div>`
+                        : ''}
+                    <div class="rx-l2" style="padding:0.25rem 0">
+                        <button class="btn-outline" id="btn-ki-edit" style="font-size:0.72rem">${hasKnownIssues ? 'Edit' : 'Add Issue'}</button>
+                    </div>
+                    <div id="ki-edit-area" style="display:none;padding:0.25rem 0" class="rx-l2">
+                        <textarea id="ki-textarea" rows="3" style="width:100%;font-size:0.8rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.4rem">${esc(doc?.technical_known_issues || "")}</textarea>
+                        <div style="display:flex;gap:0.5rem;margin-top:0.4rem">
+                            <button class="btn-outline" id="ki-save" style="font-size:0.72rem">Save</button>
+                            <button class="btn-outline" id="ki-cancel" style="font-size:0.72rem">Cancel</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1081,10 +1099,7 @@ async function showReportDetail(report) {
             title: report.name,
             business_purpose: expandRow.querySelector("#doc-e-purpose").value.trim() || null,
             business_audience: expandRow.querySelector("#doc-e-audience").value.trim() || null,
-            business_cadence: expandRow.querySelector("#doc-e-cadence").value || null,
             technical_transformations: expandRow.querySelector("#doc-e-transforms").value.trim() || null,
-            information_tab: expandRow.querySelector("#doc-e-info").value.trim() || null,
-            technical_known_issues: expandRow.querySelector("#doc-e-issues").value.trim() || null,
         };
         try {
             if (doc) {
@@ -1114,10 +1129,6 @@ async function showReportDetail(report) {
             docViewArea.style.display = "none";
             docEditArea.style.display = "";
             if (s.technical_transformations) expandRow.querySelector("#doc-e-transforms").value = s.technical_transformations;
-            if (s.business_cadence) {
-                const cadSel = expandRow.querySelector("#doc-e-cadence");
-                for (const opt of cadSel.options) { if (opt.value === s.business_cadence) { opt.selected = true; break; } }
-            }
             toast("Technical fields pre-filled. Add business context and save.");
         } catch (err) { toast("Auto-fill failed: " + err.message); }
         finally { e.target.disabled = false; e.target.textContent = "Auto-fill"; }
@@ -1133,17 +1144,46 @@ async function showReportDetail(report) {
             docViewArea.style.display = "none";
             docEditArea.style.display = "";
             if (s.purpose) expandRow.querySelector("#doc-e-purpose").value = s.purpose;
-            if (s.audience) expandRow.querySelector("#doc-e-audience").value = s.audience;
-            if (s.cadence) {
-                const cadSel = expandRow.querySelector("#doc-e-cadence");
-                for (const opt of cadSel.options) { if (opt.value === s.cadence) { opt.selected = true; break; } }
-            }
             if (s.formulas) expandRow.querySelector("#doc-e-transforms").value = s.formulas;
-            if (s.known_issues) expandRow.querySelector("#doc-e-issues").value = s.known_issues;
-            if (s.info_tab) expandRow.querySelector("#doc-e-info").value = s.info_tab;
             toast("AI suggestions filled in. Review and save.");
         } catch (err) { toast("AI suggest failed: " + err.message); }
         finally { e.target.disabled = false; e.target.textContent = "AI Suggest"; }
+    });
+
+    // ── Known Issues edit/save ──
+    expandRow.querySelector("#btn-ki-edit")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const editArea = expandRow.querySelector("#ki-edit-area");
+        editArea.style.display = editArea.style.display === "none" ? "" : "none";
+    });
+
+    expandRow.querySelector("#ki-cancel")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        expandRow.querySelector("#ki-edit-area").style.display = "none";
+    });
+
+    expandRow.querySelector("#ki-save")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.target.disabled = true;
+        const kiText = expandRow.querySelector("#ki-textarea").value.trim() || null;
+        try {
+            if (doc) {
+                await apiPatch(`/api/documentation/${doc.id}`, { technical_known_issues: kiText });
+            } else {
+                const created = await apiPostJson("/api/documentation", {
+                    report_id: report.id, title: report.name, status: "draft",
+                    technical_known_issues: kiText,
+                    linked_entities: [{ entity_type: "report", entity_id: report.id }],
+                });
+                doc = created;
+            }
+            toast("Known issues saved");
+            expandRow.remove();
+            showReportDetail(report);
+        } catch (err) {
+            toast("Save failed: " + err.message);
+            e.target.disabled = false;
+        }
     });
 }
 
@@ -1817,17 +1857,15 @@ async function renderReports() {
         { key: "_doc_pct", label: "Doc %", width: COL_W.sm, filterable: false, render: r => {
             const doc = docMap.get(r.id);
             if (!doc) return '<span style="color:var(--text-dim)">0%</span>';
-            const fields = [doc.business_purpose, doc.business_audience, doc.business_cadence,
-                            doc.technical_transformations, doc.information_tab, doc.technical_known_issues];
+            const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
             const filled = fields.filter(f => f && f.trim()).length;
-            const pct = Math.round((filled / fields.length) * 100);
+            const pct = Math.round((filled / 3) * 100);
             const cls = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-yellow' : 'badge-muted';
             return `<span class="badge ${cls}">${pct}%</span>`;
         }, sortVal: r => {
             const doc = docMap.get(r.id);
             if (!doc) return 0;
-            const fields = [doc.business_purpose, doc.business_audience, doc.business_cadence,
-                            doc.technical_transformations, doc.information_tab, doc.technical_known_issues];
+            const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
             return fields.filter(f => f && f.trim()).length;
         }},
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
@@ -1841,14 +1879,6 @@ async function renderReports() {
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
         { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
-        { key: "pbi_refresh_status", label: "PBI Status", width: COL_W.sm, render: r => {
-            if (!r.pbi_refresh_status) return '-';
-            const overdue = _isPbiOverdue(r);
-            if (overdue) return `<span class="badge badge-red" title="Refresh is overdue based on schedule">overdue</span>`;
-            const s = r.pbi_refresh_status.toLowerCase();
-            const cls = s === 'completed' ? 'badge-green' : s === 'failed' ? 'badge-red' : 'badge-yellow';
-            return `<span class="badge ${cls}">${esc(r.pbi_refresh_status)}</span>`;
-        }, sortVal: r => _isPbiOverdue(r) ? "0_overdue" : r.pbi_refresh_status === "Failed" ? "1_failed" : "2_ok" },
         { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
         { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: r => {
             if (!r.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';

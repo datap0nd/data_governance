@@ -382,41 +382,27 @@ def ai_suggest_doc(report_id: int):
         "These reports track sales performance, profitability, market share, "
         "and operational metrics.\n\n"
         "Write documentation that helps someone understand what a report does "
-        "in under 60 seconds. Be specific - use actual metric names and source "
-        "details from the context provided.\n\n"
+        "in under 60 seconds. Be specific - use actual metric names from the context.\n\n"
         "Rules:\n"
         "- purpose: 2-3 sentences. State what business questions the report answers. "
         "Reference specific metrics visible in the report (e.g. \"Tracks net sales, "
         "gross margin, and operating profit across subsidiaries\").\n"
-        "- audience: 1-2 sentences. Who uses this and for what decisions.\n"
-        "- cadence: Match to the frequency field. If daily, say which days. "
-        "If monthly, note typical timing.\n"
         "- formulas: One line per key measure, separated by newlines. "
         "Format each line as: \"Metric Name = simple definition\". "
         "Example: \"Gross Margin = Gross Sales minus Cost of Goods Sold\". "
         "Example: \"SD% = Sales Deduction divided by Gross Sales\". "
         "Example: \"vs LY = Current year value divided by last year value\". "
         "NEVER reference DAX, table names, column filters, or P2 codes. "
-        "Max 15 measures.\n"
-        "- info_tab: If the report has multiple pages/tabs, describe what each page "
-        "shows and its key visuals. Format: \"Page Name: description\". This helps "
-        "users navigate the report.\n"
-        "- known_issues: Only mention real risks you can infer from the data sources "
-        "(e.g. Excel files = manual update risk, no ETL scripts = no automation). "
-        "Don't fabricate issues.\n\n"
+        "Max 15 measures.\n\n"
         "Respond with valid JSON only. No markdown fences. "
-        "Keys: purpose, audience, cadence, formulas, info_tab, known_issues"
+        "Keys: purpose, formulas"
     )
 
     if AI_MOCK:
         # Return a structured placeholder when AI is not configured
         return {
             "purpose": f"[AI not configured] Report '{report['name']}' uses {len(tables)} data tables from {sources_text}.",
-            "audience": "[AI not configured] Set DG_AI_API_URL and DG_AI_API_KEY to enable AI suggestions.",
-            "cadence": report["frequency"] or "Unknown",
             "formulas": "\n".join(f"- {m['measure_name']}: [needs AI to explain]" for m in measures[:10]),
-            "info_tab": None,
-            "known_issues": None,
             "context_preview": context,
         }
 
@@ -430,21 +416,13 @@ def ai_suggest_doc(report_id: int):
         result = json.loads(raw)
         return {
             "purpose": result.get("purpose"),
-            "audience": result.get("audience"),
-            "cadence": result.get("cadence") or report["frequency"],
             "formulas": result.get("formulas"),
-            "info_tab": result.get("info_tab"),
-            "known_issues": result.get("known_issues"),
         }
     except json.JSONDecodeError:
         log.warning("AI returned non-JSON, using raw text as purpose")
         return {
             "purpose": raw[:500] if raw else None,
-            "audience": None,
-            "cadence": report["frequency"],
             "formulas": None,
-            "info_tab": None,
-            "known_issues": None,
         }
     except Exception as e:
         log.exception("AI suggest failed: %s", e)
@@ -477,11 +455,9 @@ def ai_suggest_all(request: Request):
                 ).fetchone()
 
             if existing:
-                fields = [existing["business_purpose"], existing["business_audience"],
-                          existing["business_cadence"], existing["technical_transformations"],
-                          existing["information_tab"], existing["technical_known_issues"]]
+                fields = [existing["business_purpose"], existing["technical_transformations"]]
                 filled = sum(1 for f in fields if f and str(f).strip())
-                if filled >= 5:
+                if filled >= 2:
                     results["skipped"] += 1
                     continue
 
@@ -496,16 +472,8 @@ def ai_suggest_all(request: Request):
                     updates = {}
                     if not existing["business_purpose"] and suggestion.get("purpose"):
                         updates["business_purpose"] = suggestion["purpose"]
-                    if not existing["business_audience"] and suggestion.get("audience"):
-                        updates["business_audience"] = suggestion["audience"]
-                    if not existing["business_cadence"] and suggestion.get("cadence"):
-                        updates["business_cadence"] = suggestion["cadence"]
                     if not existing["technical_transformations"] and suggestion.get("formulas"):
                         updates["technical_transformations"] = suggestion["formulas"]
-                    if not existing["information_tab"] and suggestion.get("info_tab"):
-                        updates["information_tab"] = suggestion["info_tab"]
-                    if not existing["technical_known_issues"] and suggestion.get("known_issues"):
-                        updates["technical_known_issues"] = suggestion["known_issues"]
                     if updates:
                         updates["updated_at"] = now
                         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -518,14 +486,11 @@ def ai_suggest_all(request: Request):
                 else:
                     cursor = db.execute(
                         """INSERT INTO documentation
-                           (report_id, title, business_purpose, business_audience, business_cadence,
-                            technical_transformations, information_tab, technical_known_issues,
+                           (report_id, title, business_purpose, technical_transformations,
                             status, created_by, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)""",
                         (report_id, report_row["name"],
-                         suggestion.get("purpose"), suggestion.get("audience"),
-                         suggestion.get("cadence"), suggestion.get("formulas"),
-                         suggestion.get("info_tab"), suggestion.get("known_issues"),
+                         suggestion.get("purpose"), suggestion.get("formulas"),
                          actor, now, now),
                     )
                     doc_id = cursor.lastrowid
