@@ -811,7 +811,7 @@ async function showReportDetail(report) {
     expandRow.className = "report-expand-row";
     expandRow.dataset.reportId = report.id;
 
-    // ── Data Sources: group by type ──
+    // ── Data Sources: group by type, each group collapsible ──
     const typeGroups = {};
     tables.forEach(t => {
         const src = t.source_id ? sourceMap.get(t.source_id) : null;
@@ -823,35 +823,66 @@ async function showReportDetail(report) {
         .map(([type, items]) => `${type} (${items.length})`)
         .join(", ");
 
-    const groupedSourcesHtml = Object.entries(typeGroups).map(([type, items]) => `
-        <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">${esc(type)} (${items.length})</div>
-        ${items.map(({ table: t, source: src }) => {
-            const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
-            return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
-                <span class="report-source-table">${t.table_name}</span>
-                <span class="report-source-arrow">&rarr;</span>
-                <span class="report-source-name">${srcName}</span>
-                ${src && src.last_updated ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:auto">${timeAgo(src.last_updated)}</span>` : ''}
-            </div>`;
-        }).join("")}
-    `).join("");
+    let dsGroupIdx = 0;
+    const groupedSourcesHtml = Object.entries(typeGroups).map(([type, items]) => {
+        const gid = `ds-group-${dsGroupIdx++}`;
+        return `
+        <div class="rx-section rx-l2">
+            <div class="rx-toggle" data-target="${gid}">
+                <span class="rx-arrow">&#9656;</span> ${esc(type)} <span class="rx-count">(${items.length})</span>
+            </div>
+            <div class="rx-body" id="${gid}" style="display:none">
+                ${items.map(({ table: t, source: src }) => {
+                    const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
+                    return `<div class="report-source-item rx-l3${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
+                        <span class="report-source-table">${t.table_name}</span>
+                        <span class="report-source-arrow">&rarr;</span>
+                        <span class="report-source-name">${srcName}</span>
+                        ${src && src.last_updated ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:auto">${timeAgo(src.last_updated)}</span>` : ''}
+                    </div>`;
+                }).join("")}
+            </div>
+        </div>`;
+    }).join("");
 
-    // ── Documentation section ──
-    const docViewHtml = doc ? `
-        ${doc.business_purpose ? `<div class="doc-inline-field"><span class="detail-label">Purpose</span><div>${renderMd(doc.business_purpose)}</div></div>` : ''}
-        ${doc.business_audience ? `<div class="doc-inline-field"><span class="detail-label">Audience</span><div>${renderMd(doc.business_audience)}</div></div>` : ''}
-        ${doc.business_cadence ? `<div class="doc-inline-field"><span class="detail-label">Cadence</span><span>${esc(doc.business_cadence)}</span></div>` : ''}
-        ${doc.technical_transformations ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Key Formulas</span><div>${_renderMeasures(doc.technical_transformations)}</div></div>` : ''}
-        ${doc.information_tab ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Information Tab</span><div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div></div>` : ''}
-        ${doc.technical_known_issues ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Known Issues</span><div>${renderMd(doc.technical_known_issues)}</div></div>` : ''}
-        ${!doc.business_purpose && !doc.business_audience && !doc.technical_transformations && !doc.information_tab
-            ? '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">Auto-generated. Click Edit to add business context.</div>' : ''}
-    ` : '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No documentation yet.</div>';
+    // ── Documentation: each field collapsible ──
+    const docSections = [];
+    const _ds = (label, id, content, badge) => {
+        if (!content) return;
+        docSections.push({ label, id, content, badge });
+    };
+    _ds("Purpose", "doc-s-purpose", doc?.business_purpose ? renderMd(doc.business_purpose) : null);
+    _ds("Audience", "doc-s-audience", doc?.business_audience ? renderMd(doc.business_audience) : null);
+    _ds("Cadence", "doc-s-cadence", doc?.business_cadence ? esc(doc.business_cadence) : null);
+    _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? _renderMeasures(doc.technical_transformations) : null);
+    _ds("Information Tab", "doc-s-info", doc?.information_tab ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div>` : null);
+    _ds("Known Issues", "doc-s-issues", doc?.technical_known_issues ? renderMd(doc.technical_known_issues) : null);
+
+    const docFieldsHtml = docSections.length > 0
+        ? docSections.map(s => `
+            <div class="rx-section rx-l2">
+                <div class="rx-toggle" data-target="${s.id}">
+                    <span class="rx-arrow">&#9656;</span> ${s.label} <span class="badge badge-green" style="font-size:0.58rem;margin-left:0.3rem">filled</span>
+                </div>
+                <div class="rx-body" id="${s.id}" style="display:none">
+                    <div class="rx-l3 doc-text-block">${s.content}</div>
+                </div>
+            </div>`).join("")
+        : '<div class="rx-l2" style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No documentation yet.</div>';
+
+    // Count unfilled for context
+    const allDocLabels = ["Purpose", "Audience", "Cadence", "Key Formulas", "Information Tab", "Known Issues"];
+    const filledCount = docSections.length;
+    const unfilledCount = allDocLabels.length - filledCount;
+
+    // Doc %
+    const docPct = Math.round((filledCount / 6) * 100);
+    const docPctCls = docPct === 100 ? 'badge-green' : docPct >= 50 ? 'badge-yellow' : 'badge-muted';
 
     const docEditHtml = `
         <div class="doc-inline-edit">
-            <label>Purpose</label><textarea id="doc-e-purpose" rows="2">${esc(doc?.business_purpose || "")}</textarea>
-            <label>Audience</label><textarea id="doc-e-audience" rows="2">${esc(doc?.business_audience || "")}</textarea>
+            <label>Purpose - Why does this report exist?</label><textarea id="doc-e-purpose" rows="2">${esc(doc?.business_purpose || "")}</textarea>
+            <label>Audience - Who uses it and how?</label><textarea id="doc-e-audience" rows="2">${esc(doc?.business_audience || "")}</textarea>
             <label>Cadence</label>
             <select id="doc-e-cadence">
                 <option value="">-</option>
@@ -859,7 +890,7 @@ async function showReportDetail(report) {
                     `<option value="${c}"${(doc?.business_cadence || "") === c ? " selected" : ""}>${c}</option>`
                 ).join("")}
             </select>
-            <label>Key Formulas</label><textarea id="doc-e-transforms" rows="4" style="font-family:monospace;font-size:0.78rem">${esc(doc?.technical_transformations || "")}</textarea>
+            <label>Key Formulas - Plain English, not DAX</label><textarea id="doc-e-transforms" rows="4">${esc(doc?.technical_transformations || "")}</textarea>
             <label>Information Tab</label><textarea id="doc-e-info" rows="4">${esc(doc?.information_tab || "")}</textarea>
             <label>Known Issues</label><textarea id="doc-e-issues" rows="2">${esc(doc?.technical_known_issues || "")}</textarea>
             <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
@@ -869,122 +900,110 @@ async function showReportDetail(report) {
         </div>
     `;
 
-    // Doc % for the section header
-    const docFields = doc ? [doc.business_purpose, doc.business_audience, doc.business_cadence,
-        doc.technical_transformations, doc.information_tab, doc.technical_known_issues] : [];
-    const docFilled = docFields.filter(f => f && f.trim()).length;
-    const docPct = doc ? Math.round((docFilled / 6) * 100) : 0;
-    const docPctCls = docPct === 100 ? 'badge-green' : docPct >= 50 ? 'badge-yellow' : 'badge-muted';
-
-    // ── Optimization section ──
+    // ── Optimization ──
     const unusedMC = unusedData.unused_measures.length + unusedData.unused_columns.length;
     const hasUnusedData = unusedData.total_fields > 0 || unusedData.total_tables > 0;
     const optimizationInner = hasUnusedData ? `
-        <div class="report-expand-label unused-toggle" style="cursor:pointer" data-target="unused-mc">
-            Unused Measures / Columns (${unusedMC} of ${unusedData.total_fields})
-            ${unusedMC > 0
-                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${unusedData.unused_pct}%</span>`
-                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
-        </div>
-        <div class="unused-measures-list" id="unused-mc" style="display:none">
-            ${unusedData.unused_measures.length > 0 ? `
-                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.3rem 0 0.15rem 0.2rem">Measures (${unusedData.unused_measures.length})</div>
-                ${unusedData.unused_measures.map(m => `
-                    <div class="unused-measure-item">
+        <div class="rx-section rx-l2">
+            <div class="rx-toggle" data-target="unused-mc">
+                <span class="rx-arrow">&#9656;</span> Unused Measures / Columns <span class="rx-count">(${unusedMC} of ${unusedData.total_fields})</span>
+                ${unusedMC > 0
+                    ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.58rem">${unusedData.unused_pct}%</span>`
+                    : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.58rem">all used</span>`}
+            </div>
+            <div class="rx-body" id="unused-mc" style="display:none">
+                ${unusedData.unused_measures.length > 0 ? unusedData.unused_measures.map(m => `
+                    <div class="unused-measure-item rx-l3">
                         <span class="unused-measure-name">${m.name}</span>
                         <span class="unused-measure-table">${m.table_name}</span>
                         ${m.dax ? `<span class="unused-measure-dax" style="display:none">${m.dax.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>` : ''}
-                    </div>`).join('')}` : ''}
-            ${unusedData.unused_columns.length > 0 ? `
-                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.3rem 0 0.15rem 0.2rem">Columns (${unusedData.unused_columns.length})</div>
-                ${unusedData.unused_columns.map(c => `
-                    <div class="unused-measure-item">
+                    </div>`).join('') : ''}
+                ${unusedData.unused_columns.length > 0 ? unusedData.unused_columns.map(c => `
+                    <div class="unused-measure-item rx-l3">
                         <span class="unused-measure-name">${c.name}</span>
                         <span class="unused-measure-table">${c.table_name}</span>
-                    </div>`).join('')}` : ''}
-            ${unusedMC === 0 ? '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All measures and columns are used in visuals</div>' : ''}
+                    </div>`).join('') : ''}
+            </div>
         </div>
-        <div class="report-expand-label unused-toggle" style="margin-top:0.5rem;cursor:pointer" data-target="unused-tables">
-            Unused Tables (${unusedData.unused_tables_count} of ${unusedData.total_tables})
-            ${unusedData.unused_tables_count > 0
-                ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${Math.round(unusedData.unused_tables_count / unusedData.total_tables * 100)}%</span>`
-                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
+        <div class="rx-section rx-l2">
+            <div class="rx-toggle" data-target="unused-tables">
+                <span class="rx-arrow">&#9656;</span> Unused Tables <span class="rx-count">(${unusedData.unused_tables_count} of ${unusedData.total_tables})</span>
+            </div>
+            <div class="rx-body" id="unused-tables" style="display:none">
+                ${unusedData.unused_tables.length > 0
+                    ? unusedData.unused_tables.map(t => `<div class="unused-measure-item rx-l3"><span class="unused-measure-name">${t}</span></div>`).join('')
+                    : '<div class="rx-l3" style="color:var(--green);font-size:0.78rem">All tables referenced</div>'}
+            </div>
         </div>
-        <div class="unused-measures-list" id="unused-tables" style="display:none">
-            ${unusedData.unused_tables.length > 0
-                ? unusedData.unused_tables.map(t => `
-                    <div class="unused-measure-item"><span class="unused-measure-name">${t}</span></div>`).join('')
-                : '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All tables are referenced by visuals</div>'}
-        </div>
-    ` : '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No scan data available</div>';
+    ` : '<div class="rx-l2" style="color:var(--text-dim);font-size:0.78rem">No scan data</div>';
 
     // ── Linked Tasks ──
     const activeLinked = linkedTasks.filter(t => t.status !== "done");
     const archivedLinked = linkedTasks.filter(t => t.status === "done");
-    const linkedTasksSection = linkedTasks.length > 0 ? `
-        <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="linked-tasks-list">
-            Linked Tasks (${activeLinked.length} active${archivedLinked.length ? `, ${archivedLinked.length} archived` : ''})
-            ${activeLinked.length > 0
-                ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.62rem">${activeLinked.length}</span>`
-                : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all done</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
-        </div>
-        <div class="unused-measures-list" id="linked-tasks-list" style="display:none">
-            ${activeLinked.map(t => `
-                <div class="linked-task-item">
-                    <span class="priority-tag ${t.priority}" style="font-size:0.65rem">${t.priority}</span>
-                    <span class="linked-task-title">${esc(t.title)}</span>
-                    ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
-                    <span class="badge badge-${t.status === 'in_progress' ? 'yellow' : 'muted'}" style="font-size:0.62rem">${t.status}</span>
-                </div>`).join('')}
-            ${archivedLinked.length > 0 ? `
-                <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">Archived (${archivedLinked.length})</div>
-                ${archivedLinked.map(t => `
-                    <div class="linked-task-item" style="opacity:0.6">
-                        <span class="linked-task-title">${esc(t.title)}</span>
-                        ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
-                        <span class="badge badge-green" style="font-size:0.62rem">done</span>
-                    </div>`).join('')}
-            ` : ''}
-        </div>
-    ` : '';
 
-    // ── Assemble expand row ──
+    // ── Assemble ──
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
-            <div class="report-expand-label unused-toggle" style="cursor:pointer" data-target="ds-list">
-                Data Sources (${tables.length}) <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400">${typeSummary}</span>
-                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
-            </div>
-            <div class="report-source-list" id="ds-list" style="display:none">${groupedSourcesHtml}</div>
-
-            <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="doc-section">
-                Documentation <span class="badge ${docPctCls}" style="margin-left:0.35rem;font-size:0.62rem">${docPct}%</span>
-                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
-            </div>
-            <div id="doc-section" style="display:none">
-                <div id="doc-view-area">${docViewHtml}
-                    <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
-                        <button class="btn-outline" id="btn-doc-inline-edit" style="font-size:0.75rem">Edit</button>
-                        <button class="btn-outline" id="btn-doc-inline-suggest" style="font-size:0.75rem">Auto-suggest</button>
-                        <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.75rem">View Lineage</button>
-                    </div>
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="ds-list">
+                    <span class="rx-arrow">&#9656;</span> Data Sources <span class="rx-count">(${tables.length})</span>
+                    <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">${typeSummary}</span>
                 </div>
-                <div id="doc-edit-area" style="display:none">${docEditHtml}</div>
+                <div class="rx-body" id="ds-list" style="display:none">${groupedSourcesHtml}</div>
             </div>
 
-            <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="optimization-section">
-                Optimization
-                ${unusedMC + unusedData.unused_tables_count > 0
-                    ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${unusedMC + unusedData.unused_tables_count} unused</span>`
-                    : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">clean</span>`}
-                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="doc-section">
+                    <span class="rx-arrow">&#9656;</span> Documentation <span class="badge ${docPctCls}" style="margin-left:0.35rem;font-size:0.58rem">${docPct}%</span>
+                    ${unfilledCount > 0 ? `<span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">${unfilledCount} unfilled</span>` : ''}
+                </div>
+                <div class="rx-body" id="doc-section" style="display:none">
+                    <div id="doc-view-area">
+                        ${docFieldsHtml}
+                        <div class="rx-l2" style="display:flex;gap:0.5rem;margin-top:0.5rem;padding:0.25rem 0">
+                            <button class="btn-outline" id="btn-doc-inline-edit" style="font-size:0.72rem">Edit</button>
+                            <button class="btn-outline" id="btn-doc-inline-suggest" style="font-size:0.72rem" title="Pre-fill with Python extraction">Auto-fill</button>
+                            <button class="btn-outline" id="btn-doc-ai-suggest" style="font-size:0.72rem" title="Generate with AI">AI Suggest</button>
+                            <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.72rem">View Lineage</button>
+                        </div>
+                    </div>
+                    <div id="doc-edit-area" style="display:none">${docEditHtml}</div>
+                </div>
             </div>
-            <div id="optimization-section" style="display:none">${optimizationInner}</div>
 
-            ${linkedTasksSection}
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="optimization-section">
+                    <span class="rx-arrow">&#9656;</span> Optimization
+                    ${unusedMC + unusedData.unused_tables_count > 0
+                        ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.58rem">${unusedMC + unusedData.unused_tables_count} unused</span>`
+                        : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.58rem">clean</span>`}
+                </div>
+                <div class="rx-body" id="optimization-section" style="display:none">${optimizationInner}</div>
+            </div>
+
+            ${linkedTasks.length > 0 ? `
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="linked-tasks-list">
+                    <span class="rx-arrow">&#9656;</span> Linked Tasks
+                    ${activeLinked.length > 0
+                        ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.58rem">${activeLinked.length} active</span>`
+                        : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.58rem">all done</span>`}
+                </div>
+                <div class="rx-body" id="linked-tasks-list" style="display:none">
+                    ${activeLinked.map(t => `
+                        <div class="linked-task-item rx-l2">
+                            <span class="priority-tag ${t.priority}" style="font-size:0.65rem">${t.priority}</span>
+                            <span class="linked-task-title">${esc(t.title)}</span>
+                            ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
+                            <span class="badge badge-${t.status === 'in_progress' ? 'yellow' : 'muted'}" style="font-size:0.62rem">${t.status}</span>
+                        </div>`).join('')}
+                    ${archivedLinked.length > 0 ? archivedLinked.map(t => `
+                        <div class="linked-task-item rx-l2" style="opacity:0.5">
+                            <span class="linked-task-title">${esc(t.title)}</span>
+                            <span class="badge badge-green" style="font-size:0.62rem">done</span>
+                        </div>`).join('') : ''}
+                </div>
+            </div>` : ''}
         </div>
     </td>`;
 
@@ -995,17 +1014,15 @@ async function showReportDetail(report) {
         if (tbody) tbody.appendChild(expandRow);
     }
 
-    // ── Bind events ──
-
-    // Collapsible section toggles
-    expandRow.querySelectorAll(".unused-toggle[data-target]").forEach(toggle => {
+    // ── Bind all collapsible toggles ──
+    expandRow.querySelectorAll(".rx-toggle[data-target]").forEach(toggle => {
         toggle.addEventListener("click", () => {
-            const list = expandRow.querySelector(`#${toggle.dataset.target}`);
-            if (!list) return;
-            const showing = list.style.display !== "none";
-            list.style.display = showing ? "none" : "";
-            const hint = toggle.querySelector(".unused-toggle-hint");
-            if (hint) hint.textContent = showing ? " -- click to expand" : " -- click to collapse";
+            const body = expandRow.querySelector(`#${toggle.dataset.target}`);
+            if (!body) return;
+            const showing = body.style.display !== "none";
+            body.style.display = showing ? "none" : "";
+            const arrow = toggle.querySelector(".rx-arrow");
+            if (arrow) arrow.innerHTML = showing ? "&#9656;" : "&#9662;";
         });
     });
 
@@ -1030,7 +1047,7 @@ async function showReportDetail(report) {
         }
     });
 
-    // Lineage button -> navigate to lineage with report pre-selected
+    // Lineage button
     expandRow.querySelectorAll(".btn-lineage-nav").forEach(btn => {
         btn.addEventListener("click", async (e) => {
             e.stopPropagation();
@@ -1044,93 +1061,89 @@ async function showReportDetail(report) {
     const docViewArea = expandRow.querySelector("#doc-view-area");
     const docEditArea = expandRow.querySelector("#doc-edit-area");
 
-    const editBtn = expandRow.querySelector("#btn-doc-inline-edit");
-    if (editBtn) {
-        editBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
+    expandRow.querySelector("#btn-doc-inline-edit")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        docViewArea.style.display = "none";
+        docEditArea.style.display = "";
+    });
+
+    expandRow.querySelector("#doc-e-cancel")?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        docEditArea.style.display = "none";
+        docViewArea.style.display = "";
+    });
+
+    expandRow.querySelector("#doc-e-save")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.target.disabled = true;
+        const body = {
+            report_id: report.id,
+            title: report.name,
+            business_purpose: expandRow.querySelector("#doc-e-purpose").value.trim() || null,
+            business_audience: expandRow.querySelector("#doc-e-audience").value.trim() || null,
+            business_cadence: expandRow.querySelector("#doc-e-cadence").value || null,
+            technical_transformations: expandRow.querySelector("#doc-e-transforms").value.trim() || null,
+            information_tab: expandRow.querySelector("#doc-e-info").value.trim() || null,
+            technical_known_issues: expandRow.querySelector("#doc-e-issues").value.trim() || null,
+        };
+        try {
+            if (doc) {
+                await apiPatch(`/api/documentation/${doc.id}`, body);
+            } else {
+                body.status = "draft";
+                body.linked_entities = [{ entity_type: "report", entity_id: report.id }];
+                const created = await apiPostJson("/api/documentation", body);
+                doc = created;
+            }
+            toast("Documentation saved");
+            expandRow.remove();
+            showReportDetail(report);
+        } catch (err) {
+            toast("Save failed: " + err.message);
+            e.target.disabled = false;
+        }
+    });
+
+    // Auto-fill (Python extraction)
+    expandRow.querySelector("#btn-doc-inline-suggest")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.target.disabled = true;
+        e.target.textContent = "Loading...";
+        try {
+            const s = await api(`/api/documentation/suggest/${report.id}`);
             docViewArea.style.display = "none";
             docEditArea.style.display = "";
-        });
-    }
-
-    const cancelBtn = expandRow.querySelector("#doc-e-cancel");
-    if (cancelBtn) {
-        cancelBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            docEditArea.style.display = "none";
-            docViewArea.style.display = "";
-        });
-    }
-
-    const saveBtn = expandRow.querySelector("#doc-e-save");
-    if (saveBtn) {
-        saveBtn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            saveBtn.disabled = true;
-            const body = {
-                report_id: report.id,
-                title: report.name,
-                business_purpose: expandRow.querySelector("#doc-e-purpose").value.trim() || null,
-                business_audience: expandRow.querySelector("#doc-e-audience").value.trim() || null,
-                business_cadence: expandRow.querySelector("#doc-e-cadence").value || null,
-                technical_transformations: expandRow.querySelector("#doc-e-transforms").value.trim() || null,
-                information_tab: expandRow.querySelector("#doc-e-info").value.trim() || null,
-                technical_known_issues: expandRow.querySelector("#doc-e-issues").value.trim() || null,
-            };
-            try {
-                if (doc) {
-                    await apiPatch(`/api/documentation/${doc.id}`, body);
-                } else {
-                    body.status = "draft";
-                    body.linked_entities = [{ entity_type: "report", entity_id: report.id }];
-                    const created = await apiPostJson("/api/documentation", body);
-                    doc = created;
-                }
-                toast("Documentation saved");
-                // Refresh the expand row
-                expandRow.remove();
-                showReportDetail(report);
-            } catch (err) {
-                toast("Save failed: " + err.message);
-                saveBtn.disabled = false;
+            if (s.technical_transformations) expandRow.querySelector("#doc-e-transforms").value = s.technical_transformations;
+            if (s.business_cadence) {
+                const cadSel = expandRow.querySelector("#doc-e-cadence");
+                for (const opt of cadSel.options) { if (opt.value === s.business_cadence) { opt.selected = true; break; } }
             }
-        });
-    }
+            toast("Technical fields pre-filled. Add business context and save.");
+        } catch (err) { toast("Auto-fill failed: " + err.message); }
+        finally { e.target.disabled = false; e.target.textContent = "Auto-fill"; }
+    });
 
-    // Auto-suggest button
-    const suggestBtn = expandRow.querySelector("#btn-doc-inline-suggest");
-    if (suggestBtn) {
-        suggestBtn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            suggestBtn.disabled = true;
-            suggestBtn.textContent = "Loading...";
-            try {
-                const suggestion = await api(`/api/documentation/suggest/${report.id}`);
-                // Switch to edit mode and fill fields
-                docViewArea.style.display = "none";
-                docEditArea.style.display = "";
-                if (suggestion.technical_transformations) {
-                    expandRow.querySelector("#doc-e-transforms").value = suggestion.technical_transformations;
-                }
-                if (suggestion.technical_sources) {
-                    // Store sources on the doc for later save
-                    expandRow.dataset.suggestedSources = suggestion.technical_sources;
-                }
-                if (suggestion.business_cadence) {
-                    const cadSel = expandRow.querySelector("#doc-e-cadence");
-                    for (const opt of cadSel.options) {
-                        if (opt.value === suggestion.business_cadence) { opt.selected = true; break; }
-                    }
-                }
-                toast("Fields pre-filled from report data. Add business context and save.");
-            } catch (err) {
-                toast("Auto-suggest failed: " + err.message);
-            } finally {
-                suggestBtn.disabled = false;
-                suggestBtn.textContent = "Auto-suggest";
+    // AI Suggest (LLM-powered)
+    expandRow.querySelector("#btn-doc-ai-suggest")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        e.target.disabled = true;
+        e.target.textContent = "Generating...";
+        try {
+            const s = await apiPost(`/api/documentation/ai-suggest/${report.id}`);
+            docViewArea.style.display = "none";
+            docEditArea.style.display = "";
+            if (s.purpose) expandRow.querySelector("#doc-e-purpose").value = s.purpose;
+            if (s.audience) expandRow.querySelector("#doc-e-audience").value = s.audience;
+            if (s.cadence) {
+                const cadSel = expandRow.querySelector("#doc-e-cadence");
+                for (const opt of cadSel.options) { if (opt.value === s.cadence) { opt.selected = true; break; } }
             }
-        });
-    }
+            if (s.formulas) expandRow.querySelector("#doc-e-transforms").value = s.formulas;
+            if (s.known_issues) expandRow.querySelector("#doc-e-issues").value = s.known_issues;
+            toast("AI suggestions filled in. Review and save.");
+        } catch (err) { toast("AI suggest failed: " + err.message); }
+        finally { e.target.disabled = false; e.target.textContent = "AI Suggest"; }
+    });
 }
 
 function _visualTypeLabel(type) {

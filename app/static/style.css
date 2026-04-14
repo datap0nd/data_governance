@@ -4179,3 +4179,14 @@ tr.row-archived td:last-child {
 .doc-inline-edit label:first-child { margin-top: 0; }
 .doc-inline-edit textarea, .doc-inline-edit select { width: 100%; font-size: 0.8rem; padding: 0.3rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font-family: inherit; resize: vertical; }
 .doc-inline-edit select { width: auto; }
+
+/* ── Report expand: nested collapsible sections ── */
+.rx-section { margin-bottom: 0.15rem; }
+.rx-l1 { padding-left: 0; }
+.rx-l2 { padding-left: 1rem; }
+.rx-l3 { padding-left: 2rem; }
+.rx-toggle { cursor: pointer; padding: 0.35rem 0.25rem; font-size: 0.82rem; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 0.35rem; border-radius: 4px; user-select: none; }
+.rx-toggle:hover { background: var(--surface-hover); }
+.rx-arrow { display: inline-block; width: 0.7rem; font-size: 0.7rem; color: var(--text-dim); transition: transform 0.15s; flex-shrink: 0; }
+.rx-count { font-weight: 400; color: var(--text-dim); font-size: 0.75rem; }
+.rx-body { padding-left: 0.25rem; }

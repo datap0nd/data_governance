@@ -264,6 +264,157 @@ def suggest_doc(report_id: int):
     }
 
 
+@router.post("/ai-suggest/{report_id}")
+def ai_suggest_doc(report_id: int):
+    """Use AI to generate documentation from structured report context."""
+    import logging
+    from app.config import AI_MOCK
+
+    log = logging.getLogger(__name__)
+
+    with get_db() as db:
+        report = db.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        # Gather context: tables, sources, measures, scripts, schedules
+        tables = db.execute("""
+            SELECT rt.table_name, s.name AS source_name, s.type AS source_type,
+                   us.name AS upstream_name
+            FROM report_tables rt
+            LEFT JOIN sources s ON s.id = rt.source_id
+            LEFT JOIN upstream_systems us ON us.id = s.upstream_id
+            WHERE rt.report_id = ?
+            ORDER BY rt.table_name
+        """, (report_id,)).fetchall()
+
+        measures = db.execute("""
+            SELECT measure_name, table_name, measure_dax
+            FROM report_measures WHERE report_id = ?
+            ORDER BY table_name, measure_name LIMIT 30
+        """, (report_id,)).fetchall()
+
+        source_ids = [t["source_id"] for t in db.execute(
+            "SELECT DISTINCT source_id FROM report_tables WHERE report_id = ? AND source_id IS NOT NULL",
+            (report_id,)
+        ).fetchall()]
+
+        scripts = []
+        sched_tasks = []
+        if source_ids:
+            ph = ",".join("?" * len(source_ids))
+            scripts = db.execute(f"""
+                SELECT DISTINCT sc.display_name, st.direction
+                FROM script_tables st JOIN scripts sc ON sc.id = st.script_id
+                WHERE st.source_id IN ({ph})
+            """, source_ids).fetchall()
+
+            script_ids = [s["id"] for s in db.execute(f"""
+                SELECT DISTINCT sc.id FROM script_tables st
+                JOIN scripts sc ON sc.id = st.script_id
+                WHERE st.source_id IN ({ph})
+            """, source_ids).fetchall()]
+            if script_ids:
+                ph2 = ",".join("?" * len(script_ids))
+                sched_tasks = db.execute(f"""
+                    SELECT task_name, schedule_type FROM scheduled_tasks
+                    WHERE script_id IN ({ph2}) AND archived = 0
+                """, script_ids).fetchall()
+
+    # Build structured context for the prompt
+    source_types = {}
+    for t in tables:
+        stype = t["source_type"] or "unknown"
+        if stype not in source_types:
+            source_types[stype] = []
+        source_types[stype].append(t["source_name"] or t["table_name"])
+
+    sources_text = ", ".join(f"{k}: {len(v)}" for k, v in source_types.items())
+
+    measure_names = [f"{m['measure_name']} ({m['table_name']})" for m in measures[:20]]
+    # Include short DAX snippets for AI to understand what measures do
+    measure_details = []
+    for m in measures[:15]:
+        dax = (m["measure_dax"] or "")[:150]
+        measure_details.append(f"- {m['measure_name']}: {dax}")
+
+    script_names = [s["display_name"] for s in scripts]
+    schedule_names = [s["task_name"] for s in sched_tasks]
+
+    context = (
+        f"Report: {report['name']}\n"
+        f"Owner: {report['owner'] or 'Unknown'}\n"
+        f"Business Owner: {report['business_owner'] or 'Unknown'}\n"
+        f"Frequency: {report['frequency'] or 'Unknown'}\n"
+        f"Data sources ({len(tables)} tables): {sources_text}\n"
+        f"Source tables: {', '.join(t['table_name'] for t in tables[:15])}\n"
+        f"Upstream systems: {', '.join(set(t['upstream_name'] for t in tables if t['upstream_name']))}\n"
+        f"Measures ({len(measures)}):\n" + "\n".join(measure_details) + "\n"
+        f"ETL scripts: {', '.join(script_names) if script_names else 'None detected'}\n"
+        f"Scheduled tasks: {', '.join(schedule_names) if schedule_names else 'None detected'}\n"
+    )
+
+    system_prompt = (
+        "You are a documentation assistant for a Power BI analytics team. "
+        "Given structured metadata about a report, generate clear documentation "
+        "that helps someone quickly understand what the report does, who uses it, "
+        "and what the key metrics mean.\n\n"
+        "Rules:\n"
+        "- Be concise and practical. 2-3 sentences per section max.\n"
+        "- For measures: explain in plain English what each one calculates. "
+        "Say 'Net Revenue = Gross revenue minus sales deductions', NOT the DAX formula.\n"
+        "- Infer the business purpose from the report name, measures, and data sources.\n"
+        "- If you cannot determine something, say so briefly.\n\n"
+        "Respond ONLY with valid JSON (no markdown fences) in this exact format:\n"
+        '{"purpose": "...", "audience": "...", "cadence": "...", "formulas": "...", "known_issues": "..."}\n\n'
+        "Fields:\n"
+        "- purpose: Why this report exists, what business question it answers (2-3 sentences)\n"
+        "- audience: Who uses this report and how (1-2 sentences)\n"
+        "- cadence: How often and when this report is expected to be refreshed\n"
+        "- formulas: Plain English explanation of the key measures, one per line\n"
+        "- known_issues: Any potential data quality concerns based on the sources\n"
+    )
+
+    if AI_MOCK:
+        # Return a structured placeholder when AI is not configured
+        return {
+            "purpose": f"[AI not configured] Report '{report['name']}' uses {len(tables)} data tables from {sources_text}.",
+            "audience": "[AI not configured] Set DG_AI_API_URL and DG_AI_API_KEY to enable AI suggestions.",
+            "cadence": report["frequency"] or "Unknown",
+            "formulas": "\n".join(f"- {m['measure_name']}: [needs AI to explain]" for m in measures[:10]),
+            "known_issues": None,
+            "context_preview": context,
+        }
+
+    try:
+        from app.ai.llm_provider import call_llm
+        raw = call_llm(system_prompt, context)
+        # Try to parse as JSON
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        result = json.loads(raw)
+        return {
+            "purpose": result.get("purpose"),
+            "audience": result.get("audience"),
+            "cadence": result.get("cadence") or report["frequency"],
+            "formulas": result.get("formulas"),
+            "known_issues": result.get("known_issues"),
+        }
+    except json.JSONDecodeError:
+        log.warning("AI returned non-JSON, using raw text as purpose")
+        return {
+            "purpose": raw[:500] if raw else None,
+            "audience": None,
+            "cadence": report["frequency"],
+            "formulas": None,
+            "known_issues": None,
+        }
+    except Exception as e:
+        log.exception("AI suggest failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"AI service error: {e}")
+
+
 def _mesc(text: str) -> str:
     """Escape text for Mermaid node labels."""
     if not text:
