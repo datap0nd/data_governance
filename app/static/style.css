@@ -4168,3 +4168,7 @@ tr.row-archived td:last-child {
 .doc-sources-table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; font-size: 0.8rem; }
 .doc-sources-table th, .doc-sources-table td { border: 1px solid var(--border); padding: 0.3rem 0.5rem; text-align: left; }
 .doc-sources-table th { background: var(--surface-2); font-weight: 600; font-size: 0.75rem; }
+.doc-measure-block { margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.doc-measure-header { padding: 0.35rem 0.6rem; background: var(--surface-2); font-size: 0.82rem; display: flex; align-items: center; gap: 0.5rem; }
+.doc-measure-table { font-size: 0.72rem; color: var(--text-dim); }
+.doc-measure-dax { margin: 0; padding: 0.5rem 0.6rem; font-size: 0.75rem; line-height: 1.45; background: var(--surface); white-space: pre-wrap; word-break: break-all; overflow-x: auto; border: none; border-radius: 0; }

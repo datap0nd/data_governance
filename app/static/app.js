@@ -4663,12 +4663,41 @@ async function renderDocumentation() {
     `;
 }
 
+function _renderMeasures(text) {
+    if (!text) return "";
+    // Split on double-newline to get individual measure blocks
+    // Format from suggest endpoint: **MeasureName** (TableName)\nDAX_expression
+    const blocks = text.split(/\n\n+/);
+    return blocks.map(block => {
+        const lines = block.trim().split("\n");
+        if (!lines[0]) return "";
+        // Check if first line matches **Name** (Table) pattern
+        const headerMatch = lines[0].match(/^\*\*(.+?)\*\*\s*\((.+?)\)$/);
+        if (headerMatch) {
+            const name = headerMatch[1];
+            const table = headerMatch[2];
+            const dax = lines.slice(1).join("\n").trim();
+            return `<div class="doc-measure-block">
+                <div class="doc-measure-header"><strong>${esc(name)}</strong> <span class="doc-measure-table">${esc(table)}</span></div>
+                ${dax ? `<pre class="doc-measure-dax">${esc(dax)}</pre>` : ''}
+            </div>`;
+        }
+        // Fallback: just render as preformatted text
+        return `<pre class="doc-measure-dax">${esc(block)}</pre>`;
+    }).join("");
+}
+
 async function showDocDetail(doc) {
     const existing = $("#doc-detail");
-    if (existing) existing.remove();
+    if (existing) {
+        // Toggle: if clicking the same doc, just close
+        if (existing.dataset.docId === String(doc.id)) { existing.remove(); return; }
+        existing.remove();
+    }
 
     const panel = document.createElement("div");
     panel.id = "doc-detail";
+    panel.dataset.docId = doc.id;
     panel.className = "source-detail-panel";
 
     const statusCls = _DOC_STATUS_BADGE[doc.status] || "badge-muted";
@@ -4730,7 +4759,7 @@ async function showDocDetail(doc) {
 
         <div class="doc-view-section">
             <h3>Key Formulas &amp; Transformations</h3>
-            <div class="doc-text-block">${doc.technical_transformations ? renderMd(doc.technical_transformations) : '<span style="color:var(--text-dim)">Not documented</span>'}</div>
+            <div class="doc-text-block">${doc.technical_transformations ? _renderMeasures(doc.technical_transformations) : '<span style="color:var(--text-dim)">Not documented</span>'}</div>
         </div>
 
         ${doc.information_tab ? `<div class="doc-view-section">
