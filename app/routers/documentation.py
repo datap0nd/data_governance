@@ -84,10 +84,17 @@ def _build_out(db, row) -> DocumentationOut:
 
 
 @router.get("", response_model=list[DocumentationOut])
-def list_docs(include_archived: bool = Query(False)):
+def list_docs(include_archived: bool = Query(False), report_id: int | None = Query(None)):
     with get_db() as db:
-        filt = "" if include_archived else "WHERE archived = 0"
-        rows = db.execute(f"SELECT * FROM documentation {filt} ORDER BY title").fetchall()
+        conditions = []
+        params = []
+        if not include_archived:
+            conditions.append("archived = 0")
+        if report_id is not None:
+            conditions.append("report_id = ?")
+            params.append(report_id)
+        filt = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        rows = db.execute(f"SELECT * FROM documentation {filt} ORDER BY title", params).fetchall()
         return [_build_out(db, r) for r in rows]
 
 

@@ -4172,3 +4172,10 @@ tr.row-archived td:last-child {
 .doc-measure-header { padding: 0.35rem 0.6rem; background: var(--surface-2); font-size: 0.82rem; display: flex; align-items: center; gap: 0.5rem; }
 .doc-measure-table { font-size: 0.72rem; color: var(--text-dim); }
 .doc-measure-dax { margin: 0; padding: 0.5rem 0.6rem; font-size: 0.75rem; line-height: 1.45; background: var(--surface); white-space: pre-wrap; word-break: break-all; overflow-x: auto; border: none; border-radius: 0; }
+.doc-inline-field { display: flex; gap: 0.5rem; padding: 0.3rem 0; font-size: 0.8rem; border-bottom: 1px solid var(--border); }
+.doc-inline-field .detail-label { min-width: 90px; flex-shrink: 0; font-weight: 600; font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.02em; padding-top: 0.1rem; }
+.doc-inline-edit { padding: 0.5rem 0; }
+.doc-inline-edit label { display: block; font-size: 0.72rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; margin: 0.5rem 0 0.15rem; }
+.doc-inline-edit label:first-child { margin-top: 0; }
+.doc-inline-edit textarea, .doc-inline-edit select { width: 100%; font-size: 0.8rem; padding: 0.3rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font-family: inherit; resize: vertical; }
+.doc-inline-edit select { width: auto; }

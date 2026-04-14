@@ -784,7 +784,6 @@ async function showReportDetail(report) {
     document.querySelectorAll(".report-expand-row").forEach(r => r.remove());
 
     // Find the clicked row in the table
-    const clickedRow = document.querySelector(`tr[data-clickable][data-row-idx]`);
     const allRows = document.querySelectorAll("#dt-reports tbody tr[data-clickable]");
     let targetRow = null;
     allRows.forEach(tr => {
@@ -795,63 +794,98 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, visuals, unusedData, linkedTasks] = await Promise.all([
+    const [tables, unusedData, linkedTasks, docData] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
-        api(`/api/reports/${report.id}/visuals`).catch(() => []),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
         api(`/api/tasks/for-entity?entity_type=report&entity_id=${report.id}`).catch(() => []),
+        api(`/api/documentation?report_id=${report.id}`).catch(() => []),
     ]);
+    let doc = docData.length > 0 ? docData[0] : null;
 
-    // Look up full source objects from the sources we fetched
     const allSources = window._reportPageSources || [];
     const sourceMap = new Map();
     allSources.forEach(s => sourceMap.set(s.id, s));
 
-    // Count how many visuals reference each table
-    const tableVisualCount = new Map();
-    visuals.forEach(page => {
-        page.visuals.forEach(v => {
-            v.fields.forEach(f => {
-                tableVisualCount.set(f.table, (tableVisualCount.get(f.table) || 0) + 1);
-            });
-        });
-    });
-
-    const colCount = targetRow ? targetRow.children.length : 6;
+    const colCount = targetRow ? targetRow.children.length : 8;
     const expandRow = document.createElement("tr");
     expandRow.className = "report-expand-row";
     expandRow.dataset.reportId = report.id;
 
-    const sourceRows = tables.length > 0
-        ? tables.map(t => {
-            const src = t.source_id ? sourceMap.get(t.source_id) : null;
+    // ── Data Sources: group by type ──
+    const typeGroups = {};
+    tables.forEach(t => {
+        const src = t.source_id ? sourceMap.get(t.source_id) : null;
+        const type = src ? (src.type || "Unknown") : "Unlinked";
+        if (!typeGroups[type]) typeGroups[type] = [];
+        typeGroups[type].push({ table: t, source: src });
+    });
+    const typeSummary = Object.entries(typeGroups)
+        .map(([type, items]) => `${type} (${items.length})`)
+        .join(", ");
+
+    const groupedSourcesHtml = Object.entries(typeGroups).map(([type, items]) => `
+        <div style="font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin:0.4rem 0 0.15rem 0.2rem">${esc(type)} (${items.length})</div>
+        ${items.map(({ table: t, source: src }) => {
             const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
-            const srcStatus = src ? src.status : "unknown";
-            const vCount = tableVisualCount.get(t.table_name) || 0;
             return `<div class="report-source-item${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
-                <span class="dot dot-${srcStatus === 'fresh' || srcStatus === 'healthy' ? 'green' : srcStatus === 'stale' || srcStatus === 'outdated' || srcStatus === 'degraded' ? 'red' : 'muted'}" style="width:6px;height:6px"></span>
                 <span class="report-source-table">${t.table_name}</span>
-                ${vCount > 0 ? `<span class="badge badge-muted" style="margin-left:0.25rem;font-size:0.65rem">${vCount} visual${vCount !== 1 ? 's' : ''}</span>` : ''}
                 <span class="report-source-arrow">&rarr;</span>
                 <span class="report-source-name">${srcName}</span>
-                ${src ? statusBadge(src.status) : ''}
                 ${src && src.last_updated ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:auto">${timeAgo(src.last_updated)}</span>` : ''}
             </div>`;
-        }).join("")
-        : '<div class="empty-state" style="padding:0.5rem">No tables found</div>';
+        }).join("")}
+    `).join("");
 
-    const totalVisuals = visuals.reduce((a, p) => a + p.visuals.length, 0);
+    // ── Documentation section ──
+    const docViewHtml = doc ? `
+        ${doc.business_purpose ? `<div class="doc-inline-field"><span class="detail-label">Purpose</span><div>${renderMd(doc.business_purpose)}</div></div>` : ''}
+        ${doc.business_audience ? `<div class="doc-inline-field"><span class="detail-label">Audience</span><div>${renderMd(doc.business_audience)}</div></div>` : ''}
+        ${doc.business_cadence ? `<div class="doc-inline-field"><span class="detail-label">Cadence</span><span>${esc(doc.business_cadence)}</span></div>` : ''}
+        ${doc.technical_transformations ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Key Formulas</span><div>${_renderMeasures(doc.technical_transformations)}</div></div>` : ''}
+        ${doc.information_tab ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Information Tab</span><div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div></div>` : ''}
+        ${doc.technical_known_issues ? `<div class="doc-inline-field" style="flex-direction:column"><span class="detail-label">Known Issues</span><div>${renderMd(doc.technical_known_issues)}</div></div>` : ''}
+        ${!doc.business_purpose && !doc.business_audience && !doc.technical_transformations && !doc.information_tab
+            ? '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">Auto-generated. Click Edit to add business context.</div>' : ''}
+    ` : '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No documentation yet.</div>';
 
-    // Unused measures/columns section
-    const hasUnusedData = unusedData.total_fields > 0 || unusedData.total_tables > 0;
+    const docEditHtml = `
+        <div class="doc-inline-edit">
+            <label>Purpose</label><textarea id="doc-e-purpose" rows="2">${esc(doc?.business_purpose || "")}</textarea>
+            <label>Audience</label><textarea id="doc-e-audience" rows="2">${esc(doc?.business_audience || "")}</textarea>
+            <label>Cadence</label>
+            <select id="doc-e-cadence">
+                <option value="">-</option>
+                ${["Daily","Weekly","Bi-weekly","Monthly","Quarterly","Yearly","Ad-hoc"].map(c =>
+                    `<option value="${c}"${(doc?.business_cadence || "") === c ? " selected" : ""}>${c}</option>`
+                ).join("")}
+            </select>
+            <label>Key Formulas</label><textarea id="doc-e-transforms" rows="4" style="font-family:monospace;font-size:0.78rem">${esc(doc?.technical_transformations || "")}</textarea>
+            <label>Information Tab</label><textarea id="doc-e-info" rows="4">${esc(doc?.information_tab || "")}</textarea>
+            <label>Known Issues</label><textarea id="doc-e-issues" rows="2">${esc(doc?.technical_known_issues || "")}</textarea>
+            <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+                <button class="btn-outline" id="doc-e-save">Save</button>
+                <button class="btn-outline" id="doc-e-cancel">Cancel</button>
+            </div>
+        </div>
+    `;
+
+    // Doc % for the section header
+    const docFields = doc ? [doc.business_purpose, doc.business_audience, doc.business_cadence,
+        doc.technical_transformations, doc.information_tab, doc.technical_known_issues] : [];
+    const docFilled = docFields.filter(f => f && f.trim()).length;
+    const docPct = doc ? Math.round((docFilled / 6) * 100) : 0;
+    const docPctCls = docPct === 100 ? 'badge-green' : docPct >= 50 ? 'badge-yellow' : 'badge-muted';
+
+    // ── Optimization section ──
     const unusedMC = unusedData.unused_measures.length + unusedData.unused_columns.length;
-    const unusedSection = hasUnusedData ? `
-        <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="unused-mc">
+    const hasUnusedData = unusedData.total_fields > 0 || unusedData.total_tables > 0;
+    const optimizationInner = hasUnusedData ? `
+        <div class="report-expand-label unused-toggle" style="cursor:pointer" data-target="unused-mc">
             Unused Measures / Columns (${unusedMC} of ${unusedData.total_fields})
             ${unusedMC > 0
                 ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${unusedData.unused_pct}%</span>`
                 : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
         </div>
         <div class="unused-measures-list" id="unused-mc" style="display:none">
             ${unusedData.unused_measures.length > 0 ? `
@@ -876,7 +910,7 @@ async function showReportDetail(report) {
             ${unusedData.unused_tables_count > 0
                 ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${Math.round(unusedData.unused_tables_count / unusedData.total_tables * 100)}%</span>`
                 : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">all used</span>`}
-            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> — click to expand</span>
+            <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
         </div>
         <div class="unused-measures-list" id="unused-tables" style="display:none">
             ${unusedData.unused_tables.length > 0
@@ -884,9 +918,9 @@ async function showReportDetail(report) {
                     <div class="unused-measure-item"><span class="unused-measure-name">${t}</span></div>`).join('')
                 : '<div style="padding:0.4rem;color:var(--green);font-size:0.78rem">All tables are referenced by visuals</div>'}
         </div>
-    ` : '';
+    ` : '<div style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No scan data available</div>';
 
-    // Build linked tasks section
+    // ── Linked Tasks ──
     const activeLinked = linkedTasks.filter(t => t.status !== "done");
     const archivedLinked = linkedTasks.filter(t => t.status === "done");
     const linkedTasksSection = linkedTasks.length > 0 ? `
@@ -917,21 +951,39 @@ async function showReportDetail(report) {
         </div>
     ` : '';
 
+    // ── Assemble expand row ──
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
-            <div class="report-expand-header">
-                <div class="detail-grid" style="margin-bottom:0.5rem">
-                    <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(report.status)}</div>
-                    <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner) || "-"}</span></div>
-                    <div class="detail-item"><div class="detail-label">Business Owner</div><span style="color:var(--text)">${esc(report.business_owner) || "-"}</span></div>
-                    ${report.pbi_refresh_schedule ? `<div class="detail-item"><div class="detail-label">PBI Schedule</div><span style="color:var(--text)">${esc(report.pbi_refresh_schedule)}</span></div>` : ''}
-                    ${report.pbi_refresh_status ? `<div class="detail-item"><div class="detail-label">Last Refresh</div>${report.pbi_refresh_status.toLowerCase() === 'completed' ? '<span class="badge badge-green">completed</span>' : report.pbi_refresh_status.toLowerCase() === 'failed' ? '<span class="badge badge-red">failed</span>' : statusBadge(report.pbi_refresh_status)} ${report.pbi_last_refresh_at ? `<span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.3rem">${timeAgo(report.pbi_last_refresh_at)}</span>` : ''}</div>` : ''}
-                    ${report.pbi_refresh_error ? `<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Refresh Error</div><span style="color:var(--red);font-size:0.78rem">${esc(report.pbi_refresh_error)}</span></div>` : ''}
-                </div>
+            <div class="report-expand-label unused-toggle" style="cursor:pointer" data-target="ds-list">
+                Data Sources (${tables.length}) <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400">${typeSummary}</span>
+                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
             </div>
-            <div class="report-expand-label">Data Sources (${tables.length})</div>
-            <div class="report-source-list">${sourceRows}</div>
-            ${unusedSection}
+            <div class="report-source-list" id="ds-list" style="display:none">${groupedSourcesHtml}</div>
+
+            <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="doc-section">
+                Documentation <span class="badge ${docPctCls}" style="margin-left:0.35rem;font-size:0.62rem">${docPct}%</span>
+                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
+            </div>
+            <div id="doc-section" style="display:none">
+                <div id="doc-view-area">${docViewHtml}
+                    <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+                        <button class="btn-outline" id="btn-doc-inline-edit" style="font-size:0.75rem">Edit</button>
+                        <button class="btn-outline" id="btn-doc-inline-suggest" style="font-size:0.75rem">Auto-suggest</button>
+                        <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.75rem">View Lineage</button>
+                    </div>
+                </div>
+                <div id="doc-edit-area" style="display:none">${docEditHtml}</div>
+            </div>
+
+            <div class="report-expand-label unused-toggle" style="margin-top:0.75rem;cursor:pointer" data-target="optimization-section">
+                Optimization
+                ${unusedMC + unusedData.unused_tables_count > 0
+                    ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.62rem">${unusedMC + unusedData.unused_tables_count} unused</span>`
+                    : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.62rem">clean</span>`}
+                <span class="unused-toggle-hint" style="font-size:0.7rem;color:var(--text-dim)"> -- click to expand</span>
+            </div>
+            <div id="optimization-section" style="display:none">${optimizationInner}</div>
+
             ${linkedTasksSection}
         </div>
     </td>`;
@@ -943,7 +995,21 @@ async function showReportDetail(report) {
         if (tbody) tbody.appendChild(expandRow);
     }
 
-    // Bind clickable sources
+    // ── Bind events ──
+
+    // Collapsible section toggles
+    expandRow.querySelectorAll(".unused-toggle[data-target]").forEach(toggle => {
+        toggle.addEventListener("click", () => {
+            const list = expandRow.querySelector(`#${toggle.dataset.target}`);
+            if (!list) return;
+            const showing = list.style.display !== "none";
+            list.style.display = showing ? "none" : "";
+            const hint = toggle.querySelector(".unused-toggle-hint");
+            if (hint) hint.textContent = showing ? " -- click to expand" : " -- click to collapse";
+        });
+    });
+
+    // Clickable sources -> navigate to source detail
     expandRow.querySelectorAll(".report-source-clickable").forEach(el => {
         el.addEventListener("click", async (e) => {
             e.stopPropagation();
@@ -953,19 +1019,7 @@ async function showReportDetail(report) {
         });
     });
 
-    // Bind unused section toggles
-    expandRow.querySelectorAll(".unused-toggle[data-target]").forEach(toggle => {
-        toggle.addEventListener("click", () => {
-            const list = expandRow.querySelector(`#${toggle.dataset.target}`);
-            if (!list) return;
-            const showing = list.style.display !== "none";
-            list.style.display = showing ? "none" : "";
-            const hint = toggle.querySelector(".unused-toggle-hint");
-            if (hint) hint.textContent = showing ? " — click to expand" : " — click to collapse";
-        });
-    });
-
-    // Bind unused measure items — click to show/hide DAX
+    // Unused measure items - click to show/hide DAX
     expandRow.querySelectorAll(".unused-measure-item").forEach(el => {
         const dax = el.querySelector(".unused-measure-dax");
         if (dax) {
@@ -975,6 +1029,108 @@ async function showReportDetail(report) {
             });
         }
     });
+
+    // Lineage button -> navigate to lineage with report pre-selected
+    expandRow.querySelectorAll(".btn-lineage-nav").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            await navigate("lineage");
+            const sel = document.getElementById("lineage-report-select");
+            if (sel) { sel.value = report.id; sel.dispatchEvent(new Event("change")); }
+        });
+    });
+
+    // ── Documentation inline edit ──
+    const docViewArea = expandRow.querySelector("#doc-view-area");
+    const docEditArea = expandRow.querySelector("#doc-edit-area");
+
+    const editBtn = expandRow.querySelector("#btn-doc-inline-edit");
+    if (editBtn) {
+        editBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            docViewArea.style.display = "none";
+            docEditArea.style.display = "";
+        });
+    }
+
+    const cancelBtn = expandRow.querySelector("#doc-e-cancel");
+    if (cancelBtn) {
+        cancelBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            docEditArea.style.display = "none";
+            docViewArea.style.display = "";
+        });
+    }
+
+    const saveBtn = expandRow.querySelector("#doc-e-save");
+    if (saveBtn) {
+        saveBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            saveBtn.disabled = true;
+            const body = {
+                report_id: report.id,
+                title: report.name,
+                business_purpose: expandRow.querySelector("#doc-e-purpose").value.trim() || null,
+                business_audience: expandRow.querySelector("#doc-e-audience").value.trim() || null,
+                business_cadence: expandRow.querySelector("#doc-e-cadence").value || null,
+                technical_transformations: expandRow.querySelector("#doc-e-transforms").value.trim() || null,
+                information_tab: expandRow.querySelector("#doc-e-info").value.trim() || null,
+                technical_known_issues: expandRow.querySelector("#doc-e-issues").value.trim() || null,
+            };
+            try {
+                if (doc) {
+                    await apiPatch(`/api/documentation/${doc.id}`, body);
+                } else {
+                    body.status = "draft";
+                    body.linked_entities = [{ entity_type: "report", entity_id: report.id }];
+                    const created = await apiPostJson("/api/documentation", body);
+                    doc = created;
+                }
+                toast("Documentation saved");
+                // Refresh the expand row
+                expandRow.remove();
+                showReportDetail(report);
+            } catch (err) {
+                toast("Save failed: " + err.message);
+                saveBtn.disabled = false;
+            }
+        });
+    }
+
+    // Auto-suggest button
+    const suggestBtn = expandRow.querySelector("#btn-doc-inline-suggest");
+    if (suggestBtn) {
+        suggestBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            suggestBtn.disabled = true;
+            suggestBtn.textContent = "Loading...";
+            try {
+                const suggestion = await api(`/api/documentation/suggest/${report.id}`);
+                // Switch to edit mode and fill fields
+                docViewArea.style.display = "none";
+                docEditArea.style.display = "";
+                if (suggestion.technical_transformations) {
+                    expandRow.querySelector("#doc-e-transforms").value = suggestion.technical_transformations;
+                }
+                if (suggestion.technical_sources) {
+                    // Store sources on the doc for later save
+                    expandRow.dataset.suggestedSources = suggestion.technical_sources;
+                }
+                if (suggestion.business_cadence) {
+                    const cadSel = expandRow.querySelector("#doc-e-cadence");
+                    for (const opt of cadSel.options) {
+                        if (opt.value === suggestion.business_cadence) { opt.selected = true; break; }
+                    }
+                }
+                toast("Fields pre-filled from report data. Add business context and save.");
+            } catch (err) {
+                toast("Auto-suggest failed: " + err.message);
+            } finally {
+                suggestBtn.disabled = false;
+                suggestBtn.textContent = "Auto-suggest";
+            }
+        });
+    }
 }
 
 function _visualTypeLabel(type) {
@@ -1624,13 +1780,19 @@ function _freqDetailOpts(type, selected) {
 
 async function renderReports() {
     const showArchived = _isShowingArchived("reports");
-    const [reports, edges, sources, options] = await Promise.all([
+    const [reports, edges, sources, options, allDocs] = await Promise.all([
         api("/api/reports" + (showArchived ? "?include_archived=true" : "")),
         api("/api/lineage"),
         api("/api/sources"),
         api("/api/create/options"),
+        api("/api/documentation").catch(() => []),
     ]);
     const people = options.people || [];
+
+    // Build report_id -> doc map for Doc % column
+    const docMap = new Map();
+    allDocs.forEach(d => { if (d.report_id) docMap.set(d.report_id, d); });
+    window._reportPageDocs = docMap;
 
     const cols = [
         { key: "name", label: "Report", width: COL_W.lg, render: r => r.powerbi_url
@@ -1638,6 +1800,22 @@ async function renderReports() {
             : `<strong>${esc(r.name)}</strong>` },
         { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
         { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
+        { key: "_doc_pct", label: "Doc %", width: COL_W.sm, filterable: false, render: r => {
+            const doc = docMap.get(r.id);
+            if (!doc) return '<span style="color:var(--text-dim)">0%</span>';
+            const fields = [doc.business_purpose, doc.business_audience, doc.business_cadence,
+                            doc.technical_transformations, doc.information_tab, doc.technical_known_issues];
+            const filled = fields.filter(f => f && f.trim()).length;
+            const pct = Math.round((filled / fields.length) * 100);
+            const cls = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-yellow' : 'badge-muted';
+            return `<span class="badge ${cls}">${pct}%</span>`;
+        }, sortVal: r => {
+            const doc = docMap.get(r.id);
+            if (!doc) return 0;
+            const fields = [doc.business_purpose, doc.business_audience, doc.business_cadence,
+                            doc.technical_transformations, doc.information_tab, doc.technical_known_issues];
+            return fields.filter(f => f && f.trim()).length;
+        }},
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
             const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
             const opts = biFirst.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
@@ -6888,7 +7066,6 @@ const pages = {
     scheduledtasks: renderScheduledTasks,
     powerautomate: renderPowerAutomate,
     customreports: renderCustomReports,
-    documentation: renderDocumentation,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -7093,7 +7270,6 @@ async function navigate(page) {
         if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "powerautomate") bindPowerAutomatePage();
         if (page === "customreports") bindCustomReportsPage();
-        if (page === "documentation") bindDocumentationPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
