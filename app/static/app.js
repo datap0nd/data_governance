@@ -854,7 +854,7 @@ async function showReportDetail(report) {
     _ds("Purpose", "doc-s-purpose", doc?.business_purpose ? renderMd(doc.business_purpose) : null);
     _ds("Audience", "doc-s-audience", doc?.business_audience ? renderMd(doc.business_audience) : null);
     _ds("Cadence", "doc-s-cadence", doc?.business_cadence ? esc(doc.business_cadence) : null);
-    _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? _renderMeasures(doc.technical_transformations) : null);
+    _ds("Key Formulas", "doc-s-formulas", doc?.technical_transformations ? renderMd(doc.technical_transformations) : null);
     _ds("Information Tab", "doc-s-info", doc?.information_tab ? `<div style="white-space:pre-wrap;font-size:0.8rem">${esc(doc.information_tab)}</div>` : null);
     _ds("Known Issues", "doc-s-issues", doc?.technical_known_issues ? renderMd(doc.technical_known_issues) : null);
 
@@ -1140,6 +1140,7 @@ async function showReportDetail(report) {
             }
             if (s.formulas) expandRow.querySelector("#doc-e-transforms").value = s.formulas;
             if (s.known_issues) expandRow.querySelector("#doc-e-issues").value = s.known_issues;
+            if (s.info_tab) expandRow.querySelector("#doc-e-info").value = s.info_tab;
             toast("AI suggestions filled in. Review and save.");
         } catch (err) { toast("AI suggest failed: " + err.message); }
         finally { e.target.disabled = false; e.target.textContent = "AI Suggest"; }
@@ -1873,6 +1874,7 @@ async function renderReports() {
             ${_archiveToggleHtml("reports")}
             ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
             <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
+            <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
             <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
         </div>
 
@@ -1965,6 +1967,32 @@ function bindReportsPage() {
                 toast("PBI sync failed: " + err.message);
                 btnPbi.disabled = false;
                 btnPbi.textContent = "Sync PBI";
+            }
+        });
+    }
+
+    // Generate All Docs button
+    const btnGenDocs = document.getElementById("btn-generate-all-docs");
+    if (btnGenDocs) {
+        btnGenDocs.addEventListener("click", async () => {
+            if (!confirm("This will use AI to generate documentation for all reports that don't have complete docs yet. Reports with 5+ fields filled will be skipped.\n\nThis may take a few minutes. Continue?")) return;
+            btnGenDocs.disabled = true;
+            btnGenDocs.textContent = "Generating...";
+            try {
+                const result = await apiPost("/api/documentation/ai-suggest-all");
+                const msg = `Done: ${result.generated} generated, ${result.skipped} skipped, ${result.failed} failed`;
+                toast(msg);
+                if (result.errors && result.errors.length > 0) {
+                    console.warn("AI doc generation errors:", result.errors);
+                }
+                if (result.generated > 0) {
+                    navigate("reports");
+                }
+            } catch (err) {
+                toast("Generation failed: " + err.message);
+            } finally {
+                btnGenDocs.disabled = false;
+                btnGenDocs.textContent = "Generate All Docs";
             }
         });
     }

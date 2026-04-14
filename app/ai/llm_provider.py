@@ -22,7 +22,7 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "max_tokens": 1024,
+        "max_tokens": 2048,
         "temperature": 0.3,
     }
 
