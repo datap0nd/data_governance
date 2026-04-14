@@ -44,17 +44,21 @@ CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))
 AI_MODEL = os.environ.get("DG_AI_MODEL", "gpt-oss-120b")
 AI_API_KEY = os.environ.get("DG_AI_API_KEY", "")
 
-# Read endpoint URL from endpoint_url.txt (same directory as latest_upload_date.csv)
+# Read endpoint URL: endpoint_url.txt takes priority, then DG_AI_API_URL env var
 _endpoint_file = BASE_DIR.parent / "endpoint_url.txt"
 if _endpoint_file.exists():
-    _endpoint_url = _endpoint_file.read_text(encoding="utf-8").strip().rstrip("/")
+    _ai_url = _endpoint_file.read_text(encoding="utf-8").strip().rstrip("/")
+else:
+    _ai_url = os.environ.get("DG_AI_API_URL", "").strip().rstrip("/")
+
+if _ai_url:
     # Append /chat/completions if endpoint ends with /v1
-    if _endpoint_url.endswith("/v1"):
-        _endpoint_url += "/chat/completions"
-    AI_API_URL = _endpoint_url if _endpoint_url else os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
+    if _ai_url.endswith("/v1"):
+        _ai_url += "/chat/completions"
+    AI_API_URL = _ai_url
     AI_MOCK = False
 else:
-    AI_API_URL = os.environ.get("DG_AI_API_URL", "http://localhost:11434/v1/chat/completions")
+    AI_API_URL = "http://localhost:11434/v1/chat/completions"
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
 
 # Power BI workspace name for refresh schedule sync
