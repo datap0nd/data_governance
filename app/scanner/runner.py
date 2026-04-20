@@ -152,12 +152,16 @@ def run_scan(reports_path: str | None = None) -> dict:
 
             # Pass 3: Strip parenthetical artifacts from source names
             # e.g. "bi_reporting.table_name (view)" -> "bi_reporting.table_name"
+            # Also strips internal parens like "foo(bar)baz" -> "foobaz"
             import re as _re
             paren_rows = db.execute(
-                "SELECT id, name FROM sources WHERE name LIKE '%(%'"
+                "SELECT id, name FROM sources WHERE name LIKE '%(%' OR name LIKE '%)%'"
             ).fetchall()
             for row in paren_rows:
-                new_name = _re.sub(r'\s*\([^)]*\)\s*$', '', row["name"]).strip()
+                # Strip all parenthesised groups, including internal ones
+                new_name = _re.sub(r'\s*\([^)]*\)\s*', '', row["name"]).strip()
+                # Also collapse accidental double dots / trailing dots
+                new_name = _re.sub(r'\.+', '.', new_name).strip('.')
                 if new_name and new_name != row["name"]:
                     dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
                                     (new_name, row["id"])).fetchone()
@@ -167,6 +171,48 @@ def run_scan(reports_path: str | None = None) -> dict:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
                         log_lines.append(f"CLEANED: {row['name']} -> {new_name}")
+
+            # Pass 4: Archive bogus postgresql entries whose names aren't clean
+            # identifiers. These are typically parser artifacts where a
+            # Name="..." step matched a column or filter instead of a table.
+            # Archive rather than delete so nothing is lost.
+            from app.scanner.tmdl_parser import _validate_table_name
+            pg_rows = db.execute(
+                "SELECT id, name FROM sources WHERE type = 'postgresql' AND archived = 0"
+            ).fetchall()
+            archived_count = 0
+            for row in pg_rows:
+                # A clean PG source name is either "schema.table" or "table"
+                if _validate_table_name(row["name"]) is None:
+                    db.execute(
+                        "UPDATE sources SET archived = 1, updated_at = ? WHERE id = ?",
+                        (now, row["id"]),
+                    )
+                    # Close any open actions tied to this source so the Alerts
+                    # table doesn't keep showing noise
+                    db.execute(
+                        """UPDATE actions SET status = 'resolved', resolved_at = ?,
+                                              updated_at = ?,
+                                              notes = COALESCE(notes, '') || ' [auto-resolved: source archived]'
+                           WHERE source_id = ? AND status NOT IN ('resolved', 'expected')""",
+                        (now, now, row["id"]),
+                    )
+                    # Acknowledge any open alerts too
+                    db.execute(
+                        """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
+                                             acknowledged = 1, acknowledged_by = 'auto',
+                                             resolution_reason = 'Source archived (invalid name)'
+                           WHERE source_id = ? AND resolution_status IS NULL""",
+                        (now, row["id"]),
+                    )
+                    archived_count += 1
+                    log_lines.append(
+                        f"ARCHIVED: {row['name']} (not a clean postgresql identifier)"
+                    )
+            if archived_count:
+                log_lines.append(
+                    f"TOTAL ARCHIVED: {archived_count} postgresql sources with invalid names"
+                )
 
             # Upsert sources
             for key, source_info in all_sources.items():

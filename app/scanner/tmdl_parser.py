@@ -461,6 +461,46 @@ def _log_unknown_expression(expr: str):
         logger.warning("Unknown source type — no function found | expression: %.200s", expr)
 
 
+# A clean table identifier: starts with letter or underscore, then word chars.
+# Optionally prefixed with a schema in the same shape.
+_CLEAN_TABLE_RE = re.compile(r'^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?$')
+
+# Extensions that indicate the "name" is actually a file, not a database table.
+_FILE_EXTENSIONS = (".xlsx", ".xls", ".csv", ".txt", ".json", ".parquet",
+                    ".xlsm", ".xlsb", ".pbix", ".zip", ".gz")
+
+# Characters that must never appear in a real table identifier. Presence of any
+# of these means the regex above was matching decoration or a query fragment
+# that happens to contain the word Name=.
+_DISALLOWED_CHARS = set("()[]{}<>*?|\\'\"`!@#$%^&+=~;,: \t\n")
+
+
+def _validate_table_name(name: str | None) -> str | None:
+    """Return name if it looks like a clean table identifier, else None.
+
+    This keeps junk out of the sql_table field. Legacy quoted names with
+    embedded dots/spaces are intentionally rejected here - they can still be
+    stored via the source_query rather than display_name, and the display
+    falls back to server/database.
+    """
+    if not name:
+        return None
+    n = name.strip()
+    if not n:
+        return None
+    # Reject anything that looks like a file
+    low = n.lower()
+    if any(low.endswith(ext) for ext in _FILE_EXTENSIONS):
+        return None
+    # Reject obviously non-identifier content (parens, spaces, etc.)
+    if any(ch in _DISALLOWED_CHARS for ch in n):
+        return None
+    # Accept bare or schema.table shape
+    if _CLEAN_TABLE_RE.match(n):
+        return n
+    return None
+
+
 def _extract_table_navigation(expr: str) -> str | None:
     """Extract the schema and table name from M navigation patterns.
 
@@ -471,36 +511,52 @@ def _extract_table_navigation(expr: str) -> str | None:
       Source{[Schema="public", Item="orders"]}[Data]  (with spaces)
 
     For native queries, tries to extract the table from the SQL.
+
+    Every candidate is validated via _validate_table_name before being
+    returned - this ensures sql_table only contains clean identifiers and
+    never a parenthesised blob or filename. Callers treat None as
+    "couldn't find a clean table" and degrade gracefully.
     """
     # Pattern 1: Schema + Item (most common for SQL Server, PostgreSQL)
     match = re.search(r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr)
     if match:
-        return f"{match.group(1)}.{match.group(2)}"
+        candidate = f"{match.group(1)}.{match.group(2)}"
+        if (v := _validate_table_name(candidate)):
+            return v
 
     # Pattern 2: Item + Schema (reversed order)
     match = re.search(r'Item\s*=\s*"([^"]+)"\s*,\s*Schema\s*=\s*"([^"]+)"', expr)
     if match:
-        return f"{match.group(2)}.{match.group(1)}"
+        candidate = f"{match.group(2)}.{match.group(1)}"
+        if (v := _validate_table_name(candidate)):
+            return v
 
-    # Pattern 3: Name + Kind (PostgreSQL often uses this)
+    # Pattern 3: Name + Kind="Table" (PostgreSQL often uses this; Kind gate
+    # keeps us from matching navigation into views, functions, or columns)
     match = re.search(r'Name\s*=\s*"([^"]+)"\s*,\s*Kind\s*=\s*"Table"', expr)
     if match:
-        return match.group(1)
+        if (v := _validate_table_name(match.group(1))):
+            return v
 
-    # Pattern 4: Just Name= (simpler navigation)
-    match = re.search(r'Name\s*=\s*"([^"]+)"', expr)
-    if match:
-        return match.group(1)
+    # Pattern 4: Just Name= - only accept if it passes strict validation.
+    # Name="..." is too generic in M (it can reference parameters, columns,
+    # Power Query steps, etc.), so we lean hard on the validator here.
+    for m in re.finditer(r'Name\s*=\s*"([^"]+)"', expr):
+        if (v := _validate_table_name(m.group(1))):
+            return v
 
-    # Pattern 5: Try to get table from native query (SELECT ... FROM schema.table)
+    # Pattern 5: Native query: FROM/JOIN "schema"."table"
     match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s*\.\s*["\[]?(\w+)["\]]?', expr, re.IGNORECASE)
     if match:
-        return f"{match.group(1)}.{match.group(2)}"
+        candidate = f"{match.group(1)}.{match.group(2)}"
+        if (v := _validate_table_name(candidate)):
+            return v
 
-    # Pattern 6: Simple FROM table
+    # Pattern 6: Simple FROM table (bare table name, no schema)
     match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s', expr, re.IGNORECASE)
     if match:
-        return match.group(1)
+        if (v := _validate_table_name(match.group(1))):
+            return v
 
     return None
 

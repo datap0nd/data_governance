@@ -33,9 +33,13 @@ def get_dashboard():
         # Report counts
         reports_total = db.execute("SELECT COUNT(*) AS c FROM reports WHERE archived = 0").fetchone()["c"]
 
-        # Alert count
+        # Alert count - exclude alerts on archived sources so the badge
+        # matches what's actually visible in the Alerts table
         alerts_active = db.execute(
-            "SELECT COUNT(*) AS c FROM alerts WHERE acknowledged = 0"
+            """SELECT COUNT(*) AS c FROM alerts a
+               LEFT JOIN sources s ON s.id = a.source_id
+               WHERE a.acknowledged = 0
+                 AND (s.archived IS NULL OR s.archived = 0)"""
         ).fetchone()["c"]
 
         # Last scan

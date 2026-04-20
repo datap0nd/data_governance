@@ -71,15 +71,18 @@ def _compute_report_context(db, source_days: dict[int, int]):
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
+        # Hide actions tied to archived sources - the source has been retired
+        # so the alert isn't actionable any more
         query = """
             SELECT a.*, s.name AS source_name, r.name AS report_name
             FROM actions a
             LEFT JOIN sources s ON s.id = a.source_id
             LEFT JOIN reports r ON r.id = a.report_id
+            WHERE (s.archived IS NULL OR s.archived = 0)
         """
         params = []
         if status:
-            query += " WHERE a.status = ?"
+            query += " AND a.status = ?"
             params.append(status)
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
