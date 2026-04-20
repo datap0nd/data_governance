@@ -2368,6 +2368,10 @@ body.ai-panel-open main {
     background: rgba(234, 179, 8, 0.18);
     color: #facc15;
 }
+.asset-type-scheduled_task {
+    background: rgba(16, 185, 129, 0.18);
+    color: #34d399;
+}
 
 /* Alert trend chart */
 .alert-trend-container {

@@ -215,6 +215,8 @@ function actionTypeBadge(type) {
         changed_query: "Query Changed",
         refresh_failed: "Refresh Failed",
         refresh_overdue: "Refresh Overdue",
+        task_failed: "Task Failed",
+        script_failed: "Script Failed",
     };
     const colors = {
         stale_source: "badge-red",
@@ -224,6 +226,8 @@ function actionTypeBadge(type) {
         changed_query: "badge-blue",
         refresh_failed: "badge-red",
         refresh_overdue: "badge-yellow",
+        task_failed: "badge-red",
+        script_failed: "badge-red",
     };
     return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
@@ -1411,11 +1415,14 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             ? `alerts-source-link" data-source-id="${a.asset_id}`
             : a.asset_type === "report"
             ? `alerts-report-link" data-report-id="${a.asset_id}`
+            : a.asset_type === "scheduled_task"
+            ? `alerts-task-link" data-task-id="${a.asset_id}`
+            : a.asset_type === "script"
+            ? `alerts-script-link" data-script-id="${a.asset_id}`
             : null;
 
         // Secondary info under the asset name: for source alerts, show
-        // which report is most affected; for report alerts, show the
-        // refresh status detail if available.
+        // which report is most affected; for other types, leave blank.
         let sub = "";
         if (a.asset_type === "source" && a.top_report_name) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">affects ${esc(a.top_report_name)}${a.report_names.length > 1 ? ` +${a.report_names.length - 1}` : ""}</div>`;
@@ -1427,8 +1434,9 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                </a>`
             : `<div><strong>${esc(assetName)}</strong>${sub}</div>`;
 
+        const typeLabel = a.asset_type === "scheduled_task" ? "task" : a.asset_type;
         const typeCell = a.asset_type
-            ? `<span class="asset-type-badge asset-type-${a.asset_type}">${a.asset_type}</span>`
+            ? `<span class="asset-type-badge asset-type-${a.asset_type}">${typeLabel}</span>`
             : '<span style="color:var(--text-dim)">-</span>';
 
         const days = a.asset_days || 0;
@@ -1544,6 +1552,35 @@ function bindDashboardAlertsRowControls() {
                     if (fresh) showSourceDetail(fresh);
                 } catch (_) {}
             }
+        });
+    });
+
+    // Clickable scheduled task cell - navigate to scheduled tasks page
+    document.querySelectorAll(".alerts-task-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const tid = parseInt(el.dataset.taskId);
+            if (!tid) return;
+            await navigate("scheduledtasks");
+            // Try to scroll/open the specific task
+            setTimeout(() => {
+                const row = document.querySelector(`[data-task-id="${tid}"]`);
+                if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 150);
+        });
+    });
+
+    // Clickable script cell - navigate to scripts page
+    document.querySelectorAll(".alerts-script-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const scid = parseInt(el.dataset.scriptId);
+            if (!scid) return;
+            await navigate("scripts");
+            setTimeout(() => {
+                const row = document.querySelector(`[data-script-id="${scid}"]`);
+                if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 150);
         });
     });
 

@@ -104,18 +104,23 @@ def _compute_report_action_days(db) -> dict[int, int]:
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
-        # Each action is about one asset - either a source or a report.
-        # For source-tied actions we also look up the latest probe so we can
-        # skip actions on sources that are no longer outdated (stale rows from
-        # before a freshness rule change will get auto-resolved on next probe
-        # but we don't want them cluttering the UI in the meantime).
+        # Each action is about one asset - a source, report, scheduled task,
+        # or script. For source-tied actions we also look up the latest probe
+        # so we can skip actions on sources that are no longer outdated
+        # (stale rows from before a freshness rule change will get auto-
+        # resolved on next probe but we don't want them cluttering the UI
+        # in the meantime).
         query = """
             SELECT a.*, s.name AS source_name, s.archived AS source_archived,
                    r.name AS report_name, r.archived AS report_archived,
+                   st.task_name AS task_name, st.archived AS task_archived,
+                   sc.display_name AS script_name, sc.archived AS script_archived,
                    sp.status AS latest_source_status
             FROM actions a
             LEFT JOIN sources s ON s.id = a.source_id
             LEFT JOIN reports r ON r.id = a.report_id
+            LEFT JOIN scheduled_tasks st ON st.id = a.scheduled_task_id
+            LEFT JOIN scripts sc ON sc.id = a.script_id
             LEFT JOIN (
                 SELECT source_id, status,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
@@ -139,6 +144,8 @@ def list_actions(status: str | None = None):
     for r in rows:
         sid = r["source_id"]
         rid = r["report_id"]
+        tid = r["scheduled_task_id"] if "scheduled_task_id" in r.keys() else None
+        scid = r["script_id"] if "script_id" in r.keys() else None
         latest = r["latest_source_status"]
 
         # Source-tied: hide if the source is archived or no longer outdated
@@ -150,8 +157,15 @@ def list_actions(status: str | None = None):
         # Report-tied: hide if the report is archived
         if rid is not None and sid is None and r["report_archived"]:
             continue
+        # Task-tied: hide if task archived
+        if tid is not None and r["task_archived"]:
+            continue
+        # Script-tied: hide if script archived
+        if scid is not None and r["script_archived"]:
+            continue
 
-        # Determine asset identity for this action
+        # Determine asset identity for this action - priority order mirrors
+        # how the action was created: source > report > task > script
         if sid is not None:
             asset_type = "source"
             asset_id = sid
@@ -162,6 +176,16 @@ def list_actions(status: str | None = None):
             asset_id = rid
             asset_name = r["report_name"]
             asset_days = report_days.get(rid, 0)
+        elif tid is not None:
+            asset_type = "scheduled_task"
+            asset_id = tid
+            asset_name = r["task_name"]
+            asset_days = 0  # no meaningful day count for task failures yet
+        elif scid is not None:
+            asset_type = "script"
+            asset_id = scid
+            asset_name = r["script_name"]
+            asset_days = 0
         else:
             asset_type = None
             asset_id = None

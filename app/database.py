@@ -455,6 +455,11 @@ MIGRATIONS = [
 )""",
     """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id)""",
     """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date)""",
+    # Allow actions to be about scripts or scheduled tasks, not just sources/reports
+    "ALTER TABLE actions ADD COLUMN scheduled_task_id INTEGER REFERENCES scheduled_tasks(id)",
+    "ALTER TABLE actions ADD COLUMN script_id INTEGER REFERENCES scripts(id)",
+    "CREATE INDEX IF NOT EXISTS idx_actions_scheduled_task_id ON actions(scheduled_task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_actions_script_id ON actions(script_id)",
 ]
 
 
