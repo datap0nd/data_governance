@@ -458,6 +458,122 @@ def _backfill_alert_owners(db):
             )
 
 
+def _check_report_source_schedule(db, now: str, log_lines: list) -> int:
+    """Flag reports that refreshed BEFORE their sources' most recent data.
+
+    Scenario: Source X updated at 10am, Report Y that uses X refreshed at
+    9am. Y is showing stale X data until it refreshes again. This is a
+    classic schedule misalignment that leaves downstream reports behind.
+
+    Creates an action with type='schedule_mismatch' on the report, one per
+    report per problem period. Auto-resolves when the report's refresh
+    catches up past all its sources.
+
+    A 1-hour buffer is applied so clock skew and tight back-to-back
+    schedules don't generate spurious alerts.
+    """
+    BUFFER_HOURS = 1
+
+    rows = db.execute("""
+        SELECT r.id AS report_id, r.name AS report_name, r.owner,
+               r.pbi_last_refresh_at, s.id AS source_id, s.name AS source_name,
+               sp.last_data_at AS source_last_data_at
+        FROM reports r
+        JOIN report_tables rt ON rt.report_id = r.id
+        JOIN sources s ON s.id = rt.source_id
+        JOIN (
+            SELECT source_id, last_data_at,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+            FROM source_probes WHERE last_data_at IS NOT NULL
+        ) sp ON sp.source_id = s.id AND sp.rn = 1
+        WHERE COALESCE(r.archived, 0) = 0
+          AND COALESCE(s.archived, 0) = 0
+          AND r.pbi_last_refresh_at IS NOT NULL
+    """).fetchall()
+
+    # Group by report: keep the newest source data time + the source name
+    # that caused it
+    per_report: dict[int, dict] = {}
+    for r in rows:
+        try:
+            src_ts = r["source_last_data_at"].replace("Z", "+00:00") if isinstance(r["source_last_data_at"], str) else r["source_last_data_at"]
+            src_dt = datetime.fromisoformat(src_ts)
+            if src_dt.tzinfo is None:
+                src_dt = src_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        entry = per_report.get(r["report_id"])
+        if entry is None or src_dt > entry["src_dt"]:
+            per_report[r["report_id"]] = {
+                "report_name": r["report_name"],
+                "report_last_refresh": r["pbi_last_refresh_at"],
+                "owner": r["owner"],
+                "src_dt": src_dt,
+                "src_name": r["source_name"],
+            }
+
+    created = 0
+    resolved = 0
+    for report_id, info in per_report.items():
+        try:
+            rep_ts = info["report_last_refresh"].replace("Z", "+00:00") if isinstance(info["report_last_refresh"], str) else info["report_last_refresh"]
+            rep_dt = datetime.fromisoformat(rep_ts)
+            if rep_dt.tzinfo is None:
+                rep_dt = rep_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+        behind_hours = (info["src_dt"] - rep_dt).total_seconds() / 3600
+        is_mismatched = behind_hours > BUFFER_HOURS
+
+        short_src = info["src_name"].replace("\\", "/").split("/")[-1]
+        msg = (
+            f"Report last refreshed {rep_dt.strftime('%Y-%m-%d %H:%M')} "
+            f"but source {short_src} has data from "
+            f"{info['src_dt'].strftime('%Y-%m-%d %H:%M')} "
+            f"({int(behind_hours)}h behind)"
+        )
+
+        existing = db.execute(
+            """SELECT id FROM actions
+               WHERE report_id = ? AND source_id IS NULL
+                 AND type = 'schedule_mismatch'
+                 AND status NOT IN ('resolved', 'expected')""",
+            (report_id,),
+        ).fetchone()
+
+        if is_mismatched:
+            if not existing:
+                db.execute(
+                    """INSERT INTO actions (report_id, type, status, assigned_to, notes, created_at, updated_at)
+                       VALUES (?, 'schedule_mismatch', 'open', ?, ?, ?, ?)""",
+                    (report_id, info["owner"], msg, now, now),
+                )
+                created += 1
+                log_lines.append(f"SCHEDULE: {info['report_name']} - {int(behind_hours)}h behind {short_src}")
+            else:
+                # Refresh the notes so the message stays current
+                db.execute(
+                    "UPDATE actions SET notes = ?, updated_at = ? WHERE id = ?",
+                    (msg, now, existing["id"]),
+                )
+        else:
+            if existing:
+                db.execute(
+                    """UPDATE actions SET status = 'resolved', resolved_at = ?, updated_at = ?,
+                          notes = COALESCE(notes, '') || ' [auto-resolved: report caught up]'
+                       WHERE id = ?""",
+                    (now, now, existing["id"]),
+                )
+                resolved += 1
+
+    if created or resolved:
+        log_lines.append(
+            f"Schedule check: {created} new, {resolved} resolved (report-vs-source)"
+        )
+    return created
+
+
 def _check_dependency_freshness(db, now: str, log_lines: list):
     """Check if any MV's upstream sources have newer data than the MV itself.
 
@@ -616,6 +732,9 @@ def run_probe() -> dict:
 
         # 4. Dependency freshness check: flag MVs whose upstream data is newer
         _check_dependency_freshness(db, now, log_lines)
+
+        # 4b. Schedule mismatch: report refreshed before its sources
+        _check_report_source_schedule(db, now, log_lines)
 
         # 5. Auto-close stale_source actions/alerts for sources no longer outdated
         auto_closed = _auto_close_stale_entries(db, now)

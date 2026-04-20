@@ -217,6 +217,7 @@ function actionTypeBadge(type) {
         refresh_overdue: "Refresh Overdue",
         task_failed: "Task Failed",
         script_failed: "Script Failed",
+        schedule_mismatch: "Stale vs Source",
     };
     const colors = {
         stale_source: "badge-red",
@@ -228,6 +229,7 @@ function actionTypeBadge(type) {
         refresh_overdue: "badge-yellow",
         task_failed: "badge-red",
         script_failed: "badge-red",
+        schedule_mismatch: "badge-yellow",
     };
     return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
