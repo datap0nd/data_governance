@@ -1,59 +1,38 @@
 from fastapi import APIRouter
 from app.database import get_db
 from app.models import DashboardStats, ScanRunOut
+from app.routers.actions import list_actions
+from app.routers.sources import list_sources
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 @router.get("", response_model=DashboardStats)
 def get_dashboard():
+    # Stats are derived from the same endpoints that power the Sources and
+    # Alerts pages so the numbers on the cards always match what the user
+    # sees when they click through. A tiny bit of redundant work, but zero
+    # drift risk.
+    visible_sources = list_sources(include_archived=False)
+    visible_actions = list_actions(status=None)
+
+    sources_total = len(visible_sources)
+    sources_fresh = sum(1 for s in visible_sources if s.status == "fresh")
+    sources_outdated = sum(
+        1 for s in visible_sources if s.status in ("outdated", "stale", "error")
+    )
+    sources_unknown = sources_total - sources_fresh - sources_outdated
+
+    # Active = anything that isn't resolved or expected (same filter as
+    # the Alerts table; list_actions already applied the visibility rules)
+    alerts_active = sum(
+        1 for a in visible_actions if a.status not in ("resolved", "expected")
+    )
+
     with get_db() as db:
-        # Total source count
-        sources_total = db.execute("SELECT COUNT(*) AS c FROM sources WHERE archived = 0").fetchone()["c"]
-
-        # Source status counts from latest probes
-        probe_statuses = db.execute("""
-            SELECT COALESCE(sp.status, 'unknown') AS eff_status, COUNT(*) AS c
-            FROM sources s
-            LEFT JOIN (
-                SELECT source_id, status,
-                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
-                FROM source_probes
-            ) sp ON sp.source_id = s.id AND sp.rn = 1
-            WHERE s.archived = 0
-            GROUP BY eff_status
-        """).fetchall()
-
-        status_counts = {r["eff_status"]: r["c"] for r in probe_statuses}
-        sources_fresh = status_counts.get("fresh", 0)
-        sources_stale = 0  # no longer used, always 0
-        sources_outdated = status_counts.get("outdated", 0) + status_counts.get("stale", 0) + status_counts.get("error", 0)
-        sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0) + status_counts.get("no_rule", 0)
-
-        # Report counts
-        reports_total = db.execute("SELECT COUNT(*) AS c FROM reports WHERE archived = 0").fetchone()["c"]
-
-        # Alert count - match what's visible in the dashboard Alerts table.
-        # Use the actions table (same source of truth as the UI), filtered to
-        # unresolved entries whose source is still outdated (or unknown).
-        alerts_active = db.execute(
-            """SELECT COUNT(*) AS c FROM actions a
-               LEFT JOIN sources s ON s.id = a.source_id
-               LEFT JOIN (
-                   SELECT source_id, status,
-                          ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
-                   FROM source_probes
-               ) sp ON sp.source_id = a.source_id AND sp.rn = 1
-               WHERE a.status NOT IN ('resolved', 'expected')
-                 AND (s.archived IS NULL OR s.archived = 0)
-                 AND (
-                     a.source_id IS NULL
-                     OR sp.status IS NULL
-                     OR sp.status IN ('outdated', 'stale', 'error')
-                 )"""
+        reports_total = db.execute(
+            "SELECT COUNT(*) AS c FROM reports WHERE archived = 0"
         ).fetchone()["c"]
-
-        # Last scan
         last_scan_row = db.execute(
             "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
@@ -62,7 +41,7 @@ def get_dashboard():
     return DashboardStats(
         sources_total=sources_total,
         sources_fresh=sources_fresh,
-        sources_stale=sources_stale,
+        sources_stale=0,  # legacy field, always 0
         sources_outdated=sources_outdated,
         sources_unknown=sources_unknown,
         reports_total=reports_total,
