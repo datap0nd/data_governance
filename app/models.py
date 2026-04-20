@@ -155,7 +155,11 @@ class ActionOut(BaseModel):
     # Days the asset has been in a problem state (covers both source
     # outdated days and report refresh-overdue days)
     asset_days: int = 0
-    type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue
+    # Extra troubleshooting context for specific alert types. For
+    # schedule_mismatch: names of the sources that refreshed after the
+    # report, with how far behind the report is.
+    detail_items: list[str] = []
+    type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue, schedule_mismatch
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
     notes: str | None = None

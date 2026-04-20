@@ -101,6 +101,65 @@ def _compute_report_action_days(db) -> dict[int, int]:
     return result
 
 
+def _compute_report_stale_sources(db) -> dict[int, list[str]]:
+    """For each report, list sources with data newer than the report's last
+    refresh. Output strings look like "source_name (+Nh)" to give the user
+    enough context to troubleshoot without clicking through.
+
+    Empty list means the report is caught up. Used to populate
+    detail_items on schedule_mismatch actions.
+    """
+    rows = db.execute("""
+        SELECT r.id AS report_id, r.pbi_last_refresh_at,
+               s.name AS source_name, sp.last_data_at
+        FROM reports r
+        JOIN report_tables rt ON rt.report_id = r.id
+        JOIN sources s ON s.id = rt.source_id
+        JOIN (
+            SELECT source_id, last_data_at,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+            FROM source_probes WHERE last_data_at IS NOT NULL
+        ) sp ON sp.source_id = s.id AND sp.rn = 1
+        WHERE COALESCE(r.archived, 0) = 0
+          AND COALESCE(s.archived, 0) = 0
+          AND r.pbi_last_refresh_at IS NOT NULL
+    """).fetchall()
+
+    def _parse_dt(val):
+        if not val:
+            return None
+        try:
+            ts = val.replace("Z", "+00:00") if isinstance(val, str) else val
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    result: dict[int, list[tuple[float, str]]] = {}
+    for r in rows:
+        report_dt = _parse_dt(r["pbi_last_refresh_at"])
+        source_dt = _parse_dt(r["last_data_at"])
+        if not report_dt or not source_dt:
+            continue
+        delta_hours = (source_dt - report_dt).total_seconds() / 3600
+        if delta_hours <= 1:  # same 1h buffer as detector
+            continue
+        short = r["source_name"].replace("\\", "/").split("/")[-1]
+        label = (
+            f"{short} (+{int(delta_hours)}h)" if delta_hours < 48
+            else f"{short} (+{int(delta_hours / 24)}d)"
+        )
+        result.setdefault(r["report_id"], []).append((delta_hours, label))
+
+    # Sort each list by how far behind (most behind first), drop the sort key
+    return {
+        rid: [label for _, label in sorted(items, key=lambda x: -x[0])]
+        for rid, items in result.items()
+    }
+
+
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
@@ -137,6 +196,7 @@ def list_actions(status: str | None = None):
         source_days = _compute_source_days_outdated(db)
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
         report_days = _compute_report_action_days(db)
+        report_stale_sources = _compute_report_stale_sources(db)
 
     ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
 
@@ -201,6 +261,11 @@ def list_actions(status: str | None = None):
             if d >= top_days:
                 top_rid, top_rname, top_days = lrid, lrname, d
 
+        # Troubleshooting details shown inline on the alert row
+        detail_items: list[str] = []
+        if r["type"] == "schedule_mismatch" and rid is not None:
+            detail_items = report_stale_sources.get(rid, [])
+
         results.append(ActionOut(
             id=r["id"],
             source_id=sid,
@@ -216,6 +281,7 @@ def list_actions(status: str | None = None):
             asset_id=asset_id,
             asset_name=asset_name,
             asset_days=asset_days,
+            detail_items=detail_items,
             type=r["type"],
             status=r["status"],
             assigned_to=r["assigned_to"],

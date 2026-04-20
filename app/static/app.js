@@ -1423,11 +1423,15 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             ? `alerts-script-link" data-script-id="${a.asset_id}`
             : null;
 
-        // Secondary info under the asset name: for source alerts, show
-        // which report is most affected; for other types, leave blank.
+        // Secondary info under the asset name
         let sub = "";
         if (a.asset_type === "source" && a.top_report_name) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">affects ${esc(a.top_report_name)}${a.report_names.length > 1 ? ` +${a.report_names.length - 1}` : ""}</div>`;
+        } else if (a.detail_items && a.detail_items.length > 0) {
+            // For schedule_mismatch, show the sources that refreshed after
+            const shown = a.detail_items.slice(0, 3).map(esc).join(", ");
+            const more = a.detail_items.length > 3 ? ` +${a.detail_items.length - 3}` : "";
+            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400" title="${esc(a.detail_items.join(", "))}">stale vs: ${shown}${more}</div>`;
         }
 
         const assetCell = linkData
@@ -1515,25 +1519,55 @@ function bindDashboardAlerts() {
     });
 }
 
+function _waitForDataTable(id, timeoutMs = 2000) {
+    // Poll until window._dt[id] exists with _displayRows populated, then
+    // resolve. Gives up after timeoutMs and resolves anyway so the caller
+    // still tries to render something.
+    return new Promise(resolve => {
+        const start = Date.now();
+        const check = () => {
+            const dt = window._dt && window._dt[id];
+            if (dt && dt._displayRows && dt._displayRows.length > 0) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() - start > timeoutMs) {
+                resolve(false);
+                return;
+            }
+            setTimeout(check, 30);
+        };
+        check();
+    });
+}
+
 function bindDashboardAlertsRowControls() {
-    // Clickable report cell - navigate to reports page and open detail
+    // Clickable report cell - navigate to reports page and open detail.
+    // showReportDetail needs the DataTable bound and _displayRows populated
+    // (so it can find the right row to attach the expanded panel after);
+    // requestAnimationFrame + a short wait ensures navigate() finished
+    // painting the Reports page before we try to open it.
     document.querySelectorAll(".alerts-report-link").forEach(el => {
         el.addEventListener("click", async (e) => {
             e.stopPropagation();
             const rid = parseInt(el.dataset.reportId);
             if (!rid) return;
             await navigate("reports");
-            const rpt = (window._dashboardReports || []).find(r => r.id === rid);
-            if (rpt) {
-                showReportDetail(rpt);
-            } else {
-                // Fresh fetch in case dashboard cache is stale
-                try {
-                    const all = await api("/api/reports");
-                    const found = all.find(r => r.id === rid);
-                    if (found) showReportDetail(found);
-                } catch (_) {}
+            let report;
+            try {
+                const all = await api("/api/reports");
+                report = all.find(r => r.id === rid);
+            } catch (_) {
+                report = (window._dashboardReports || []).find(r => r.id === rid);
             }
+            if (!report) return;
+            await _waitForDataTable("dt-reports");
+            showReportDetail(report);
+            // Scroll the expanded row into view
+            requestAnimationFrame(() => {
+                const expanded = document.querySelector(`.report-expand-row[data-report-id="${rid}"]`);
+                if (expanded) expanded.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
         });
     });
 
@@ -1544,16 +1578,15 @@ function bindDashboardAlertsRowControls() {
             const sid = parseInt(el.dataset.sourceId);
             if (!sid) return;
             await navigate("sources");
-            const src = (window._dashboardSources || []).find(s => s.id === sid);
-            if (src) {
-                showSourceDetail(src);
-            } else {
-                // Fresh fetch
-                try {
-                    const fresh = await api(`/api/sources/${sid}`);
-                    if (fresh) showSourceDetail(fresh);
-                } catch (_) {}
+            let src;
+            try {
+                src = await api(`/api/sources/${sid}`);
+            } catch (_) {
+                src = (window._dashboardSources || []).find(s => s.id === sid);
             }
+            if (!src) return;
+            await _waitForDataTable("dt-sources");
+            showSourceDetail(src);
         });
     });
 
