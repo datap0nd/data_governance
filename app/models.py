@@ -148,7 +148,14 @@ class ActionOut(BaseModel):
     top_report_name: str | None = None
     top_report_degradation_days: int = 0
     source_days_outdated: int = 0
-    type: str  # stale_source, error_source, broken_ref, changed_query
+    # Asset abstraction - an action is about either a source or a report
+    asset_type: str | None = None  # "source", "report", ...
+    asset_id: int | None = None
+    asset_name: str | None = None
+    # Days the asset has been in a problem state (covers both source
+    # outdated days and report refresh-overdue days)
+    asset_days: int = 0
+    type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
     notes: str | None = None

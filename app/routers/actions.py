@@ -42,12 +42,17 @@ def _compute_report_context(db, source_days: dict[int, int]):
 
     source_reports_map: {source_id: [(report_id, report_name), ...]}
     report_degradation_map: {report_id: total_degradation_days}
+
+    Active (non-archived) reports are preferred, but archived reports are
+    still included so the Alerts table matches what Sources page shows.
     """
     rows = db.execute("""
-        SELECT rt.source_id, rt.report_id, r.name AS report_name
+        SELECT rt.source_id, rt.report_id, r.name AS report_name,
+               COALESCE(r.archived, 0) AS archived
         FROM report_tables rt
         JOIN reports r ON r.id = rt.report_id
-        WHERE COALESCE(r.archived, 0) = 0 AND rt.source_id IS NOT NULL
+        WHERE rt.source_id IS NOT NULL
+        ORDER BY archived ASC, r.name ASC
     """).fetchall()
 
     source_reports: dict[int, list[tuple[int, str]]] = {}
@@ -68,16 +73,45 @@ def _compute_report_context(db, source_days: dict[int, int]):
     return source_reports, report_degradation, report_names
 
 
+def _compute_report_action_days(db) -> dict[int, int]:
+    """Days since last successful refresh, keyed by report_id.
+
+    For report-level actions (refresh_failed / refresh_overdue) we want a
+    "days since problem started" metric analogous to source_days_outdated.
+    Uses pbi_last_refresh_at as the reference point.
+    """
+    rows = db.execute(
+        "SELECT id, pbi_last_refresh_at FROM reports WHERE archived = 0"
+    ).fetchall()
+    result: dict[int, int] = {}
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        last = r["pbi_last_refresh_at"]
+        if not last:
+            result[r["id"]] = 0
+            continue
+        try:
+            ts = last.replace("Z", "+00:00") if isinstance(last, str) else last
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            result[r["id"]] = max(0, (now - dt).days)
+        except (ValueError, TypeError, AttributeError):
+            result[r["id"]] = 0
+    return result
+
+
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
-        # Hide actions tied to archived sources - the source has been retired
-        # so the alert isn't actionable any more. Also hide actions where the
-        # source's latest probe is no longer outdated (these are stale from
-        # before a rule change / data refresh; the prober will auto-close
-        # them on its next run, but don't clutter the UI in the meantime).
+        # Each action is about one asset - either a source or a report.
+        # For source-tied actions we also look up the latest probe so we can
+        # skip actions on sources that are no longer outdated (stale rows from
+        # before a freshness rule change will get auto-resolved on next probe
+        # but we don't want them cluttering the UI in the meantime).
         query = """
-            SELECT a.*, s.name AS source_name, r.name AS report_name,
+            SELECT a.*, s.name AS source_name, s.archived AS source_archived,
+                   r.name AS report_name, r.archived AS report_archived,
                    sp.status AS latest_source_status
             FROM actions a
             LEFT JOIN sources s ON s.id = a.source_id
@@ -87,56 +121,77 @@ def list_actions(status: str | None = None):
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = a.source_id AND sp.rn = 1
-            WHERE (s.archived IS NULL OR s.archived = 0)
         """
         params = []
         if status:
-            query += " AND a.status = ?"
+            query += " WHERE a.status = ?"
             params.append(status)
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
 
         source_days = _compute_source_days_outdated(db)
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
+        report_days = _compute_report_action_days(db)
 
-    # Only include actions that are either:
-    #   a) not tied to a source (broken_ref, changed_query etc.), or
-    #   b) tied to a source whose latest probe is still outdated/stale/error,
-    #      OR has never been probed (status NULL) so we don't know yet
-    # This eliminates the 0d noise for sources that have flipped back to fresh
-    # or no_rule but whose old alerts haven't been auto-closed yet.
     ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
 
     results: list[ActionOut] = []
     for r in rows:
         sid = r["source_id"]
+        rid = r["report_id"]
         latest = r["latest_source_status"]
-        # Skip source-tied actions whose source isn't currently outdated.
-        # Keep actions with no source_id (source-independent issues).
-        # Keep actions whose source has never been probed (latest is None) -
-        # we can't tell yet if it's degraded.
-        if sid is not None and latest is not None and latest not in ACTIONABLE_STATUSES:
+
+        # Source-tied: hide if the source is archived or no longer outdated
+        if sid is not None:
+            if r["source_archived"]:
+                continue
+            if latest is not None and latest not in ACTIONABLE_STATUSES:
+                continue
+        # Report-tied: hide if the report is archived
+        if rid is not None and sid is None and r["report_archived"]:
             continue
+
+        # Determine asset identity for this action
+        if sid is not None:
+            asset_type = "source"
+            asset_id = sid
+            asset_name = r["source_name"]
+            asset_days = source_days.get(sid, 0)
+        elif rid is not None:
+            asset_type = "report"
+            asset_id = rid
+            asset_name = r["report_name"]
+            asset_days = report_days.get(rid, 0)
+        else:
+            asset_type = None
+            asset_id = None
+            asset_name = None
+            asset_days = 0
+
+        # For source-tied alerts, surface the top affected report
         linked = source_reports.get(sid, []) if sid else []
         names = [rn for _, rn in linked]
-        # Pick the report with the highest degradation_days as the "top" report
         top_rid, top_rname, top_days = None, None, 0
-        for rid, rname in linked:
-            d = report_degradation.get(rid, 0)
+        for lrid, lrname in linked:
+            d = report_degradation.get(lrid, 0)
             if d >= top_days:
-                top_rid, top_rname, top_days = rid, rname, d
+                top_rid, top_rname, top_days = lrid, lrname, d
 
         results.append(ActionOut(
             id=r["id"],
-            source_id=r["source_id"],
+            source_id=sid,
             source_name=r["source_name"],
-            report_id=r["report_id"],
+            report_id=rid,
             report_name=r["report_name"],
             report_names=names,
             top_report_id=top_rid,
             top_report_name=top_rname,
             top_report_degradation_days=top_days,
             source_days_outdated=source_days.get(sid, 0) if sid else 0,
+            asset_type=asset_type,
+            asset_id=asset_id,
+            asset_name=asset_name,
+            asset_days=asset_days,
             type=r["type"],
             status=r["status"],
             assigned_to=r["assigned_to"],
@@ -146,31 +201,27 @@ def list_actions(status: str | None = None):
             resolved_at=r["resolved_at"],
         ))
 
-    # Sort: open/unresolved first; within that by top_report_degradation_days DESC,
-    # then source_days_outdated DESC, then created_at DESC
+    # Sort: open first; by asset_days DESC (most urgent first); then created_at DESC
     def sort_key(a: ActionOut):
         is_closed = a.status in ("resolved", "expected")
         return (
             1 if is_closed else 0,
-            -a.top_report_degradation_days,
-            -a.source_days_outdated,
+            -max(a.asset_days, a.top_report_degradation_days),
             -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )
     results.sort(key=sort_key)
 
-    # Dedupe by source_id so each source shows one row even if the DB
-    # accidentally holds multiple open actions for it (happens when old
-    # action rows get merged via UPDATE ... SET source_id during source
-    # renames). We keep the first one in sort order (highest priority).
-    seen_source_ids: set[int] = set()
+    # Dedupe: one row per asset (source or report)
+    seen: set[tuple[str, int]] = set()
     deduped: list[ActionOut] = []
     for a in results:
-        if a.source_id is None:
+        if a.asset_type is None or a.asset_id is None:
             deduped.append(a)
             continue
-        if a.source_id in seen_source_ids:
+        key = (a.asset_type, a.asset_id)
+        if key in seen:
             continue
-        seen_source_ids.add(a.source_id)
+        seen.add(key)
         deduped.append(a)
     return deduped
 

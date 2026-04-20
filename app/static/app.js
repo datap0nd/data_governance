@@ -213,6 +213,8 @@ function actionTypeBadge(type) {
         error_source: "Degraded",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
+        refresh_failed: "Refresh Failed",
+        refresh_overdue: "Refresh Overdue",
     };
     const colors = {
         stale_source: "badge-red",
@@ -220,6 +222,8 @@ function actionTypeBadge(type) {
         error_source: "badge-red",
         broken_ref: "badge-red",
         changed_query: "badge-blue",
+        refresh_failed: "badge-red",
+        refresh_overdue: "badge-yellow",
     };
     return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
@@ -1401,22 +1405,40 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
     `;
 
     const rows = filtered.map(a => {
-        const sourceName = shortNameFromPath(a.source_name || "") || (a.source_name || "-");
-        const reportCell = a.top_report_name
-            ? `<a class="alerts-link alerts-report-link" data-report-id="${a.top_report_id}" title="Open report details">
-                   <strong>${esc(a.top_report_name)}</strong>
-                   <div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">${a.top_report_degradation_days}d total${a.report_names.length > 1 ? ` &middot; in ${a.report_names.length} reports` : ""}</div>
+        const rawName = a.asset_name || a.source_name || a.report_name || "-";
+        const assetName = shortNameFromPath(rawName) || rawName;
+        const linkData = a.asset_type === "source"
+            ? `alerts-source-link" data-source-id="${a.asset_id}`
+            : a.asset_type === "report"
+            ? `alerts-report-link" data-report-id="${a.asset_id}`
+            : null;
+
+        // Secondary info under the asset name: for source alerts, show
+        // which report is most affected; for report alerts, show the
+        // refresh status detail if available.
+        let sub = "";
+        if (a.asset_type === "source" && a.top_report_name) {
+            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">affects ${esc(a.top_report_name)}${a.report_names.length > 1 ? ` +${a.report_names.length - 1}` : ""}</div>`;
+        }
+
+        const assetCell = linkData
+            ? `<a class="alerts-link ${linkData}" title="Open detail">
+                   <strong>${esc(assetName)}</strong>${sub}
                </a>`
+            : `<div><strong>${esc(assetName)}</strong>${sub}</div>`;
+
+        const typeCell = a.asset_type
+            ? `<span class="asset-type-badge asset-type-${a.asset_type}">${a.asset_type}</span>`
             : '<span style="color:var(--text-dim)">-</span>';
-        const sourceCell = a.source_id
-            ? `<a class="alerts-link alerts-source-link" data-source-id="${a.source_id}" title="Open source details"><strong>${esc(sourceName)}</strong></a>`
-            : `<strong>${esc(sourceName)}</strong>`;
+
+        const days = a.asset_days || 0;
+
         return `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
-                <td>${reportCell}</td>
-                <td>${sourceCell}</td>
+                <td>${assetCell}</td>
+                <td>${typeCell}</td>
                 <td style="text-align:right">
-                    <span class="days-pill${a.source_days_outdated >= 7 ? ' days-pill-high' : ''}">${a.source_days_outdated}d</span>
+                    <span class="days-pill${days >= 7 ? ' days-pill-high' : ''}">${days}d</span>
                 </td>
                 <td>${actionTypeBadge(a.type)}</td>
                 <td>
@@ -1441,12 +1463,12 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             <table class="alerts-table">
                 <thead>
                     <tr>
-                        <th style="width:26%">Report</th>
-                        <th style="width:24%">Source</th>
+                        <th style="width:34%">Asset</th>
+                        <th style="width:10%">Type</th>
                         <th style="width:8%;text-align:right">Days</th>
-                        <th style="width:14%">Type</th>
-                        <th style="width:14%">Owner</th>
-                        <th style="width:14%">Status</th>
+                        <th style="width:16%">Issue</th>
+                        <th style="width:16%">Owner</th>
+                        <th style="width:16%">Status</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>

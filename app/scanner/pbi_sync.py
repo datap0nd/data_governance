@@ -251,43 +251,113 @@ def is_refresh_overdue(schedule_str: str | None, last_refresh_at: str | None) ->
 
 
 def _check_refresh_alerts(db, now: str) -> int:
-    """Create alerts for reports with overdue PBI refreshes.
+    """Create actions + alerts for reports with refresh problems.
 
-    Avoids duplicates by checking for existing unresolved alerts.
+    Two kinds of issues, both surface in the dashboard Alerts table:
+      - refresh_failed: pbi_refresh_status indicates the last refresh errored
+      - refresh_overdue: scheduled to refresh but no recent successful run
+
+    Duplicates are avoided by the standard "open action already exists for
+    this report and type" check. When a refresh recovers (status becomes
+    Completed), any open action for that report auto-resolves on the next
+    sync via _auto_resolve_recovered_refreshes.
     """
     reports = db.execute(
-        """SELECT id, name, pbi_refresh_schedule, pbi_last_refresh_at
-           FROM reports WHERE archived = 0 AND pbi_refresh_schedule IS NOT NULL"""
+        """SELECT id, name, pbi_refresh_schedule, pbi_last_refresh_at,
+                  pbi_refresh_status, pbi_refresh_error, owner
+           FROM reports WHERE archived = 0"""
     ).fetchall()
 
     created = 0
     for r in reports:
-        if not is_refresh_overdue(r["pbi_refresh_schedule"], r["pbi_last_refresh_at"]):
+        status_val = (r["pbi_refresh_status"] or "").lower()
+        is_failed = status_val in ("failed", "disabled", "cancelled")
+        is_overdue = (
+            r["pbi_refresh_schedule"]
+            and is_refresh_overdue(r["pbi_refresh_schedule"], r["pbi_last_refresh_at"])
+        )
+
+        if not is_failed and not is_overdue:
             continue
 
-        # Check for existing unresolved alert for this report
-        existing = db.execute(
+        # Failed takes precedence over overdue (a failed run is the root cause)
+        action_type = "refresh_failed" if is_failed else "refresh_overdue"
+        last_str = r["pbi_last_refresh_at"] or "never"
+        if is_failed:
+            msg = f"PBI refresh {status_val}: {r['name']}"
+            if r["pbi_refresh_error"]:
+                msg += f" - {r['pbi_refresh_error'][:200]}"
+            severity = "critical"
+        else:
+            msg = (
+                f"PBI refresh overdue: {r['name']} "
+                f"(schedule: {r['pbi_refresh_schedule']}, last refresh: {last_str})"
+            )
+            severity = "warning"
+
+        # Action (drives the Alerts table on the dashboard)
+        existing_action = db.execute(
+            """SELECT id FROM actions
+               WHERE report_id = ? AND source_id IS NULL AND type IN ('refresh_failed', 'refresh_overdue')
+                 AND status NOT IN ('resolved', 'expected')""",
+            (r["id"],),
+        ).fetchone()
+        if not existing_action:
+            db.execute(
+                """INSERT INTO actions (report_id, type, status, assigned_to, notes, created_at, updated_at)
+                   VALUES (?, ?, 'open', ?, ?, ?, ?)""",
+                (r["id"], action_type, r["owner"], msg, now, now),
+            )
+            created += 1
+
+        # Alert (legacy view - keep for back-compat, but tied to report_id now)
+        existing_alert = db.execute(
             """SELECT id FROM alerts
                WHERE message LIKE ? AND resolution_status IS NULL""",
-            (f"PBI refresh overdue: {r['name']}%",)
+            (f"PBI refresh % {r['name']}%",),
         ).fetchone()
+        if not existing_alert:
+            db.execute(
+                """INSERT INTO alerts (severity, message, assigned_to, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (severity, msg, r["owner"], now),
+            )
 
-        if existing:
-            continue
-
-        last_str = r["pbi_last_refresh_at"] or "never"
-        db.execute(
-            """INSERT INTO alerts (severity, message, created_at)
-               VALUES (?, ?, ?)""",
-            (
-                "warning",
-                f"PBI refresh overdue: {r['name']} (schedule: {r['pbi_refresh_schedule']}, last refresh: {last_str})",
-                now,
-            ),
-        )
-        created += 1
-
+    # Auto-resolve actions for reports whose refresh is back to healthy
+    resolved = _auto_resolve_recovered_refreshes(db, now)
+    if resolved:
+        logger.info("Auto-resolved %s recovered refresh actions", resolved)
     return created
+
+
+def _auto_resolve_recovered_refreshes(db, now: str) -> int:
+    """Close refresh_* actions whose report is no longer failing/overdue."""
+    rows = db.execute(
+        """SELECT a.id, r.pbi_refresh_status, r.pbi_refresh_schedule,
+                  r.pbi_last_refresh_at
+           FROM actions a
+           JOIN reports r ON r.id = a.report_id
+           WHERE a.source_id IS NULL
+             AND a.type IN ('refresh_failed', 'refresh_overdue')
+             AND a.status NOT IN ('resolved', 'expected')"""
+    ).fetchall()
+    closed = 0
+    for row in rows:
+        status_val = (row["pbi_refresh_status"] or "").lower()
+        is_failed = status_val in ("failed", "disabled", "cancelled")
+        is_overdue = (
+            row["pbi_refresh_schedule"]
+            and is_refresh_overdue(row["pbi_refresh_schedule"], row["pbi_last_refresh_at"])
+        )
+        if not is_failed and not is_overdue:
+            db.execute(
+                """UPDATE actions SET status = 'resolved', resolved_at = ?, updated_at = ?,
+                      notes = COALESCE(notes, '') || ' [auto-resolved: refresh recovered]'
+                   WHERE id = ?""",
+                (now, now, row["id"]),
+            )
+            closed += 1
+    return closed
 
 
 PS1_USAGE_SCRIPT = BASE_DIR / "tools" / "pbi_usage_sync.ps1"
