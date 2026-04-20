@@ -1383,7 +1383,7 @@ function renderDashboardAlertsSection(actions, people) {
     return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
             <h2 style="margin:0">Alerts</h2>
-            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by report degradation days (sum of days each source is past its freshness rule)</span>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by days in problem state (most urgent first)</span>
         </div>
         <div class="alerts-chips">${chipsHtml}</div>
         <div id="dashboard-alerts-tbody-wrap">${tableHtml}</div>

@@ -225,12 +225,14 @@ def list_actions(status: str | None = None):
             resolved_at=r["resolved_at"],
         ))
 
-    # Sort: open first; by asset_days DESC (most urgent first); then created_at DESC
+    # Sort: open first; then by days in problem state DESC (matches the
+    # Days column the user sees in the table); finally by created_at DESC
+    # for deterministic tie-breaking.
     def sort_key(a: ActionOut):
         is_closed = a.status in ("resolved", "expected")
         return (
             1 if is_closed else 0,
-            -max(a.asset_days, a.top_report_degradation_days),
+            -a.asset_days,
             -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )
     results.sort(key=sort_key)
