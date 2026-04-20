@@ -335,6 +335,52 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
         )
 
 
+def _dedupe_open_actions(db, now: str) -> int:
+    """Collapse multiple open stale_source actions for the same source.
+
+    Sources can end up with multiple open actions when merge logic in the
+    scanner reparents action rows to a new source_id. Keep the oldest
+    action (it carries the longest history) and mark the rest as resolved.
+
+    Returns the count of duplicates closed.
+    """
+    # Find source_ids that have more than one open action
+    dup_rows = db.execute(
+        """SELECT source_id
+           FROM actions
+           WHERE source_id IS NOT NULL
+             AND status NOT IN ('resolved', 'expected')
+           GROUP BY source_id
+           HAVING COUNT(*) > 1"""
+    ).fetchall()
+
+    closed = 0
+    for row in dup_rows:
+        sid = row["source_id"]
+        # Keep the oldest, close the rest
+        keep = db.execute(
+            """SELECT id FROM actions
+               WHERE source_id = ?
+                 AND status NOT IN ('resolved', 'expected')
+               ORDER BY created_at ASC LIMIT 1""",
+            (sid,),
+        ).fetchone()
+        keep_id = keep["id"] if keep else None
+        if keep_id is None:
+            continue
+        result = db.execute(
+            """UPDATE actions
+               SET status = 'resolved', resolved_at = ?, updated_at = ?,
+                   notes = COALESCE(notes, '') || ' [auto-resolved: deduplicated]'
+               WHERE source_id = ?
+                 AND id != ?
+                 AND status NOT IN ('resolved', 'expected')""",
+            (now, now, sid, keep_id),
+        )
+        closed += result.rowcount or 0
+    return closed
+
+
 def _auto_close_stale_entries(db, now: str) -> int:
     """Close stale_source actions and alerts for sources no longer outdated.
 
@@ -575,6 +621,11 @@ def run_probe() -> dict:
         auto_closed = _auto_close_stale_entries(db, now)
         if auto_closed:
             log_lines.append(f"Auto-closed {auto_closed} stale alerts (sources no longer outdated)")
+
+        # 6. Dedupe: collapse multiple open actions for the same source
+        deduped = _dedupe_open_actions(db, now)
+        if deduped:
+            log_lines.append(f"Deduped {deduped} duplicate open actions (same source, multiple rows)")
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()

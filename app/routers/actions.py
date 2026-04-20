@@ -157,7 +157,22 @@ def list_actions(status: str | None = None):
             -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )
     results.sort(key=sort_key)
-    return results
+
+    # Dedupe by source_id so each source shows one row even if the DB
+    # accidentally holds multiple open actions for it (happens when old
+    # action rows get merged via UPDATE ... SET source_id during source
+    # renames). We keep the first one in sort order (highest priority).
+    seen_source_ids: set[int] = set()
+    deduped: list[ActionOut] = []
+    for a in results:
+        if a.source_id is None:
+            deduped.append(a)
+            continue
+        if a.source_id in seen_source_ids:
+            continue
+        seen_source_ids.add(a.source_id)
+        deduped.append(a)
+    return deduped
 
 
 @router.patch("/{action_id}", response_model=ActionOut)

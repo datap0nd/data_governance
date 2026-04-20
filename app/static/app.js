@@ -1403,13 +1403,18 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
     const rows = filtered.map(a => {
         const sourceName = shortNameFromPath(a.source_name || "") || (a.source_name || "-");
         const reportCell = a.top_report_name
-            ? `<div><strong>${esc(a.top_report_name)}</strong></div>
-               <div style="font-size:0.7rem;color:var(--text-dim)">${a.top_report_degradation_days}d total${a.report_names.length > 1 ? ` &middot; in ${a.report_names.length} reports` : ""}</div>`
+            ? `<a class="alerts-link alerts-report-link" data-report-id="${a.top_report_id}" title="Open report details">
+                   <strong>${esc(a.top_report_name)}</strong>
+                   <div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">${a.top_report_degradation_days}d total${a.report_names.length > 1 ? ` &middot; in ${a.report_names.length} reports` : ""}</div>
+               </a>`
             : '<span style="color:var(--text-dim)">-</span>';
+        const sourceCell = a.source_id
+            ? `<a class="alerts-link alerts-source-link" data-source-id="${a.source_id}" title="Open source details"><strong>${esc(sourceName)}</strong></a>`
+            : `<strong>${esc(sourceName)}</strong>`;
         return `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>${reportCell}</td>
-                <td><strong>${esc(sourceName)}</strong></td>
+                <td>${sourceCell}</td>
                 <td style="text-align:right">
                     <span class="days-pill${a.source_days_outdated >= 7 ? ' days-pill-high' : ''}">${a.source_days_outdated}d</span>
                 </td>
@@ -1479,6 +1484,47 @@ function bindDashboardAlerts() {
 }
 
 function bindDashboardAlertsRowControls() {
+    // Clickable report cell - navigate to reports page and open detail
+    document.querySelectorAll(".alerts-report-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const rid = parseInt(el.dataset.reportId);
+            if (!rid) return;
+            await navigate("reports");
+            const rpt = (window._dashboardReports || []).find(r => r.id === rid);
+            if (rpt) {
+                showReportDetail(rpt);
+            } else {
+                // Fresh fetch in case dashboard cache is stale
+                try {
+                    const all = await api("/api/reports");
+                    const found = all.find(r => r.id === rid);
+                    if (found) showReportDetail(found);
+                } catch (_) {}
+            }
+        });
+    });
+
+    // Clickable source cell - navigate to sources page and open detail
+    document.querySelectorAll(".alerts-source-link").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const sid = parseInt(el.dataset.sourceId);
+            if (!sid) return;
+            await navigate("sources");
+            const src = (window._dashboardSources || []).find(s => s.id === sid);
+            if (src) {
+                showSourceDetail(src);
+            } else {
+                // Fresh fetch
+                try {
+                    const fresh = await api(`/api/sources/${sid}`);
+                    if (fresh) showSourceDetail(fresh);
+                } catch (_) {}
+            }
+        });
+    });
+
     // Status pill dropdowns (reuse open/close behavior) + dashboard-aware state update
     if (!window._statusDropdownOutsideClick) {
         window._statusDropdownOutsideClick = true;
@@ -1800,11 +1846,6 @@ async function renderSources() {
         { key: "type", label: "Type", width: COL_W.sm, render: s => typeBadge(s.type) },
         { key: "_shortName", label: "File / Table", width: COL_W.lg, render: s => `<strong>${esc(s._shortName)}</strong>`, sortVal: s => s._shortName || "" },
         { key: "_folderSchema", label: "Folder / Schema", width: COL_W.md, render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
-        { key: "_fullLocation", label: "Full Location", width: COL_W.xl, render: s => {
-            const loc = s._fullLocation || "-";
-            const escaped = loc.replace(/"/g, '&quot;');
-            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}">${loc}</span>`;
-        }, sortVal: s => s._fullLocation || "" },
         { key: "status", label: "Status", width: COL_W.sm, render: s => {
             let b = statusBadge(s.status);
             if (s.custom_fresh_days != null && s.custom_fresh_days > 0) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';

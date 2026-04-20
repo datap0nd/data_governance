@@ -2334,6 +2334,18 @@ body.ai-panel-open main {
     font-size: 0.76rem;
     font-family: inherit;
 }
+.alerts-link {
+    color: inherit;
+    cursor: pointer;
+    display: block;
+    text-decoration: none;
+    border-bottom: 1px dotted transparent;
+    transition: color 0.12s, border-color 0.12s;
+}
+.alerts-link:hover {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
 
 /* Alert trend chart */
 .alert-trend-container {
