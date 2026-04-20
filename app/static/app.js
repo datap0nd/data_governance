@@ -1894,7 +1894,6 @@ async function renderSources() {
         api("/api/create/options"),
     ]);
     const people = options.people || [];
-    const upstreams = options.upstream_systems || [];
 
     sources.forEach(s => {
         const parsed = parseSourceName(s);
@@ -1938,25 +1937,6 @@ async function renderSources() {
             if (!s.linked_scripts) return '-';
             return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
         }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no" },
-        { key: "upstream_id", label: "Upstream", width: COL_W.md, render: s => {
-            const opts = upstreams.map(u => `<option value="${u.id}"${s.upstream_id === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join("");
-            return `<select class="freq-select-inline source-upstream-select" data-source-id="${s.id}"><option value="">None</option>${opts}</select>`;
-        }, sortVal: s => {
-            if (!s.upstream_id) return "";
-            const u = upstreams.find(u => u.id === s.upstream_id);
-            return u ? u.name : "";
-        }},
-        { key: "refresh_schedule", label: "Frequency", width: COL_W.md, render: s => {
-            const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-            const current = s.refresh_schedule ? `Weekly - ${s.refresh_schedule}` : "";
-            const opts = days.map(d => {
-                const val = `Weekly - ${d}`;
-                return `<option value="${d}"${s.refresh_schedule === d ? ' selected' : ''}>${val}</option>`;
-            }).join("");
-            return `<select class="freq-select-inline source-freq-select" data-source-id="${s.id}">
-                ${s.refresh_schedule ? '' : '<option value="">-</option>'}${opts}
-            </select>`;
-        }},
         { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: s => {
             if (!s.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
             return `<span class="badge badge-blue" style="cursor:help" title="${s.linked_task_count} active task${s.linked_task_count !== 1 ? 's' : ''}">${s.linked_task_count}</span>`;
@@ -2041,43 +2021,6 @@ function bindSourcesPage() {
                 await apiPatch(`/api/sources/${sourceId}`, { owner: sel.value });
                 toast("Owner updated");
             } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
-    // Inline upstream select dropdowns for sources
-    document.querySelectorAll(".source-upstream-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
-            e.stopPropagation();
-            const sourceId = sel.dataset.sourceId;
-            const val = sel.value ? parseInt(sel.value) : null;
-            try {
-                await apiPatch(`/api/sources/${sourceId}`, { upstream_id: val });
-                toast("Upstream updated");
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
-    // Inline frequency select dropdowns for sources
-    document.querySelectorAll(".source-freq-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
-            e.stopPropagation();
-            const sourceId = sel.dataset.sourceId;
-            const day = sel.value;
-            if (!day) return;
-            if (!confirm(`Change refresh schedule to "${day}"?`)) {
-                sel.value = sel.dataset.prev || "";
-                return;
-            }
-            try {
-                await apiPatch(`/api/sources/${sourceId}`, { refresh_schedule: day });
-                sel.dataset.prev = day;
-                toast("Frequency updated");
-            } catch (err) {
-                sel.value = sel.dataset.prev || "";
                 toast("Failed: " + err.message);
             }
         });
