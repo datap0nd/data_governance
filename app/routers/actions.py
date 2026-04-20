@@ -8,6 +8,66 @@ from app.models import ActionOut, ActionUpdate
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
 
+def _compute_source_days_outdated(db) -> dict[int, int]:
+    """For each source with outdated latest probe, days between now and last_data_at."""
+    rows = db.execute("""
+        SELECT sp.source_id, sp.status, sp.last_data_at
+        FROM source_probes sp
+        WHERE sp.id = (
+            SELECT sp2.id FROM source_probes sp2
+            WHERE sp2.source_id = sp.source_id
+            ORDER BY sp2.probed_at DESC LIMIT 1
+        )
+    """).fetchall()
+    result: dict[int, int] = {}
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        status = r["status"]
+        last_data = r["last_data_at"]
+        if status not in ("outdated", "stale", "error") or not last_data:
+            continue
+        try:
+            dt = datetime.fromisoformat(last_data)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            days = max(0, (now - dt).days)
+        except (ValueError, TypeError):
+            days = 0
+        result[r["source_id"]] = days
+    return result
+
+
+def _compute_report_context(db, source_days: dict[int, int]):
+    """Return (source_reports_map, report_degradation_map).
+
+    source_reports_map: {source_id: [(report_id, report_name), ...]}
+    report_degradation_map: {report_id: total_degradation_days}
+    """
+    rows = db.execute("""
+        SELECT rt.source_id, rt.report_id, r.name AS report_name
+        FROM report_tables rt
+        JOIN reports r ON r.id = rt.report_id
+        WHERE COALESCE(r.archived, 0) = 0 AND rt.source_id IS NOT NULL
+    """).fetchall()
+
+    source_reports: dict[int, list[tuple[int, str]]] = {}
+    report_sources: dict[int, list[int]] = {}
+    report_names: dict[int, str] = {}
+    for r in rows:
+        sid = r["source_id"]
+        rid = r["report_id"]
+        source_reports.setdefault(sid, []).append((rid, r["report_name"]))
+        report_sources.setdefault(rid, []).append(sid)
+        report_names[rid] = r["report_name"]
+
+    report_degradation: dict[int, int] = {}
+    for rid, sids in report_sources.items():
+        total = sum(source_days.get(sid, 0) for sid in sids)
+        report_degradation[rid] = total
+
+    return source_reports, report_degradation, report_names
+
+
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
@@ -24,13 +84,32 @@ def list_actions(status: str | None = None):
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
 
-    return [
-        ActionOut(
+        source_days = _compute_source_days_outdated(db)
+        source_reports, report_degradation, _ = _compute_report_context(db, source_days)
+
+    results: list[ActionOut] = []
+    for r in rows:
+        sid = r["source_id"]
+        linked = source_reports.get(sid, []) if sid else []
+        names = [rn for _, rn in linked]
+        # Pick the report with the highest degradation_days as the "top" report
+        top_rid, top_rname, top_days = None, None, 0
+        for rid, rname in linked:
+            d = report_degradation.get(rid, 0)
+            if d >= top_days:
+                top_rid, top_rname, top_days = rid, rname, d
+
+        results.append(ActionOut(
             id=r["id"],
             source_id=r["source_id"],
             source_name=r["source_name"],
             report_id=r["report_id"],
             report_name=r["report_name"],
+            report_names=names,
+            top_report_id=top_rid,
+            top_report_name=top_rname,
+            top_report_degradation_days=top_days,
+            source_days_outdated=source_days.get(sid, 0) if sid else 0,
             type=r["type"],
             status=r["status"],
             assigned_to=r["assigned_to"],
@@ -38,9 +117,20 @@ def list_actions(status: str | None = None):
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             resolved_at=r["resolved_at"],
+        ))
+
+    # Sort: open/unresolved first; within that by top_report_degradation_days DESC,
+    # then source_days_outdated DESC, then created_at DESC
+    def sort_key(a: ActionOut):
+        is_closed = a.status in ("resolved", "expected")
+        return (
+            1 if is_closed else 0,
+            -a.top_report_degradation_days,
+            -a.source_days_outdated,
+            -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )
-        for r in rows
-    ]
+    results.sort(key=sort_key)
+    return results
 
 
 @router.patch("/{action_id}", response_model=ActionOut)

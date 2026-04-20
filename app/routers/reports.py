@@ -339,7 +339,7 @@ def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:
             WHERE sp2.source_id = rt.source_id
             ORDER BY sp2.probed_at DESC LIMIT 1
         )
-        AND COALESCE(sp.status, 'unknown') NOT IN ('unknown', 'no_connection')
+        AND COALESCE(sp.status, 'unknown') NOT IN ('unknown', 'no_connection', 'no_rule')
         AND COALESCE(s.archived, 0) = 0
     """).fetchall()
 

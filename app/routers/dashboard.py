@@ -28,7 +28,7 @@ def get_dashboard():
         sources_fresh = status_counts.get("fresh", 0)
         sources_stale = 0  # no longer used, always 0
         sources_outdated = status_counts.get("outdated", 0) + status_counts.get("stale", 0) + status_counts.get("error", 0)
-        sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0)
+        sources_unknown = status_counts.get("unknown", 0) + status_counts.get("no_connection", 0) + status_counts.get("no_rule", 0)
 
         # Report counts
         reports_total = db.execute("SELECT COUNT(*) AS c FROM reports WHERE archived = 0").fetchone()["c"]

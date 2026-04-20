@@ -35,14 +35,17 @@ PG_SOURCE_TYPES = {"postgresql"}
 
 
 def _compute_status(last_activity_str: str | None,
-                    fresh_max: int = FRESH_MAX_DAYS,
+                    fresh_max: int | None = FRESH_MAX_DAYS,
                     stale_max: int = 0) -> str:
     """Compute freshness status based on age of last_activity.
 
+    fresh_max is None: source has no freshness rule - returns "no_rule"
     <= fresh_max days: fresh
     > fresh_max days: outdated
     Unparseable or missing: unknown
     """
+    if fresh_max is None:
+        return "no_rule"
     if not last_activity_str:
         return "unknown"
 
@@ -93,7 +96,7 @@ def _find_file(file_path: str) -> Path | None:
 
 
 def _probe_file_source(db, source_id: int, file_path: str, now: str,
-                       fresh_max: int = FRESH_MAX_DAYS) -> str:
+                       fresh_max: int | None = FRESH_MAX_DAYS) -> str:
     """Probe a file-based source by checking file existence and modification time.
 
     Returns the computed status.
@@ -109,10 +112,13 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
 
     mod_time = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
     status = _compute_status(mod_time.isoformat(), fresh_max)
+    msg = f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"
+    if status == "no_rule":
+        msg += " (no freshness rule set)"
 
     db.execute(
         "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
-        (source_id, now, mod_time.isoformat(), status, f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"),
+        (source_id, now, mod_time.isoformat(), status, msg),
     )
     return status
 
@@ -190,7 +196,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
     Returns dict of status counts.
     """
-    statuses = {"fresh": 0, "outdated": 0, "unknown": 0}
+    statuses = {"fresh": 0, "outdated": 0, "unknown": 0, "no_rule": 0}
     pg_conn = _get_pg_connection()
 
     if pg_conn is None:
@@ -208,7 +214,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
         pg_cur = pg_conn.cursor()
 
         for src in pg_sources:
-            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            fm = src["custom_fresh_days"]  # None means no rule - skip status check
             parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
 
             if not parsed:
@@ -251,6 +257,8 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                     latest_iso = last_write.isoformat()
                     status = _compute_status(latest_iso, fm)
                     msg = f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} ({row_count:,} rows)"
+                    if status == "no_rule":
+                        msg += " (no freshness rule set)"
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
                         (src["id"], now, latest_iso, row_count, status, msg),
@@ -284,9 +292,9 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
 
 def _create_action_and_alert(db, source_id: int, status: str, now: str,
-                             fresh_max: int = FRESH_MAX_DAYS):
+                             fresh_max: int | None = FRESH_MAX_DAYS):
     """Create an action item and alert for outdated sources if not already open."""
-    if status != "outdated":
+    if status != "outdated" or fresh_max is None:
         return
 
     action_type = "stale_source"
@@ -449,7 +457,7 @@ def run_probe() -> dict:
     file_probed = 0
     pg_probed = 0
     skipped = 0
-    statuses = {"fresh": 0, "outdated": 0, "unknown": 0}
+    statuses = {"fresh": 0, "outdated": 0, "unknown": 0, "no_rule": 0}
     log_lines = []
 
     with get_db() as db:
@@ -460,7 +468,7 @@ def run_probe() -> dict:
 
         for src in file_sources:
             file_path = src["connection_info"] or src["name"]
-            fm = src["custom_fresh_days"] or FRESH_MAX_DAYS
+            fm = src["custom_fresh_days"]  # None means no rule
             status = _probe_file_source(db, src["id"], file_path, now, fm)
             statuses[status] = statuses.get(status, 0) + 1
             _create_action_and_alert(db, src["id"], status, now, fm)

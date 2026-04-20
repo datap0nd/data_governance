@@ -143,6 +143,11 @@ class ActionOut(BaseModel):
     source_name: str | None = None
     report_id: int | None = None
     report_name: str | None = None
+    report_names: list[str] = []
+    top_report_id: int | None = None
+    top_report_name: str | None = None
+    top_report_degradation_days: int = 0
+    source_days_outdated: int = 0
     type: str  # stale_source, error_source, broken_ref, changed_query
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None

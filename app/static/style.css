@@ -2216,41 +2216,123 @@ body.ai-panel-open main {
 .input-sm::placeholder { color: var(--text-dim); }
 
 /* ================================================================
-   Dashboard Attention Row
+   Dashboard Trend + Alerts
    ================================================================ */
-.dashboard-attention-row {
-    display: grid;
-    grid-template-columns: 2fr 3fr;
-    gap: 1.25rem;
-    align-items: start;
+.dashboard-trend {
     margin-top: 1.25rem;
 }
+.dashboard-trend .alert-trend-container {
+    padding: 0.5rem 0.75rem 0.3rem;
+    position: relative;
+}
+.dashboard-trend canvas {
+    width: 100%;
+    display: block;
+    height: 120px !important;
+}
 
-.dashboard-attention-main { min-width: 0; display: flex; flex-direction: column; max-height: 420px; }
-.dashboard-attention-main .alert-list { font-size: 0.8rem; }
-.dashboard-attention-main .attention-scrollable { flex: 1; overflow-y: auto; }
-.dashboard-attention-main .alert-item { padding: 0.4rem 0.55rem; }
-.dashboard-attention-main .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; }
-#attention-timeline, #attention-impact { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-#attention-timeline .attention-scrollable, #attention-impact .impact-list { flex: 1; overflow-y: auto; min-height: 0; }
-.attention-show-more { text-align: center; padding: 0.4rem; color: var(--accent); cursor: pointer; font-size: 0.78rem; border-top: 1px solid var(--border); }
-.attention-show-more:hover { text-decoration: underline; }
+.dashboard-alerts-section {
+    margin-top: 1.5rem;
+}
 
-.dashboard-attention-side { margin-top: 0 !important; display: flex; flex-direction: column; max-height: 420px; }
-.dashboard-attention-side h2 { margin-bottom: 0.4rem; flex-shrink: 0; }
-.dashboard-attention-side .alert-trend-container {
+.alerts-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+.alerts-chip {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.6rem;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
+    color: var(--text);
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background 0.15s, border-color 0.15s;
+    font-family: inherit;
 }
-.dashboard-attention-side .alert-trend-container canvas { flex: 1; min-height: 0; }
+.alerts-chip:hover {
+    border-color: var(--accent);
+}
+.alerts-chip.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+.alerts-chip-count {
+    background: rgba(0,0,0,0.18);
+    padding: 0.08rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    min-width: 1.4rem;
+    text-align: center;
+}
+.alerts-chip.active .alerts-chip-count {
+    background: rgba(255,255,255,0.25);
+}
 
-@media (max-width: 1000px) {
-    .dashboard-attention-row { grid-template-columns: 1fr; }
+.alerts-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+.alerts-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.alerts-table thead th {
+    text-align: left;
+    padding: 0.6rem 0.75rem;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+}
+.alerts-table tbody td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.alerts-table tbody tr:last-child td {
+    border-bottom: none;
+}
+.alerts-table tbody tr:hover {
+    background: rgba(255,255,255,0.02);
+}
+.days-pill {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: rgba(185,28,28,0.14);
+    color: #f87171;
+    min-width: 2.2rem;
+    text-align: center;
+}
+.days-pill-high {
+    background: rgba(185,28,28,0.28);
+    color: #fca5a5;
+}
+.dashboard-action-owner-select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 0.25rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.76rem;
+    font-family: inherit;
 }
 
 /* Alert trend chart */

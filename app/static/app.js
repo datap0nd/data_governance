@@ -188,6 +188,8 @@ function statusBadge(status) {
         return `<span class="badge badge-red">${status}</span>`;
     if (s === "no_connection")
         return '<span class="badge badge-muted">no connection</span>';
+    if (s === "no_rule")
+        return '<span class="badge badge-muted" title="No freshness rule set for this source">no rule</span>';
     if (s === "unknown")
         return '<span class="badge badge-muted">not probed</span>';
     return `<span class="badge badge-muted">${status}</span>`;
@@ -717,10 +719,10 @@ async function showSourceDetail(source) {
                 days (degraded after)
             </label>
             <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
-            ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Reset to default</button>' : ''}
+            ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Clear rule</button>' : ''}
             ${hasCustomRule
-                ? '<span class="badge badge-blue" style="font-size:0.72rem">custom rule active</span>'
-                : '<span style="color:var(--text-dim);font-size:0.75rem">Using global default (0 days - always degraded unless set)</span>'}
+                ? '<span class="badge badge-blue" style="font-size:0.72rem">rule active</span>'
+                : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
         </div>
     `;
 
@@ -763,7 +765,7 @@ async function showSourceDetail(source) {
         resetFreshBtn.addEventListener("click", async () => {
             try {
                 await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                toast("Freshness rule reset to defaults");
+                toast("Freshness rule cleared - source not monitored");
                 document.getElementById("fresh-days-input").value = "";
             } catch (err) {
                 toast("Failed: " + err.message);
@@ -1218,13 +1220,13 @@ function _autoVisualTitle(v) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, alerts, healthTrend, impactData] = await Promise.all([
+    const [data, sources, reports, actions, healthTrend, people] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
-        api("/api/alerts?active_only=true"),
+        api("/api/actions"),
         api("/api/schedules/health-trend"),
-        api("/api/dashboard/impact"),
+        api("/api/people"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
@@ -1243,47 +1245,11 @@ async function renderDashboard() {
     else if (allUnknown) healthLabel = "Not yet probed";
     else healthLabel = freshPct + "% healthy";
 
-    // Build unified "Needs Attention" list from problem sources, reports, and alerts
-    const problemSources = sources.filter(s => s.status === "stale" || s.status === "outdated");
-    const problemReports = reports.filter(r => r.status === "degraded");
-    const needsAttention = [];
-    problemSources.forEach(s => {
-        const parsed = parseSourceName(s);
-        needsAttention.push({
-            severity: "red",
-            kind: "source", name: parsed.shortName,
-            description: "degraded - past freshness threshold",
-            timestamp: s.last_updated, id: s.id, data: s,
-        });
-    });
-    problemReports.forEach(r => {
-        needsAttention.push({
-            severity: "red",
-            kind: "report", name: r.name,
-            description: "has degraded sources",
-            timestamp: r.worst_source_updated, id: r.id, data: r,
-        });
-    });
-    alerts.forEach(a => {
-        const srcShort = a.source_name ? shortNameFromPath(a.source_name) : "";
-        needsAttention.push({
-            severity: a.severity === "critical" ? "red" : "red",
-            kind: "alert", name: srcShort || "Alert",
-            description: a.message, timestamp: a.created_at, id: a.id, data: a,
-        });
-    });
-    needsAttention.sort((a, b) => {
-        const sev = { red: 0 };
-        if ((sev[a.severity] ?? 1) !== (sev[b.severity] ?? 1)) return (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1);
-        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-        return tb - ta;
-    });
-
-    // Store for click-through navigation and "show more"
+    // Store for click-through navigation
     window._dashboardSources = sources;
     window._dashboardReports = reports;
-    window._needsAttentionFull = needsAttention;
+    window._dashboardActions = actions;
+    window._dashboardPeople = people;
 
     return `
         <div class="stat-grid">
@@ -1303,14 +1269,14 @@ async function renderDashboard() {
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within freshness threshold">${data.sources_fresh} healthy</span>
                     <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data past freshness threshold">${data.sources_outdated} degraded</span>
-                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown" title="Source has not been probed yet">${data.sources_unknown} unknown</span>` : ""}
+                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown" title="Source has not been probed yet or has no rule">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-navigate="dashboard" role="button" tabindex="0" aria-label="Active Alerts: ${data.alerts_active}">
+            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-scroll-to="dashboard-alerts" role="button" tabindex="0" aria-label="Active Alerts: ${data.alerts_active}">
                 <div class="stat-label">Active Alerts</div>
                 <div class="stat-value">${data.alerts_active}</div>
-                <div class="stat-card-link">View &rarr;</div>
+                <div class="stat-card-link">View &darr;</div>
             </div>
             <div class="stat-card card-green stat-card-clickable" data-navigate="scanner" role="button" tabindex="0" aria-label="Last Scan: ${scan ? timeAgo(scan.started_at) : 'never'}" title="Click to view scanner details and trigger new scans">
                 <div class="stat-label">Last Scan</div>
@@ -1350,61 +1316,253 @@ async function renderDashboard() {
             `}
         </div>
 
-        <div class="dashboard-attention-row">
-        <div class="section dashboard-attention-main">
-            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
-                <h2 style="margin:0">Needs Attention${needsAttention.length > 0 ? ` <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">(${needsAttention.length})</span>` : ""}</h2>
-                <div class="impact-toggle">
-                    <button class="impact-toggle-btn active" data-view="impact">By Impact${impactData.length > 0 ? ` (${impactData.length})` : ""}</button>
-                    <button class="impact-toggle-btn" data-view="timeline">Timeline</button>
-                </div>
+        <div class="dashboard-trend">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem">
+                <h2 style="margin:0">Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
             </div>
-            <div id="attention-timeline" style="display:none">
-            ${needsAttention.length > 0 ? `
-                <div class="alert-list attention-scrollable" id="attention-list">
-                    ${needsAttention.slice(0, 10).map(item => `
-                        <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
-                            <div class="dot dot-${item.severity}"></div>
-                            <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                            <span><strong>${esc(item.name)}</strong>  - ${esc(item.description)}</span>
-                            <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
-                        </div>
-                    `).join("")}
-                    ${needsAttention.length > 10 ? `<div class="attention-show-more" id="attention-show-more">Show all ${needsAttention.length} items</div>` : ""}
-                </div>
-            ` : allUnknown
-                ? '<div class="empty-state">No issues detected  - run a probe to check source freshness</div>'
-                : '<div class="empty-state">All sources and reports are healthy</div>'
-            }
-            </div>
-            <div id="attention-impact">
-            ${impactData.length > 0 ? `
-                <div class="impact-list">
-                    ${impactData.map(item => `
-                        <div class="impact-item impact-clickable" data-source-id="${item.source_id}">
-                            <div class="impact-header">
-                                <div class="dot dot-red"></div>
-                                <strong>${esc(item.source_name)}</strong>
-                                <span class="impact-status">${esc(item.status)}</span>
-                                <span class="impact-badge">${item.affected_reports} report${item.affected_reports !== 1 ? "s" : ""}</span>
-                                <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem">${item.last_data_at ? timeAgo(item.last_data_at) : ""}</span>
-                            </div>
-                            <div class="impact-reports">${item.report_names.map(n => esc(n)).join(", ")}</div>
-                        </div>
-                    `).join("")}
-                </div>
-            ` : '<div class="empty-state">No freshness issues affecting reports</div>'}
-            </div>
-        </div>
-        <div class="dashboard-attention-side">
-            <h2>Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
             <div class="alert-trend-container" style="position:relative">
-                <canvas id="health-trend-canvas" height="200" role="img" aria-label="Health trend chart showing source freshness over the past 30 days"></canvas>
+                <canvas id="health-trend-canvas" height="120" role="img" aria-label="Health trend chart showing source freshness over the past 30 days"></canvas>
                 <div id="health-trend-tooltip" class="chart-tooltip"></div>
             </div>
         </div>
+
+        <div id="dashboard-alerts" class="dashboard-alerts-section">
+            ${renderDashboardAlertsSection(actions, people)}
         </div>
     `;
+}
+
+function renderDashboardAlertsSection(actions, people) {
+    const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
+
+    // Open = not resolved or expected
+    const openActions = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
+    const unassignedCount = openActions.filter(a => !a.assigned_to).length;
+
+    // Per-person open counts
+    const personCounts = {};
+    biPeople.forEach(p => { personCounts[p] = 0; });
+    openActions.forEach(a => {
+        if (a.assigned_to && personCounts[a.assigned_to] !== undefined) {
+            personCounts[a.assigned_to]++;
+        }
+    });
+
+    const chipsHtml = `
+        <button class="alerts-chip active" data-filter-person="all">All <span class="alerts-chip-count">${openActions.length}</span></button>
+        <button class="alerts-chip" data-filter-person="__unassigned__">Unassigned <span class="alerts-chip-count">${unassignedCount}</span></button>
+        ${biPeople.map(p => `
+            <button class="alerts-chip" data-filter-person="${esc(p)}">${esc(p)} <span class="alerts-chip-count">${personCounts[p]}</span></button>
+        `).join("")}
+    `;
+
+    const tableHtml = renderDashboardAlertsTable(actions, biPeople, "all");
+
+    return `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
+            <h2 style="margin:0">Alerts</h2>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by report degradation days (sum of days each source is past its freshness rule)</span>
+        </div>
+        <div class="alerts-chips">${chipsHtml}</div>
+        <div id="dashboard-alerts-tbody-wrap">${tableHtml}</div>
+    `;
+}
+
+function renderDashboardAlertsTable(actions, biPeople, personFilter) {
+    let filtered = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
+    if (personFilter && personFilter !== "all") {
+        if (personFilter === "__unassigned__") {
+            filtered = filtered.filter(a => !a.assigned_to);
+        } else {
+            filtered = filtered.filter(a => a.assigned_to === personFilter);
+        }
+    }
+
+    if (filtered.length === 0) {
+        return '<div class="empty-state" style="padding:1.5rem">No open alerts for this filter</div>';
+    }
+
+    const statusOptions = ["open", "acknowledged", "investigating", "expected", "resolved"];
+    const ownerOptions = (currentOwner) => `
+        <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
+        ${biPeople.map(p => `<option value="${esc(p)}"${p === currentOwner ? ' selected' : ''}>${esc(p)}</option>`).join("")}
+    `;
+
+    const rows = filtered.map(a => {
+        const sourceName = shortNameFromPath(a.source_name || "") || (a.source_name || "-");
+        const reportCell = a.top_report_name
+            ? `<div><strong>${esc(a.top_report_name)}</strong></div>
+               <div style="font-size:0.7rem;color:var(--text-dim)">${a.top_report_degradation_days}d total${a.report_names.length > 1 ? ` &middot; in ${a.report_names.length} reports` : ""}</div>`
+            : '<span style="color:var(--text-dim)">-</span>';
+        return `
+            <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
+                <td>${reportCell}</td>
+                <td><strong>${esc(sourceName)}</strong></td>
+                <td style="text-align:right">
+                    <span class="days-pill${a.source_days_outdated >= 7 ? ' days-pill-high' : ''}">${a.source_days_outdated}d</span>
+                </td>
+                <td>${actionTypeBadge(a.type)}</td>
+                <td>
+                    <select class="dashboard-action-owner-select" data-action-id="${a.id}">
+                        ${ownerOptions(a.assigned_to || "")}
+                    </select>
+                </td>
+                <td>
+                    <div class="status-pill-wrapper">
+                        <button class="status-pill status-${a.status}" data-action-id="${a.id}" data-current="${a.status}">${a.status} <span class="pill-chevron">&#9662;</span></button>
+                        <div class="status-dropdown" data-action-id="${a.id}">
+                            ${statusOptions.map(s => `<div class="status-option status-${s}${s === a.status ? ' active' : ''}" data-value="${s}">${s}</div>`).join("")}
+                        </div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join("");
+
+    return `
+        <div class="alerts-table-wrap">
+            <table class="alerts-table">
+                <thead>
+                    <tr>
+                        <th style="width:26%">Report</th>
+                        <th style="width:24%">Source</th>
+                        <th style="width:8%;text-align:right">Days</th>
+                        <th style="width:14%">Type</th>
+                        <th style="width:14%">Owner</th>
+                        <th style="width:14%">Status</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+function bindDashboardAlerts() {
+    // Person filter chips
+    document.querySelectorAll(".alerts-chip").forEach(chip => {
+        chip.addEventListener("click", () => {
+            document.querySelectorAll(".alerts-chip").forEach(c => c.classList.remove("active"));
+            chip.classList.add("active");
+            const person = chip.dataset.filterPerson;
+            const actions = window._dashboardActions || [];
+            const people = window._dashboardPeople || [];
+            const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
+            const wrap = document.getElementById("dashboard-alerts-tbody-wrap");
+            if (wrap) {
+                wrap.innerHTML = renderDashboardAlertsTable(actions, biPeople, person);
+                bindDashboardAlertsRowControls();
+            }
+        });
+    });
+    bindDashboardAlertsRowControls();
+
+    // Scroll-to anchors
+    document.querySelectorAll(".stat-card-clickable[data-scroll-to]").forEach(card => {
+        card.addEventListener("click", () => {
+            const target = document.getElementById(card.dataset.scrollTo);
+            if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    });
+}
+
+function bindDashboardAlertsRowControls() {
+    // Status pill dropdowns (reuse open/close behavior) + dashboard-aware state update
+    if (!window._statusDropdownOutsideClick) {
+        window._statusDropdownOutsideClick = true;
+        document.addEventListener("click", (e) => {
+            if (!e.target.closest(".status-pill-wrapper")) {
+                document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+                document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+            }
+        });
+    }
+
+    document.querySelectorAll(".alerts-table .status-pill").forEach(pill => {
+        pill.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const wrapper = pill.closest(".status-pill-wrapper");
+            const dropdown = wrapper.querySelector(".status-dropdown");
+            const wasOpen = dropdown.classList.contains("visible");
+            document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+            document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+            if (!wasOpen) {
+                dropdown.classList.add("visible");
+                pill.classList.add("open");
+            }
+        });
+    });
+
+    document.querySelectorAll(".alerts-table .status-option").forEach(option => {
+        option.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const dropdown = option.closest(".status-dropdown");
+            const actionId = dropdown.dataset.actionId;
+            const newStatus = option.dataset.value;
+            dropdown.classList.remove("visible");
+            try {
+                await apiPatch(`/api/actions/${actionId}`, { status: newStatus });
+                if (window._dashboardActions) {
+                    const a = window._dashboardActions.find(x => x.id == actionId);
+                    if (a) a.status = newStatus;
+                }
+                toast(`Alert updated to ${newStatus}`);
+                // Re-render table (filter may now hide this row) and refresh chip counts
+                const activeChip = document.querySelector(".alerts-chip.active");
+                const person = activeChip ? activeChip.dataset.filterPerson : "all";
+                const people = window._dashboardPeople || [];
+                const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
+                const wrap = document.getElementById("dashboard-alerts-tbody-wrap");
+                if (wrap) {
+                    wrap.innerHTML = renderDashboardAlertsTable(window._dashboardActions || [], biPeople, person);
+                    bindDashboardAlertsRowControls();
+                }
+                _refreshDashboardAlertChipCounts();
+            } catch (err) {
+                toast("Failed to update: " + err.message);
+            }
+        });
+    });
+
+    // Owner assignment selects
+    document.querySelectorAll(".dashboard-action-owner-select").forEach(sel => {
+        sel.addEventListener("change", async () => {
+            const actionId = sel.dataset.actionId;
+            const newOwner = sel.value || null;
+            try {
+                await apiPatch(`/api/actions/${actionId}`, { assigned_to: newOwner });
+                if (window._dashboardActions) {
+                    const a = window._dashboardActions.find(x => x.id == actionId);
+                    if (a) a.assigned_to = newOwner;
+                }
+                _refreshDashboardAlertChipCounts();
+                toast(`Alert assigned to ${newOwner || "unassigned"}`);
+            } catch (err) {
+                toast("Failed to assign: " + err.message);
+            }
+        });
+    });
+}
+
+function _refreshDashboardAlertChipCounts() {
+    const actions = window._dashboardActions || [];
+    const people = window._dashboardPeople || [];
+    const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
+    const open = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
+    const unassigned = open.filter(a => !a.assigned_to).length;
+    const counts = {};
+    biPeople.forEach(p => counts[p] = 0);
+    open.forEach(a => {
+        if (a.assigned_to && counts[a.assigned_to] !== undefined) counts[a.assigned_to]++;
+    });
+    document.querySelectorAll(".alerts-chip").forEach(chip => {
+        const person = chip.dataset.filterPerson;
+        const countEl = chip.querySelector(".alerts-chip-count");
+        if (!countEl) return;
+        if (person === "all") countEl.textContent = open.length;
+        else if (person === "__unassigned__") countEl.textContent = unassigned;
+        else countEl.textContent = counts[person] || 0;
+    });
 }
 
 function drawHealthTrendChart() {
@@ -7049,7 +7207,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "How does freshness monitoring work?",
-        a: "After a scan, the prober checks when each data source was last updated. PostgreSQL sources are probed directly via track_commit_timestamp. Sources are classified as Healthy or Degraded based on configurable thresholds per source. Default freshness threshold is 0 days (any age is acceptable unless overridden)."
+        a: "After a scan, the prober checks when each data source was last updated. PostgreSQL sources are probed directly via track_commit_timestamp. Sources are classified as Healthy or Degraded based on per-source freshness rules you set. Sources without a rule are not monitored - set a rule from the source detail panel to enable tracking."
     },
     {
         q: "What are Report Owner and Business Owner?",
@@ -7193,14 +7351,13 @@ const pages = {
     create: renderCreate,
     bestpractices: renderBestPractices,
     export: renderExport,
-    actions: renderActions,
     tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", issues: "dashboard" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard" };
 
 let currentPage = "dashboard";
 
@@ -7311,81 +7468,13 @@ async function navigate(page) {
                     }
                 });
             });
-            // Clickable attention items — drill down to source/report/alert detail
-            document.querySelectorAll(".attention-clickable").forEach(el => {
-                el.addEventListener("click", async () => {
-                    const kind = el.dataset.kind;
-                    const id = parseInt(el.dataset.id);
-                    if (kind === "source") {
-                        const src = (window._dashboardSources || []).find(s => s.id === id);
-                        if (src) { await navigate("sources"); showSourceDetail(src); }
-                    } else if (kind === "report") {
-                        const rpt = (window._dashboardReports || []).find(r => r.id === id);
-                        if (rpt) { await navigate("reports"); showReportDetail(rpt); }
-                    } else if (kind === "alert") {
-                        // Flash-highlight the clicked alert row
-                        el.style.background = "rgba(59,130,246,0.25)";
-                        setTimeout(() => { el.style.background = ""; }, 1200);
-                    }
-                });
-            });
-            // "Show more" in attention list
-            const showMoreBtn = document.getElementById("attention-show-more");
-            if (showMoreBtn) {
-                showMoreBtn.addEventListener("click", () => {
-                    const list = document.getElementById("attention-list");
-                    if (!list || !window._needsAttentionFull) return;
-                    const items = window._needsAttentionFull;
-                    list.innerHTML = items.map(item => `
-                        <div class="alert-item attention-clickable" data-kind="${item.kind}" data-id="${item.id}">
-                            <div class="dot dot-${item.severity}"></div>
-                            <span class="attention-kind-badge kind-${item.kind}">${item.kind}</span>
-                            <span><strong>${esc(item.name)}</strong>  - ${esc(item.description)}</span>
-                            <span style="margin-left:auto;color:var(--text-dim);font-size:0.72rem;white-space:nowrap">${item.timestamp ? timeAgo(item.timestamp) : ""}</span>
-                        </div>
-                    `).join("");
-                    // Re-bind click handlers on new items
-                    list.querySelectorAll(".attention-clickable").forEach(el => {
-                        el.addEventListener("click", async () => {
-                            const kind = el.dataset.kind;
-                            const id = parseInt(el.dataset.id);
-                            if (kind === "source") {
-                                const src = (window._dashboardSources || []).find(s => s.id === id);
-                                if (src) { await navigate("sources"); showSourceDetail(src); }
-                            } else if (kind === "report") {
-                                const rpt = (window._dashboardReports || []).find(r => r.id === id);
-                                if (rpt) { await navigate("reports"); showReportDetail(rpt); }
-                            }
-                        });
-                    });
-                });
-            }
-            // Impact toggle
-            document.querySelectorAll(".impact-toggle-btn").forEach(btn => {
-                btn.addEventListener("click", () => {
-                    const view = btn.dataset.view;
-                    document.querySelectorAll(".impact-toggle-btn").forEach(b => b.classList.remove("active"));
-                    btn.classList.add("active");
-                    const timeline = document.getElementById("attention-timeline");
-                    const impact = document.getElementById("attention-impact");
-                    if (timeline) timeline.style.display = view === "timeline" ? "" : "none";
-                    if (impact) impact.style.display = view === "impact" ? "" : "none";
-                });
-            });
-            // Impact items — click to source detail
-            document.querySelectorAll(".impact-clickable").forEach(el => {
-                el.addEventListener("click", async () => {
-                    const srcId = parseInt(el.dataset.sourceId);
-                    const src = (window._dashboardSources || []).find(s => s.id === srcId);
-                    if (src) { await navigate("sources"); showSourceDetail(src); }
-                });
-            });
+            // Dashboard alerts (table + person filter chips)
+            bindDashboardAlerts();
             // Draw health trend chart
             drawHealthTrendChart();
         }
         if (page === "scanner") bindScannerButtons();
         if (page === "sources") bindSourcesPage();
-        if (page === "actions") bindActionsTab();
         if (page === "reports") bindReportsPage();
         if (page === "scripts") bindScriptsPage();
         if (page === "scheduledtasks") bindScheduledTasksPage();
