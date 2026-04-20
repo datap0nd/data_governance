@@ -52,7 +52,8 @@ def list_sources(include_archived: bool = Query(False)):
             status=r["latest_status"] if r["latest_status"] else "unknown",
             last_updated=r["latest_last_data_at"],
             report_count=r["report_count"],
-            custom_fresh_days=r["custom_fresh_days"],
+            # Treat 0 as no rule (same as NULL) - present a clean view to the UI
+            custom_fresh_days=r["custom_fresh_days"] or None,
             upstream_id=r["upstream_id"],
             upstream_name=r["upstream_name"],
             upstream_refresh_day=r["upstream_refresh_day"],
@@ -108,7 +109,8 @@ def get_source(source_id: int):
         status=r["latest_status"] or "unknown",
         last_updated=r["latest_last_data_at"],
         report_count=r["report_count"],
-        custom_fresh_days=r["custom_fresh_days"],
+        # Treat 0 as no rule (same as NULL)
+        custom_fresh_days=r["custom_fresh_days"] or None,
         upstream_id=r["upstream_id"],
         upstream_name=r["upstream_name"],
         upstream_refresh_day=r["upstream_refresh_day"],
@@ -189,9 +191,12 @@ def get_source_probes(source_id: int):
 
 @router.put("/{source_id}/freshness-rule")
 def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Request):
-    """Set custom freshness thresholds for a source."""
-    if body.fresh_days < 0:
-        raise HTTPException(status_code=400, detail="fresh_days must be at least 0")
+    """Set custom freshness thresholds for a source.
+
+    fresh_days must be at least 1. 0 is not allowed - use DELETE to clear the rule.
+    """
+    if body.fresh_days < 1:
+        raise HTTPException(status_code=400, detail="fresh_days must be at least 1 - use DELETE to clear the rule")
     with get_db() as db:
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:

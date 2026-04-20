@@ -214,7 +214,8 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
         pg_cur = pg_conn.cursor()
 
         for src in pg_sources:
-            fm = src["custom_fresh_days"]  # None means no rule - skip status check
+            # Treat both NULL and 0 as "no rule" - skip freshness status check
+            fm = src["custom_fresh_days"] or None
             parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
 
             if not parsed:
@@ -332,6 +333,61 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
             "INSERT INTO alerts (source_id, severity, message, assigned_to, created_at) VALUES (?, ?, ?, ?, ?)",
             (source_id, severity, msg, assigned, now),
         )
+
+
+def _auto_close_stale_entries(db, now: str) -> int:
+    """Close stale_source actions and alerts for sources no longer outdated.
+
+    When a source transitions from "outdated" to "fresh", "no_rule", or
+    "unknown" (e.g., rule cleared), its open stale_source action/alert are
+    stranded. Auto-close them here so the Alerts table reflects reality.
+
+    Returns the count of actions closed.
+    """
+    # Find sources whose latest probe is not outdated but have open stale_source actions
+    rows = db.execute("""
+        SELECT a.id AS action_id, a.source_id, sp.status AS latest_status
+        FROM actions a
+        JOIN (
+            SELECT source_id, status,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+            FROM source_probes
+        ) sp ON sp.source_id = a.source_id AND sp.rn = 1
+        WHERE a.type = 'stale_source'
+          AND a.status NOT IN ('resolved', 'expected')
+          AND sp.status NOT IN ('outdated', 'stale', 'error')
+    """).fetchall()
+
+    closed = 0
+    for r in rows:
+        db.execute(
+            """UPDATE actions
+               SET status = 'resolved', resolved_at = ?, updated_at = ?,
+                   notes = COALESCE(notes, '') || ' [auto-resolved: source is now '
+                   || COALESCE((SELECT status FROM source_probes WHERE id = (
+                       SELECT id FROM source_probes WHERE source_id = ? ORDER BY probed_at DESC LIMIT 1
+                   )), 'fresh') || ']'
+               WHERE id = ?""",
+            (now, now, r["source_id"], r["action_id"]),
+        )
+        closed += 1
+
+    # Also resolve alerts for those same sources
+    source_ids = [r["source_id"] for r in rows]
+    if source_ids:
+        placeholders = ",".join("?" * len(source_ids))
+        db.execute(
+            f"""UPDATE alerts
+                SET resolution_status = 'resolved', resolved_at = ?,
+                    acknowledged = 1, acknowledged_by = 'auto',
+                    resolution_reason = 'Source no longer outdated'
+                WHERE source_id IN ({placeholders})
+                  AND severity = 'critical'
+                  AND resolution_status IS NULL""",
+            [now, *source_ids],
+        )
+
+    return closed
 
 
 def _backfill_alert_owners(db):
@@ -468,7 +524,8 @@ def run_probe() -> dict:
 
         for src in file_sources:
             file_path = src["connection_info"] or src["name"]
-            fm = src["custom_fresh_days"]  # None means no rule
+            # Treat both NULL and 0 as "no rule" - no freshness monitoring
+            fm = src["custom_fresh_days"] or None
             status = _probe_file_source(db, src["id"], file_path, now, fm)
             statuses[status] = statuses.get(status, 0) + 1
             _create_action_and_alert(db, src["id"], status, now, fm)
@@ -513,6 +570,11 @@ def run_probe() -> dict:
 
         # 4. Dependency freshness check: flag MVs whose upstream data is newer
         _check_dependency_freshness(db, now, log_lines)
+
+        # 5. Auto-close stale_source actions/alerts for sources no longer outdated
+        auto_closed = _auto_close_stale_entries(db, now)
+        if auto_closed:
+            log_lines.append(f"Auto-closed {auto_closed} stale alerts (sources no longer outdated)")
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()

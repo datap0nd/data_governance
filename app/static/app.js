@@ -670,8 +670,9 @@ async function showSourceDetail(source) {
         `).join("")
         : '<tr><td colspan="3" class="empty-state" style="border:none">No reports linked to this source</td></tr>';
 
-    const hasCustomRule = source.custom_fresh_days != null;
-    const freshVal = source.custom_fresh_days || "";
+    // Treat 0 as no rule (same as NULL) for UI purposes
+    const hasCustomRule = source.custom_fresh_days != null && source.custom_fresh_days > 0;
+    const freshVal = hasCustomRule ? source.custom_fresh_days : "";
 
     panel.innerHTML = `
         <div class="source-detail-header">
@@ -715,7 +716,7 @@ async function showSourceDetail(source) {
         <h2>Freshness Rule</h2>
         <div class="freshness-rule-form">
             <label class="freshness-label">Healthy up to
-                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="0" min="0" max="9999" class="input-sm">
+                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="blank = no rule" min="1" max="9999" class="input-sm">
                 days (degraded after)
             </label>
             <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
@@ -747,9 +748,20 @@ async function showSourceDetail(source) {
     const saveFreshBtn = document.getElementById("btn-save-freshness");
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
-            const fd = parseInt(document.getElementById("fresh-days-input").value);
-            if (isNaN(fd) || fd < 0) {
-                toast("Enter a valid number of days");
+            const raw = document.getElementById("fresh-days-input").value.trim();
+            // Blank input = clear the rule
+            if (raw === "") {
+                try {
+                    await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                    toast("Rule cleared - source not monitored");
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+                return;
+            }
+            const fd = parseInt(raw);
+            if (isNaN(fd) || fd < 1) {
+                toast("Enter at least 1 day, or leave blank to clear the rule");
                 return;
             }
             try {
@@ -1795,18 +1807,23 @@ async function renderSources() {
         }, sortVal: s => s._fullLocation || "" },
         { key: "status", label: "Status", width: COL_W.sm, render: s => {
             let b = statusBadge(s.status);
-            if (s.custom_fresh_days != null) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
+            if (s.custom_fresh_days != null && s.custom_fresh_days > 0) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
             return b;
-        }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection" })[s.status] ?? "3_" + s.status },
+        }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection", no_rule: "2_no_rule" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "custom_fresh_days", label: "Freshness", width: COL_W.sm, render: s => {
-            const days = s.custom_fresh_days ?? 0;
-            return `<span style="color:var(--text-muted)">${days}d</span>`;
-        }, sortVal: s => s.custom_fresh_days ?? 0 },
+            if (s.custom_fresh_days == null || s.custom_fresh_days === 0) {
+                return '<span style="color:var(--text-dim)" title="No freshness rule set">-</span>';
+            }
+            return `<span style="color:var(--text-muted)">${s.custom_fresh_days}d</span>`;
+        }, sortVal: s => s.custom_fresh_days ?? -1 },
         { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
             const d = daysOld(s.last_updated);
             if (d === null) return '<span style="color:var(--text-dim)">-</span>';
-            const threshold = s.custom_fresh_days ?? 0;
+            const threshold = s.custom_fresh_days;
+            if (threshold == null || threshold === 0) {
+                return `<span style="color:var(--text-muted)">${d}</span>`;
+            }
             const color = d <= threshold ? "var(--green)" : "var(--red)";
             return `<span style="color:${color};font-weight:600">${d}</span>`;
         }, sortVal: s => daysOld(s.last_updated) ?? 9999 },
