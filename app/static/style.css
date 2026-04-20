@@ -949,19 +949,27 @@ button:disabled {
     cursor: not-allowed;
 }
 
-button.btn-outline {
+button.btn-outline, a.btn-outline {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
     padding: 0.35rem 0.75rem;
     font-size: 0.8rem;
+    border-radius: 4px;
+    display: inline-block;
+    line-height: 1.4;
 }
 
-button.btn-outline:hover {
+button.btn-outline:hover, a.btn-outline:hover {
     border-color: var(--text-muted);
     color: var(--text);
     background: var(--surface-hover);
     opacity: 1;
+    text-decoration: none;
+}
+
+a.btn-outline:visited {
+    color: var(--text-muted);
 }
 
 button.btn-sm {
@@ -2371,6 +2379,77 @@ body.ai-panel-open main {
 .asset-type-scheduled_task {
     background: rgba(16, 185, 129, 0.18);
     color: #34d399;
+}
+
+.alerts-expand-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0 0.35rem 0 0;
+    font-size: 0.72rem;
+    margin-right: 0.25rem;
+    vertical-align: middle;
+}
+.alerts-expand-btn:hover {
+    color: var(--accent);
+}
+.alerts-expand-arrow {
+    display: inline-block;
+    transition: transform 0.12s;
+}
+.alerts-expand-spacer {
+    display: inline-block;
+    width: 1.1rem;
+}
+.alerts-asset-wrap {
+    display: inline-block;
+    vertical-align: top;
+}
+.alerts-expand-row > td.alerts-expand-cell {
+    padding: 0.6rem 0.75rem 0.8rem 2.4rem;
+    background: rgba(255, 255, 255, 0.02);
+    border-top: none;
+}
+.alerts-recommendation {
+    font-size: 0.78rem;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    background: rgba(59, 130, 246, 0.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+}
+.alerts-recommendation strong {
+    color: var(--accent);
+    margin-right: 0.3rem;
+}
+.alerts-sources-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.35rem;
+}
+.alerts-sources-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.alerts-sources-list a.alerts-detail-source {
+    display: inline-block;
+    padding: 0.25rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 0.76rem;
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+}
+.alerts-sources-list a.alerts-detail-source:hover {
+    border-color: var(--accent);
+    background: rgba(59, 130, 246, 0.08);
 }
 
 /* Alert trend chart */

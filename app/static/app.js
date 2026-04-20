@@ -1429,9 +1429,11 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">affects ${esc(a.top_report_name)}${a.report_names.length > 1 ? ` +${a.report_names.length - 1}` : ""}</div>`;
         } else if (a.detail_items && a.detail_items.length > 0) {
             // For schedule_mismatch, show the sources that refreshed after
-            const shown = a.detail_items.slice(0, 3).map(esc).join(", ");
+            const summary = a.detail_items.slice(0, 3).map(d =>
+                `${esc(d.name)} (+${d.delta_hours < 48 ? d.delta_hours + 'h' : Math.floor(d.delta_hours / 24) + 'd'})`
+            ).join(", ");
             const more = a.detail_items.length > 3 ? ` +${a.detail_items.length - 3}` : "";
-            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400" title="${esc(a.detail_items.join(", "))}">stale vs: ${shown}${more}</div>`;
+            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">stale vs: ${summary}${more}</div>`;
         }
 
         const assetCell = linkData
@@ -1446,10 +1448,16 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             : '<span style="color:var(--text-dim)">-</span>';
 
         const days = a.asset_days || 0;
+        const hasExpandable = !!a.recommendation || (a.detail_items && a.detail_items.length > 0);
 
-        return `
+        const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
-                <td>${assetCell}</td>
+                <td>
+                    ${hasExpandable
+                        ? `<button class="alerts-expand-btn" data-action-id="${a.id}" aria-label="Expand" title="Show recommendation + stale sources"><span class="alerts-expand-arrow">&#9656;</span></button>`
+                        : '<span class="alerts-expand-spacer"></span>'}
+                    <span class="alerts-asset-wrap">${assetCell}</span>
+                </td>
                 <td>${typeCell}</td>
                 <td style="text-align:right">
                     <span class="days-pill${days >= 7 ? ' days-pill-high' : ''}">${days}d</span>
@@ -1470,6 +1478,27 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 </td>
             </tr>
         `;
+
+        const sourceLinksHtml = (a.detail_items || []).map(d => {
+            const delta = d.delta_hours < 48
+                ? `${d.delta_hours}h`
+                : `${Math.floor(d.delta_hours / 24)}d`;
+            return `<a class="alerts-source-link alerts-detail-source" data-source-id="${d.id}">
+                <strong>${esc(d.name)}</strong>
+                <span style="color:var(--text-dim);margin-left:0.35rem">+${delta}</span>
+            </a>`;
+        }).join("");
+
+        const expandRow = hasExpandable ? `
+            <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
+                <td colspan="6" class="alerts-expand-cell">
+                    ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
+                    ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
+                </td>
+            </tr>
+        ` : "";
+
+        return mainRow + expandRow;
     }).join("");
 
     return `
@@ -1520,14 +1549,16 @@ function bindDashboardAlerts() {
 }
 
 function _waitForDataTable(id, timeoutMs = 2000) {
-    // Poll until window._dt[id] exists with _displayRows populated, then
-    // resolve. Gives up after timeoutMs and resolves anyway so the caller
-    // still tries to render something.
+    // Poll until the tbody for this table is in the DOM with at least one
+    // clickable row AND window._dt[id]._displayRows is populated. Both
+    // conditions need to hold for showReportDetail/showSourceDetail to
+    // find their anchor row.
     return new Promise(resolve => {
         const start = Date.now();
         const check = () => {
+            const rows = document.querySelectorAll(`#${id} tbody tr[data-clickable]`);
             const dt = window._dt && window._dt[id];
-            if (dt && dt._displayRows && dt._displayRows.length > 0) {
+            if (rows.length > 0 && dt && dt._displayRows && dt._displayRows.length > 0) {
                 resolve(true);
                 return;
             }
@@ -1535,7 +1566,20 @@ function _waitForDataTable(id, timeoutMs = 2000) {
                 resolve(false);
                 return;
             }
-            setTimeout(check, 30);
+            requestAnimationFrame(check);
+        };
+        check();
+    });
+}
+
+function _waitForElement(selector, timeoutMs = 2000) {
+    return new Promise(resolve => {
+        const start = Date.now();
+        const check = () => {
+            const el = document.querySelector(selector);
+            if (el) { resolve(el); return; }
+            if (Date.now() - start > timeoutMs) { resolve(null); return; }
+            requestAnimationFrame(check);
         };
         check();
     });
@@ -1543,16 +1587,13 @@ function _waitForDataTable(id, timeoutMs = 2000) {
 
 function bindDashboardAlertsRowControls() {
     // Clickable report cell - navigate to reports page and open detail.
-    // showReportDetail needs the DataTable bound and _displayRows populated
-    // (so it can find the right row to attach the expanded panel after);
-    // requestAnimationFrame + a short wait ensures navigate() finished
-    // painting the Reports page before we try to open it.
     document.querySelectorAll(".alerts-report-link").forEach(el => {
         el.addEventListener("click", async (e) => {
             e.stopPropagation();
             const rid = parseInt(el.dataset.reportId);
             if (!rid) return;
             await navigate("reports");
+            await _waitForDataTable("dt-reports");
             let report;
             try {
                 const all = await api("/api/reports");
@@ -1561,13 +1602,9 @@ function bindDashboardAlertsRowControls() {
                 report = (window._dashboardReports || []).find(r => r.id === rid);
             }
             if (!report) return;
-            await _waitForDataTable("dt-reports");
-            showReportDetail(report);
-            // Scroll the expanded row into view
-            requestAnimationFrame(() => {
-                const expanded = document.querySelector(`.report-expand-row[data-report-id="${rid}"]`);
-                if (expanded) expanded.scrollIntoView({ behavior: "smooth", block: "start" });
-            });
+            await showReportDetail(report);
+            const expanded = await _waitForElement(`.report-expand-row[data-report-id="${rid}"]`, 3000);
+            if (expanded) expanded.scrollIntoView({ behavior: "smooth", block: "start" });
         });
     });
 
@@ -1578,6 +1615,7 @@ function bindDashboardAlertsRowControls() {
             const sid = parseInt(el.dataset.sourceId);
             if (!sid) return;
             await navigate("sources");
+            await _waitForDataTable("dt-sources");
             let src;
             try {
                 src = await api(`/api/sources/${sid}`);
@@ -1585,8 +1623,40 @@ function bindDashboardAlertsRowControls() {
                 src = (window._dashboardSources || []).find(s => s.id === sid);
             }
             if (!src) return;
+            await showSourceDetail(src);
+            const panel = await _waitForElement("#source-detail", 3000);
+            if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    });
+
+    // Expand button toggles the recommendation/source-list row
+    document.querySelectorAll(".alerts-expand-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const actionId = btn.dataset.actionId;
+            const expandRow = document.querySelector(`.alerts-expand-row[data-action-id="${actionId}"]`);
+            if (!expandRow) return;
+            const isOpen = expandRow.style.display !== "none";
+            expandRow.style.display = isOpen ? "none" : "";
+            const arrow = btn.querySelector(".alerts-expand-arrow");
+            if (arrow) arrow.innerHTML = isOpen ? "&#9656;" : "&#9662;";
+        });
+    });
+
+    // Source links inside the expanded section (schedule_mismatch sources)
+    document.querySelectorAll(".alerts-detail-source").forEach(el => {
+        el.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const sid = parseInt(el.dataset.sourceId);
+            if (!sid) return;
+            await navigate("sources");
             await _waitForDataTable("dt-sources");
-            showSourceDetail(src);
+            let src;
+            try { src = await api(`/api/sources/${sid}`); } catch (_) {}
+            if (!src) return;
+            await showSourceDetail(src);
+            const panel = await _waitForElement("#source-detail", 3000);
+            if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
         });
     });
 

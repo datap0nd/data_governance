@@ -156,9 +156,12 @@ class ActionOut(BaseModel):
     # outdated days and report refresh-overdue days)
     asset_days: int = 0
     # Extra troubleshooting context for specific alert types. For
-    # schedule_mismatch: names of the sources that refreshed after the
-    # report, with how far behind the report is.
-    detail_items: list[str] = []
+    # schedule_mismatch: list of sources that refreshed after the report,
+    # each as {id, name, delta_hours} so the frontend can render them as
+    # clickable links showing how far behind the report is.
+    detail_items: list[dict] = []
+    # Short actionable recommendation shown when the row is expanded.
+    recommendation: str | None = None
     type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue, schedule_mismatch
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None

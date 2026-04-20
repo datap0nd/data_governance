@@ -101,17 +101,16 @@ def _compute_report_action_days(db) -> dict[int, int]:
     return result
 
 
-def _compute_report_stale_sources(db) -> dict[int, list[str]]:
+def _compute_report_stale_sources(db) -> dict[int, list[dict]]:
     """For each report, list sources with data newer than the report's last
-    refresh. Output strings look like "source_name (+Nh)" to give the user
-    enough context to troubleshoot without clicking through.
+    refresh. Each item is a dict with source id, name, and how far ahead
+    so the frontend can render clickable links for troubleshooting.
 
-    Empty list means the report is caught up. Used to populate
-    detail_items on schedule_mismatch actions.
+    Empty list means the report is caught up.
     """
     rows = db.execute("""
         SELECT r.id AS report_id, r.pbi_last_refresh_at,
-               s.name AS source_name, sp.last_data_at
+               s.id AS source_id, s.name AS source_name, sp.last_data_at
         FROM reports r
         JOIN report_tables rt ON rt.report_id = r.id
         JOIN sources s ON s.id = rt.source_id
@@ -137,7 +136,7 @@ def _compute_report_stale_sources(db) -> dict[int, list[str]]:
         except (ValueError, TypeError, AttributeError):
             return None
 
-    result: dict[int, list[tuple[float, str]]] = {}
+    result: dict[int, list[dict]] = {}
     for r in rows:
         report_dt = _parse_dt(r["pbi_last_refresh_at"])
         source_dt = _parse_dt(r["last_data_at"])
@@ -147,17 +146,43 @@ def _compute_report_stale_sources(db) -> dict[int, list[str]]:
         if delta_hours <= 1:  # same 1h buffer as detector
             continue
         short = r["source_name"].replace("\\", "/").split("/")[-1]
-        label = (
-            f"{short} (+{int(delta_hours)}h)" if delta_hours < 48
-            else f"{short} (+{int(delta_hours / 24)}d)"
-        )
-        result.setdefault(r["report_id"], []).append((delta_hours, label))
+        result.setdefault(r["report_id"], []).append({
+            "id": r["source_id"],
+            "name": short,
+            "delta_hours": int(delta_hours),
+        })
 
-    # Sort each list by how far behind (most behind first), drop the sort key
+    # Sort each list by how far behind (most behind first)
     return {
-        rid: [label for _, label in sorted(items, key=lambda x: -x[0])]
+        rid: sorted(items, key=lambda x: -x["delta_hours"])
         for rid, items in result.items()
     }
+
+
+def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | None:
+    """Short actionable message shown when an alert row is expanded."""
+    if action_type == "schedule_mismatch":
+        if detail_items:
+            return (
+                f"Refresh this report to pick up updated data from "
+                f"{len(detail_items)} source(s) that ran after its last refresh."
+            )
+        return "Refresh this report - one or more sources have fresher data."
+    if action_type == "refresh_failed":
+        return "Investigate the PBI refresh error (check the notes) and trigger a manual refresh once fixed."
+    if action_type == "refresh_overdue":
+        return "Trigger a manual refresh or verify the schedule is enabled and the gateway is up."
+    if action_type in ("stale_source", "outdated_source", "error_source"):
+        return "Find out why this source hasn't updated. Check linked scripts and scheduled tasks."
+    if action_type == "task_failed":
+        return "Open the scheduled task, review the last run output, and re-run once the underlying issue is resolved."
+    if action_type == "script_failed":
+        return "Check the script log for errors. The linked scheduled task(s) may need to be re-run after fixing."
+    if action_type == "broken_ref":
+        return "Update the report to point at an existing source, or remove the unused table."
+    if action_type == "changed_query":
+        return "Review the query change - confirm downstream usage is still correct."
+    return None
 
 
 @router.get("", response_model=list[ActionOut])
@@ -262,9 +287,10 @@ def list_actions(status: str | None = None):
                 top_rid, top_rname, top_days = lrid, lrname, d
 
         # Troubleshooting details shown inline on the alert row
-        detail_items: list[str] = []
+        detail_items: list[dict] = []
         if r["type"] == "schedule_mismatch" and rid is not None:
             detail_items = report_stale_sources.get(rid, [])
+        recommendation = _recommendation_for(r["type"], detail_items)
 
         results.append(ActionOut(
             id=r["id"],
@@ -282,6 +308,7 @@ def list_actions(status: str | None = None):
             asset_name=asset_name,
             asset_days=asset_days,
             detail_items=detail_items,
+            recommendation=recommendation,
             type=r["type"],
             status=r["status"],
             assigned_to=r["assigned_to"],
