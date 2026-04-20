@@ -72,12 +72,21 @@ def _compute_report_context(db, source_days: dict[int, int]):
 def list_actions(status: str | None = None):
     with get_db() as db:
         # Hide actions tied to archived sources - the source has been retired
-        # so the alert isn't actionable any more
+        # so the alert isn't actionable any more. Also hide actions where the
+        # source's latest probe is no longer outdated (these are stale from
+        # before a rule change / data refresh; the prober will auto-close
+        # them on its next run, but don't clutter the UI in the meantime).
         query = """
-            SELECT a.*, s.name AS source_name, r.name AS report_name
+            SELECT a.*, s.name AS source_name, r.name AS report_name,
+                   sp.status AS latest_source_status
             FROM actions a
             LEFT JOIN sources s ON s.id = a.source_id
             LEFT JOIN reports r ON r.id = a.report_id
+            LEFT JOIN (
+                SELECT source_id, status,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                FROM source_probes
+            ) sp ON sp.source_id = a.source_id AND sp.rn = 1
             WHERE (s.archived IS NULL OR s.archived = 0)
         """
         params = []
@@ -90,9 +99,24 @@ def list_actions(status: str | None = None):
         source_days = _compute_source_days_outdated(db)
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
 
+    # Only include actions that are either:
+    #   a) not tied to a source (broken_ref, changed_query etc.), or
+    #   b) tied to a source whose latest probe is still outdated/stale/error,
+    #      OR has never been probed (status NULL) so we don't know yet
+    # This eliminates the 0d noise for sources that have flipped back to fresh
+    # or no_rule but whose old alerts haven't been auto-closed yet.
+    ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
+
     results: list[ActionOut] = []
     for r in rows:
         sid = r["source_id"]
+        latest = r["latest_source_status"]
+        # Skip source-tied actions whose source isn't currently outdated.
+        # Keep actions with no source_id (source-independent issues).
+        # Keep actions whose source has never been probed (latest is None) -
+        # we can't tell yet if it's degraded.
+        if sid is not None and latest is not None and latest not in ACTIONABLE_STATUSES:
+            continue
         linked = source_reports.get(sid, []) if sid else []
         names = [rn for _, rn in linked]
         # Pick the report with the highest degradation_days as the "top" report

@@ -33,13 +33,24 @@ def get_dashboard():
         # Report counts
         reports_total = db.execute("SELECT COUNT(*) AS c FROM reports WHERE archived = 0").fetchone()["c"]
 
-        # Alert count - exclude alerts on archived sources so the badge
-        # matches what's actually visible in the Alerts table
+        # Alert count - match what's visible in the dashboard Alerts table.
+        # Use the actions table (same source of truth as the UI), filtered to
+        # unresolved entries whose source is still outdated (or unknown).
         alerts_active = db.execute(
-            """SELECT COUNT(*) AS c FROM alerts a
+            """SELECT COUNT(*) AS c FROM actions a
                LEFT JOIN sources s ON s.id = a.source_id
-               WHERE a.acknowledged = 0
-                 AND (s.archived IS NULL OR s.archived = 0)"""
+               LEFT JOIN (
+                   SELECT source_id, status,
+                          ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                   FROM source_probes
+               ) sp ON sp.source_id = a.source_id AND sp.rn = 1
+               WHERE a.status NOT IN ('resolved', 'expected')
+                 AND (s.archived IS NULL OR s.archived = 0)
+                 AND (
+                     a.source_id IS NULL
+                     OR sp.status IS NULL
+                     OR sp.status IN ('outdated', 'stale', 'error')
+                 )"""
         ).fetchone()["c"]
 
         # Last scan
