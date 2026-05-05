@@ -22,7 +22,24 @@ if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
 
 Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
 
-# Connect
+# Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically
+$clicker = $null
+$clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
+if (Test-Path $clickerScript) {
+    try {
+        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-File", $clickerScript,
+            "-TimeoutSeconds", "90"
+        )
+        Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
+    }
+}
+
+# Connect (uses cached token if available, otherwise pops login - auto-clicker handles it)
 Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
 try {
     Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
@@ -31,6 +48,10 @@ try {
     Write-Error "Failed to connect to Power BI: $_"
     Read-Host "Press Enter to exit"
     exit 1
+} finally {
+    if ($clicker -and -not $clicker.HasExited) {
+        Stop-Process -Id $clicker.Id -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Get already-synced days from the governance API
@@ -111,7 +132,22 @@ foreach ($day in $daysToFetch) {
         $viewCount = ($viewEvents | Measure-Object).Count
         Write-Host " $viewCount views" -ForegroundColor $(if ($viewCount -gt 0) { "Green" } else { "Gray" })
     } catch {
-        Write-Host " FAILED: $_" -ForegroundColor Red
+        $errMsg = $_.ToString()
+        Write-Host " FAILED: $errMsg" -ForegroundColor Red
+
+        # Abort immediately on auth/permission errors - no point trying remaining days
+        if ($errMsg -match "Unauthorized|Forbidden|403|401") {
+            Write-Host ""
+            Write-Host "PERMISSION ERROR: Your account lacks the required role." -ForegroundColor Red
+            Write-Host "Get-PowerBIActivityEvent requires one of:" -ForegroundColor Yellow
+            Write-Host "  - Power BI Service Administrator" -ForegroundColor Yellow
+            Write-Host "  - Fabric Administrator" -ForegroundColor Yellow
+            Write-Host "  - Global Administrator" -ForegroundColor Yellow
+            Write-Host "Workspace Admin alone is NOT sufficient." -ForegroundColor Yellow
+            Write-Host ""
+            Read-Host "Press Enter to close"
+            exit 1
+        }
     }
 }
 

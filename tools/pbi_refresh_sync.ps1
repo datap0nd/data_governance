@@ -21,7 +21,24 @@ if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
 
 Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
 
-# Connect (uses cached token if available, otherwise pops login)
+# Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically
+$clicker = $null
+$clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
+if (Test-Path $clickerScript) {
+    try {
+        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+            "-ExecutionPolicy", "Bypass",
+            "-NoProfile",
+            "-File", $clickerScript,
+            "-TimeoutSeconds", "90"
+        )
+        Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
+    }
+}
+
+# Connect (uses cached token if available, otherwise pops login - auto-clicker handles it)
 Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
 try {
     Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
@@ -30,6 +47,10 @@ try {
     Write-Error "Failed to connect to Power BI: $_"
     Read-Host "Press Enter to exit"
     exit 1
+} finally {
+    if ($clicker -and -not $clicker.HasExited) {
+        Stop-Process -Id $clicker.Id -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Find workspace
