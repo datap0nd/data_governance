@@ -1585,7 +1585,7 @@ button.btn-blue { background: var(--accent); }
 .status-dot-fresh, .status-dot-current { background: var(--green); }
 .status-dot-stale { background: var(--red); }
 .status-dot-outdated, .status-dot-error { background: var(--red); }
-.status-dot-unknown, .status-dot-no_connection { background: var(--text-dim); }
+.status-dot-unknown, .status-dot-no_connection, .status-dot-no_rule { background: var(--yellow); }
 
 .lineage-source-info { flex: 1; min-width: 0; }
 

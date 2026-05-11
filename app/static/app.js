@@ -193,7 +193,7 @@ function _bindArchiveButtons(reloadFn) {
 }
 
 function statusBadge(status) {
-    if (!status) return '<span class="badge badge-muted">not probed</span>';
+    if (!status) return '<span class="badge badge-yellow">not probed</span>';
     const s = status.toLowerCase();
     if (s === "fresh" || s === "healthy" || s === "current" || s === "pass" || s === "completed")
         return `<span class="badge badge-green">healthy</span>`;
@@ -204,11 +204,11 @@ function statusBadge(status) {
     if (s === "error" || s === "fail" || s === "failed" || s === "critical")
         return `<span class="badge badge-red">${status}</span>`;
     if (s === "no_connection")
-        return '<span class="badge badge-muted">no connection</span>';
+        return '<span class="badge badge-yellow">no connection</span>';
     if (s === "no_rule")
-        return '<span class="badge badge-muted" title="No freshness rule set for this source">no rule</span>';
+        return '<span class="badge badge-yellow" title="No freshness rule set for this source">no rule</span>';
     if (s === "unknown")
-        return '<span class="badge badge-muted">not probed</span>';
+        return '<span class="badge badge-yellow">not probed</span>';
     return `<span class="badge badge-muted">${status}</span>`;
 }
 
@@ -1389,7 +1389,7 @@ async function renderDashboard() {
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green" title="All data sources are fresh and up to date">${reports.filter(r => r.status === "healthy").length} healthy</span>
                     <span class="stat-dot dot-red" title="Data sources are past freshness threshold">${reports.filter(r => r.status === "degraded" || r.status === "at risk").length} degraded</span>
-                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-muted" title="Status has not been probed yet">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
+                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-yellow" title="Status has not been probed yet">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
@@ -1399,7 +1399,7 @@ async function renderDashboard() {
                 <div class="stat-breakdown">
                     <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within freshness threshold">${data.sources_fresh} healthy</span>
                     <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data past freshness threshold">${data.sources_outdated} degraded</span>
-                    ${data.sources_unknown ? `<span class="stat-dot dot-muted stat-filter" data-filter="unknown" title="Source has not been probed yet or has no rule">${data.sources_unknown} unknown</span>` : ""}
+                    ${data.sources_unknown ? `<span class="stat-dot dot-yellow stat-filter" data-filter="unknown" title="Source has not been probed yet or has no rule">${data.sources_unknown} unknown</span>` : ""}
                 </div>
                 <div class="stat-card-link">View &rarr;</div>
             </div>
@@ -1428,20 +1428,20 @@ async function renderDashboard() {
             <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">Run a scan to discover data sources</div>
             ` : allUnknown ? `
             <div class="health-bar">
-                <div class="segment segment-muted" style="width:100%"></div>
+                <div class="segment segment-yellow" style="width:100%"></div>
             </div>
             <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered  - probe to check freshness</div>
             ` : `
             <div class="health-bar">
                 ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} healthy (${freshPct}%)" data-filter="healthy" style="width:${freshPct}%"></div>` : ""}
                 ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} degraded (${outdatedPct}%)" data-filter="degraded" style="width:${outdatedPct}%"></div>` : ""}
-                ${unknownPct > 0 ? `<div class="segment segment-muted" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
+                ${unknownPct > 0 ? `<div class="segment segment-yellow" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
             </div>
             <div class="health-tooltip" id="health-tooltip"></div>
             <div class="health-legend">
                 <span class="stat-dot dot-green">${data.sources_fresh} Healthy</span>
                 <span class="stat-dot dot-red">${data.sources_outdated} Degraded</span>
-                ${data.sources_unknown ? `<span class="stat-dot dot-muted">${data.sources_unknown} Unknown</span>` : ""}
+                ${data.sources_unknown ? `<span class="stat-dot dot-yellow">${data.sources_unknown} Unknown</span>` : ""}
             </div>
             `}
         </div>
@@ -2125,17 +2125,17 @@ async function renderSources() {
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
         { key: "freshness_rule_type", label: "Freshness", width: COL_W.md, render: s => {
             if (!sourceHasFreshnessRule(s)) {
-                return '<span style="color:var(--text-dim)" title="No freshness rule set">-</span>';
+                return '<span style="color:var(--yellow)" title="No freshness rule set">no rule</span>';
             }
             return `<span style="color:var(--text-muted)">${esc(freshnessRuleLabel(s))}</span>`;
         }, sortVal: s => freshnessRuleLabel(s) },
         { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
             const d = daysOld(s.last_updated);
-            if (d === null) return '<span style="color:var(--text-dim)">-</span>';
+            if (d === null) return '<span style="color:var(--yellow)">no update</span>';
             if (!sourceHasFreshnessRule(s)) {
-                return `<span style="color:var(--text-muted)">${d}</span>`;
+                return `<span style="color:var(--yellow);font-weight:600">${d}</span>`;
             }
-            const color = s.status === "fresh" ? "var(--green)" : (s.status === "outdated" || s.status === "stale" || s.status === "error") ? "var(--red)" : "var(--text-muted)";
+            const color = s.status === "fresh" ? "var(--green)" : (s.status === "outdated" || s.status === "stale" || s.status === "error") ? "var(--red)" : "var(--yellow)";
             return `<span style="color:${color};font-weight:600">${d}</span>`;
         }, sortVal: s => daysOld(s.last_updated) ?? 9999 },
         { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
@@ -6542,10 +6542,10 @@ function _renderLineageDiagram(data) {
     }
 
     // Status helpers
-    const stCls = (s, lastDate) => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-err", outdated: "lin-st-err", error: "lin-st-err" }[s] || (lastDate ? "lin-st-ok" : ""));
+    const stCls = (s) => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-err", outdated: "lin-st-err", error: "lin-st-err", unknown: "lin-st-warn", no_rule: "lin-st-warn", no_connection: "lin-st-warn" }[s] || "lin-st-warn");
     const stDot = (s, lastDate) => {
         const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--red)", outdated: "var(--red)", error: "var(--red)" };
-        return `<span class="lin-dot" style="background:${c[s] || (lastDate ? "var(--green)" : "var(--text-dim)")}" title="${lastDate ? `Refreshed ${timeAgo(lastDate)}` : "No refresh date"}"></span>`;
+        return `<span class="lin-dot" style="background:${c[s] || "var(--yellow)"}" title="${lastDate ? `Refreshed ${timeAgo(lastDate)}` : "No refresh date"}"></span>`;
     };
 
     // === Column HTML builders ===
@@ -6620,7 +6620,7 @@ function _renderLineageDiagram(data) {
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
         const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
         const last = s.last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(s.last_data_at))}">${timeAgo(s.last_data_at)}</div>` : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s.status, s.last_data_at)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status, s.last_data_at)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
+        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status, s.last_data_at)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
     }
     colHtml.sources = srcH;
 
@@ -6633,7 +6633,7 @@ function _renderLineageDiagram(data) {
             // This upstream table only feeds the MV, not directly used by the report
             mvUpSources.push(d);
             const last = d.depends_on_last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(d.depends_on_last_data_at))}">${timeAgo(d.depends_on_last_data_at)}</div>` : '';
-            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status, d.depends_on_last_data_at)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status, d.depends_on_last_data_at)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
+            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status, d.depends_on_last_data_at)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
         }
     }
     colHtml.mv_upstream = mvUpH;
