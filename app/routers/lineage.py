@@ -16,12 +16,13 @@ def get_lineage():
                 s.type AS source_type,
                 r.id AS report_id,
                 r.name AS report_name,
-                sp.status AS source_status
+                sp.status AS source_status,
+                CAST(sp.last_data_at AS TEXT) AS source_last_data_at
             FROM report_tables rt
             JOIN sources s ON s.id = rt.source_id
             JOIN reports r ON r.id = rt.report_id
             LEFT JOIN (
-                SELECT source_id, status,
+                SELECT source_id, status, last_data_at,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -36,6 +37,7 @@ def get_lineage():
             report_id=r["report_id"],
             report_name=r["report_name"],
             source_status=r["source_status"] or "unknown",
+            source_last_data_at=r["source_last_data_at"],
         )
         for r in rows
     ]

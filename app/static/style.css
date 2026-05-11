@@ -2201,6 +2201,9 @@ body.ai-panel-open main {
     flex-wrap: wrap;
     margin-top: 0.4rem;
 }
+.freshness-rule-form-wide {
+    align-items: flex-start;
+}
 
 .freshness-label {
     color: var(--text-muted);
@@ -2208,6 +2211,59 @@ body.ai-panel-open main {
     display: flex;
     align-items: center;
     gap: 0.3rem;
+}
+.freshness-select {
+    min-width: 150px;
+    padding: 0.28rem 0.45rem;
+    font-size: 0.78rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    outline: none;
+}
+.freshness-select:focus { border-color: var(--accent); }
+.freshness-fixed-options {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+.freshness-day-list {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+.freshness-day-pill {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+.freshness-day-pill input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+.freshness-day-pill span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 38px;
+    height: 26px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    background: var(--bg);
+}
+.freshness-day-pill input:checked + span {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent);
+}
+.freshness-help {
+    color: var(--text-dim);
+    font-size: 0.72rem;
 }
 
 .input-sm {
@@ -3301,6 +3357,11 @@ button.btn-danger-outline:hover {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.lin-card-time {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    padding: 0 8px 2px 22px;
 }
 
 /* Upstream system card */

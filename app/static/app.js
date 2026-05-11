@@ -47,14 +47,31 @@ function esc(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+function _getClientKey() {
+    const keyName = "mx-client-key";
+    let key = localStorage.getItem(keyName);
+    if (!key) {
+        key = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem(keyName, key);
+    }
+    document.cookie = `mx_client_key=${encodeURIComponent(key)}; Path=/; Max-Age=34560000; SameSite=Lax`;
+    return key;
+}
+
+function apiHeaders(extra = {}) {
+    return { "X-Client-Key": _getClientKey(), ...extra };
+}
+
 async function api(path) {
-    const res = await fetch(path);
+    const res = await fetch(path, { headers: apiHeaders() });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
 }
 
 async function apiPost(path) {
-    const res = await fetch(path, { method: "POST" });
+    const res = await fetch(path, { method: "POST", headers: apiHeaders() });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
 }
@@ -62,7 +79,7 @@ async function apiPost(path) {
 async function apiPatch(path, body) {
     const res = await fetch(path, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -72,7 +89,7 @@ async function apiPatch(path, body) {
 async function apiPostJson(path, body) {
     const res = await fetch(path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -82,7 +99,7 @@ async function apiPostJson(path, body) {
 async function apiPut(path, body) {
     const res = await fetch(path, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -90,7 +107,7 @@ async function apiPut(path, body) {
 }
 
 async function apiDelete(path) {
-    const res = await fetch(path, { method: "DELETE" });
+    const res = await fetch(path, { method: "DELETE", headers: apiHeaders() });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
 }
@@ -274,6 +291,34 @@ function timeAgo(dateStr) {
     const months = Math.floor(days / 30);
     if (months < 12) return `${months}mo ago`;
     return `${Math.floor(months / 12)}y ago`;
+}
+
+const FRESHNESS_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function sourceFreshnessRuleType(source) {
+    if (source.freshness_rule_type) return source.freshness_rule_type;
+    if (source.custom_fresh_days != null && source.custom_fresh_days > 0) return "custom";
+    return "";
+}
+
+function sourceHasFreshnessRule(source) {
+    return !!sourceFreshnessRuleType(source);
+}
+
+function sourceFreshnessDays(source) {
+    if (!source.freshness_schedule_days) return [];
+    return source.freshness_schedule_days.split(",").map(d => d.trim()).filter(Boolean);
+}
+
+function freshnessRuleLabel(source) {
+    const type = sourceFreshnessRuleType(source);
+    if (type === "daily") return "Daily";
+    if (type === "fixed") {
+        const days = sourceFreshnessDays(source).map(d => d.slice(0, 3)).join(", ");
+        return days ? `Fixed: ${days}` : "Fixed";
+    }
+    if (type === "custom" && source.custom_fresh_days) return `Custom: ${source.custom_fresh_days}d`;
+    return "-";
 }
 
 function formatDate(dateStr) {
@@ -680,9 +725,16 @@ async function showSourceDetail(source) {
         `).join("")
         : '<tr><td colspan="3" class="empty-state" style="border:none">No reports linked to this source</td></tr>';
 
-    // Treat 0 as no rule (same as NULL) for UI purposes
-    const hasCustomRule = source.custom_fresh_days != null && source.custom_fresh_days > 0;
-    const freshVal = hasCustomRule ? source.custom_fresh_days : "";
+    const freshnessType = sourceFreshnessRuleType(source);
+    const hasFreshnessRule = sourceHasFreshnessRule(source);
+    const freshVal = source.custom_fresh_days != null && source.custom_fresh_days > 0 ? source.custom_fresh_days : "";
+    const selectedFreshDays = new Set(sourceFreshnessDays(source));
+    const dayBoxes = FRESHNESS_DAYS.map(day => `
+        <label class="freshness-day-pill">
+            <input type="checkbox" value="${day}" ${selectedFreshDays.has(day) ? "checked" : ""}>
+            <span>${day.slice(0, 3)}</span>
+        </label>
+    `).join("");
 
     panel.innerHTML = `
         <div class="source-detail-header">
@@ -724,15 +776,28 @@ async function showSourceDetail(source) {
         </table>
 
         <h2>Freshness Rule</h2>
-        <div class="freshness-rule-form">
-            <label class="freshness-label">Healthy up to
-                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="blank = no rule" min="1" max="9999" class="input-sm">
-                days (degraded after)
+        <div class="freshness-rule-form freshness-rule-form-wide">
+            <label class="freshness-label">Rule
+                <select id="freshness-rule-type" class="freshness-select">
+                    <option value="" ${!freshnessType ? "selected" : ""}>No rule</option>
+                    <option value="daily" ${freshnessType === "daily" ? "selected" : ""}>Daily</option>
+                    <option value="custom" ${freshnessType === "custom" ? "selected" : ""}>Custom days</option>
+                    <option value="fixed" ${freshnessType === "fixed" ? "selected" : ""}>Fixed schedule</option>
+                </select>
             </label>
+            <label class="freshness-label freshness-custom-options">Healthy up to
+                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="days" min="1" max="9999" class="input-sm">
+                days
+            </label>
+            <div class="freshness-fixed-options">
+                <span class="freshness-label">Refresh days</span>
+                <div class="freshness-day-list">${dayBoxes}</div>
+                <span class="freshness-help">Choose up to 3</span>
+            </div>
             <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
-            ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Clear rule</button>' : ''}
-            ${hasCustomRule
-                ? '<span class="badge badge-blue" style="font-size:0.72rem">rule active</span>'
+            ${hasFreshnessRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Clear rule</button>' : ''}
+            ${hasFreshnessRule
+                ? `<span class="badge badge-blue" style="font-size:0.72rem">${esc(freshnessRuleLabel(source))}</span>`
                 : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
         </div>
     `;
@@ -755,12 +820,35 @@ async function showSourceDetail(source) {
     });
 
     // Freshness rule bindings
+    const ruleTypeSelect = document.getElementById("freshness-rule-type");
+    const syncFreshnessOptions = () => {
+        const type = ruleTypeSelect ? ruleTypeSelect.value : "";
+        panel.querySelectorAll(".freshness-custom-options").forEach(el => {
+            el.style.display = type === "custom" ? "flex" : "none";
+        });
+        panel.querySelectorAll(".freshness-fixed-options").forEach(el => {
+            el.style.display = type === "fixed" ? "flex" : "none";
+        });
+    };
+    if (ruleTypeSelect) {
+        ruleTypeSelect.addEventListener("change", syncFreshnessOptions);
+        syncFreshnessOptions();
+    }
+    panel.querySelectorAll(".freshness-day-pill input").forEach(box => {
+        box.addEventListener("change", () => {
+            const checked = [...panel.querySelectorAll(".freshness-day-pill input:checked")];
+            if (checked.length > 3) {
+                box.checked = false;
+                toast("Choose up to 3 refresh days");
+            }
+        });
+    });
+
     const saveFreshBtn = document.getElementById("btn-save-freshness");
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
-            const raw = document.getElementById("fresh-days-input").value.trim();
-            // Blank input = clear the rule
-            if (raw === "") {
+            const ruleType = document.getElementById("freshness-rule-type").value;
+            if (!ruleType) {
                 try {
                     await apiDelete(`/api/sources/${source.id}/freshness-rule`);
                     toast("Rule cleared - source not monitored");
@@ -769,13 +857,30 @@ async function showSourceDetail(source) {
                 }
                 return;
             }
-            const fd = parseInt(raw);
-            if (isNaN(fd) || fd < 1) {
-                toast("Enter at least 1 day, or leave blank to clear the rule");
-                return;
+            const payload = { rule_type: ruleType };
+            if (ruleType === "custom") {
+                const raw = document.getElementById("fresh-days-input").value.trim();
+                const fd = parseInt(raw);
+                if (isNaN(fd) || fd < 1) {
+                    toast("Enter at least 1 freshness day");
+                    return;
+                }
+                payload.fresh_days = fd;
+            }
+            if (ruleType === "fixed") {
+                const days = [...panel.querySelectorAll(".freshness-day-pill input:checked")].map(el => el.value);
+                if (days.length === 0) {
+                    toast("Choose at least one refresh day");
+                    return;
+                }
+                if (days.length > 3) {
+                    toast("Choose up to 3 refresh days");
+                    return;
+                }
+                payload.refresh_days = days;
             }
             try {
-                await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd });
+                await apiPut(`/api/sources/${source.id}/freshness-rule`, payload);
                 toast("Freshness rule saved - re-probe to apply");
             } catch (err) {
                 toast("Failed: " + err.message);
@@ -788,7 +893,10 @@ async function showSourceDetail(source) {
             try {
                 await apiDelete(`/api/sources/${source.id}/freshness-rule`);
                 toast("Freshness rule cleared - source not monitored");
+                document.getElementById("freshness-rule-type").value = "";
                 document.getElementById("fresh-days-input").value = "";
+                panel.querySelectorAll(".freshness-day-pill input").forEach(box => { box.checked = false; });
+                syncFreshnessOptions();
             } catch (err) {
                 toast("Failed: " + err.message);
             }
@@ -2011,24 +2119,23 @@ async function renderSources() {
         { key: "_folderSchema", label: "Folder / Schema", width: COL_W.md, render: s => `<span style="color:var(--text-muted);font-size:0.75rem">${s._folderSchema || "-"}</span>`, sortVal: s => s._folderSchema || "" },
         { key: "status", label: "Status", width: COL_W.sm, render: s => {
             let b = statusBadge(s.status);
-            if (s.custom_fresh_days != null && s.custom_fresh_days > 0) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Custom freshness rule active">*</span>';
+            if (sourceHasFreshnessRule(s)) b += ' <span style="font-size:0.65rem;color:var(--blue)" title="Freshness rule active">*</span>';
             return b;
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection", no_rule: "2_no_rule" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
-        { key: "custom_fresh_days", label: "Freshness", width: COL_W.sm, render: s => {
-            if (s.custom_fresh_days == null || s.custom_fresh_days === 0) {
+        { key: "freshness_rule_type", label: "Freshness", width: COL_W.md, render: s => {
+            if (!sourceHasFreshnessRule(s)) {
                 return '<span style="color:var(--text-dim)" title="No freshness rule set">-</span>';
             }
-            return `<span style="color:var(--text-muted)">${s.custom_fresh_days}d</span>`;
-        }, sortVal: s => s.custom_fresh_days ?? -1 },
+            return `<span style="color:var(--text-muted)">${esc(freshnessRuleLabel(s))}</span>`;
+        }, sortVal: s => freshnessRuleLabel(s) },
         { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
             const d = daysOld(s.last_updated);
             if (d === null) return '<span style="color:var(--text-dim)">-</span>';
-            const threshold = s.custom_fresh_days;
-            if (threshold == null || threshold === 0) {
+            if (!sourceHasFreshnessRule(s)) {
                 return `<span style="color:var(--text-muted)">${d}</span>`;
             }
-            const color = d <= threshold ? "var(--green)" : "var(--red)";
+            const color = s.status === "fresh" ? "var(--green)" : (s.status === "outdated" || s.status === "stale" || s.status === "error") ? "var(--red)" : "var(--text-muted)";
             return `<span style="color:${color};font-weight:600">${d}</span>`;
         }, sortVal: s => daysOld(s.last_updated) ?? 9999 },
         { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
@@ -2520,7 +2627,7 @@ function bindAlertsTab() {
                 const url = owner
                     ? `/api/alerts/${alertId}/assign?owner=${encodeURIComponent(owner)}`
                     : `/api/alerts/${alertId}/assign`;
-                await fetch(url, { method: "PATCH" });
+                await fetch(url, { method: "PATCH", headers: apiHeaders() });
                 toast(owner ? `Assigned to ${owner}` : "Unassigned");
             } catch (err) {
                 toast("Failed: " + err.message);
@@ -3284,7 +3391,7 @@ function bindCreatePage() {
             const personId = btn.dataset.personId;
             if (!confirm('Delete this person?')) return;
             try {
-                await fetch(`/api/people/${personId}`, { method: 'DELETE' });
+                await fetch(`/api/people/${personId}`, { method: 'DELETE', headers: apiHeaders() });
                 toast('Person deleted');
                 navigate('create');
             } catch (err) {
@@ -6435,10 +6542,10 @@ function _renderLineageDiagram(data) {
     }
 
     // Status helpers
-    const stCls = s => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-warn", outdated: "lin-st-err", error: "lin-st-err" }[s] || "");
-    const stDot = s => {
+    const stCls = (s, lastDate) => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-err", outdated: "lin-st-err", error: "lin-st-err" }[s] || (lastDate ? "lin-st-ok" : ""));
+    const stDot = (s, lastDate) => {
         const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--red)", outdated: "var(--red)", error: "var(--red)" };
-        return `<span class="lin-dot" style="background:${c[s] || "var(--text-dim)"}"></span>`;
+        return `<span class="lin-dot" style="background:${c[s] || (lastDate ? "var(--green)" : "var(--text-dim)")}" title="${lastDate ? `Refreshed ${timeAgo(lastDate)}` : "No refresh date"}"></span>`;
     };
 
     // === Column HTML builders ===
@@ -6512,7 +6619,8 @@ function _renderLineageDiagram(data) {
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
         const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sched}</div>`;
+        const last = s.last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(s.last_data_at))}">${timeAgo(s.last_data_at)}</div>` : '';
+        srcH += `<div class="lin-card lin-src ${stCls(s.status, s.last_data_at)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status, s.last_data_at)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
     }
     colHtml.sources = srcH;
 
@@ -6524,7 +6632,8 @@ function _renderLineageDiagram(data) {
         if (!existingSourceIds.has(depId)) {
             // This upstream table only feeds the MV, not directly used by the report
             mvUpSources.push(d);
-            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div></div>`;
+            const last = d.depends_on_last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(d.depends_on_last_data_at))}">${timeAgo(d.depends_on_last_data_at)}</div>` : '';
+            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status, d.depends_on_last_data_at)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status, d.depends_on_last_data_at)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
         }
     }
     colHtml.mv_upstream = mvUpH;
@@ -7938,7 +8047,7 @@ async function sendAIChat() {
     try {
         const res = await fetch("/api/ai/chat", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: apiHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({ message: msg }),
         });
         const data = await res.json();
@@ -8036,6 +8145,8 @@ function _isLocal() {
 function _showConnectedUser(user) {
     const el = document.getElementById("connected-user");
     if (!el) return;
+    const title = [user.hostname, user.ip].filter(Boolean).join(" - ");
+    el.title = title ? `Connected from ${title}` : "";
     el.innerHTML = `<span class="user-name">${esc(user.name)}</span>${user.is_local ? '<span class="user-local">(local)</span>' : ''}`;
 }
 
@@ -8045,7 +8156,7 @@ function _showRegistrationModal(ip) {
     overlay.innerHTML = `
         <div class="register-modal">
             <h2>Welcome to MX Analytics</h2>
-            <p>Enter your name to get started. This will be linked to your IP address (${esc(ip)}) so the system knows who you are.</p>
+            <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
             <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
             <button id="register-submit">Continue</button>
         </div>
@@ -8062,8 +8173,8 @@ function _showRegistrationModal(ip) {
         btn.textContent = "Saving...";
         fetch("/api/register", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
+            headers: apiHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ name, client_key: _getClientKey() }),
         })
         .then(r => r.json())
         .then(me => {
@@ -8143,7 +8254,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ── Identity check: fetch /api/me, show registration if needed ──
     window._currentUser = null;
-    fetch("/api/me").then(r => r.json()).then(me => {
+    fetch("/api/me", { headers: apiHeaders() }).then(r => r.json()).then(me => {
         if (me.name) {
             window._currentUser = me;
             _showConnectedUser(me);

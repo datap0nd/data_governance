@@ -1,8 +1,10 @@
 import logging
 import re
+import socket
 import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
@@ -22,26 +24,94 @@ from app.ai.router import router as ai_router
 # Show scanner logs in the console
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
-# In-memory cache for IP -> user resolution (cleared on register)
-_ip_cache: dict[str, str | None] = {}
+# In-memory caches for identity resolution (cleared on register)
+_identity_cache: dict[tuple[str, str | None], str | None] = {}
+_hostname_cache: dict[str, str | None] = {}
 
 
-def _resolve_ip(ip: str) -> str | None:
-    """Look up person_name for an IP address, with caching."""
-    if ip in _ip_cache:
-        return _ip_cache[ip]
+def _clean_client_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if len(value) > 128:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", value):
+        return None
+    return value
+
+
+def _resolve_hostname(ip: str) -> str | None:
+    """Best-effort reverse DNS lookup for LAN hostnames."""
+    if ip in _hostname_cache:
+        return _hostname_cache[ip]
+    try:
+        host = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        host = None
+    _hostname_cache[ip] = host
+    return host
+
+
+def _resolve_identity(ip: str, client_key: str | None = None) -> str | None:
+    """Look up person_name by browser/device key first, then IP address."""
+    cache_key = (ip, client_key)
+    if cache_key in _identity_cache:
+        return _identity_cache[cache_key]
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT person_name FROM user_ips WHERE ip_address = ?", (ip,)
-        ).fetchone()
+        row = None
+        if client_key:
+            row = conn.execute(
+                "SELECT person_name FROM user_devices WHERE client_key = ?",
+                (client_key,),
+            ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT person_name FROM user_ips WHERE ip_address = ?", (ip,)
+            ).fetchone()
         conn.close()
         name = row["person_name"] if row else None
-        _ip_cache[ip] = name
+        _identity_cache[cache_key] = name
         return name
     except Exception:
         return None
+
+
+def _mark_identity_seen(ip: str, client_key: str | None, name: str | None, hostname: str | None):
+    """Update last-seen metadata without changing an existing person's name."""
+    if not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        conn.execute(
+            """INSERT INTO user_ips
+               (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(ip_address) DO UPDATE SET
+                   person_name = excluded.person_name,
+                   hostname = COALESCE(excluded.hostname, user_ips.hostname),
+                   client_key = COALESCE(excluded.client_key, user_ips.client_key),
+                   updated_at = excluded.updated_at,
+                   last_seen_at = excluded.last_seen_at""",
+            (ip, name, hostname, client_key, now, now, now),
+        )
+        if client_key:
+            conn.execute(
+                """INSERT INTO user_devices
+                   (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(client_key) DO UPDATE SET
+                       last_ip_address = excluded.last_ip_address,
+                       hostname = COALESCE(excluded.hostname, user_devices.hostname),
+                       last_seen_at = excluded.last_seen_at""",
+                (client_key, name, ip, hostname, now, now, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _is_localhost(ip: str) -> bool:
@@ -53,9 +123,13 @@ class UserIdentityMiddleware(BaseHTTPMiddleware):
     """Resolve client IP to user identity on every request."""
     async def dispatch(self, request: StarletteRequest, call_next):
         ip = request.client.host if request.client else "unknown"
+        client_key = _clean_client_key(
+            request.headers.get("x-client-key") or request.cookies.get("mx_client_key")
+        )
         request.state.client_ip = ip
+        request.state.client_key = client_key
         request.state.is_local = _is_localhost(ip)
-        request.state.actor = _resolve_ip(ip)
+        request.state.actor = _resolve_identity(ip, client_key)
         response = await call_next(request)
         return response
 
@@ -191,15 +265,22 @@ def get_version():
 
 class RegisterRequest(BaseModel):
     name: str
+    client_key: str | None = None
 
 
 @app.get("/api/me")
 def get_me(request: Request):
     """Return the current user's identity based on IP."""
     ip = request.state.client_ip
+    client_key = request.state.client_key
+    hostname = _resolve_hostname(ip)
     name = request.state.actor
+    if name:
+        _mark_identity_seen(ip, client_key, name, hostname)
     return {
         "ip": ip,
+        "client_key": client_key,
+        "hostname": hostname,
         "name": name,
         "is_local": request.state.is_local,
     }
@@ -209,6 +290,8 @@ def get_me(request: Request):
 def register_user(body: RegisterRequest, request: Request):
     """Register or update the current IP's user identity."""
     ip = request.state.client_ip
+    client_key = _clean_client_key(body.client_key) or request.state.client_key
+    hostname = _resolve_hostname(ip)
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name cannot be empty")
@@ -217,19 +300,39 @@ def register_user(body: RegisterRequest, request: Request):
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.execute(
-            """INSERT INTO user_ips (ip_address, person_name)
-               VALUES (?, ?)
-               ON CONFLICT(ip_address) DO UPDATE SET person_name = ?""",
-            (ip, name, name),
+            """INSERT INTO user_ips (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(ip_address) DO UPDATE SET
+                   person_name = excluded.person_name,
+                   hostname = COALESCE(excluded.hostname, user_ips.hostname),
+                   client_key = COALESCE(excluded.client_key, user_ips.client_key),
+                   updated_at = CURRENT_TIMESTAMP,
+                   last_seen_at = CURRENT_TIMESTAMP""",
+            (ip, name, hostname, client_key),
         )
+        if client_key:
+            conn.execute(
+                """INSERT INTO user_devices
+                   (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(client_key) DO UPDATE SET
+                       person_name = excluded.person_name,
+                       last_ip_address = excluded.last_ip_address,
+                       hostname = COALESCE(excluded.hostname, user_devices.hostname),
+                       updated_at = CURRENT_TIMESTAMP,
+                       last_seen_at = CURRENT_TIMESTAMP""",
+                (client_key, name, ip, hostname),
+            )
         conn.commit()
     finally:
         conn.close()
 
-    # Clear cache for this IP
-    _ip_cache.pop(ip, None)
+    # Clear identity cache entries that may include this IP or client key.
+    for key in list(_identity_cache):
+        if key[0] == ip or key[1] == client_key:
+            _identity_cache.pop(key, None)
 
-    return {"ip": ip, "name": name, "is_local": _is_localhost(ip)}
+    return {"ip": ip, "client_key": client_key, "hostname": hostname, "name": name, "is_local": _is_localhost(ip)}
 
 
 @app.post("/api/update")

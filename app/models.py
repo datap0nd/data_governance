@@ -18,6 +18,8 @@ class SourceOut(BaseModel):
     last_updated: str | None = None
     report_count: int = 0
     custom_fresh_days: int | None = None
+    freshness_rule_type: str | None = None
+    freshness_schedule_days: str | None = None
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
@@ -29,7 +31,9 @@ class SourceOut(BaseModel):
 
 
 class FreshnessRuleRequest(BaseModel):
-    fresh_days: int
+    rule_type: str | None = None
+    fresh_days: int | None = None
+    refresh_days: list[str] | None = None
 
 
 class SourceUpdate(BaseModel):
@@ -94,6 +98,7 @@ class LineageEdge(BaseModel):
     source_name: str
     source_type: str
     source_status: str = "unknown"
+    source_last_data_at: str | None = None
     report_id: int
     report_name: str
 

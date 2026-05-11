@@ -33,6 +33,11 @@ FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
 # PostgreSQL source types
 PG_SOURCE_TYPES = {"postgresql"}
 
+WEEKDAY_ORDER = {
+    "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+    "Friday": 4, "Saturday": 5, "Sunday": 6,
+}
+
 
 def _compute_status(last_activity_str: str | None,
                     fresh_max: int | None = FRESH_MAX_DAYS,
@@ -74,6 +79,78 @@ def _compute_status(last_activity_str: str | None,
         return "unknown"
 
 
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        dt = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                dt = datetime.strptime(value, fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _rule_for_source(src) -> dict:
+    """Normalize legacy and current source freshness rule fields."""
+    custom_days = src["custom_fresh_days"] or None
+    rule_type = src["freshness_rule_type"] or ("custom" if custom_days else None)
+    if rule_type == "daily":
+        return {"type": "daily", "fresh_days": 1, "description": "daily"}
+    if rule_type == "custom" and custom_days:
+        return {"type": "custom", "fresh_days": custom_days, "description": f"{custom_days} days"}
+    if rule_type == "fixed":
+        days = []
+        for raw in (src["freshness_schedule_days"] or "").split(","):
+            day = raw.strip()
+            if day in WEEKDAY_ORDER and day not in days:
+                days.append(day)
+        if days:
+            return {"type": "fixed", "days": days, "description": "fixed schedule: " + ", ".join(days)}
+    return {"type": None, "description": None}
+
+
+def _compute_fixed_schedule_status(last_activity_str: str | None, schedule_days: list[str]) -> str:
+    last_dt = _parse_datetime(last_activity_str)
+    if last_dt is None:
+        return "unknown"
+
+    scheduled_dows = {WEEKDAY_ORDER[d] for d in schedule_days if d in WEEKDAY_ORDER}
+    if not scheduled_dows:
+        return "no_rule"
+
+    # No refresh time is captured, so today's scheduled refresh gets until
+    # tomorrow before it is considered missed.
+    today = datetime.now(timezone.utc).date()
+    cursor = today - timedelta(days=1) if today.weekday() in scheduled_dows else today
+    expected_date = None
+    for offset in range(8):
+        candidate = cursor - timedelta(days=offset)
+        if candidate.weekday() in scheduled_dows:
+            expected_date = candidate
+            break
+
+    if expected_date is None:
+        return "unknown"
+    return "fresh" if last_dt.date() >= expected_date else "outdated"
+
+
+def _compute_status_for_rule(last_activity_str: str | None, rule: dict) -> str:
+    if not rule.get("type"):
+        return "no_rule"
+    if rule["type"] == "fixed":
+        return _compute_fixed_schedule_status(last_activity_str, rule.get("days", []))
+    return _compute_status(last_activity_str, rule.get("fresh_days"))
+
+
 def _find_file(file_path: str) -> Path | None:
     """Try to locate a file at its original path or common fallback locations."""
     p = Path(file_path)
@@ -96,7 +173,7 @@ def _find_file(file_path: str) -> Path | None:
 
 
 def _probe_file_source(db, source_id: int, file_path: str, now: str,
-                       fresh_max: int | None = FRESH_MAX_DAYS) -> str:
+                       rule: dict) -> str:
     """Probe a file-based source by checking file existence and modification time.
 
     Returns the computed status.
@@ -111,10 +188,12 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
         return "unknown"
 
     mod_time = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
-    status = _compute_status(mod_time.isoformat(), fresh_max)
+    status = _compute_status_for_rule(mod_time.isoformat(), rule)
     msg = f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"
     if status == "no_rule":
         msg += " (no freshness rule set)"
+    elif rule.get("description"):
+        msg += f" ({rule['description']})"
 
     db.execute(
         "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
@@ -214,8 +293,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
         pg_cur = pg_conn.cursor()
 
         for src in pg_sources:
-            # Treat both NULL and 0 as "no rule" - skip freshness status check
-            fm = src["custom_fresh_days"] or None
+            rule = _rule_for_source(src)
             parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
 
             if not parsed:
@@ -256,10 +334,12 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                     if last_write.tzinfo is None:
                         last_write = last_write.replace(tzinfo=timezone.utc)
                     latest_iso = last_write.isoformat()
-                    status = _compute_status(latest_iso, fm)
+                    status = _compute_status_for_rule(latest_iso, rule)
                     msg = f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} ({row_count:,} rows)"
                     if status == "no_rule":
                         msg += " (no freshness rule set)"
+                    elif rule.get("description"):
+                        msg += f" ({rule['description']})"
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
                         (src["id"], now, latest_iso, row_count, status, msg),
@@ -274,7 +354,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                     )
 
                 statuses[status] = statuses.get(status, 0) + 1
-                _create_action_and_alert(db, src["id"], status, now, fm)
+                _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
                 log_lines.append(f"PG: {short} - {status} ({msg})")
 
             except Exception as e:
@@ -293,14 +373,14 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
 
 def _create_action_and_alert(db, source_id: int, status: str, now: str,
-                             fresh_max: int | None = FRESH_MAX_DAYS):
+                             rule_description: str | None = None):
     """Create an action item and alert for outdated sources if not already open."""
-    if status != "outdated" or fresh_max is None:
+    if status != "outdated" or rule_description is None:
         return
 
     action_type = "stale_source"
     severity = "critical"
-    msg = f"Source data is older than {fresh_max} days"
+    msg = f"Source data is outside freshness rule ({rule_description})"
 
     # Find owner for assignment (from linked report)
     owner_row = db.execute(
@@ -681,16 +761,17 @@ def run_probe() -> dict:
     with get_db() as db:
         # 1. Probe file-based sources
         file_sources = db.execute(
-            "SELECT id, name, type, connection_info, custom_fresh_days FROM sources WHERE type IN ('csv', 'excel', 'folder')"
+            """SELECT id, name, type, connection_info, custom_fresh_days,
+                      freshness_rule_type, freshness_schedule_days
+               FROM sources WHERE type IN ('csv', 'excel', 'folder')"""
         ).fetchall()
 
         for src in file_sources:
             file_path = src["connection_info"] or src["name"]
-            # Treat both NULL and 0 as "no rule" - no freshness monitoring
-            fm = src["custom_fresh_days"] or None
-            status = _probe_file_source(db, src["id"], file_path, now, fm)
+            rule = _rule_for_source(src)
+            status = _probe_file_source(db, src["id"], file_path, now, rule)
             statuses[status] = statuses.get(status, 0) + 1
-            _create_action_and_alert(db, src["id"], status, now, fm)
+            _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
@@ -698,7 +779,9 @@ def run_probe() -> dict:
 
         # 2. Probe PostgreSQL sources (READ-ONLY)
         pg_sources = db.execute(
-            "SELECT id, name, type, connection_info, custom_fresh_days FROM sources WHERE type = 'postgresql'"
+            """SELECT id, name, type, connection_info, custom_fresh_days,
+                      freshness_rule_type, freshness_schedule_days
+               FROM sources WHERE type = 'postgresql'"""
         ).fetchall()
 
         if pg_sources:

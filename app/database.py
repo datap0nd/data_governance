@@ -252,6 +252,8 @@ MIGRATIONS = [
     # Per-source custom freshness thresholds
     "ALTER TABLE sources ADD COLUMN custom_fresh_days INTEGER",
     "ALTER TABLE sources ADD COLUMN custom_stale_days INTEGER",
+    "ALTER TABLE sources ADD COLUMN freshness_rule_type TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_schedule_days TEXT",
     # Upstream system linkage
     "ALTER TABLE sources ADD COLUMN upstream_id INTEGER REFERENCES upstream_systems(id)",
     # Alert owner assignment
@@ -370,6 +372,21 @@ MIGRATIONS = [
         person_name TEXT NOT NULL,
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
+    "ALTER TABLE user_ips ADD COLUMN hostname TEXT",
+    "ALTER TABLE user_ips ADD COLUMN client_key TEXT",
+    "ALTER TABLE user_ips ADD COLUMN last_seen_at DATETIME",
+    "ALTER TABLE user_ips ADD COLUMN updated_at DATETIME",
+    """CREATE TABLE IF NOT EXISTS user_devices (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_key      TEXT NOT NULL UNIQUE,
+        person_name     TEXT NOT NULL,
+        last_ip_address TEXT,
+        hostname        TEXT,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)",
     # Multi-user: actor tracking in event log
     "ALTER TABLE event_log ADD COLUMN actor TEXT",
     # Power Automate flows (manual entry)

@@ -5,6 +5,39 @@ from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _source_out_from_row(r) -> SourceOut:
+    custom_days = r["custom_fresh_days"] or None
+    rule_type = r["freshness_rule_type"] or ("custom" if custom_days else None)
+    return SourceOut(
+        id=r["id"],
+        name=r["name"],
+        type=r["type"],
+        connection_info=r["connection_info"],
+        source_query=r["source_query"],
+        owner=r["owner"],
+        refresh_schedule=r["refresh_schedule"],
+        tags=r["tags"],
+        discovered_by=r["discovered_by"],
+        status=r["latest_status"] if r["latest_status"] else "unknown",
+        last_updated=r["latest_last_data_at"],
+        report_count=r["report_count"],
+        # Treat 0 as no rule (same as NULL) - present a clean view to the UI
+        custom_fresh_days=custom_days,
+        freshness_rule_type=rule_type,
+        freshness_schedule_days=r["freshness_schedule_days"],
+        upstream_id=r["upstream_id"],
+        upstream_name=r["upstream_name"],
+        upstream_refresh_day=r["upstream_refresh_day"],
+        linked_scripts=r["linked_scripts"],
+        linked_task_count=r["linked_task_count"] if "linked_task_count" in r.keys() else 0,
+        archived=bool(r["archived"]),
+        created_at=r["created_at"],
+        updated_at=r["updated_at"],
+    )
+
 
 @router.get("", response_model=list[SourceOut])
 def list_sources(include_archived: bool = Query(False)):
@@ -39,30 +72,7 @@ def list_sources(include_archived: bool = Query(False)):
         """).fetchall()
 
     return [
-        SourceOut(
-            id=r["id"],
-            name=r["name"],
-            type=r["type"],
-            connection_info=r["connection_info"],
-            source_query=r["source_query"],
-            owner=r["owner"],
-            refresh_schedule=r["refresh_schedule"],
-            tags=r["tags"],
-            discovered_by=r["discovered_by"],
-            status=r["latest_status"] if r["latest_status"] else "unknown",
-            last_updated=r["latest_last_data_at"],
-            report_count=r["report_count"],
-            # Treat 0 as no rule (same as NULL) - present a clean view to the UI
-            custom_fresh_days=r["custom_fresh_days"] or None,
-            upstream_id=r["upstream_id"],
-            upstream_name=r["upstream_name"],
-            upstream_refresh_day=r["upstream_refresh_day"],
-            linked_scripts=r["linked_scripts"],
-            linked_task_count=r["linked_task_count"],
-            archived=bool(r["archived"]),
-            created_at=r["created_at"],
-            updated_at=r["updated_at"],
-        )
+        _source_out_from_row(r)
         for r in rows
         if (r["latest_status"] or "unknown") not in ("unknown", "no_connection") or r["discovered_by"] in ("manual", "pg_deps")
     ]
@@ -96,29 +106,7 @@ def get_source(source_id: int):
     if not r:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    return SourceOut(
-        id=r["id"],
-        name=r["name"],
-        type=r["type"],
-        connection_info=r["connection_info"],
-        source_query=r["source_query"],
-        owner=r["owner"],
-        refresh_schedule=r["refresh_schedule"],
-        tags=r["tags"],
-        discovered_by=r["discovered_by"],
-        status=r["latest_status"] or "unknown",
-        last_updated=r["latest_last_data_at"],
-        report_count=r["report_count"],
-        # Treat 0 as no rule (same as NULL)
-        custom_fresh_days=r["custom_fresh_days"] or None,
-        upstream_id=r["upstream_id"],
-        upstream_name=r["upstream_name"],
-        upstream_refresh_day=r["upstream_refresh_day"],
-        linked_scripts=r["linked_scripts"],
-        archived=bool(r["archived"]),
-        created_at=r["created_at"],
-        updated_at=r["updated_at"],
-    )
+    return _source_out_from_row(r)
 
 
 @router.patch("/{source_id}", response_model=SourceOut)
@@ -191,22 +179,54 @@ def get_source_probes(source_id: int):
 
 @router.put("/{source_id}/freshness-rule")
 def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Request):
-    """Set custom freshness thresholds for a source.
+    """Set a freshness rule for a source."""
+    rule_type = (body.rule_type or ("custom" if body.fresh_days is not None else "")).strip().lower()
+    if rule_type not in {"custom", "daily", "fixed"}:
+        raise HTTPException(status_code=400, detail="rule_type must be custom, daily, or fixed")
 
-    fresh_days must be at least 1. 0 is not allowed - use DELETE to clear the rule.
-    """
-    if body.fresh_days < 1:
-        raise HTTPException(status_code=400, detail="fresh_days must be at least 1 - use DELETE to clear the rule")
+    fresh_days = None
+    schedule_days = None
+    if rule_type == "custom":
+        if body.fresh_days is None or body.fresh_days < 1:
+            raise HTTPException(status_code=400, detail="fresh_days must be at least 1")
+        fresh_days = body.fresh_days
+    elif rule_type == "daily":
+        fresh_days = 1
+    elif rule_type == "fixed":
+        raw_days = body.refresh_days or []
+        days = []
+        for day in raw_days:
+            clean = str(day).strip().capitalize()
+            if clean not in WEEKDAYS:
+                raise HTTPException(status_code=400, detail=f"Invalid refresh day: {day}")
+            if clean not in days:
+                days.append(clean)
+        if not days:
+            raise HTTPException(status_code=400, detail="Choose at least one refresh day")
+        if len(days) > 3:
+            raise HTTPException(status_code=400, detail="Choose no more than 3 refresh days")
+        schedule_days = ",".join(days)
+
     with get_db() as db:
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Source not found")
         db.execute(
-            "UPDATE sources SET custom_fresh_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (body.fresh_days, source_id),
+            """UPDATE sources
+               SET freshness_rule_type = ?,
+                   custom_fresh_days = ?,
+                   freshness_schedule_days = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (rule_type, fresh_days, schedule_days, source_id),
         )
-        log_event(db, "source", source_id, None, "freshness_rule_set", f"healthy_days={body.fresh_days}", get_actor(request))
-    return {"status": "ok", "fresh_days": body.fresh_days}
+        detail = f"type={rule_type}"
+        if fresh_days is not None:
+            detail += f", healthy_days={fresh_days}"
+        if schedule_days:
+            detail += f", refresh_days={schedule_days}"
+        log_event(db, "source", source_id, None, "freshness_rule_set", detail, get_actor(request))
+    return {"status": "ok", "rule_type": rule_type, "fresh_days": fresh_days, "refresh_days": schedule_days}
 
 
 @router.delete("/{source_id}/freshness-rule")
@@ -217,7 +237,12 @@ def delete_freshness_rule(source_id: int, request: Request):
         if not existing:
             raise HTTPException(status_code=404, detail="Source not found")
         db.execute(
-            "UPDATE sources SET custom_fresh_days = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            """UPDATE sources
+               SET custom_fresh_days = NULL,
+                   freshness_rule_type = NULL,
+                   freshness_schedule_days = NULL,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
             (source_id,),
         )
         log_event(db, "source", source_id, None, "freshness_rule_reset", None, get_actor(request))
