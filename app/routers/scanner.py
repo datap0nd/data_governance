@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
+from app.local_access import is_server_machine
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data, trigger_pbi_usage_sync
@@ -21,9 +22,9 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 
 def _require_local(request: Request):
-    """Raise 403 if request is not from localhost."""
+    """Raise 403 if request is not from the server machine."""
     ip = request.client.host if request.client else ""
-    if ip not in ("127.0.0.1", "::1") and not ip.startswith("::ffff:127.0.0.1"):
+    if not is_server_machine(ip):
         raise HTTPException(status_code=403, detail="Scanner restricted to server machine")
 
 

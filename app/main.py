@@ -18,6 +18,7 @@ from starlette.requests import Request as StarletteRequest
 
 from app.config import DB_PATH
 from app.database import init_db
+from app.local_access import is_server_machine
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation
 from app.ai.router import router as ai_router
 
@@ -115,8 +116,8 @@ def _mark_identity_seen(ip: str, client_key: str | None, name: str | None, hostn
 
 
 def _is_localhost(ip: str) -> bool:
-    """Check if an IP is localhost (IPv4, IPv6, or IPv4-mapped IPv6)."""
-    return ip in ("127.0.0.1", "::1") or ip.startswith("::ffff:127.0.0.1")
+    """Check if a request came from the machine running the app."""
+    return is_server_machine(ip)
 
 
 class UserIdentityMiddleware(BaseHTTPMiddleware):
@@ -337,9 +338,9 @@ def register_user(body: RegisterRequest, request: Request):
 
 @app.post("/api/update")
 def trigger_update(request: Request):
-    """Launch setup.ps1 to update the app. Localhost only."""
+    """Launch setup.ps1 to update the app. Server machine only."""
     ip = request.client.host if request.client else ""
-    if not _is_localhost(ip):
+    if not is_server_machine(ip):
         raise HTTPException(status_code=403, detail="Update restricted to server machine")
     setup_path = Path(__file__).parent.parent / "setup.ps1"
     if not setup_path.exists():
