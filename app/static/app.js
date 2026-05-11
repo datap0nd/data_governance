@@ -1591,14 +1591,11 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             const delta = d.delta_hours < 48
                 ? `${d.delta_hours}h`
                 : `${Math.floor(d.delta_hours / 24)}d`;
-            const sourceTime = d.source_last_data_at ? timeAgo(d.source_last_data_at) : "-";
-            const reportTime = d.report_last_refresh_at ? timeAgo(d.report_last_refresh_at) : "-";
             return `<a class="alerts-source-link alerts-detail-source" data-source-id="${d.id}">
                 <span class="alerts-source-main">
                     <strong>${esc(d.name)}</strong>
                     <span class="alerts-source-gap">+${delta} after report</span>
                 </span>
-                <span class="alerts-source-times">Source ${sourceTime} &middot; report ${reportTime}</span>
             </a>`;
         }).join("");
 

@@ -2566,11 +2566,6 @@ body.ai-panel-open main {
     font-size: 0.7rem;
     font-weight: 600;
 }
-.alerts-source-times {
-    color: var(--text-dim);
-    font-size: 0.68rem;
-}
-
 /* Alert trend chart */
 .alert-trend-container {
     background: var(--surface);
