@@ -150,6 +150,8 @@ def _compute_report_stale_sources(db) -> dict[int, list[dict]]:
             "id": r["source_id"],
             "name": short,
             "delta_hours": int(delta_hours),
+            "source_last_data_at": source_dt.isoformat(),
+            "report_last_refresh_at": report_dt.isoformat(),
         })
 
     # Sort each list by how far behind (most behind first)

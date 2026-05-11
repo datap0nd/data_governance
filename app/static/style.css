@@ -2493,8 +2493,10 @@ body.ai-panel-open main {
     gap: 0.4rem;
 }
 .alerts-sources-list a.alerts-detail-source {
-    display: inline-block;
-    padding: 0.25rem 0.55rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    padding: 0.35rem 0.55rem;
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 0.76rem;
@@ -2506,6 +2508,20 @@ body.ai-panel-open main {
 .alerts-sources-list a.alerts-detail-source:hover {
     border-color: var(--accent);
     background: rgba(59, 130, 246, 0.08);
+}
+.alerts-source-main {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+}
+.alerts-source-gap {
+    color: var(--yellow);
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.alerts-source-times {
+    color: var(--text-dim);
+    font-size: 0.68rem;
 }
 
 /* Alert trend chart */
