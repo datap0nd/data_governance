@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from app.config import DB_PATH
+from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
 from app.database import init_db
 from app.local_access import is_server_machine
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation
@@ -172,23 +172,40 @@ def _scheduled_scan():
         log.exception("Scheduled scan failed: %s", e)
 
 
+def _scheduled_pbi_sync():
+    """Daily Power BI Service refresh metadata sync."""
+    from app.scanner.pbi_sync import trigger_pbi_sync
+    log = logging.getLogger("scheduler")
+    log.info("Running scheduled PBI sync")
+    try:
+        result = trigger_pbi_sync()
+        log.info("PBI sync result: %s", result.get("status"))
+    except Exception as e:
+        log.exception("Scheduled PBI sync failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
 
-    # Daily backup at 6:00 AM, full scan at 7:00 AM
+    # Daily backup at 6:00 AM, full scan at 7:00 AM, PBI sync after scan
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup")
     _scheduler.add_job(_scheduled_scan, "cron", hour=7, minute=0, id="daily_scan")
+    _scheduler.add_job(_scheduled_pbi_sync, "cron", hour=PBI_SYNC_HOUR, minute=PBI_SYNC_MINUTE, id="daily_pbi_sync")
     _scheduler.start()
-    logging.getLogger(__name__).info("Scheduler started: backup at 06:00, scan at 07:00")
+    logging.getLogger(__name__).info(
+        "Scheduler started: backup at 06:00, scan at 07:00, PBI sync at %02d:%02d",
+        PBI_SYNC_HOUR,
+        PBI_SYNC_MINUTE,
+    )
 
     yield
 
     _scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="MX Analytics", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Data Governance", version="0.1.0", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(UserIdentityMiddleware)
 

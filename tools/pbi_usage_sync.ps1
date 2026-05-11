@@ -9,14 +9,23 @@
 #>
 param(
     [string]$ApiBase = "http://localhost:8000",
-    [int]$DaysBack = 30
+    [int]$DaysBack = 30,
+    [string]$PreferredAccount = $env:DG_PBI_ACCOUNT,
+    [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
 
+function Pause-IfNeeded {
+    param([string]$Message = "Press Enter to close")
+    if (-not $NoPause) {
+        Read-Host $Message
+    }
+}
+
 if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
     Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
-    Read-Host "Press Enter to exit"
+    Pause-IfNeeded "Press Enter to exit"
     exit 1
 }
 
@@ -27,12 +36,16 @@ $clicker = $null
 $clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
 if (Test-Path $clickerScript) {
     try {
-        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+        $clickerArgs = @(
             "-ExecutionPolicy", "Bypass",
             "-NoProfile",
             "-File", $clickerScript,
             "-TimeoutSeconds", "90"
         )
+        if ($PreferredAccount) {
+            $clickerArgs += @("-PreferredAccount", $PreferredAccount)
+        }
+        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList $clickerArgs
         Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
     } catch {
         Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
@@ -46,7 +59,7 @@ try {
     Write-Host "Connected." -ForegroundColor Green
 } catch {
     Write-Error "Failed to connect to Power BI: $_"
-    Read-Host "Press Enter to exit"
+    Pause-IfNeeded "Press Enter to exit"
     exit 1
 } finally {
     if ($clicker -and -not $clicker.HasExited) {
@@ -81,7 +94,7 @@ for ($i = 1; $i -le $DaysBack; $i++) {
 
 if ($daysToFetch.Count -eq 0) {
     Write-Host "All days already synced. Nothing to do." -ForegroundColor Green
-    Read-Host "Press Enter to close"
+    Pause-IfNeeded "Press Enter to close"
     exit 0
 }
 
@@ -145,7 +158,7 @@ foreach ($day in $daysToFetch) {
             Write-Host "  - Global Administrator" -ForegroundColor Yellow
             Write-Host "Workspace Admin alone is NOT sufficient." -ForegroundColor Yellow
             Write-Host ""
-            Read-Host "Press Enter to close"
+            Pause-IfNeeded "Press Enter to close"
             exit 1
         }
     }
@@ -173,4 +186,4 @@ try {
     Write-Error "Failed to POST to governance API: $_"
 }
 
-Read-Host "Press Enter to close"
+Pause-IfNeeded "Press Enter to close"

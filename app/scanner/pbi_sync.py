@@ -58,8 +58,8 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
 
     # Build the command the scheduled task will run
     ps_cmd = (
-        f'powershell -ExecutionPolicy Bypass -File "{PS1_SCRIPT}" '
-        f'-WorkspaceName "{ws_name}" -ApiBase "http://localhost:{port}"'
+        f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_SCRIPT}" '
+        f'-WorkspaceName "{ws_name}" -ApiBase "http://localhost:{port}" -NoPause'
     )
 
     # Create a scheduled task that runs in the interactive session
@@ -373,8 +373,8 @@ def trigger_pbi_usage_sync(port: int = 8000) -> dict:
         return {"status": "error", "message": f"PowerShell script not found: {PS1_USAGE_SCRIPT}"}
 
     ps_cmd = (
-        f'powershell -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '
-        f'-ApiBase "http://localhost:{port}"'
+        f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '
+        f'-ApiBase "http://localhost:{port}" -NoPause'
     )
 
     try:

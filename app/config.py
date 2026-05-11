@@ -8,11 +8,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
-_default_reports = r"\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
+_default_reports = os.environ.get("DG_DEFAULT_REPORTS_PATH", "")
 
 REPORTS_PATH = os.environ.get("DG_REPORTS_PATH", _default_reports)
 
-# DG_TMDL_ROOT is the documented env var — prefer it over REPORTS_PATH
+# DG_TMDL_ROOT is the documented env var; prefer it over REPORTS_PATH
 _tmdl_root_raw = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
 # Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
 if not os.path.isabs(_tmdl_root_raw):
@@ -22,9 +22,9 @@ TMDL_ROOT = _tmdl_root_raw
 
 # Folders where Python scripts live (semicolon-separated for multiple paths)
 _default_script_paths = [
-    r"\\MX-SHARE\Users\METOMX\Desktop",
-    r"\\MX-SHARE\Users\meto.mx\Desktop",
-    r"\\METO-MX02\Users\METOMX\Desktop",
+    p.strip()
+    for p in os.environ.get("DG_DEFAULT_SCRIPT_PATHS", "").split(";")
+    if p.strip()
 ]
 _env_scripts = os.environ.get("DG_SCRIPTS_PATH", "")
 if _env_scripts:
@@ -62,7 +62,9 @@ else:
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
 
 # Power BI workspace name for refresh schedule sync
-PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "mx executive")
+PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
+PBI_SYNC_HOUR = int(os.environ.get("DG_PBI_SYNC_HOUR", "8"))
+PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))
 
 # PostgreSQL credentials for READ-ONLY freshness probing
 # WARNING: These credentials must ONLY be used for SELECT queries.

@@ -2,36 +2,55 @@
 .SYNOPSIS
     Fetch Power BI refresh schedules and POST to the governance API.
 .PARAMETER WorkspaceName
-    Name of the Power BI workspace to scan. Default: mx executive
+    Name of the Power BI workspace to scan. Defaults to DG_PBI_WORKSPACE.
 .PARAMETER ApiBase
     Base URL of the governance API. Default: http://localhost:8000
 #>
 param(
-    [string]$WorkspaceName = "mx executive",
-    [string]$ApiBase = "http://localhost:8000"
+    [string]$WorkspaceName = $env:DG_PBI_WORKSPACE,
+    [string]$ApiBase = "http://localhost:8000",
+    [string]$PreferredAccount = $env:DG_PBI_ACCOUNT,
+    [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
 
+function Pause-IfNeeded {
+    param([string]$Message = "Press Enter to close")
+    if (-not $NoPause) {
+        Read-Host $Message
+    }
+}
+
 if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
     Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
-    Read-Host "Press Enter to exit"
+    Pause-IfNeeded "Press Enter to exit"
     exit 1
 }
 
 Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
+
+if (-not $WorkspaceName) {
+    Write-Error "No Power BI workspace configured. Set DG_PBI_WORKSPACE or pass -WorkspaceName."
+    Pause-IfNeeded "Press Enter to exit"
+    exit 1
+}
 
 # Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically
 $clicker = $null
 $clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
 if (Test-Path $clickerScript) {
     try {
-        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+        $clickerArgs = @(
             "-ExecutionPolicy", "Bypass",
             "-NoProfile",
             "-File", $clickerScript,
             "-TimeoutSeconds", "90"
         )
+        if ($PreferredAccount) {
+            $clickerArgs += @("-PreferredAccount", $PreferredAccount)
+        }
+        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList $clickerArgs
         Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
     } catch {
         Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
@@ -45,7 +64,7 @@ try {
     Write-Host "Connected." -ForegroundColor Green
 } catch {
     Write-Error "Failed to connect to Power BI: $_"
-    Read-Host "Press Enter to exit"
+    Pause-IfNeeded "Press Enter to exit"
     exit 1
 } finally {
     if ($clicker -and -not $clicker.HasExited) {
@@ -57,7 +76,7 @@ try {
 $ws = Get-PowerBIWorkspace | Where-Object { $_.Name -eq $WorkspaceName }
 if (-not $ws) {
     Write-Error "Workspace '$WorkspaceName' not found"
-    Read-Host "Press Enter to exit"
+    Pause-IfNeeded "Press Enter to exit"
     exit 1
 }
 
@@ -153,4 +172,4 @@ try {
     Write-Error "Failed to POST to governance API: $_"
 }
 
-Read-Host "Press Enter to close"
+Pause-IfNeeded "Press Enter to close"
