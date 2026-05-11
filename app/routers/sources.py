@@ -8,9 +8,13 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
+def _row_value(r, key: str, default=None):
+    return r[key] if key in r.keys() else default
+
+
 def _source_out_from_row(r) -> SourceOut:
-    custom_days = r["custom_fresh_days"] or None
-    rule_type = r["freshness_rule_type"] or ("custom" if custom_days else None)
+    custom_days = _row_value(r, "custom_fresh_days") or None
+    rule_type = _row_value(r, "freshness_rule_type") or ("custom" if custom_days else None)
     return SourceOut(
         id=r["id"],
         name=r["name"],
@@ -27,10 +31,10 @@ def _source_out_from_row(r) -> SourceOut:
         # Treat 0 as no rule (same as NULL) - present a clean view to the UI
         custom_fresh_days=custom_days,
         freshness_rule_type=rule_type,
-        freshness_schedule_days=r["freshness_schedule_days"],
-        upstream_id=r["upstream_id"],
-        upstream_name=r["upstream_name"],
-        upstream_refresh_day=r["upstream_refresh_day"],
+        freshness_schedule_days=_row_value(r, "freshness_schedule_days"),
+        upstream_id=_row_value(r, "upstream_id"),
+        upstream_name=_row_value(r, "upstream_name"),
+        upstream_refresh_day=_row_value(r, "upstream_refresh_day"),
         linked_scripts=r["linked_scripts"],
         linked_task_count=r["linked_task_count"] if "linked_task_count" in r.keys() else 0,
         archived=bool(r["archived"]),
@@ -236,13 +240,14 @@ def delete_freshness_rule(source_id: int, request: Request):
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Source not found")
+        cols = {r["name"] for r in db.execute("PRAGMA table_info(sources)").fetchall()}
+        fields = ["custom_fresh_days = NULL", "updated_at = CURRENT_TIMESTAMP"]
+        if "freshness_rule_type" in cols:
+            fields.append("freshness_rule_type = NULL")
+        if "freshness_schedule_days" in cols:
+            fields.append("freshness_schedule_days = NULL")
         db.execute(
-            """UPDATE sources
-               SET custom_fresh_days = NULL,
-                   freshness_rule_type = NULL,
-                   freshness_schedule_days = NULL,
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
+            f"UPDATE sources SET {', '.join(fields)} WHERE id = ?",
             (source_id,),
         )
         log_event(db, "source", source_id, None, "freshness_rule_reset", None, get_actor(request))
