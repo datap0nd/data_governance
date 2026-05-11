@@ -48,23 +48,37 @@ try {
 }
 
 try {
-    Add-Type -TypeDefinition @"
+    $win32Type = @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class DgMouse {
+public static class DgWin32 {
     [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
     public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extraInfo);
 
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
     public const int LeftDown = 0x0002;
     public const int LeftUp = 0x0004;
+    public const int Restore = 9;
 }
-"@ -ErrorAction Stop
+"@
+    Add-Type -TypeDefinition $win32Type -ErrorAction Stop
 } catch {
-    Write-Log "Mouse fallback unavailable: $_"
+    Write-Log "Win32 fallback unavailable: $_"
+}
+
+try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+} catch {
+    Write-Log "Keyboard fallback unavailable: $_"
 }
 
 $root = [System.Windows.Automation.AutomationElement]::RootElement
@@ -72,11 +86,15 @@ $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $trueCondition = [System.Windows.Automation.Condition]::TrueCondition
 $clickedKeys = @{}
 $clickedSomething = $false
+$fallbackAttempts = 0
+$lastFallbackAt = Get-Date "2000-01-01"
 
 $titleFragments = @(
     "Pick an account",
     "Choose an account",
+    "Select an account",
     "Sign in to your account",
+    "Sign in",
     "Microsoft account",
     "Work or school account",
     "Use this account",
@@ -148,6 +166,7 @@ function Test-WindowLooksLikePicker {
     param($Window)
     $name = Get-ElementName $Window
     if (Test-ContainsAny -Value $name -Needles $titleFragments) { return $true }
+    if ($name -eq "Microsoft") { return $true }
 
     $checked = 0
     foreach ($el in (Get-Elements $Window)) {
@@ -159,6 +178,30 @@ function Test-WindowLooksLikePicker {
     return $false
 }
 
+function Get-PickerWindowFromProcessTitles {
+    try {
+        $processes = Get-Process | Where-Object { $_.MainWindowHandle -and $_.MainWindowHandle -ne 0 }
+        foreach ($p in $processes) {
+            $title = [string]$p.MainWindowTitle
+            if (-not $title) { continue }
+            if ((Test-ContainsAny -Value $title -Needles $titleFragments) -or $title -eq "Microsoft") {
+                try {
+                    $window = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
+                    if ($window) {
+                        Write-Log "Picker found by process title: $title ($($p.ProcessName))"
+                        return $window
+                    }
+                } catch {
+                    Write-Log "Could not bind process title window '$title': $_"
+                }
+            }
+        }
+    } catch {
+        Write-Log "Could not scan process window titles: $_"
+    }
+    return $null
+}
+
 function Get-PickerWindow {
     try {
         $children = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueCondition)
@@ -168,7 +211,7 @@ function Get-PickerWindow {
     } catch {
         Write-Log "Could not scan top-level windows: $_"
     }
-    return $null
+    return Get-PickerWindowFromProcessTitles
 }
 
 function Get-ClickableAncestor {
@@ -203,6 +246,21 @@ function Get-RectKey {
     }
 }
 
+function Focus-PickerWindow {
+    param($Window)
+    try { $Window.SetFocus() } catch {}
+    try {
+        $handle = [IntPtr]$Window.Current.NativeWindowHandle
+        if ($handle -ne [IntPtr]::Zero -and ("DgWin32" -as [type])) {
+            [DgWin32]::ShowWindow($handle, [DgWin32]::Restore) | Out-Null
+            [DgWin32]::SetForegroundWindow($handle) | Out-Null
+        }
+    } catch {
+        Write-Log "Could not focus picker: $_"
+    }
+    Start-Sleep -Milliseconds 200
+}
+
 function Invoke-Element {
     param($Element)
     $target = Get-ClickableAncestor -Element $Element
@@ -225,17 +283,17 @@ function Invoke-Element {
         return $true
     } catch {}
 
-    if ("DgMouse" -as [type]) {
+    if ("DgWin32" -as [type]) {
         try {
             $r = $target.Current.BoundingRectangle
             if ($r.Width -gt 1 -and $r.Height -gt 1) {
                 $x = [int]($r.Left + ($r.Width / 2))
                 $y = [int]($r.Top + ($r.Height / 2))
-                [DgMouse]::SetCursorPos($x, $y) | Out-Null
+                [DgWin32]::SetCursorPos($x, $y) | Out-Null
                 Start-Sleep -Milliseconds 80
-                [DgMouse]::mouse_event([DgMouse]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
+                [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
                 Start-Sleep -Milliseconds 80
-                [DgMouse]::mouse_event([DgMouse]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
+                [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
                 return $true
             }
         } catch {
@@ -243,6 +301,74 @@ function Invoke-Element {
         }
     }
     return $false
+}
+
+function Invoke-KeyboardFallback {
+    param($Window, [int]$Attempt)
+    if (-not ("System.Windows.Forms.SendKeys" -as [type])) { return $false }
+    Focus-PickerWindow -Window $Window
+    try {
+        if ($Attempt -eq 1) {
+            Write-Log "Fallback: sending Enter to focused picker."
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        } elseif ($Attempt -eq 2) {
+            Write-Log "Fallback: sending Tab then Enter to picker."
+            [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+            Start-Sleep -Milliseconds 120
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        } else {
+            Write-Log "Fallback: sending Down then Enter to picker."
+            [System.Windows.Forms.SendKeys]::SendWait("{DOWN}")
+            Start-Sleep -Milliseconds 120
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        }
+        return $true
+    } catch {
+        Write-Log "Keyboard fallback failed: $_"
+        return $false
+    }
+}
+
+function Invoke-WindowClickFallback {
+    param($Window, [int]$Attempt)
+    if (-not ("DgWin32" -as [type])) { return $false }
+    Focus-PickerWindow -Window $Window
+    try {
+        $r = $Window.Current.BoundingRectangle
+        if ($r.Width -le 1 -or $r.Height -le 1) { return $false }
+
+        $x = [int]($r.Left + ($r.Width * 0.50))
+        if ($Attempt -le 3) {
+            $y = [int]($r.Top + ($r.Height * 0.38))
+        } elseif ($Attempt -eq 4) {
+            $y = [int]($r.Top + ($r.Height * 0.48))
+        } else {
+            $y = [int]($r.Top + ($r.Height * 0.58))
+        }
+
+        Write-Log "Fallback: clicking picker at $x,$y."
+        [DgWin32]::SetCursorPos($x, $y) | Out-Null
+        Start-Sleep -Milliseconds 80
+        [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 80
+        [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
+        return $true
+    } catch {
+        Write-Log "Window click fallback failed: $_"
+        return $false
+    }
+}
+
+function Invoke-FallbackClick {
+    param($Window)
+    $script:fallbackAttempts += 1
+    if ($script:fallbackAttempts -le 2) {
+        return (Invoke-KeyboardFallback -Window $Window -Attempt $script:fallbackAttempts)
+    }
+    if (Invoke-WindowClickFallback -Window $Window -Attempt $script:fallbackAttempts) {
+        return $true
+    }
+    return (Invoke-KeyboardFallback -Window $Window -Attempt $script:fallbackAttempts)
 }
 
 function Find-PreferredAccount {
@@ -312,6 +438,7 @@ while ((Get-Date) -lt $deadline) {
         $picker = Get-PickerWindow
         if ($picker) {
             Write-Log "Picker found: $(Get-ElementName $picker)"
+            Focus-PickerWindow -Window $picker
             $target = Find-ClickTarget -Window $picker
             if ($target) {
                 $name = Get-ElementName $target
@@ -325,10 +452,24 @@ while ((Get-Date) -lt $deadline) {
                         Start-Sleep -Milliseconds 900
                     } else {
                         Write-Log "Could not invoke or click target: $name"
+                        if (((Get-Date) - $lastFallbackAt).TotalSeconds -gt 1.5) {
+                            $lastFallbackAt = Get-Date
+                            if (Invoke-FallbackClick -Window $picker) {
+                                $clickedSomething = $true
+                                Start-Sleep -Milliseconds 900
+                            }
+                        }
                     }
                 }
             } else {
                 Write-Log "Picker present but no eligible account/button found."
+                if (((Get-Date) - $lastFallbackAt).TotalSeconds -gt 1.5) {
+                    $lastFallbackAt = Get-Date
+                    if (Invoke-FallbackClick -Window $picker) {
+                        $clickedSomething = $true
+                        Start-Sleep -Milliseconds 900
+                    }
+                }
             }
         } elseif ($clickedSomething) {
             Write-Log "Picker gone after click."

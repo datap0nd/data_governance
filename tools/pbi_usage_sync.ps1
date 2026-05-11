@@ -39,6 +39,7 @@ if (Test-Path $clickerScript) {
         $clickerArgs = @(
             "-ExecutionPolicy", "Bypass",
             "-NoProfile",
+            "-STA",
             "-File", $clickerScript,
             "-TimeoutSeconds", "90"
         )
