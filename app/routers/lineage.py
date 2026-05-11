@@ -124,7 +124,8 @@ def get_lineage_diagram(report_id: int):
             placeholders = ",".join("?" * len(source_ids))
             source_rows = db.execute(f"""
                 SELECT s.id, s.name, s.type, s.owner, s.upstream_id,
-                       s.refresh_schedule,
+                       s.refresh_schedule, s.custom_fresh_days,
+                       s.freshness_rule_type, s.freshness_schedule_days,
                        sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
                 FROM sources s
                 LEFT JOIN (
@@ -144,6 +145,9 @@ def get_lineage_diagram(report_id: int):
                     "owner": r["owner"],
                     "upstream_id": r["upstream_id"],
                     "refresh_schedule": r["refresh_schedule"],
+                    "custom_fresh_days": r["custom_fresh_days"],
+                    "freshness_rule_type": r["freshness_rule_type"],
+                    "freshness_schedule_days": r["freshness_schedule_days"],
                 }
                 for r in source_rows
             ]
@@ -170,6 +174,9 @@ def get_lineage_diagram(report_id: int):
             dep_rows = db.execute(f"""
                 SELECT sd.source_id, sd.depends_on_id,
                        s.name AS depends_on_name, s.type AS depends_on_type,
+                       s.custom_fresh_days AS depends_on_custom_fresh_days,
+                       s.freshness_rule_type AS depends_on_freshness_rule_type,
+                       s.freshness_schedule_days AS depends_on_freshness_schedule_days,
                        sp.status AS depends_on_status,
                        CAST(sp.last_data_at AS TEXT) AS depends_on_last_data_at
                 FROM source_dependencies sd
@@ -187,6 +194,9 @@ def get_lineage_diagram(report_id: int):
                     "depends_on_id": r["depends_on_id"],
                     "depends_on_name": r["depends_on_name"],
                     "depends_on_type": r["depends_on_type"],
+                    "depends_on_custom_fresh_days": r["depends_on_custom_fresh_days"],
+                    "depends_on_freshness_rule_type": r["depends_on_freshness_rule_type"],
+                    "depends_on_freshness_schedule_days": r["depends_on_freshness_schedule_days"],
                     "depends_on_status": r["depends_on_status"] or "unknown",
                     "depends_on_last_data_at": r["depends_on_last_data_at"],
                 }

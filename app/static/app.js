@@ -1523,8 +1523,6 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const assetName = shortNameFromPath(rawName) || rawName;
         const linkData = a.asset_type === "source"
             ? `alerts-source-link" data-source-id="${a.asset_id}`
-            : a.asset_type === "report"
-            ? `alerts-report-link" data-report-id="${a.asset_id}`
             : a.asset_type === "scheduled_task"
             ? `alerts-task-link" data-task-id="${a.asset_id}`
             : a.asset_type === "script"
@@ -1544,11 +1542,13 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">stale vs: ${summary}${more}</div>`;
         }
 
+        const reportButton = a.asset_type === "report" && a.asset_id
+            ? `<button type="button" class="alerts-go-report" data-report-id="${a.asset_id}" title="Open report detail">Go to Report</button>`
+            : "";
+        const assetBody = `<div class="alerts-asset-title"><strong>${esc(assetName)}</strong>${reportButton}</div>${sub}`;
         const assetCell = linkData
-            ? `<a class="alerts-link ${linkData}" title="Open detail">
-                   <strong>${esc(assetName)}</strong>${sub}
-               </a>`
-            : `<div><strong>${esc(assetName)}</strong>${sub}</div>`;
+            ? `<a class="alerts-link ${linkData}" title="Open detail">${assetBody}</a>`
+            : `<div class="alerts-asset-plain">${assetBody}</div>`;
 
         const typeLabel = a.asset_type === "scheduled_task" ? "task" : a.asset_type;
         const typeCell = a.asset_type
@@ -1562,7 +1562,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
                     ${hasExpandable
-                        ? `<button class="alerts-expand-btn" data-action-id="${a.id}" aria-label="Expand" title="Show recommendation + stale sources"><span class="alerts-expand-arrow">&#9656;</span></button>`
+                        ? `<button type="button" class="alerts-expand-btn" data-action-id="${a.id}" aria-expanded="false" title="Show recommendation and stale sources"><span class="alerts-expand-label">Details</span><span class="alerts-expand-arrow">&#8250;</span></button>`
                         : '<span class="alerts-expand-spacer"></span>'}
                     <span class="alerts-asset-wrap">${assetCell}</span>
                 </td>
@@ -1699,8 +1699,8 @@ function _waitForElement(selector, timeoutMs = 2000) {
 }
 
 function bindDashboardAlertsRowControls() {
-    // Clickable report cell - navigate to reports page and open detail.
-    document.querySelectorAll(".alerts-report-link").forEach(el => {
+    // Explicit report button - navigate to reports page and open detail.
+    document.querySelectorAll(".alerts-go-report").forEach(el => {
         el.addEventListener("click", async (e) => {
             e.stopPropagation();
             const rid = parseInt(el.dataset.reportId);
@@ -1751,8 +1751,8 @@ function bindDashboardAlertsRowControls() {
             if (!expandRow) return;
             const isOpen = expandRow.style.display !== "none";
             expandRow.style.display = isOpen ? "none" : "";
-            const arrow = btn.querySelector(".alerts-expand-arrow");
-            if (arrow) arrow.innerHTML = isOpen ? "&#9656;" : "&#9662;";
+            btn.classList.toggle("expanded", !isOpen);
+            btn.setAttribute("aria-expanded", isOpen ? "false" : "true");
         });
     });
 
@@ -6547,10 +6547,32 @@ function _renderLineageDiagram(data) {
     }
 
     // Status helpers
-    const stCls = (s) => ({ current: "lin-st-ok", fresh: "lin-st-ok", stale: "lin-st-err", outdated: "lin-st-err", error: "lin-st-err", unknown: "lin-st-warn", no_rule: "lin-st-warn", no_connection: "lin-st-warn" }[s] || "lin-st-warn");
-    const stDot = (s, lastDate) => {
-        const c = { current: "var(--green)", fresh: "var(--green)", stale: "var(--red)", outdated: "var(--red)", error: "var(--red)" };
-        return `<span class="lin-dot" style="background:${c[s] || "var(--yellow)"}" title="${lastDate ? `Refreshed ${timeAgo(lastDate)}` : "No refresh date"}"></span>`;
+    const hasLineageRule = (item, prefix = "") => {
+        const ruleType = item[`${prefix}freshness_rule_type`];
+        const customDays = item[`${prefix}custom_fresh_days`];
+        return !!ruleType || (customDays != null && customDays > 0);
+    };
+    const lineageState = (item, prefix = "") => {
+        const status = item[`${prefix}status`] || "unknown";
+        const lastDate = item[`${prefix}last_data_at`];
+        if (!hasLineageRule(item, prefix)) return "warn";
+        if (!lastDate) return "warn";
+        if (["fresh", "current"].includes(status)) return "ok";
+        if (["stale", "outdated", "error", "degraded"].includes(status)) return "err";
+        if (["unknown", "no_connection", "no_rule"].includes(status)) return "warn";
+        return "warn";
+    };
+    const stCls = (item, prefix = "") => ({ ok: "lin-st-ok", err: "lin-st-err", warn: "lin-st-warn" }[lineageState(item, prefix)] || "lin-st-warn");
+    const stDot = (item, prefix = "") => {
+        const state = lineageState(item, prefix);
+        const lastDate = item[`${prefix}last_data_at`];
+        const status = item[`${prefix}status`] || "unknown";
+        const c = { ok: "var(--green)", err: "var(--red)", warn: "var(--yellow)" };
+        let title = "Freshness rule not set";
+        if (hasLineageRule(item, prefix)) {
+            title = lastDate ? `${status}: refreshed ${timeAgo(lastDate)}` : `${status}: no refresh date`;
+        }
+        return `<span class="lin-dot" style="background:${c[state]}" title="${esc(title)}"></span>`;
     };
 
     // === Column HTML builders ===
@@ -6625,7 +6647,7 @@ function _renderLineageDiagram(data) {
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
         const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
         const last = s.last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(s.last_data_at))}">${timeAgo(s.last_data_at)}</div>` : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s.status)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s.status, s.last_data_at)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
+        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
     }
     colHtml.sources = srcH;
 
@@ -6638,7 +6660,7 @@ function _renderLineageDiagram(data) {
             // This upstream table only feeds the MV, not directly used by the report
             mvUpSources.push(d);
             const last = d.depends_on_last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(d.depends_on_last_data_at))}">${timeAgo(d.depends_on_last_data_at)}</div>` : '';
-            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d.depends_on_status)}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d.depends_on_status, d.depends_on_last_data_at)}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
+            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d, "depends_on_")}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d, "depends_on_")}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
         }
     }
     colHtml.mv_upstream = mvUpH;
