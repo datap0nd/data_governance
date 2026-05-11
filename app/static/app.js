@@ -6645,9 +6645,8 @@ function _renderLineageDiagram(data) {
         const hasDeps = depMap.has(s.id);
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
-        const sched = s.refresh_schedule ? `<div class="lin-card-sched" title="Refresh schedule">${esc(s.refresh_schedule)}</div>` : '';
         const last = s.last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(s.last_data_at))}">${timeAgo(s.last_data_at)}</div>` : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}${sched}</div>`;
+        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}</div>`;
     }
     colHtml.sources = srcH;
 
