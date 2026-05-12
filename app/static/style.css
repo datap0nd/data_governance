@@ -4586,6 +4586,27 @@ tr.row-archived td:last-child {
     color: var(--text-dim);
     margin-left: 0.35rem;
 }
+.email-fix-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.25rem;
+}
+.email-fix-links a,
+.email-fix-links span {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--accent);
+    font-size: 0.68rem;
+    line-height: 1.2;
+    margin-left: 0;
+    padding: 0.14rem 0.4rem;
+    text-decoration: none;
+}
+.email-fix-links span {
+    color: var(--text-dim);
+}
 
 /* ── Documentation ── */
 .doc-view-section { margin-top: 1.25rem; }

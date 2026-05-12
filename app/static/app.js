@@ -3747,6 +3747,11 @@ const EMAIL_STATUS_LABELS = {
     review: "Review",
 };
 
+const EMAIL_KIND_LABELS = {
+    alert: "alert",
+    task: "task",
+};
+
 function _emailStatusCounts(tasks) {
     const counts = { backlog: 0, todo: 0, in_progress: 0, review: 0 };
     (tasks || []).forEach(t => {
@@ -3761,26 +3766,78 @@ function _emailTaskLine(task) {
     return `<li><strong>${esc(task.title)}</strong><span>${esc(task.priority || "medium")} - ${esc(status)}${esc(due)}</span></li>`;
 }
 
+function _emailFixLinks(alert) {
+    const reportLinks = (alert.report_links || [])
+        .filter(r => r.powerbi_url)
+        .map(r => `<a href="${esc(r.powerbi_url)}" target="_blank" rel="noopener">Power BI: ${esc(r.report_name)}</a>`);
+    const sourceLinks = (alert.source_links || [])
+        .filter(s => s.folder_path)
+        .map(s => ({ ...s, label: s.link_label || "Source Folder" }))
+        .map(s => s.href
+            ? `<a href="${esc(s.href)}" target="_blank" rel="noopener">${esc(s.label)}: ${esc(s.source_name)}</a>`
+            : `<span title="${esc(s.folder_path)}">${esc(s.label)}: ${esc(s.source_name)}</span>`);
+    return [...reportLinks, ...sourceLinks];
+}
+
+function _emailAlertLine(alert) {
+    const days = alert.asset_days || 0;
+    const links = _emailFixLinks(alert).slice(0, 4).join("");
+    return `<li>
+        <strong>${esc(alert.issue_label || alert.type)}</strong>
+        <span>${esc(alert.asset_name || "Unknown asset")} - ${days}d</span>
+        ${links ? `<div class="email-fix-links">${links}</div>` : ""}
+    </li>`;
+}
+
 async function renderEmail() {
-    const [people, summaryData] = await Promise.all([
+    const [people, alertData, taskData] = await Promise.all([
         api("/api/email/people"),
+        api("/api/email/alert-summaries"),
         api("/api/email/task-summaries"),
     ]);
-    const summaries = summaryData.summaries || [];
+    const alertSummaries = alertData.summaries || [];
+    const taskSummaries = taskData.summaries || [];
     window._emailPeople = people;
-    window._emailSummaries = summaries;
+    window._emailAlertSummaries = alertSummaries;
+    window._emailTaskSummaries = taskSummaries;
 
     const biPeople = people.filter(p => p.role === "BI");
     const mappingRows = biPeople.map(p => `
         <tr>
             <td>${esc(p.name)}</td>
+            <td>${p.pending_alert_count || 0}</td>
             <td>${p.pending_task_count || 0}</td>
             <td><input class="email-map-input" data-person-id="${p.id}" type="email" value="${esc(p.email || "")}" placeholder="name@example.com"></td>
             <td><button class="btn-sm btn-outline email-save-person" data-person-id="${p.id}">Save</button></td>
         </tr>
     `).join("");
 
-    const summaryCards = summaries.length ? summaries.map(s => {
+    const alertCards = alertSummaries.length ? alertSummaries.map(s => {
+        const missingEmail = !s.email;
+        const previewAlerts = (s.alerts || []).slice(0, 4).map(_emailAlertLine).join("");
+        return `
+            <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
+                <div class="email-summary-head">
+                    <label class="email-summary-check">
+                        <input type="checkbox" class="email-alert-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
+                        <span>${esc(s.owner_name)}</span>
+                    </label>
+                    <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
+                </div>
+                <div class="email-summary-meta"><span>${s.alert_count} active alert${s.alert_count === 1 ? "" : "s"}</span></div>
+                <ul class="email-task-preview">${previewAlerts}</ul>
+                ${s.alerts.length > 4 ? `<div class="email-more">+${s.alerts.length - 4} more</div>` : ""}
+                <div class="email-summary-actions">
+                    <button class="btn-outline email-open-draft" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
+                    <button class="btn-outline email-copy-summary" data-kind="alert" data-owner="${esc(s.owner_name)}">Copy Summary</button>
+                    <button class="btn-outline email-server-draft" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
+                    <button class="btn-outline btn-danger-outline email-server-send" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
+                </div>
+            </div>
+        `;
+    }).join("") : '<div class="empty-state">No active alerts assigned to BI owners.</div>';
+
+    const taskCards = taskSummaries.length ? taskSummaries.map(s => {
         const counts = _emailStatusCounts(s.tasks);
         const statusBits = Object.entries(counts)
             .filter(([, count]) => count > 0)
@@ -3792,7 +3849,7 @@ async function renderEmail() {
             <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
                 <div class="email-summary-head">
                     <label class="email-summary-check">
-                        <input type="checkbox" class="email-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
+                        <input type="checkbox" class="email-task-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
                         <span>${esc(s.owner_name)}</span>
                     </label>
                     <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
@@ -3801,10 +3858,10 @@ async function renderEmail() {
                 <ul class="email-task-preview">${previewTasks}</ul>
                 ${s.tasks.length > 4 ? `<div class="email-more">+${s.tasks.length - 4} more</div>` : ""}
                 <div class="email-summary-actions">
-                    <button class="btn-outline email-open-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
-                    <button class="btn-outline email-copy-summary" data-owner="${esc(s.owner_name)}">Copy Summary</button>
-                    <button class="btn-outline email-server-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
-                    <button class="btn-outline btn-danger-outline email-server-send" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
+                    <button class="btn-outline email-open-draft" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
+                    <button class="btn-outline email-copy-summary" data-kind="task" data-owner="${esc(s.owner_name)}">Copy Summary</button>
+                    <button class="btn-outline email-server-draft" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
+                    <button class="btn-outline btn-danger-outline email-server-send" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
                 </div>
             </div>
         `;
@@ -3814,7 +3871,7 @@ async function renderEmail() {
     return `
         <div class="page-header">
             <h1>Email</h1>
-            <span class="subtitle">Outlook task summaries by owner</span>
+            <span class="subtitle">Outlook alerts and task summaries by owner</span>
         </div>
         <div class="email-layout">
             <section class="email-section">
@@ -3824,7 +3881,7 @@ async function renderEmail() {
                 </div>
                 ${biPeople.length ? `
                     <table class="email-map-table">
-                        <thead><tr><th>BI Owner</th><th>Pending</th><th>Email</th><th></th></tr></thead>
+                        <thead><tr><th>BI Owner</th><th>Alerts</th><th>Tasks</th><th>Email</th><th></th></tr></thead>
                         <tbody>${mappingRows}</tbody>
                     </table>
                 ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
@@ -3832,33 +3889,47 @@ async function renderEmail() {
 
             <section class="email-section">
                 <div class="email-section-head">
-                    <h2>Pending Task Summaries</h2>
+                    <h2>Active Alert Summaries</h2>
                     <div class="email-bulk-actions">
-                        <button class="btn-outline" id="email-draft-selected">Server Draft Selected</button>
-                        <button class="btn-outline btn-danger-outline" id="email-send-selected">Send Selected</button>
+                        <button class="btn-outline" id="email-alert-draft-selected">Server Draft Selected</button>
+                        <button class="btn-outline btn-danger-outline" id="email-alert-send-selected">Send Selected</button>
                     </div>
                 </div>
-                <div class="email-summary-list">${summaryCards}</div>
+                <div class="email-summary-list">${alertCards}</div>
+            </section>
+
+            <section class="email-section">
+                <div class="email-section-head">
+                    <h2>Pending Task Summaries</h2>
+                    <div class="email-bulk-actions">
+                        <button class="btn-outline" id="email-task-draft-selected">Server Draft Selected</button>
+                        <button class="btn-outline btn-danger-outline" id="email-task-send-selected">Send Selected</button>
+                    </div>
+                </div>
+                <div class="email-summary-list">${taskCards}</div>
             </section>
         </div>
     `;
 }
 
-function _emailSelectedOwners(fallbackOwner) {
+function _emailSelectedOwners(kind, fallbackOwner) {
     if (fallbackOwner) return [fallbackOwner];
-    return Array.from(document.querySelectorAll(".email-owner-check:checked")).map(i => i.value);
+    return Array.from(document.querySelectorAll(`.email-${kind}-owner-check:checked`)).map(i => i.value);
 }
 
-function _emailFindSummary(owner) {
-    return (window._emailSummaries || []).find(s => s.owner_name === owner);
+function _emailFindSummary(kind, owner) {
+    const list = kind === "alert" ? window._emailAlertSummaries : window._emailTaskSummaries;
+    return (list || []).find(s => s.owner_name === owner);
 }
 
-async function _emailLaunchServer(mode, owner) {
-    const ownerNames = _emailSelectedOwners(owner);
+async function _emailLaunchServer(kind, mode, owner) {
+    const ownerNames = _emailSelectedOwners(kind, owner);
     if (ownerNames.length === 0) { toast("Select at least one owner with an email"); return; }
-    if (mode === "send" && !confirm(`Send ${ownerNames.length} task summary email${ownerNames.length === 1 ? "" : "s"} through Outlook?`)) return;
+    const label = EMAIL_KIND_LABELS[kind] || kind;
+    if (mode === "send" && !confirm(`Send ${ownerNames.length} ${label} summary email${ownerNames.length === 1 ? "" : "s"} through Outlook?`)) return;
     try {
-        const result = await apiPostJson("/api/email/send-task-summaries", { mode, owner_names: ownerNames });
+        const endpoint = kind === "alert" ? "/api/email/send-alert-summaries" : "/api/email/send-task-summaries";
+        const result = await apiPostJson(endpoint, { mode, owner_names: ownerNames });
         toast(`${mode === "send" ? "Send" : "Draft"} launched for ${result.count} owner${result.count === 1 ? "" : "s"}`);
     } catch (err) {
         toast("Outlook email failed: " + err.message);
@@ -3884,7 +3955,7 @@ function bindEmailPage() {
 
     document.querySelectorAll(".email-open-draft").forEach(btn => {
         btn.addEventListener("click", () => {
-            const summary = _emailFindSummary(btn.dataset.owner);
+            const summary = _emailFindSummary(btn.dataset.kind, btn.dataset.owner);
             if (!summary || !summary.email) { toast("Map an email first"); return; }
             window.location.href = summary.mailto;
         });
@@ -3892,7 +3963,7 @@ function bindEmailPage() {
 
     document.querySelectorAll(".email-copy-summary").forEach(btn => {
         btn.addEventListener("click", async () => {
-            const summary = _emailFindSummary(btn.dataset.owner);
+            const summary = _emailFindSummary(btn.dataset.kind, btn.dataset.owner);
             if (!summary) return;
             try {
                 await navigator.clipboard.writeText(summary.body_text);
@@ -3904,15 +3975,19 @@ function bindEmailPage() {
     });
 
     document.querySelectorAll(".email-server-draft").forEach(btn => {
-        btn.addEventListener("click", () => _emailLaunchServer("draft", btn.dataset.owner));
+        btn.addEventListener("click", () => _emailLaunchServer(btn.dataset.kind, "draft", btn.dataset.owner));
     });
     document.querySelectorAll(".email-server-send").forEach(btn => {
-        btn.addEventListener("click", () => _emailLaunchServer("send", btn.dataset.owner));
+        btn.addEventListener("click", () => _emailLaunchServer(btn.dataset.kind, "send", btn.dataset.owner));
     });
-    const draftSelected = document.getElementById("email-draft-selected");
-    if (draftSelected) draftSelected.addEventListener("click", () => _emailLaunchServer("draft"));
-    const sendSelected = document.getElementById("email-send-selected");
-    if (sendSelected) sendSelected.addEventListener("click", () => _emailLaunchServer("send"));
+    const alertDraftSelected = document.getElementById("email-alert-draft-selected");
+    if (alertDraftSelected) alertDraftSelected.addEventListener("click", () => _emailLaunchServer("alert", "draft"));
+    const alertSendSelected = document.getElementById("email-alert-send-selected");
+    if (alertSendSelected) alertSendSelected.addEventListener("click", () => _emailLaunchServer("alert", "send"));
+    const taskDraftSelected = document.getElementById("email-task-draft-selected");
+    if (taskDraftSelected) taskDraftSelected.addEventListener("click", () => _emailLaunchServer("task", "draft"));
+    const taskSendSelected = document.getElementById("email-task-send-selected");
+    if (taskSendSelected) taskSendSelected.addEventListener("click", () => _emailLaunchServer("task", "send"));
 }
 
 
