@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
 from app.database import init_db
 from app.local_access import is_server_machine
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -28,6 +28,42 @@ logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 # In-memory caches for identity resolution (cleared on register)
 _identity_cache: dict[tuple[str, str | None], str | None] = {}
 _hostname_cache: dict[str, str | None] = {}
+
+
+def _ensure_identity_schema(conn: sqlite3.Connection):
+    """Create or repair the lightweight user identity tables."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS user_ips (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip_address  TEXT NOT NULL UNIQUE,
+            person_name TEXT NOT NULL,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    for stmt in (
+        "ALTER TABLE user_ips ADD COLUMN hostname TEXT",
+        "ALTER TABLE user_ips ADD COLUMN client_key TEXT",
+        "ALTER TABLE user_ips ADD COLUMN last_seen_at DATETIME",
+        "ALTER TABLE user_ips ADD COLUMN updated_at DATETIME",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS user_devices (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_key      TEXT NOT NULL UNIQUE,
+            person_name     TEXT NOT NULL,
+            last_ip_address TEXT,
+            hostname        TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)")
 
 
 def _clean_client_key(value: str | None) -> str | None:
@@ -61,6 +97,8 @@ def _resolve_identity(ip: str, client_key: str | None = None) -> str | None:
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        _ensure_identity_schema(conn)
         row = None
         if client_key:
             row = conn.execute(
@@ -87,29 +125,44 @@ def _mark_identity_seen(ip: str, client_key: str | None, name: str | None, hostn
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
-        conn.execute(
-            """INSERT INTO user_ips
-               (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(ip_address) DO UPDATE SET
-                   person_name = excluded.person_name,
-                   hostname = COALESCE(excluded.hostname, user_ips.hostname),
-                   client_key = COALESCE(excluded.client_key, user_ips.client_key),
-                   updated_at = excluded.updated_at,
-                   last_seen_at = excluded.last_seen_at""",
-            (ip, name, hostname, client_key, now, now, now),
-        )
-        if client_key:
+        _ensure_identity_schema(conn)
+        existing_ip = conn.execute("SELECT id FROM user_ips WHERE ip_address = ? LIMIT 1", (ip,)).fetchone()
+        if existing_ip:
             conn.execute(
-                """INSERT INTO user_devices
-                   (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(client_key) DO UPDATE SET
-                       last_ip_address = excluded.last_ip_address,
-                       hostname = COALESCE(excluded.hostname, user_devices.hostname),
-                       last_seen_at = excluded.last_seen_at""",
-                (client_key, name, ip, hostname, now, now, now),
+                """UPDATE user_ips
+                   SET person_name = ?,
+                       hostname = COALESCE(?, hostname),
+                       client_key = COALESCE(?, client_key),
+                       updated_at = ?,
+                       last_seen_at = ?
+                   WHERE id = ?""",
+                (name, hostname, client_key, now, now, existing_ip[0]),
             )
+        else:
+            conn.execute(
+                """INSERT INTO user_ips
+                   (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (ip, name, hostname, client_key, now, now, now),
+            )
+        if client_key:
+            existing_device = conn.execute("SELECT id FROM user_devices WHERE client_key = ? LIMIT 1", (client_key,)).fetchone()
+            if existing_device:
+                conn.execute(
+                    """UPDATE user_devices
+                       SET last_ip_address = ?,
+                           hostname = COALESCE(?, hostname),
+                           last_seen_at = ?
+                       WHERE id = ?""",
+                    (ip, hostname, now, existing_device[0]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO user_devices
+                       (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (client_key, name, ip, hostname, now, now, now),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -125,7 +178,7 @@ class UserIdentityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
         ip = request.client.host if request.client else "unknown"
         client_key = _clean_client_key(
-            request.headers.get("x-client-key") or request.cookies.get("mx_client_key")
+            request.headers.get("x-client-key") or request.cookies.get("dg_client_key")
         )
         request.state.client_ip = ip
         request.state.client_key = client_key
@@ -232,6 +285,7 @@ app.include_router(power_automate.router)
 app.include_router(overview.router)
 app.include_router(custom_reports.router)
 app.include_router(documentation.router)
+app.include_router(email.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"
@@ -317,30 +371,45 @@ def register_user(body: RegisterRequest, request: Request):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
-        conn.execute(
-            """INSERT INTO user_ips (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
-               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-               ON CONFLICT(ip_address) DO UPDATE SET
-                   person_name = excluded.person_name,
-                   hostname = COALESCE(excluded.hostname, user_ips.hostname),
-                   client_key = COALESCE(excluded.client_key, user_ips.client_key),
-                   updated_at = CURRENT_TIMESTAMP,
-                   last_seen_at = CURRENT_TIMESTAMP""",
-            (ip, name, hostname, client_key),
-        )
-        if client_key:
+        _ensure_identity_schema(conn)
+        existing_ip = conn.execute("SELECT id FROM user_ips WHERE ip_address = ? LIMIT 1", (ip,)).fetchone()
+        if existing_ip:
             conn.execute(
-                """INSERT INTO user_devices
-                   (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                   ON CONFLICT(client_key) DO UPDATE SET
-                       person_name = excluded.person_name,
-                       last_ip_address = excluded.last_ip_address,
-                       hostname = COALESCE(excluded.hostname, user_devices.hostname),
+                """UPDATE user_ips
+                   SET person_name = ?,
+                       hostname = COALESCE(?, hostname),
+                       client_key = COALESCE(?, client_key),
                        updated_at = CURRENT_TIMESTAMP,
-                       last_seen_at = CURRENT_TIMESTAMP""",
-                (client_key, name, ip, hostname),
+                       last_seen_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (name, hostname, client_key, existing_ip[0]),
             )
+        else:
+            conn.execute(
+                """INSERT INTO user_ips (ip_address, person_name, hostname, client_key, created_at, updated_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                (ip, name, hostname, client_key),
+            )
+        if client_key:
+            existing_device = conn.execute("SELECT id FROM user_devices WHERE client_key = ? LIMIT 1", (client_key,)).fetchone()
+            if existing_device:
+                conn.execute(
+                    """UPDATE user_devices
+                       SET person_name = ?,
+                           last_ip_address = ?,
+                           hostname = COALESCE(?, hostname),
+                           updated_at = CURRENT_TIMESTAMP,
+                           last_seen_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (name, ip, hostname, existing_device[0]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO user_devices
+                       (client_key, person_name, last_ip_address, hostname, created_at, updated_at, last_seen_at)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                    (client_key, name, ip, hostname),
+                )
         conn.commit()
     finally:
         conn.close()

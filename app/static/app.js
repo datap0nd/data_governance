@@ -48,7 +48,7 @@ function esc(str) {
 }
 
 function _getClientKey() {
-    const keyName = "mx-client-key";
+    const keyName = "dg-client-key";
     let key = localStorage.getItem(keyName);
     if (!key) {
         key = (window.crypto && window.crypto.randomUUID)
@@ -56,7 +56,7 @@ function _getClientKey() {
             : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         localStorage.setItem(keyName, key);
     }
-    document.cookie = `mx_client_key=${encodeURIComponent(key)}; Path=/; Max-Age=34560000; SameSite=Lax`;
+    document.cookie = `dg_client_key=${encodeURIComponent(key)}; Path=/; Max-Age=34560000; SameSite=Lax`;
     return key;
 }
 
@@ -2023,7 +2023,7 @@ function drawHealthTrendChart() {
     // Store chart geometry for tooltip
     window._healthChartGeom = { padL, padR, padT, padB, chartW, chartH, trend, series, xAt, yAt, maxVal, canvasRect: rect };
 
-    // Tooltip handler — remove previous listeners to avoid accumulation
+    // Tooltip handler: remove previous listeners to avoid accumulation
     canvas.removeEventListener("mousemove", _healthChartMouseMove);
     canvas.removeEventListener("mouseleave", _healthChartMouseLeave);
     canvas.addEventListener("mousemove", _healthChartMouseMove);
@@ -2042,12 +2042,12 @@ function _healthChartMouseMove(e) {
     if (!tip) return;
 
     const rect = e.target.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
     // Find nearest data point index
-    if (mx < g.padL || mx > g.padL + g.chartW) { tip.style.display = "none"; return; }
-    const ratio = (mx - g.padL) / g.chartW;
+    if (mouseX < g.padL || mouseX > g.padL + g.chartW) { tip.style.display = "none"; return; }
+    const ratio = (mouseX - g.padL) / g.chartW;
     const idx = Math.round(ratio * (g.trend.length - 1));
     if (idx < 0 || idx >= g.trend.length) { tip.style.display = "none"; return; }
 
@@ -2064,8 +2064,8 @@ function _healthChartMouseMove(e) {
     tip.style.display = "block";
 
     // Position tooltip near cursor
-    const tipX = Math.min(mx + 12, rect.width - 140);
-    const tipY = Math.max(my - 70, 0);
+    const tipX = Math.min(mouseX + 12, rect.width - 140);
+    const tipY = Math.max(mouseY - 70, 0);
     tip.style.left = tipX + "px";
     tip.style.top = tipY + "px";
 
@@ -2379,7 +2379,7 @@ function bindReportsPage() {
         });
         sel.addEventListener("click", (e) => e.stopPropagation());
     });
-    // Lineage button — navigate to Lineage tab with report pre-selected
+    // Lineage button: navigate to Lineage tab with report pre-selected
     document.querySelectorAll(".btn-lineage[data-lineage-report]").forEach(btn => {
         btn.addEventListener("click", async () => {
             const reportId = btn.dataset.lineageReport;
@@ -2981,7 +2981,7 @@ async function renderChangelog() {
 
     const flowchart = `
         <div class="flowchart-wrap">
-            <div class="flowchart-title">MX Analytics Pipeline</div>
+            <div class="flowchart-title">Data Governance Pipeline</div>
             <div class="flowchart-sub">Hover each step for details</div>
             <div class="fc-pipeline">
                 <div class="fc-col">
@@ -3110,7 +3110,7 @@ async function renderChangelog() {
 
 
 function bindChangelogPage() {
-    // Placeholder — no interactive elements currently needed
+    // Placeholder: no interactive elements currently needed
 }
 
 
@@ -3735,6 +3735,184 @@ function bindBestPracticesPage() {
             _refreshDT("dt-bp");
         });
     });
+}
+
+
+// ── Email ──
+
+const EMAIL_STATUS_LABELS = {
+    backlog: "Backlog",
+    todo: "To Do",
+    in_progress: "In Progress",
+    review: "Review",
+};
+
+function _emailStatusCounts(tasks) {
+    const counts = { backlog: 0, todo: 0, in_progress: 0, review: 0 };
+    (tasks || []).forEach(t => {
+        if (counts[t.status] != null) counts[t.status] += 1;
+    });
+    return counts;
+}
+
+function _emailTaskLine(task) {
+    const due = task.due_date ? ` due ${task.due_date}` : "";
+    const status = EMAIL_STATUS_LABELS[task.status] || task.status;
+    return `<li><strong>${esc(task.title)}</strong><span>${esc(task.priority || "medium")} - ${esc(status)}${esc(due)}</span></li>`;
+}
+
+async function renderEmail() {
+    const [people, summaryData] = await Promise.all([
+        api("/api/email/people"),
+        api("/api/email/task-summaries"),
+    ]);
+    const summaries = summaryData.summaries || [];
+    window._emailPeople = people;
+    window._emailSummaries = summaries;
+
+    const biPeople = people.filter(p => p.role === "BI");
+    const mappingRows = biPeople.map(p => `
+        <tr>
+            <td>${esc(p.name)}</td>
+            <td>${p.pending_task_count || 0}</td>
+            <td><input class="email-map-input" data-person-id="${p.id}" type="email" value="${esc(p.email || "")}" placeholder="name@example.com"></td>
+            <td><button class="btn-sm btn-outline email-save-person" data-person-id="${p.id}">Save</button></td>
+        </tr>
+    `).join("");
+
+    const summaryCards = summaries.length ? summaries.map(s => {
+        const counts = _emailStatusCounts(s.tasks);
+        const statusBits = Object.entries(counts)
+            .filter(([, count]) => count > 0)
+            .map(([status, count]) => `<span>${esc(EMAIL_STATUS_LABELS[status] || status)}: ${count}</span>`)
+            .join("");
+        const previewTasks = (s.tasks || []).slice(0, 4).map(_emailTaskLine).join("");
+        const missingEmail = !s.email;
+        return `
+            <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
+                <div class="email-summary-head">
+                    <label class="email-summary-check">
+                        <input type="checkbox" class="email-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
+                        <span>${esc(s.owner_name)}</span>
+                    </label>
+                    <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
+                </div>
+                <div class="email-summary-meta">${statusBits || "<span>No active status counts</span>"}</div>
+                <ul class="email-task-preview">${previewTasks}</ul>
+                ${s.tasks.length > 4 ? `<div class="email-more">+${s.tasks.length - 4} more</div>` : ""}
+                <div class="email-summary-actions">
+                    <button class="btn-outline email-open-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
+                    <button class="btn-outline email-copy-summary" data-owner="${esc(s.owner_name)}">Copy Summary</button>
+                    <button class="btn-outline email-server-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
+                    <button class="btn-outline btn-danger-outline email-server-send" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
+                </div>
+            </div>
+        `;
+    }).join("") : '<div class="empty-state">No pending tasks assigned to BI owners.</div>';
+
+    const mappedCount = biPeople.filter(p => p.email).length;
+    return `
+        <div class="page-header">
+            <h1>Email</h1>
+            <span class="subtitle">Outlook task summaries by owner</span>
+        </div>
+        <div class="email-layout">
+            <section class="email-section">
+                <div class="email-section-head">
+                    <h2>Owner Email Mapping</h2>
+                    <span>${mappedCount}/${biPeople.length} mapped</span>
+                </div>
+                ${biPeople.length ? `
+                    <table class="email-map-table">
+                        <thead><tr><th>BI Owner</th><th>Pending</th><th>Email</th><th></th></tr></thead>
+                        <tbody>${mappingRows}</tbody>
+                    </table>
+                ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
+            </section>
+
+            <section class="email-section">
+                <div class="email-section-head">
+                    <h2>Pending Task Summaries</h2>
+                    <div class="email-bulk-actions">
+                        <button class="btn-outline" id="email-draft-selected">Server Draft Selected</button>
+                        <button class="btn-outline btn-danger-outline" id="email-send-selected">Send Selected</button>
+                    </div>
+                </div>
+                <div class="email-summary-list">${summaryCards}</div>
+            </section>
+        </div>
+    `;
+}
+
+function _emailSelectedOwners(fallbackOwner) {
+    if (fallbackOwner) return [fallbackOwner];
+    return Array.from(document.querySelectorAll(".email-owner-check:checked")).map(i => i.value);
+}
+
+function _emailFindSummary(owner) {
+    return (window._emailSummaries || []).find(s => s.owner_name === owner);
+}
+
+async function _emailLaunchServer(mode, owner) {
+    const ownerNames = _emailSelectedOwners(owner);
+    if (ownerNames.length === 0) { toast("Select at least one owner with an email"); return; }
+    if (mode === "send" && !confirm(`Send ${ownerNames.length} task summary email${ownerNames.length === 1 ? "" : "s"} through Outlook?`)) return;
+    try {
+        const result = await apiPostJson("/api/email/send-task-summaries", { mode, owner_names: ownerNames });
+        toast(`${mode === "send" ? "Send" : "Draft"} launched for ${result.count} owner${result.count === 1 ? "" : "s"}`);
+    } catch (err) {
+        toast("Outlook email failed: " + err.message);
+    }
+}
+
+function bindEmailPage() {
+    document.querySelectorAll(".email-save-person").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const personId = btn.dataset.personId;
+            const input = document.querySelector(`.email-map-input[data-person-id="${personId}"]`);
+            btn.disabled = true;
+            try {
+                await apiPatch(`/api/email/people/${personId}`, { email: input.value.trim() || null });
+                toast("Email saved");
+                await navigate("email");
+            } catch (err) {
+                btn.disabled = false;
+                toast("Failed to save email: " + err.message);
+            }
+        });
+    });
+
+    document.querySelectorAll(".email-open-draft").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const summary = _emailFindSummary(btn.dataset.owner);
+            if (!summary || !summary.email) { toast("Map an email first"); return; }
+            window.location.href = summary.mailto;
+        });
+    });
+
+    document.querySelectorAll(".email-copy-summary").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const summary = _emailFindSummary(btn.dataset.owner);
+            if (!summary) return;
+            try {
+                await navigator.clipboard.writeText(summary.body_text);
+                toast("Summary copied");
+            } catch (_) {
+                toast("Clipboard unavailable");
+            }
+        });
+    });
+
+    document.querySelectorAll(".email-server-draft").forEach(btn => {
+        btn.addEventListener("click", () => _emailLaunchServer("draft", btn.dataset.owner));
+    });
+    document.querySelectorAll(".email-server-send").forEach(btn => {
+        btn.addEventListener("click", () => _emailLaunchServer("send", btn.dataset.owner));
+    });
+    const draftSelected = document.getElementById("email-draft-selected");
+    if (draftSelected) draftSelected.addEventListener("click", () => _emailLaunchServer("draft"));
+    const sendSelected = document.getElementById("email-send-selected");
+    if (sendSelected) sendSelected.addEventListener("click", () => _emailLaunchServer("send"));
 }
 
 
@@ -6159,9 +6337,9 @@ function _initOverviewGraph(data, container) {
         for (const e of edges) {
             const hl = highlightSet && highlightSet.has(e.source.id) && highlightSet.has(e.target.id);
             ctx.beginPath();
-            const mx = (e.source.x + e.target.x) / 2;
+            const midX = (e.source.x + e.target.x) / 2;
             ctx.moveTo(e.source.x, e.source.y);
-            ctx.bezierCurveTo(mx, e.source.y, mx, e.target.y, e.target.x, e.target.y);
+            ctx.bezierCurveTo(midX, e.source.y, midX, e.target.y, e.target.x, e.target.y);
             if (dimming && !hl) {
                 ctx.strokeStyle = dark ? "rgba(100,100,100,0.06)" : "rgba(150,150,150,0.06)";
                 ctx.lineWidth = 0.5;
@@ -6772,9 +6950,9 @@ function _drawLinEdges() {
         const y1 = fr.top + fr.height / 2 - wr.top + wrap.scrollTop;
         const x2 = tr.left - wr.left + wrap.scrollLeft;
         const y2 = tr.top + tr.height / 2 - wr.top + wrap.scrollTop;
-        const mx = (x1 + x2) / 2;
+        const midX = (x1 + x2) / 2;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`);
+        path.setAttribute("d", `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`);
         path.setAttribute("class", "lin-edge");
         path.dataset.from = e.from; path.dataset.to = e.to;
         svg.appendChild(path);
@@ -7468,7 +7646,7 @@ async function renderEventLog() {
         { key: "created_at", label: "When", width: COL_W.md, render: e => `<span title="${esc(e.created_at || "")}">${timeAgo(e.created_at)}</span>` },
         { key: "actor", label: "User", width: COL_W.sm, render: e => e.actor ? `<span style="color:var(--accent)">${esc(e.actor)}</span>` : '<span style="color:var(--text-dim)">system</span>' },
         { key: "entity_type", label: "Type", width: COL_W.sm, render: e => `<span class="eventlog-type-badge type-${esc(e.entity_type)}">${esc(e.entity_type)}</span>` },
-        { key: "entity_name", label: "Entity", width: COL_W.lg, render: e => esc(e.entity_name) || `#${e.entity_id || "—"}` },
+        { key: "entity_name", label: "Entity", width: COL_W.lg, render: e => esc(e.entity_name) || `#${e.entity_id || "-"}` },
         { key: "action", label: "Action", width: COL_W.sm, render: e => `<span class="eventlog-action action-${esc(e.action)}">${esc(e.action)}</span>` },
         { key: "detail", label: "Detail", width: COL_W.xl, render: e => esc(e.detail) || "" },
     ];
@@ -7492,7 +7670,7 @@ function bindEventLogPage() {
 const FAQ_ITEMS = [
     {
         q: "What does this platform do?",
-        a: "MX Analytics automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives the BI team a single place to manage data quality and accountability."
+        a: "Data Governance automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives the BI team a single place to manage data quality and accountability."
     },
     {
         q: "Where does the data come from?",
@@ -7647,6 +7825,7 @@ const pages = {
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
+    email: renderEmail,
     export: renderExport,
     tasks: renderTasks,
     eventlog: renderEventLog,
@@ -7713,7 +7892,7 @@ async function navigate(page) {
                 else if (dd.sources_stale > 0) navDot.style.background = "var(--red)"; // degraded (legacy stale)
                 else navDot.style.background = "var(--green)"; // healthy
             }
-            // Clickable stat card sub-labels — filter navigation
+            // Clickable stat card sub-labels: filter navigation
             document.querySelectorAll(".stat-filter[data-filter]").forEach(dot => {
                 dot.addEventListener("click", async (e) => {
                     e.stopPropagation();
@@ -7728,7 +7907,7 @@ async function navigate(page) {
                     }
                 });
             });
-            // Clickable stat cards — navigate to target page
+            // Clickable stat cards: navigate to target page
             document.querySelectorAll(".stat-card-clickable[data-navigate]").forEach(card => {
                 card.addEventListener("click", () => navigate(card.dataset.navigate));
                 card.addEventListener("keydown", (e) => {
@@ -7780,6 +7959,7 @@ async function navigate(page) {
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "email") bindEmailPage();
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
@@ -7800,7 +7980,7 @@ function bindScannerButtons() {
                 const showing = target.style.display !== "none";
                 target.style.display = showing ? "none" : "";
                 const hint = h2.querySelector("span");
-                if (hint) hint.textContent = showing ? "— click to expand" : "— click to collapse";
+                if (hint) hint.textContent = showing ? "- click to expand" : "- click to collapse";
             }
         });
     });
@@ -8178,7 +8358,7 @@ function _showRegistrationModal(ip) {
     overlay.className = "register-overlay";
     overlay.innerHTML = `
         <div class="register-modal">
-            <h2>Welcome to MX Analytics</h2>
+            <h2>Welcome to Data Governance</h2>
             <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
             <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
             <button id="register-submit">Continue</button>
@@ -8199,16 +8379,20 @@ function _showRegistrationModal(ip) {
             headers: apiHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({ name, client_key: _getClientKey() }),
         })
-        .then(r => r.json())
+        .then(async r => {
+            const payload = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(payload.detail || `API error: ${r.status}`);
+            return payload;
+        })
         .then(me => {
             window._currentUser = me;
             _showConnectedUser(me);
             overlay.remove();
         })
-        .catch(() => {
+        .catch((err) => {
             btn.disabled = false;
             btn.textContent = "Continue";
-            toast("Registration failed - try again");
+            toast("Registration failed: " + err.message);
         });
     }
 
@@ -8321,7 +8505,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const themeToggle = document.getElementById("theme-toggle");
     if (themeToggle) {
         // Restore saved preference
-        const saved = localStorage.getItem("mx-theme");
+        const saved = localStorage.getItem("dg-theme");
         if (saved === "dark") document.documentElement.classList.add("dark");
         else if (saved === "light") document.documentElement.classList.add("light");
         updateThemeIcon();
@@ -8331,20 +8515,20 @@ document.addEventListener("DOMContentLoaded", () => {
             if (html.classList.contains("dark")) {
                 html.classList.remove("dark");
                 html.classList.add("light");
-                localStorage.setItem("mx-theme", "light");
+                localStorage.setItem("dg-theme", "light");
             } else if (html.classList.contains("light")) {
                 html.classList.remove("light");
                 html.classList.add("dark");
-                localStorage.setItem("mx-theme", "dark");
+                localStorage.setItem("dg-theme", "dark");
             } else {
                 // Auto mode - toggle to opposite of system preference
                 const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
                 if (prefersDark) {
                     html.classList.add("light");
-                    localStorage.setItem("mx-theme", "light");
+                    localStorage.setItem("dg-theme", "light");
                 } else {
                     html.classList.add("dark");
-                    localStorage.setItem("mx-theme", "dark");
+                    localStorage.setItem("dg-theme", "dark");
                 }
             }
             updateThemeIcon();

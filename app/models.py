@@ -299,11 +299,19 @@ class PersonOut(BaseModel):
     id: int
     name: str
     role: str
+    email: str | None = None
     created_at: str | None = None
 
 class PersonCreate(BaseModel):
     name: str
     role: str
+    email: str | None = None
+
+
+class PersonUpdate(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    email: str | None = None
 
 
 # --- Scripts ---

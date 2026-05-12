@@ -264,7 +264,8 @@ MIGRATIONS = [
     # Task email-owner flag
     "ALTER TABLE tasks ADD COLUMN email_owner INTEGER DEFAULT 0",
     # People table
-    "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL, email TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+    "ALTER TABLE people ADD COLUMN email TEXT",
     # Scheduled tasks (Windows Task Scheduler)
     """CREATE TABLE IF NOT EXISTS scheduled_tasks (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,

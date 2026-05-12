@@ -1,5 +1,5 @@
 /* ================================================================
-   MX Analytics - Design System
+   Data Governance - Design System
    Outfit typeface, warm-tinted neutrals, teal accent
    ================================================================ */
 
@@ -4473,6 +4473,118 @@ tr.row-archived td:last-child {
 .register-modal button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+/* Email tool */
+.email-layout {
+    display: grid;
+    gap: 1rem;
+}
+.email-section {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    padding: 1rem;
+}
+.email-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+.email-section-head h2 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+.email-section-head span,
+.email-address,
+.email-more {
+    color: var(--text-dim);
+    font-size: 0.76rem;
+}
+.email-bulk-actions,
+.email-summary-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+.email-map-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.email-map-table th,
+.email-map-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 0.45rem 0.5rem;
+    text-align: left;
+}
+.email-map-table th {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.email-map-input {
+    width: min(100%, 320px);
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.34rem 0.5rem;
+    font: inherit;
+    font-size: 0.8rem;
+}
+.email-summary-list {
+    display: grid;
+    gap: 0.75rem;
+}
+.email-summary-panel {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.8rem;
+    background: var(--bg);
+}
+.email-summary-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+.email-summary-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-weight: 600;
+}
+.email-summary-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.55rem 0;
+}
+.email-summary-meta span {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    background: var(--surface);
+    font-size: 0.7rem;
+    padding: 0.15rem 0.45rem;
+}
+.email-task-preview {
+    margin: 0.4rem 0 0.6rem;
+    padding-left: 1.1rem;
+    color: var(--text);
+    font-size: 0.8rem;
+}
+.email-task-preview li {
+    margin: 0.25rem 0;
+}
+.email-task-preview span {
+    color: var(--text-dim);
+    margin-left: 0.35rem;
 }
 
 /* ── Documentation ── */
