@@ -8,12 +8,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
-_default_reports = os.environ.get("DG_DEFAULT_REPORTS_PATH", "")
+_report_root_env = (
+    os.environ.get("bio_path")
+    or os.environ.get("BIO_PATH")
+    or os.environ.get("DG_TMDL_ROOT")
+    or os.environ.get("DG_REPORTS_PATH")
+    or os.environ.get("DG_DEFAULT_REPORTS_PATH")
+    or "reports"
+)
 
-REPORTS_PATH = os.environ.get("DG_REPORTS_PATH", _default_reports)
+REPORTS_PATH = _report_root_env
 
-# DG_TMDL_ROOT is the documented env var; prefer it over REPORTS_PATH
-_tmdl_root_raw = os.environ.get("DG_TMDL_ROOT", REPORTS_PATH)
+# Prefer bio_path for BI report originals, while keeping the older documented
+# variables as fallbacks for existing installs.
+_tmdl_root_raw = _report_root_env
 # Resolve relative paths against BASE_DIR (needed for Vercel/serverless)
 if not os.path.isabs(_tmdl_root_raw):
     _tmdl_root_raw = str(BASE_DIR / _tmdl_root_raw)
@@ -30,9 +38,7 @@ _env_scripts = os.environ.get("DG_SCRIPTS_PATH", "")
 if _env_scripts:
     SCRIPTS_PATHS = [p.strip() for p in _env_scripts.split(";") if p.strip()]
 else:
-    # Use defaults, filtering to those that actually exist
-    _existing = [p for p in _default_script_paths if os.path.isdir(p)]
-    SCRIPTS_PATHS = _existing if _existing else []
+    SCRIPTS_PATHS = _default_script_paths
 # Keep single-path compat
 SCRIPTS_PATH = SCRIPTS_PATHS[0] if SCRIPTS_PATHS else ""
 

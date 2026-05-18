@@ -185,6 +185,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS email_schedules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_key    TEXT UNIQUE NOT NULL,
+    enabled         INTEGER DEFAULT 0,
+    recurrence      TEXT DEFAULT 'weekly',
+    weekdays        TEXT DEFAULT 'monday',
+    month_day       INTEGER,
+    send_time       TEXT DEFAULT '09:00',
+    recipients      TEXT,
+    subject         TEXT,
+    last_sent_at    DATETIME,
+    next_run_at     DATETIME,
+    last_error      TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
@@ -234,6 +251,8 @@ CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
+CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_report_pages_report_id ON report_pages(report_id);
 CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id);
 CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);
@@ -355,6 +374,25 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_task_links_task_id ON task_links(task_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_links_entity ON task_links(entity_type, entity_id)",
+    # Email summary schedules
+    """CREATE TABLE IF NOT EXISTS email_schedules (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_key    TEXT UNIQUE NOT NULL,
+        enabled         INTEGER DEFAULT 0,
+        recurrence      TEXT DEFAULT 'weekly',
+        weekdays        TEXT DEFAULT 'monday',
+        month_day       INTEGER,
+        send_time       TEXT DEFAULT '09:00',
+        recipients      TEXT,
+        subject         TEXT,
+        last_sent_at    DATETIME,
+        next_run_at     DATETIME,
+        last_error      TEXT,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key)",
+    "CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at)",
     # Source-to-source dependencies (MV -> upstream tables)
     """CREATE TABLE IF NOT EXISTS source_dependencies (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,

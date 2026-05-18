@@ -6969,6 +6969,120 @@ function _renderLineageDiagram(data) {
     setTimeout(() => { _drawLinEdges(); _bindLinInteractions(); }, 60);
 }
 
+async function _showLineageSourceDetail(sourceId) {
+    const id = parseInt(sourceId, 10);
+    const container = document.getElementById("lineage-container");
+    if (!container || isNaN(id)) return;
+
+    let panel = document.getElementById("lineage-source-detail");
+    if (!panel) {
+        panel = document.createElement("div");
+        panel.id = "lineage-source-detail";
+        panel.className = "source-detail-panel lineage-source-detail-panel";
+        container.appendChild(panel);
+    }
+    panel.innerHTML = '<div class="lineage-source-detail-loading">Loading source details...</div>';
+
+    try {
+        const source = await api(`/api/sources/${id}`);
+        const parsed = parseSourceName(source);
+        const hasCustomRule = source.custom_fresh_days != null && source.custom_fresh_days > 0;
+        const freshVal = hasCustomRule ? source.custom_fresh_days : "";
+        const location = source.connection_info || parsed.fullLocation || source.name;
+        const lastRefreshed = source.last_updated ? esc(source.last_updated) : "-";
+
+        panel.innerHTML = `
+            <div class="source-detail-header">
+                <h2>${esc(parsed.shortName)}</h2>
+                <button class="btn-outline" id="btn-close-lineage-source-detail">&times; Close</button>
+            </div>
+            <div class="detail-grid lineage-source-detail-grid">
+                <div class="detail-item"><div class="detail-label">Type</div>${typeBadge(source.type)}</div>
+                <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
+                <div class="detail-item"><div class="detail-label">Last Refreshed</div><span class="lineage-exact-timestamp">${lastRefreshed}</span></div>
+                <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + esc(source.refresh_schedule) : "-"}</span></div>
+                <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
+                <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${esc(source.upstream_name) || "-"}</span></div>
+                <div class="detail-item"><div class="detail-label">Upstream Refresh</div><span style="color:var(--text)">${esc(source.upstream_refresh_day) || "-"}</span></div>
+                <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(location)} ${_viewPathBtn(location)}</span></div>
+            </div>
+            <h2>Freshness Rule</h2>
+            <div class="freshness-rule-form">
+                <label class="freshness-label">Healthy up to
+                    <input type="number" id="lineage-fresh-days-input" value="${freshVal}" placeholder="blank = no rule" min="1" max="9999" class="input-sm">
+                    days (degraded after)
+                </label>
+                <button class="btn-sm btn-blue" id="btn-lineage-save-freshness">Save</button>
+                ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-lineage-reset-freshness">Clear rule</button>' : ''}
+                ${hasCustomRule
+                    ? '<span class="badge badge-blue" style="font-size:0.72rem">rule active</span>'
+                    : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
+            </div>
+        `;
+
+        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+        const closeBtn = panel.querySelector("#btn-close-lineage-source-detail");
+        if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
+
+        panel.querySelectorAll(".view-path-btn").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const p = btn.dataset.path;
+                try {
+                    await apiPostJson("/api/scanner/open-path", { path: p });
+                } catch (err) {
+                    toast("Could not open path (only works on server machine)");
+                }
+            });
+        });
+
+        const saveFreshBtn = panel.querySelector("#btn-lineage-save-freshness");
+        if (saveFreshBtn) {
+            saveFreshBtn.addEventListener("click", async () => {
+                const raw = panel.querySelector("#lineage-fresh-days-input").value.trim();
+                if (raw === "") {
+                    try {
+                        await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                        toast("Rule cleared - source not monitored");
+                        _showLineageSourceDetail(source.id);
+                    } catch (err) {
+                        toast("Failed: " + err.message);
+                    }
+                    return;
+                }
+                const fd = parseInt(raw);
+                if (isNaN(fd) || fd < 1) {
+                    toast("Enter at least 1 day, or leave blank to clear the rule");
+                    return;
+                }
+                try {
+                    await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd });
+                    toast("Freshness rule saved - re-probe to apply");
+                    _showLineageSourceDetail(source.id);
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+            });
+        }
+
+        const resetFreshBtn = panel.querySelector("#btn-lineage-reset-freshness");
+        if (resetFreshBtn) {
+            resetFreshBtn.addEventListener("click", async () => {
+                try {
+                    await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                    toast("Freshness rule cleared - source not monitored");
+                    _showLineageSourceDetail(source.id);
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+            });
+        }
+    } catch (err) {
+        panel.innerHTML = `<div class="lineage-source-detail-loading" style="color:var(--red)">Failed to load source: ${esc(err.message)}</div>`;
+    }
+}
+
 function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes) {
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
     function add(a, b, svg) {
@@ -7055,6 +7169,7 @@ function _bindLinInteractions() {
             if (node.classList.contains("expanded") && e.target.closest(".lin-card-body") && !e.target.closest(".lin-subrow")) return;
             e.stopPropagation();
             const id = node.dataset.linId;
+            if (id.startsWith("source-")) _showLineageSourceDetail(id.replace("source-", ""));
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
             const connected = _traceLinLineage(id);
             // Hide SVG immediately so stale edges don't show during transition
@@ -7171,14 +7286,165 @@ function _taskCard(task) {
     </div>`;
 }
 
+const EMAIL_WEEKDAYS = [
+    ["monday", "Mon"],
+    ["tuesday", "Tue"],
+    ["wednesday", "Wed"],
+    ["thursday", "Thu"],
+    ["friday", "Fri"],
+    ["saturday", "Sat"],
+    ["sunday", "Sun"],
+];
+
+function _emailSchedulerPane(schedule) {
+    const s = schedule || {};
+    const recurrence = s.recurrence || "weekly";
+    const selectedDays = new Set(s.weekdays || ["monday"]);
+    const weekdayHtml = EMAIL_WEEKDAYS.map(([key, label]) => `
+        <label class="email-weekday-chip">
+            <input type="checkbox" class="email-weekday-input" value="${key}" ${selectedDays.has(key) ? "checked" : ""}>
+            <span>${label}</span>
+        </label>
+    `).join("");
+    const nextRun = s.next_run_at ? formatDate(s.next_run_at) : "-";
+    const lastSent = s.last_sent_at ? formatDate(s.last_sent_at) : "-";
+
+    return `
+        <section class="email-scheduler-pane" id="task-email-scheduler">
+            <div class="email-scheduler-header">
+                <div>
+                    <h2>Email Scheduler</h2>
+                    <p>Send the active task board summary on a recurring schedule.</p>
+                </div>
+                <label class="email-scheduler-toggle">
+                    <input type="checkbox" id="email-schedule-enabled" ${s.enabled ? "checked" : ""}>
+                    <span>Enabled</span>
+                </label>
+            </div>
+            <div class="email-scheduler-grid">
+                <label class="email-scheduler-field">Recurrence
+                    <select id="email-schedule-recurrence">
+                        <option value="daily" ${recurrence === "daily" ? "selected" : ""}>Daily</option>
+                        <option value="weekly" ${recurrence === "weekly" ? "selected" : ""}>Weekly</option>
+                        <option value="monthly" ${recurrence === "monthly" ? "selected" : ""}>Monthly</option>
+                    </select>
+                </label>
+                <label class="email-scheduler-field">Send Time
+                    <input type="time" id="email-schedule-time" value="${esc(s.send_time || "09:00")}">
+                </label>
+                <label class="email-scheduler-field email-month-day-field">Month Day
+                    <input type="number" id="email-schedule-month-day" min="1" max="31" value="${s.month_day || 1}">
+                </label>
+                <label class="email-scheduler-field email-subject-field">Subject
+                    <input type="text" id="email-schedule-subject" value="${esc(s.subject || "Task Board Summary")}">
+                </label>
+                <label class="email-scheduler-field email-recipients-field">Recipients
+                    <textarea id="email-schedule-recipients" rows="2" placeholder="name@example.com, team@example.com">${esc(s.recipients || "")}</textarea>
+                </label>
+                <div class="email-scheduler-field email-weekdays-field">
+                    <span>Weekdays</span>
+                    <div class="email-weekday-row">${weekdayHtml}</div>
+                </div>
+            </div>
+            <div class="email-scheduler-footer">
+                <div class="email-scheduler-meta">
+                    <span>Next: <strong id="email-schedule-next">${esc(nextRun)}</strong></span>
+                    <span>Last sent: <strong>${esc(lastSent)}</strong></span>
+                    ${s.last_error ? `<span class="email-scheduler-error" title="${esc(s.last_error)}">Last error: ${esc(s.last_error)}</span>` : ""}
+                </div>
+                <div class="email-scheduler-actions">
+                    <button class="btn-outline" id="btn-send-task-email-now" style="font-size:0.78rem">Send Now</button>
+                    <button class="btn-new-task" id="btn-save-task-email-schedule">Save Schedule</button>
+                </div>
+            </div>
+        </section>
+    `;
+}
+
+function _syncEmailSchedulerFields() {
+    const recurrence = document.getElementById("email-schedule-recurrence")?.value || "weekly";
+    const weekdayField = document.querySelector(".email-weekdays-field");
+    const monthField = document.querySelector(".email-month-day-field");
+    if (weekdayField) weekdayField.style.display = recurrence === "weekly" ? "" : "none";
+    if (monthField) monthField.style.display = recurrence === "monthly" ? "" : "none";
+}
+
+function _collectEmailSchedule() {
+    const recurrence = document.getElementById("email-schedule-recurrence")?.value || "weekly";
+    const weekdays = [...document.querySelectorAll(".email-weekday-input:checked")].map(input => input.value);
+    return {
+        enabled: document.getElementById("email-schedule-enabled")?.checked || false,
+        recurrence,
+        weekdays,
+        month_day: recurrence === "monthly" ? parseInt(document.getElementById("email-schedule-month-day")?.value || "1", 10) : null,
+        send_time: document.getElementById("email-schedule-time")?.value || "09:00",
+        recipients: document.getElementById("email-schedule-recipients")?.value.trim() || null,
+        subject: document.getElementById("email-schedule-subject")?.value.trim() || "Task Board Summary",
+    };
+}
+
+function bindTaskEmailScheduler() {
+    const pane = document.getElementById("task-email-scheduler");
+    if (!pane) return;
+
+    _syncEmailSchedulerFields();
+    const recurrence = document.getElementById("email-schedule-recurrence");
+    if (recurrence) recurrence.addEventListener("change", _syncEmailSchedulerFields);
+
+    const saveBtn = document.getElementById("btn-save-task-email-schedule");
+    if (saveBtn) {
+        saveBtn.addEventListener("click", async () => {
+            const body = _collectEmailSchedule();
+            if (body.enabled && !body.recipients) {
+                toast("Add at least one recipient before enabling the schedule");
+                return;
+            }
+            if (body.recurrence === "weekly" && body.weekdays.length === 0) {
+                toast("Choose at least one weekday");
+                return;
+            }
+            saveBtn.disabled = true;
+            try {
+                const updated = await apiPut("/api/email-schedules/task-summary", body);
+                window._taskEmailSchedule = updated;
+                toast("Email schedule saved");
+                await navigate("tasks");
+            } catch (err) {
+                saveBtn.disabled = false;
+                toast("Failed to save email schedule: " + err.message);
+            }
+        });
+    }
+
+    const sendNowBtn = document.getElementById("btn-send-task-email-now");
+    if (sendNowBtn) {
+        sendNowBtn.addEventListener("click", async () => {
+            sendNowBtn.disabled = true;
+            try {
+                const body = _collectEmailSchedule();
+                await apiPut("/api/email-schedules/task-summary", body);
+                const updated = await apiPost("/api/email-schedules/task-summary/send-now");
+                window._taskEmailSchedule = updated;
+                toast("Task summary email sent");
+                await navigate("tasks");
+            } catch (err) {
+                sendNowBtn.disabled = false;
+                toast("Send failed: " + err.message);
+            }
+        });
+    }
+}
+
 async function renderTasks() {
-    const [tasks, owners] = await Promise.all([
+    const [tasks, owners, emailSchedule] = await Promise.all([
         api("/api/tasks"),
         api("/api/tasks/owners"),
+        api("/api/email-schedules/task-summary"),
     ]);
 
     window._tasksData = tasks;
     window._tasksOwners = owners;
+    window._taskEmailSchedule = emailSchedule;
 
     const activeTasks = tasks.filter(t => t.status !== "done");
     const archivedTasks = tasks.filter(t => t.status === "done");
@@ -7199,6 +7465,7 @@ async function renderTasks() {
                 ${ownerOptions}
             </select>
         </div>
+        ${_emailSchedulerPane(emailSchedule)}
         <div id="kanban-board-container">
             ${boardHtml}
         </div>
@@ -7590,6 +7857,8 @@ async function _refreshTaskBoard() {
 }
 
 function bindTasksPage() {
+    bindTaskEmailScheduler();
+
     // New task button
     const newBtn = document.getElementById("btn-new-task");
     if (newBtn) newBtn.addEventListener("click", () => _openTaskModal(null));
@@ -7745,7 +8014,7 @@ function bindEventLogPage() {
 const FAQ_ITEMS = [
     {
         q: "What does this platform do?",
-        a: "Data Governance automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives the BI team a single place to manage data quality and accountability."
+        a: "The data governance panel automatically discovers Power BI reports and their data sources, monitors data freshness, flags issues, and gives the BI team a single place to manage data quality and accountability."
     },
     {
         q: "Where does the data come from?",
@@ -8433,7 +8702,7 @@ function _showRegistrationModal(ip) {
     overlay.className = "register-overlay";
     overlay.innerHTML = `
         <div class="register-modal">
-            <h2>Welcome to Data Governance</h2>
+            <h2>Welcome to Data Governance Panel</h2>
             <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
             <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
             <button id="register-submit">Continue</button>

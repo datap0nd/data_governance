@@ -1,5 +1,5 @@
 /* ================================================================
-   Data Governance - Design System
+   Data Governance Panel - Design System
    Outfit typeface, warm-tinted neutrals, teal accent
    ================================================================ */
 
@@ -3476,6 +3476,26 @@ button.btn-danger-outline:hover {
     font-size: 0.68rem; color: var(--text-dim);
 }
 
+.lineage-source-detail-panel {
+    margin-top: 0.9rem;
+}
+
+.lineage-source-detail-grid {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.lineage-exact-timestamp {
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.76rem;
+}
+
+.lineage-source-detail-loading {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    padding: 0.35rem 0;
+}
+
 /* ================================================================
    Pipeline Overview (force-directed graph)
    ================================================================ */
@@ -3989,6 +4009,187 @@ button.btn-danger-outline:hover {
     font-size: 0.72rem;
     padding: 4px 10px;
     white-space: nowrap;
+}
+
+/* Task email scheduler */
+.email-scheduler-pane {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.email-scheduler-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.85rem;
+}
+
+.email-scheduler-header h2 {
+    font-size: 0.9rem;
+    margin-bottom: 0.12rem;
+}
+
+.email-scheduler-header p {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.email-scheduler-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.email-scheduler-toggle input,
+.email-weekday-chip input {
+    accent-color: var(--accent);
+}
+
+.email-scheduler-grid {
+    display: grid;
+    grid-template-columns: 150px 130px 110px minmax(180px, 1fr);
+    gap: 0.65rem;
+    align-items: end;
+}
+
+.email-scheduler-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+
+.email-scheduler-field input,
+.email-scheduler-field select,
+.email-scheduler-field textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.38rem 0.5rem;
+    font-size: 0.78rem;
+    font-family: inherit;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+}
+
+.email-scheduler-field textarea {
+    min-height: 36px;
+    resize: vertical;
+}
+
+.email-scheduler-field input:focus,
+.email-scheduler-field select:focus,
+.email-scheduler-field textarea:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.email-subject-field,
+.email-recipients-field {
+    grid-column: span 2;
+}
+
+.email-weekdays-field {
+    grid-column: 1 / -1;
+}
+
+.email-weekday-row {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.email-weekday-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.22rem 0.42rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.email-scheduler-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.email-scheduler-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+}
+
+.email-scheduler-meta strong {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.email-scheduler-error {
+    color: var(--red);
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.email-scheduler-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+    .email-scheduler-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .email-subject-field,
+    .email-recipients-field {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 640px) {
+    .email-scheduler-header,
+    .email-scheduler-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .email-scheduler-grid {
+        grid-template-columns: 1fr;
+    }
+    .email-scheduler-actions {
+        justify-content: flex-start;
+    }
 }
 
 /* Linked tasks in report detail */

@@ -288,6 +288,33 @@ class TaskUpdate(BaseModel):
     linked_entities: list[TaskLinkRequest] | None = None
 
 
+class EmailScheduleOut(BaseModel):
+    id: int
+    schedule_key: str
+    enabled: bool = False
+    recurrence: str = "weekly"
+    weekdays: list[str] = []
+    month_day: int | None = None
+    send_time: str = "09:00"
+    recipients: str | None = None
+    subject: str | None = None
+    last_sent_at: str | None = None
+    next_run_at: str | None = None
+    last_error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class EmailScheduleUpdate(BaseModel):
+    enabled: bool = False
+    recurrence: str = "weekly"
+    weekdays: list[str] | None = None
+    month_day: int | None = None
+    send_time: str = "09:00"
+    recipients: str | None = None
+    subject: str | None = None
+
+
 class TaskMove(BaseModel):
     status: str
     position: int = 0

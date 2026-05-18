@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
 from app.database import init_db
 from app.local_access import is_server_machine
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -237,6 +237,18 @@ def _scheduled_pbi_sync():
         log.exception("Scheduled PBI sync failed: %s", e)
 
 
+def _scheduled_email_dispatch():
+    """Check configured email schedules and send anything due."""
+    from app.routers.email_schedules import dispatch_due_email_schedules
+    log = logging.getLogger("scheduler")
+    try:
+        sent = dispatch_due_email_schedules()
+        if sent:
+            log.info("Email schedules sent: %s", sent)
+    except Exception as e:
+        log.exception("Email schedule dispatch failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
@@ -246,9 +258,10 @@ async def lifespan(app):
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup")
     _scheduler.add_job(_scheduled_scan, "cron", hour=7, minute=0, id="daily_scan")
     _scheduler.add_job(_scheduled_pbi_sync, "cron", hour=PBI_SYNC_HOUR, minute=PBI_SYNC_MINUTE, id="daily_pbi_sync")
+    _scheduler.add_job(_scheduled_email_dispatch, "interval", minutes=1, id="email_schedule_dispatch")
     _scheduler.start()
     logging.getLogger(__name__).info(
-        "Scheduler started: backup at 06:00, scan at 07:00, PBI sync at %02d:%02d",
+        "Scheduler started: backup at 06:00, scan at 07:00, PBI sync at %02d:%02d, email dispatch every minute",
         PBI_SYNC_HOUR,
         PBI_SYNC_MINUTE,
     )
@@ -258,7 +271,7 @@ async def lifespan(app):
     _scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Data Governance", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Data Governance Panel", version="0.1.0", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(UserIdentityMiddleware)
 
@@ -286,6 +299,7 @@ app.include_router(overview.router)
 app.include_router(custom_reports.router)
 app.include_router(documentation.router)
 app.include_router(email.router)
+app.include_router(email_schedules.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"
