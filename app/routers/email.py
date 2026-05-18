@@ -46,6 +46,21 @@ ACTION_TYPE_LABELS = {
 
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 PATH_SOURCE_TYPES = {"csv", "excel", "file", "folder", "sharepoint", "web"}
+SQL_SOURCE_TYPES = {"postgres", "postgresql", "sql", "sql server", "mssql", "mysql", "oracle"}
+SOURCE_ALERT_TYPES = {"stale_source", "outdated_source", "error_source"}
+DEGRADED_SOURCE_RECOMMENDATION = (
+    "Find out why these sources haven't updated. Check linked scripts and scheduled tasks. "
+    "Once they're updated, refresh upstream reports."
+)
+WEEKDAY_ORDER = {
+    "Monday": 0,
+    "Tuesday": 1,
+    "Wednesday": 2,
+    "Thursday": 3,
+    "Friday": 4,
+    "Saturday": 5,
+    "Sunday": 6,
+}
 
 
 class PersonEmailUpdate(BaseModel):
@@ -126,16 +141,18 @@ def _source_link(source: dict | None) -> dict | None:
     raw_path = source.get("connection_info") or source.get("source_query") or source.get("name")
     if not _looks_like_source_path(raw_path, source.get("type")):
         return None
-    folder = _folder_from_path(raw_path, source.get("type"))
-    href = _file_href(folder)
-    if not folder:
+    source_kind = (source.get("type") or "").lower()
+    target = raw_path if source_kind in {"csv", "excel", "file", "sharepoint", "web"} or _is_url(raw_path) else _folder_from_path(raw_path, source.get("type"))
+    href = _file_href(target)
+    if not target:
         return None
+    link_label = "Source URL" if _is_url(target) else "Source File" if target == raw_path and source_kind != "folder" else "Source Folder"
     return {
         "source_id": source["id"],
         "source_name": source["name"],
-        "link_label": "Source URL" if _is_url(folder) else "Source Folder",
+        "link_label": link_label,
         "path": raw_path,
-        "folder_path": folder,
+        "folder_path": target,
         "href": href,
     }
 
@@ -156,6 +173,164 @@ def _html_link(label: str, href: str | None) -> str:
     if not href:
         return label_html
     return f'<a href="{html.escape(href, quote=True)}">{label_html}</a>'
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = value.replace("Z", "+00:00") if isinstance(value, str) else value
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _duration_text_from_hours(hours: float | int | None) -> str:
+    if hours is None:
+        return "-"
+    hours = max(0, float(hours))
+    if hours < 48:
+        whole_hours = max(1, int(round(hours)))
+        return f"{whole_hours}h"
+    days = max(1, int(round(hours / 24)))
+    return f"{days}d"
+
+
+def _age_text(value: str | None) -> str:
+    dt = _parse_dt(value)
+    if not dt:
+        return "-"
+    delta_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    return _duration_text_from_hours(delta_hours)
+
+
+def _source_raw_path(source: dict | None) -> str | None:
+    if not source:
+        return None
+    return source.get("connection_info") or source.get("source_query") or source.get("name")
+
+
+def _is_sql_source(source: dict | None) -> bool:
+    return (source or {}).get("type", "").lower() in SQL_SOURCE_TYPES
+
+
+def _path_leaf(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().rstrip("\\/").replace("\\", "/")
+    if not normalized:
+        return None
+    return normalized.rsplit("/", 1)[-1] or normalized
+
+
+def _source_display_name(source: dict | None) -> str:
+    if not source:
+        return "Unknown source"
+    if _is_sql_source(source):
+        return source.get("name") or "Unknown source"
+    raw_path = _source_raw_path(source)
+    if _looks_like_source_path(raw_path, source.get("type")):
+        return _path_leaf(raw_path) or source.get("name") or "Unknown source"
+    return source.get("name") or _path_leaf(raw_path) or "Unknown source"
+
+
+def _source_href(source: dict | None) -> str | None:
+    if not source or _is_sql_source(source):
+        return None
+    raw_path = _source_raw_path(source)
+    if not _looks_like_source_path(raw_path, source.get("type")):
+        return None
+    return _file_href(raw_path)
+
+
+def _source_cell_html(source: dict | None, fallback_name: str | None = None) -> str:
+    label = _source_display_name(source) if source else (fallback_name or "Unknown source")
+    return _html_link(label, _source_href(source))
+
+
+def _source_text(source: dict | None, fallback_name: str | None = None) -> str:
+    label = _source_display_name(source) if source else (fallback_name or "Unknown source")
+    href = _source_href(source)
+    return f"{label} ({href})" if href else label
+
+
+def _fixed_schedule_max_gap_days(schedule_days: str | None) -> int | None:
+    days = []
+    for raw in (schedule_days or "").split(","):
+        day = raw.strip().capitalize()
+        if day in WEEKDAY_ORDER and WEEKDAY_ORDER[day] not in days:
+            days.append(WEEKDAY_ORDER[day])
+    if not days:
+        return None
+    days.sort()
+    if len(days) == 1:
+        return 7
+    gaps = []
+    for idx, day in enumerate(days):
+        nxt = days[(idx + 1) % len(days)]
+        gaps.append((nxt - day) % 7 or 7)
+    return max(gaps)
+
+
+def _source_max_age_days(source: dict | None) -> str:
+    if not source:
+        return "-"
+    custom = source.get("custom_fresh_days")
+    if custom:
+        return str(custom)
+    rule_type = (source.get("freshness_rule_type") or "").lower()
+    if rule_type == "daily":
+        return "1"
+    if rule_type == "fixed":
+        gap = _fixed_schedule_max_gap_days(source.get("freshness_schedule_days"))
+        return str(gap) if gap else "-"
+    return "-"
+
+
+def _report_href(report: dict | None) -> str | None:
+    if not report:
+        return None
+    return report.get("powerbi_url") or _file_href(report.get("tmdl_path"))
+
+
+def _report_cell_html(report: dict | None, fallback_name: str | None = None) -> str:
+    if not report:
+        return html.escape(fallback_name or "Unknown report")
+    return _html_link(report.get("report_name") or report.get("name") or fallback_name or "Unknown report", _report_href(report))
+
+
+def _report_text(report: dict | None, fallback_name: str | None = None) -> str:
+    if not report:
+        return fallback_name or "Unknown report"
+    label = report.get("report_name") or report.get("name") or fallback_name or "Unknown report"
+    href = _report_href(report)
+    return f"{label} ({href})" if href else label
+
+
+def _report_links_html(reports: list[dict]) -> str:
+    if not reports:
+        return "-"
+    return "<br>".join(_report_cell_html(r) for r in reports)
+
+
+def _report_links_text(reports: list[dict]) -> str:
+    if not reports:
+        return "-"
+    return "; ".join(_report_text(r) for r in reports)
+
+
+def _td(value: str, extra_style: str = "") -> str:
+    style = "padding:6px 8px;border:1px solid #d7dce2;vertical-align:top"
+    if extra_style:
+        style += ";" + extra_style
+    return f'<td style="{style}">{value}</td>'
+
+
+def _th(value: str) -> str:
+    return f'<th style="padding:6px 8px;border:1px solid #d7dce2">{html.escape(value)}</th>'
 
 
 def _priority_sort_key(row) -> tuple[int, str, int]:
@@ -272,67 +447,172 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
     owner_name = owner["name"]
     subject = f"Active alert summary - {owner_name} - {today}"
 
+    degraded_sources = sorted(
+        [a for a in alerts if a.get("type") in SOURCE_ALERT_TYPES],
+        key=lambda a: (
+            -len(a.get("report_links") or []),
+            -(a.get("asset_days") or 0),
+            a.get("asset_name") or "",
+        ),
+    )
+    stale_vs_source = sorted(
+        [a for a in alerts if a.get("type") == "schedule_mismatch"],
+        key=lambda a: -max([d.get("delta_hours") or 0 for d in (a.get("detail_items") or [])] or [0]),
+    )
+    other_alerts = [
+        a for a in alerts
+        if a.get("type") not in SOURCE_ALERT_TYPES and a.get("type") != "schedule_mismatch"
+    ]
+
     lines = [
         f"Hi {owner_name},",
         "",
         f"Here are your active alerts as of {today}.",
         "",
     ]
-    for alert in alerts:
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-        days = alert.get("asset_days") or 0
-        lines.append(f"- [{label}] {alert['asset_name']} ({days}d)")
-        if alert.get("recommendation"):
-            lines.append(f"  Fix: {alert['recommendation']}")
-        report_links = [r for r in alert.get("report_links", []) if r.get("powerbi_url")]
-        if report_links:
-            lines.append("  Power BI: " + ", ".join(f"{r['report_name']} ({r['powerbi_url']})" for r in report_links))
-        source_links = [s for s in alert.get("source_links", []) if s.get("folder_path")]
-        if source_links:
-            lines.append("  Source folders:")
-            for src in source_links:
-                lines.append(f"    - {src['source_name']}: {src['folder_path']}")
-        if alert.get("notes"):
-            lines.append(f"  Notes: {alert['notes']}")
+
+    if degraded_sources:
+        lines.append(f"Degraded Sources ({len(degraded_sources)})")
+        lines.append(DEGRADED_SOURCE_RECOMMENDATION)
+        for alert in degraded_sources:
+            source = alert.get("source_detail")
+            max_age = _source_max_age_days(source)
+            lines.append(
+                f"- {_source_text(source, alert.get('asset_name'))} | "
+                f"max age days: {max_age} | "
+                f"current age days: {alert.get('asset_days') or 0} | "
+                f"reports affected: {_report_links_text(alert.get('report_links') or [])}"
+            )
+        lines.append("")
+
+    if stale_vs_source:
+        lines.append(f"Stale vs Source ({len(stale_vs_source)})")
+        for alert in stale_vs_source:
+            report = alert.get("report_detail")
+            details = alert.get("detail_items") or []
+            if not details:
+                lines.append(f"- {_report_text(report, alert.get('asset_name'))}: {alert.get('notes') or 'Source data is newer than report data'}")
+                continue
+            for detail in details:
+                source = detail.get("source_detail")
+                delta = _duration_text_from_hours(detail.get("delta_hours"))
+                lines.append(
+                    f"- report: {_report_text(report, alert.get('asset_name'))} | "
+                    f"report age: {_age_text(detail.get('report_last_refresh_at') or (report or {}).get('pbi_last_refresh_at'))} | "
+                    f"source: {_source_text(source, detail.get('name'))} | "
+                    f"source age: {_age_text(detail.get('source_last_data_at'))} | "
+                    f"This source has fresher data than the report, by {delta}"
+                )
+        lines.append("")
+
+    if other_alerts:
+        lines.append(f"Other Alerts ({len(other_alerts)})")
+        for alert in other_alerts:
+            label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+            lines.append(f"- [{label}] {alert.get('asset_name') or 'Unknown asset'} ({alert.get('asset_days') or 0}d)")
+            if alert.get("recommendation"):
+                lines.append(f"  Fix: {alert['recommendation']}")
+        lines.append("")
+
     lines.extend(["", "Thanks,", "Data Governance"])
     body_text = "\n".join(lines)
 
     html_parts = [
-        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#202124;max-width:860px\">",
+        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#202124;max-width:980px\">",
         f"<p>Hi {html.escape(owner_name)},</p>",
         f"<p>Here are your active alerts as of {html.escape(today)}.</p>",
-        "<table style=\"width:100%;border-collapse:collapse;font-size:13px\">",
-        "<tr style=\"background:#f3f4f6;text-align:left\">"
-        "<th style=\"padding:6px 8px;border:1px solid #d7dce2\">Issue</th>"
-        "<th style=\"padding:6px 8px;border:1px solid #d7dce2\">Asset</th>"
-        "<th style=\"padding:6px 8px;border:1px solid #d7dce2\">Days</th>"
-        "<th style=\"padding:6px 8px;border:1px solid #d7dce2\">Fix Links</th>"
-        "<th style=\"padding:6px 8px;border:1px solid #d7dce2\">Recommendation</th>"
-        "</tr>",
     ]
-    for alert in alerts:
-        report_links = [
-            _html_link(f"Power BI: {r['report_name']}", r.get("powerbi_url"))
-            for r in alert.get("report_links", [])
-            if r.get("powerbi_url")
-        ]
-        source_links = [
-            _html_link(f"{s.get('link_label') or 'Source Folder'}: {s['source_name']}", s.get("href"))
-            for s in alert.get("source_links", [])
-            if s.get("folder_path")
-        ]
-        fix_links = "<br>".join(report_links + source_links) or "-"
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+
+    if degraded_sources:
+        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Degraded Sources ({len(degraded_sources)})</h3>")
+        html_parts.append(f"<p style=\"margin:0 0 8px;color:#4b5563\">{html.escape(DEGRADED_SOURCE_RECOMMENDATION)}</p>")
+        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
         html_parts.append(
-            "<tr>"
-            f"<td style=\"padding:6px 8px;border:1px solid #d7dce2\">{html.escape(label)}</td>"
-            f"<td style=\"padding:6px 8px;border:1px solid #d7dce2\"><strong>{html.escape(alert['asset_name'])}</strong></td>"
-            f"<td style=\"padding:6px 8px;border:1px solid #d7dce2\">{alert.get('asset_days') or 0}d</td>"
-            f"<td style=\"padding:6px 8px;border:1px solid #d7dce2\">{fix_links}</td>"
-            f"<td style=\"padding:6px 8px;border:1px solid #d7dce2;color:#4b5563\">{html.escape(alert.get('recommendation') or '-')}</td>"
-            "</tr>"
+            "<tr style=\"background:#f3f4f6;text-align:left\">"
+            + _th("Source")
+            + _th("Max Age Days")
+            + _th("Current Age Days")
+            + _th("Reports Affected")
+            + "</tr>"
         )
-    html_parts.append("</table><p>Thanks,<br>Data Governance</p></div>")
+        for alert in degraded_sources:
+            source = alert.get("source_detail")
+            html_parts.append(
+                "<tr>"
+                + _td(f"<strong>{_source_cell_html(source, alert.get('asset_name'))}</strong>")
+                + _td(html.escape(_source_max_age_days(source)))
+                + _td(str(alert.get("asset_days") or 0))
+                + _td(_report_links_html(alert.get("report_links") or []), "min-width:220px")
+                + "</tr>"
+            )
+        html_parts.append("</table>")
+
+    if stale_vs_source:
+        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Stale vs Source ({len(stale_vs_source)})</h3>")
+        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
+        html_parts.append(
+            "<tr style=\"background:#f3f4f6;text-align:left\">"
+            + _th("Report")
+            + _th("Report Age")
+            + _th("Sources")
+            + _th("Source Age")
+            + _th("Differential")
+            + "</tr>"
+        )
+        for alert in stale_vs_source:
+            report = alert.get("report_detail")
+            details = alert.get("detail_items") or []
+            if not details:
+                html_parts.append(
+                    "<tr>"
+                    + _td(f"<strong>{_report_cell_html(report, alert.get('asset_name'))}</strong>")
+                    + _td(_age_text((report or {}).get("pbi_last_refresh_at")))
+                    + _td("-")
+                    + _td("-")
+                    + _td(html.escape(alert.get("notes") or "Source data is newer than the report."))
+                    + "</tr>"
+                )
+                continue
+            for detail in details:
+                source = detail.get("source_detail")
+                delta = _duration_text_from_hours(detail.get("delta_hours"))
+                report_age = _age_text(detail.get("report_last_refresh_at") or (report or {}).get("pbi_last_refresh_at"))
+                source_age = _age_text(detail.get("source_last_data_at"))
+                html_parts.append(
+                    "<tr>"
+                    + _td(f"<strong>{_report_cell_html(report, alert.get('asset_name'))}</strong>")
+                    + _td(html.escape(report_age))
+                    + _td(_source_cell_html(source, detail.get("name")))
+                    + _td(html.escape(source_age))
+                    + _td(html.escape(f"This source has fresher data than the report, by {delta}"))
+                    + "</tr>"
+                )
+        html_parts.append("</table>")
+
+    if other_alerts:
+        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Other Alerts ({len(other_alerts)})</h3>")
+        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
+        html_parts.append(
+            "<tr style=\"background:#f3f4f6;text-align:left\">"
+            + _th("Issue")
+            + _th("Asset")
+            + _th("Days")
+            + _th("Recommendation")
+            + "</tr>"
+        )
+        for alert in other_alerts:
+            label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+            html_parts.append(
+                "<tr>"
+                + _td(html.escape(label))
+                + _td(f"<strong>{html.escape(alert.get('asset_name') or 'Unknown asset')}</strong>")
+                + _td(f"{alert.get('asset_days') or 0}d")
+                + _td(html.escape(alert.get("recommendation") or "-"), "color:#4b5563")
+                + "</tr>"
+            )
+        html_parts.append("</table>")
+
+    html_parts.append("<p>Thanks,<br>Data Governance</p></div>")
 
     return {
         "owner_name": owner_name,
@@ -394,11 +674,24 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
 
         reports = {
             r["id"]: dict(r)
-            for r in db.execute("SELECT id, name, powerbi_url, tmdl_path FROM reports").fetchall()
+            for r in db.execute(
+                "SELECT id, name, powerbi_url, tmdl_path, pbi_last_refresh_at FROM reports"
+            ).fetchall()
         }
         sources = {
             s["id"]: dict(s)
-            for s in db.execute("SELECT id, name, type, connection_info, source_query FROM sources").fetchall()
+            for s in db.execute("""
+                SELECT s.id, s.name, s.type, s.connection_info, s.source_query,
+                       s.custom_fresh_days, s.freshness_rule_type, s.freshness_schedule_days,
+                       sp.status AS latest_status,
+                       CAST(sp.last_data_at AS TEXT) AS last_data_at
+                FROM sources s
+                LEFT JOIN (
+                    SELECT source_id, status, last_data_at,
+                           ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                    FROM source_probes
+                ) sp ON sp.source_id = s.id AND sp.rn = 1
+            """).fetchall()
         }
         report_rows = db.execute(
             """SELECT rt.source_id, r.id, r.name, r.powerbi_url, r.tmdl_path
@@ -430,6 +723,7 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
 
         source_id = alert.get("source_id") or (alert.get("asset_id") if alert.get("asset_type") == "source" else None)
         if source_id and sources.get(source_id):
+            alert["source_detail"] = sources[source_id]
             link = _source_link(sources[source_id])
             if link:
                 source_links.append(link)
@@ -438,8 +732,13 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
                 if link:
                     report_links.append(link)
 
+        if report_id and reports.get(report_id):
+            alert["report_detail"] = reports[report_id]
+
         for detail in alert.get("detail_items") or []:
             detail_source = sources.get(detail.get("id"))
+            if detail_source:
+                detail["source_detail"] = detail_source
             link = _source_link(detail_source)
             if link:
                 link["delta_hours"] = detail.get("delta_hours")

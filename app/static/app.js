@@ -3790,10 +3790,11 @@ function _emailAlertLine(alert) {
 }
 
 async function renderEmail() {
-    const [people, alertData, taskData] = await Promise.all([
+    const [people, alertData, taskData, emailSchedule] = await Promise.all([
         api("/api/email/people"),
         api("/api/email/alert-summaries"),
         api("/api/email/task-summaries"),
+        api("/api/email-schedules/task-summary"),
     ]);
     const alertSummaries = alertData.summaries || [];
     const taskSummaries = taskData.summaries || [];
@@ -3887,6 +3888,8 @@ async function renderEmail() {
                 ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
             </section>
 
+            ${_emailSchedulerPane(emailSchedule)}
+
             <section class="email-section">
                 <div class="email-section-head">
                     <h2>Active Alert Summaries</h2>
@@ -3937,6 +3940,8 @@ async function _emailLaunchServer(kind, mode, owner) {
 }
 
 function bindEmailPage() {
+    bindTaskEmailScheduler();
+
     document.querySelectorAll(".email-save-person").forEach(btn => {
         btn.addEventListener("click", async () => {
             const personId = btn.dataset.personId;
@@ -6974,6 +6979,9 @@ async function _showLineageSourceDetail(sourceId) {
     const container = document.getElementById("lineage-container");
     if (!container || isNaN(id)) return;
 
+    const scriptPanel = document.getElementById("lineage-script-detail");
+    if (scriptPanel) scriptPanel.remove();
+
     let panel = document.getElementById("lineage-source-detail");
     if (!panel) {
         panel = document.createElement("div");
@@ -7083,6 +7091,89 @@ async function _showLineageSourceDetail(sourceId) {
     }
 }
 
+async function _showLineageScriptDetail(scriptId) {
+    const id = parseInt(scriptId, 10);
+    const container = document.getElementById("lineage-container");
+    if (!container || isNaN(id)) return;
+
+    const sourcePanel = document.getElementById("lineage-source-detail");
+    if (sourcePanel) sourcePanel.remove();
+
+    let panel = document.getElementById("lineage-script-detail");
+    if (!panel) {
+        panel = document.createElement("div");
+        panel.id = "lineage-script-detail";
+        panel.className = "source-detail-panel lineage-source-detail-panel";
+        container.appendChild(panel);
+    }
+    panel.innerHTML = '<div class="lineage-source-detail-loading">Loading script details...</div>';
+
+    try {
+        const [script, tables] = await Promise.all([
+            api(`/api/scripts/${id}`),
+            api(`/api/scripts/${id}/tables`),
+        ]);
+        const writeRows = tables.filter(t => t.direction === "write");
+        const readRows = tables.filter(t => t.direction === "read");
+        const machine = script.machine_alias || script.hostname || "-";
+        const lastModified = script.last_modified ? esc(script.last_modified) : "-";
+        const lastScanned = script.last_scanned ? esc(script.last_scanned) : "-";
+
+        const tableBadges = (rows, mode) => rows.length > 0
+            ? rows.map(t => {
+                const ref = _refType(t.table_name);
+                const cls = mode === "write" && ref.type === "sql" ? "badge-red" : mode === "read" && ref.type === "sql" ? "badge-blue" : ref.cls;
+                if (t.source_id) {
+                    return `<span class="badge ${cls} lineage-script-source-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
+                }
+                return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
+            }).join(" ")
+            : '<span style="color:var(--text-dim)">None detected</span>';
+
+        panel.innerHTML = `
+            <div class="source-detail-header">
+                <h2>${esc(script.display_name)}</h2>
+                <button class="btn-outline" id="btn-close-lineage-script-detail">&times; Close</button>
+            </div>
+            <div class="detail-grid lineage-source-detail-grid">
+                <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_scriptCategory(script)] || 'badge-muted'}">${esc(_scriptCategory(script))}</span></div>
+                <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(script.owner) || "-"}</span></div>
+                <div class="detail-item"><div class="detail-label">Machine</div><span style="color:var(--text)">${esc(machine)}</span></div>
+                <div class="detail-item"><div class="detail-label">File Size</div><span style="color:var(--text)">${formatFileSize(script.file_size)}</span></div>
+                <div class="detail-item"><div class="detail-label">Last Modified</div><span class="lineage-exact-timestamp">${lastModified}</span></div>
+                <div class="detail-item"><div class="detail-label">Last Scanned</div><span class="lineage-exact-timestamp">${lastScanned}</span></div>
+                <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)} ${_viewPathBtn(script.path)}</span></div>
+            </div>
+            <h2>Writes to / Refreshes (${writeRows.length})</h2>
+            <div style="padding:0.25rem 0">${tableBadges(writeRows, "write")}</div>
+            <h2>Reads From (${readRows.length})</h2>
+            <div style="padding:0.25rem 0">${tableBadges(readRows, "read")}</div>
+        `;
+
+        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+        const closeBtn = panel.querySelector("#btn-close-lineage-script-detail");
+        if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
+
+        panel.querySelectorAll(".view-path-btn").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                try { await apiPostJson("/api/scanner/open-path", { path: btn.dataset.path }); }
+                catch { toast("Could not open path (only works on server machine)"); }
+            });
+        });
+
+        panel.querySelectorAll(".lineage-script-source-link").forEach(el => {
+            el.addEventListener("click", (e) => {
+                e.stopPropagation();
+                _showLineageSourceDetail(el.dataset.sourceId);
+            });
+        });
+    } catch (err) {
+        panel.innerHTML = `<div class="lineage-source-detail-loading" style="color:var(--red)">Failed to load script: ${esc(err.message)}</div>`;
+    }
+}
+
 function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes) {
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
     function add(a, b, svg) {
@@ -7170,6 +7261,7 @@ function _bindLinInteractions() {
             e.stopPropagation();
             const id = node.dataset.linId;
             if (id.startsWith("source-")) _showLineageSourceDetail(id.replace("source-", ""));
+            if (id.startsWith("script-")) _showLineageScriptDetail(id.replace("script-", ""));
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
             const connected = _traceLinLineage(id);
             // Hide SVG immediately so stale edges don't show during transition
@@ -7408,7 +7500,7 @@ function bindTaskEmailScheduler() {
                 const updated = await apiPut("/api/email-schedules/task-summary", body);
                 window._taskEmailSchedule = updated;
                 toast("Email schedule saved");
-                await navigate("tasks");
+                await navigate(currentPage === "email" ? "email" : "tasks");
             } catch (err) {
                 saveBtn.disabled = false;
                 toast("Failed to save email schedule: " + err.message);
@@ -7426,7 +7518,7 @@ function bindTaskEmailScheduler() {
                 const updated = await apiPost("/api/email-schedules/task-summary/send-now");
                 window._taskEmailSchedule = updated;
                 toast("Task summary email sent");
-                await navigate("tasks");
+                await navigate(currentPage === "email" ? "email" : "tasks");
             } catch (err) {
                 sendNowBtn.disabled = false;
                 toast("Send failed: " + err.message);
@@ -7436,15 +7528,13 @@ function bindTaskEmailScheduler() {
 }
 
 async function renderTasks() {
-    const [tasks, owners, emailSchedule] = await Promise.all([
+    const [tasks, owners] = await Promise.all([
         api("/api/tasks"),
         api("/api/tasks/owners"),
-        api("/api/email-schedules/task-summary"),
     ]);
 
     window._tasksData = tasks;
     window._tasksOwners = owners;
-    window._taskEmailSchedule = emailSchedule;
 
     const activeTasks = tasks.filter(t => t.status !== "done");
     const archivedTasks = tasks.filter(t => t.status === "done");
@@ -7465,7 +7555,6 @@ async function renderTasks() {
                 ${ownerOptions}
             </select>
         </div>
-        ${_emailSchedulerPane(emailSchedule)}
         <div id="kanban-board-container">
             ${boardHtml}
         </div>
