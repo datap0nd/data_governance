@@ -6,9 +6,9 @@ Ship per-profile email scheduling and keep existing SQLite databases able to mig
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: bfb0ce0
+- Latest commit: e0e753f
 - Public repo: yes
-- Push status: pending for current changes
+- Push status: pushed to origin/main
 
 ## Decisions Made
 - Email schedules are now keyed per BI profile, with selectable content types for open tasks, alerts, or both.
@@ -37,4 +37,4 @@ Ship per-profile email scheduling and keep existing SQLite databases able to mig
 - None blocking.
 
 ## Next Step
-Commit and push the migration startup fix to `origin/main`.
+Have the user restart the app on the existing Windows database and confirm startup completes.
