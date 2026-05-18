@@ -1,12 +1,12 @@
 # Agent Handoff
 
 ## Current Objective
-Ship per-profile email scheduling and align lineage source details with the source freshness rule editor.
+Ship per-profile email scheduling and keep existing SQLite databases able to migrate cleanly.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: 5404584
+- Latest commit: bfb0ce0
 - Public repo: yes
 - Push status: pending for current changes
 
@@ -15,6 +15,7 @@ Ship per-profile email scheduling and align lineage source details with the sour
 - Profile schedules support daily or week-days-only recurrence plus a send time.
 - Lineage source details reuse the same freshness editor behavior as the Sources detail pane.
 - Lineage Last Refreshed displays as `YYYY-MM-DD-HH-mm`, while the raw timestamp remains available as hover text.
+- New indexes that depend on migrated columns must live in migrations, not the base schema block, because `init_db()` executes the base schema before migrations on existing databases.
 
 ## Files Changed
 - app/database.py: added per-person email schedule fields and indexes.
@@ -22,6 +23,7 @@ Ship per-profile email scheduling and align lineage source details with the sour
 - app/routers/email_schedules.py: added per-profile schedule endpoints and dispatcher support.
 - app/static/app.js: added per-profile Schedule dialog, reused freshness editor helpers, and compact lineage timestamp formatting.
 - app/static/style.css: added row action/status and schedule dialog styling.
+- docs/agent_handoff.md: updated current repo handoff.
 
 ## Commands And Checks
 - `node --check app/static/app.js`: passed.
@@ -29,9 +31,10 @@ Ship per-profile email scheduling and align lineage source details with the sour
 - FastAPI TestClient schedule endpoint smoke test: passed.
 - `git diff --check`: passed.
 - Browser smoke test on a temporary local server: passed for Email Schedule dialog and Lineage freshness controls.
+- Old SQLite schema migration smoke test: passed after moving `idx_email_schedules_person` out of the base schema.
 
 ## Open Questions
 - None blocking.
 
 ## Next Step
-Commit and push these changes to `origin/main`.
+Commit and push the migration startup fix to `origin/main`.

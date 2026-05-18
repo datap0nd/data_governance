@@ -255,7 +255,6 @@ CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
-CREATE INDEX IF NOT EXISTS idx_email_schedules_person ON email_schedules(person_id);
 CREATE INDEX IF NOT EXISTS idx_report_pages_report_id ON report_pages(report_id);
 CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id);
 CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);
