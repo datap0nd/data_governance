@@ -5,7 +5,12 @@ When 10 reports all pull from the same database,
 that's 1 source, not 10.
 """
 
-from app.scanner.tmdl_parser import SourceInfo, resolve_parameters, is_auto_table
+from app.scanner.tmdl_parser import (
+    SourceInfo,
+    is_auto_table,
+    is_folder_like_file_source,
+    resolve_parameters,
+)
 from app.scanner.walker import DiscoveredReport
 
 # Source types that are internal/calculated, not real external data sources
@@ -39,6 +44,8 @@ def deduplicate_sources(reports: list[DiscoveredReport]) -> dict[str, SourceInfo
                 resolved = resolve_parameters(source, expressions)
             else:
                 resolved = source
+            if is_folder_like_file_source(resolved):
+                continue
 
             key = resolved.connection_key
             if key not in sources:

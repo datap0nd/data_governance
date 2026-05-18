@@ -10,7 +10,7 @@ Parses .tmdl files from Power BI semantic model exports to extract:
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 @dataclass
@@ -112,6 +112,28 @@ _AUTO_TABLE_PREFIXES = (
 def is_auto_table(name: str) -> bool:
     """Return True if this table name is a Power BI auto-generated internal table."""
     return name.startswith(_AUTO_TABLE_PREFIXES)
+
+
+def path_has_file_extension(path: str | None) -> bool:
+    """Return True when the final path segment looks like a file."""
+    if not path:
+        return False
+    clean = str(path).strip().strip('"').rstrip("\\/")
+    if not clean:
+        return False
+    return bool(PureWindowsPath(clean).suffix or PurePosixPath(clean.replace("\\", "/")).suffix)
+
+
+def is_folder_like_file_source(source: "SourceInfo | None") -> bool:
+    """Return True for folder paths used to combine files."""
+    if source is None:
+        return False
+    expr = source.raw_expression or ""
+    if re.search(r'Folder\.Files\s*\(', expr):
+        return True
+    if source.source_type in {"csv", "excel", "folder", "file"} and source.file_path:
+        return not path_has_file_extension(source.file_path)
+    return False
 
 
 def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:

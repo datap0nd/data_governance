@@ -9,16 +9,20 @@ Scan runner — orchestrates a full scan.
 """
 
 import logging
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE
 from app.database import get_db
+from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_extension
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 
 logger = logging.getLogger(__name__)
+
+_FILE_SOURCE_DB_TYPES = {"csv", "excel", "folder", "file"}
 
 
 def _backup_db() -> None:
@@ -38,6 +42,56 @@ def _backup_db() -> None:
         logger.info("Database backed up to %s", backup_path)
     except Exception as e:
         logger.warning("Failed to backup database: %s", e)
+
+
+def _source_row_is_folder_like(row) -> bool:
+    """Return True for scan-discovered file sources that are actually folders."""
+    source_query = row["source_query"] or ""
+    if re.search(r'Folder\.Files\s*\(', source_query):
+        return True
+    source_type = (row["type"] or "").lower()
+    if source_type not in _FILE_SOURCE_DB_TYPES:
+        return False
+    path = (row["connection_info"] or row["name"] or "").strip()
+    return bool(path) and not path_has_file_extension(path)
+
+
+def _archive_folder_like_scan_sources(db, now: str, log_lines: list[str]) -> None:
+    """Hide old folder entries produced by Folder.Files scans."""
+    rows = db.execute(
+        """SELECT id, name, type, connection_info, source_query
+           FROM sources
+           WHERE archived = 0
+             AND discovered_by = 'scan'
+             AND type IN ('csv', 'excel', 'folder', 'file')"""
+    ).fetchall()
+    archived_count = 0
+    for row in rows:
+        if not _source_row_is_folder_like(row):
+            continue
+        db.execute("UPDATE report_tables SET source_id = NULL WHERE source_id = ?", (row["id"],))
+        db.execute(
+            "UPDATE sources SET archived = 1, updated_at = ? WHERE id = ?",
+            (now, row["id"]),
+        )
+        db.execute(
+            """UPDATE actions SET status = 'resolved', resolved_at = ?,
+                                  updated_at = ?,
+                                  notes = COALESCE(notes, '') || ' [auto-resolved: folder source archived]'
+               WHERE source_id = ? AND status NOT IN ('resolved', 'expected')""",
+            (now, now, row["id"]),
+        )
+        db.execute(
+            """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
+                                 acknowledged = 1, acknowledged_by = 'auto',
+                                 resolution_reason = 'Folder source archived'
+               WHERE source_id = ? AND resolution_status IS NULL""",
+            (now, row["id"]),
+        )
+        archived_count += 1
+        log_lines.append(f"ARCHIVED: {row['name']} (folder path, not a file source)")
+    if archived_count:
+        log_lines.append(f"TOTAL ARCHIVED: {archived_count} folder-like file sources")
 
 
 def run_scan(reports_path: str | None = None) -> dict:
@@ -214,6 +268,8 @@ def run_scan(reports_path: str | None = None) -> dict:
                     f"TOTAL ARCHIVED: {archived_count} postgresql sources with invalid names"
                 )
 
+            _archive_folder_like_scan_sources(db, now, log_lines)
+
             # Upsert sources
             for key, source_info in all_sources.items():
                 existing = db.execute(
@@ -285,7 +341,12 @@ def run_scan(reports_path: str | None = None) -> dict:
                     m_expression = getattr(table, "m_expression", None)
                     is_metadata = getattr(table, "is_metadata", False)
 
-                    if source and not is_metadata:
+                    if source and not is_metadata and is_folder_like_file_source(source):
+                        log_lines.append(
+                            f"SKIPPED: {report.name}/{table.table_name} folder source "
+                            f"{source.file_path or source.display_name}"
+                        )
+                    elif source and not is_metadata:
                         # Find matching source in DB
                         source_row = db.execute(
                             "SELECT id FROM sources WHERE name = ?",

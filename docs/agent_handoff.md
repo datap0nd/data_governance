@@ -1,14 +1,14 @@
 # Agent Handoff
 
 ## Current Objective
-Ship per-profile email scheduling and keep existing SQLite databases able to migrate cleanly.
+Exclude folder-combine paths from scanned data sources.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: e0e753f
+- Latest commit: current folder-source filter work
 - Public repo: yes
-- Push status: pushed to origin/main
+- Push status: push current changes after commit
 
 ## Decisions Made
 - Email schedules are now keyed per BI profile, with selectable content types for open tasks, alerts, or both.
@@ -16,25 +16,23 @@ Ship per-profile email scheduling and keep existing SQLite databases able to mig
 - Lineage source details reuse the same freshness editor behavior as the Sources detail pane.
 - Lineage Last Refreshed displays as `YYYY-MM-DD-HH-mm`, while the raw timestamp remains available as hover text.
 - New indexes that depend on migrated columns must live in migrations, not the base schema block, because `init_db()` executes the base schema before migrations on existing databases.
+- `Folder.Files(...)` queries are folder containers, not data-file sources, so scans skip them instead of adding them to Sources.
+- Existing scan-discovered folder-like file sources are archived and unlinked from report tables on the next scan.
 
 ## Files Changed
-- app/database.py: added per-person email schedule fields and indexes.
-- app/models.py: exposed person and content-type schedule fields.
-- app/routers/email_schedules.py: added per-profile schedule endpoints and dispatcher support.
-- app/static/app.js: added per-profile Schedule dialog, reused freshness editor helpers, and compact lineage timestamp formatting.
-- app/static/style.css: added row action/status and schedule dialog styling.
+- app/scanner/tmdl_parser.py: added folder-like file source detection using `Folder.Files(...)` and final-path extension checks.
+- app/scanner/source_matcher.py: skips folder-like file sources before deduplicating scanned sources.
+- app/scanner/runner.py: archives old scan-created folder sources and avoids linking folder paths into report lineage.
 - docs/agent_handoff.md: updated current repo handoff.
 
 ## Commands And Checks
-- `node --check app/static/app.js`: passed.
-- `python3.12 -m compileall app/database.py app/models.py app/routers/email_schedules.py`: passed.
-- FastAPI TestClient schedule endpoint smoke test: passed.
+- `python3.12 -m compileall app/scanner/tmdl_parser.py app/scanner/source_matcher.py app/scanner/runner.py`: not run because `python3.12` is unavailable locally.
+- `PYTHONPYCACHEPREFIX=/private/tmp/dg_pycache /opt/homebrew/bin/python3.11 -m compileall app/scanner/tmdl_parser.py app/scanner/source_matcher.py app/scanner/runner.py`: passed.
+- Python behavior check: `Folder.Files(".../Inputs")` is filtered while `Excel.Workbook(File.Contents(".../sales.xlsx"))` remains a source.
 - `git diff --check`: passed.
-- Browser smoke test on a temporary local server: passed for Email Schedule dialog and Lineage freshness controls.
-- Old SQLite schema migration smoke test: passed after moving `idx_email_schedules_person` out of the base schema.
 
 ## Open Questions
 - None blocking.
 
 ## Next Step
-Have the user restart the app on the existing Windows database and confirm startup completes.
+Run a normal scan and confirm folder paths no longer appear as active Sources.
