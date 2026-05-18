@@ -188,6 +188,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS email_schedules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     schedule_key    TEXT UNIQUE NOT NULL,
+    person_id       INTEGER,
+    content_types   TEXT DEFAULT 'tasks',
     enabled         INTEGER DEFAULT 0,
     recurrence      TEXT DEFAULT 'weekly',
     weekdays        TEXT DEFAULT 'monday',
@@ -253,6 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_email_schedules_person ON email_schedules(person_id);
 CREATE INDEX IF NOT EXISTS idx_report_pages_report_id ON report_pages(report_id);
 CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id);
 CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);
@@ -378,6 +381,8 @@ MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS email_schedules (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         schedule_key    TEXT UNIQUE NOT NULL,
+        person_id       INTEGER,
+        content_types   TEXT DEFAULT 'tasks',
         enabled         INTEGER DEFAULT 0,
         recurrence      TEXT DEFAULT 'weekly',
         weekdays        TEXT DEFAULT 'monday',
@@ -391,8 +396,11 @@ MIGRATIONS = [
         created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
+    "ALTER TABLE email_schedules ADD COLUMN person_id INTEGER",
+    "ALTER TABLE email_schedules ADD COLUMN content_types TEXT DEFAULT 'tasks'",
     "CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key)",
     "CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at)",
+    "CREATE INDEX IF NOT EXISTS idx_email_schedules_person ON email_schedules(person_id)",
     # Source-to-source dependencies (MV -> upstream tables)
     """CREATE TABLE IF NOT EXISTS source_dependencies (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,

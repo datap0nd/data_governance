@@ -291,6 +291,10 @@ class TaskUpdate(BaseModel):
 class EmailScheduleOut(BaseModel):
     id: int
     schedule_key: str
+    person_id: int | None = None
+    person_name: str | None = None
+    person_email: str | None = None
+    content_types: list[str] = []
     enabled: bool = False
     recurrence: str = "weekly"
     weekdays: list[str] = []
@@ -313,6 +317,7 @@ class EmailScheduleUpdate(BaseModel):
     send_time: str = "09:00"
     recipients: str | None = None
     subject: str | None = None
+    content_types: list[str] | None = None
 
 
 class TaskMove(BaseModel):

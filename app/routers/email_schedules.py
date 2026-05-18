@@ -16,8 +16,13 @@ from app.routers.eventlog import get_actor, log_event
 router = APIRouter(prefix="/api/email-schedules", tags=["email-schedules"])
 
 TASK_SUMMARY_KEY = "task_summary"
+PERSON_SCHEDULE_PREFIX = "person:"
 DEFAULT_SUBJECT = "Task Board Summary"
-_RECURRENCES = {"daily", "weekly", "monthly"}
+PERSON_DEFAULT_SUBJECT = "Scheduled Email Summary"
+_RECURRENCES = {"daily", "weekly", "monthly", "weekdays"}
+_PERSON_RECURRENCES = {"daily", "weekdays"}
+_PERSON_CONTENT_TYPES = {"tasks", "alerts"}
+_PERSON_DEFAULT_CONTENT_TYPES = ["tasks", "alerts"]
 _WEEKDAYS = {
     "monday": 0,
     "tuesday": 1,
@@ -27,6 +32,7 @@ _WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
+_BUSINESS_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
 _STATUS_LABELS = {
     "backlog": "Backlog",
     "todo": "To Do",
@@ -147,6 +153,19 @@ def _normalize_weekdays(values: list[str] | str | None) -> list[str]:
     return seen
 
 
+def _normalize_content_types(values: list[str] | str | None) -> list[str]:
+    if isinstance(values, str):
+        raw_items = values.replace(";", ",").split(",")
+    else:
+        raw_items = values or []
+    seen = []
+    for item in raw_items:
+        key = str(item).strip().lower()
+        if key in _PERSON_CONTENT_TYPES and key not in seen:
+            seen.append(key)
+    return seen
+
+
 def _next_month(year: int, month: int) -> tuple[int, int]:
     month += 1
     if month > 12:
@@ -170,7 +189,7 @@ def _calculate_next_run(
     hour, minute = _parse_send_time(send_time)
     recurrence = (recurrence or "weekly").lower()
     if recurrence not in _RECURRENCES:
-        raise ValueError("recurrence must be daily, weekly, or monthly")
+        raise ValueError("recurrence must be daily, weekly, weekdays, or monthly")
 
     if recurrence == "daily":
         candidate = datetime.combine(current.date(), time(hour, minute))
@@ -188,7 +207,7 @@ def _calculate_next_run(
             year, month = _next_month(year, month)
         return current + timedelta(days=31)
 
-    selected = _normalize_weekdays(weekdays) or ["monday"]
+    selected = _BUSINESS_WEEKDAYS if recurrence == "weekdays" else (_normalize_weekdays(weekdays) or ["monday"])
     selected_numbers = {_WEEKDAYS[d] for d in selected}
     for offset in range(14):
         day = current.date() + timedelta(days=offset)
@@ -201,9 +220,14 @@ def _calculate_next_run(
 
 
 def _row_to_out(row) -> EmailScheduleOut:
+    keys = set(row.keys())
     return EmailScheduleOut(
         id=row["id"],
         schedule_key=row["schedule_key"],
+        person_id=row["person_id"] if "person_id" in keys else None,
+        person_name=row["person_name"] if "person_name" in keys else None,
+        person_email=row["person_email"] if "person_email" in keys else None,
+        content_types=_normalize_content_types(row["content_types"] if "content_types" in keys else None),
         enabled=bool(row["enabled"]),
         recurrence=row["recurrence"] or "weekly",
         weekdays=_normalize_weekdays(row["weekdays"]),
@@ -217,6 +241,25 @@ def _row_to_out(row) -> EmailScheduleOut:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _person_schedule_key(person_id: int) -> str:
+    return f"{PERSON_SCHEDULE_PREFIX}{person_id}"
+
+
+def _select_schedule_with_person(db, schedule_id: int | None = None, schedule_key: str | None = None):
+    where = "es.id = ?"
+    value = schedule_id
+    if schedule_key is not None:
+        where = "es.schedule_key = ?"
+        value = schedule_key
+    return db.execute(
+        f"""SELECT es.*, p.name AS person_name, p.email AS person_email
+            FROM email_schedules es
+            LEFT JOIN people p ON p.id = es.person_id
+            WHERE {where}""",
+        (value,),
+    ).fetchone()
 
 
 def _ensure_task_summary_schedule(db):
@@ -238,6 +281,44 @@ def _ensure_task_summary_schedule(db):
         "SELECT * FROM email_schedules WHERE schedule_key = ?",
         (TASK_SUMMARY_KEY,),
     ).fetchone()
+
+
+def _get_bi_person(db, person_id: int):
+    person = db.execute(
+        "SELECT id, name, role, email, created_at FROM people WHERE id = ?",
+        (person_id,),
+    ).fetchone()
+    if not person or person["role"] != "BI":
+        raise HTTPException(status_code=404, detail="BI profile not found")
+    return person
+
+
+def _ensure_person_schedule(db, person_id: int):
+    person = _get_bi_person(db, person_id)
+    schedule_key = _person_schedule_key(person_id)
+    row = _select_schedule_with_person(db, schedule_key=schedule_key)
+    if row:
+        if row["person_id"] is None:
+            db.execute("UPDATE email_schedules SET person_id = ? WHERE id = ?", (person_id, row["id"]))
+            row = _select_schedule_with_person(db, schedule_id=row["id"])
+        return row
+
+    next_run = _calculate_next_run("weekdays", "09:00", _BUSINESS_WEEKDAYS, None)
+    db.execute(
+        """INSERT INTO email_schedules
+           (schedule_key, person_id, content_types, enabled, recurrence, weekdays,
+            send_time, subject, next_run_at)
+           VALUES (?, ?, ?, 0, 'weekdays', ?, '09:00', ?, ?)""",
+        (
+            schedule_key,
+            person["id"],
+            ",".join(_PERSON_DEFAULT_CONTENT_TYPES),
+            ",".join(_BUSINESS_WEEKDAYS),
+            PERSON_DEFAULT_SUBJECT,
+            _iso(next_run),
+        ),
+    )
+    return _select_schedule_with_person(db, schedule_key=schedule_key)
 
 
 def _parse_recipients(raw: str | None) -> list[str]:
@@ -400,15 +481,13 @@ def _build_task_summary_email() -> tuple[str, str]:
     return "".join(html_parts), "\n".join(text_parts) + "\n"
 
 
-def _send_task_summary(schedule: dict) -> int:
-    recipients = _parse_recipients(schedule.get("recipients"))
+def _send_smtp_email(recipients: list[str], subject: str, html_body: str, text_body: str) -> int:
     if not recipients:
         raise RuntimeError("Add at least one recipient before sending.")
 
     cfg = _smtp_config()
-    html_body, text_body = _build_task_summary_email()
     msg = EmailMessage()
-    msg["Subject"] = schedule.get("subject") or DEFAULT_SUBJECT
+    msg["Subject"] = subject
     msg["From"] = cfg["sender"]
     msg["To"] = ", ".join(recipients)
     msg.set_content(text_body)
@@ -427,6 +506,84 @@ def _send_task_summary(schedule: dict) -> int:
                 smtp.login(cfg["user"], cfg["password"])
             smtp.send_message(msg)
     return len(recipients)
+
+
+def _send_task_summary(schedule: dict) -> int:
+    recipients = _parse_recipients(schedule.get("recipients"))
+    html_body, text_body = _build_task_summary_email()
+    return _send_smtp_email(recipients, schedule.get("subject") or DEFAULT_SUBJECT, html_body, text_body)
+
+
+def _pick_owner_summary(summaries: list[dict], owner_name: str) -> dict | None:
+    return next((summary for summary in summaries if summary.get("owner_name") == owner_name), None)
+
+
+def _summary_section(title: str, summary: dict) -> tuple[str, str]:
+    html_body = summary.get("body_html") or ""
+    text_body = summary.get("body_text") or ""
+    return (
+        f'<h3 style="margin:18px 0 8px;font-size:15px;color:#374151">{html.escape(title)}</h3>{html_body}',
+        f"\n\n--- {title.upper()} ---\n{text_body}".rstrip(),
+    )
+
+
+def _build_person_schedule_email(person: dict, content_types: list[str]) -> tuple[str, str, str]:
+    from app.routers.email import _load_alert_summaries, _load_task_summaries
+
+    owner_name = person["name"]
+    selected = set(content_types)
+    html_sections: list[str] = []
+    text_sections: list[str] = []
+    subjects: list[str] = []
+
+    if "tasks" in selected:
+        task_summary = _pick_owner_summary(_load_task_summaries({owner_name}), owner_name)
+        if task_summary:
+            html_part, text_part = _summary_section("Open Tasks", task_summary)
+            html_sections.append(html_part)
+            text_sections.append(text_part)
+            subjects.append(task_summary.get("subject") or "Open Tasks")
+
+    if "alerts" in selected:
+        alert_summary = _pick_owner_summary(_load_alert_summaries({owner_name}), owner_name)
+        if alert_summary:
+            html_part, text_part = _summary_section("Alerts", alert_summary)
+            html_sections.append(html_part)
+            text_sections.append(text_part)
+            subjects.append(alert_summary.get("subject") or "Alerts")
+
+    if not html_sections:
+        raise RuntimeError("No selected email content is available for this BI profile.")
+
+    today = _now().strftime("%d %b %Y")
+    if len(subjects) == 1:
+        subject = subjects[0]
+    else:
+        subject = f"{PERSON_DEFAULT_SUBJECT} - {owner_name} - {today}"
+    html_body = (
+        '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:1120px">'
+        f'<h2 style="margin:0 0 4px;font-size:17px">{html.escape(PERSON_DEFAULT_SUBJECT)}</h2>'
+        f'<p style="margin:0 0 16px;color:#666;font-size:13px">{html.escape(owner_name)} - {html.escape(today)}</p>'
+        + "".join(html_sections)
+        + "</div>"
+    )
+    text_body = f"{PERSON_DEFAULT_SUBJECT}\n{owner_name} - {today}" + "".join(text_sections) + "\n"
+    return subject, html_body, text_body
+
+
+def _send_person_summary(schedule: dict) -> int:
+    person_id = schedule.get("person_id")
+    if not person_id:
+        raise RuntimeError("Schedule is not linked to a BI profile.")
+    with get_db() as db:
+        person = _get_bi_person(db, int(person_id))
+        person = dict(person)
+    email = (person.get("email") or "").strip()
+    if not email:
+        raise RuntimeError("Map an email address before enabling this schedule.")
+    content_types = _normalize_content_types(schedule.get("content_types")) or _PERSON_DEFAULT_CONTENT_TYPES
+    subject, html_body, text_body = _build_person_schedule_email(person, content_types)
+    return _send_smtp_email([email], subject, html_body, text_body)
 
 
 def _schedule_dict(row) -> dict:
@@ -466,11 +623,70 @@ def get_task_summary_schedule():
         return _row_to_out(row)
 
 
+@router.get("/people", response_model=list[EmailScheduleOut])
+def get_person_email_schedules():
+    with get_db() as db:
+        people = db.execute(
+            "SELECT id FROM people WHERE role = 'BI' ORDER BY name"
+        ).fetchall()
+        rows = [_ensure_person_schedule(db, person["id"]) for person in people]
+        return [_row_to_out(row) for row in rows]
+
+
+@router.get("/people/{person_id}", response_model=EmailScheduleOut)
+def get_person_email_schedule(person_id: int):
+    with get_db() as db:
+        row = _ensure_person_schedule(db, person_id)
+        return _row_to_out(row)
+
+
+@router.put("/people/{person_id}", response_model=EmailScheduleOut)
+def update_person_email_schedule(person_id: int, body: EmailScheduleUpdate, request: Request):
+    recurrence = (body.recurrence or "weekdays").lower()
+    if recurrence not in _PERSON_RECURRENCES:
+        raise HTTPException(status_code=400, detail="recurrence must be daily or weekdays")
+    content_types = _normalize_content_types(body.content_types)
+    if not content_types:
+        raise HTTPException(status_code=400, detail="Choose at least one email content type")
+    weekdays = _BUSINESS_WEEKDAYS if recurrence == "weekdays" else []
+    try:
+        next_run = _calculate_next_run(recurrence, body.send_time, weekdays, None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    now_iso = _iso(_now())
+    with get_db() as db:
+        row = _ensure_person_schedule(db, person_id)
+        if body.enabled and not (row["person_email"] or "").strip():
+            raise HTTPException(status_code=400, detail="Map an email address before enabling this schedule")
+        db.execute(
+            """UPDATE email_schedules
+               SET enabled = ?, recurrence = ?, weekdays = ?, month_day = NULL,
+                   send_time = ?, content_types = ?, recipients = NULL, subject = ?,
+                   next_run_at = ?, last_error = NULL, updated_at = ?
+               WHERE id = ?""",
+            (
+                int(body.enabled),
+                recurrence,
+                ",".join(weekdays),
+                body.send_time,
+                ",".join(content_types),
+                PERSON_DEFAULT_SUBJECT,
+                _iso(next_run),
+                now_iso,
+                row["id"],
+            ),
+        )
+        log_event(db, "email_schedule", row["id"], row["person_name"], "updated", actor=get_actor(request))
+        updated = _select_schedule_with_person(db, schedule_id=row["id"])
+        return _row_to_out(updated)
+
+
 @router.put("/task-summary", response_model=EmailScheduleOut)
 def update_task_summary_schedule(body: EmailScheduleUpdate, request: Request):
     recurrence = (body.recurrence or "weekly").lower()
     if recurrence not in _RECURRENCES:
-        raise HTTPException(status_code=400, detail="recurrence must be daily, weekly, or monthly")
+        raise HTTPException(status_code=400, detail="recurrence must be daily, weekly, weekdays, or monthly")
     weekdays = _normalize_weekdays(body.weekdays)
     if recurrence == "weekly" and not weekdays:
         weekdays = ["monday"]
@@ -544,27 +760,36 @@ def dispatch_due_email_schedules() -> int:
     now_iso = _iso(_now())
     with get_db() as db:
         rows = db.execute(
-            """SELECT * FROM email_schedules
-               WHERE enabled = 1
-                 AND next_run_at IS NOT NULL
-                 AND next_run_at <= ?
-               ORDER BY next_run_at""",
+            """SELECT es.*, p.name AS person_name, p.email AS person_email
+               FROM email_schedules es
+               LEFT JOIN people p ON p.id = es.person_id
+               WHERE es.enabled = 1
+                 AND es.next_run_at IS NOT NULL
+                 AND es.next_run_at <= ?
+               ORDER BY es.next_run_at""",
             (now_iso,),
         ).fetchall()
         schedules = [_schedule_dict(row) for row in rows]
 
     sent = 0
     for schedule in schedules:
-        if schedule.get("schedule_key") != TASK_SUMMARY_KEY:
+        schedule_key = schedule.get("schedule_key") or ""
+        if schedule_key == TASK_SUMMARY_KEY:
+            label = "Task summary"
+            send_fn = _send_task_summary
+        elif schedule_key.startswith(PERSON_SCHEDULE_PREFIX):
+            label = schedule.get("person_name") or f"BI profile {schedule.get('person_id')}"
+            send_fn = _send_person_summary
+        else:
             continue
         try:
-            count = _send_task_summary(schedule)
+            count = send_fn(schedule)
             _mark_result(schedule["id"], schedule, None)
             with get_db() as db:
-                log_event(db, "email_schedule", schedule["id"], "Task summary", "sent", f"recipients={count}", "scheduler")
+                log_event(db, "email_schedule", schedule["id"], label, "sent", f"recipients={count}", "scheduler")
             sent += 1
         except Exception as exc:
             _mark_result(schedule["id"], schedule, str(exc))
             with get_db() as db:
-                log_event(db, "email_schedule", schedule["id"], "Task summary", "send_failed", str(exc), "scheduler")
+                log_event(db, "email_schedule", schedule["id"], label, "send_failed", str(exc), "scheduler")
     return sent

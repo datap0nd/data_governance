@@ -4168,6 +4168,88 @@ button.btn-danger-outline:hover {
     flex-shrink: 0;
 }
 
+.email-schedule-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    background: rgba(17, 24, 39, 0.46);
+}
+
+.email-schedule-dialog {
+    width: min(620px, 100%);
+    max-height: calc(100vh - 2.5rem);
+    overflow: auto;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 18px 50px rgba(17, 24, 39, 0.24);
+    padding: 1rem;
+}
+
+.email-schedule-dialog-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.8rem;
+}
+
+.email-schedule-dialog-head h2 {
+    margin: 0 0 0.15rem;
+    font-size: 0.98rem;
+}
+
+.email-schedule-dialog-head p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+}
+
+.email-schedule-enabled-row {
+    margin-bottom: 0.75rem;
+}
+
+.email-schedule-dialog-grid {
+    display: grid;
+    grid-template-columns: 1fr 130px;
+    gap: 0.65rem;
+    align-items: end;
+}
+
+.email-schedule-content-field {
+    grid-column: 1 / -1;
+}
+
+.email-schedule-content-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.email-schedule-content-options label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    padding: 0.34rem 0.52rem;
+    font-size: 0.78rem;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+}
+
+.email-schedule-content-options input {
+    accent-color: var(--accent);
+}
+
 @media (max-width: 900px) {
     .email-scheduler-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4189,6 +4271,16 @@ button.btn-danger-outline:hover {
     }
     .email-scheduler-actions {
         justify-content: flex-start;
+    }
+    .email-schedule-dialog-grid {
+        grid-template-columns: 1fr;
+    }
+    .email-schedule-dialog-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .email-scheduler-footer {
+        align-items: stretch;
     }
 }
 
@@ -4737,6 +4829,24 @@ tr.row-archived td:last-child {
     padding: 0.34rem 0.5rem;
     font: inherit;
     font-size: 0.8rem;
+}
+.email-profile-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.email-schedule-status {
+    color: var(--text-dim);
+    font-size: 0.68rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.08rem 0.38rem;
+}
+.email-schedule-status.active {
+    color: var(--green);
+    background: var(--green-bg);
+    border-color: var(--green-border);
 }
 .email-summary-list {
     display: grid;

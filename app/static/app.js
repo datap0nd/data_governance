@@ -321,12 +321,160 @@ function freshnessRuleLabel(source) {
     return "-";
 }
 
+function _freshnessRuleFormHtml(source, opts = {}) {
+    const prefix = opts.prefix || "freshness";
+    const freshnessType = sourceFreshnessRuleType(source);
+    const hasFreshnessRule = sourceHasFreshnessRule(source);
+    const freshVal = source.custom_fresh_days != null && source.custom_fresh_days > 0 ? source.custom_fresh_days : "";
+    const selectedFreshDays = new Set(sourceFreshnessDays(source));
+    const dayBoxes = FRESHNESS_DAYS.map(day => `
+        <label class="freshness-day-pill">
+            <input type="checkbox" value="${day}" ${selectedFreshDays.has(day) ? "checked" : ""}>
+            <span>${day.slice(0, 3)}</span>
+        </label>
+    `).join("");
+    const wideClass = opts.wide === false ? "" : " freshness-rule-form-wide";
+
+    return `
+        <div class="freshness-rule-form${wideClass}" data-freshness-prefix="${esc(prefix)}">
+            <label class="freshness-label">Rule
+                <select id="${esc(prefix)}-rule-type" class="freshness-select">
+                    <option value="" ${!freshnessType ? "selected" : ""}>No rule</option>
+                    <option value="daily" ${freshnessType === "daily" ? "selected" : ""}>Daily</option>
+                    <option value="custom" ${freshnessType === "custom" ? "selected" : ""}>Custom days</option>
+                    <option value="fixed" ${freshnessType === "fixed" ? "selected" : ""}>Fixed schedule</option>
+                </select>
+            </label>
+            <label class="freshness-label freshness-custom-options">Healthy up to
+                <input type="number" id="${esc(prefix)}-fresh-days-input" value="${freshVal}" placeholder="days" min="1" max="9999" class="input-sm">
+                days
+            </label>
+            <div class="freshness-fixed-options">
+                <span class="freshness-label">Refresh days</span>
+                <div class="freshness-day-list">${dayBoxes}</div>
+                <span class="freshness-help">Choose up to 3</span>
+            </div>
+            <button class="btn-sm btn-blue" id="${esc(prefix)}-save-freshness">Save</button>
+            ${hasFreshnessRule ? `<button class="btn-sm btn-outline" id="${esc(prefix)}-reset-freshness">Clear rule</button>` : ""}
+            ${hasFreshnessRule
+                ? `<span class="badge badge-blue" style="font-size:0.72rem">${esc(freshnessRuleLabel(source))}</span>`
+                : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
+        </div>
+    `;
+}
+
+function _bindFreshnessRuleForm(panel, source, opts = {}) {
+    const prefix = opts.prefix || "freshness";
+    const ruleTypeSelect = panel.querySelector(`#${prefix}-rule-type`);
+    const afterChange = typeof opts.afterChange === "function" ? opts.afterChange : null;
+    const syncFreshnessOptions = () => {
+        const type = ruleTypeSelect ? ruleTypeSelect.value : "";
+        panel.querySelectorAll(".freshness-custom-options").forEach(el => {
+            el.style.display = type === "custom" ? "flex" : "none";
+        });
+        panel.querySelectorAll(".freshness-fixed-options").forEach(el => {
+            el.style.display = type === "fixed" ? "flex" : "none";
+        });
+    };
+    if (ruleTypeSelect) {
+        ruleTypeSelect.addEventListener("change", syncFreshnessOptions);
+        syncFreshnessOptions();
+    }
+    panel.querySelectorAll(".freshness-day-pill input").forEach(box => {
+        box.addEventListener("change", () => {
+            const checked = [...panel.querySelectorAll(".freshness-day-pill input:checked")];
+            if (checked.length > 3) {
+                box.checked = false;
+                toast("Choose up to 3 refresh days");
+            }
+        });
+    });
+
+    const saveFreshBtn = panel.querySelector(`#${prefix}-save-freshness`);
+    if (saveFreshBtn) {
+        saveFreshBtn.addEventListener("click", async () => {
+            const ruleType = ruleTypeSelect ? ruleTypeSelect.value : "";
+            if (!ruleType) {
+                try {
+                    await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                    toast("Rule cleared - source not monitored");
+                    if (afterChange) await afterChange();
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+                return;
+            }
+            const payload = { rule_type: ruleType };
+            if (ruleType === "custom") {
+                const raw = panel.querySelector(`#${prefix}-fresh-days-input`).value.trim();
+                const fd = parseInt(raw, 10);
+                if (isNaN(fd) || fd < 1) {
+                    toast("Enter at least 1 freshness day");
+                    return;
+                }
+                payload.fresh_days = fd;
+            }
+            if (ruleType === "fixed") {
+                const days = [...panel.querySelectorAll(".freshness-day-pill input:checked")].map(el => el.value);
+                if (days.length === 0) {
+                    toast("Choose at least one refresh day");
+                    return;
+                }
+                if (days.length > 3) {
+                    toast("Choose up to 3 refresh days");
+                    return;
+                }
+                payload.refresh_days = days;
+            }
+            try {
+                await apiPut(`/api/sources/${source.id}/freshness-rule`, payload);
+                toast("Freshness rule saved - re-probe to apply");
+                if (afterChange) await afterChange();
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    }
+
+    const resetFreshBtn = panel.querySelector(`#${prefix}-reset-freshness`);
+    if (resetFreshBtn) {
+        resetFreshBtn.addEventListener("click", async () => {
+            try {
+                await apiDelete(`/api/sources/${source.id}/freshness-rule`);
+                toast("Freshness rule cleared - source not monitored");
+                if (afterChange) {
+                    await afterChange();
+                    return;
+                }
+                if (ruleTypeSelect) ruleTypeSelect.value = "";
+                const freshInput = panel.querySelector(`#${prefix}-fresh-days-input`);
+                if (freshInput) freshInput.value = "";
+                panel.querySelectorAll(".freshness-day-pill input").forEach(box => { box.checked = false; });
+                syncFreshnessOptions();
+            } catch (err) {
+                toast("Failed: " + err.message);
+            }
+        });
+    }
+}
+
 function formatDate(dateStr) {
     if (!dateStr) return "-";
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return dateStr;
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
          + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatCompactTimestamp(dateStr) {
+    if (!dateStr) return "-";
+    const raw = String(dateStr).trim();
+    const exact = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (exact) return `${exact[1]}-${exact[2]}-${exact[3]}-${exact[4]}-${exact[5]}`;
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return raw;
+    const pad = value => String(value).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}-${pad(d.getMinutes())}`;
 }
 
 function exportTableCSV(tableId, filename) {
@@ -725,17 +873,6 @@ async function showSourceDetail(source) {
         `).join("")
         : '<tr><td colspan="3" class="empty-state" style="border:none">No reports linked to this source</td></tr>';
 
-    const freshnessType = sourceFreshnessRuleType(source);
-    const hasFreshnessRule = sourceHasFreshnessRule(source);
-    const freshVal = source.custom_fresh_days != null && source.custom_fresh_days > 0 ? source.custom_fresh_days : "";
-    const selectedFreshDays = new Set(sourceFreshnessDays(source));
-    const dayBoxes = FRESHNESS_DAYS.map(day => `
-        <label class="freshness-day-pill">
-            <input type="checkbox" value="${day}" ${selectedFreshDays.has(day) ? "checked" : ""}>
-            <span>${day.slice(0, 3)}</span>
-        </label>
-    `).join("");
-
     panel.innerHTML = `
         <div class="source-detail-header">
             <h2>${esc(parsed.shortName)}</h2>
@@ -776,30 +913,7 @@ async function showSourceDetail(source) {
         </table>
 
         <h2>Freshness Rule</h2>
-        <div class="freshness-rule-form freshness-rule-form-wide">
-            <label class="freshness-label">Rule
-                <select id="freshness-rule-type" class="freshness-select">
-                    <option value="" ${!freshnessType ? "selected" : ""}>No rule</option>
-                    <option value="daily" ${freshnessType === "daily" ? "selected" : ""}>Daily</option>
-                    <option value="custom" ${freshnessType === "custom" ? "selected" : ""}>Custom days</option>
-                    <option value="fixed" ${freshnessType === "fixed" ? "selected" : ""}>Fixed schedule</option>
-                </select>
-            </label>
-            <label class="freshness-label freshness-custom-options">Healthy up to
-                <input type="number" id="fresh-days-input" value="${freshVal}" placeholder="days" min="1" max="9999" class="input-sm">
-                days
-            </label>
-            <div class="freshness-fixed-options">
-                <span class="freshness-label">Refresh days</span>
-                <div class="freshness-day-list">${dayBoxes}</div>
-                <span class="freshness-help">Choose up to 3</span>
-            </div>
-            <button class="btn-sm btn-blue" id="btn-save-freshness">Save</button>
-            ${hasFreshnessRule ? '<button class="btn-sm btn-outline" id="btn-reset-freshness">Clear rule</button>' : ''}
-            ${hasFreshnessRule
-                ? `<span class="badge badge-blue" style="font-size:0.72rem">${esc(freshnessRuleLabel(source))}</span>`
-                : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
-        </div>
+        ${_freshnessRuleFormHtml(source, { prefix: "source-freshness", wide: true })}
     `;
 
     $("#app").appendChild(panel);
@@ -819,89 +933,7 @@ async function showSourceDetail(source) {
         });
     });
 
-    // Freshness rule bindings
-    const ruleTypeSelect = document.getElementById("freshness-rule-type");
-    const syncFreshnessOptions = () => {
-        const type = ruleTypeSelect ? ruleTypeSelect.value : "";
-        panel.querySelectorAll(".freshness-custom-options").forEach(el => {
-            el.style.display = type === "custom" ? "flex" : "none";
-        });
-        panel.querySelectorAll(".freshness-fixed-options").forEach(el => {
-            el.style.display = type === "fixed" ? "flex" : "none";
-        });
-    };
-    if (ruleTypeSelect) {
-        ruleTypeSelect.addEventListener("change", syncFreshnessOptions);
-        syncFreshnessOptions();
-    }
-    panel.querySelectorAll(".freshness-day-pill input").forEach(box => {
-        box.addEventListener("change", () => {
-            const checked = [...panel.querySelectorAll(".freshness-day-pill input:checked")];
-            if (checked.length > 3) {
-                box.checked = false;
-                toast("Choose up to 3 refresh days");
-            }
-        });
-    });
-
-    const saveFreshBtn = document.getElementById("btn-save-freshness");
-    if (saveFreshBtn) {
-        saveFreshBtn.addEventListener("click", async () => {
-            const ruleType = document.getElementById("freshness-rule-type").value;
-            if (!ruleType) {
-                try {
-                    await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                    toast("Rule cleared - source not monitored");
-                } catch (err) {
-                    toast("Failed: " + err.message);
-                }
-                return;
-            }
-            const payload = { rule_type: ruleType };
-            if (ruleType === "custom") {
-                const raw = document.getElementById("fresh-days-input").value.trim();
-                const fd = parseInt(raw);
-                if (isNaN(fd) || fd < 1) {
-                    toast("Enter at least 1 freshness day");
-                    return;
-                }
-                payload.fresh_days = fd;
-            }
-            if (ruleType === "fixed") {
-                const days = [...panel.querySelectorAll(".freshness-day-pill input:checked")].map(el => el.value);
-                if (days.length === 0) {
-                    toast("Choose at least one refresh day");
-                    return;
-                }
-                if (days.length > 3) {
-                    toast("Choose up to 3 refresh days");
-                    return;
-                }
-                payload.refresh_days = days;
-            }
-            try {
-                await apiPut(`/api/sources/${source.id}/freshness-rule`, payload);
-                toast("Freshness rule saved - re-probe to apply");
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-    }
-    const resetFreshBtn = document.getElementById("btn-reset-freshness");
-    if (resetFreshBtn) {
-        resetFreshBtn.addEventListener("click", async () => {
-            try {
-                await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                toast("Freshness rule cleared - source not monitored");
-                document.getElementById("freshness-rule-type").value = "";
-                document.getElementById("fresh-days-input").value = "";
-                panel.querySelectorAll(".freshness-day-pill input").forEach(box => { box.checked = false; });
-                syncFreshnessOptions();
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-    }
+    _bindFreshnessRuleForm(panel, source, { prefix: "source-freshness" });
 }
 
 
@@ -3790,28 +3822,39 @@ function _emailAlertLine(alert) {
 }
 
 async function renderEmail() {
-    const [people, alertData, taskData, emailSchedule] = await Promise.all([
+    const [people, alertData, taskData, emailSchedules] = await Promise.all([
         api("/api/email/people"),
         api("/api/email/alert-summaries"),
         api("/api/email/task-summaries"),
-        api("/api/email-schedules/task-summary"),
+        api("/api/email-schedules/people"),
     ]);
     const alertSummaries = alertData.summaries || [];
     const taskSummaries = taskData.summaries || [];
     window._emailPeople = people;
     window._emailAlertSummaries = alertSummaries;
     window._emailTaskSummaries = taskSummaries;
+    window._emailSchedulesByPerson = new Map((emailSchedules || []).map(s => [String(s.person_id), s]));
 
     const biPeople = people.filter(p => p.role === "BI");
-    const mappingRows = biPeople.map(p => `
+    const mappingRows = biPeople.map(p => {
+        const schedule = window._emailSchedulesByPerson.get(String(p.id));
+        const status = schedule?.enabled ? "Scheduled" : "Manual";
+        return `
         <tr>
             <td>${esc(p.name)}</td>
             <td>${p.pending_alert_count || 0}</td>
             <td>${p.pending_task_count || 0}</td>
             <td><input class="email-map-input" data-person-id="${p.id}" type="email" value="${esc(p.email || "")}" placeholder="name@example.com"></td>
-            <td><button class="btn-sm btn-outline email-save-person" data-person-id="${p.id}">Save</button></td>
+            <td>
+                <div class="email-profile-actions">
+                    <button class="btn-sm btn-outline email-save-person" data-person-id="${p.id}">Save</button>
+                    <button type="button" class="btn-sm btn-outline email-schedule-person" data-person-id="${p.id}" onclick="event.stopPropagation(); window.openEmailScheduleModal && window.openEmailScheduleModal(${p.id})">Schedule</button>
+                    <span class="email-schedule-status${schedule?.enabled ? " active" : ""}">${esc(status)}</span>
+                </div>
+            </td>
         </tr>
-    `).join("");
+    `;
+    }).join("");
 
     const alertCards = alertSummaries.length ? alertSummaries.map(s => {
         const missingEmail = !s.email;
@@ -3888,8 +3931,6 @@ async function renderEmail() {
                 ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
             </section>
 
-            ${_emailSchedulerPane(emailSchedule)}
-
             <section class="email-section">
                 <div class="email-section-head">
                     <h2>Active Alert Summaries</h2>
@@ -3940,7 +3981,7 @@ async function _emailLaunchServer(kind, mode, owner) {
 }
 
 function bindEmailPage() {
-    bindTaskEmailScheduler();
+    bindEmailProfileSchedules();
 
     document.querySelectorAll(".email-save-person").forEach(btn => {
         btn.addEventListener("click", async () => {
@@ -6994,10 +7035,8 @@ async function _showLineageSourceDetail(sourceId) {
     try {
         const source = await api(`/api/sources/${id}`);
         const parsed = parseSourceName(source);
-        const hasCustomRule = source.custom_fresh_days != null && source.custom_fresh_days > 0;
-        const freshVal = hasCustomRule ? source.custom_fresh_days : "";
         const location = source.connection_info || parsed.fullLocation || source.name;
-        const lastRefreshed = source.last_updated ? esc(source.last_updated) : "-";
+        const lastRefreshed = source.last_updated ? esc(formatCompactTimestamp(source.last_updated)) : "-";
 
         panel.innerHTML = `
             <div class="source-detail-header">
@@ -7007,7 +7046,7 @@ async function _showLineageSourceDetail(sourceId) {
             <div class="detail-grid lineage-source-detail-grid">
                 <div class="detail-item"><div class="detail-label">Type</div>${typeBadge(source.type)}</div>
                 <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
-                <div class="detail-item"><div class="detail-label">Last Refreshed</div><span class="lineage-exact-timestamp">${lastRefreshed}</span></div>
+                <div class="detail-item"><div class="detail-label">Last Refreshed</div><span class="lineage-exact-timestamp" title="${esc(source.last_updated || "")}">${lastRefreshed}</span></div>
                 <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + esc(source.refresh_schedule) : "-"}</span></div>
                 <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
                 <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${esc(source.upstream_name) || "-"}</span></div>
@@ -7015,17 +7054,7 @@ async function _showLineageSourceDetail(sourceId) {
                 <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(location)} ${_viewPathBtn(location)}</span></div>
             </div>
             <h2>Freshness Rule</h2>
-            <div class="freshness-rule-form">
-                <label class="freshness-label">Healthy up to
-                    <input type="number" id="lineage-fresh-days-input" value="${freshVal}" placeholder="blank = no rule" min="1" max="9999" class="input-sm">
-                    days (degraded after)
-                </label>
-                <button class="btn-sm btn-blue" id="btn-lineage-save-freshness">Save</button>
-                ${hasCustomRule ? '<button class="btn-sm btn-outline" id="btn-lineage-reset-freshness">Clear rule</button>' : ''}
-                ${hasCustomRule
-                    ? '<span class="badge badge-blue" style="font-size:0.72rem">rule active</span>'
-                    : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
-            </div>
+            ${_freshnessRuleFormHtml(source, { prefix: "lineage-freshness", wide: true })}
         `;
 
         panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -7045,47 +7074,10 @@ async function _showLineageSourceDetail(sourceId) {
             });
         });
 
-        const saveFreshBtn = panel.querySelector("#btn-lineage-save-freshness");
-        if (saveFreshBtn) {
-            saveFreshBtn.addEventListener("click", async () => {
-                const raw = panel.querySelector("#lineage-fresh-days-input").value.trim();
-                if (raw === "") {
-                    try {
-                        await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                        toast("Rule cleared - source not monitored");
-                        _showLineageSourceDetail(source.id);
-                    } catch (err) {
-                        toast("Failed: " + err.message);
-                    }
-                    return;
-                }
-                const fd = parseInt(raw);
-                if (isNaN(fd) || fd < 1) {
-                    toast("Enter at least 1 day, or leave blank to clear the rule");
-                    return;
-                }
-                try {
-                    await apiPut(`/api/sources/${source.id}/freshness-rule`, { fresh_days: fd });
-                    toast("Freshness rule saved - re-probe to apply");
-                    _showLineageSourceDetail(source.id);
-                } catch (err) {
-                    toast("Failed: " + err.message);
-                }
-            });
-        }
-
-        const resetFreshBtn = panel.querySelector("#btn-lineage-reset-freshness");
-        if (resetFreshBtn) {
-            resetFreshBtn.addEventListener("click", async () => {
-                try {
-                    await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                    toast("Freshness rule cleared - source not monitored");
-                    _showLineageSourceDetail(source.id);
-                } catch (err) {
-                    toast("Failed: " + err.message);
-                }
-            });
-        }
+        _bindFreshnessRuleForm(panel, source, {
+            prefix: "lineage-freshness",
+            afterChange: () => _showLineageSourceDetail(source.id),
+        });
     } catch (err) {
         panel.innerHTML = `<div class="lineage-source-detail-loading" style="color:var(--red)">Failed to load source: ${esc(err.message)}</div>`;
     }
@@ -7378,154 +7370,135 @@ function _taskCard(task) {
     </div>`;
 }
 
-const EMAIL_WEEKDAYS = [
-    ["monday", "Mon"],
-    ["tuesday", "Tue"],
-    ["wednesday", "Wed"],
-    ["thursday", "Thu"],
-    ["friday", "Fri"],
-    ["saturday", "Sat"],
-    ["sunday", "Sun"],
-];
+function _emailPersonById(personId) {
+    return (window._emailPeople || []).find(p => String(p.id) === String(personId));
+}
 
-function _emailSchedulerPane(schedule) {
+function _emailScheduleForPerson(personId) {
+    return window._emailSchedulesByPerson?.get(String(personId)) || null;
+}
+
+function _emailScheduleModalHtml(person, schedule) {
     const s = schedule || {};
-    const recurrence = s.recurrence || "weekly";
-    const selectedDays = new Set(s.weekdays || ["monday"]);
-    const weekdayHtml = EMAIL_WEEKDAYS.map(([key, label]) => `
-        <label class="email-weekday-chip">
-            <input type="checkbox" class="email-weekday-input" value="${key}" ${selectedDays.has(key) ? "checked" : ""}>
-            <span>${label}</span>
-        </label>
-    `).join("");
+    const contentTypes = new Set(s.content_types || ["tasks", "alerts"]);
+    const recurrence = s.recurrence === "daily" ? "daily" : "weekdays";
     const nextRun = s.next_run_at ? formatDate(s.next_run_at) : "-";
     const lastSent = s.last_sent_at ? formatDate(s.last_sent_at) : "-";
-
     return `
-        <section class="email-scheduler-pane" id="task-email-scheduler">
-            <div class="email-scheduler-header">
-                <div>
-                    <h2>Email Scheduler</h2>
-                    <p>Send the active task board summary on a recurring schedule.</p>
+        <div class="email-schedule-overlay" id="email-schedule-overlay">
+            <div class="email-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="email-schedule-title">
+                <div class="email-schedule-dialog-head">
+                    <div>
+                        <h2 id="email-schedule-title">Schedule ${esc(person.name)}</h2>
+                        <p>${person.email ? esc(person.email) : "No email mapped"}</p>
+                    </div>
+                    <button class="btn-outline" id="email-schedule-close">&times; Close</button>
                 </div>
-                <label class="email-scheduler-toggle">
-                    <input type="checkbox" id="email-schedule-enabled" ${s.enabled ? "checked" : ""}>
+                <label class="email-scheduler-toggle email-schedule-enabled-row">
+                    <input type="checkbox" id="email-profile-schedule-enabled" ${s.enabled ? "checked" : ""}>
                     <span>Enabled</span>
                 </label>
-            </div>
-            <div class="email-scheduler-grid">
-                <label class="email-scheduler-field">Recurrence
-                    <select id="email-schedule-recurrence">
-                        <option value="daily" ${recurrence === "daily" ? "selected" : ""}>Daily</option>
-                        <option value="weekly" ${recurrence === "weekly" ? "selected" : ""}>Weekly</option>
-                        <option value="monthly" ${recurrence === "monthly" ? "selected" : ""}>Monthly</option>
-                    </select>
-                </label>
-                <label class="email-scheduler-field">Send Time
-                    <input type="time" id="email-schedule-time" value="${esc(s.send_time || "09:00")}">
-                </label>
-                <label class="email-scheduler-field email-month-day-field">Month Day
-                    <input type="number" id="email-schedule-month-day" min="1" max="31" value="${s.month_day || 1}">
-                </label>
-                <label class="email-scheduler-field email-subject-field">Subject
-                    <input type="text" id="email-schedule-subject" value="${esc(s.subject || "Task Board Summary")}">
-                </label>
-                <label class="email-scheduler-field email-recipients-field">Recipients
-                    <textarea id="email-schedule-recipients" rows="2" placeholder="name@example.com, team@example.com">${esc(s.recipients || "")}</textarea>
-                </label>
-                <div class="email-scheduler-field email-weekdays-field">
-                    <span>Weekdays</span>
-                    <div class="email-weekday-row">${weekdayHtml}</div>
+                <div class="email-schedule-dialog-grid">
+                    <label class="email-scheduler-field">Frequency
+                        <select id="email-profile-schedule-recurrence">
+                            <option value="daily" ${recurrence === "daily" ? "selected" : ""}>Daily</option>
+                            <option value="weekdays" ${recurrence === "weekdays" ? "selected" : ""}>Week-days only</option>
+                        </select>
+                    </label>
+                    <label class="email-scheduler-field">Hour
+                        <input type="time" id="email-profile-schedule-time" step="3600" value="${esc(s.send_time || "09:00")}">
+                    </label>
+                    <div class="email-scheduler-field email-schedule-content-field">
+                        <span>Send</span>
+                        <div class="email-schedule-content-options">
+                            <label><input type="checkbox" class="email-profile-schedule-content" value="tasks" ${contentTypes.has("tasks") ? "checked" : ""}> Open tasks</label>
+                            <label><input type="checkbox" class="email-profile-schedule-content" value="alerts" ${contentTypes.has("alerts") ? "checked" : ""}> Alerts</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="email-scheduler-footer">
+                    <div class="email-scheduler-meta">
+                        <span>Next: <strong>${esc(nextRun)}</strong></span>
+                        <span>Last sent: <strong>${esc(lastSent)}</strong></span>
+                        ${s.last_error ? `<span class="email-scheduler-error" title="${esc(s.last_error)}">Last error: ${esc(s.last_error)}</span>` : ""}
+                    </div>
+                    <div class="email-scheduler-actions">
+                        <button class="btn-outline" id="email-schedule-cancel">Cancel</button>
+                        <button class="btn-new-task" id="email-schedule-save">Save Schedule</button>
+                    </div>
                 </div>
             </div>
-            <div class="email-scheduler-footer">
-                <div class="email-scheduler-meta">
-                    <span>Next: <strong id="email-schedule-next">${esc(nextRun)}</strong></span>
-                    <span>Last sent: <strong>${esc(lastSent)}</strong></span>
-                    ${s.last_error ? `<span class="email-scheduler-error" title="${esc(s.last_error)}">Last error: ${esc(s.last_error)}</span>` : ""}
-                </div>
-                <div class="email-scheduler-actions">
-                    <button class="btn-outline" id="btn-send-task-email-now" style="font-size:0.78rem">Send Now</button>
-                    <button class="btn-new-task" id="btn-save-task-email-schedule">Save Schedule</button>
-                </div>
-            </div>
-        </section>
+        </div>
     `;
 }
 
-function _syncEmailSchedulerFields() {
-    const recurrence = document.getElementById("email-schedule-recurrence")?.value || "weekly";
-    const weekdayField = document.querySelector(".email-weekdays-field");
-    const monthField = document.querySelector(".email-month-day-field");
-    if (weekdayField) weekdayField.style.display = recurrence === "weekly" ? "" : "none";
-    if (monthField) monthField.style.display = recurrence === "monthly" ? "" : "none";
-}
-
-function _collectEmailSchedule() {
-    const recurrence = document.getElementById("email-schedule-recurrence")?.value || "weekly";
-    const weekdays = [...document.querySelectorAll(".email-weekday-input:checked")].map(input => input.value);
-    return {
-        enabled: document.getElementById("email-schedule-enabled")?.checked || false,
-        recurrence,
-        weekdays,
-        month_day: recurrence === "monthly" ? parseInt(document.getElementById("email-schedule-month-day")?.value || "1", 10) : null,
-        send_time: document.getElementById("email-schedule-time")?.value || "09:00",
-        recipients: document.getElementById("email-schedule-recipients")?.value.trim() || null,
-        subject: document.getElementById("email-schedule-subject")?.value.trim() || "Task Board Summary",
-    };
-}
-
-function bindTaskEmailScheduler() {
-    const pane = document.getElementById("task-email-scheduler");
-    if (!pane) return;
-
-    _syncEmailSchedulerFields();
-    const recurrence = document.getElementById("email-schedule-recurrence");
-    if (recurrence) recurrence.addEventListener("change", _syncEmailSchedulerFields);
-
-    const saveBtn = document.getElementById("btn-save-task-email-schedule");
-    if (saveBtn) {
-        saveBtn.addEventListener("click", async () => {
-            const body = _collectEmailSchedule();
-            if (body.enabled && !body.recipients) {
-                toast("Add at least one recipient before enabling the schedule");
-                return;
-            }
-            if (body.recurrence === "weekly" && body.weekdays.length === 0) {
-                toast("Choose at least one weekday");
-                return;
-            }
-            saveBtn.disabled = true;
-            try {
-                const updated = await apiPut("/api/email-schedules/task-summary", body);
-                window._taskEmailSchedule = updated;
-                toast("Email schedule saved");
-                await navigate(currentPage === "email" ? "email" : "tasks");
-            } catch (err) {
-                saveBtn.disabled = false;
-                toast("Failed to save email schedule: " + err.message);
-            }
-        });
+async function _openEmailScheduleModal(personId) {
+    const person = _emailPersonById(personId);
+    if (!person) return;
+    let schedule = _emailScheduleForPerson(personId);
+    if (!schedule) {
+        schedule = await api(`/api/email-schedules/people/${personId}`);
+        window._emailSchedulesByPerson?.set(String(personId), schedule);
     }
+    const existing = document.getElementById("email-schedule-overlay");
+    if (existing) existing.remove();
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = _emailScheduleModalHtml(person, schedule);
+    document.body.appendChild(wrapper.firstElementChild);
 
-    const sendNowBtn = document.getElementById("btn-send-task-email-now");
-    if (sendNowBtn) {
-        sendNowBtn.addEventListener("click", async () => {
-            sendNowBtn.disabled = true;
-            try {
-                const body = _collectEmailSchedule();
-                await apiPut("/api/email-schedules/task-summary", body);
-                const updated = await apiPost("/api/email-schedules/task-summary/send-now");
-                window._taskEmailSchedule = updated;
-                toast("Task summary email sent");
-                await navigate(currentPage === "email" ? "email" : "tasks");
-            } catch (err) {
-                sendNowBtn.disabled = false;
-                toast("Send failed: " + err.message);
-            }
-        });
-    }
+    const overlay = document.getElementById("email-schedule-overlay");
+    const close = () => overlay?.remove();
+    overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) close();
+    });
+    document.getElementById("email-schedule-close")?.addEventListener("click", close);
+    document.getElementById("email-schedule-cancel")?.addEventListener("click", close);
+
+    const saveBtn = document.getElementById("email-schedule-save");
+    saveBtn?.addEventListener("click", async () => {
+        const enabled = document.getElementById("email-profile-schedule-enabled")?.checked || false;
+        const contentTypes = [...document.querySelectorAll(".email-profile-schedule-content:checked")].map(el => el.value);
+        if (contentTypes.length === 0) {
+            toast("Choose open tasks, alerts, or both");
+            return;
+        }
+        if (enabled && !person.email) {
+            toast("Save an email address before enabling the schedule");
+            return;
+        }
+        const body = {
+            enabled,
+            recurrence: document.getElementById("email-profile-schedule-recurrence")?.value || "weekdays",
+            send_time: document.getElementById("email-profile-schedule-time")?.value || "09:00",
+            content_types: contentTypes,
+        };
+        saveBtn.disabled = true;
+        try {
+            const updated = await apiPut(`/api/email-schedules/people/${personId}`, body);
+            window._emailSchedulesByPerson?.set(String(personId), updated);
+            toast("Email schedule saved");
+            close();
+            await navigate("email");
+        } catch (err) {
+            saveBtn.disabled = false;
+            toast("Failed to save schedule: " + err.message);
+        }
+    });
 }
+
+function bindEmailProfileSchedules() {
+    if (window._emailScheduleDelegated) return;
+    window._emailScheduleDelegated = true;
+    document.addEventListener("click", (event) => {
+        const target = event.target && event.target.closest ? event.target : event.target?.parentElement;
+        const btn = target?.closest(".email-schedule-person");
+        if (!btn) return;
+        event.preventDefault();
+        _openEmailScheduleModal(btn.dataset.personId);
+    });
+}
+
+window.openEmailScheduleModal = _openEmailScheduleModal;
 
 async function renderTasks() {
     const [tasks, owners] = await Promise.all([
@@ -7946,8 +7919,6 @@ async function _refreshTaskBoard() {
 }
 
 function bindTasksPage() {
-    bindTaskEmailScheduler();
-
     // New task button
     const newBtn = document.getElementById("btn-new-task");
     if (newBtn) newBtn.addEventListener("click", () => _openTaskModal(null));
@@ -8845,6 +8816,8 @@ function updateThemeIcon() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+    bindEmailProfileSchedules();
+
     $$("nav a[data-page]").forEach(a => {
         a.addEventListener("click", (e) => {
             e.preventDefault();
