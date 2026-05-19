@@ -119,17 +119,16 @@ nav .logo {
     line-height: 1;
 }
 
-.logo-letter {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.15rem;
+.logo-word {
+    display: inline-block;
     font-weight: 800;
+    font-size: 1rem;
+    letter-spacing: 0;
 }
 
 .logo-metronome {
-    width: 19px;
-    height: 22px;
+    width: 17px;
+    height: 20px;
     display: block;
     overflow: visible;
 }

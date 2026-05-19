@@ -2198,19 +2198,19 @@ async function renderSources() {
     const unhealthyCount = degradedCount;
 
     return `
-        <div class="page-header">
-            <h1>Sources</h1>
-            <span class="subtitle">${active.length} data sources tracked - ${healthy} healthy, ${degradedCount} degraded</span>
-            ${_archiveToggleHtml("sources")}
-            <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
-        </div>
         <div class="sources-wide-section">
+            <div class="page-header">
+                <h1>Sources</h1>
+                <span class="subtitle">${active.length} data sources tracked - ${healthy} healthy, ${degradedCount} degraded</span>
+                ${_archiveToggleHtml("sources")}
+                <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
+            </div>
             <div class="source-filters" style="display:flex;gap:0.4rem;margin-bottom:0.75rem;flex-wrap:wrap">
                 <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy" style="${unhealthyCount > 0 ? 'color:var(--red);border-color:var(--red)' : ''}">Not Healthy (${unhealthyCount})</button>
+                <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy">Not Healthy (${unhealthyCount})</button>
             </div>
             ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
         </div>
