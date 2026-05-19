@@ -1,38 +1,46 @@
 # Agent Handoff
 
 ## Current Objective
-Route scheduled emails through the existing Outlook sender, rename the app surface to Metronome, and widen the Sources table.
+Integrate Power BI usage CSVs into Metronome so reports, sources, and alerts show raw and weighted usage impact.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: 31d9e1f Use Outlook for scheduled emails
+- Latest commit: f95bfc9 Integrate usage impact metrics
 - Public repo: yes
-- Push status: pushed to origin/main
+- Push status: pending push after this handoff update
 
 ## Decisions Made
-- Scheduled email dispatch now reuses the Outlook task sender instead of SMTP environment variables.
-- The app-facing name is Metronome in the browser title, FastAPI metadata, registration welcome, email signatures, and nav logo.
-- The Sources table is wrapped in a viewport-wide section on desktop, with mobile reset to avoid body overflow.
+- `usage_files_path` is the primary source for usage CSVs, with `USAGE_FILES_PATH` and `DG_USAGE_FILES_PATH` as fallbacks.
+- Usage import reads `Reports.csv`, `Report_views.csv`, and `Users.csv`; report matching prefers report GUID and falls back to normalized report name.
+- The last-30-days window is anchored to the latest date present in `Report_views.csv`.
+- `Views last 30d` is raw view count. Alert `Impact` is weighted view count, with premium viewers counted 5x.
+- Source usage sums each distinct report once per source, even if the source feeds multiple tables in that report.
+- Premium viewer management is local-admin only and does not use a password.
+- Alert sorting prioritizes open alerts, then weighted impact, then days in problem state.
 
 ## Files Changed
-- app/main.py: FastAPI title updated to Metronome.
-- app/routers/email.py: extracted reusable Outlook payload launcher and updated email signatures.
-- app/routers/email_schedules.py: removed SMTP config/sending and sends scheduled summaries through Outlook.
-- app/static/index.html: browser title and logo markup updated.
-- app/static/style.css: Metronome logo styling and Sources table wide-layout CSS.
-- app/static/app.js: Sources table wrapper and registration welcome text updated.
-- docs/agent_handoff.md: updated current repo handoff.
+- app/usage.py: CSV import, per-user usage storage, report/source usage maps, premium impact weighting.
+- app/routers/usage.py: local-only premium viewer and usage sync endpoints.
+- app/routers/reports.py: report `Views last 30d` from shared usage helper.
+- app/routers/sources.py: source `Views last 30d` rollup from reports fed by each source.
+- app/routers/actions.py: weighted `impact_views_30d` on alerts and impact-first ordering.
+- app/routers/scanner.py: `Sync Usage` uses CSV import when configured, then falls back to legacy PowerShell sync.
+- app/database.py, app/models.py, app/config.py, app/main.py: schema, API model, config, and router wiring.
+- app/static/index.html, app/static/app.js, app/static/style.css: Premium Viewers admin tab, usage columns, alert impact column.
+- docs/metric_contracts.md: metric definitions for raw views and weighted impact.
 
 ## Commands And Checks
-- `PYTHONPYCACHEPREFIX=/private/tmp/dg-pycache python3 -m compileall app/main.py app/routers/email.py app/routers/email_schedules.py`: passed.
+- `git pull --ff-only`: already up to date before edits.
+- `PYTHONPYCACHEPREFIX=/private/tmp/dg-pycache python3 -m compileall app`: passed.
 - `node --check app/static/app.js`: passed.
 - `git diff --check`: passed.
-- Static Chrome layout harness: passed. Desktop Sources table section measured wider than the app content container with no body horizontal overflow; mobile body width stayed at viewport width while table scrolling stayed inside the table wrapper.
-- Not run: full FastAPI server, because startup begins the scheduler and could dispatch due emails.
+- Usage import smoke test with temporary CSVs and in-memory SQLite: passed.
+- `node .../impeccable/scripts/detect.mjs --json --fast app/static`: warnings only, all pre-existing classes of issues (side accent borders, layout transitions, single-font heuristic).
+- Not run: full FastAPI server/browser QA, because app startup begins the scheduler and can dispatch due scheduled emails.
 
 ## Open Questions
-- None blocking.
+- No blocker. Confirm after deploy that the configured CSV folder contains the expected file names and headers.
 
 ## Next Step
-After deploy, trigger one scheduled email manually or wait for the next due run to confirm Outlook dispatch clears any previous SMTP-related `last_error`.
+On the admin PC, set `usage_files_path`, restart Metronome, open Admin -> Premium Viewers, add premium emails, then run Sync Usage.
