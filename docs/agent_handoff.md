@@ -6,9 +6,9 @@ Route scheduled emails through the existing Outlook sender, rename the app surfa
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: c635e61 Exclude folder paths from scanned sources
+- Latest commit: 31d9e1f Use Outlook for scheduled emails
 - Public repo: yes
-- Push status: pending commit and push
+- Push status: pushed to origin/main
 
 ## Decisions Made
 - Scheduled email dispatch now reuses the Outlook task sender instead of SMTP environment variables.
