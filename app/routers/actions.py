@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import ActionOut, ActionUpdate
+from app.usage import get_report_usage_map, get_source_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
@@ -190,6 +191,7 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
+        sync_usage_from_csv_if_configured(db)
         # Each action is about one asset - a source, report, scheduled task,
         # or script. For source-tied actions we also look up the latest probe
         # so we can skip actions on sources that are no longer outdated
@@ -224,6 +226,8 @@ def list_actions(status: str | None = None):
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
         report_days = _compute_report_action_days(db)
         report_stale_sources = _compute_report_stale_sources(db)
+        report_usage = get_report_usage_map(db)
+        source_usage = get_source_usage_map(db)
 
     ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
 
@@ -258,26 +262,31 @@ def list_actions(status: str | None = None):
             asset_id = sid
             asset_name = r["source_name"]
             asset_days = source_days.get(sid, 0)
+            impact_views_30d = source_usage.get(sid, {}).get("impact_views_30d", 0)
         elif rid is not None:
             asset_type = "report"
             asset_id = rid
             asset_name = r["report_name"]
             asset_days = report_days.get(rid, 0)
+            impact_views_30d = report_usage.get(rid, {}).get("impact_views_30d", 0)
         elif tid is not None:
             asset_type = "scheduled_task"
             asset_id = tid
             asset_name = r["task_name"]
             asset_days = 0  # no meaningful day count for task failures yet
+            impact_views_30d = 0
         elif scid is not None:
             asset_type = "script"
             asset_id = scid
             asset_name = r["script_name"]
             asset_days = 0
+            impact_views_30d = 0
         else:
             asset_type = None
             asset_id = None
             asset_name = None
             asset_days = 0
+            impact_views_30d = 0
 
         # For source-tied alerts, surface the top affected report
         linked = source_reports.get(sid, []) if sid else []
@@ -315,18 +324,19 @@ def list_actions(status: str | None = None):
             status=r["status"],
             assigned_to=r["assigned_to"],
             notes=r["notes"],
+            impact_views_30d=impact_views_30d,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             resolved_at=r["resolved_at"],
         ))
 
-    # Sort: open first; then by days in problem state DESC (matches the
-    # Days column the user sees in the table); finally by created_at DESC
-    # for deterministic tie-breaking.
+    # Sort: open first; then by weighted impact views DESC. Days remains a
+    # tiebreaker so executive-facing reports can outrank old low-traffic issues.
     def sort_key(a: ActionOut):
         is_closed = a.status in ("resolved", "expected")
         return (
             1 if is_closed else 0,
+            -a.impact_views_30d,
             -a.asset_days,
             -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )

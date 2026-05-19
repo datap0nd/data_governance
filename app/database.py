@@ -260,6 +260,43 @@ CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id)
 CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);
 CREATE INDEX IF NOT EXISTS idx_report_measures_report_id ON report_measures(report_id);
 CREATE INDEX IF NOT EXISTS idx_report_columns_report_id ON report_columns(report_id);
+
+CREATE TABLE IF NOT EXISTS pbi_usage_days (
+    date TEXT PRIMARY KEY,
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pbi_report_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_name TEXT NOT NULL,
+    report_id INTEGER REFERENCES reports(id),
+    view_date TEXT NOT NULL,
+    view_count INTEGER DEFAULT 0,
+    unique_users INTEGER DEFAULT 0,
+    UNIQUE(report_name, view_date)
+);
+
+CREATE TABLE IF NOT EXISTS pbi_report_user_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_guid TEXT,
+    report_name TEXT NOT NULL,
+    report_id INTEGER REFERENCES reports(id),
+    user_id TEXT NOT NULL,
+    view_date TEXT NOT NULL,
+    view_count INTEGER DEFAULT 0,
+    UNIQUE(report_guid, report_name, user_id, view_date)
+);
+
+CREATE TABLE IF NOT EXISTS premium_viewers (
+    email TEXT PRIMARY KEY,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id);
+CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date);
+CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_report_id ON pbi_report_user_views(report_id);
+CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_date ON pbi_report_user_views(view_date);
+CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_user ON pbi_report_user_views(user_id);
 """
 
 
@@ -518,6 +555,23 @@ MIGRATIONS = [
 )""",
     """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id)""",
     """CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date)""",
+    """CREATE TABLE IF NOT EXISTS pbi_report_user_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_guid TEXT,
+    report_name TEXT NOT NULL,
+    report_id INTEGER REFERENCES reports(id),
+    user_id TEXT NOT NULL,
+    view_date TEXT NOT NULL,
+    view_count INTEGER DEFAULT 0,
+    UNIQUE(report_guid, report_name, user_id, view_date)
+)""",
+    """CREATE TABLE IF NOT EXISTS premium_viewers (
+    email TEXT PRIMARY KEY,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_report_id ON pbi_report_user_views(report_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_date ON pbi_report_user_views(view_date)",
+    "CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_user ON pbi_report_user_views(user_id)",
     # Allow actions to be about scripts or scheduled tasks, not just sources/reports
     "ALTER TABLE actions ADD COLUMN scheduled_task_id INTEGER REFERENCES scheduled_tasks(id)",
     "ALTER TABLE actions ADD COLUMN script_id INTEGER REFERENCES scripts(id)",

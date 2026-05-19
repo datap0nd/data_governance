@@ -25,6 +25,8 @@ class SourceOut(BaseModel):
     upstream_refresh_day: str | None = None
     linked_scripts: str | None = None
     linked_task_count: int = 0
+    views_30d: int | None = None
+    unique_users_30d: int | None = None
     archived: bool = False
     created_at: str | None = None
     updated_at: str | None = None
@@ -171,6 +173,7 @@ class ActionOut(BaseModel):
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
     notes: str | None = None
+    impact_views_30d: int = 0
     created_at: str | None = None
     updated_at: str | None = None
     resolved_at: str | None = None

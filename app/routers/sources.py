@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
+from app.usage import get_source_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -12,9 +13,10 @@ def _row_value(r, key: str, default=None):
     return r[key] if key in r.keys() else default
 
 
-def _source_out_from_row(r) -> SourceOut:
+def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
     custom_days = _row_value(r, "custom_fresh_days") or None
     rule_type = _row_value(r, "freshness_rule_type") or ("custom" if custom_days else None)
+    usage = usage or {}
     return SourceOut(
         id=r["id"],
         name=r["name"],
@@ -37,6 +39,8 @@ def _source_out_from_row(r) -> SourceOut:
         upstream_refresh_day=_row_value(r, "upstream_refresh_day"),
         linked_scripts=r["linked_scripts"],
         linked_task_count=r["linked_task_count"] if "linked_task_count" in r.keys() else 0,
+        views_30d=usage.get("views_30d"),
+        unique_users_30d=usage.get("unique_users_30d"),
         archived=bool(r["archived"]),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
@@ -46,6 +50,7 @@ def _source_out_from_row(r) -> SourceOut:
 @router.get("", response_model=list[SourceOut])
 def list_sources(include_archived: bool = Query(False)):
     with get_db() as db:
+        sync_usage_from_csv_if_configured(db)
         archive_filter = "" if include_archived else "WHERE s.archived = 0"
         rows = db.execute(f"""
             SELECT s.*,
@@ -74,9 +79,10 @@ def list_sources(include_archived: bool = Query(False)):
             {archive_filter}
             ORDER BY s.name
         """).fetchall()
+        usage_map = get_source_usage_map(db)
 
     return [
-        _source_out_from_row(r)
+        _source_out_from_row(r, usage_map.get(r["id"]))
         for r in rows
         if (r["latest_status"] or "unknown") not in ("unknown", "no_connection") or r["discovered_by"] in ("manual", "pg_deps")
     ]
@@ -85,6 +91,7 @@ def list_sources(include_archived: bool = Query(False)):
 @router.get("/{source_id}", response_model=SourceOut)
 def get_source(source_id: int):
     with get_db() as db:
+        sync_usage_from_csv_if_configured(db)
         r = db.execute("""
             SELECT s.*,
                    sp.status AS latest_status,
@@ -110,7 +117,9 @@ def get_source(source_id: int):
     if not r:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    return _source_out_from_row(r)
+    with get_db() as db:
+        usage_map = get_source_usage_map(db)
+    return _source_out_from_row(r, usage_map.get(source_id))
 
 
 @router.patch("/{source_id}", response_model=SourceOut)

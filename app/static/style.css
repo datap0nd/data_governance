@@ -1367,6 +1367,13 @@ button.btn-blue { background: var(--accent); }
     border-radius: 10px;
 }
 
+.settings-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+}
+
 /* Summary counts */
 .summary-counts {
     display: flex;
@@ -2426,6 +2433,17 @@ body.ai-panel-open main {
 .days-pill-high {
     background: rgba(185,28,28,0.28);
     color: #fca5a5;
+}
+.impact-pill {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: rgba(37,99,235,0.14);
+    color: var(--blue);
+    min-width: 2.4rem;
+    text-align: center;
 }
 .dashboard-action-owner-select {
     width: 100%;

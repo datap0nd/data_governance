@@ -72,6 +72,16 @@ PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
 PBI_SYNC_HOUR = int(os.environ.get("DG_PBI_SYNC_HOUR", "8"))
 PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))
 
+# Folder containing the exported PBI usage CSV files.
+# The lowercase name is kept because this app is often configured from
+# Windows environment variables created by hand.
+USAGE_FILES_PATH = (
+    os.environ.get("usage_files_path")
+    or os.environ.get("USAGE_FILES_PATH")
+    or os.environ.get("DG_USAGE_FILES_PATH")
+    or ""
+)
+
 # PostgreSQL credentials for READ-ONLY freshness probing
 # WARNING: These credentials must ONLY be used for SELECT queries.
 # NEVER use them for INSERT, UPDATE, DELETE, DROP, or any write operation.

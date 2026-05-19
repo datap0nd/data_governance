@@ -1,8 +1,7 @@
-from datetime import datetime, timezone, timedelta
-
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
+from app.usage import get_report_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -10,6 +9,7 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 @router.get("", response_model=list[ReportOut])
 def list_reports(include_archived: bool = Query(False)):
     with get_db() as db:
+        sync_usage_from_csv_if_configured(db)
         archive_filter = "" if include_archived else "WHERE r.archived = 0"
         rows = db.execute(f"""
             SELECT r.*,
@@ -32,16 +32,7 @@ def list_reports(include_archived: bool = Query(False)):
         # Batch: derive report status for all reports in one query
         status_map = _batch_report_statuses(db)
 
-        # Attach 30-day view counts
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
-        view_counts = db.execute(
-            """SELECT report_id, SUM(view_count) as views, SUM(unique_users) as users
-               FROM pbi_report_views
-               WHERE view_date >= ? AND report_id IS NOT NULL
-               GROUP BY report_id""",
-            (cutoff,)
-        ).fetchall()
-        views_map = {r["report_id"]: {"views_30d": r["views"], "unique_users_30d": r["users"]} for r in view_counts}
+        views_map = get_report_usage_map(db)
 
     results = []
     for r in rows:
@@ -108,6 +99,7 @@ def all_columns():
 @router.get("/{report_id}", response_model=ReportOut)
 def get_report(report_id: int):
     with get_db() as db:
+        sync_usage_from_csv_if_configured(db)
         r = db.execute("""
             SELECT r.*,
                    (SELECT COUNT(DISTINCT rt.source_id)
@@ -116,6 +108,7 @@ def get_report(report_id: int):
             FROM reports r
             WHERE r.id = ?
         """, (report_id,)).fetchone()
+        views_map = get_report_usage_map(db)
 
     if not r:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -140,6 +133,8 @@ def get_report(report_id: int):
         pbi_refresh_status=r["pbi_refresh_status"],
         pbi_refresh_error=r["pbi_refresh_error"],
         archived=bool(r["archived"]),
+        views_30d=views_map.get(r["id"], {}).get("views_30d"),
+        unique_users_30d=views_map.get(r["id"], {}).get("unique_users_30d"),
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )

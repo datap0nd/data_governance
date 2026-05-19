@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
 from app.database import init_db
 from app.local_access import is_server_machine
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules, usage
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -300,6 +300,7 @@ app.include_router(custom_reports.router)
 app.include_router(documentation.router)
 app.include_router(email.router)
 app.include_router(email_schedules.router)
+app.include_router(usage.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

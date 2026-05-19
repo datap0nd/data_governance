@@ -47,6 +47,10 @@ function esc(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+function fmtInt(value) {
+    return Number(value || 0).toLocaleString();
+}
+
 function _getClientKey() {
     const keyName = "dg-client-key";
     let key = localStorage.getItem(keyName);
@@ -1523,7 +1527,7 @@ function renderDashboardAlertsSection(actions, people) {
     return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
             <h2 style="margin:0">Alerts</h2>
-            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by days in problem state (most urgent first)</span>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by weighted impact, then days in problem state</span>
         </div>
         <div class="alerts-chips">${chipsHtml}</div>
         <div id="dashboard-alerts-tbody-wrap">${tableHtml}</div>
@@ -1588,6 +1592,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             : '<span style="color:var(--text-dim)">-</span>';
 
         const days = a.asset_days || 0;
+        const impact = a.impact_views_30d || 0;
         const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || (a.detail_items && a.detail_items.length > 0);
 
         const mainRow = `
@@ -1599,6 +1604,9 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                     <span class="alerts-asset-wrap">${assetCell}</span>
                 </td>
                 <td>${typeCell}</td>
+                <td style="text-align:right">
+                    <span class="impact-pill" title="Weighted views in the last 30 days. Premium viewers count 5x.">${fmtInt(impact)}</span>
+                </td>
                 <td style="text-align:right">
                     <span class="days-pill${days >= 7 ? ' days-pill-high' : ''}">${days}d</span>
                 </td>
@@ -1633,7 +1641,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
-                <td colspan="6" class="alerts-expand-cell">
+                <td colspan="7" class="alerts-expand-cell">
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
                 </td>
@@ -1650,10 +1658,11 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                     <tr>
                         <th style="width:34%">Asset</th>
                         <th style="width:10%">Type</th>
+                        <th style="width:10%;text-align:right">Impact</th>
                         <th style="width:8%;text-align:right">Days</th>
-                        <th style="width:16%">Issue</th>
-                        <th style="width:16%">Owner</th>
-                        <th style="width:16%">Status</th>
+                        <th style="width:14%">Issue</th>
+                        <th style="width:12%">Owner</th>
+                        <th style="width:12%">Status</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -2173,6 +2182,11 @@ async function renderSources() {
             return `<span style="color:${color};font-weight:600">${d}</span>`;
         }, sortVal: s => daysOld(s.last_updated) ?? 9999 },
         { key: "report_count", label: "Reports", width: COL_W.sm, sortVal: s => s.report_count || 0 },
+        { key: "views_30d", label: "Views last 30d", width: COL_W.sm, render: s => {
+            if (!s.views_30d) return '<span style="color:var(--text-dim)">-</span>';
+            const title = s.unique_users_30d ? `${s.views_30d} views by ${s.unique_users_30d} user${s.unique_users_30d !== 1 ? 's' : ''}` : `${s.views_30d} views`;
+            return `<span style="cursor:help" title="${title}">${fmtInt(s.views_30d)}</span>`;
+        }, sortVal: s => s.views_30d || 0 },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
@@ -2334,10 +2348,10 @@ async function renderReports() {
             const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
             return fields.filter(f => f && f.trim()).length;
         }},
-        { key: "views_30d", label: "Views (30d)", width: COL_W.sm, render: r => {
+        { key: "views_30d", label: "Views last 30d", width: COL_W.sm, render: r => {
             if (!r.views_30d) return '<span style="color:var(--text-dim)">-</span>';
             const title = r.unique_users_30d ? `${r.views_30d} views by ${r.unique_users_30d} user${r.unique_users_30d !== 1 ? 's' : ''}` : `${r.views_30d} views`;
-            return `<span style="cursor:help" title="${title}">${r.views_30d}</span>`;
+            return `<span style="cursor:help" title="${title}">${fmtInt(r.views_30d)}</span>`;
         }, sortVal: r => r.views_30d || 0 },
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
             const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
@@ -2530,6 +2544,11 @@ function bindReportsPage() {
                             }
                         } catch (_) {}
                     }, 2000);
+                } else if (result.status === "completed" || result.status === "unchanged") {
+                    toast(result.message || "Usage sync complete");
+                    btnUsage.disabled = false;
+                    btnUsage.textContent = "Sync Usage";
+                    navigate("reports");
                 } else {
                     toast("Usage sync: " + (result.message || result.status));
                     btnUsage.disabled = false;
@@ -2754,17 +2773,18 @@ async function renderActionsContent() {
                            : a.type.includes("broken") ? "ind-red"
                            : "ind-blue";
 
-            const sourceName = a.source_name || "-";
-            const shortSource = shortNameFromPath(sourceName) || sourceName;
+            const assetName = a.asset_name || a.source_name || a.report_name || "-";
+            const shortAsset = shortNameFromPath(assetName) || assetName;
             const currentOwner = a.assigned_to || "";
 
             return `
                 <div class="action-card" data-action-id="${a.id}">
                     <div class="action-indicator ${indColor}"></div>
                     <div class="action-body">
-                        <div class="action-title">${shortSource}</div>
+                        <div class="action-title">${shortAsset}</div>
                         <div class="action-meta">
                             ${actionTypeBadge(a.type)}
+                            <span title="Weighted views in the last 30 days">Impact ${fmtInt(a.impact_views_30d || 0)}</span>
                             <select class="action-owner-select" data-action-id="${a.id}">
                                 <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
                                 ${owners.map(o => `<option value="${esc(o)}"${o === currentOwner ? ' selected' : ''}>${esc(o)}</option>`).join("")}
@@ -8214,6 +8234,75 @@ function bindFaqPage() {
     });
 }
 
+async function renderPremiumViewers() {
+    if (!_isLocal()) {
+        return `
+            <div class="page-header">
+                <h1>Premium Viewers</h1>
+                <span class="subtitle">Admin PC only</span>
+            </div>
+            <div class="empty-state">This page is only available from the machine running Metronome.</div>
+        `;
+    }
+
+    const data = await api("/api/usage/premium-viewers");
+    const viewers = data.viewers || [];
+    const emails = viewers.map(v => v.email).join("\n");
+    return `
+        <div class="page-header">
+            <h1>Premium Viewers</h1>
+            <span class="subtitle">${viewers.length} premium viewer${viewers.length === 1 ? "" : "s"} - ${data.weight || 5}x impact weight</span>
+            <button class="btn-outline" id="btn-premium-sync-usage" style="font-size:0.78rem">Sync Usage</button>
+        </div>
+        <div class="settings-panel" style="max-width:760px">
+            <label for="premium-viewers-input" style="display:block;font-size:0.78rem;font-weight:600;color:var(--text-dim);margin-bottom:0.35rem">Viewer emails</label>
+            <textarea id="premium-viewers-input" rows="12" spellcheck="false" style="width:100%;font-family:monospace;font-size:0.82rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.75rem">${esc(emails)}</textarea>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-top:0.75rem;flex-wrap:wrap">
+                <span style="color:var(--text-dim);font-size:0.78rem">One email per line. Commas and semicolons also work.</span>
+                <button id="btn-save-premium-viewers">Save Premium Viewers</button>
+            </div>
+        </div>
+    `;
+}
+
+function bindPremiumViewersPage() {
+    const saveBtn = document.getElementById("btn-save-premium-viewers");
+    const input = document.getElementById("premium-viewers-input");
+    if (saveBtn && input) {
+        saveBtn.addEventListener("click", async () => {
+            const emails = input.value.split(/[\n,;]+/).map(v => v.trim()).filter(Boolean);
+            saveBtn.disabled = true;
+            saveBtn.textContent = "Saving...";
+            try {
+                const result = await apiPut("/api/usage/premium-viewers", { emails });
+                toast(`Saved ${result.count} premium viewer${result.count === 1 ? "" : "s"}`);
+                await navigate("premiumviewers");
+            } catch (err) {
+                toast("Save failed: " + err.message);
+                saveBtn.disabled = false;
+                saveBtn.textContent = "Save Premium Viewers";
+            }
+        });
+    }
+
+    const syncBtn = document.getElementById("btn-premium-sync-usage");
+    if (syncBtn) {
+        syncBtn.addEventListener("click", async () => {
+            syncBtn.disabled = true;
+            syncBtn.textContent = "Syncing...";
+            try {
+                const result = await apiPost("/api/usage/sync");
+                toast(result.message || "Usage sync complete");
+                await navigate("premiumviewers");
+            } catch (err) {
+                toast("Usage sync failed: " + err.message);
+                syncBtn.disabled = false;
+                syncBtn.textContent = "Sync Usage";
+            }
+        });
+    }
+}
+
 
 // ── Router ──
 
@@ -8236,6 +8325,7 @@ const pages = {
     tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
+    premiumviewers: renderPremiumViewers,
 };
 
 // Map old hash routes to new pages for backwards compat
@@ -8369,6 +8459,7 @@ async function navigate(page) {
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
+        if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
         if (page === "overview") bindOverviewPage();
@@ -8880,6 +8971,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (me.is_local) {
             const updateBtn = document.getElementById("btn-update-app");
             if (updateBtn) updateBtn.style.display = "";
+            const premiumLink = document.getElementById("nav-premium-viewers");
+            if (premiumLink) premiumLink.style.display = "";
+            if (currentPage === "premiumviewers") navigate("premiumviewers");
         }
     }).catch(() => {});
 

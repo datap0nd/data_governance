@@ -15,6 +15,7 @@ from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data, trigger_pbi_usage_sync
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
+from app.usage import sync_usage_from_csv
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +414,10 @@ def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
 
 @router.post("/pbi-usage-sync")
 def do_pbi_usage_sync(request: Request):
-    """Launch PBI usage sync in the user's interactive session."""
+    """Sync usage from configured CSVs, falling back to the legacy PS1 sync."""
     _require_local(request)
+    with get_db() as db:
+        csv_result = sync_usage_from_csv(db, force=True)
+        if csv_result.get("status") != "skipped":
+            return csv_result
     return trigger_pbi_usage_sync()
