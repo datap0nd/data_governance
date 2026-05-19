@@ -271,7 +271,7 @@ async def lifespan(app):
     _scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Data Governance Panel", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Metronome", version="0.1.0", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(UserIdentityMiddleware)
 

@@ -1,38 +1,38 @@
 # Agent Handoff
 
 ## Current Objective
-Exclude folder-combine paths from scanned data sources.
+Route scheduled emails through the existing Outlook sender, rename the app surface to Metronome, and widen the Sources table.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: current folder-source filter work
+- Latest commit: c635e61 Exclude folder paths from scanned sources
 - Public repo: yes
-- Push status: push current changes after commit
+- Push status: pending commit and push
 
 ## Decisions Made
-- Email schedules are now keyed per BI profile, with selectable content types for open tasks, alerts, or both.
-- Profile schedules support daily or week-days-only recurrence plus a send time.
-- Lineage source details reuse the same freshness editor behavior as the Sources detail pane.
-- Lineage Last Refreshed displays as `YYYY-MM-DD-HH-mm`, while the raw timestamp remains available as hover text.
-- New indexes that depend on migrated columns must live in migrations, not the base schema block, because `init_db()` executes the base schema before migrations on existing databases.
-- `Folder.Files(...)` queries are folder containers, not data-file sources, so scans skip them instead of adding them to Sources.
-- Existing scan-discovered folder-like file sources are archived and unlinked from report tables on the next scan.
+- Scheduled email dispatch now reuses the Outlook task sender instead of SMTP environment variables.
+- The app-facing name is Metronome in the browser title, FastAPI metadata, registration welcome, email signatures, and nav logo.
+- The Sources table is wrapped in a viewport-wide section on desktop, with mobile reset to avoid body overflow.
 
 ## Files Changed
-- app/scanner/tmdl_parser.py: added folder-like file source detection using `Folder.Files(...)` and final-path extension checks.
-- app/scanner/source_matcher.py: skips folder-like file sources before deduplicating scanned sources.
-- app/scanner/runner.py: archives old scan-created folder sources and avoids linking folder paths into report lineage.
+- app/main.py: FastAPI title updated to Metronome.
+- app/routers/email.py: extracted reusable Outlook payload launcher and updated email signatures.
+- app/routers/email_schedules.py: removed SMTP config/sending and sends scheduled summaries through Outlook.
+- app/static/index.html: browser title and logo markup updated.
+- app/static/style.css: Metronome logo styling and Sources table wide-layout CSS.
+- app/static/app.js: Sources table wrapper and registration welcome text updated.
 - docs/agent_handoff.md: updated current repo handoff.
 
 ## Commands And Checks
-- `python3.12 -m compileall app/scanner/tmdl_parser.py app/scanner/source_matcher.py app/scanner/runner.py`: not run because `python3.12` is unavailable locally.
-- `PYTHONPYCACHEPREFIX=/private/tmp/dg_pycache /opt/homebrew/bin/python3.11 -m compileall app/scanner/tmdl_parser.py app/scanner/source_matcher.py app/scanner/runner.py`: passed.
-- Python behavior check: `Folder.Files(".../Inputs")` is filtered while `Excel.Workbook(File.Contents(".../sales.xlsx"))` remains a source.
+- `PYTHONPYCACHEPREFIX=/private/tmp/dg-pycache python3 -m compileall app/main.py app/routers/email.py app/routers/email_schedules.py`: passed.
+- `node --check app/static/app.js`: passed.
 - `git diff --check`: passed.
+- Static Chrome layout harness: passed. Desktop Sources table section measured wider than the app content container with no body horizontal overflow; mobile body width stayed at viewport width while table scrolling stayed inside the table wrapper.
+- Not run: full FastAPI server, because startup begins the scheduler and could dispatch due emails.
 
 ## Open Questions
 - None blocking.
 
 ## Next Step
-Run a normal scan and confirm folder paths no longer appear as active Sources.
+After deploy, trigger one scheduled email manually or wait for the next due run to confirm Outlook dispatch clears any previous SMTP-related `last_error`.

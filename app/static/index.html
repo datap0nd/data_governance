@@ -3,13 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Data Governance</title>
+    <title>Metronome</title>
     <link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 <body>
     <a href="#app" class="skip-link">Skip to main content</a>
     <nav role="navigation" aria-label="Main navigation">
-        <span class="logo">DG<span class="logo-dot"></span></span>
+        <span class="logo" aria-label="Metronome">
+            <span class="logo-letter">M</span>
+            <svg class="logo-metronome" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path class="logo-metronome-body" d="M7.5 21h9L14.6 4.5H9.4L7.5 21Z"></path>
+                <path class="logo-metronome-arm" d="M12 6.2l3.2 10.2"></path>
+                <circle class="logo-metronome-weight" cx="14" cy="12.4" r="1.7"></circle>
+                <path class="logo-metronome-base" d="M6 21h12"></path>
+            </svg>
+        </span>
         <a href="#dashboard" data-page="dashboard" class="active"><span class="nav-health-dot" id="nav-health-dot"></span>Dashboard</a>
         <a href="#lineage" data-page="lineage">Lineage</a>
         <div class="nav-group" data-pages="overview,reports,sources,scripts,scheduledtasks,powerautomate" role="group" aria-label="Data pages">

@@ -1,5 +1,5 @@
 /* ================================================================
-   Data Governance Panel - Design System
+   Metronome - Design System
    Outfit typeface, warm-tinted neutrals, teal accent
    ================================================================ */
 
@@ -108,24 +108,49 @@ nav {
 
 nav .logo {
     font-weight: 800;
-    font-size: 1.15rem;
+    font-size: 1.18rem;
     color: var(--text);
     white-space: nowrap;
     margin-right: 2.5rem;
-    letter-spacing: -0.04em;
-    display: flex;
+    letter-spacing: 0;
+    display: inline-flex;
     align-items: center;
-    gap: 0;
+    gap: 0.35rem;
+    line-height: 1;
 }
 
-.logo-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    background: var(--accent);
-    border-radius: 50%;
-    margin-left: 1px;
-    margin-bottom: -2px;
+.logo-letter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.15rem;
+    font-weight: 800;
+}
+
+.logo-metronome {
+    width: 19px;
+    height: 22px;
+    display: block;
+    overflow: visible;
+}
+
+.logo-metronome-body {
+    fill: var(--accent-bg);
+    stroke: var(--accent);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+}
+
+.logo-metronome-arm,
+.logo-metronome-base {
+    fill: none;
+    stroke: var(--text-secondary);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+}
+
+.logo-metronome-weight {
+    fill: var(--accent);
 }
 
 nav a {
@@ -737,6 +762,21 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
     color: var(--text-dim);
     font-size: 0.7rem;
     margin-top: 0.35rem;
+}
+
+.sources-wide-section {
+    width: calc(100vw - 4rem);
+    max-width: calc(100vw - 4rem);
+    margin-left: 50%;
+    transform: translateX(-50%);
+}
+
+.sources-wide-section .table-wrapper {
+    width: 100%;
+}
+
+.sources-wide-section table {
+    width: 100%;
 }
 
 /* ================================================================
@@ -4398,6 +4438,12 @@ button.btn-danger-outline:hover {
     .kanban-column {
         max-width: 100%;
         min-width: 0;
+    }
+    .sources-wide-section {
+        width: 100%;
+        max-width: 100%;
+        margin-left: 0;
+        transform: none;
     }
 }
 

@@ -2,10 +2,7 @@
 
 import calendar
 import html
-import os
-import smtplib
 from datetime import date, datetime, time, timedelta
-from email.message import EmailMessage
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -328,23 +325,6 @@ def _parse_recipients(raw: str | None) -> list[str]:
     return [part.strip() for part in normalized.splitlines() if part.strip()]
 
 
-def _smtp_config() -> dict:
-    host = os.environ.get("DG_SMTP_HOST") or os.environ.get("SMTP_HOST")
-    sender = os.environ.get("DG_SMTP_FROM") or os.environ.get("SMTP_FROM") or os.environ.get("DG_SMTP_USER") or os.environ.get("SMTP_USER")
-    if not host or not sender:
-        raise RuntimeError("SMTP is not configured. Set DG_SMTP_HOST and DG_SMTP_FROM.")
-    port = int(os.environ.get("DG_SMTP_PORT") or os.environ.get("SMTP_PORT") or "587")
-    return {
-        "host": host,
-        "port": port,
-        "user": os.environ.get("DG_SMTP_USER") or os.environ.get("SMTP_USER"),
-        "password": os.environ.get("DG_SMTP_PASSWORD") or os.environ.get("SMTP_PASSWORD"),
-        "sender": sender,
-        "use_tls": (os.environ.get("DG_SMTP_TLS") or "true").lower() in ("1", "true", "yes"),
-        "use_ssl": (os.environ.get("DG_SMTP_SSL") or "false").lower() in ("1", "true", "yes"),
-    }
-
-
 def _task_link_columns(db, task_id: int) -> dict[str, list[dict]]:
     rows = db.execute(
         "SELECT entity_type, entity_id FROM task_links WHERE task_id = ? ORDER BY created_at",
@@ -481,37 +461,23 @@ def _build_task_summary_email() -> tuple[str, str]:
     return "".join(html_parts), "\n".join(text_parts) + "\n"
 
 
-def _send_smtp_email(recipients: list[str], subject: str, html_body: str, text_body: str) -> int:
+def _send_outlook_email(recipients: list[str], subject: str, html_body: str) -> int:
     if not recipients:
         raise RuntimeError("Add at least one recipient before sending.")
 
-    cfg = _smtp_config()
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = cfg["sender"]
-    msg["To"] = ", ".join(recipients)
-    msg.set_content(text_body)
-    msg.add_alternative(html_body, subtype="html")
+    from app.routers.email import _launch_outlook_payload
 
-    if cfg["use_ssl"]:
-        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=20) as smtp:
-            if cfg["user"] and cfg["password"]:
-                smtp.login(cfg["user"], cfg["password"])
-            smtp.send_message(msg)
-    else:
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as smtp:
-            if cfg["use_tls"]:
-                smtp.starttls()
-            if cfg["user"] and cfg["password"]:
-                smtp.login(cfg["user"], cfg["password"])
-            smtp.send_message(msg)
+    _launch_outlook_payload(
+        [{"to": "; ".join(recipients), "subject": subject, "html_body": html_body}],
+        "send",
+    )
     return len(recipients)
 
 
 def _send_task_summary(schedule: dict) -> int:
     recipients = _parse_recipients(schedule.get("recipients"))
-    html_body, text_body = _build_task_summary_email()
-    return _send_smtp_email(recipients, schedule.get("subject") or DEFAULT_SUBJECT, html_body, text_body)
+    html_body, _text_body = _build_task_summary_email()
+    return _send_outlook_email(recipients, schedule.get("subject") or DEFAULT_SUBJECT, html_body)
 
 
 def _pick_owner_summary(summaries: list[dict], owner_name: str) -> dict | None:
@@ -582,8 +548,8 @@ def _send_person_summary(schedule: dict) -> int:
     if not email:
         raise RuntimeError("Map an email address before enabling this schedule.")
     content_types = _normalize_content_types(schedule.get("content_types")) or _PERSON_DEFAULT_CONTENT_TYPES
-    subject, html_body, text_body = _build_person_schedule_email(person, content_types)
-    return _send_smtp_email([email], subject, html_body, text_body)
+    subject, html_body, _text_body = _build_person_schedule_email(person, content_types)
+    return _send_outlook_email([email], subject, html_body)
 
 
 def _schedule_dict(row) -> dict:

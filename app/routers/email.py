@@ -63,6 +63,13 @@ WEEKDAY_ORDER = {
 }
 
 
+class OutlookEmailError(RuntimeError):
+    def __init__(self, detail: str, status_code: int = 500):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
 class PersonEmailUpdate(BaseModel):
     email: str | None = None
 
@@ -392,7 +399,7 @@ def _build_task_summary(owner: dict, tasks: list[dict]) -> dict:
         lines.append("")
 
     lines.append("Thanks,")
-    lines.append("Data Governance")
+    lines.append("Metronome")
     body_text = "\n".join(lines)
 
     html_parts = [
@@ -428,7 +435,7 @@ def _build_task_summary(owner: dict, tasks: list[dict]) -> dict:
                 "</tr>"
             )
         html_parts.append("</table>")
-    html_parts.append("<p>Thanks,<br>Data Governance</p></div>")
+    html_parts.append("<p>Thanks,<br>Metronome</p></div>")
 
     return {
         "owner_name": owner_name,
@@ -514,7 +521,7 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
                 lines.append(f"  Fix: {alert['recommendation']}")
         lines.append("")
 
-    lines.extend(["", "Thanks,", "Data Governance"])
+    lines.extend(["", "Thanks,", "Metronome"])
     body_text = "\n".join(lines)
 
     html_parts = [
@@ -612,7 +619,7 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
             )
         html_parts.append("</table>")
 
-    html_parts.append("<p>Thanks,<br>Data Governance</p></div>")
+    html_parts.append("<p>Thanks,<br>Metronome</p></div>")
 
     return {
         "owner_name": owner_name,
@@ -763,13 +770,16 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
     return summaries
 
 
-def _launch_outlook_messages(messages: list[dict], mode: str, event_name: str, request: Request) -> dict:
+def _launch_outlook_payload(messages: list[dict], mode: str = "send") -> int:
+    mode = (mode or "send").lower().strip()
+    if mode not in {"draft", "send"}:
+        raise OutlookEmailError("Mode must be draft or send", status_code=422)
     if platform.system() != "Windows":
-        raise HTTPException(status_code=400, detail="Server-side Outlook sending is only available on Windows")
+        raise OutlookEmailError("Server-side Outlook sending is only available on Windows", status_code=400)
     if not OUTLOOK_SCRIPT.exists():
-        raise HTTPException(status_code=404, detail=f"Outlook script not found: {OUTLOOK_SCRIPT}")
+        raise OutlookEmailError(f"Outlook script not found: {OUTLOOK_SCRIPT}", status_code=404)
     if not messages:
-        raise HTTPException(status_code=400, detail="No email messages to send")
+        raise OutlookEmailError("No email messages to send", status_code=400)
 
     payload = {"mode": mode, "messages": messages}
     payload_path = _payload_path()
@@ -799,7 +809,16 @@ def _launch_outlook_messages(messages: list[dict], mode: str, event_name: str, r
             check=True,
         )
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to launch Outlook email task: {exc.stderr or exc}")
+        raise OutlookEmailError(f"Failed to launch Outlook email task: {exc.stderr or exc}") from exc
+
+    return len(messages)
+
+
+def _launch_outlook_messages(messages: list[dict], mode: str, event_name: str, request: Request) -> dict:
+    try:
+        count = _launch_outlook_payload(messages, mode)
+    except OutlookEmailError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     with get_db() as db:
         log_event(
@@ -811,7 +830,7 @@ def _launch_outlook_messages(messages: list[dict], mode: str, event_name: str, r
             f"{len(messages)} owner summaries",
             get_actor(request),
         )
-    return {"status": "launched", "mode": mode, "count": len(messages)}
+    return {"status": "launched", "mode": mode, "count": count}
 
 
 @router.get("/people")
