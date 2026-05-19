@@ -2180,7 +2180,7 @@ async function renderSources() {
         { key: "linked_scripts", label: "Scripts", width: COL_W.sm, render: s => {
             if (!s.linked_scripts) return '-';
             return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
-        }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no" },
+        }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no", filterVal: s => s.linked_scripts ? `yes has script ${s.linked_scripts}` : "no script" },
         { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: s => {
             if (!s.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
             return `<span class="badge badge-blue" style="cursor:help" title="${s.linked_task_count} active task${s.linked_task_count !== 1 ? 's' : ''}">${s.linked_task_count}</span>`;
@@ -2235,7 +2235,7 @@ function bindSourcesPage() {
             } else if (filter === "postgresql") {
                 dt.filters["type"] = "postgresql";
             } else if (filter === "has-script") {
-                dt.filters["linked_scripts"] = "python";
+                dt.filters["linked_scripts"] = "yes";
             } else if (filter === "unhealthy") {
                 dt.filters["status"] = "outdated|degraded|unknown";
             }
