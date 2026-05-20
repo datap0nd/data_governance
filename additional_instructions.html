@@ -159,13 +159,13 @@
   <ol>
     <li>Go to <strong>Home &gt; New Source &gt; Blank Query</strong></li>
     <li>Open the <strong>Advanced Editor</strong> (Home &gt; Advanced Editor)</li>
-    <li>Replace everything with the expression below, putting the business owner's name where it says <code>Rafael Cunha</code>:</li>
+    <li>Replace everything with the expression below, putting the business owner's name where it says <code>BUSINESS_OWNER_NAME</code>:</li>
   </ol>
 <pre>let
-    Source = #table({"Business Owner"}, {{"Rafael Cunha"}})
+    Source = #table({"Business Owner"}, {{"BUSINESS_OWNER_NAME"}})
 in
     Source</pre>
-  <p class="example-note">Example uses "Rafael Cunha". Replace with the actual business owner's full name.</p>
+  <p class="example-note">Replace <code>BUSINESS_OWNER_NAME</code> with the actual business owner's full name.</p>
   <ol start="4">
     <li>Click <strong>Done</strong></li>
     <li>In the Query Settings pane on the right, rename the query to exactly: <strong>Business Owner</strong></li>
@@ -175,13 +175,13 @@ in
   <ol>
     <li>Go to <strong>Home &gt; New Source &gt; Blank Query</strong> again</li>
     <li>Open the <strong>Advanced Editor</strong></li>
-    <li>Replace everything with the expression below, putting your name where it says <code>Rafael Cunha</code>:</li>
+    <li>Replace everything with the expression below, putting your name where it says <code>REPORT_OWNER_NAME</code>:</li>
   </ol>
 <pre>let
-    Source = #table({"Report Owner"}, {{"Rafael Cunha"}})
+    Source = #table({"Report Owner"}, {{"REPORT_OWNER_NAME"}})
 in
     Source</pre>
-  <p class="example-note">Example uses "Rafael Cunha". Replace with your full name.</p>
+  <p class="example-note">Replace <code>REPORT_OWNER_NAME</code> with your full name.</p>
   <ol start="4">
     <li>Click <strong>Done</strong></li>
     <li>Rename the query to exactly: <strong>Report Owner</strong></li>
@@ -198,7 +198,7 @@ in
     <li><strong>Names must be exact.</strong> The table names must be <code>Business Owner</code> and <code>Report Owner</code>. Case-sensitive, with a space, no quotes in the name itself.</li>
     <li><strong>Column name must match the table name.</strong> The column inside <code>Business Owner</code> must also be called <code>Business Owner</code>. Same for <code>Report Owner</code>.</li>
     <li><strong>One value per table.</strong> Each table should have exactly one row with your name as a quoted string.</li>
-    <li><strong>Use real names.</strong> Use the same name you use across the business (e.g., "Rafael Cunha", not "rcunha" or an alias). This is what shows up in dashboards and alert assignments.</li>
+    <li><strong>Use full names.</strong> Use the same full name you use across the business, not a username or alias. This is what shows up in dashboards and alert assignments.</li>
   </ul>
 
   <h2>Checklist</h2>
