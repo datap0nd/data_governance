@@ -8,7 +8,7 @@ Add a dashboard table that ranks user configuration activity over the last seven
 - Branch: main
 - Latest implementation commit before this change: cfd0948 Update handoff for fix first triage
 - Public repo: yes
-- Push status: pending push after the dashboard user-activity change is committed
+- Push status: blocked by approval guard because public origin contains tracked identifying/project-specific content
 
 ## Decisions Made
 - User activity is derived from `event_log.actor`, which is populated by the request identity middleware from registered IP/client identity.
@@ -31,9 +31,11 @@ Add a dashboard table that ranks user configuration activity over the last seven
 - `curl -sS http://127.0.0.1:8000/api/dashboard/user-activity`: passed against preview server with sample rows.
 - Browser verification: dashboard rendered `Actions Per User` with sample rows in descending action count.
 - `node .../skills/impeccable/scripts/detect.mjs --json --fast app/static`: warnings only, matching pre-existing classes of issues.
+- `git push origin main`: blocked by approval guard due public-repo disclosure risk from existing tracked content.
 
 ## Open Questions
 - Confirm in production whether unregistered activity should remain visible or be hidden once user registration is fully adopted.
+- Before pushing, either scrub the public repo's identifying content or get explicit user approval after the disclosure risk is understood.
 
 ## Next Step
-Review the dashboard in Safari at `http://127.0.0.1:8000`, then push the pending commits to origin/main.
+Review the dashboard in Safari at `http://127.0.0.1:8000`, then decide whether to scrub public-repo content before retrying the push.
