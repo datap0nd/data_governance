@@ -188,6 +188,113 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
     return None
 
 
+TRIAGE_TYPE_WEIGHT = {
+    "refresh_failed": 900,
+    "schedule_mismatch": 820,
+    "stale_source": 760,
+    "outdated_source": 760,
+    "error_source": 760,
+    "refresh_overdue": 680,
+    "task_failed": 620,
+    "script_failed": 620,
+    "broken_ref": 540,
+    "changed_query": 420,
+}
+
+
+def _issue_reason(action_type: str) -> str:
+    return {
+        "refresh_failed": "Last PBI refresh failed",
+        "refresh_overdue": "PBI refresh is overdue",
+        "schedule_mismatch": "Report is behind newer source data",
+        "stale_source": "Source is outside its freshness rule",
+        "outdated_source": "Source is outside its freshness rule",
+        "error_source": "Source probe is failing",
+        "task_failed": "Scheduled task failed",
+        "script_failed": "Script-linked refresh failed",
+        "broken_ref": "Report points to a missing source",
+        "changed_query": "Source query changed",
+    }.get(action_type, action_type.replace("_", " "))
+
+
+def _triage_cta(asset_type: str | None, assigned_to: str | None) -> str:
+    if not assigned_to:
+        return "Assign owner"
+    if asset_type == "report":
+        return "Open report"
+    if asset_type == "source":
+        return "Open source"
+    if asset_type == "scheduled_task":
+        return "Open task"
+    if asset_type == "script":
+        return "Open script"
+    return "Open details"
+
+
+def _apply_triage(action: ActionOut) -> ActionOut:
+    """Attach transparent fix-first scoring to an action.
+
+    Impact is deliberately the dominant signal: one weighted usage view is
+    worth more than issue-type and age tie-breakers combined.
+    """
+    if action.status in ("resolved", "expected"):
+        action.triage_score = 0
+        action.triage_reasons = []
+        action.triage_cta = None
+        return action
+
+    impact = max(0, action.impact_views_30d or 0)
+    days = max(0, action.asset_days or 0)
+    issue_weight = TRIAGE_TYPE_WEIGHT.get(action.type, 400)
+    status_weight = {
+        "open": 300,
+        "investigating": 160,
+        "acknowledged": 90,
+    }.get(action.status, 120)
+    owner_weight = 75 if not action.assigned_to else 0
+    affected_reports = len(action.report_names or [])
+    report_weight = min(affected_reports, 10) * 20
+    stale_gap_weight = 0
+    if action.type == "schedule_mismatch" and action.detail_items:
+        max_gap = max((int(item.get("delta_hours") or 0) for item in action.detail_items), default=0)
+        stale_gap_weight = min(max_gap, 72) * 5
+
+    action.triage_score = (
+        impact * 1000
+        + issue_weight
+        + min(days, 30) * 25
+        + status_weight
+        + owner_weight
+        + report_weight
+        + stale_gap_weight
+    )
+
+    reasons: list[str] = []
+    if impact:
+        reasons.append(f"{impact:,} weighted views in last 30d")
+    else:
+        reasons.append("No measured usage impact yet")
+    reasons.append(_issue_reason(action.type))
+    if action.type == "schedule_mismatch" and action.detail_items:
+        count = len(action.detail_items)
+        worst_gap = max((int(item.get("delta_hours") or 0) for item in action.detail_items), default=0)
+        if worst_gap >= 48:
+            gap = f"{worst_gap // 24}d"
+        else:
+            gap = f"{worst_gap}h"
+        reasons.append(f"{count} source{'s' if count != 1 else ''} newer, worst gap {gap}")
+    elif action.asset_type == "source" and affected_reports:
+        reasons.append(f"Affects {affected_reports} report{'s' if affected_reports != 1 else ''}")
+    if days:
+        reasons.append(f"Open for {days}d")
+    if not action.assigned_to:
+        reasons.append("Unassigned")
+
+    action.triage_reasons = reasons[:4]
+    action.triage_cta = _triage_cta(action.asset_type, action.assigned_to)
+    return action
+
+
 @router.get("", response_model=list[ActionOut])
 def list_actions(status: str | None = None):
     with get_db() as db:
@@ -303,7 +410,7 @@ def list_actions(status: str | None = None):
             detail_items = report_stale_sources.get(rid, [])
         recommendation = _recommendation_for(r["type"], detail_items)
 
-        results.append(ActionOut(
+        action = ActionOut(
             id=r["id"],
             source_id=sid,
             source_name=r["source_name"],
@@ -328,16 +435,15 @@ def list_actions(status: str | None = None):
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             resolved_at=r["resolved_at"],
-        ))
+        )
+        results.append(_apply_triage(action))
 
-    # Sort: open first; then by weighted impact views DESC. Days remains a
-    # tiebreaker so executive-facing reports can outrank old low-traffic issues.
+    # Sort: open first; then by transparent fix-first score.
     def sort_key(a: ActionOut):
         is_closed = a.status in ("resolved", "expected")
         return (
             1 if is_closed else 0,
-            -a.impact_views_30d,
-            -a.asset_days,
+            -a.triage_score,
             -(datetime.fromisoformat(a.created_at).timestamp() if a.created_at else 0),
         )
     results.sort(key=sort_key)
@@ -354,6 +460,12 @@ def list_actions(status: str | None = None):
             continue
         seen.add(key)
         deduped.append(a)
+    rank = 1
+    for action in deduped:
+        if action.status in ("resolved", "expected"):
+            continue
+        action.triage_rank = rank
+        rank += 1
     return deduped
 
 

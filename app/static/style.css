@@ -2386,6 +2386,113 @@ body.ai-panel-open main {
     background: rgba(255,255,255,0.25);
 }
 
+.fix-first-panel {
+    margin: 0 0 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.85rem;
+}
+.fix-first-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.65rem;
+}
+.fix-first-header h3 {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text);
+}
+.fix-first-header span {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--text-dim);
+    font-size: 0.74rem;
+}
+.fix-first-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+}
+.fix-first-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.55rem;
+    align-items: start;
+    padding: 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+}
+.fix-first-rank {
+    width: 1.45rem;
+    height: 1.45rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+.fix-first-body {
+    min-width: 0;
+}
+.fix-first-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+}
+.fix-first-title-row strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.fix-first-reasons {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    margin-top: 0.4rem;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+.fix-first-metrics {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.1rem;
+}
+.fix-first-cta {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    padding: 0.28rem 0.55rem;
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+.fix-first-cta:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.focus-pulse {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+@media (max-width: 980px) {
+    .fix-first-list {
+        grid-template-columns: 1fr;
+    }
+}
+
 .alerts-table-wrap {
     overflow-x: auto;
     border: 1px solid var(--border);

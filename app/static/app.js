@@ -1498,6 +1498,68 @@ async function renderDashboard() {
     `;
 }
 
+function renderFixFirstPanel(openActions) {
+    const picks = [...openActions]
+        .filter(a => a.triage_rank)
+        .sort((a, b) => (a.triage_rank || 999) - (b.triage_rank || 999))
+        .slice(0, 3);
+    if (picks.length === 0) return "";
+
+    const ctaHtml = (a) => {
+        const label = esc(a.triage_cta || "Open details");
+        if (a.triage_cta === "Assign owner") {
+            return `<button type="button" class="fix-first-cta fix-first-focus-owner" data-action-id="${a.id}">${label}</button>`;
+        }
+        if (a.asset_type === "source" && a.asset_id) {
+            return `<button type="button" class="fix-first-cta alerts-source-link" data-source-id="${a.asset_id}">${label}</button>`;
+        }
+        if (a.asset_type === "report" && a.asset_id) {
+            return `<button type="button" class="fix-first-cta alerts-go-report" data-report-id="${a.asset_id}">${label}</button>`;
+        }
+        if (a.asset_type === "scheduled_task" && a.asset_id) {
+            return `<button type="button" class="fix-first-cta alerts-task-link" data-task-id="${a.asset_id}">${label}</button>`;
+        }
+        if (a.asset_type === "script" && a.asset_id) {
+            return `<button type="button" class="fix-first-cta alerts-script-link" data-script-id="${a.asset_id}">${label}</button>`;
+        }
+        return `<button type="button" class="fix-first-cta fix-first-focus-owner" data-action-id="${a.id}">${label}</button>`;
+    };
+
+    const items = picks.map(a => {
+        const rawName = a.asset_name || a.source_name || a.report_name || "-";
+        const assetName = shortNameFromPath(rawName) || rawName;
+        const reasons = (a.triage_reasons || []).slice(0, 3).map(r => `<span>${esc(r)}</span>`).join("");
+        return `
+            <div class="fix-first-item">
+                <div class="fix-first-rank">${a.triage_rank}</div>
+                <div class="fix-first-body">
+                    <div class="fix-first-title-row">
+                        <strong>${esc(assetName)}</strong>
+                        ${actionTypeBadge(a.type)}
+                    </div>
+                    <div class="fix-first-reasons">${reasons}</div>
+                </div>
+                <div class="fix-first-metrics">
+                    <span class="impact-pill" title="Weighted views in the last 30 days">${fmtInt(a.impact_views_30d || 0)}</span>
+                    ${ctaHtml(a)}
+                </div>
+            </div>
+        `;
+    }).join("");
+
+    return `
+        <section class="fix-first-panel" aria-label="Fix this first">
+            <div class="fix-first-header">
+                <div>
+                    <h3>Fix This First</h3>
+                    <span>Ranked by weighted impact, issue type, age, and ownership.</span>
+                </div>
+            </div>
+            <div class="fix-first-list">${items}</div>
+        </section>
+    `;
+}
+
 function renderDashboardAlertsSection(actions, people) {
     const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
 
@@ -1523,12 +1585,14 @@ function renderDashboardAlertsSection(actions, people) {
     `;
 
     const tableHtml = renderDashboardAlertsTable(actions, biPeople, "all");
+    const fixFirstHtml = renderFixFirstPanel(openActions);
 
     return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
             <h2 style="margin:0">Alerts</h2>
             <span style="color:var(--text-dim);font-size:0.78rem">Sorted by weighted impact, then days in problem state</span>
         </div>
+        ${fixFirstHtml}
         <div class="alerts-chips">${chipsHtml}</div>
         <div id="dashboard-alerts-tbody-wrap">${tableHtml}</div>
     `;
@@ -1737,6 +1801,35 @@ function _waitForElement(selector, timeoutMs = 2000) {
 }
 
 function bindDashboardAlertsRowControls() {
+    document.querySelectorAll(".fix-first-focus-owner").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const actionId = btn.dataset.actionId;
+            if (!actionId) return;
+            let row = document.querySelector(`.alerts-row[data-action-id="${actionId}"]`);
+            if (!row) {
+                const actions = window._dashboardActions || [];
+                const people = window._dashboardPeople || [];
+                const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
+                const wrap = document.getElementById("dashboard-alerts-tbody-wrap");
+                if (wrap) {
+                    wrap.innerHTML = renderDashboardAlertsTable(actions, biPeople, "all");
+                    document.querySelectorAll(".alerts-chip").forEach(chip => chip.classList.toggle("active", chip.dataset.filterPerson === "all"));
+                    bindDashboardAlertsRowControls();
+                    row = document.querySelector(`.alerts-row[data-action-id="${actionId}"]`);
+                }
+            }
+            if (!row) return;
+            row.scrollIntoView({ behavior: "smooth", block: "center" });
+            const ownerSelect = row.querySelector(".dashboard-action-owner-select");
+            if (ownerSelect) {
+                ownerSelect.focus();
+                ownerSelect.classList.add("focus-pulse");
+                setTimeout(() => ownerSelect.classList.remove("focus-pulse"), 1200);
+            }
+        });
+    });
+
     // Explicit report button - navigate to reports page and open detail.
     document.querySelectorAll(".alerts-go-report").forEach(el => {
         el.addEventListener("click", async (e) => {

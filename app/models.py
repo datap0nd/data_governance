@@ -174,6 +174,10 @@ class ActionOut(BaseModel):
     assigned_to: str | None = None
     notes: str | None = None
     impact_views_30d: int = 0
+    triage_rank: int | None = None
+    triage_score: int = 0
+    triage_reasons: list[str] = []
+    triage_cta: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     resolved_at: str | None = None
