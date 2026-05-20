@@ -32,7 +32,21 @@ $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop;\\MX-SHARE\Users\meto.mx\Desktop;\\METO-MX02\Users\METOMX\Desktop"
 $Port        = 8000
-$ZipUrl      = "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
+$GitHubToken = $env:DG_GITHUB_TOKEN
+$ZipUrl      = if ($GitHubToken) {
+    "https://api.github.com/repos/datap0nd/data_governance/zipball/main"
+} else {
+    "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
+}
+if ($env:DG_UPDATE_ZIP_URL) {
+    $ZipUrl = $env:DG_UPDATE_ZIP_URL
+}
+$ZipHeaders = @{}
+if ($GitHubToken) {
+    $ZipHeaders["Authorization"] = "Bearer $GitHubToken"
+    $ZipHeaders["Accept"] = "application/vnd.github+json"
+    $ZipHeaders["User-Agent"] = "Metronome-Setup"
+}
 $ZipPath     = "$ProjectDir\_update.zip"
 $PyDir       = "$ProjectDir\python313"
 $PyExe       = "$PyDir\python.exe"
@@ -144,10 +158,16 @@ $ErrorActionPreference = "Stop"
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
 try {
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
+    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing -Headers $ZipHeaders
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
 } catch {
     Write-Host "  Direct download failed: $_" -ForegroundColor Yellow
+    if ($GitHubToken) {
+        Write-Host "  Check that DG_GITHUB_TOKEN has read access to this private repo." -ForegroundColor Red
+        Write-Host "  Required GitHub permission: Contents = Read." -ForegroundColor Red
+        pause
+        exit 1
+    }
     Write-Host "  Trying via Edge..." -ForegroundColor Yellow
 
     $BrowserZip = "$env:USERPROFILE\Downloads\data_governance-main.zip"
