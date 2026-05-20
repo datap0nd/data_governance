@@ -1,41 +1,36 @@
 # Agent Handoff
 
 ## Current Objective
-Add a dashboard table that ranks user configuration activity over the last seven days.
+Prepare the installer for a private GitHub repository and keep the dashboard user-activity work ready to push.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest implementation commit before this change: cfd0948 Update handoff for fix first triage
-- Public repo: yes
-- Push status: blocked by approval guard because public origin contains tracked identifying/project-specific content
+- Latest local implementation commit before this handoff: 38bc3c1 Support private repo setup downloads
+- Public repo: yes at time of handoff
+- Push status: blocked while origin remains public and tracked identifying/project-specific content exists
 
 ## Decisions Made
-- User activity is derived from `event_log.actor`, which is populated by the request identity middleware from registered IP/client identity.
-- The dashboard metric includes all user-visible event log activity from the last seven days.
-- Null or blank actors are grouped as `Unregistered` so missing identity setup is visible.
-- Scheduler and system actors are excluded so automated jobs do not distort accountability.
-- The dashboard table is placed between Health Trend and Alerts, keeping it visible without displacing the alert triage workflow.
+- `setup.ps1` now supports private-repo code downloads via `DG_GITHUB_TOKEN`.
+- The token is read from the environment and is never written into the repo.
+- When `DG_GITHUB_TOKEN` exists, setup downloads through the GitHub API zipball endpoint with `Authorization: Bearer`.
+- `DG_UPDATE_ZIP_URL` can override the update ZIP URL for custom deployment paths.
+- Browser fallback remains only for anonymous/public downloads; private downloads fail fast with a token-permission message.
 
 ## Files Changed
-- app/routers/dashboard.py: added `/api/dashboard/user-activity`.
-- app/static/app.js: fetches and renders the Actions Per User table on the dashboard.
-- app/static/style.css: added compact table styling for the dashboard activity panel.
-- docs/metric_contracts.md: documented the `Actions per user last 7d` metric contract.
+- setup.ps1: added authenticated ZIP download support for private GitHub repos.
 - docs/agent_handoff.md: updated current handoff.
+- Earlier local commits also contain the dashboard user-activity table, Fix This First triage panel, and owner-example placeholder cleanup.
 
 ## Commands And Checks
-- `PYTHONPYCACHEPREFIX=/private/tmp/dg-pycache python3 -m compileall app`: passed.
-- `node --check app/static/app.js`: passed.
-- `git diff --check`: passed.
-- `curl -sS http://127.0.0.1:8000/api/dashboard/user-activity`: passed against preview server with sample rows.
-- Browser verification: dashboard rendered `Actions Per User` with sample rows in descending action count.
-- `node .../skills/impeccable/scripts/detect.mjs --json --fast app/static`: warnings only, matching pre-existing classes of issues.
-- `git push origin main`: blocked by approval guard due public-repo disclosure risk from existing tracked content.
+- `gh repo view datap0nd/data_governance --json visibility,nameWithOwner`: failed because GitHub CLI is not authenticated.
+- `git diff --check`: passed after the setup change.
+- Not run: PowerShell syntax validation, because `pwsh` is not installed on this Mac environment.
+- Not run: `git push origin main`, because origin is still public and the approval guard blocks publishing tracked identifying/project-specific content.
 
 ## Open Questions
-- Confirm in production whether unregistered activity should remain visible or be hidden once user registration is fully adopted.
-- Before pushing, either scrub the public repo's identifying content or get explicit user approval after the disclosure risk is understood.
+- User or an authenticated GitHub CLI session must make the repository private before Codex can retry pushing safely.
+- After privacy changes, confirm the setup PC has a fine-grained GitHub token with read-only Contents access saved as `DG_GITHUB_TOKEN`.
 
 ## Next Step
-Review the dashboard in Safari at `http://127.0.0.1:8000`, then decide whether to scrub public-repo content before retrying the push.
+Make the GitHub repository private, then retry `git push origin main`.
