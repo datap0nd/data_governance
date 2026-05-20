@@ -2341,6 +2341,90 @@ body.ai-panel-open main {
     height: 120px !important;
 }
 
+.user-activity-panel {
+    margin-top: 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.user-activity-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem 0.95rem;
+    border-bottom: 1px solid var(--border);
+}
+.user-activity-header h2 {
+    margin: 0;
+    font-size: 0.92rem;
+}
+.user-activity-header span {
+    display: block;
+    margin-top: 0.16rem;
+    color: var(--text-dim);
+    font-size: 0.74rem;
+}
+.user-activity-header strong {
+    color: var(--text);
+    font-size: 0.86rem;
+    white-space: nowrap;
+}
+.user-activity-table-wrap {
+    overflow-x: auto;
+}
+.user-activity-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.user-activity-table th {
+    text-align: left;
+    padding: 0.6rem 0.95rem;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+}
+.user-activity-table td {
+    padding: 0.58rem 0.95rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.user-activity-table tr:last-child td {
+    border-bottom: none;
+}
+.user-activity-table tbody tr:hover {
+    background: rgba(255,255,255,0.02);
+}
+.user-activity-rank {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.45rem;
+    height: 1.45rem;
+    margin-right: 0.5rem;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+.user-activity-name {
+    color: var(--text);
+    font-weight: 600;
+}
+@media (max-width: 720px) {
+    .user-activity-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}
+
 .dashboard-alerts-section {
     margin-top: 1.5rem;
 }

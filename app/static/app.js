@@ -1386,13 +1386,14 @@ function _autoVisualTitle(v) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, actions, healthTrend, people] = await Promise.all([
+    const [data, sources, reports, actions, healthTrend, people, userActivity] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
         api("/api/actions"),
         api("/api/schedules/health-trend"),
         api("/api/people"),
+        api("/api/dashboard/user-activity"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
@@ -1416,6 +1417,7 @@ async function renderDashboard() {
     window._dashboardReports = reports;
     window._dashboardActions = actions;
     window._dashboardPeople = people;
+    window._dashboardUserActivity = userActivity;
 
     return `
         <div class="stat-grid">
@@ -1492,9 +1494,61 @@ async function renderDashboard() {
             </div>
         </div>
 
+        ${renderUserActivityTable(userActivity)}
+
         <div id="dashboard-alerts" class="dashboard-alerts-section">
             ${renderDashboardAlertsSection(actions, people)}
         </div>
+    `;
+}
+
+function renderUserActivityTable(rows) {
+    const activity = [...(rows || [])].sort((a, b) =>
+        (b.action_count || 0) - (a.action_count || 0) ||
+        String(b.last_action_at || "").localeCompare(String(a.last_action_at || "")) ||
+        String(a.actor || "").localeCompare(String(b.actor || ""))
+    );
+    const totalActions = activity.reduce((sum, row) => sum + Number(row.action_count || 0), 0);
+
+    const bodyHtml = activity.length
+        ? `
+            <div class="user-activity-table-wrap">
+                <table class="user-activity-table">
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            <th style="text-align:right">Actions last 7d</th>
+                            <th>Last action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${activity.map((row, index) => `
+                            <tr>
+                                <td>
+                                    <span class="user-activity-rank">${index + 1}</span>
+                                    <span class="user-activity-name">${esc(row.actor || "Unregistered")}</span>
+                                </td>
+                                <td style="text-align:right"><strong>${fmtInt(row.action_count || 0)}</strong></td>
+                                <td>${row.last_action_at ? timeAgo(row.last_action_at) : "-"}</td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `
+        : '<div class="empty-state" style="padding:1.1rem">No user activity in the last 7 days</div>';
+
+    return `
+        <section class="user-activity-panel" aria-label="Actions per user">
+            <div class="user-activity-header">
+                <div>
+                    <h2>Actions Per User</h2>
+                    <span>Last 7 days, ranked by configuration activity</span>
+                </div>
+                <strong>${fmtInt(totalActions)} total</strong>
+            </div>
+            ${bodyHtml}
+        </section>
     `;
 }
 

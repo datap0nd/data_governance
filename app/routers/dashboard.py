@@ -97,3 +97,36 @@ def get_impact_hierarchy():
         }
         for r in rows
     ]
+
+
+@router.get("/user-activity")
+def get_user_activity():
+    """Return configuration activity by user over the last seven days."""
+    with get_db() as db:
+        rows = db.execute("""
+            SELECT
+                CASE
+                    WHEN actor IS NULL OR TRIM(actor) = '' THEN 'Unregistered'
+                    ELSE TRIM(actor)
+                END AS actor,
+                COUNT(*) AS action_count,
+                CAST(MAX(created_at) AS TEXT) AS last_action_at
+            FROM event_log
+            WHERE created_at >= datetime('now', '-7 days')
+              AND LOWER(TRIM(COALESCE(actor, ''))) NOT IN ('scheduler', 'system')
+            GROUP BY
+                CASE
+                    WHEN actor IS NULL OR TRIM(actor) = '' THEN 'Unregistered'
+                    ELSE TRIM(actor)
+                END
+            ORDER BY action_count DESC, last_action_at DESC, actor ASC
+        """).fetchall()
+
+    return [
+        {
+            "actor": r["actor"],
+            "action_count": r["action_count"],
+            "last_action_at": r["last_action_at"],
+        }
+        for r in rows
+    ]

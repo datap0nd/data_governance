@@ -36,3 +36,14 @@
 - Affected report weight: source actions add 20 per affected report, capped at 10 reports.
 - Stale gap weight: schedule mismatch actions add 5 per hour of worst source/report gap, capped at 72 hours.
 - Reason display: The API returns short `triage_reasons` strings so users can see why an item appears in the panel.
+
+## Actions per user last 7d
+- Business meaning: Dashboard accountability metric showing who changed or configured the governance tool recently.
+- Numerator: Count of `event_log` rows created in the last seven days, grouped by resolved actor name.
+- Denominator: None.
+- Grain: Actor.
+- Date logic: Uses SQLite `datetime('now', '-7 days')` against `event_log.created_at`.
+- Actor logic: Uses `event_log.actor`, which is resolved from the request identity middleware's IP/client-key registration. Null or blank actors are grouped as `Unregistered`.
+- Filters: Excludes scheduler and system actors so automated email dispatches do not rank as user activity.
+- Ordering: Sort by action count descending, then most recent action descending, then actor name ascending.
+- Edge cases: Historical rows before actor tracking appear under `Unregistered` if they fall inside the seven-day window.

@@ -1,41 +1,39 @@
 # Agent Handoff
 
 ## Current Objective
-Add a dashboard "Fix This First" triage panel that explains the highest-priority alerts.
+Add a dashboard table that ranks user configuration activity over the last seven days.
 
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: 366f66a Add fix first alert triage
+- Latest implementation commit before this change: cfd0948 Update handoff for fix first triage
 - Public repo: yes
-- Push status: pending push after this handoff update
+- Push status: pending push after the dashboard user-activity change is committed
 
 ## Decisions Made
-- Action ranking stays deterministic and API-owned, not hidden in frontend-only logic.
-- `impact_views_30d` is the dominant triage signal: one weighted view is worth more than issue-type and age tie-breakers combined.
-- Fix-first scoring also considers issue type, days in problem state, unassigned ownership, affected report count, and source/report stale gap.
-- The dashboard shows the top three active actions above the Alerts table with short reasons and a CTA.
-- CTA opens the relevant asset when ownership exists; for unassigned actions it scrolls to the table row and focuses the owner dropdown.
+- User activity is derived from `event_log.actor`, which is populated by the request identity middleware from registered IP/client identity.
+- The dashboard metric includes all user-visible event log activity from the last seven days.
+- Null or blank actors are grouped as `Unregistered` so missing identity setup is visible.
+- Scheduler and system actors are excluded so automated jobs do not distort accountability.
+- The dashboard table is placed between Health Trend and Alerts, keeping it visible without displacing the alert triage workflow.
 
 ## Files Changed
-- app/models.py: added triage fields to `ActionOut`.
-- app/routers/actions.py: computes triage score, rank, reasons, and CTA for visible actions.
-- app/static/app.js: renders the Fix This First panel and binds CTA interactions.
-- app/static/style.css: styling for the triage panel.
-- docs/metric_contracts.md: added Fix This First rank contract.
+- app/routers/dashboard.py: added `/api/dashboard/user-activity`.
+- app/static/app.js: fetches and renders the Actions Per User table on the dashboard.
+- app/static/style.css: added compact table styling for the dashboard activity panel.
+- docs/metric_contracts.md: documented the `Actions per user last 7d` metric contract.
 - docs/agent_handoff.md: updated current handoff.
 
 ## Commands And Checks
-- `git pull --ff-only`: already up to date before edits.
 - `PYTHONPYCACHEPREFIX=/private/tmp/dg-pycache python3 -m compileall app`: passed.
 - `node --check app/static/app.js`: passed.
 - `git diff --check`: passed.
-- `node .../impeccable/scripts/detect.mjs --json --fast app/static`: warnings only, matching pre-existing classes of issues (side accent borders, layout transitions, single-font heuristic).
-- Triage scoring smoke test: not run in local system Python because `pydantic` is not installed in that interpreter.
-- Not run: full FastAPI server/browser QA, because app startup begins the scheduler and can dispatch due scheduled emails.
+- `curl -sS http://127.0.0.1:8000/api/dashboard/user-activity`: passed against preview server with sample rows.
+- Browser verification: dashboard rendered `Actions Per User` with sample rows in descending action count.
+- `node .../skills/impeccable/scripts/detect.mjs --json --fast app/static`: warnings only, matching pre-existing classes of issues.
 
 ## Open Questions
-- No blocker.
+- Confirm in production whether unregistered activity should remain visible or be hidden once user registration is fully adopted.
 
 ## Next Step
-After deploy, review the first few Fix This First picks with real usage data to tune issue-type weights if the order feels off.
+Review the dashboard in Safari at `http://127.0.0.1:8000`, then push the pending commits to origin/main.
