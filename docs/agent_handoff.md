@@ -6,9 +6,9 @@ Add a dashboard "Fix This First" triage panel that explains the highest-priority
 ## Repo State
 - Path: data_governance
 - Branch: main
-- Latest commit: e3a5507 Update handoff for usage metrics
+- Latest commit: 366f66a Add fix first alert triage
 - Public repo: yes
-- Push status: pending commit and push for triage work
+- Push status: pending push after this handoff update
 
 ## Decisions Made
 - Action ranking stays deterministic and API-owned, not hidden in frontend-only logic.
