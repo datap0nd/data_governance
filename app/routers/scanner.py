@@ -9,10 +9,19 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
-from app.local_access import is_server_machine
+from app.local_access import require_admin
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
-from app.scanner.pbi_sync import trigger_pbi_sync, import_pbi_data, trigger_pbi_usage_sync
+from app.scanner.pbi_sync import (
+    _record_sync_run,
+    latest_pbi_sync,
+    latest_successful_pbi_sync,
+    pbi_sync_freshness,
+    service_principal_configured,
+    trigger_pbi_sync,
+    import_pbi_data,
+    trigger_pbi_usage_sync,
+)
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 from app.usage import sync_usage_from_csv
@@ -23,10 +32,8 @@ router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 
 def _require_local(request: Request):
-    """Raise 403 if request is not from the server machine."""
-    ip = request.client.host if request.client else ""
-    if not is_server_machine(ip):
-        raise HTTPException(status_code=403, detail="Scanner restricted to server machine")
+    """Raise 403 if request does not have admin capabilities."""
+    require_admin(request, "Scanner restricted to admins")
 
 
 @router.post("/run")
@@ -66,6 +73,23 @@ def do_pbi_sync(request: Request):
     """Launch PBI sync in the user's interactive session."""
     _require_local(request)
     return trigger_pbi_sync()
+
+
+@router.get("/pbi-sync/status")
+def pbi_sync_status():
+    """Return latest PBI sync status and freshness."""
+    return {
+        "auth_mode": "service_principal" if service_principal_configured() else "interactive",
+        "refresh": {
+            "latest_attempt": latest_pbi_sync("refresh"),
+            "latest_success": latest_successful_pbi_sync("refresh"),
+            "freshness": pbi_sync_freshness(),
+        },
+        "usage": {
+            "latest_attempt": latest_pbi_sync("usage"),
+            "latest_success": latest_successful_pbi_sync("usage"),
+        },
+    }
 
 
 @router.post("/pbi-import")
@@ -119,6 +143,27 @@ def do_pg_cron(request: Request):
 
 class OpenPathRequest(BaseModel):
     path: str
+
+
+class PbiSyncRunStatus(BaseModel):
+    sync_type: str = "refresh"
+    status: str
+    message: str | None = None
+    details: dict | None = None
+
+
+@router.post("/pbi-sync/run-status")
+def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
+    """Record status from a PowerShell sync process that failed before import."""
+    _require_local(request)
+    sync_type = (body.sync_type or "refresh").strip().lower()
+    if sync_type not in {"refresh", "usage"}:
+        raise HTTPException(status_code=400, detail="sync_type must be refresh or usage")
+    status = (body.status or "").strip().lower()
+    if status not in {"launched", "completed", "failed", "skipped"}:
+        raise HTTPException(status_code=400, detail="status is not valid")
+    _record_sync_run(sync_type, status, body.message, body.details)
+    return {"status": "recorded"}
 
 
 @router.post("/open-path")
@@ -409,7 +454,14 @@ def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
             if report_id:
                 matched += 1
 
-    return {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
+    result = {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
+    _record_sync_run(
+        "usage",
+        "completed",
+        f"Power BI usage sync completed: {len(days_synced)} day(s), {matched} matched.",
+        result,
+    )
+    return result
 
 
 @router.post("/pbi-usage-sync")
@@ -419,5 +471,12 @@ def do_pbi_usage_sync(request: Request):
     with get_db() as db:
         csv_result = sync_usage_from_csv(db, force=True)
         if csv_result.get("status") != "skipped":
+            if csv_result.get("status") in {"completed", "success"}:
+                _record_sync_run(
+                    "usage",
+                    "completed",
+                    csv_result.get("message") or "Power BI usage CSV sync completed.",
+                    csv_result,
+                )
             return csv_result
     return trigger_pbi_usage_sync()

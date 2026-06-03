@@ -23,50 +23,93 @@ function Pause-IfNeeded {
     }
 }
 
+function Report-SyncStatus {
+    param(
+        [string]$Status,
+        [string]$Message
+    )
+    try {
+        $payload = @{
+            sync_type = "usage"
+            status    = $Status
+            message   = $Message
+        } | ConvertTo-Json -Depth 4
+        Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-sync/run-status" -Method POST -Body $payload -ContentType "application/json; charset=utf-8" | Out-Null
+    } catch {
+        Write-Host "Could not report sync status: $_" -ForegroundColor DarkYellow
+    }
+}
+
 if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
     Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
+    Report-SyncStatus -Status "failed" -Message "MicrosoftPowerBIMgmt module is not installed."
     Pause-IfNeeded "Press Enter to exit"
     exit 1
 }
 
 Import-Module MicrosoftPowerBIMgmt -ErrorAction Stop
 
-# Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically
-$clicker = $null
-$clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
-if (Test-Path $clickerScript) {
-    try {
-        $clickerArgs = @(
-            "-ExecutionPolicy", "Bypass",
-            "-NoProfile",
-            "-STA",
-            "-File", $clickerScript,
-            "-TimeoutSeconds", "90"
-        )
-        if ($PreferredAccount) {
-            $clickerArgs += @("-PreferredAccount", $PreferredAccount)
+function Test-ServicePrincipalConfig {
+    return [bool]($env:DG_PBI_TENANT_ID -and $env:DG_PBI_CLIENT_ID -and $env:DG_PBI_CLIENT_SECRET)
+}
+
+function Connect-DgPowerBI {
+    if (Test-ServicePrincipalConfig) {
+        Write-Host "Connecting to Power BI with service principal..." -ForegroundColor Yellow
+        try {
+            $secureSecret = ConvertTo-SecureString $env:DG_PBI_CLIENT_SECRET -AsPlainText -Force
+            $credential = New-Object System.Management.Automation.PSCredential($env:DG_PBI_CLIENT_ID, $secureSecret)
+            Connect-PowerBIServiceAccount -ServicePrincipal -Tenant $env:DG_PBI_TENANT_ID -Credential $credential -ErrorAction Stop | Out-Null
+            Write-Host "Connected with service principal." -ForegroundColor Green
+            return
+        } catch {
+            Write-Error "Failed to connect to Power BI with service principal: $_"
+            Report-SyncStatus -Status "failed" -Message "Failed to connect to Power BI with service principal: $_"
+            Pause-IfNeeded "Press Enter to exit"
+            exit 1
         }
-        $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList $clickerArgs
-        Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
+    }
+
+    # Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically.
+    # This fallback requires an unlocked interactive Windows session.
+    $clicker = $null
+    $clickerScript = Join-Path $PSScriptRoot "pbi_auto_click_picker.ps1"
+    if (Test-Path $clickerScript) {
+        try {
+            $clickerArgs = @(
+                "-ExecutionPolicy", "Bypass",
+                "-NoProfile",
+                "-STA",
+                "-File", $clickerScript,
+                "-TimeoutSeconds", "90"
+            )
+            if ($PreferredAccount) {
+                $clickerArgs += @("-PreferredAccount", $PreferredAccount)
+            }
+            $clicker = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList $clickerArgs
+            Write-Host "Auto-clicker started (PID $($clicker.Id))." -ForegroundColor DarkGray
+        } catch {
+            Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
+        }
+    }
+
+    Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
+    try {
+        Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
+        Write-Host "Connected." -ForegroundColor Green
     } catch {
-        Write-Host "Could not start auto-clicker: $_" -ForegroundColor DarkYellow
+        Write-Error "Failed to connect to Power BI: $_"
+        Report-SyncStatus -Status "failed" -Message "Failed to connect to Power BI interactively: $_"
+        Pause-IfNeeded "Press Enter to exit"
+        exit 1
+    } finally {
+        if ($clicker -and -not $clicker.HasExited) {
+            Stop-Process -Id $clicker.Id -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
-# Connect (uses cached token if available, otherwise pops login - auto-clicker handles it)
-Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
-try {
-    Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
-    Write-Host "Connected." -ForegroundColor Green
-} catch {
-    Write-Error "Failed to connect to Power BI: $_"
-    Pause-IfNeeded "Press Enter to exit"
-    exit 1
-} finally {
-    if ($clicker -and -not $clicker.HasExited) {
-        Stop-Process -Id $clicker.Id -Force -ErrorAction SilentlyContinue
-    }
-}
+Connect-DgPowerBI
 
 # Get already-synced days from the governance API
 Write-Host "Checking previously synced days..." -ForegroundColor Yellow
@@ -159,6 +202,7 @@ foreach ($day in $daysToFetch) {
             Write-Host "  - Global Administrator" -ForegroundColor Yellow
             Write-Host "Workspace Admin alone is NOT sufficient." -ForegroundColor Yellow
             Write-Host ""
+            Report-SyncStatus -Status "failed" -Message "Power BI activity event permission error."
             Pause-IfNeeded "Press Enter to close"
             exit 1
         }
@@ -185,6 +229,7 @@ try {
     Write-Host "  Matched to DB: $($response.matched)" -ForegroundColor Green
 } catch {
     Write-Error "Failed to POST to governance API: $_"
+    Report-SyncStatus -Status "failed" -Message "Failed to POST Power BI usage data to governance API: $_"
 }
 
 Pause-IfNeeded "Press Enter to close"

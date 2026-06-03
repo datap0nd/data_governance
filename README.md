@@ -40,6 +40,24 @@ Open your browser to `http://localhost:8000`
 
 For other people on the network to access it, they go to `http://YOUR_COMPUTER_IP:8000`
 
+### Admin access for another PC
+
+The machine running the app is always an admin. To grant another PC the same capabilities, have the user open the app from that PC and register their name. Then open Admin > Admin Access from an existing admin session and enable admin use for that user's IP row.
+
+### Unattended Power BI sync
+
+Interactive Power BI sign-in cannot be reliably auto-clicked when Windows is locked. For locked-machine morning syncs, configure a Power BI service principal and set these environment variables for the service account:
+
+```bash
+DG_PBI_TENANT_ID=<tenant-id>
+DG_PBI_CLIENT_ID=<app-client-id>
+DG_PBI_CLIENT_SECRET=<client-secret>
+```
+
+When those values are present, the sync runs without the Microsoft account picker. Scheduled emails are blocked by default if the latest completed Power BI refresh sync is older than `DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS` hours, defaulting to `24`. After the configured overall refresh time plus `DG_EMAIL_PBI_SYNC_GRACE_MINUTES`, defaulting to `30`, emails require that day's sync to have completed. If PBI is stale, the email is deferred and retried after `DG_EMAIL_PBI_STALE_RETRY_MINUTES`, defaulting to `30`. Set `DG_EMAIL_REQUIRE_FRESH_PBI=false` only if stale PBI metadata is acceptable.
+
+Admins can change the daily overall refresh time from Admin > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
+
 ### 5. Run the scanner
 
 Click "Run Scan Now" on the Scanner page, or hit the API:

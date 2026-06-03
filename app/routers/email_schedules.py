@@ -2,13 +2,21 @@
 
 import calendar
 import html
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timezone, time, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.config import (
+    EMAIL_MAX_PBI_SYNC_AGE_HOURS,
+    EMAIL_PBI_STALE_RETRY_MINUTES,
+    EMAIL_PBI_SYNC_GRACE_MINUTES,
+    EMAIL_REQUIRE_FRESH_PBI,
+)
 from app.database import get_db
 from app.models import EmailScheduleOut, EmailScheduleUpdate
 from app.routers.eventlog import get_actor, log_event
+from app.scanner.pbi_sync import pbi_sync_freshness
+from app.settings import get_overall_refresh_time
 
 router = APIRouter(prefix="/api/email-schedules", tags=["email-schedules"])
 
@@ -552,6 +560,68 @@ def _send_person_summary(schedule: dict) -> int:
     return _send_outlook_email([email], subject, html_body)
 
 
+class StalePbiSyncError(RuntimeError):
+    pass
+
+
+def _parse_aware_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _required_pbi_sync_after() -> datetime | None:
+    now_local = datetime.now().astimezone()
+    refresh_time = get_overall_refresh_time()
+    expected_local = datetime.combine(
+        now_local.date(),
+        time(refresh_time["hour"], refresh_time["minute"]),
+        tzinfo=now_local.tzinfo,
+    )
+    if now_local < expected_local + timedelta(minutes=EMAIL_PBI_SYNC_GRACE_MINUTES):
+        return None
+    return expected_local.astimezone(timezone.utc)
+
+
+def _require_fresh_pbi_for_scheduled_email(schedule: dict) -> None:
+    if not EMAIL_REQUIRE_FRESH_PBI:
+        return
+    content_types = _normalize_content_types(schedule.get("content_types"))
+    schedule_key = schedule.get("schedule_key") or ""
+    needs_pbi_guard = schedule_key == TASK_SUMMARY_KEY or not content_types or "alerts" in content_types
+    if not needs_pbi_guard:
+        return
+    freshness = pbi_sync_freshness(EMAIL_MAX_PBI_SYNC_AGE_HOURS, "refresh")
+    if freshness.get("fresh"):
+        required_after = _required_pbi_sync_after()
+        if not required_after:
+            return
+        latest_success = freshness.get("latest_success") or {}
+        finished_at = _parse_aware_dt(latest_success.get("finished_at"))
+        if finished_at and finished_at >= required_after:
+            return
+        raise StalePbiSyncError(
+            "Skipped scheduled email because today's Power BI sync has not completed yet."
+        )
+    latest_attempt = freshness.get("latest_attempt") or {}
+    attempt_status = latest_attempt.get("status")
+    attempt_time = latest_attempt.get("finished_at") or latest_attempt.get("started_at")
+    reason = freshness.get("reason") or "Power BI sync is not fresh."
+    if attempt_status:
+        reason += f" Latest attempt: {attempt_status}"
+        if attempt_time:
+            reason += f" at {attempt_time}"
+        if latest_attempt.get("message"):
+            reason += f" ({latest_attempt['message']})"
+    raise StalePbiSyncError(f"Skipped scheduled email because {reason}")
+
+
 def _schedule_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
 
@@ -580,6 +650,18 @@ def _mark_result(schedule_id: int, schedule: dict, error: str | None) -> None:
                    WHERE id = ?""",
                 (now_iso, _iso(next_run), now_iso, schedule_id),
             )
+
+
+def _defer_result(schedule_id: int, error: str) -> None:
+    retry_at = _now() + timedelta(minutes=EMAIL_PBI_STALE_RETRY_MINUTES)
+    now_iso = _iso(_now())
+    with get_db() as db:
+        db.execute(
+            """UPDATE email_schedules
+               SET next_run_at = ?, last_error = ?, updated_at = ?
+               WHERE id = ?""",
+            (_iso(retry_at), error[:500], now_iso, schedule_id),
+        )
 
 
 @router.get("/task-summary", response_model=EmailScheduleOut)
@@ -749,11 +831,16 @@ def dispatch_due_email_schedules() -> int:
         else:
             continue
         try:
+            _require_fresh_pbi_for_scheduled_email(schedule)
             count = send_fn(schedule)
             _mark_result(schedule["id"], schedule, None)
             with get_db() as db:
                 log_event(db, "email_schedule", schedule["id"], label, "sent", f"recipients={count}", "scheduler")
             sent += 1
+        except StalePbiSyncError as exc:
+            _defer_result(schedule["id"], str(exc))
+            with get_db() as db:
+                log_event(db, "email_schedule", schedule["id"], label, "deferred", str(exc), "scheduler")
         except Exception as exc:
             _mark_result(schedule["id"], schedule, str(exc))
             with get_db() as db:

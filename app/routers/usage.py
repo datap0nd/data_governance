@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.local_access import is_server_machine
+from app.local_access import require_admin
 from app.usage import PREMIUM_VIEW_WEIGHT, sync_usage_from_csv
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
@@ -13,9 +13,7 @@ class PremiumViewersUpdate(BaseModel):
 
 
 def _require_local(request: Request):
-    ip = request.client.host if request.client else ""
-    if not is_server_machine(ip):
-        raise HTTPException(status_code=403, detail="Usage admin is restricted to the server machine")
+    require_admin(request, "Usage admin is restricted to admins")
 
 
 def _clean_email(value: str) -> str | None:
@@ -63,4 +61,3 @@ def sync_usage(request: Request):
     _require_local(request)
     with get_db() as db:
         return sync_usage_from_csv(db, force=True)
-

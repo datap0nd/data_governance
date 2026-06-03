@@ -2555,8 +2555,8 @@ async function renderReports() {
                 <h1>Reports</h1>
                 <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
                 ${_archiveToggleHtml("reports")}
-                ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
-                ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
+                ${_isAdmin() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
+                ${_isAdmin() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
                 <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
                 <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
                 <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
@@ -2733,12 +2733,34 @@ function bindReportsPage() {
 }
 
 async function renderScanner() {
-    const [runs, probeRuns] = await Promise.all([
+    const [runs, probeRuns, pbiStatus] = await Promise.all([
         api("/api/scanner/runs"),
         api("/api/scanner/probe/runs"),
+        api("/api/scanner/pbi-sync/status").catch(() => null),
     ]);
     const lastRun = runs.length > 0 ? runs[0] : null;
     const lastProbe = probeRuns.length > 0 ? probeRuns[0] : null;
+    const refreshStatus = pbiStatus?.refresh || {};
+    const latestPbiSuccess = refreshStatus.latest_success;
+    const latestPbiAttempt = refreshStatus.latest_attempt;
+    const pbiFresh = refreshStatus.freshness?.fresh;
+    const pbiStatusBadge = !pbiStatus
+        ? '<span class="badge badge-muted">Unknown</span>'
+        : pbiFresh
+            ? '<span class="badge badge-green">Fresh</span>'
+            : '<span class="badge badge-red">Stale</span>';
+    const pbiSyncMeta = pbiStatus ? `
+        <div class="section pbi-sync-status">
+            <h2>Power BI Sync</h2>
+            <div class="pbi-sync-facts">
+                <span>${pbiStatusBadge}</span>
+                <span>Mode: <strong>${pbiStatus.auth_mode === "service_principal" ? "Service principal" : "Interactive"}</strong></span>
+                <span>Last success: <strong>${latestPbiSuccess?.finished_at ? timeAgo(latestPbiSuccess.finished_at) : "never"}</strong></span>
+                <span>Last attempt: <strong>${latestPbiAttempt?.status || "none"}</strong>${latestPbiAttempt?.started_at ? ` ${timeAgo(latestPbiAttempt.started_at)}` : ""}</span>
+            </div>
+            ${refreshStatus.freshness?.reason ? `<div class="pbi-sync-warning">${esc(refreshStatus.freshness.reason)}</div>` : ""}
+        </div>
+    ` : "";
 
     return `
         <div class="page-header">
@@ -2747,8 +2769,8 @@ async function renderScanner() {
         </div>
 
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
-            ${_isLocal() ? '<button id="btn-scan">Run Scan Now</button>' : ''}
-            ${_isLocal() ? '<button id="btn-probe" class="btn-outline">Probe Sources</button>' : ''}
+            ${_isAdmin() ? '<button id="btn-scan">Run Scan Now</button>' : ''}
+            ${_isAdmin() ? '<button id="btn-probe" class="btn-outline">Probe Sources</button>' : ''}
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
@@ -2757,6 +2779,8 @@ async function renderScanner() {
         </div>
 
         <div id="diagnose-panel" style="display:none"></div>
+
+        ${pbiSyncMeta}
 
         ${lastRun && lastRun.log ? `
             <div class="section">
@@ -4865,9 +4889,9 @@ async function renderScripts() {
         <div class="page-header">
             <h1>Scripts</h1>
             <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
-            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
-            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
-            ${_isLocal() ? '<button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>' : ''}
+            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
+            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
+            ${_isAdmin() ? '<button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>' : ''}
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
@@ -5252,8 +5276,8 @@ async function renderScheduledTasks() {
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
             <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
-            ${_isLocal() ? '<button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>' : ''}
+            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
+            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>' : ''}
             <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
@@ -8414,13 +8438,13 @@ function bindFaqPage() {
 }
 
 async function renderPremiumViewers() {
-    if (!_isLocal()) {
+    if (!_isAdmin()) {
         return `
             <div class="page-header">
                 <h1>Premium Viewers</h1>
-                <span class="subtitle">Admin PC only</span>
+                <span class="subtitle">Admin only</span>
             </div>
-            <div class="empty-state">This page is only available from the machine running Metronome.</div>
+            <div class="empty-state">This page is only available to admins.</div>
         `;
     }
 
@@ -8482,6 +8506,167 @@ function bindPremiumViewersPage() {
     }
 }
 
+async function renderAdminAccess() {
+    if (!_isAdmin()) {
+        return `
+            <div class="page-header">
+                <h1>Admin Access</h1>
+                <span class="subtitle">Admin only</span>
+            </div>
+            <div class="empty-state">This page is only available to admins.</div>
+        `;
+    }
+
+    const data = await api("/api/admin/access");
+    const users = data.users || [];
+    const adminCount = users.filter(u => u.is_admin).length;
+    const rows = users.length ? users.map(u => {
+        const statusBadge = u.is_local
+            ? '<span class="badge badge-green">Server</span>'
+            : u.is_admin
+                ? '<span class="badge badge-blue">Admin</span>'
+                : '<span class="badge badge-muted">Standard</span>';
+        const checked = u.is_admin ? "checked" : "";
+        const disabled = u.can_toggle ? "" : "disabled";
+        const title = u.is_local ? "Server machine admin access is always enabled" : "Enable admin use from this IP";
+        return `
+            <tr>
+                <td><strong>${esc(u.person_name || "-")}</strong></td>
+                <td><code>${esc(u.ip_address || "-")}</code></td>
+                <td>${esc(u.hostname || "-")}</td>
+                <td>${u.last_seen_at ? `<span title="${esc(formatDate(u.last_seen_at))}">${timeAgo(u.last_seen_at)}</span>` : "-"}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <label class="admin-access-toggle" title="${esc(title)}">
+                        <input type="checkbox" data-ip="${esc(u.ip_address || "")}" ${checked} ${disabled}>
+                        <span>Admin</span>
+                    </label>
+                </td>
+            </tr>
+        `;
+    }).join("") : '<tr><td colspan="6" class="empty-row">No registered users yet</td></tr>';
+
+    return `
+        <div class="page-header">
+            <h1>Admin Access</h1>
+            <span class="subtitle">${users.length} registered IP${users.length === 1 ? "" : "s"} - ${adminCount} admin${adminCount === 1 ? "" : "s"}</span>
+        </div>
+        <div class="section admin-access-section">
+            <div class="table-wrap">
+                <table class="admin-access-table">
+                    <thead>
+                        <tr>
+                            <th>User</th>
+                            <th>IP</th>
+                            <th>Host</th>
+                            <th>Last seen</th>
+                            <th>Status</th>
+                            <th>Admin use</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function bindAdminAccessPage() {
+    document.querySelectorAll(".admin-access-toggle input[data-ip]").forEach(input => {
+        input.addEventListener("change", async () => {
+            const enabled = input.checked;
+            input.disabled = true;
+            try {
+                await apiPut("/api/admin/access/ip", {
+                    ip_address: input.dataset.ip,
+                    enabled,
+                });
+                toast(enabled ? "Admin access enabled" : "Admin access disabled");
+                await navigate("adminaccess");
+            } catch (err) {
+                input.checked = !enabled;
+                input.disabled = false;
+                toast("Admin update failed: " + err.message);
+            }
+        });
+    });
+}
+
+async function renderRefreshSchedule() {
+    if (!_isAdmin()) {
+        return `
+            <div class="page-header">
+                <h1>Refresh Schedule</h1>
+                <span class="subtitle">Admin only</span>
+            </div>
+            <div class="empty-state">This page is only available to admins.</div>
+        `;
+    }
+
+    const schedule = await api("/api/admin/refresh-schedule");
+    return `
+        <div class="page-header">
+            <h1>Refresh Schedule</h1>
+            <span class="subtitle">Overall refresh at ${esc(schedule.refresh_time || "-")}</span>
+        </div>
+        <div class="section refresh-schedule-section">
+            <div class="refresh-schedule-grid">
+                <label class="refresh-schedule-field">
+                    <span>Daily refresh time</span>
+                    <input type="time" id="overall-refresh-time" value="${esc(schedule.refresh_time || "08:15")}" step="60">
+                </label>
+                <div class="refresh-schedule-status">
+                    <span>Next run</span>
+                    <strong>${schedule.next_run_at ? timeAgo(schedule.next_run_at) : "pending scheduler"}</strong>
+                    ${schedule.next_run_at ? `<small title="${esc(formatDate(schedule.next_run_at))}">${esc(formatDate(schedule.next_run_at))}</small>` : ""}
+                </div>
+            </div>
+            <div class="refresh-schedule-actions">
+                <button id="btn-save-refresh-schedule">Save schedule</button>
+                <button class="btn-outline" id="btn-run-overall-refresh">Run once now</button>
+            </div>
+        </div>
+    `;
+}
+
+function bindRefreshSchedulePage() {
+    const input = document.getElementById("overall-refresh-time");
+    const saveBtn = document.getElementById("btn-save-refresh-schedule");
+    const runBtn = document.getElementById("btn-run-overall-refresh");
+
+    if (saveBtn && input) {
+        saveBtn.addEventListener("click", async () => {
+            saveBtn.disabled = true;
+            saveBtn.textContent = "Saving...";
+            try {
+                const updated = await apiPut("/api/admin/refresh-schedule", { refresh_time: input.value });
+                toast(`Refresh schedule saved for ${updated.refresh_time}`);
+                await navigate("refreshschedule");
+            } catch (err) {
+                toast("Schedule save failed: " + err.message);
+                saveBtn.disabled = false;
+                saveBtn.textContent = "Save schedule";
+            }
+        });
+    }
+
+    if (runBtn) {
+        runBtn.addEventListener("click", async () => {
+            runBtn.disabled = true;
+            runBtn.textContent = "Queueing...";
+            try {
+                await apiPost("/api/admin/refresh-now");
+                toast("Overall refresh queued");
+                await navigate("scanner");
+            } catch (err) {
+                toast("Refresh launch failed: " + err.message);
+                runBtn.disabled = false;
+                runBtn.textContent = "Run once now";
+            }
+        });
+    }
+}
+
 
 // ── Router ──
 
@@ -8504,6 +8689,8 @@ const pages = {
     tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
+    refreshschedule: renderRefreshSchedule,
+    adminaccess: renderAdminAccess,
     premiumviewers: renderPremiumViewers,
 };
 
@@ -8638,6 +8825,8 @@ async function navigate(page) {
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
+        if (page === "refreshschedule") bindRefreshSchedulePage();
+        if (page === "adminaccess") bindAdminAccessPage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
@@ -9021,12 +9210,32 @@ function _isLocal() {
     return window._currentUser && window._currentUser.is_local;
 }
 
+function _isAdmin() {
+    return window._currentUser && window._currentUser.is_admin;
+}
+
 function _showConnectedUser(user) {
     const el = document.getElementById("connected-user");
     if (!el) return;
     const title = [user.hostname, user.ip].filter(Boolean).join(" - ");
     el.title = title ? `Connected from ${title}` : "";
-    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>${user.is_local ? '<span class="user-local">(local)</span>' : ''}`;
+    const adminLabel = user.is_admin ? `<span class="user-admin">${user.is_local ? "local admin" : "admin"}</span>` : "";
+    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>${adminLabel}`;
+}
+
+function _applyAccessUi(user) {
+    const refreshLink = document.getElementById("nav-refresh-schedule");
+    const adminLink = document.getElementById("nav-admin-access");
+    const premiumLink = document.getElementById("nav-premium-viewers");
+    const updateBtn = document.getElementById("btn-update-app");
+    const showAdmin = !!(user && user.is_admin);
+    if (refreshLink) refreshLink.style.display = showAdmin ? "" : "none";
+    if (adminLink) adminLink.style.display = showAdmin ? "" : "none";
+    if (premiumLink) premiumLink.style.display = showAdmin ? "" : "none";
+    if (updateBtn) updateBtn.style.display = showAdmin ? "" : "none";
+    if (showAdmin && (currentPage === "premiumviewers" || currentPage === "adminaccess" || currentPage === "refreshschedule")) {
+        navigate(currentPage);
+    }
 }
 
 function _showRegistrationModal(ip) {
@@ -9063,6 +9272,7 @@ function _showRegistrationModal(ip) {
         .then(me => {
             window._currentUser = me;
             _showConnectedUser(me);
+            _applyAccessUi(me);
             overlay.remove();
         })
         .catch((err) => {
@@ -9146,14 +9356,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             _showRegistrationModal(me.ip);
         }
-        // Show Update App button for local users only
-        if (me.is_local) {
-            const updateBtn = document.getElementById("btn-update-app");
-            if (updateBtn) updateBtn.style.display = "";
-            const premiumLink = document.getElementById("nav-premium-viewers");
-            if (premiumLink) premiumLink.style.display = "";
-            if (currentPage === "premiumviewers") navigate("premiumviewers");
-        }
+        _applyAccessUi(me);
     }).catch(() => {});
 
     initAIChatPanel();

@@ -15,13 +15,173 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.config import BASE_DIR, PBI_WORKSPACE
+from app.config import BASE_DIR, PBI_CLIENT_ID, PBI_CLIENT_SECRET, PBI_TENANT_ID, PBI_WORKSPACE
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
 PS1_SCRIPT = BASE_DIR / "tools" / "pbi_refresh_sync.ps1"
 TASK_NAME = "DG_PBI_Sync"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def service_principal_configured() -> bool:
+    """Return True when unattended Power BI auth has enough config to run."""
+    return bool(PBI_TENANT_ID and PBI_CLIENT_ID and PBI_CLIENT_SECRET)
+
+
+def _record_sync_run(
+    sync_type: str,
+    status: str,
+    message: str | None = None,
+    details: dict | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    """Persist sync status so scheduled emails can require fresh PBI data."""
+    now = _now_iso()
+    started = started_at or now
+    finished = finished_at if finished_at is not None else (now if status in {"completed", "failed", "skipped"} else None)
+    details_json = json.dumps(details or {}, default=str) if details else None
+    try:
+        with get_db() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_type   TEXT NOT NULL,
+                    status      TEXT NOT NULL,
+                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME,
+                    message     TEXT,
+                    details     TEXT
+                )"""
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at)"
+            )
+            db.execute(
+                """INSERT INTO pbi_sync_runs (sync_type, status, started_at, finished_at, message, details)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (sync_type, status, started, finished, message, details_json),
+            )
+    except Exception:
+        logger.exception("Could not record PBI sync run")
+
+
+def latest_pbi_sync(sync_type: str = "refresh") -> dict | None:
+    """Return the newest sync run for a sync type."""
+    try:
+        with get_db() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_type   TEXT NOT NULL,
+                    status      TEXT NOT NULL,
+                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME,
+                    message     TEXT,
+                    details     TEXT
+                )"""
+            )
+            row = db.execute(
+                """SELECT * FROM pbi_sync_runs
+                   WHERE sync_type = ?
+                   ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+                   LIMIT 1""",
+                (sync_type,),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        logger.exception("Could not read latest PBI sync run")
+        return None
+
+
+def latest_successful_pbi_sync(sync_type: str = "refresh") -> dict | None:
+    """Return the newest completed sync run for a sync type."""
+    try:
+        with get_db() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_type   TEXT NOT NULL,
+                    status      TEXT NOT NULL,
+                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME,
+                    message     TEXT,
+                    details     TEXT
+                )"""
+            )
+            row = db.execute(
+                """SELECT * FROM pbi_sync_runs
+                   WHERE sync_type = ? AND status = 'completed'
+                   ORDER BY finished_at DESC, id DESC
+                   LIMIT 1""",
+                (sync_type,),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        logger.exception("Could not read latest successful PBI sync run")
+        return None
+
+
+def pbi_sync_freshness(max_age_hours: float = 24.0, sync_type: str = "refresh") -> dict:
+    """Return freshness information for the latest successful PBI sync."""
+    latest_success = latest_successful_pbi_sync(sync_type)
+    latest_attempt = latest_pbi_sync(sync_type)
+    if not latest_success or not latest_success.get("finished_at"):
+        return {
+            "fresh": False,
+            "reason": "No completed Power BI sync has been recorded.",
+            "latest_success": latest_success,
+            "latest_attempt": latest_attempt,
+        }
+    try:
+        finished = latest_success["finished_at"].replace("Z", "+00:00")
+        finished_dt = datetime.fromisoformat(finished)
+        if finished_dt.tzinfo is None:
+            finished_dt = finished_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError, AttributeError):
+        return {
+            "fresh": False,
+            "reason": "The latest Power BI sync timestamp is invalid.",
+            "latest_success": latest_success,
+            "latest_attempt": latest_attempt,
+        }
+    age_hours = (datetime.now(timezone.utc) - finished_dt).total_seconds() / 3600
+    fresh = age_hours <= max_age_hours
+    return {
+        "fresh": fresh,
+        "age_hours": age_hours,
+        "max_age_hours": max_age_hours,
+        "reason": None if fresh else f"Latest Power BI sync is {age_hours:.1f}h old.",
+        "latest_success": latest_success,
+        "latest_attempt": latest_attempt,
+    }
+
+
+def _launch_powershell_background(script: Path, args: list[str], sync_type: str) -> dict:
+    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        _record_sync_run(sync_type, "failed", str(exc))
+        return {"status": "error", "message": str(exc)}
+    _record_sync_run(sync_type, "launched", "Power BI sync launched with service principal authentication.")
+    return {
+        "status": "launched",
+        "message": "Power BI sync launched in unattended service-principal mode.",
+        "auth_mode": "service_principal",
+    }
 
 
 def _build_schedule_string(schedule: dict) -> str | None:
@@ -56,6 +216,13 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
     if not PS1_SCRIPT.exists():
         return {"status": "error", "message": f"PowerShell script not found: {PS1_SCRIPT}"}
 
+    if service_principal_configured():
+        return _launch_powershell_background(
+            PS1_SCRIPT,
+            ["-WorkspaceName", ws_name, "-ApiBase", f"http://localhost:{port}", "-NoPause"],
+            "refresh",
+        )
+
     # Build the command the scheduled task will run
     ps_cmd = (
         f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_SCRIPT}" '
@@ -89,13 +256,17 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else str(e)
+        _record_sync_run("refresh", "failed", f"Failed to launch PBI sync task: {stderr}")
         return {"status": "error", "message": f"Failed to launch PBI sync task: {stderr}"}
     except Exception as e:
+        _record_sync_run("refresh", "failed", str(e))
         return {"status": "error", "message": str(e)}
 
+    _record_sync_run("refresh", "launched", "Power BI sync launched with interactive scheduled task.")
     return {
         "status": "launched",
         "message": "PBI sync started - a PowerShell window should appear on your desktop. Log in if prompted.",
+        "auth_mode": "interactive",
     }
 
 
@@ -197,6 +368,21 @@ def import_pbi_data(data: dict) -> dict:
         "overdue_alerts": overdue_count,
         "log": "\n".join(log_lines),
     }
+    _record_sync_run(
+        "refresh",
+        "completed",
+        f"Power BI refresh sync completed: {matched} matched, {len(unmatched)} unmatched.",
+        {
+            "workspace": data.get("workspace"),
+            "synced_at": data.get("synced_at"),
+            "total_pbi_reports": len(reports_data),
+            "matched": matched,
+            "unmatched_count": len(unmatched),
+            "archived": archived_count,
+            "overdue_alerts": overdue_count,
+        },
+        finished_at=now,
+    )
     logger.info("PBI sync completed: %s matched, %s unmatched, %s archived, %s overdue", matched, len(unmatched), archived_count, overdue_count)
     return summary
 
@@ -372,6 +558,13 @@ def trigger_pbi_usage_sync(port: int = 8000) -> dict:
     if not PS1_USAGE_SCRIPT.exists():
         return {"status": "error", "message": f"PowerShell script not found: {PS1_USAGE_SCRIPT}"}
 
+    if service_principal_configured():
+        return _launch_powershell_background(
+            PS1_USAGE_SCRIPT,
+            ["-ApiBase", f"http://localhost:{port}", "-NoPause"],
+            "usage",
+        )
+
     ps_cmd = (
         f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '
         f'-ApiBase "http://localhost:{port}" -NoPause'
@@ -393,8 +586,11 @@ def trigger_pbi_usage_sync(port: int = 8000) -> dict:
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else str(e)
+        _record_sync_run("usage", "failed", f"Failed to launch usage sync: {stderr}")
         return {"status": "error", "message": f"Failed to launch usage sync: {stderr}"}
     except Exception as e:
+        _record_sync_run("usage", "failed", str(e))
         return {"status": "error", "message": str(e)}
 
-    return {"status": "launched", "message": "Usage sync started - check the PowerShell window."}
+    _record_sync_run("usage", "launched", "Power BI usage sync launched with interactive scheduled task.")
+    return {"status": "launched", "message": "Usage sync started - check the PowerShell window.", "auth_mode": "interactive"}

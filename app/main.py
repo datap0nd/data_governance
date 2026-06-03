@@ -1,10 +1,11 @@
 import logging
+import ipaddress
 import re
 import socket
 import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
@@ -16,10 +17,11 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
+from app.config import DB_PATH
 from app.database import init_db
-from app.local_access import is_server_machine
+from app.local_access import ensure_admin_schema, is_admin_ip, is_admin_request, is_server_machine, require_admin
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules, usage
+from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -64,6 +66,7 @@ def _ensure_identity_schema(conn: sqlite3.Connection):
         )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)")
+    ensure_admin_schema(conn)
 
 
 def _clean_client_key(value: str | None) -> str | None:
@@ -183,6 +186,7 @@ class UserIdentityMiddleware(BaseHTTPMiddleware):
         request.state.client_ip = ip
         request.state.client_key = client_key
         request.state.is_local = _is_localhost(ip)
+        request.state.is_admin = is_admin_ip(ip)
         request.state.actor = _resolve_identity(ip, client_key)
         response = await call_next(request)
         return response
@@ -211,7 +215,7 @@ def _scheduled_backup():
 
 
 def _scheduled_scan():
-    """Daily 7 AM full scan + probe."""
+    """Run a full report scan and source probe."""
     from app.scanner.runner import run_scan
     from app.scanner.prober import run_probe
     log = logging.getLogger("scheduler")
@@ -237,6 +241,15 @@ def _scheduled_pbi_sync():
         log.exception("Scheduled PBI sync failed: %s", e)
 
 
+def _scheduled_overall_refresh():
+    """Daily overall refresh: report scan, source probe, then Power BI sync."""
+    log = logging.getLogger("scheduler")
+    log.info("Running scheduled overall refresh")
+    _scheduled_scan()
+    _scheduled_pbi_sync()
+    log.info("Scheduled overall refresh launched")
+
+
 def _scheduled_email_dispatch():
     """Check configured email schedules and send anything due."""
     from app.routers.email_schedules import dispatch_due_email_schedules
@@ -249,21 +262,44 @@ def _scheduled_email_dispatch():
         log.exception("Email schedule dispatch failed: %s", e)
 
 
+def _configure_overall_refresh_job() -> dict:
+    refresh_time = get_overall_refresh_time()
+    _scheduler.add_job(
+        _scheduled_overall_refresh,
+        "cron",
+        hour=refresh_time["hour"],
+        minute=refresh_time["minute"],
+        id="daily_overall_refresh",
+        replace_existing=True,
+    )
+    return refresh_time
+
+
+def _configure_scheduler_jobs() -> dict:
+    _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
+    refresh_time = _configure_overall_refresh_job()
+    _scheduler.add_job(
+        _scheduled_email_dispatch,
+        "interval",
+        minutes=1,
+        id="email_schedule_dispatch",
+        replace_existing=True,
+    )
+    return refresh_time
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
 
-    # Daily backup at 6:00 AM, full scan at 7:00 AM, PBI sync after scan
-    _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup")
-    _scheduler.add_job(_scheduled_scan, "cron", hour=7, minute=0, id="daily_scan")
-    _scheduler.add_job(_scheduled_pbi_sync, "cron", hour=PBI_SYNC_HOUR, minute=PBI_SYNC_MINUTE, id="daily_pbi_sync")
-    _scheduler.add_job(_scheduled_email_dispatch, "interval", minutes=1, id="email_schedule_dispatch")
+    # Daily backup plus an admin-configurable overall refresh.
+    refresh_time = _configure_scheduler_jobs()
     _scheduler.start()
     logging.getLogger(__name__).info(
-        "Scheduler started: backup at 06:00, scan at 07:00, PBI sync at %02d:%02d, email dispatch every minute",
-        PBI_SYNC_HOUR,
-        PBI_SYNC_MINUTE,
+        "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, email dispatch every minute",
+        refresh_time["hour"],
+        refresh_time["minute"],
     )
 
     yield
@@ -355,6 +391,15 @@ class RegisterRequest(BaseModel):
     client_key: str | None = None
 
 
+class AdminIpRequest(BaseModel):
+    ip_address: str
+    enabled: bool = True
+
+
+class RefreshScheduleRequest(BaseModel):
+    refresh_time: str
+
+
 @app.get("/api/me")
 def get_me(request: Request):
     """Return the current user's identity based on IP."""
@@ -370,7 +415,212 @@ def get_me(request: Request):
         "hostname": hostname,
         "name": name,
         "is_local": request.state.is_local,
+        "is_admin": request.state.is_admin,
     }
+
+
+def _clean_admin_ip(value: str) -> str:
+    try:
+        return str(ipaddress.ip_address((value or "").strip()))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid IP address") from exc
+
+
+def _parse_refresh_time(value: str) -> tuple[int, int]:
+    raw = (value or "").strip()
+    parts = raw.split(":")
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="refresh_time must be HH:MM")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="refresh_time must be HH:MM") from exc
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise HTTPException(status_code=400, detail="refresh_time must be HH:MM")
+    return hour, minute
+
+
+def _refresh_schedule_payload() -> dict:
+    refresh_time = get_overall_refresh_time()
+    job = _scheduler.get_job("daily_overall_refresh")
+    next_run = getattr(job, "next_run_time", None) if job else None
+    return {
+        "refresh_time": refresh_time["time"],
+        "hour": refresh_time["hour"],
+        "minute": refresh_time["minute"],
+        "next_run_at": next_run.isoformat() if next_run else None,
+        "scheduler_running": bool(getattr(_scheduler, "running", False)),
+    }
+
+
+@app.get("/api/admin/refresh-schedule")
+def get_refresh_schedule(request: Request):
+    """Return the admin-configurable overall refresh schedule."""
+    require_admin(request)
+    return _refresh_schedule_payload()
+
+
+@app.put("/api/admin/refresh-schedule")
+def update_refresh_schedule(body: RefreshScheduleRequest, request: Request):
+    """Persist and reschedule the daily overall refresh time."""
+    require_admin(request)
+    hour, minute = _parse_refresh_time(body.refresh_time)
+    saved = set_overall_refresh_time(hour, minute)
+    _configure_overall_refresh_job()
+    try:
+        from app.routers.eventlog import log_event
+
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            log_event(
+                conn,
+                "admin_settings",
+                None,
+                "Overall refresh",
+                "updated",
+                saved["time"],
+                getattr(request.state, "actor", None),
+            )
+            conn.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not log refresh schedule update")
+    return _refresh_schedule_payload()
+
+
+@app.post("/api/admin/refresh-now")
+def run_refresh_now(request: Request):
+    """Queue a one-off overall refresh for immediate testing."""
+    require_admin(request)
+    if not getattr(_scheduler, "running", False):
+        raise HTTPException(status_code=503, detail="Scheduler is not running")
+    run_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    job_id = f"manual_overall_refresh_{int(run_at.timestamp())}"
+    _scheduler.add_job(
+        _scheduled_overall_refresh,
+        "date",
+        run_date=run_at,
+        id=job_id,
+        replace_existing=True,
+    )
+    return {"status": "queued", "job_id": job_id, "run_at": run_at.isoformat()}
+
+
+@app.get("/api/admin/access")
+def list_admin_access(request: Request):
+    """List known user IPs and their admin access state."""
+    require_admin(request)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        _ensure_identity_schema(conn)
+        ip_rows = conn.execute(
+            """SELECT ip_address, person_name, hostname, client_key,
+                      created_at, updated_at, last_seen_at
+               FROM user_ips
+               ORDER BY COALESCE(last_seen_at, updated_at, created_at) DESC,
+                        person_name COLLATE NOCASE"""
+        ).fetchall()
+        admin_rows = conn.execute(
+            """SELECT ip_address, enabled, granted_by, granted_at, updated_at
+               FROM admin_user_ips"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    admin_by_ip = {row["ip_address"]: row for row in admin_rows}
+    users = []
+    for row in ip_rows:
+        ip = row["ip_address"]
+        is_local = is_server_machine(ip)
+        admin_row = admin_by_ip.get(ip)
+        enabled = bool(admin_row["enabled"]) if admin_row else False
+        users.append(
+            {
+                "ip_address": ip,
+                "person_name": row["person_name"],
+                "hostname": row["hostname"],
+                "client_key": row["client_key"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_seen_at": row["last_seen_at"],
+                "is_local": is_local,
+                "is_admin": is_local or enabled,
+                "can_toggle": not is_local,
+                "granted_by": admin_row["granted_by"] if admin_row else None,
+                "granted_at": admin_row["granted_at"] if admin_row else None,
+            }
+        )
+
+    return {
+        "current_ip": request.state.client_ip,
+        "current_user": request.state.actor,
+        "is_admin": request.state.is_admin,
+        "users": users,
+    }
+
+
+@app.put("/api/admin/access/ip")
+def update_admin_access(body: AdminIpRequest, request: Request):
+    """Enable or disable admin access for a known user IP."""
+    require_admin(request)
+    ip = _clean_admin_ip(body.ip_address)
+    if is_server_machine(ip) and not body.enabled:
+        raise HTTPException(status_code=400, detail="Server machine admin access cannot be disabled")
+
+    actor = getattr(request.state, "actor", None) or getattr(request.state, "client_ip", None) or "admin"
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        _ensure_identity_schema(conn)
+        user_row = conn.execute(
+            "SELECT person_name FROM user_ips WHERE ip_address = ? LIMIT 1",
+            (ip,),
+        ).fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="Register that IP before granting admin access")
+
+        if body.enabled:
+            conn.execute(
+                """INSERT INTO admin_user_ips (ip_address, enabled, granted_by, granted_at, updated_at)
+                   VALUES (?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(ip_address) DO UPDATE SET
+                       enabled = 1,
+                       granted_by = excluded.granted_by,
+                       granted_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (ip, actor),
+            )
+            action = "admin_enabled"
+        else:
+            conn.execute(
+                """INSERT INTO admin_user_ips (ip_address, enabled, granted_by, granted_at, updated_at)
+                   VALUES (?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(ip_address) DO UPDATE SET
+                       enabled = 0,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (ip, actor),
+            )
+            action = "admin_disabled"
+
+        from app.routers.eventlog import log_event
+
+        log_event(
+            conn,
+            "admin_access",
+            None,
+            user_row["person_name"],
+            action,
+            ip,
+            actor,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"status": "saved", "ip_address": ip, "is_admin": body.enabled}
 
 
 @app.post("/api/register")
@@ -434,15 +684,21 @@ def register_user(body: RegisterRequest, request: Request):
         if key[0] == ip or key[1] == client_key:
             _identity_cache.pop(key, None)
 
-    return {"ip": ip, "client_key": client_key, "hostname": hostname, "name": name, "is_local": _is_localhost(ip)}
+    return {
+        "ip": ip,
+        "client_key": client_key,
+        "hostname": hostname,
+        "name": name,
+        "is_local": _is_localhost(ip),
+        "is_admin": is_admin_ip(ip),
+    }
 
 
 @app.post("/api/update")
 def trigger_update(request: Request):
-    """Launch setup.ps1 to update the app. Server machine only."""
-    ip = request.client.host if request.client else ""
-    if not is_server_machine(ip):
-        raise HTTPException(status_code=403, detail="Update restricted to server machine")
+    """Launch setup.ps1 to update the app. Admin users only."""
+    if not is_admin_request(request):
+        raise HTTPException(status_code=403, detail="Update restricted to admins")
     setup_path = Path(__file__).parent.parent / "setup.ps1"
     if not setup_path.exists():
         raise HTTPException(status_code=404, detail="setup.ps1 not found")

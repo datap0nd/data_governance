@@ -71,6 +71,32 @@ else:
 PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
 PBI_SYNC_HOUR = int(os.environ.get("DG_PBI_SYNC_HOUR", "8"))
 PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))
+PBI_TENANT_ID = os.environ.get("DG_PBI_TENANT_ID", "")
+PBI_CLIENT_ID = os.environ.get("DG_PBI_CLIENT_ID", "")
+PBI_CLIENT_SECRET = os.environ.get("DG_PBI_CLIENT_SECRET", "")
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+EMAIL_REQUIRE_FRESH_PBI = _bool_env("DG_EMAIL_REQUIRE_FRESH_PBI", True)
+EMAIL_MAX_PBI_SYNC_AGE_HOURS = _float_env("DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS", 24.0)
+EMAIL_PBI_SYNC_GRACE_MINUTES = _float_env("DG_EMAIL_PBI_SYNC_GRACE_MINUTES", 30.0)
+EMAIL_PBI_STALE_RETRY_MINUTES = _float_env("DG_EMAIL_PBI_STALE_RETRY_MINUTES", 30.0)
 
 # Folder containing the exported PBI usage CSV files.
 # The lowercase name is kept because this app is often configured from
