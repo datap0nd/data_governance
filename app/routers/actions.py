@@ -177,6 +177,8 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
         return "Trigger a manual refresh or verify the schedule is enabled and the gateway is up."
     if action_type in ("stale_source", "outdated_source", "error_source"):
         return "Find out why this source hasn't updated. Check linked scripts and scheduled tasks."
+    if action_type == "empty_source":
+        return "Check the latest refresh output. The source now has zero rows after previously having data."
     if action_type == "task_failed":
         return "Open the scheduled task, review the last run output, and re-run once the underlying issue is resolved."
     if action_type == "script_failed":
@@ -194,6 +196,7 @@ TRIAGE_TYPE_WEIGHT = {
     "stale_source": 760,
     "outdated_source": 760,
     "error_source": 760,
+    "empty_source": 780,
     "refresh_overdue": 680,
     "task_failed": 620,
     "script_failed": 620,
@@ -210,6 +213,7 @@ def _issue_reason(action_type: str) -> str:
         "stale_source": "Source is outside its freshness rule",
         "outdated_source": "Source is outside its freshness rule",
         "error_source": "Source probe is failing",
+        "empty_source": "Source row count dropped to zero",
         "task_failed": "Scheduled task failed",
         "script_failed": "Script-linked refresh failed",
         "broken_ref": "Report points to a missing source",
@@ -310,15 +314,16 @@ def list_actions(status: str | None = None):
                    r.name AS report_name, r.archived AS report_archived,
                    st.task_name AS task_name, st.archived AS task_archived,
                    sc.display_name AS script_name, sc.archived AS script_archived,
-                   sp.status AS latest_source_status
+                   sp.status AS latest_source_status,
+                   sp.row_count AS latest_source_row_count
             FROM actions a
             LEFT JOIN sources s ON s.id = a.source_id
             LEFT JOIN reports r ON r.id = a.report_id
             LEFT JOIN scheduled_tasks st ON st.id = a.scheduled_task_id
             LEFT JOIN scripts sc ON sc.id = a.script_id
             LEFT JOIN (
-                SELECT source_id, status,
-                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                SELECT source_id, status, row_count,
+                       ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC, id DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = a.source_id AND sp.rn = 1
         """
@@ -345,12 +350,16 @@ def list_actions(status: str | None = None):
         tid = r["scheduled_task_id"] if "scheduled_task_id" in r.keys() else None
         scid = r["script_id"] if "script_id" in r.keys() else None
         latest = r["latest_source_status"]
+        latest_row_count = r["latest_source_row_count"]
 
         # Source-tied: hide if the source is archived or no longer outdated
         if sid is not None:
             if r["source_archived"]:
                 continue
-            if latest is not None and latest not in ACTIONABLE_STATUSES:
+            if r["type"] == "empty_source":
+                if latest_row_count is not None and latest_row_count > 0:
+                    continue
+            elif latest is not None and latest not in ACTIONABLE_STATUSES:
                 continue
         # Report-tied: hide if the report is archived
         if rid is not None and sid is None and r["report_archived"]:
@@ -368,7 +377,16 @@ def list_actions(status: str | None = None):
             asset_type = "source"
             asset_id = sid
             asset_name = r["source_name"]
-            asset_days = source_days.get(sid, 0)
+            if r["type"] == "empty_source" and r["created_at"]:
+                try:
+                    created = datetime.fromisoformat(r["created_at"])
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    asset_days = max(0, (datetime.now(timezone.utc) - created).days)
+                except (ValueError, TypeError, AttributeError):
+                    asset_days = 0
+            else:
+                asset_days = source_days.get(sid, 0)
             impact_views_30d = source_usage.get(sid, {}).get("impact_views_30d", 0)
         elif rid is not None:
             asset_type = "report"

@@ -47,3 +47,14 @@
 - Filters: Excludes scheduler and system actors so automated email dispatches do not rank as user activity.
 - Ordering: Sort by action count descending, then most recent action descending, then actor name ascending.
 - Edge cases: Historical rows before actor tracking appear under `Unregistered` if they fall inside the seven-day window.
+
+## Source rows
+- Business meaning: Data-row count observed for a source during the latest probe, used to spot empty files or tables.
+- Numerator: Count of data rows in the probed source. CSV/TXT and XLSX-family files exclude one header row per file or worksheet. PostgreSQL sources use `COUNT(*)`.
+- Denominator: None.
+- Grain: Source per probe; source and lineage views show only the latest probe value.
+- Date logic: Updates when the source probe runs. Existing historical probes without `row_count` show unknown until re-probed.
+- Alert logic: Create a critical `empty_source` action and alert when the latest probe records 0 rows and the previous non-null row count for that source was greater than 1.
+- Filters: Source views hide archived sources by default, matching the rest of the source inventory.
+- Auto-resolution: Resolve open `empty_source` actions and matching alerts when a later probe records a positive row count.
+- Edge cases: Unsupported file formats, inaccessible files, and non-PostgreSQL database sources without direct connection support show unknown. Header-only files display 0 rows. A transition from 1 row to 0 rows does not alert.

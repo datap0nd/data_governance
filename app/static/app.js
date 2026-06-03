@@ -51,6 +51,22 @@ function fmtInt(value) {
     return Number(value || 0).toLocaleString();
 }
 
+function fmtRows(value) {
+    if (value == null || value === "") return "-";
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return n.toLocaleString();
+}
+
+function rowCountHtml(value) {
+    if (value == null || value === "") return '<span style="color:var(--text-dim)">-</span>';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '<span style="color:var(--text-dim)">-</span>';
+    const cls = n === 0 ? "badge badge-red" : "badge badge-muted";
+    const title = n === 0 ? "Latest probe found no data rows" : "Rows from latest probe";
+    return `<span class="${cls}" title="${title}">${fmtInt(n)}</span>`;
+}
+
 function _getClientKey() {
     const keyName = "dg-client-key";
     let key = localStorage.getItem(keyName);
@@ -232,6 +248,7 @@ function actionTypeBadge(type) {
         stale_source: "Degraded",
         outdated_source: "Degraded",
         error_source: "Degraded",
+        empty_source: "Empty Source",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
         refresh_failed: "Refresh Failed",
@@ -244,6 +261,7 @@ function actionTypeBadge(type) {
         stale_source: "badge-red",
         outdated_source: "badge-red",
         error_source: "badge-red",
+        empty_source: "badge-red",
         broken_ref: "badge-red",
         changed_query: "badge-blue",
         refresh_failed: "badge-red",
@@ -886,6 +904,7 @@ async function showSourceDetail(source) {
             <div class="detail-item"><div class="detail-label">Type</div>${typeBadge(source.type)}</div>
             <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
             <div class="detail-item"><div class="detail-label">Last Updated</div><span style="color:var(--text)">${source.last_updated ? esc(formatDate(source.last_updated)) : "-"}</span></div>
+            <div class="detail-item"><div class="detail-label">Rows</div>${rowCountHtml(source.row_count)}</div>
             <div class="detail-item"><div class="detail-label">Schema</div><span style="color:var(--text)">${esc(parsed.folderSchema)}</span></div>
             <div class="detail-item"><div class="detail-label">Full Location</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(parsed.fullLocation)} ${_viewPathBtn(source.connection_info || parsed.fullLocation)}</span></div>
             <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
@@ -2313,6 +2332,7 @@ async function renderSources() {
             return b;
         }, sortVal: s => ({ fresh: "0_healthy", stale: "1_degraded", outdated: "1_degraded", unknown: "2_unknown", no_connection: "2_no_connection", no_rule: "2_no_rule" })[s.status] ?? "3_" + s.status },
         { key: "last_updated", label: "Last Updated", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_updated || ''}">${s.last_updated ? timeAgo(s.last_updated) : "-"}</span>`, sortVal: s => s.last_updated || "" },
+        { key: "row_count", label: "Rows", width: COL_W.sm, render: s => rowCountHtml(s.row_count), sortVal: s => s.row_count == null ? Number.MAX_SAFE_INTEGER : s.row_count, filterVal: s => s.row_count == null ? "unknown" : String(s.row_count) },
         { key: "freshness_rule_type", label: "Freshness", width: COL_W.md, render: s => {
             if (!sourceHasFreshnessRule(s)) {
                 return '<span style="color:var(--yellow)" title="No freshness rule set">no rule</span>';
@@ -2530,18 +2550,20 @@ async function renderReports() {
     window._reportPageSources = sources;
 
     return `
-        <div class="page-header">
-            <h1>Reports</h1>
-            <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
-            ${_archiveToggleHtml("reports")}
-            ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
-            ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
-            <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
-            <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
-            <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
-        </div>
+        <div class="reports-wide-section">
+            <div class="page-header">
+                <h1>Reports</h1>
+                <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
+                ${_archiveToggleHtml("reports")}
+                ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
+                ${_isLocal() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
+                <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
+                <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
+                <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
+            </div>
 
-        ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
+            ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
+        </div>
     `;
 }
 
@@ -7028,6 +7050,17 @@ function _renderLineageDiagram(data) {
         return "warn";
     };
     const stCls = (item, prefix = "") => ({ ok: "lin-st-ok", err: "lin-st-err", warn: "lin-st-warn" }[lineageState(item, prefix)] || "lin-st-warn");
+    const sourceFacts = (item, prefix = "") => {
+        const lastDate = item[`${prefix}last_data_at`];
+        const rowCount = item[`${prefix}row_count`];
+        const parts = [];
+        if (lastDate) parts.push(`<span title="${esc(formatDate(lastDate))}">${timeAgo(lastDate)}</span>`);
+        if (rowCount != null) {
+            const zeroClass = Number(rowCount) === 0 ? ' class="lin-rows-zero"' : "";
+            parts.push(`<span${zeroClass} title="Rows from latest probe">${fmtRows(rowCount)} rows</span>`);
+        }
+        return parts.length ? `<div class="lin-card-facts">${parts.join('<span class="lin-card-sep">-</span>')}</div>` : "";
+    };
     const stDot = (item, prefix = "") => {
         const state = lineageState(item, prefix);
         const lastDate = item[`${prefix}last_data_at`];
@@ -7110,8 +7143,7 @@ function _renderLineageDiagram(data) {
         const hasDeps = depMap.has(s.id);
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
-        const last = s.last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(s.last_data_at))}">${timeAgo(s.last_data_at)}</div>` : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${last}</div>`;
+        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sourceFacts(s)}</div>`;
     }
     colHtml.sources = srcH;
 
@@ -7123,8 +7155,7 @@ function _renderLineageDiagram(data) {
         if (!existingSourceIds.has(depId)) {
             // This upstream table only feeds the MV, not directly used by the report
             mvUpSources.push(d);
-            const last = d.depends_on_last_data_at ? `<div class="lin-card-time" title="${esc(formatDate(d.depends_on_last_data_at))}">${timeAgo(d.depends_on_last_data_at)}</div>` : '';
-            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d, "depends_on_")}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d, "depends_on_")}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${last}</div>`;
+            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d, "depends_on_")}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d, "depends_on_")}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${sourceFacts(d, "depends_on_")}</div>`;
         }
     }
     colHtml.mv_upstream = mvUpH;
@@ -7216,6 +7247,7 @@ async function _showLineageSourceDetail(sourceId) {
                 <div class="detail-item"><div class="detail-label">Type</div>${typeBadge(source.type)}</div>
                 <div class="detail-item"><div class="detail-label">Status</div>${statusBadge(source.status)}</div>
                 <div class="detail-item"><div class="detail-label">Last Refreshed</div><span class="lineage-exact-timestamp" title="${esc(source.last_updated || "")}">${lastRefreshed}</span></div>
+                <div class="detail-item"><div class="detail-label">Rows</div>${rowCountHtml(source.row_count)}</div>
                 <div class="detail-item"><div class="detail-label">Source Refresh</div><span style="color:var(--text)">${source.refresh_schedule ? 'Weekly - ' + esc(source.refresh_schedule) : "-"}</span></div>
                 <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(source.owner) || "-"}</span></div>
                 <div class="detail-item"><div class="detail-label">Upstream System</div><span style="color:var(--text)">${esc(source.upstream_name) || "-"}</span></div>

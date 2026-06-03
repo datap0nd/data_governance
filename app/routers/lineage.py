@@ -17,12 +17,13 @@ def get_lineage():
                 r.id AS report_id,
                 r.name AS report_name,
                 sp.status AS source_status,
-                CAST(sp.last_data_at AS TEXT) AS source_last_data_at
+                CAST(sp.last_data_at AS TEXT) AS source_last_data_at,
+                sp.row_count AS source_row_count
             FROM report_tables rt
             JOIN sources s ON s.id = rt.source_id
             JOIN reports r ON r.id = rt.report_id
             LEFT JOIN (
-                SELECT source_id, status, last_data_at,
+                SELECT source_id, status, last_data_at, row_count,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -38,6 +39,7 @@ def get_lineage():
             report_name=r["report_name"],
             source_status=r["source_status"] or "unknown",
             source_last_data_at=r["source_last_data_at"],
+            source_row_count=r["source_row_count"],
         )
         for r in rows
     ]
@@ -126,10 +128,11 @@ def get_lineage_diagram(report_id: int):
                 SELECT s.id, s.name, s.type, s.owner, s.upstream_id,
                        s.refresh_schedule, s.custom_fresh_days,
                        s.freshness_rule_type, s.freshness_schedule_days,
-                       sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at
+                       sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at,
+                       sp.row_count
                 FROM sources s
                 LEFT JOIN (
-                    SELECT source_id, status, last_data_at,
+                    SELECT source_id, status, last_data_at, row_count,
                            ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                     FROM source_probes
                 ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -142,6 +145,7 @@ def get_lineage_diagram(report_id: int):
                     "type": r["type"],
                     "status": r["status"] or "unknown",
                     "last_data_at": r["last_data_at"],
+                    "row_count": r["row_count"],
                     "owner": r["owner"],
                     "upstream_id": r["upstream_id"],
                     "refresh_schedule": r["refresh_schedule"],
@@ -178,11 +182,12 @@ def get_lineage_diagram(report_id: int):
                        s.freshness_rule_type AS depends_on_freshness_rule_type,
                        s.freshness_schedule_days AS depends_on_freshness_schedule_days,
                        sp.status AS depends_on_status,
-                       CAST(sp.last_data_at AS TEXT) AS depends_on_last_data_at
+                       CAST(sp.last_data_at AS TEXT) AS depends_on_last_data_at,
+                       sp.row_count AS depends_on_row_count
                 FROM source_dependencies sd
                 JOIN sources s ON s.id = sd.depends_on_id
                 LEFT JOIN (
-                    SELECT source_id, status, last_data_at,
+                    SELECT source_id, status, last_data_at, row_count,
                            ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                     FROM source_probes
                 ) sp ON sp.source_id = sd.depends_on_id AND sp.rn = 1
@@ -199,6 +204,7 @@ def get_lineage_diagram(report_id: int):
                     "depends_on_freshness_schedule_days": r["depends_on_freshness_schedule_days"],
                     "depends_on_status": r["depends_on_status"] or "unknown",
                     "depends_on_last_data_at": r["depends_on_last_data_at"],
+                    "depends_on_row_count": r["depends_on_row_count"],
                 }
                 for r in dep_rows
             ]

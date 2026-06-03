@@ -16,6 +16,7 @@ class SourceOut(BaseModel):
     discovered_by: str = "manual"
     status: str | None = None  # populated from latest probe
     last_updated: str | None = None
+    row_count: int | None = None
     report_count: int = 0
     custom_fresh_days: int | None = None
     freshness_rule_type: str | None = None
@@ -101,6 +102,7 @@ class LineageEdge(BaseModel):
     source_type: str
     source_status: str = "unknown"
     source_last_data_at: str | None = None
+    source_row_count: int | None = None
     report_id: int
     report_name: str
 

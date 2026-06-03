@@ -14,10 +14,13 @@ NEVER use them for INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE,
 or ANY other write/DDL operation. This is a strict, non-negotiable constraint.
 """
 
+import csv
 import logging
 import os
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from app.config import BASE_DIR, PGHOST, PGUSER, PGPASSWORD, PGDATABASE
 from app.database import get_db
@@ -172,6 +175,138 @@ def _find_file(file_path: str) -> Path | None:
     return None
 
 
+def _latest_source_row_count(db, source_id: int) -> int | None:
+    row = db.execute(
+        """SELECT row_count
+           FROM source_probes
+           WHERE source_id = ? AND row_count IS NOT NULL
+           ORDER BY probed_at DESC, id DESC
+           LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    return row["row_count"] if row else None
+
+
+def _source_alert_owner(db, source_id: int) -> str | None:
+    row = db.execute(
+        """SELECT r.owner FROM report_tables rt
+           JOIN reports r ON r.id = rt.report_id
+           WHERE rt.source_id = ? AND r.owner IS NOT NULL
+           LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    return row["owner"] if row else None
+
+
+def _create_empty_source_alert(
+    db,
+    source_id: int,
+    previous_row_count: int | None,
+    current_row_count: int | None,
+    now: str,
+) -> bool:
+    """Create an alert when a source drops from >1 rows to zero rows."""
+    if current_row_count != 0 or previous_row_count is None or previous_row_count <= 1:
+        return False
+
+    action_type = "empty_source"
+    severity = "critical"
+    msg = f"Source row count dropped from {previous_row_count:,} to 0 rows during latest probe"
+    assigned = _source_alert_owner(db, source_id)
+
+    existing_action = db.execute(
+        """SELECT id FROM actions
+           WHERE source_id = ? AND type = ?
+             AND status NOT IN ('resolved', 'expected')""",
+        (source_id, action_type),
+    ).fetchone()
+    if not existing_action:
+        db.execute(
+            """INSERT INTO actions
+               (source_id, type, status, assigned_to, notes, created_at, updated_at)
+               VALUES (?, ?, 'open', ?, ?, ?, ?)""",
+            (source_id, action_type, assigned, msg, now, now),
+        )
+
+    existing_alert = db.execute(
+        """SELECT id FROM alerts
+           WHERE source_id = ?
+             AND message LIKE 'Source row count dropped%'
+             AND acknowledged = 0
+             AND resolution_status IS NULL""",
+        (source_id,),
+    ).fetchone()
+    if not existing_alert:
+        db.execute(
+            """INSERT INTO alerts
+               (source_id, severity, message, assigned_to, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (source_id, severity, msg, assigned, now),
+        )
+        return True
+    return False
+
+
+def _count_csv_data_rows(path: Path) -> int:
+    """Count non-empty CSV data rows, excluding the first row as the header."""
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as f:
+        sample = f.read(8192)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.reader(f, dialect)
+        non_empty_rows = sum(1 for row in reader if any(cell.strip() for cell in row))
+    return max(0, non_empty_rows - 1)
+
+
+def _xlsx_cell_has_value(cell) -> bool:
+    for child in cell:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag in {"v", "t"} and (child.text or "").strip():
+            return True
+        if tag == "is":
+            for inline_child in child.iter():
+                if inline_child.tag.rsplit("}", 1)[-1] == "t" and (inline_child.text or "").strip():
+                    return True
+    return False
+
+
+def _count_xlsx_data_rows(path: Path) -> int:
+    """Count non-empty worksheet rows across an XLSX workbook, excluding headers."""
+    total_rows = 0
+    with zipfile.ZipFile(path) as zf:
+        worksheet_names = [
+            name for name in zf.namelist()
+            if name.startswith("xl/worksheets/") and name.endswith(".xml")
+        ]
+        for worksheet_name in worksheet_names:
+            non_empty_rows = 0
+            with zf.open(worksheet_name) as f:
+                for _, elem in ET.iterparse(f, events=("end",)):
+                    if elem.tag.rsplit("}", 1)[-1] == "row":
+                        if any(_xlsx_cell_has_value(cell) for cell in elem):
+                            non_empty_rows += 1
+                        elem.clear()
+            total_rows += max(0, non_empty_rows - 1)
+    return total_rows
+
+
+def _count_file_data_rows(path: Path) -> int | None:
+    """Best-effort data row count for local file sources.
+
+    Counts data rows, not header rows. Unsupported file types return None so
+    probing can still record freshness without pretending to know the count.
+    """
+    ext = path.suffix.lower()
+    if ext in {".csv", ".txt"}:
+        return _count_csv_data_rows(path)
+    if ext in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return _count_xlsx_data_rows(path)
+    return None
+
+
 def _probe_file_source(db, source_id: int, file_path: str, now: str,
                        rule: dict) -> str:
     """Probe a file-based source by checking file existence and modification time.
@@ -188,17 +323,28 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
         return "unknown"
 
     mod_time = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+    previous_row_count = _latest_source_row_count(db, source_id)
+    row_count = None
+    try:
+        row_count = _count_file_data_rows(p)
+    except Exception as e:
+        logger.warning("Row count failed for %s: %s", p, e)
     status = _compute_status_for_rule(mod_time.isoformat(), rule)
     msg = f"File modified: {mod_time.strftime('%Y-%m-%d %H:%M')}"
+    if row_count is not None:
+        msg += f" ({row_count:,} rows)"
     if status == "no_rule":
         msg += " (no freshness rule set)"
     elif rule.get("description"):
         msg += f" ({rule['description']})"
 
     db.execute(
-        "INSERT INTO source_probes (source_id, probed_at, last_data_at, status, message) VALUES (?, ?, ?, ?, ?)",
-        (source_id, now, mod_time.isoformat(), status, msg),
+        """INSERT INTO source_probes
+           (source_id, probed_at, last_data_at, row_count, status, message)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (source_id, now, mod_time.isoformat(), row_count, status, msg),
     )
+    _create_empty_source_alert(db, source_id, previous_row_count, row_count, now)
     return status
 
 
@@ -308,6 +454,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
 
             schema, table = parsed
             short = f"{schema}.{table}"
+            previous_row_count = _latest_source_row_count(db, src["id"])
 
             try:
                 # READ-ONLY: get last write time via track_commit_timestamp
@@ -344,6 +491,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                         "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
                         (src["id"], now, latest_iso, row_count, status, msg),
                     )
+                    _create_empty_source_alert(db, src["id"], previous_row_count, row_count, now)
                 else:
                     # Table exists but empty or no commit timestamps
                     status = "unknown"
@@ -352,6 +500,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                         "INSERT INTO source_probes (source_id, probed_at, row_count, status, message) VALUES (?, ?, ?, 'unknown', ?)",
                         (src["id"], now, row_count, msg),
                     )
+                    _create_empty_source_alert(db, src["id"], previous_row_count, row_count, now)
 
                 statuses[status] = statuses.get(status, 0) + 1
                 _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
@@ -405,7 +554,12 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
 
     # Alert
     existing_alert = db.execute(
-        "SELECT id FROM alerts WHERE source_id = ? AND severity = ? AND acknowledged = 0",
+        """SELECT id FROM alerts
+           WHERE source_id = ?
+             AND severity = ?
+             AND message LIKE 'Source data is outside freshness rule%'
+             AND acknowledged = 0
+             AND resolution_status IS NULL""",
         (source_id, severity),
     ).fetchone()
     if not existing_alert:
@@ -424,11 +578,12 @@ def _dedupe_open_actions(db, now: str) -> int:
 
     Returns the count of duplicates closed.
     """
-    # Find source_ids that have more than one open action
+    # Find source_ids that have more than one open stale-source action.
     dup_rows = db.execute(
         """SELECT source_id
            FROM actions
            WHERE source_id IS NOT NULL
+             AND type = 'stale_source'
              AND status NOT IN ('resolved', 'expected')
            GROUP BY source_id
            HAVING COUNT(*) > 1"""
@@ -441,6 +596,7 @@ def _dedupe_open_actions(db, now: str) -> int:
         keep = db.execute(
             """SELECT id FROM actions
                WHERE source_id = ?
+                 AND type = 'stale_source'
                  AND status NOT IN ('resolved', 'expected')
                ORDER BY created_at ASC LIMIT 1""",
             (sid,),
@@ -453,6 +609,7 @@ def _dedupe_open_actions(db, now: str) -> int:
                SET status = 'resolved', resolved_at = ?, updated_at = ?,
                    notes = COALESCE(notes, '') || ' [auto-resolved: deduplicated]'
                WHERE source_id = ?
+                 AND type = 'stale_source'
                  AND id != ?
                  AND status NOT IN ('resolved', 'expected')""",
             (now, now, sid, keep_id),
@@ -509,6 +666,52 @@ def _auto_close_stale_entries(db, now: str) -> int:
                     resolution_reason = 'Source no longer outdated'
                 WHERE source_id IN ({placeholders})
                   AND severity = 'critical'
+                  AND message LIKE 'Source data is outside freshness rule%'
+                  AND resolution_status IS NULL""",
+            [now, *source_ids],
+        )
+
+    return closed
+
+
+def _auto_close_empty_source_entries(db, now: str) -> int:
+    """Close empty-source actions and alerts after rows return."""
+    rows = db.execute("""
+        SELECT a.id AS action_id, a.source_id, sp.row_count AS latest_row_count
+        FROM actions a
+        JOIN (
+            SELECT source_id, row_count,
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC, id DESC) AS rn
+            FROM source_probes
+            WHERE row_count IS NOT NULL
+        ) sp ON sp.source_id = a.source_id AND sp.rn = 1
+        WHERE a.type = 'empty_source'
+          AND a.status NOT IN ('resolved', 'expected')
+          AND sp.row_count > 0
+    """).fetchall()
+
+    closed = 0
+    for r in rows:
+        db.execute(
+            """UPDATE actions
+               SET status = 'resolved', resolved_at = ?, updated_at = ?,
+                   notes = COALESCE(notes, '') || ' [auto-resolved: source row count recovered to '
+                   || ? || ']'
+               WHERE id = ?""",
+            (now, now, f"{r['latest_row_count']:,}", r["action_id"]),
+        )
+        closed += 1
+
+    source_ids = [r["source_id"] for r in rows]
+    if source_ids:
+        placeholders = ",".join("?" * len(source_ids))
+        db.execute(
+            f"""UPDATE alerts
+                SET resolution_status = 'resolved', resolved_at = ?,
+                    acknowledged = 1, acknowledged_by = 'auto',
+                    resolution_reason = 'Source row count recovered'
+                WHERE source_id IN ({placeholders})
+                  AND message LIKE 'Source row count dropped%'
                   AND resolution_status IS NULL""",
             [now, *source_ids],
         )
@@ -823,6 +1026,10 @@ def run_probe() -> dict:
         auto_closed = _auto_close_stale_entries(db, now)
         if auto_closed:
             log_lines.append(f"Auto-closed {auto_closed} stale alerts (sources no longer outdated)")
+
+        empty_closed = _auto_close_empty_source_entries(db, now)
+        if empty_closed:
+            log_lines.append(f"Auto-closed {empty_closed} empty-source alerts (rows recovered)")
 
         # 6. Dedupe: collapse multiple open actions for the same source
         deduped = _dedupe_open_actions(db, now)

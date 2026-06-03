@@ -763,18 +763,21 @@ tr.filter-row input::placeholder { color: var(--text-dim); }
     margin-top: 0.35rem;
 }
 
-.sources-wide-section {
+.sources-wide-section,
+.reports-wide-section {
     width: calc(100vw - 4rem);
     max-width: calc(100vw - 4rem);
     margin-left: 50%;
     transform: translateX(-50%);
 }
 
-.sources-wide-section .table-wrapper {
+.sources-wide-section .table-wrapper,
+.reports-wide-section .table-wrapper {
     width: 100%;
 }
 
-.sources-wide-section table {
+.sources-wide-section table,
+.reports-wide-section table {
     width: 100%;
 }
 
@@ -3669,6 +3672,22 @@ button.btn-danger-outline:hover {
     color: var(--text-secondary);
     padding: 0 8px 2px 22px;
 }
+.lin-card-facts {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0 8px 4px 22px;
+    font-size: 0.66rem;
+    color: var(--text-secondary);
+    min-width: 0;
+}
+.lin-card-sep {
+    color: var(--text-dim);
+}
+.lin-rows-zero {
+    color: var(--red);
+    font-weight: 700;
+}
 
 /* Upstream system card */
 .lin-upstream { background: var(--surface-2); }
@@ -4647,7 +4666,8 @@ button.btn-danger-outline:hover {
         max-width: 100%;
         min-width: 0;
     }
-    .sources-wide-section {
+    .sources-wide-section,
+    .reports-wide-section {
         width: 100%;
         max-width: 100%;
         margin-left: 0;

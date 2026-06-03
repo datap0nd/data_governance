@@ -29,6 +29,7 @@ def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
         discovered_by=r["discovered_by"],
         status=r["latest_status"] if r["latest_status"] else "unknown",
         last_updated=r["latest_last_data_at"],
+        row_count=_row_value(r, "latest_row_count"),
         report_count=r["report_count"],
         # Treat 0 as no rule (same as NULL) - present a clean view to the UI
         custom_fresh_days=custom_days,
@@ -56,6 +57,7 @@ def list_sources(include_archived: bool = Query(False)):
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
+                   sp.row_count AS latest_row_count,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
                    us.name AS upstream_name,
                    us.refresh_day AS upstream_refresh_day,
@@ -71,7 +73,7 @@ def list_sources(include_archived: bool = Query(False)):
                    ) AS linked_task_count
             FROM sources s
             LEFT JOIN (
-                SELECT source_id, status, last_data_at,
+                SELECT source_id, status, last_data_at, row_count,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
@@ -96,6 +98,7 @@ def get_source(source_id: int):
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
+                   sp.row_count AS latest_row_count,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
                    us.name AS upstream_name,
                    us.refresh_day AS upstream_refresh_day,
@@ -106,7 +109,7 @@ def get_source(source_id: int):
                    ) AS linked_scripts
             FROM sources s
             LEFT JOIN (
-                SELECT source_id, status, last_data_at,
+                SELECT source_id, status, last_data_at, row_count,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
                 FROM source_probes
             ) sp ON sp.source_id = s.id AND sp.rn = 1
