@@ -8915,7 +8915,7 @@ function bindRefreshSchedulePage() {
             runBtn.textContent = "Queueing...";
             try {
                 await apiPost("/api/system/refresh-now");
-                toast("Overall refresh queued");
+                toast("Overall refresh queued; PBI sync will launch after scan and probe");
                 await navigate("scanner");
             } catch (err) {
                 toast("Refresh launch failed: " + err.message);
@@ -9114,7 +9114,11 @@ function bindScannerButtons() {
             btnScan.textContent = "Scanning...";
             try {
                 const result = await apiPost("/api/scanner/run");
-                toast(`Scan complete: ${result.reports_scanned} reports, ${result.sources_found} sources`);
+                const pbi = result.pbi_sync || {};
+                const pbiMsg = pbi.status === "launched"
+                    ? "PBI sync launched"
+                    : `PBI sync ${pbi.status || "not launched"}`;
+                toast(`Scan complete: ${result.reports_scanned} reports, ${result.sources_found} sources; ${pbiMsg}`);
                 navigate("scanner");
             } catch (err) {
                 toast("Scan failed: " + err.message);

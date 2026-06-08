@@ -506,6 +506,8 @@ MIGRATIONS = [
     )""",
     # Multi-user: actor tracking in event log
     "ALTER TABLE event_log ADD COLUMN actor TEXT",
+    # Remove non-user diagnostic rows created by a reverted scheduler debug build.
+    "DELETE FROM event_log WHERE entity_type = 'scheduler'",
     # Power Automate flows (manual entry)
     """CREATE TABLE IF NOT EXISTS power_automate_flows (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,

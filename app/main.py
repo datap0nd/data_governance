@@ -203,18 +203,6 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 _scheduler = BackgroundScheduler()
 
 
-def _log_scheduler_event(action: str, detail: str | None = None, entity_name: str = "Overall refresh"):
-    """Write scheduler activity into the app event log for operator diagnostics."""
-    try:
-        from app.database import get_db
-        from app.routers.eventlog import log_event
-
-        with get_db() as db:
-            log_event(db, "scheduler", None, entity_name, action, detail, "scheduler")
-    except Exception:
-        logging.getLogger("scheduler").exception("Could not write scheduler event")
-
-
 def _scheduled_backup():
     """Daily 6 AM backup of governance.db."""
     from app.scanner.runner import _backup_db
@@ -230,51 +218,34 @@ def _scheduled_scan():
     from app.scanner.prober import run_probe
     log = logging.getLogger("scheduler")
     log.info("Running scheduled full scan")
-    _log_scheduler_event("scan_started", "Scheduled scan/probe started.")
     try:
         result = run_scan()
         log.info("Scan result: %s", result.get("status"))
         probe_result = run_probe()
         log.info("Probe result: %s", probe_result.get("statuses"))
-        _log_scheduler_event(
-            "scan_completed",
-            (
-                f"scan={result.get('status')}; "
-                f"reports={result.get('reports_scanned')}; "
-                f"probe={probe_result.get('status') or probe_result.get('statuses')}"
-            ),
-        )
     except Exception as e:
         log.exception("Scheduled scan failed: %s", e)
-        _log_scheduler_event("scan_failed", str(e))
 
 
 def _scheduled_pbi_sync():
     """Daily Power BI Service refresh metadata sync."""
-    from app.scanner.pbi_sync import trigger_pbi_sync
+    from app.scanner.pbi_sync import trigger_pbi_sync_via_api
     log = logging.getLogger("scheduler")
-    log.info("Running scheduled PBI sync")
-    _log_scheduler_event("pbi_sync_started", "Scheduled Power BI sync trigger started.")
+    log.info("Running scheduled PBI sync via API endpoint")
     try:
-        result = trigger_pbi_sync()
+        result = trigger_pbi_sync_via_api()
         log.info("PBI sync result: %s", result.get("status"))
-        status = (result.get("status") or "unknown").lower()
-        detail = result.get("message") or str(result)[:500]
-        _log_scheduler_event(f"pbi_sync_{status}", detail)
     except Exception as e:
         log.exception("Scheduled PBI sync failed: %s", e)
-        _log_scheduler_event("pbi_sync_failed", str(e))
 
 
 def _scheduled_overall_refresh():
     """Daily overall refresh: report scan, source probe, then Power BI sync."""
     log = logging.getLogger("scheduler")
     log.info("Running scheduled overall refresh")
-    _log_scheduler_event("started", "Scheduled overall refresh started.")
     _scheduled_scan()
     _scheduled_pbi_sync()
     log.info("Scheduled overall refresh launched")
-    _log_scheduler_event("completed", "Scheduled overall refresh finished its launch sequence.")
 
 
 def _scheduled_email_dispatch():
@@ -521,7 +492,6 @@ def run_refresh_now(request: Request):
         id=job_id,
         replace_existing=True,
     )
-    _log_scheduler_event("queued", f"Manual overall refresh queued for {run_at.isoformat()}.")
     return {"status": "queued", "job_id": job_id, "run_at": run_at.isoformat()}
 
 
