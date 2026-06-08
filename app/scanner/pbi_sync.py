@@ -13,13 +13,10 @@ import os
 import platform
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import (
-    APP_PORT,
     BASE_DIR,
     PBI_CLIENT_ID,
     PBI_CLIENT_SECRET,
@@ -733,25 +730,6 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
         "message": "PBI sync started - a PowerShell window should appear on your desktop. Log in if prompted.",
         "auth_mode": "interactive",
     }
-
-
-def trigger_pbi_sync_via_api(port: int | None = None, timeout: int = 120) -> dict:
-    """Launch PBI sync through the same API route used by the Reports button."""
-    target_port = port or APP_PORT
-    url = f"http://127.0.0.1:{target_port}/api/scanner/pbi-sync"
-    request = urllib.request.Request(url, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body) if body else {"status": "ok"}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        message = body or str(exc)
-        _record_sync_run("refresh", "failed", f"Failed to call PBI sync endpoint: {message}")
-        return {"status": "error", "message": f"Failed to call PBI sync endpoint: {message}"}
-    except Exception as exc:
-        _record_sync_run("refresh", "failed", f"Failed to call PBI sync endpoint: {exc}")
-        return {"status": "error", "message": f"Failed to call PBI sync endpoint: {exc}"}
 
 
 def import_pbi_data(data: dict) -> dict:

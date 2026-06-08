@@ -229,11 +229,11 @@ def _scheduled_scan():
 
 def _scheduled_pbi_sync():
     """Daily Power BI Service refresh metadata sync."""
-    from app.scanner.pbi_sync import trigger_pbi_sync_via_api
+    from app.scanner.pbi_sync import trigger_pbi_sync
     log = logging.getLogger("scheduler")
-    log.info("Running scheduled PBI sync via API endpoint")
+    log.info("Running scheduled PBI sync")
     try:
-        result = trigger_pbi_sync_via_api()
+        result = trigger_pbi_sync()
         log.info("PBI sync result: %s", result.get("status"))
     except Exception as e:
         log.exception("Scheduled PBI sync failed: %s", e)
@@ -243,8 +243,8 @@ def _scheduled_overall_refresh():
     """Daily overall refresh: report scan, source probe, then Power BI sync."""
     log = logging.getLogger("scheduler")
     log.info("Running scheduled overall refresh")
-    _scheduled_scan()
     _scheduled_pbi_sync()
+    _scheduled_scan()
     log.info("Scheduled overall refresh launched")
 
 

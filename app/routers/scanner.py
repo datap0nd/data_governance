@@ -21,7 +21,6 @@ from app.scanner.pbi_sync import (
     service_principal_configured,
     stop_pbi_sync_processes,
     trigger_pbi_sync,
-    trigger_pbi_sync_via_api,
     import_pbi_data,
     trigger_pbi_usage_sync,
 )
@@ -43,6 +42,7 @@ def _require_scan_access(request: Request):
 def do_scan(request: Request):
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
     _require_scan_access(request)
+    pbi_result = trigger_pbi_sync()
     result = run_scan()
     # After scan, probe sources for freshness
     try:
@@ -51,7 +51,7 @@ def do_scan(request: Request):
     except Exception as e:
         logger.exception("Probe failed after scan")
         result["probe"] = {"status": "failed", "error": str(e)}
-    result["pbi_sync"] = trigger_pbi_sync_via_api()
+    result["pbi_sync"] = pbi_result
     return result
 
 

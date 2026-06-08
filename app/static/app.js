@@ -8915,7 +8915,7 @@ function bindRefreshSchedulePage() {
             runBtn.textContent = "Queueing...";
             try {
                 await apiPost("/api/system/refresh-now");
-                toast("Overall refresh queued; PBI sync will launch after scan and probe");
+                toast("Overall refresh queued; PBI sync launches first, then scan and probe run");
                 await navigate("scanner");
             } catch (err) {
                 toast("Refresh launch failed: " + err.message);

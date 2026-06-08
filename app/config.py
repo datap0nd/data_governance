@@ -68,7 +68,6 @@ else:
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
 
 # Power BI workspace name for refresh schedule sync
-APP_PORT = int(os.environ.get("DG_APP_PORT", os.environ.get("PORT", "8000")))
 PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
 PBI_SYNC_HOUR = int(os.environ.get("DG_PBI_SYNC_HOUR", "8"))
 PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))

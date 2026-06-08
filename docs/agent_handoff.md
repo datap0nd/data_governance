@@ -1,27 +1,28 @@
 # Agent Handoff
 
 ## Current Objective
-Ensure every full/automated refresh triggers Power BI sync through the same API route as the working Reports page Sync PBI button.
+Ensure every full/automated refresh triggers Power BI sync through the same launch function as the working Reports page Sync PBI button.
 
 ## Repo State
 - Path: repo root
 - Branch: `main`
-- Latest commit before current changes: `44ab24f Record scheduler PBI sync attempts`
+- Latest commit before current changes: `998875e Trigger PBI sync from refresh paths via API`
 - Public repo: previously verified private, but pushed files must still remain generic and free of identifying details.
-- Push status: current fix is not committed yet.
+- Push status: current follow-up fix is not committed yet.
 
 ## Decisions Made
 - Event Log is for user actions, not refresh-debug breadcrumbs. Scheduler debug event writes were removed.
-- The Reports Sync PBI button works because it calls `POST /api/scanner/pbi-sync`.
-- Scanner full refresh and scheduled overall refresh must launch Power BI sync by calling that same local API route.
+- The Reports Sync PBI button works because `POST /api/scanner/pbi-sync` calls `trigger_pbi_sync()`.
+- Scanner full refresh and scheduled overall refresh must call `trigger_pbi_sync()` directly, without an internal HTTP self-call.
+- Power BI sync now launches before scan/probe so the interactive scheduled task is created immediately.
 - Accidental debug Event Log rows with `entity_type = 'scheduler'` should be removed on startup.
 
 ## Files Changed
-- `app/config.py`: adds `APP_PORT` with default `8000` for local API calls.
-- `app/scanner/pbi_sync.py`: adds `trigger_pbi_sync_via_api()`, which POSTs to `http://127.0.0.1:<port>/api/scanner/pbi-sync`.
-- `app/routers/scanner.py`: full scanner run now launches Power BI sync through `trigger_pbi_sync_via_api()` after scan/probe and returns the `pbi_sync` result.
-- `app/main.py`: scheduled overall refresh now uses `trigger_pbi_sync_via_api()` and no longer writes scheduler diagnostics to Event Log.
-- `app/static/app.js`: Scanner full refresh toast now reports the PBI sync launch status; System refresh toast clarifies PBI sync launches after scan/probe.
+- `app/config.py`: removes the abandoned internal API port setting.
+- `app/scanner/pbi_sync.py`: removes the abandoned internal HTTP self-call helper.
+- `app/routers/scanner.py`: full scanner run now calls `trigger_pbi_sync()` before scan/probe and returns the `pbi_sync` result.
+- `app/main.py`: scheduled overall refresh now calls `trigger_pbi_sync()` before scan/probe and no longer writes scheduler diagnostics to Event Log.
+- `app/static/app.js`: Scanner full refresh toast reports the PBI sync launch status; System refresh toast says PBI sync launches first.
 - `app/database.py`: removes accidental scheduler diagnostic Event Log rows.
 - `docs/agent_handoff.md`: updated current repo context.
 
@@ -29,12 +30,11 @@ Ensure every full/automated refresh triggers Power BI sync through the same API 
 - Bundled Python 3.12 `-m py_compile app/config.py app/database.py app/main.py app/scanner/pbi_sync.py app/routers/scanner.py`: passed.
 - Node `--check app/static/app.js`: passed.
 - Temp database migration check: confirmed `entity_type = 'scheduler'` Event Log rows are removed and normal user-action rows remain.
-- Mocked `trigger_pbi_sync_via_api`: confirmed it POSTs to `/api/scanner/pbi-sync`.
-- Shimmed scanner route test: confirmed `/api/scanner/run` calls the PBI sync API caller and includes the result.
-- Static scheduler assertion: confirmed `_scheduled_pbi_sync()` uses `trigger_pbi_sync_via_api()` and does not call `trigger_pbi_sync()` directly.
+- Shimmed scanner route test: confirmed `/api/scanner/run` calls the same `trigger_pbi_sync()` function as `/api/scanner/pbi-sync`, and calls it before scan/probe.
+- Static scheduler assertion: confirmed `_scheduled_overall_refresh()` launches PBI sync before scan/probe.
 
 ## Open Questions
-- On the Windows host, confirm Scanner > Run Scan Now and System > Refresh Schedule > Run once now both create a new PBI sync attempt in the Scanner Power BI Sync panel.
+- On the Windows host, confirm Scanner > Run Scan Now and System > Refresh Schedule > Run once now both open the same PowerShell PBI sync flow as Reports > Sync PBI.
 
 ## Next Step
-Commit, push, pull/update on the Windows host, run both refresh paths, and verify the PowerShell PBI sync window launches just like Reports > Sync PBI.
+Commit, push, pull/update on the Windows host, restart the app service, run both refresh paths, and verify the PowerShell PBI sync window launches immediately just like Reports > Sync PBI.
