@@ -318,7 +318,7 @@ def _target_session_status() -> dict:
     return {
         "ready": False,
         "repairable": repairable,
-        "message": f"Sync user '{target_user}' is not active on console. Sessions: {states}",
+        "message": f"Sync user '{target_user}' is not active in an interactive session. Sessions: {states}",
         "target_user": target_user,
         "sessions": target_sessions,
     }

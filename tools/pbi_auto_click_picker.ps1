@@ -53,11 +53,30 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class DgWin32 {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT {
+        public int type;
+        public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT {
+        public int dx;
+        public int dy;
+        public int mouseData;
+        public int dwFlags;
+        public int time;
+        public IntPtr dwExtraInfo;
+    }
+
     [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
     public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extraInfo);
+
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -68,6 +87,16 @@ public static class DgWin32 {
     public const int LeftDown = 0x0002;
     public const int LeftUp = 0x0004;
     public const int Restore = 9;
+    public const int InputMouse = 0;
+
+    public static bool SendLeftClick() {
+        INPUT[] inputs = new INPUT[2];
+        inputs[0].type = InputMouse;
+        inputs[0].mi.dwFlags = LeftDown;
+        inputs[1].type = InputMouse;
+        inputs[1].mi.dwFlags = LeftUp;
+        return SendInput(2, inputs, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT))) == 2;
+    }
 }
 "@
     Add-Type -TypeDefinition $win32Type -ErrorAction Stop
@@ -261,10 +290,40 @@ function Focus-PickerWindow {
     Start-Sleep -Milliseconds 200
 }
 
+function Invoke-PhysicalClick {
+    param($Element, [string]$Label = "target")
+    if (-not ("DgWin32" -as [type])) { return $false }
+    try {
+        $r = $Element.Current.BoundingRectangle
+        if ($r.Width -le 1 -or $r.Height -le 1) { return $false }
+        $x = [int]($r.Left + ($r.Width / 2))
+        $y = [int]($r.Top + ($r.Height / 2))
+        Write-Log "Physical click: $Label at $x,$y."
+        [DgWin32]::SetCursorPos($x, $y) | Out-Null
+        Start-Sleep -Milliseconds 140
+        if ([DgWin32]::SendLeftClick()) {
+            return $true
+        }
+        Write-Log "SendInput click failed, trying mouse_event fallback."
+        [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 100
+        [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
+        return $true
+    } catch {
+        Write-Log "Physical click failed: $_"
+        return $false
+    }
+}
+
 function Invoke-Element {
     param($Element)
     $target = Get-ClickableAncestor -Element $Element
     try { $target.SetFocus() } catch {}
+    $targetName = Get-ElementName $target
+
+    if (Invoke-PhysicalClick -Element $target -Label $targetName) {
+        return $true
+    }
 
     try {
         $pat = $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
@@ -285,17 +344,7 @@ function Invoke-Element {
 
     if ("DgWin32" -as [type]) {
         try {
-            $r = $target.Current.BoundingRectangle
-            if ($r.Width -gt 1 -and $r.Height -gt 1) {
-                $x = [int]($r.Left + ($r.Width / 2))
-                $y = [int]($r.Top + ($r.Height / 2))
-                [DgWin32]::SetCursorPos($x, $y) | Out-Null
-                Start-Sleep -Milliseconds 80
-                [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
-                Start-Sleep -Milliseconds 80
-                [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
-                return $true
-            }
+            return (Invoke-PhysicalClick -Element $target -Label $targetName)
         } catch {
             Write-Log "Mouse fallback failed: $_"
         }
@@ -348,10 +397,13 @@ function Invoke-WindowClickFallback {
 
         Write-Log "Fallback: clicking picker at $x,$y."
         [DgWin32]::SetCursorPos($x, $y) | Out-Null
-        Start-Sleep -Milliseconds 80
-        [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
-        Start-Sleep -Milliseconds 80
-        [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 140
+        if (-not [DgWin32]::SendLeftClick()) {
+            Write-Log "SendInput fallback click failed, trying mouse_event."
+            [DgWin32]::mouse_event([DgWin32]::LeftDown, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 100
+            [DgWin32]::mouse_event([DgWin32]::LeftUp, 0, 0, 0, [UIntPtr]::Zero)
+        }
         return $true
     } catch {
         Write-Log "Window click fallback failed: $_"
