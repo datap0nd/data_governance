@@ -17,6 +17,7 @@ from app.scanner.pbi_sync import (
     latest_pbi_sync,
     latest_successful_pbi_sync,
     pbi_sync_freshness,
+    rdp_console_guard_status,
     service_principal_configured,
     trigger_pbi_sync,
     import_pbi_data,
@@ -89,6 +90,7 @@ def pbi_sync_status():
             "latest_attempt": latest_pbi_sync("usage"),
             "latest_success": latest_successful_pbi_sync("usage"),
         },
+        "rdp_guard": rdp_console_guard_status(),
     }
 
 

@@ -12,16 +12,26 @@ import logging
 import os
 import platform
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.config import BASE_DIR, PBI_CLIENT_ID, PBI_CLIENT_SECRET, PBI_TENANT_ID, PBI_WORKSPACE
+from app.config import (
+    BASE_DIR,
+    PBI_CLIENT_ID,
+    PBI_CLIENT_SECRET,
+    PBI_SYNC_WINDOWS_USER,
+    PBI_TENANT_ID,
+    PBI_WORKSPACE,
+)
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
 PS1_SCRIPT = BASE_DIR / "tools" / "pbi_refresh_sync.ps1"
 TASK_NAME = "DG_PBI_Sync"
+RDP_GUARD_SCRIPT = BASE_DIR / "tools" / "rdp_console_guard.ps1"
+RDP_GUARD_TASK_NAME = "DG_RDP_Console_Guard"
 
 
 def _now_iso() -> str:
@@ -184,6 +194,242 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
     }
 
 
+def _short_windows_user(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    if "\\" in raw:
+        return raw.rsplit("\\", 1)[-1]
+    if "@" in raw:
+        return raw.split("@", 1)[0]
+    return raw
+
+
+def _parse_quser_sessions(output: str) -> list[dict]:
+    sessions = []
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.lower().startswith("username"):
+            continue
+        line = line.lstrip(">").strip()
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        user = parts[0]
+        if parts[1].isdigit():
+            session_name = ""
+            session_id = parts[1]
+            state = parts[2]
+        elif len(parts) >= 4 and parts[2].isdigit():
+            session_name = parts[1]
+            session_id = parts[2]
+            state = parts[3]
+        else:
+            continue
+        try:
+            parsed_id = int(session_id)
+        except ValueError:
+            continue
+        sessions.append(
+            {
+                "user": user,
+                "short_user": _short_windows_user(user),
+                "session_name": session_name,
+                "session_id": parsed_id,
+                "state": state,
+                "raw": line,
+            }
+        )
+    return sessions
+
+
+def _target_session_status() -> dict:
+    target_user = PBI_SYNC_WINDOWS_USER or os.environ.get("USERNAME", "")
+    target_short = _short_windows_user(target_user)
+    if not target_short:
+        return {
+            "ready": False,
+            "repairable": False,
+            "message": "No sync Windows user configured. Set DG_PBI_SYNC_WINDOWS_USER.",
+            "target_user": target_user,
+            "sessions": [],
+        }
+    try:
+        result = subprocess.run(
+            ["quser"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return {
+            "ready": False,
+            "repairable": False,
+            "message": f"Could not query Windows sessions with quser: {exc}",
+            "target_user": target_user,
+            "sessions": [],
+        }
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "").strip()
+        return {
+            "ready": False,
+            "repairable": False,
+            "message": f"quser failed: {msg}",
+            "target_user": target_user,
+            "sessions": [],
+        }
+
+    sessions = _parse_quser_sessions(result.stdout)
+    target_sessions = [s for s in sessions if s["short_user"] == target_short]
+    if not target_sessions:
+        return {
+            "ready": False,
+            "repairable": False,
+            "message": f"No Windows session found for sync user '{target_user}'. Log into that account once before running PBI sync.",
+            "target_user": target_user,
+            "sessions": sessions,
+        }
+
+    console = next(
+        (
+            s
+            for s in target_sessions
+            if s["session_name"].lower() == "console" and s["state"].lower() == "active"
+        ),
+        None,
+    )
+    if console:
+        return {
+            "ready": True,
+            "repairable": False,
+            "message": f"Sync user '{target_user}' is active on console session {console['session_id']}.",
+            "target_user": target_user,
+            "sessions": target_sessions,
+            "console_session": console,
+        }
+
+    repairable = any(s["state"].lower().startswith("disc") for s in target_sessions)
+    states = ", ".join(f"{s['session_name'] or '-'}:{s['session_id']}:{s['state']}" for s in target_sessions)
+    return {
+        "ready": False,
+        "repairable": repairable,
+        "message": f"Sync user '{target_user}' is not active on console. Sessions: {states}",
+        "target_user": target_user,
+        "sessions": target_sessions,
+    }
+
+
+def _wait_for_console_ready(seconds: int = 15) -> dict:
+    deadline = time.monotonic() + seconds
+    latest = _target_session_status()
+    while time.monotonic() < deadline:
+        if latest.get("ready"):
+            return latest
+        time.sleep(1)
+        latest = _target_session_status()
+    return latest
+
+
+def _run_guard_script_direct(target_user: str) -> dict:
+    if not RDP_GUARD_SCRIPT.exists():
+        return {"status": "skipped", "message": f"RDP console guard script not found: {RDP_GUARD_SCRIPT}"}
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RDP_GUARD_SCRIPT),
+    ]
+    if target_user:
+        command.extend(["-TargetUser", target_user])
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return {
+            "status": "completed" if result.returncode == 0 else "failed",
+            "message": (result.stdout or result.stderr or "").strip()[-500:],
+            "returncode": result.returncode,
+        }
+    except Exception as exc:
+        return {"status": "failed", "message": str(exc)}
+
+
+def _run_rdp_console_guard() -> dict:
+    """Repair and verify the sync user's interactive session before PBI sync."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "ready": True, "message": "RDP console guard only runs on Windows."}
+
+    target_user = PBI_SYNC_WINDOWS_USER or os.environ.get("USERNAME", "")
+    before = _target_session_status()
+    if before.get("ready"):
+        return {"status": "ready", "ready": True, "message": before.get("message"), "before": before, "after": before}
+
+    guard_attempts = []
+    try:
+        task_result = subprocess.run(
+            ["schtasks", "/run", "/tn", RDP_GUARD_TASK_NAME],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        guard_attempts.append(
+            {
+                "method": "scheduled_task",
+                "returncode": task_result.returncode,
+                "message": (task_result.stdout or task_result.stderr or "").strip()[-500:],
+            }
+        )
+        if task_result.returncode == 0:
+            after_task = _wait_for_console_ready(15)
+            if after_task.get("ready"):
+                return {
+                    "status": "repaired",
+                    "ready": True,
+                    "message": after_task.get("message"),
+                    "before": before,
+                    "after": after_task,
+                    "guard_attempts": guard_attempts,
+                }
+    except Exception as exc:
+        guard_attempts.append({"method": "scheduled_task", "status": "failed", "message": str(exc)})
+
+    direct_result = _run_guard_script_direct(target_user)
+    guard_attempts.append({"method": "direct_script", **direct_result})
+    after_direct = _wait_for_console_ready(10)
+    if after_direct.get("ready"):
+        return {
+            "status": "repaired",
+            "ready": True,
+            "message": after_direct.get("message"),
+            "before": before,
+            "after": after_direct,
+            "guard_attempts": guard_attempts,
+        }
+
+    return {
+        "status": "not_ready",
+        "ready": False,
+        "message": after_direct.get("message") or before.get("message"),
+        "before": before,
+        "after": after_direct,
+        "guard_attempts": guard_attempts,
+    }
+
+
+def rdp_console_guard_status() -> dict:
+    """Return current sync-user session status for operator diagnostics."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "ready": True, "message": "RDP console guard only runs on Windows."}
+    status = _target_session_status()
+    return {"status": "ready" if status.get("ready") else "not_ready", **status}
+
+
 def _build_schedule_string(schedule: dict) -> str | None:
     """Convert schedule dict to human-readable string like 'Monday, Wednesday @ 08:00, 16:00'."""
     if not schedule or not schedule.get("enabled"):
@@ -222,6 +468,18 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
             ["-WorkspaceName", ws_name, "-ApiBase", f"http://localhost:{port}", "-NoPause"],
             "refresh",
         )
+
+    guard_result = _run_rdp_console_guard()
+    logger.info("RDP console guard before refresh sync: %s", guard_result.get("status"))
+    if not guard_result.get("ready"):
+        message = guard_result.get("message") or "Sync Windows session is not ready for interactive Power BI sign-in."
+        _record_sync_run("refresh", "failed", message, guard_result)
+        return {
+            "status": "error",
+            "message": message,
+            "auth_mode": "interactive",
+            "guard": guard_result,
+        }
 
     # Build the command the scheduled task will run
     ps_cmd = (
@@ -564,6 +822,18 @@ def trigger_pbi_usage_sync(port: int = 8000) -> dict:
             ["-ApiBase", f"http://localhost:{port}", "-NoPause"],
             "usage",
         )
+
+    guard_result = _run_rdp_console_guard()
+    logger.info("RDP console guard before usage sync: %s", guard_result.get("status"))
+    if not guard_result.get("ready"):
+        message = guard_result.get("message") or "Sync Windows session is not ready for interactive Power BI sign-in."
+        _record_sync_run("usage", "failed", message, guard_result)
+        return {
+            "status": "error",
+            "message": message,
+            "auth_mode": "interactive",
+            "guard": guard_result,
+        }
 
     ps_cmd = (
         f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_USAGE_SCRIPT}" '

@@ -74,6 +74,7 @@ PBI_SYNC_MINUTE = int(os.environ.get("DG_PBI_SYNC_MINUTE", "15"))
 PBI_TENANT_ID = os.environ.get("DG_PBI_TENANT_ID", "")
 PBI_CLIENT_ID = os.environ.get("DG_PBI_CLIENT_ID", "")
 PBI_CLIENT_SECRET = os.environ.get("DG_PBI_CLIENT_SECRET", "")
+PBI_SYNC_WINDOWS_USER = os.environ.get("DG_PBI_SYNC_WINDOWS_USER", os.environ.get("USERNAME", ""))
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -93,6 +94,7 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+ADMIN_EVERYONE = _bool_env("DG_ADMIN_EVERYONE", True)
 EMAIL_REQUIRE_FRESH_PBI = _bool_env("DG_EMAIL_REQUIRE_FRESH_PBI", True)
 EMAIL_MAX_PBI_SYNC_AGE_HOURS = _float_env("DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS", 24.0)
 EMAIL_PBI_SYNC_GRACE_MINUTES = _float_env("DG_EMAIL_PBI_SYNC_GRACE_MINUTES", 30.0)

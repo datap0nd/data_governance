@@ -11,10 +11,17 @@ param(
     [string]$ApiBase = "http://localhost:8000",
     [int]$DaysBack = 30,
     [string]$PreferredAccount = $env:DG_PBI_ACCOUNT,
+    [int]$ConnectTimeoutSeconds = 120,
     [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
+
+$helperScript = Join-Path $PSScriptRoot "pbi_sync_helpers.ps1"
+if (Test-Path $helperScript) {
+    . $helperScript
+    $ConnectTimeoutSeconds = Get-DgPbiConnectTimeout -DefaultSeconds $ConnectTimeoutSeconds
+}
 
 function Pause-IfNeeded {
     param([string]$Message = "Press Enter to close")
@@ -26,15 +33,20 @@ function Pause-IfNeeded {
 function Report-SyncStatus {
     param(
         [string]$Status,
-        [string]$Message
+        [string]$Message,
+        $Details = $null
     )
     try {
         $payload = @{
             sync_type = "usage"
             status    = $Status
             message   = $Message
-        } | ConvertTo-Json -Depth 4
-        Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-sync/run-status" -Method POST -Body $payload -ContentType "application/json; charset=utf-8" | Out-Null
+        }
+        if ($Details) {
+            $payload.details = $Details
+        }
+        $json = $payload | ConvertTo-Json -Depth 6
+        Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-sync/run-status" -Method POST -Body $json -ContentType "application/json; charset=utf-8" | Out-Null
     } catch {
         Write-Host "Could not report sync status: $_" -ForegroundColor DarkYellow
     }
@@ -70,6 +82,17 @@ function Connect-DgPowerBI {
         }
     }
 
+    if (Get-Command Test-DgInteractiveSignInReady -ErrorAction SilentlyContinue) {
+        $preflight = Test-DgInteractiveSignInReady
+        if (-not $preflight.Ready) {
+            Write-Host $preflight.Message -ForegroundColor Red
+            Report-SyncStatus -Status "failed" -Message $preflight.Message -Details $preflight.Details
+            Pause-IfNeeded "Press Enter to exit"
+            exit 2
+        }
+        Write-Host "Interactive sign-in preflight: $($preflight.Message)" -ForegroundColor DarkGray
+    }
+
     # Spawn the auto-clicker so the MSAL "Pick an account" popup is dismissed automatically.
     # This fallback requires an unlocked interactive Windows session.
     $clicker = $null
@@ -81,7 +104,7 @@ function Connect-DgPowerBI {
                 "-NoProfile",
                 "-STA",
                 "-File", $clickerScript,
-                "-TimeoutSeconds", "90"
+                "-TimeoutSeconds", "$ConnectTimeoutSeconds"
             )
             if ($PreferredAccount) {
                 $clickerArgs += @("-PreferredAccount", $PreferredAccount)
@@ -94,7 +117,11 @@ function Connect-DgPowerBI {
     }
 
     Write-Host "Connecting to Power BI..." -ForegroundColor Yellow
+    $watchdog = $null
     try {
+        if (Get-Command Start-DgPbiConnectWatchdog -ErrorAction SilentlyContinue) {
+            $watchdog = Start-DgPbiConnectWatchdog -ApiBase $ApiBase -SyncType "usage" -TimeoutSeconds $ConnectTimeoutSeconds
+        }
         Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
         Write-Host "Connected." -ForegroundColor Green
     } catch {
@@ -103,6 +130,9 @@ function Connect-DgPowerBI {
         Pause-IfNeeded "Press Enter to exit"
         exit 1
     } finally {
+        if (Get-Command Stop-DgPbiConnectWatchdog -ErrorAction SilentlyContinue) {
+            Stop-DgPbiConnectWatchdog -Watchdog $watchdog
+        }
         if ($clicker -and -not $clicker.HasExited) {
             Stop-Process -Id $clicker.Id -Force -ErrorAction SilentlyContinue
         }

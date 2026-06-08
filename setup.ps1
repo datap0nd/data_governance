@@ -240,6 +240,7 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "DG_SCRIPTS_PATH=$ScriptsPath" `
     "DG_SCHTASK_REMOTES=MX-Share" `
     "DG_PBI_WORKSPACE=mx executive" `
+    "DG_PBI_SYNC_WINDOWS_USER=$env:USERNAME" `
     "DG_AI_MOCK=true"
 
 # Run service as current user (needed for network share access)
@@ -262,6 +263,19 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppRotateFiles 1
 & $NssmExe set $ServiceName AppRotateSeconds 86400
 & $NssmExe set $ServiceName AppRotateBytes 10485760
+
+if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
+    Write-Host "Installing RDP console guard..." -ForegroundColor Yellow
+    try {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$CodeDir\tools\install_rdp_console_guard.ps1" -TargetUser $env:USERNAME
+        if ($LASTEXITCODE -ne 0) {
+            throw "installer exited with code $LASTEXITCODE"
+        }
+    } catch {
+        Write-Host "  RDP console guard install failed: $_" -ForegroundColor Yellow
+        Write-Host "  The app will still start, but interactive sync may fail after RDP disconnects." -ForegroundColor Yellow
+    }
+}
 
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3

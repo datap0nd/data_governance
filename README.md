@@ -40,21 +40,43 @@ Open your browser to `http://localhost:8000`
 
 For other people on the network to access it, they go to `http://YOUR_COMPUTER_IP:8000`
 
-### Admin access for another PC
+### Admin access
 
-The machine running the app is always an admin. To grant another PC the same capabilities, have the user open the app from that PC and register their name. Then open Admin > Admin Access from an existing admin session and enable admin use for that user's IP row.
+Everyone has admin access by default, including remote PCs on the network. Admin > Admin Access still lists registered users and IPs for visibility. To return to IP-based admin toggles, set `DG_ADMIN_EVERYONE=false` before starting the app.
 
 ### Unattended Power BI sync
 
-Interactive Power BI sign-in cannot be reliably auto-clicked when Windows is locked. For locked-machine morning syncs, configure a Power BI service principal and set these environment variables for the service account:
+The refresh metadata sync uses the signed-in Windows user's delegated Power BI session. Without tenant-admin/service-principal access, it is not a true headless job: Windows must have an active, unlocked interactive session so the Microsoft account picker can be selected.
+
+For RDP-heavy machines, setup installs an automatic RDP console guard. The guard runs every five minutes, also runs after RDP disconnect events, and runs once immediately before a Power BI sync starts. It targets the configured sync Windows user and transfers that user's disconnected RDP session back to the console with `tscon`, so the sync does not depend on every RDP user remembering a manual step.
+
+This is a workaround for delegated interactive auth, not a secure headless design. Use it only on a controlled machine where leaving the sync user's desktop available at the console is acceptable.
+
+Set the target sync user if the service account is not the same account used during setup:
 
 ```bash
-DG_PBI_TENANT_ID=<tenant-id>
-DG_PBI_CLIENT_ID=<app-client-id>
-DG_PBI_CLIENT_SECRET=<client-secret>
+DG_PBI_SYNC_WINDOWS_USER=<windows-user-name>
 ```
 
-When those values are present, the sync runs without the Microsoft account picker. Scheduled emails are blocked by default if the latest completed Power BI refresh sync is older than `DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS` hours, defaulting to `24`. After the configured overall refresh time plus `DG_EMAIL_PBI_SYNC_GRACE_MINUTES`, defaulting to `30`, emails require that day's sync to have completed. If PBI is stale, the email is deferred and retried after `DG_EMAIL_PBI_STALE_RETRY_MINUTES`, defaulting to `30`. Set `DG_EMAIL_REQUIRE_FRESH_PBI=false` only if stale PBI metadata is acceptable.
+The guard only repairs disconnected sessions by default. It does not kick an actively connected RDP user. If someone is actively using a different account at the sync time, the sync may still have to wait or fail cleanly. That case needs an operating rule, such as reserving the sync window or running the sync under a dedicated service account that users do not RDP into.
+
+If multiple Microsoft accounts are cached, set this environment variable for the service account so the picker chooses the expected account:
+
+```bash
+DG_PBI_ACCOUNT=<user@example.com>
+```
+
+The sync scripts also check for a locked/disconnected session before interactive sign-in and record a failed sync instead of hanging overnight. If sign-in reaches the account picker but does not finish, the process is stopped after `DG_PBI_CONNECT_TIMEOUT_SECONDS`, defaulting to `120`.
+
+The current RDP guard diagnostics are available at:
+
+```text
+http://localhost:8000/api/scanner/pbi-sync/status
+```
+
+Scheduled emails are blocked by default if the latest completed Power BI refresh sync is older than `DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS` hours, defaulting to `24`. After the configured overall refresh time plus `DG_EMAIL_PBI_SYNC_GRACE_MINUTES`, defaulting to `30`, emails require that day's sync to have completed. If PBI is stale, the email is deferred and retried after `DG_EMAIL_PBI_STALE_RETRY_MINUTES`, defaulting to `30`. Set `DG_EMAIL_REQUIRE_FRESH_PBI=false` only if stale PBI metadata is acceptable.
+
+If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_CLIENT_ID`, and `DG_PBI_CLIENT_SECRET` to run the sync without an interactive account picker.
 
 Admins can change the daily overall refresh time from Admin > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
 
@@ -72,7 +94,7 @@ To show when PostgreSQL tables were last updated:
 1. Export the query results from pgAdmin as a CSV named `latest_upload_date.csv`
 2. Place it in the `data_governance` project root (same level as `app/`)
 3. CSV must have columns: `schema_name, table_name, last_activity` (with a header row)
-4. Run a scan — the prober runs automatically after each scan
+4. Run a scan - the prober runs automatically after each scan
 
 You can also trigger a probe independently:
 ```bash
