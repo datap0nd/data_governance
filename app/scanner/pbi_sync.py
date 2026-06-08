@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 PS1_SCRIPT = BASE_DIR / "tools" / "pbi_refresh_sync.ps1"
 TASK_NAME = "DG_PBI_Sync"
+PS1_USAGE_SCRIPT = BASE_DIR / "tools" / "pbi_usage_sync.ps1"
+USAGE_TASK_NAME = "DG_PBI_Usage_Sync"
 RDP_GUARD_SCRIPT = BASE_DIR / "tools" / "rdp_console_guard.ps1"
 RDP_GUARD_TASK_NAME = "DG_RDP_Console_Guard"
 
@@ -54,7 +56,7 @@ def _record_sync_run(
     """Persist sync status so scheduled emails can require fresh PBI data."""
     now = _now_iso()
     started = started_at or now
-    finished = finished_at if finished_at is not None else (now if status in {"completed", "failed", "skipped"} else None)
+    finished = finished_at if finished_at is not None else (now if status in {"completed", "failed", "skipped", "stopped"} else None)
     details_json = json.dumps(details or {}, default=str) if details else None
     try:
         with get_db() as db:
@@ -191,6 +193,197 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
         "status": "launched",
         "message": "Power BI sync launched in unattended service-principal mode.",
         "auth_mode": "service_principal",
+    }
+
+
+def _run_schtasks_action(task_name: str, action: str) -> dict:
+    command = ["schtasks", f"/{action}", "/tn", task_name]
+    if action == "delete":
+        command.append("/f")
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return {
+            "task": task_name,
+            "action": action,
+            "ok": result.returncode == 0,
+            "returncode": result.returncode,
+            "message": (result.stdout or result.stderr or "").strip()[-500:],
+        }
+    except Exception as exc:
+        return {
+            "task": task_name,
+            "action": action,
+            "ok": False,
+            "message": str(exc),
+        }
+
+
+def _stop_matching_powershell_processes() -> dict:
+    script = r'''
+$ErrorActionPreference = "SilentlyContinue"
+$patterns = @(
+    "pbi_refresh_sync.ps1",
+    "pbi_usage_sync.ps1",
+    "pbi_auto_click_picker.ps1",
+    "pbi-sync/run-status",
+    "Interactive Power BI sign-in did not complete"
+)
+
+function Get-DgCommandText($processInfo) {
+    $line = [string]$processInfo.CommandLine
+    if ($line -match "(?i)-encodedcommand\s+([A-Za-z0-9+/=]+)") {
+        try {
+            $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
+            return "$line`n$decoded"
+        } catch {
+            return $line
+        }
+    }
+    return $line
+}
+
+function Test-DgSyncProcess([string]$text) {
+    foreach ($pattern in $patterns) {
+        if ($text -like "*$pattern*") {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-DgSyncType([string]$text) {
+    if ($text -like "*pbi_refresh_sync.ps1*") { return "refresh" }
+    if ($text -like "*pbi_usage_sync.ps1*") { return "usage" }
+    return ""
+}
+
+$stopped = @()
+$errors = @()
+$currentPid = $PID
+$processes = Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.ProcessId -ne $currentPid -and
+        $_.Name -match "^(powershell|pwsh)(\.exe)?$" -and
+        (Test-DgSyncProcess (Get-DgCommandText $_))
+    }
+
+foreach ($processInfo in $processes) {
+    $text = Get-DgCommandText $processInfo
+    $preview = if ($text.Length -gt 700) { $text.Substring(0, 700) } else { $text }
+    try {
+        Stop-Process -Id $processInfo.ProcessId -Force -ErrorAction Stop
+        $stopped += [pscustomobject]@{
+            pid = $processInfo.ProcessId
+            name = $processInfo.Name
+            sync_type = Get-DgSyncType $text
+            command_line = $preview
+        }
+    } catch {
+        $errors += [pscustomobject]@{
+            pid = $processInfo.ProcessId
+            name = $processInfo.Name
+            message = $_.Exception.Message
+            command_line = $preview
+        }
+    }
+}
+
+[pscustomobject]@{
+    stopped = @($stopped)
+    errors = @($errors)
+} | ConvertTo-Json -Depth 5
+'''
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        cwd=str(BASE_DIR),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    stdout = (result.stdout or "").strip()
+    parsed: dict = {}
+    if stdout:
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError:
+            parsed = {"raw_output": stdout[-1000:]}
+    parsed.setdefault("stopped", [])
+    parsed.setdefault("errors", [])
+    parsed["returncode"] = result.returncode
+    if result.stderr:
+        parsed["stderr"] = result.stderr.strip()[-1000:]
+    return parsed
+
+
+def stop_pbi_sync_processes() -> dict:
+    """Stop running Power BI refresh/usage sync tasks and helper processes."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "message": "PBI sync stop is only available on Windows"}
+
+    sync_tasks = ((TASK_NAME, "refresh"), (USAGE_TASK_NAME, "usage"))
+    task_results = []
+    recorded_types: set[str] = set()
+
+    for task_name, sync_type in sync_tasks:
+        for action in ("end", "delete"):
+            result = _run_schtasks_action(task_name, action)
+            task_results.append(result)
+            if action == "end" and result.get("ok"):
+                recorded_types.add(sync_type)
+
+    process_result = _stop_matching_powershell_processes()
+    stopped_processes = process_result.get("stopped") or []
+    if isinstance(stopped_processes, dict):
+        stopped_processes = [stopped_processes]
+    process_errors = process_result.get("errors") or []
+    if isinstance(process_errors, dict):
+        process_errors = [process_errors]
+
+    for proc in stopped_processes:
+        sync_type = (proc or {}).get("sync_type")
+        if sync_type in {"refresh", "usage"}:
+            recorded_types.add(sync_type)
+
+    for sync_type in ("refresh", "usage"):
+        latest = latest_pbi_sync(sync_type)
+        if latest and latest.get("status") == "launched":
+            recorded_types.add(sync_type)
+
+    details = {
+        "tasks": task_results,
+        "processes": process_result,
+    }
+    for sync_type in sorted(recorded_types):
+        _record_sync_run(
+            sync_type,
+            "stopped",
+            "Power BI sync stopped by user.",
+            details,
+        )
+
+    stopped_task_actions = sum(1 for result in task_results if result.get("action") == "end" and result.get("ok"))
+    stopped_process_count = len(stopped_processes)
+    status = "stopped" if recorded_types or stopped_task_actions or stopped_process_count else "idle"
+    if status == "idle":
+        message = "No running Power BI sync tasks or processes were found."
+    else:
+        message = (
+            f"Stop requested: {stopped_task_actions} task action(s), "
+            f"{stopped_process_count} process(es) stopped."
+        )
+
+    return {
+        "status": status,
+        "message": message,
+        "tasks": task_results,
+        "processes_stopped": stopped_process_count,
+        "process_errors": process_errors,
+        "recorded_sync_types": sorted(recorded_types),
     }
 
 
@@ -807,10 +1000,6 @@ def _auto_resolve_recovered_refreshes(db, now: str) -> int:
             )
             closed += 1
     return closed
-
-
-PS1_USAGE_SCRIPT = BASE_DIR / "tools" / "pbi_usage_sync.ps1"
-USAGE_TASK_NAME = "DG_PBI_Usage_Sync"
 
 
 def trigger_pbi_usage_sync(port: int = 8000) -> dict:

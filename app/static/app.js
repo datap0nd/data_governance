@@ -3099,7 +3099,7 @@ async function renderScanner() {
     const pbiFresh = refreshStatus.freshness?.fresh;
     const rdpGuard = pbiStatus?.rdp_guard;
     const latestPbiAttemptMessage = latestPbiAttempt?.message || "";
-    const pbiAttemptWarning = latestPbiAttempt?.status === "failed" && latestPbiAttemptMessage
+    const pbiAttemptWarning = ["failed", "stopped"].includes(latestPbiAttempt?.status) && latestPbiAttemptMessage
         ? `<div class="pbi-sync-warning">${esc(latestPbiAttemptMessage)}</div>`
         : "";
     const rdpGuardWarning = rdpGuard && !rdpGuard.ready
@@ -3136,6 +3136,7 @@ async function renderScanner() {
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
+            <button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop Sync Processes</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -9163,6 +9164,24 @@ function bindScannerButtons() {
             }
             btnDiagnose.disabled = false;
             btnDiagnose.textContent = "Diagnose";
+        });
+    }
+
+    const btnStopPbiSync = $("#btn-stop-pbi-sync");
+    if (btnStopPbiSync) {
+        btnStopPbiSync.addEventListener("click", async () => {
+            if (!confirm("Stop all running Power BI refresh and usage sync processes?")) return;
+            btnStopPbiSync.disabled = true;
+            btnStopPbiSync.textContent = "Stopping...";
+            try {
+                const result = await apiPost("/api/scanner/pbi-sync/stop");
+                toast(result.message || "Sync stop requested");
+                navigate("scanner");
+            } catch (err) {
+                toast("Stop sync failed: " + err.message);
+                btnStopPbiSync.disabled = false;
+                btnStopPbiSync.textContent = "Stop Sync Processes";
+            }
         });
     }
 

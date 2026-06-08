@@ -19,6 +19,7 @@ from app.scanner.pbi_sync import (
     pbi_sync_freshness,
     rdp_console_guard_status,
     service_principal_configured,
+    stop_pbi_sync_processes,
     trigger_pbi_sync,
     import_pbi_data,
     trigger_pbi_usage_sync,
@@ -74,6 +75,13 @@ def do_pbi_sync(request: Request):
     """Launch PBI sync in the user's interactive session."""
     _require_scan_access(request)
     return trigger_pbi_sync()
+
+
+@router.post("/pbi-sync/stop")
+def stop_pbi_sync(request: Request):
+    """Stop running PBI refresh/usage sync tasks and helper processes."""
+    _require_scan_access(request)
+    return stop_pbi_sync_processes()
 
 
 @router.get("/pbi-sync/status")
@@ -162,7 +170,7 @@ def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
     if sync_type not in {"refresh", "usage"}:
         raise HTTPException(status_code=400, detail="sync_type must be refresh or usage")
     status = (body.status or "").strip().lower()
-    if status not in {"launched", "completed", "failed", "skipped"}:
+    if status not in {"launched", "completed", "failed", "skipped", "stopped"}:
         raise HTTPException(status_code=400, detail="status is not valid")
     _record_sync_run(sync_type, status, body.message, body.details)
     return {"status": "recorded"}
