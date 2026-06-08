@@ -651,14 +651,20 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
     and POSTs it back to /api/scanner/pbi-import.
     """
     if platform.system() != "Windows":
-        return {"status": "skipped", "message": "PBI sync only available on Windows"}
+        message = "PBI sync only available on Windows"
+        _record_sync_run("refresh", "skipped", message)
+        return {"status": "skipped", "message": message}
 
     ws_name = workspace or PBI_WORKSPACE
     if not ws_name:
-        return {"status": "error", "message": "No PBI workspace configured (set DG_PBI_WORKSPACE)"}
+        message = "No PBI workspace configured (set DG_PBI_WORKSPACE)"
+        _record_sync_run("refresh", "failed", message)
+        return {"status": "error", "message": message}
 
     if not PS1_SCRIPT.exists():
-        return {"status": "error", "message": f"PowerShell script not found: {PS1_SCRIPT}"}
+        message = f"PowerShell script not found: {PS1_SCRIPT}"
+        _record_sync_run("refresh", "failed", message)
+        return {"status": "error", "message": message}
 
     if service_principal_configured():
         return _launch_powershell_background(
@@ -1005,10 +1011,14 @@ def _auto_resolve_recovered_refreshes(db, now: str) -> int:
 def trigger_pbi_usage_sync(port: int = 8000) -> dict:
     """Launch PBI usage sync in the user's interactive session."""
     if platform.system() != "Windows":
-        return {"status": "skipped", "message": "PBI usage sync only available on Windows"}
+        message = "PBI usage sync only available on Windows"
+        _record_sync_run("usage", "skipped", message)
+        return {"status": "skipped", "message": message}
 
     if not PS1_USAGE_SCRIPT.exists():
-        return {"status": "error", "message": f"PowerShell script not found: {PS1_USAGE_SCRIPT}"}
+        message = f"PowerShell script not found: {PS1_USAGE_SCRIPT}"
+        _record_sync_run("usage", "failed", message)
+        return {"status": "error", "message": message}
 
     if service_principal_configured():
         return _launch_powershell_background(

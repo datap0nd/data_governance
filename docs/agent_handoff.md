@@ -1,47 +1,34 @@
 # Agent Handoff
 
 ## Current Objective
-Remove the application admin/non-admin split so every registered user has the same app access.
+Make the automated overall refresh visibly attempt Power BI sync and expose enough run evidence to debug scheduler failures.
 
 ## Repo State
-- Path: `/Users/rafaelcunha/Documents/data_governance`
+- Path: repo root
 - Branch: `main`
-- Latest functional commit: `b04400a Remove app admin access split`
-- Public repo: verified private with `gh repo view datap0nd/data_governance --json visibility,nameWithOwner`
-- Push status: functional commit pushed to `origin/main`; this handoff update is a follow-up repo-context commit.
-- Untracked local artifacts remain intentionally unstaged: `.DS_Store`, `PRODUCT.md`, screenshot files, `mockup_lineage.html`, `package*.json`, `screenshots/`, and `ui_review*.mjs` / `ui_verify.mjs`.
+- Latest commit before current changes: `6c24d16 Add scanner stop sync control`
+- Public repo: previously verified private, but pushed files must still remain generic and free of identifying details.
+- Push status: current scheduler/PBI-sync diagnostic changes are not committed yet.
 
 ## Decisions Made
-- Removed IP allowlist based app access. All requests now pass the generic app-access hook.
-- Kept the `is_admin: true` response field for compatibility with existing clients that may still read it.
-- Removed the Admin Access UI and `/api/admin/access` toggle endpoint.
-- Renamed the user-facing Admin menu to System.
-- Moved refresh schedule frontend calls to `/api/system/...`.
-- Kept hidden `/api/admin/refresh-*` aliases for backward compatibility only.
-- Stopped creating the old `admin_user_ips` table for new databases. Existing databases may retain the unused table harmlessly.
+- The overall refresh order remains scan/probe first, then Power BI refresh sync.
+- Do not move Power BI sync before the scan unless logs prove ordering is the real failure.
+- Power BI sync trigger early exits must record `pbi_sync_runs` rows, so skipped/error attempts show in Scanner instead of silently returning.
+- Scheduler activity should be recorded in the app event log, not only console logs.
 
 ## Files Changed
-- `app/local_access.py`: removed admin/IP allowlist enforcement and replaced it with generic app-access helpers.
-- `app/main.py`: sets every request/user response as admin-compatible, removes access toggle endpoints, adds System refresh routes.
-- `app/database.py` and `app/config.py`: remove the admin allowlist table setup and `DG_ADMIN_EVERYONE` flag.
-- `app/static/index.html`, `app/static/app.js`, `app/static/style.css`: show formerly hidden controls, remove Admin Access page/routing/styles, rename nav to System, remove user admin badge.
-- `app/routers/scanner.py`, `app/routers/scripts.py`, `app/routers/scheduled_tasks.py`, `app/routers/usage.py`: rename old local/admin access hooks to generic access hooks.
-- `README.md`, `docs/metric_contracts.md`, `app/routers/changelog.py`: update stale admin wording.
+- `app/scanner/pbi_sync.py`: records refresh/usage sync skipped or failed rows for early exits such as unsupported OS, missing workspace, or missing PowerShell script.
+- `app/main.py`: writes scheduler event-log entries for manual queueing, overall refresh start/completion, scan start/completion/failure, and PBI sync start/result/failure.
+- `docs/agent_handoff.md`: updated current repo context.
 
 ## Commands And Checks
-- `node --check app/static/app.js`: passed.
-- `python3 -m compileall app`: passed.
-- Bundled Python 3.12 `-m compileall app`: passed.
-- Temp Python 3.12 venv with `api/requirements.txt`: `import app.main` passed.
-- Smoke server on `127.0.0.1:8765` with `DG_DB_PATH=/tmp/data_governance_smoke.db`: started and stopped cleanly.
-- `curl /api/me`: returned `is_admin: true`.
-- `curl /api/system/refresh-schedule`: returned schedule payload.
-- `curl /api/admin/access`: returned `404`, confirming the removed toggle endpoint.
-- Playwright using local Google Chrome: nav renders System, no Admin Access link, System links visible, no console errors.
-- `git diff --check` and `git diff --cached --check`: passed.
+- Bundled Python 3.12 `-m py_compile app/main.py app/scanner/pbi_sync.py app/routers/scanner.py`: passed.
+- `git diff --check -- app/main.py app/scanner/pbi_sync.py`: passed.
+- Mocked non-Windows refresh/usage PBI sync trigger: confirmed skipped sync rows are recorded.
+- `import app.main`: not run successfully in this local Codex runtime because `apscheduler` is not installed outside the app deployment environment.
 
 ## Open Questions
-- None blocking. If old external tooling called `/api/admin/access`, it will need to stop using that removed toggle endpoint.
+- On the target Windows host, confirm whether Event Log shows `pbi_sync_started` followed by `pbi_sync_launched`, `pbi_sync_error`, or `pbi_sync_skipped` after System > Refresh Schedule > Run once now.
 
 ## Next Step
-On the target machine, update the app and confirm a remote registered user can see System > Refresh Schedule, Premium Viewers, scanner actions, and update controls without any app-level access toggle.
+Deploy/pull the commit on the Windows host, click Run once now, then inspect Scanner and Event Log for the recorded scheduler/PBI-sync entries.
