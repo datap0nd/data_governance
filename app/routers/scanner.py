@@ -14,6 +14,7 @@ from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import (
     _record_sync_run,
+    get_pending_pbi_sync,
     latest_pbi_sync,
     latest_successful_pbi_sync,
     pbi_sync_freshness,
@@ -100,6 +101,7 @@ def pbi_sync_status():
             "latest_attempt": latest_pbi_sync("usage"),
             "latest_success": latest_successful_pbi_sync("usage"),
         },
+        "pending": get_pending_pbi_sync(),
         "rdp_guard": rdp_console_guard_status(),
     }
 

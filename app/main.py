@@ -229,14 +229,26 @@ def _scheduled_scan():
 
 def _scheduled_pbi_sync():
     """Daily Power BI Service refresh metadata sync."""
-    from app.scanner.pbi_sync import trigger_pbi_sync
+    from app.scanner.pbi_sync import trigger_pbi_sync_or_defer
     log = logging.getLogger("scheduler")
     log.info("Running scheduled PBI sync")
     try:
-        result = trigger_pbi_sync()
+        result = trigger_pbi_sync_or_defer("scheduled_overall_refresh")
         log.info("PBI sync result: %s", result.get("status"))
     except Exception as e:
         log.exception("Scheduled PBI sync failed: %s", e)
+
+
+def _scheduled_pending_pbi_sync_retry():
+    """Retry scheduled PBI sync after RDP/lock-screen conditions clear."""
+    from app.scanner.pbi_sync import retry_pending_pbi_sync
+    log = logging.getLogger("scheduler")
+    try:
+        result = retry_pending_pbi_sync()
+        if result.get("status") not in {"idle", "waiting"}:
+            log.info("Pending PBI sync retry result: %s", result.get("status"))
+    except Exception as e:
+        log.exception("Pending PBI sync retry failed: %s", e)
 
 
 def _scheduled_overall_refresh():
@@ -282,6 +294,15 @@ def _configure_scheduler_jobs() -> dict:
         minutes=1,
         id="email_schedule_dispatch",
         replace_existing=True,
+    )
+    _scheduler.add_job(
+        _scheduled_pending_pbi_sync_retry,
+        "interval",
+        minutes=1,
+        id="pending_pbi_sync_retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     return refresh_time
 
@@ -454,13 +475,27 @@ def update_refresh_schedule(body: RefreshScheduleRequest, request: Request):
     """Persist and reschedule the daily overall refresh time."""
     require_app_access(request)
     hour, minute = _parse_refresh_time(body.refresh_time)
-    saved = set_overall_refresh_time(hour, minute)
-    _configure_overall_refresh_job()
+    try:
+        saved = set_overall_refresh_time(hour, minute)
+    except sqlite3.OperationalError as exc:
+        logging.getLogger(__name__).exception("Could not save refresh schedule")
+        raise HTTPException(status_code=503, detail=f"Could not save refresh schedule: {exc}") from exc
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Could not save refresh schedule")
+        raise HTTPException(status_code=500, detail=f"Could not save refresh schedule: {exc}") from exc
+
+    reschedule_error = None
+    try:
+        _configure_overall_refresh_job()
+    except Exception as exc:
+        reschedule_error = str(exc)
+        logging.getLogger(__name__).exception("Could not reschedule overall refresh job")
+
     try:
         from app.routers.eventlog import log_event
 
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA busy_timeout = 15000")
             log_event(
                 conn,
                 "app_settings",
@@ -473,7 +508,20 @@ def update_refresh_schedule(body: RefreshScheduleRequest, request: Request):
             conn.commit()
     except Exception:
         logging.getLogger(__name__).exception("Could not log refresh schedule update")
-    return _refresh_schedule_payload()
+    try:
+        payload = _refresh_schedule_payload()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not build refresh schedule payload")
+        payload = {
+            "refresh_time": saved["time"],
+            "hour": saved["hour"],
+            "minute": saved["minute"],
+            "next_run_at": None,
+            "scheduler_running": bool(getattr(_scheduler, "running", False)),
+        }
+    if reschedule_error:
+        payload["reschedule_error"] = reschedule_error
+    return payload
 
 
 @app.post("/api/admin/refresh-now", include_in_schema=False)

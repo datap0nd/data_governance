@@ -3098,9 +3098,13 @@ async function renderScanner() {
     const latestPbiAttempt = refreshStatus.latest_attempt;
     const pbiFresh = refreshStatus.freshness?.fresh;
     const rdpGuard = pbiStatus?.rdp_guard;
+    const pendingPbiSync = pbiStatus?.pending;
     const latestPbiAttemptMessage = latestPbiAttempt?.message || "";
-    const pbiAttemptWarning = ["failed", "stopped"].includes(latestPbiAttempt?.status) && latestPbiAttemptMessage
+    const pbiAttemptWarning = ["failed", "stopped", "pending"].includes(latestPbiAttempt?.status) && latestPbiAttemptMessage
         ? `<div class="pbi-sync-warning">${esc(latestPbiAttemptMessage)}</div>`
+        : "";
+    const pendingPbiWarning = pendingPbiSync
+        ? `<div class="pbi-sync-warning">Pending Power BI sync: ${esc(pendingPbiSync.message || "waiting for an interactive desktop")}</div>`
         : "";
     const rdpGuardWarning = rdpGuard && !rdpGuard.ready
         ? `<div class="pbi-sync-warning">${esc(rdpGuard.message || "RDP console guard is not ready.")}</div>`
@@ -3118,10 +3122,12 @@ async function renderScanner() {
                 <span>Mode: <strong>${pbiStatus.auth_mode === "service_principal" ? "Service principal" : "Interactive"}</strong></span>
                 <span>Last success: <strong>${latestPbiSuccess?.finished_at ? timeAgo(latestPbiSuccess.finished_at) : "never"}</strong></span>
                 <span>Last attempt: <strong>${latestPbiAttempt?.status || "none"}</strong>${latestPbiAttempt?.started_at ? ` ${timeAgo(latestPbiAttempt.started_at)}` : ""}</span>
+                ${pendingPbiSync ? `<span>Pending: <strong>Yes</strong>${pendingPbiSync.updated_at ? ` ${timeAgo(pendingPbiSync.updated_at)}` : ""}</span>` : ""}
                 ${rdpGuard ? `<span>RDP guard: <strong>${rdpGuard.ready ? "Ready" : "Not ready"}</strong></span>` : ""}
             </div>
             ${refreshStatus.freshness?.reason ? `<div class="pbi-sync-warning">${esc(refreshStatus.freshness.reason)}</div>` : ""}
             ${pbiAttemptWarning}
+            ${pendingPbiWarning}
             ${rdpGuardWarning}
         </div>
     ` : "";
@@ -8899,7 +8905,9 @@ function bindRefreshSchedulePage() {
             saveBtn.textContent = "Saving...";
             try {
                 const updated = await apiPut("/api/system/refresh-schedule", { refresh_time: input.value });
-                toast(`Refresh schedule saved for ${updated.refresh_time}`);
+                toast(updated.reschedule_error
+                    ? `Refresh time saved for ${updated.refresh_time}; scheduler reschedule needs restart`
+                    : `Refresh schedule saved for ${updated.refresh_time}`);
                 await navigate("refreshschedule");
             } catch (err) {
                 toast("Schedule save failed: " + err.message);

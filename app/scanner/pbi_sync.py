@@ -34,6 +34,7 @@ PS1_USAGE_SCRIPT = BASE_DIR / "tools" / "pbi_usage_sync.ps1"
 USAGE_TASK_NAME = "DG_PBI_Usage_Sync"
 RDP_GUARD_SCRIPT = BASE_DIR / "tools" / "rdp_console_guard.ps1"
 RDP_GUARD_TASK_NAME = "DG_RDP_Console_Guard"
+PENDING_REFRESH_SETTING = "pbi_sync_pending_refresh"
 
 
 def _now_iso() -> str:
@@ -81,6 +82,101 @@ def _record_sync_run(
             )
     except Exception:
         logger.exception("Could not record PBI sync run")
+
+
+def _read_app_setting(key: str) -> str | None:
+    with get_db() as db:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS app_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        row = db.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+
+def _write_app_setting(key: str, value: str) -> None:
+    with get_db() as db:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS app_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        db.execute(
+            """INSERT INTO app_settings (key, value, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(key) DO UPDATE SET
+                   value = excluded.value,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (key, value),
+        )
+
+
+def _delete_app_setting(key: str) -> None:
+    with get_db() as db:
+        db.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+
+
+def get_pending_pbi_sync() -> dict | None:
+    raw = _read_app_setting(PENDING_REFRESH_SETTING)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"status": "pending", "message": raw}
+
+
+def _save_pending_pbi_sync(payload: dict) -> None:
+    _write_app_setting(PENDING_REFRESH_SETTING, json.dumps(payload, default=str))
+
+
+def clear_pending_pbi_sync() -> None:
+    _delete_app_setting(PENDING_REFRESH_SETTING)
+
+
+def _mark_pbi_sync_pending(message: str, source: str, details: dict | None = None) -> dict:
+    now = _now_iso()
+    existing = get_pending_pbi_sync() or {}
+    first_seen = existing.get("created_at") or now
+    attempts = int(existing.get("attempts") or 0)
+    pending = {
+        "status": "pending",
+        "sync_type": "refresh",
+        "source": source,
+        "message": message,
+        "created_at": first_seen,
+        "updated_at": now,
+        "attempts": attempts,
+        "details": details or existing.get("details") or {},
+    }
+    _save_pending_pbi_sync(pending)
+    if not existing:
+        _record_sync_run("refresh", "pending", message, pending, started_at=now, finished_at=None)
+    return pending
+
+
+def _update_pending_retry(message: str, details: dict | None = None) -> dict:
+    now = _now_iso()
+    pending = get_pending_pbi_sync() or {
+        "status": "pending",
+        "sync_type": "refresh",
+        "source": "retry",
+        "created_at": now,
+        "attempts": 0,
+    }
+    pending["message"] = message
+    pending["updated_at"] = now
+    pending["last_retry_at"] = now
+    pending["attempts"] = int(pending.get("attempts") or 0) + 1
+    if details:
+        pending["details"] = details
+    _save_pending_pbi_sync(pending)
+    return pending
 
 
 def latest_pbi_sync(sync_type: str = "refresh") -> dict | None:
@@ -188,6 +284,8 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
     except Exception as exc:
         _record_sync_run(sync_type, "failed", str(exc))
         return {"status": "error", "message": str(exc)}
+    if sync_type == "refresh":
+        clear_pending_pbi_sync()
     _record_sync_run(sync_type, "launched", "Power BI sync launched with service principal authentication.")
     return {
         "status": "launched",
@@ -724,12 +822,80 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
         _record_sync_run("refresh", "failed", str(e))
         return {"status": "error", "message": str(e)}
 
+    clear_pending_pbi_sync()
     _record_sync_run("refresh", "launched", "Power BI sync launched with interactive scheduled task.")
     return {
         "status": "launched",
         "message": "PBI sync started - a PowerShell window should appear on your desktop. Log in if prompted.",
         "auth_mode": "interactive",
     }
+
+
+def _should_defer_interactive_sync(result: dict) -> bool:
+    if service_principal_configured():
+        return False
+    if (result.get("status") or "").lower() != "error":
+        return False
+    if result.get("guard"):
+        return True
+    message = (result.get("message") or "").lower()
+    return any(
+        token in message
+        for token in (
+            "interactive",
+            "session",
+            "desktop",
+            "lock screen",
+            "not active",
+            "not logged on",
+            "user is not logged",
+        )
+    )
+
+
+def trigger_pbi_sync_or_defer(source: str = "scheduled") -> dict:
+    """Launch PBI sync, or mark it pending until an interactive session is usable."""
+    result = trigger_pbi_sync()
+    status = (result.get("status") or "").lower()
+    if status in {"launched", "completed"}:
+        clear_pending_pbi_sync()
+        return result
+    if _should_defer_interactive_sync(result):
+        pending = _mark_pbi_sync_pending(
+            result.get("message") or "Power BI sync is waiting for an interactive desktop.",
+            source,
+            result,
+        )
+        return {**result, "pending": pending}
+    return result
+
+
+def retry_pending_pbi_sync() -> dict:
+    """Retry a pending scheduled PBI sync when the interactive desktop is ready."""
+    pending = get_pending_pbi_sync()
+    if not pending:
+        return {"status": "idle", "message": "No pending Power BI sync."}
+
+    guard_result = _run_rdp_console_guard()
+    if not guard_result.get("ready"):
+        message = guard_result.get("message") or "Power BI sync is waiting for an interactive desktop."
+        updated = _update_pending_retry(message, guard_result)
+        return {"status": "waiting", "message": message, "pending": updated, "guard": guard_result}
+
+    result = trigger_pbi_sync()
+    status = (result.get("status") or "").lower()
+    if status in {"launched", "completed"}:
+        clear_pending_pbi_sync()
+        return result
+    if _should_defer_interactive_sync(result):
+        updated = _update_pending_retry(
+            result.get("message") or "Power BI sync is still waiting for an interactive desktop.",
+            result,
+        )
+        return {**result, "pending": updated}
+
+    clear_pending_pbi_sync()
+    return result
 
 
 def import_pbi_data(data: dict) -> dict:
@@ -845,6 +1011,7 @@ def import_pbi_data(data: dict) -> dict:
         },
         finished_at=now,
     )
+    clear_pending_pbi_sync()
     logger.info("PBI sync completed: %s matched, %s unmatched, %s archived, %s overdue", matched, len(unmatched), archived_count, overdue_count)
     return summary
 

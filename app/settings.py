@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 
 from app.config import DB_PATH, PBI_SYNC_HOUR, PBI_SYNC_MINUTE
 
@@ -43,35 +44,54 @@ def ensure_app_settings_schema(conn):
 def _get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 15000")
     ensure_app_settings_schema(conn)
     conn.commit()
     return conn
 
 
+def _with_db_retry(fn):
+    last_exc = None
+    for attempt in range(4):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            time.sleep(0.25 * (attempt + 1))
+    raise last_exc
+
+
 def get_setting(key: str, default: str | None = None) -> str | None:
-    conn = _get_conn()
-    try:
-        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
-        return row["value"] if row else default
-    finally:
-        conn.close()
+    def _read():
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+            return row["value"] if row else default
+        finally:
+            conn.close()
+
+    return _with_db_retry(_read)
 
 
 def set_setting(key: str, value: str) -> None:
-    conn = _get_conn()
-    try:
-        conn.execute(
-            """INSERT INTO app_settings (key, value, updated_at)
-               VALUES (?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(key) DO UPDATE SET
-                   value = excluded.value,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (key, value),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    def _write():
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO app_settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (key, value),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    _with_db_retry(_write)
 
 
 def get_overall_refresh_time() -> dict:
@@ -95,6 +115,25 @@ def get_overall_refresh_time() -> dict:
 def set_overall_refresh_time(hour: int, minute: int) -> dict:
     hour = _clamp_hour(hour)
     minute = _clamp_minute(minute)
-    set_setting(SETTING_OVERALL_REFRESH_HOUR, str(hour))
-    set_setting(SETTING_OVERALL_REFRESH_MINUTE, str(minute))
+
+    def _write_refresh_time():
+        conn = _get_conn()
+        try:
+            for key, value in (
+                (SETTING_OVERALL_REFRESH_HOUR, str(hour)),
+                (SETTING_OVERALL_REFRESH_MINUTE, str(minute)),
+            ):
+                conn.execute(
+                    """INSERT INTO app_settings (key, value, updated_at)
+                       VALUES (?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(key) DO UPDATE SET
+                           value = excluded.value,
+                           updated_at = CURRENT_TIMESTAMP""",
+                    (key, value),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    _with_db_retry(_write_refresh_time)
     return get_overall_refresh_time()
