@@ -16,6 +16,7 @@ from pathlib import Path
 
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE
 from app.database import get_db
+from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, current_cancel_generation
 from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_extension
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
@@ -94,11 +95,19 @@ def _archive_folder_like_scan_sources(db, now: str, log_lines: list[str]) -> Non
         log_lines.append(f"TOTAL ARCHIVED: {archived_count} folder-like file sources")
 
 
-def run_scan(reports_path: str | None = None) -> dict:
+def run_scan(
+    reports_path: str | None = None,
+    *,
+    cancel_generation: int | None = None,
+    run_followup_probe: bool = True,
+) -> dict:
     """Run a full scan and store results.
 
     Returns a summary dict with scan statistics.
     """
+    generation = current_cancel_generation() if cancel_generation is None else cancel_generation
+    assert_not_cancelled(generation, "Report scan")
+
     _backup_db()
 
     root = reports_path or TMDL_ROOT
@@ -112,8 +121,11 @@ def run_scan(reports_path: str | None = None) -> dict:
         scan_id = cursor.lastrowid
 
     try:
+        assert_not_cancelled(generation, "Report scan")
         reports = walk_reports_root(root)
+        assert_not_cancelled(generation, "Report scan")
         all_sources = deduplicate_sources(reports)
+        assert_not_cancelled(generation, "Report scan")
 
         new_sources = 0
         changed_queries = 0
@@ -122,6 +134,7 @@ def run_scan(reports_path: str | None = None) -> dict:
 
         # Per-report parsing summary (visible in scan log)
         for report in reports:
+            assert_not_cancelled(generation, "Report scan")
             tables_count = len(report.tables)
             measures_count = len(getattr(report, "measures", []))
             layout = getattr(report, "layout", None)
@@ -141,11 +154,12 @@ def run_scan(reports_path: str | None = None) -> dict:
                 )
 
         with get_db() as db:
+            assert_not_cancelled(generation, "Report scan")
             # Normalize PostgreSQL source names BEFORE upsert so matches work.
             # Handles two legacy naming patterns:
-            #   1. "111.101.50.135/postgres/bi_reporting.table" -> "bi_reporting.table"
-            #   2. "postgres.bi_reporting.table" -> "bi_reporting.table"
-            # Canonical form is just schema.table (e.g. "bi_reporting.psi_combined").
+            #   1. "SERVER_NAME/database/schema.table" -> "schema.table"
+            #   2. "database.schema.table" -> "schema.table"
+            # Canonical form is just schema.table.
             def _merge_source(db, old_id, new_id, old_name, new_name, log_lines):
                 """Migrate all FK references from old_id to new_id, then delete old."""
                 db.execute("UPDATE report_tables SET source_id = ? WHERE source_id = ?",
@@ -185,7 +199,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
 
-            # Pass 2: Strip "PGDATABASE." prefix (e.g. "postgres.bi_reporting.table")
+            # Pass 2: Strip "PGDATABASE." prefix.
             if PGDATABASE:
                 db_prefix = f"{PGDATABASE}."
                 old_rows = db.execute(
@@ -205,7 +219,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                                    (new_name, row["id"]))
 
             # Pass 3: Strip parenthetical artifacts from source names
-            # e.g. "bi_reporting.table_name (view)" -> "bi_reporting.table_name"
+            # e.g. "schema.table_name (view)" -> "schema.table_name"
             # Also strips internal parens like "foo(bar)baz" -> "foobaz"
             import re as _re
             paren_rows = db.execute(
@@ -307,6 +321,7 @@ def run_scan(reports_path: str | None = None) -> dict:
 
             # Upsert reports and their tables
             for report in reports:
+                assert_not_cancelled(generation, "Report scan")
                 existing_report = db.execute(
                     "SELECT id FROM reports WHERE name = ?",
                     (report.name,),
@@ -333,6 +348,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                 # Upsert report tables
                 from app.scanner.tmdl_parser import is_auto_table
                 for table in report.tables:
+                    assert_not_cancelled(generation, "Report scan")
                     # Skip Power BI auto-generated internal tables
                     if is_auto_table(table.table_name):
                         continue
@@ -463,6 +479,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                         )
 
             # Set initial "unknown" status for any source without a probe
+            assert_not_cancelled(generation, "Report scan")
             sourceless = db.execute("""
                 SELECT s.id FROM sources s
                 WHERE NOT EXISTS (
@@ -476,6 +493,7 @@ def run_scan(reports_path: str | None = None) -> dict:
                 )
 
             # Update scan run record
+            assert_not_cancelled(generation, "Report scan")
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
             finished = datetime.now(timezone.utc).isoformat()
             db.execute(
@@ -496,15 +514,18 @@ def run_scan(reports_path: str | None = None) -> dict:
                 ),
             )
 
-        # Run freshness probe after scan
-        from app.scanner.prober import run_probe
-        try:
-            run_probe()
-            logger.info("Freshness probe completed after scan")
-        except Exception as e:
-            logger.exception("Probe failed after scan: %s", e)
+        if run_followup_probe:
+            from app.scanner.prober import run_probe
+            try:
+                run_probe(cancel_generation=generation)
+                logger.info("Freshness probe completed after scan")
+            except ScannerWorkCancelled:
+                raise
+            except Exception as e:
+                logger.exception("Probe failed after scan: %s", e)
 
         # Scan PostgreSQL MV dependencies
+        assert_not_cancelled(generation, "Report scan")
         from app.scanner.pg_deps import scan_pg_dependencies
         try:
             dep_result = scan_pg_dependencies()
@@ -513,6 +534,7 @@ def run_scan(reports_path: str | None = None) -> dict:
             logger.exception("PG dependency scan failed: %s", e)
 
         # Scan pg_cron for MV refresh schedules
+        assert_not_cancelled(generation, "Report scan")
         from app.scanner.pg_cron import scan_pg_cron
         try:
             cron_result = scan_pg_cron()
@@ -521,6 +543,7 @@ def run_scan(reports_path: str | None = None) -> dict:
             logger.exception("pg_cron scan failed: %s", e)
 
         # Scan Python scripts for table references
+        assert_not_cancelled(generation, "Report scan")
         from app.scanner.script_runner import run_script_scan
         try:
             script_result = run_script_scan()
@@ -541,6 +564,19 @@ def run_scan(reports_path: str | None = None) -> dict:
         }
         logger.info("Scan completed: %s", summary)
         return summary
+
+    except ScannerWorkCancelled as e:
+        logger.info("Scan stopped: %s", e)
+        with get_db() as db:
+            db.execute(
+                "UPDATE scan_runs SET finished_at = ?, status = 'stopped', log = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), str(e), scan_id),
+            )
+        return {
+            "scan_id": scan_id,
+            "status": "stopped",
+            "message": str(e),
+        }
 
     except Exception as e:
         logger.exception("Scan failed")

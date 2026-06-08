@@ -24,6 +24,7 @@ from xml.etree import ElementTree as ET
 
 from app.config import BASE_DIR, PGHOST, PGUSER, PGPASSWORD, PGDATABASE
 from app.database import get_db
+from app.scanner.control import assert_not_cancelled, current_cancel_generation
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +399,7 @@ def _parse_pg_table_ref(connection_info: str, source_name: str):
     if not parts:
         return None
 
-    table_part = parts[-1]  # e.g. "bi_reporting.daily_sales"
+    table_part = parts[-1]  # e.g. "schema.table_name"
     if "." in table_part:
         schema, table = table_part.split(".", 1)
         return (schema.strip(), table.strip())
@@ -943,7 +944,7 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
             log_lines.append(f"DEP: {mv_name} <- {up_name} ({hours}h behind)")
 
 
-def run_probe() -> dict:
+def run_probe(cancel_generation: int | None = None) -> dict:
     """Probe all sources for freshness.
 
     1. File-based sources (Excel): check file modification time
@@ -953,6 +954,9 @@ def run_probe() -> dict:
 
     Returns a summary dict.
     """
+    generation = current_cancel_generation() if cancel_generation is None else cancel_generation
+    assert_not_cancelled(generation, "Source probe")
+
     now = datetime.now(timezone.utc).isoformat()
     probed = 0
     file_probed = 0
@@ -970,6 +974,7 @@ def run_probe() -> dict:
         ).fetchall()
 
         for src in file_sources:
+            assert_not_cancelled(generation, "Source probe")
             file_path = src["connection_info"] or src["name"]
             rule = _rule_for_source(src)
             status = _probe_file_source(db, src["id"], file_path, now, rule)
@@ -988,6 +993,7 @@ def run_probe() -> dict:
         ).fetchall()
 
         if pg_sources:
+            assert_not_cancelled(generation, "Source probe")
             pg_statuses = _probe_pg_sources(db, pg_sources, now, log_lines)
             for k, v in pg_statuses.items():
                 statuses[k] = statuses.get(k, 0) + v
@@ -1007,6 +1013,7 @@ def run_probe() -> dict:
         ).fetchall()
 
         for src in unprobed_db:
+            assert_not_cancelled(generation, "Source probe")
             db.execute(
                 "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
                 (src["id"], now, f"No direct connection ({src['type']})"),
@@ -1017,9 +1024,11 @@ def run_probe() -> dict:
             log_lines.append(f"SKIP: {short} - unknown ({src['type']}, no connection)")
 
         # 4. Dependency freshness check: flag MVs whose upstream data is newer
+        assert_not_cancelled(generation, "Source probe")
         _check_dependency_freshness(db, now, log_lines)
 
         # 4b. Schedule mismatch: report refreshed before its sources
+        assert_not_cancelled(generation, "Source probe")
         _check_report_source_schedule(db, now, log_lines)
 
         # 5. Auto-close stale_source actions/alerts for sources no longer outdated
@@ -1040,6 +1049,7 @@ def run_probe() -> dict:
     finished = datetime.now(timezone.utc).isoformat()
 
     # Record probe run
+    assert_not_cancelled(generation, "Source probe")
     with get_db() as db:
         db.execute(
             """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, status, log)

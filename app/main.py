@@ -212,31 +212,63 @@ def _scheduled_backup():
     log.info("Scheduled backup complete")
 
 
-def _scheduled_scan():
+def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = True):
     """Run a full report scan and source probe."""
     from app.scanner.runner import run_scan
     from app.scanner.prober import run_probe
+    from app.scanner.control import ScannerWorkCancelled
+    from app.scanner.pbi_sync import stop_pbi_sync_processes
     log = logging.getLogger("scheduler")
     log.info("Running scheduled full scan")
+    stop_result = None
+    generation = cancel_generation
+    if stop_existing:
+        stop_result = stop_pbi_sync_processes("New scheduled scan started.")
+        generation = (stop_result.get("scanner") or {}).get("generation")
     try:
-        result = run_scan()
+        result = run_scan(cancel_generation=generation, run_followup_probe=False)
         log.info("Scan result: %s", result.get("status"))
-        probe_result = run_probe()
+        if result.get("status") == "stopped":
+            return {**result, "stop": stop_result}
+        probe_result = run_probe(cancel_generation=generation)
         log.info("Probe result: %s", probe_result.get("statuses"))
+        return {**result, "probe": probe_result, "stop": stop_result}
+    except ScannerWorkCancelled as e:
+        log.info("Scheduled scan stopped: %s", e)
+        return {"status": "stopped", "message": str(e), "stop": stop_result}
     except Exception as e:
         log.exception("Scheduled scan failed: %s", e)
+        return {"status": "failed", "error": str(e), "stop": stop_result}
 
 
-def _scheduled_pbi_sync():
+def _scheduled_pbi_sync(
+    cancel_generation: int | None = None,
+    *,
+    stop_existing: bool = True,
+    wait: bool = False,
+):
     """Daily Power BI Service refresh metadata sync."""
-    from app.scanner.pbi_sync import trigger_pbi_sync_or_defer
+    from app.scanner.pbi_sync import trigger_pbi_sync_and_wait, trigger_pbi_sync_or_defer
     log = logging.getLogger("scheduler")
     log.info("Running scheduled PBI sync")
     try:
-        result = trigger_pbi_sync_or_defer("scheduled_overall_refresh")
+        if wait:
+            result = trigger_pbi_sync_and_wait(
+                "scheduled_overall_refresh",
+                cancel_existing=stop_existing,
+                cancel_generation=cancel_generation,
+            )
+        else:
+            result = trigger_pbi_sync_or_defer(
+                "scheduled_overall_refresh",
+                cancel_existing=stop_existing,
+                cancel_generation=cancel_generation,
+            )
         log.info("PBI sync result: %s", result.get("status"))
+        return result
     except Exception as e:
         log.exception("Scheduled PBI sync failed: %s", e)
+        return {"status": "failed", "error": str(e)}
 
 
 def _scheduled_pending_pbi_sync_retry():
@@ -253,11 +285,27 @@ def _scheduled_pending_pbi_sync_retry():
 
 def _scheduled_overall_refresh():
     """Daily overall refresh: report scan, source probe, then Power BI sync."""
+    from app.scanner.control import ScannerWorkCancelled
+    from app.scanner.pbi_sync import stop_pbi_sync_processes
     log = logging.getLogger("scheduler")
     log.info("Running scheduled overall refresh")
-    _scheduled_pbi_sync()
-    _scheduled_scan()
-    log.info("Scheduled overall refresh launched")
+    stop_result = stop_pbi_sync_processes("New scheduled overall refresh started.")
+    generation = (stop_result.get("scanner") or {}).get("generation")
+    try:
+        pbi_result = _scheduled_pbi_sync(
+            cancel_generation=generation,
+            stop_existing=False,
+            wait=True,
+        )
+        if (pbi_result.get("status") or "").lower() not in {"completed", "skipped"}:
+            log.warning("Scheduled overall refresh stopped before scan because PBI sync result was %s", pbi_result.get("status"))
+            return {"status": "pbi_sync_not_completed", "pbi_sync": pbi_result, "stop": stop_result}
+        scan_result = _scheduled_scan(cancel_generation=generation, stop_existing=False)
+        log.info("Scheduled overall refresh complete")
+        return {"status": scan_result.get("status"), "pbi_sync": pbi_result, "scan": scan_result, "stop": stop_result}
+    except ScannerWorkCancelled as e:
+        log.info("Scheduled overall refresh stopped: %s", e)
+        return {"status": "stopped", "message": str(e), "stop": stop_result}
 
 
 def _scheduled_email_dispatch():
@@ -281,6 +329,8 @@ def _configure_overall_refresh_job() -> dict:
         minute=refresh_time["minute"],
         id="daily_overall_refresh",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     return refresh_time
 
@@ -528,9 +578,17 @@ def update_refresh_schedule(body: RefreshScheduleRequest, request: Request):
 @app.post("/api/system/refresh-now")
 def run_refresh_now(request: Request):
     """Queue a one-off overall refresh for immediate testing."""
+    from app.scanner.pbi_sync import stop_pbi_sync_processes
+
     require_app_access(request)
     if not getattr(_scheduler, "running", False):
         raise HTTPException(status_code=503, detail="Scheduler is not running")
+    stop_result = stop_pbi_sync_processes("Manual refresh now requested.")
+    removed_jobs = []
+    for job in list(_scheduler.get_jobs()):
+        if job.id.startswith("manual_overall_refresh_"):
+            _scheduler.remove_job(job.id)
+            removed_jobs.append(job.id)
     run_at = datetime.now(timezone.utc) + timedelta(seconds=1)
     job_id = f"manual_overall_refresh_{int(run_at.timestamp())}"
     _scheduler.add_job(
@@ -540,7 +598,13 @@ def run_refresh_now(request: Request):
         id=job_id,
         replace_existing=True,
     )
-    return {"status": "queued", "job_id": job_id, "run_at": run_at.isoformat()}
+    return {
+        "status": "queued",
+        "job_id": job_id,
+        "run_at": run_at.isoformat(),
+        "removed_jobs": removed_jobs,
+        "stop": stop_result,
+    }
 
 
 @app.post("/api/register")

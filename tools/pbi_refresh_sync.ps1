@@ -237,6 +237,15 @@ $output = @{
 $json = $output | ConvertTo-Json -Depth 5
 try {
     $response = Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-import" -Method POST -Body $json -ContentType "application/json; charset=utf-8"
+    if ($response.status -eq "stopped") {
+        Write-Host ""
+        Write-Host "Sync stopped." -ForegroundColor Yellow
+        if ($response.message) {
+            Write-Host "  $($response.message)" -ForegroundColor Yellow
+        }
+        Pause-IfNeeded "Press Enter to close"
+        exit 0
+    }
     Write-Host ""
     Write-Host "Sync complete!" -ForegroundColor Green
     Write-Host "  Matched: $($response.matched)" -ForegroundColor Green

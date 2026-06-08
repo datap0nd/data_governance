@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
 from app.local_access import require_app_access
+from app.scanner.control import ScannerWorkCancelled
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import (
@@ -22,6 +23,7 @@ from app.scanner.pbi_sync import (
     service_principal_configured,
     stop_pbi_sync_processes,
     trigger_pbi_sync,
+    trigger_pbi_sync_and_wait,
     import_pbi_data,
     trigger_pbi_usage_sync,
 )
@@ -43,16 +45,38 @@ def _require_scan_access(request: Request):
 def do_scan(request: Request):
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
     _require_scan_access(request)
-    pbi_result = trigger_pbi_sync()
-    result = run_scan()
-    # After scan, probe sources for freshness
+    stop_result = stop_pbi_sync_processes("New scanner refresh started.")
+    generation = (stop_result.get("scanner") or {}).get("generation")
+
     try:
-        probe_result = run_probe()
+        pbi_result = trigger_pbi_sync_and_wait(
+            "manual_scanner_refresh",
+            cancel_existing=False,
+            cancel_generation=generation,
+        )
+        if (pbi_result.get("status") or "").lower() not in {"completed", "skipped"}:
+            return {
+                "status": "pbi_sync_not_completed",
+                "message": "Scanner refresh stopped before scan because Power BI sync did not complete.",
+                "pbi_sync": pbi_result,
+                "stop": stop_result,
+            }
+
+        result = run_scan(cancel_generation=generation, run_followup_probe=False)
+        if result.get("status") == "stopped":
+            result["pbi_sync"] = pbi_result
+            result["stop"] = stop_result
+            return result
+
+        probe_result = run_probe(cancel_generation=generation)
         result["probe"] = probe_result
+    except ScannerWorkCancelled as e:
+        return {"status": "stopped", "message": str(e), "stop": stop_result}
     except Exception as e:
-        logger.exception("Probe failed after scan")
-        result["probe"] = {"status": "failed", "error": str(e)}
+        logger.exception("Scanner refresh failed")
+        return {"status": "failed", "error": str(e), "stop": stop_result}
     result["pbi_sync"] = pbi_result
+    result["stop"] = stop_result
     return result
 
 
@@ -60,7 +84,14 @@ def do_scan(request: Request):
 def do_probe(request: Request):
     """Probe all sources for freshness (file mod times)."""
     _require_scan_access(request)
-    return run_probe()
+    stop_result = stop_pbi_sync_processes("New source probe started.")
+    generation = (stop_result.get("scanner") or {}).get("generation")
+    try:
+        result = run_probe(cancel_generation=generation)
+        result["stop"] = stop_result
+        return result
+    except ScannerWorkCancelled as e:
+        return {"status": "stopped", "message": str(e), "stop": stop_result}
 
 
 @router.get("/probe/runs")
@@ -82,7 +113,7 @@ def do_pbi_sync(request: Request):
 
 @router.post("/pbi-sync/stop")
 def stop_pbi_sync(request: Request):
-    """Stop running PBI refresh/usage sync tasks and helper processes."""
+    """Stop running scanner refresh work and PBI helper processes."""
     _require_scan_access(request)
     return stop_pbi_sync_processes()
 
@@ -481,9 +512,12 @@ def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
 def do_pbi_usage_sync(request: Request):
     """Sync usage from configured CSVs, falling back to the legacy PS1 sync."""
     _require_scan_access(request)
+    stop_result = stop_pbi_sync_processes("New Power BI usage sync started.")
+    generation = (stop_result.get("scanner") or {}).get("generation")
     with get_db() as db:
         csv_result = sync_usage_from_csv(db, force=True)
         if csv_result.get("status") != "skipped":
+            csv_result["stop"] = stop_result
             if csv_result.get("status") in {"completed", "success"}:
                 _record_sync_run(
                     "usage",
@@ -492,4 +526,4 @@ def do_pbi_usage_sync(request: Request):
                     csv_result,
                 )
             return csv_result
-    return trigger_pbi_usage_sync()
+    return trigger_pbi_usage_sync(cancel_existing=False, cancel_generation=generation)

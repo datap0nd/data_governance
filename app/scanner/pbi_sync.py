@@ -26,6 +26,12 @@ from app.config import (
     PBI_WORKSPACE,
 )
 from app.database import get_db
+from app.scanner.control import (
+    ScannerWorkCancelled,
+    assert_not_cancelled,
+    current_cancel_generation,
+    request_stop_existing_work,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,9 @@ RDP_GUARD_SCRIPT = BASE_DIR / "tools" / "rdp_console_guard.ps1"
 RDP_GUARD_TASK_NAME = "DG_RDP_Console_Guard"
 PENDING_REFRESH_SETTING = "pbi_sync_pending_refresh"
 PBI_IMPORT_LOCK_RETRY_SECONDS = 900
+PBI_SYNC_WAIT_TIMEOUT_SECONDS = 1200
+PBI_SYNC_WAIT_POLL_SECONDS = 5
+PBI_SYNC_TERMINAL_STATUSES = {"completed", "failed", "skipped", "stopped"}
 
 
 def _now_iso() -> str:
@@ -55,7 +64,7 @@ def _record_sync_run(
     details: dict | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
-) -> None:
+) -> int | None:
     """Persist sync status so scheduled emails can require fresh PBI data."""
     now = _now_iso()
     started = started_at or now
@@ -77,13 +86,15 @@ def _record_sync_run(
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at)"
             )
-            db.execute(
+            cursor = db.execute(
                 """INSERT INTO pbi_sync_runs (sync_type, status, started_at, finished_at, message, details)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (sync_type, status, started, finished, message, details_json),
             )
+            return cursor.lastrowid
     except Exception:
         logger.exception("Could not record PBI sync run")
+        return None
 
 
 def _read_app_setting(key: str) -> str | None:
@@ -212,6 +223,43 @@ def latest_pbi_sync(sync_type: str = "refresh") -> dict | None:
         return None
 
 
+def latest_pbi_sync_after(sync_type: str = "refresh", after_id: int | None = None) -> dict | None:
+    """Return the newest sync run after a launch row."""
+    try:
+        with get_db() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_type   TEXT NOT NULL,
+                    status      TEXT NOT NULL,
+                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME,
+                    message     TEXT,
+                    details     TEXT
+                )"""
+            )
+            if after_id:
+                row = db.execute(
+                    """SELECT * FROM pbi_sync_runs
+                       WHERE sync_type = ? AND id > ?
+                       ORDER BY id DESC
+                       LIMIT 1""",
+                    (sync_type, after_id),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    """SELECT * FROM pbi_sync_runs
+                       WHERE sync_type = ?
+                       ORDER BY id DESC
+                       LIMIT 1""",
+                    (sync_type,),
+                ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        logger.exception("Could not read PBI sync runs after launch")
+        return None
+
+
 def latest_successful_pbi_sync(sync_type: str = "refresh") -> dict | None:
     """Return the newest completed sync run for a sync type."""
     try:
@@ -291,11 +339,12 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
         return {"status": "error", "message": str(exc)}
     if sync_type == "refresh":
         clear_pending_pbi_sync()
-    _record_sync_run(sync_type, "launched", "Power BI sync launched with service principal authentication.")
+    run_id = _record_sync_run(sync_type, "launched", "Power BI sync launched with service principal authentication.")
     return {
         "status": "launched",
         "message": "Power BI sync launched in unattended service-principal mode.",
         "auth_mode": "service_principal",
+        "run_id": run_id,
     }
 
 
@@ -423,14 +472,36 @@ foreach ($processInfo in $processes) {
     return parsed
 
 
-def stop_pbi_sync_processes() -> dict:
-    """Stop running Power BI refresh/usage sync tasks and helper processes."""
+def stop_pbi_sync_processes(reason: str = "Stop requested by user.") -> dict:
+    """Stop running scanner refresh work and Power BI helper processes."""
+    scanner_stop = request_stop_existing_work(reason)
+    pending = get_pending_pbi_sync()
+    clear_pending_pbi_sync()
+
     if platform.system() != "Windows":
-        return {"status": "skipped", "message": "PBI sync stop is only available on Windows"}
+        stopped_count = (
+            scanner_stop.get("scan_runs_stopped", 0)
+            + scanner_stop.get("probe_runs_stopped", 0)
+            + scanner_stop.get("pbi_runs_stopped", 0)
+            + (1 if pending else 0)
+        )
+        message = (
+            f"Stop requested: {stopped_count} scanner state item(s) cleared. "
+            "Power BI process stop is only available on Windows."
+        )
+        return {
+            "status": "stopped" if stopped_count else "idle",
+            "message": message,
+            "scanner": scanner_stop,
+            "pending_cleared": bool(pending),
+            "windows_process_stop": "skipped",
+        }
 
     sync_tasks = ((TASK_NAME, "refresh"), (USAGE_TASK_NAME, "usage"))
     task_results = []
     recorded_types: set[str] = set()
+    if pending or scanner_stop.get("pbi_runs_stopped"):
+        recorded_types.add("refresh")
 
     for task_name, sync_type in sync_tasks:
         for action in ("end", "delete"):
@@ -458,6 +529,8 @@ def stop_pbi_sync_processes() -> dict:
             recorded_types.add(sync_type)
 
     details = {
+        "scanner": scanner_stop,
+        "pending_cleared": bool(pending),
         "tasks": task_results,
         "processes": process_result,
     }
@@ -471,18 +544,27 @@ def stop_pbi_sync_processes() -> dict:
 
     stopped_task_actions = sum(1 for result in task_results if result.get("action") == "end" and result.get("ok"))
     stopped_process_count = len(stopped_processes)
-    status = "stopped" if recorded_types or stopped_task_actions or stopped_process_count else "idle"
+    scanner_stopped_count = (
+        scanner_stop.get("scan_runs_stopped", 0)
+        + scanner_stop.get("probe_runs_stopped", 0)
+        + scanner_stop.get("pbi_runs_stopped", 0)
+        + (1 if pending else 0)
+    )
+    status = "stopped" if recorded_types or stopped_task_actions or stopped_process_count or scanner_stopped_count else "idle"
     if status == "idle":
-        message = "No running Power BI sync tasks or processes were found."
+        message = "No running scanner refresh work or Power BI sync processes were found."
     else:
         message = (
             f"Stop requested: {stopped_task_actions} task action(s), "
-            f"{stopped_process_count} process(es) stopped."
+            f"{stopped_process_count} process(es), "
+            f"{scanner_stopped_count} scanner state item(s) stopped."
         )
 
     return {
         "status": status,
         "message": message,
+        "scanner": scanner_stop,
+        "pending_cleared": bool(pending),
         "tasks": task_results,
         "processes_stopped": stopped_process_count,
         "process_errors": process_errors,
@@ -747,12 +829,24 @@ def _build_schedule_string(schedule: dict) -> str | None:
     return " @ ".join(parts) if parts else None
 
 
-def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
+def trigger_pbi_sync(
+    workspace: str | None = None,
+    port: int = 8000,
+    *,
+    cancel_existing: bool = True,
+    cancel_generation: int | None = None,
+) -> dict:
     """Launch PBI sync in the user's interactive session via scheduled task.
 
     The PS1 script runs where the user can see the login popup, fetches PBI data,
     and POSTs it back to /api/scanner/pbi-import.
     """
+    if cancel_existing:
+        stop_result = stop_pbi_sync_processes("New Power BI sync started.")
+        cancel_generation = stop_result.get("scanner", {}).get("generation") or cancel_generation
+
+    assert_not_cancelled(cancel_generation, "Power BI sync")
+
     if platform.system() != "Windows":
         message = "PBI sync only available on Windows"
         _record_sync_run("refresh", "skipped", message)
@@ -776,6 +870,7 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
             "refresh",
         )
 
+    assert_not_cancelled(cancel_generation, "Power BI sync")
     guard_result = _run_rdp_console_guard()
     logger.info("RDP console guard before refresh sync: %s", guard_result.get("status"))
     if not guard_result.get("ready"):
@@ -828,11 +923,12 @@ def trigger_pbi_sync(workspace: str | None = None, port: int = 8000) -> dict:
         return {"status": "error", "message": str(e)}
 
     clear_pending_pbi_sync()
-    _record_sync_run("refresh", "launched", "Power BI sync launched with interactive scheduled task.")
+    run_id = _record_sync_run("refresh", "launched", "Power BI sync launched with interactive scheduled task.")
     return {
         "status": "launched",
         "message": "PBI sync started - a PowerShell window should appear on your desktop. Log in if prompted.",
         "auth_mode": "interactive",
+        "run_id": run_id,
     }
 
 
@@ -858,9 +954,14 @@ def _should_defer_interactive_sync(result: dict) -> bool:
     )
 
 
-def trigger_pbi_sync_or_defer(source: str = "scheduled") -> dict:
+def trigger_pbi_sync_or_defer(
+    source: str = "scheduled",
+    *,
+    cancel_existing: bool = True,
+    cancel_generation: int | None = None,
+) -> dict:
     """Launch PBI sync, or mark it pending until an interactive session is usable."""
-    result = trigger_pbi_sync()
+    result = trigger_pbi_sync(cancel_existing=cancel_existing, cancel_generation=cancel_generation)
     status = (result.get("status") or "").lower()
     if status in {"launched", "completed"}:
         clear_pending_pbi_sync()
@@ -873,6 +974,57 @@ def trigger_pbi_sync_or_defer(source: str = "scheduled") -> dict:
         )
         return {**result, "pending": pending}
     return result
+
+
+def wait_for_pbi_sync_completion(
+    launch_result: dict,
+    *,
+    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    cancel_generation: int | None = None,
+) -> dict:
+    """Wait until the PowerShell process records a terminal refresh sync status."""
+    status = (launch_result.get("status") or "").lower()
+    if status != "launched":
+        return launch_result
+
+    launch_id = launch_result.get("run_id")
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        assert_not_cancelled(cancel_generation, "Power BI sync wait")
+        latest = latest_pbi_sync_after("refresh", launch_id)
+        latest_status = (latest or {}).get("status", "").lower()
+        if latest and latest_status in PBI_SYNC_TERMINAL_STATUSES:
+            return {
+                "status": latest_status,
+                "message": latest.get("message") or f"Power BI sync {latest_status}.",
+                "run": latest,
+                "launch": launch_result,
+            }
+        time.sleep(PBI_SYNC_WAIT_POLL_SECONDS)
+
+    message = f"Timed out waiting {timeout_seconds} seconds for Power BI sync import to complete."
+    _record_sync_run("refresh", "failed", message, {"launch": launch_result})
+    return {"status": "timeout", "message": message, "launch": launch_result}
+
+
+def trigger_pbi_sync_and_wait(
+    source: str = "scheduled",
+    *,
+    cancel_existing: bool = True,
+    cancel_generation: int | None = None,
+    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+) -> dict:
+    """Launch refresh sync and wait for the import result before continuing."""
+    result = trigger_pbi_sync_or_defer(
+        source,
+        cancel_existing=cancel_existing,
+        cancel_generation=cancel_generation,
+    )
+    return wait_for_pbi_sync_completion(
+        result,
+        timeout_seconds=timeout_seconds,
+        cancel_generation=cancel_generation,
+    )
 
 
 def retry_pending_pbi_sync() -> dict:
@@ -930,16 +1082,26 @@ def _run_with_sqlite_lock_retry(operation: str, fn):
             time.sleep(sleep_seconds)
 
 
-def import_pbi_data(data: dict) -> dict:
+def import_pbi_data(data: dict, cancel_generation: int | None = None) -> dict:
     """Import PBI data, waiting through refresh-time SQLite write contention."""
-    return _run_with_sqlite_lock_retry("Power BI refresh import", lambda: _import_pbi_data_once(data))
+    generation = current_cancel_generation() if cancel_generation is None else cancel_generation
+    try:
+        return _run_with_sqlite_lock_retry(
+            "Power BI refresh import",
+            lambda: _import_pbi_data_once(data, generation),
+        )
+    except ScannerWorkCancelled as exc:
+        message = str(exc)
+        _record_sync_run("refresh", "stopped", message, {"workspace": data.get("workspace")})
+        return {"status": "stopped", "message": message}
 
 
-def _import_pbi_data_once(data: dict) -> dict:
+def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> dict:
     """Import PBI data received from the PS1 script and update the reports table.
 
     Also auto-archives reports not found in PBI and sets powerbi_url.
     """
+    assert_not_cancelled(cancel_generation, "Power BI refresh import")
     reports_data = data.get("reports") or []
     matched = 0
     unmatched = []
@@ -956,6 +1118,7 @@ def _import_pbi_data_once(data: dict) -> dict:
         matched_ids = set()
 
         for entry in reports_data:
+            assert_not_cancelled(cancel_generation, "Power BI refresh import")
             report_name = entry.get("report_name")
             if not report_name:
                 continue
@@ -1020,6 +1183,7 @@ def _import_pbi_data_once(data: dict) -> dict:
                         log_lines.append(f"ARCHIVE: {r['name']} (not in PBI workspace)")
 
         # Check for overdue refreshes and create alerts
+        assert_not_cancelled(cancel_generation, "Power BI refresh import")
         overdue_count = _check_refresh_alerts(db, now)
 
     summary = {
@@ -1212,8 +1376,19 @@ def _auto_resolve_recovered_refreshes(db, now: str) -> int:
     return closed
 
 
-def trigger_pbi_usage_sync(port: int = 8000) -> dict:
+def trigger_pbi_usage_sync(
+    port: int = 8000,
+    *,
+    cancel_existing: bool = True,
+    cancel_generation: int | None = None,
+) -> dict:
     """Launch PBI usage sync in the user's interactive session."""
+    if cancel_existing:
+        stop_result = stop_pbi_sync_processes("New Power BI usage sync started.")
+        cancel_generation = stop_result.get("scanner", {}).get("generation") or cancel_generation
+
+    assert_not_cancelled(cancel_generation, "Power BI usage sync")
+
     if platform.system() != "Windows":
         message = "PBI usage sync only available on Windows"
         _record_sync_run("usage", "skipped", message)
@@ -1270,5 +1445,10 @@ def trigger_pbi_usage_sync(port: int = 8000) -> dict:
         _record_sync_run("usage", "failed", str(e))
         return {"status": "error", "message": str(e)}
 
-    _record_sync_run("usage", "launched", "Power BI usage sync launched with interactive scheduled task.")
-    return {"status": "launched", "message": "Usage sync started - check the PowerShell window.", "auth_mode": "interactive"}
+    run_id = _record_sync_run("usage", "launched", "Power BI usage sync launched with interactive scheduled task.")
+    return {
+        "status": "launched",
+        "message": "Usage sync started - check the PowerShell window.",
+        "auth_mode": "interactive",
+        "run_id": run_id,
+    }

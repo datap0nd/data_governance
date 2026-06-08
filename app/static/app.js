@@ -3142,7 +3142,7 @@ async function renderScanner() {
             <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
-            <button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop Sync Processes</button>
+            <button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop Refresh Work</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -5161,7 +5161,7 @@ const _CATEGORY_COLORS = {
 // Classify a table reference by its PostgreSQL schema or pattern
 function _classifyTable(tableName) {
     const t = tableName.toLowerCase();
-    if (t.startsWith("bi_reporting.")) return { label: "BI Reporting", cls: "badge-blue" };
+    if (t.startsWith("reporting.")) return { label: "Reporting", cls: "badge-blue" };
     if (t.startsWith("smartswitch.")) return { label: "SmartSwitch", cls: "badge-purple" };
     if (t.startsWith("device_health.")) return { label: "Device Health", cls: "badge-purple" };
     if (t.startsWith("do_not_use_tables.")) return { label: "Internal", cls: "badge-dim" };
@@ -8698,7 +8698,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "What is the Scripts page?",
-        a: "The Scripts page discovers and tracks all Python ETL scripts on the BI desktop and shared drives. It detects which SQL tables each script writes to and reads from, links scripts to data sources in the lineage, and shows modification dates. Scripts are categorized as Data to SQL, Data to Excel, or Other. Use Full Scan to discover new scripts or Re-parse to re-analyze existing ones."
+        a: "The Scripts page discovers and tracks all Python ETL scripts on the desktop machine and shared drives. It detects which SQL tables each script writes to and reads from, links scripts to data sources in the lineage, and shows modification dates. Scripts are categorized as Data to SQL, Data to Excel, or Other. Use Full Scan to discover new scripts or Re-parse to re-analyze existing ones."
     },
     {
         q: "What is the Scheduled Tasks page?",
@@ -9122,9 +9122,26 @@ function bindScannerButtons() {
             btnScan.textContent = "Scanning...";
             try {
                 const result = await apiPost("/api/scanner/run");
+                if (result.status === "pbi_sync_not_completed") {
+                    const pbi = result.pbi_sync || {};
+                    toast(`Refresh stopped before scan: PBI sync ${pbi.status || "did not complete"}`);
+                    navigate("scanner");
+                    return;
+                }
+                if (result.status === "stopped") {
+                    toast(result.message || "Scanner refresh stopped");
+                    navigate("scanner");
+                    return;
+                }
+                if (result.status === "failed") {
+                    toast("Scanner refresh failed: " + (result.error || result.message || "unknown error"));
+                    btnScan.disabled = false;
+                    btnScan.textContent = "Run Scan Now";
+                    return;
+                }
                 const pbi = result.pbi_sync || {};
-                const pbiMsg = pbi.status === "launched"
-                    ? "PBI sync launched"
+                const pbiMsg = pbi.status === "completed"
+                    ? "PBI sync completed"
                     : `PBI sync ${pbi.status || "not launched"}`;
                 toast(`Scan complete: ${result.reports_scanned} reports, ${result.sources_found} sources; ${pbiMsg}`);
                 navigate("scanner");
@@ -9143,7 +9160,11 @@ function bindScannerButtons() {
             btnProbe.textContent = "Probing...";
             try {
                 const result = await apiPost("/api/scanner/probe");
-                toast(`Probe complete: ${result.matched} matched, ${result.skipped} skipped`);
+                if (result.status === "stopped") {
+                    toast(result.message || "Probe stopped");
+                } else {
+                    toast(`Probe complete: ${result.probed || 0} sources checked`);
+                }
                 btnProbe.disabled = false;
                 btnProbe.textContent = "Probe Sources";
             } catch (err) {
@@ -9182,7 +9203,7 @@ function bindScannerButtons() {
     const btnStopPbiSync = $("#btn-stop-pbi-sync");
     if (btnStopPbiSync) {
         btnStopPbiSync.addEventListener("click", async () => {
-            if (!confirm("Stop all running Power BI refresh and usage sync processes?")) return;
+            if (!confirm("Stop all running or pending scanner refresh, probe, and Power BI sync work?")) return;
             btnStopPbiSync.disabled = true;
             btnStopPbiSync.textContent = "Stopping...";
             try {
@@ -9190,9 +9211,9 @@ function bindScannerButtons() {
                 toast(result.message || "Sync stop requested");
                 navigate("scanner");
             } catch (err) {
-                toast("Stop sync failed: " + err.message);
+                toast("Stop refresh work failed: " + err.message);
                 btnStopPbiSync.disabled = false;
-                btnStopPbiSync.textContent = "Stop Sync Processes";
+                btnStopPbiSync.textContent = "Stop Refresh Work";
             }
         });
     }
