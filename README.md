@@ -58,7 +58,7 @@ Set the target sync user if the service account is not the same account used dur
 DG_PBI_SYNC_WINDOWS_USER=<windows-user-name>
 ```
 
-The guard only repairs disconnected sessions by default. It does not kick an actively connected RDP user. If someone is actively using a different account at the sync time, the sync may still have to wait or fail cleanly. That case needs an operating rule, such as reserving the sync window or running the sync under a dedicated service account that users do not RDP into.
+The guard only repairs disconnected sessions by default. It does not kick an actively connected RDP user. If the sync user is actively connected through RDP, that counts as ready because the account picker is visible in that session. If someone is actively using a different account at the sync time, the sync may still have to wait or fail cleanly. That case needs an operating rule, such as reserving the sync window or running the sync under a dedicated service account that users do not RDP into.
 
 If multiple Microsoft accounts are cached, set this environment variable for the service account so the picker chooses the expected account:
 

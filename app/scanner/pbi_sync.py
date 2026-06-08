@@ -290,22 +290,27 @@ def _target_session_status() -> dict:
             "sessions": sessions,
         }
 
-    console = next(
+    interactive = next(
         (
             s
             for s in target_sessions
-            if s["session_name"].lower() == "console" and s["state"].lower() == "active"
+            if s["state"].lower() == "active"
+            and (
+                s["session_name"].lower() == "console"
+                or s["session_name"].lower().startswith("rdp-tcp")
+            )
         ),
         None,
     )
-    if console:
+    if interactive:
+        surface = "console" if interactive["session_name"].lower() == "console" else "active RDP"
         return {
             "ready": True,
             "repairable": False,
-            "message": f"Sync user '{target_user}' is active on console session {console['session_id']}.",
+            "message": f"Sync user '{target_user}' is active on {surface} session {interactive['session_id']}.",
             "target_user": target_user,
             "sessions": target_sessions,
-            "console_session": console,
+            "interactive_session": interactive,
         }
 
     repairable = any(s["state"].lower().startswith("disc") for s in target_sessions)
