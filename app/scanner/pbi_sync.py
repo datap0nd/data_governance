@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import platform
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,7 @@ USAGE_TASK_NAME = "DG_PBI_Usage_Sync"
 RDP_GUARD_SCRIPT = BASE_DIR / "tools" / "rdp_console_guard.ps1"
 RDP_GUARD_TASK_NAME = "DG_RDP_Console_Guard"
 PENDING_REFRESH_SETTING = "pbi_sync_pending_refresh"
+PBI_IMPORT_LOCK_RETRY_SECONDS = 900
 
 
 def _now_iso() -> str:
@@ -136,7 +138,10 @@ def _save_pending_pbi_sync(payload: dict) -> None:
 
 
 def clear_pending_pbi_sync() -> None:
-    _delete_app_setting(PENDING_REFRESH_SETTING)
+    try:
+        _delete_app_setting(PENDING_REFRESH_SETTING)
+    except Exception:
+        logger.exception("Could not clear pending PBI sync state")
 
 
 def _mark_pbi_sync_pending(message: str, source: str, details: dict | None = None) -> dict:
@@ -898,7 +903,39 @@ def retry_pending_pbi_sync() -> dict:
     return result
 
 
+def _is_sqlite_lock_error(exc: Exception) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "locked" in str(exc).lower() or "busy" in str(exc).lower()
+    )
+
+
+def _run_with_sqlite_lock_retry(operation: str, fn):
+    deadline = time.monotonic() + PBI_IMPORT_LOCK_RETRY_SECONDS
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_lock_error(exc) or time.monotonic() >= deadline:
+                raise
+            attempt += 1
+            sleep_seconds = min(10.0, 0.5 * attempt)
+            logger.warning(
+                "%s waiting for SQLite lock, retry %s in %.1fs: %s",
+                operation,
+                attempt,
+                sleep_seconds,
+                exc,
+            )
+            time.sleep(sleep_seconds)
+
+
 def import_pbi_data(data: dict) -> dict:
+    """Import PBI data, waiting through refresh-time SQLite write contention."""
+    return _run_with_sqlite_lock_retry("Power BI refresh import", lambda: _import_pbi_data_once(data))
+
+
+def _import_pbi_data_once(data: dict) -> dict:
     """Import PBI data received from the PS1 script and update the reports table.
 
     Also auto-archives reports not found in PBI and sets powerbi_url.

@@ -107,10 +107,9 @@ def pbi_sync_status():
 
 
 @router.post("/pbi-import")
-async def do_pbi_import(request: Request):
+def do_pbi_import(request: Request, data: dict = fastapi.Body(...)):
     """Receive PBI data from the PS1 script and update the DB."""
     _require_scan_access(request)
-    data = await request.json()
     return import_pbi_data(data)
 
 

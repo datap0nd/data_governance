@@ -2,6 +2,8 @@ import sqlite3
 from contextlib import contextmanager
 from app.config import DB_PATH
 
+SQLITE_BUSY_TIMEOUT_MS = 60000
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -620,7 +622,7 @@ def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     for migration in MIGRATIONS:
@@ -641,7 +643,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn

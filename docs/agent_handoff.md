@@ -1,14 +1,14 @@
 # Agent Handoff
 
 ## Current Objective
-Ensure scheduled refreshes trigger or retry Power BI sync when the desktop is not interactive, and stop intermittent refresh schedule save failures.
+Ensure scheduled Power BI sync results survive SQLite lock contention during full refresh.
 
 ## Repo State
 - Path: repo root
 - Branch: `main`
-- Latest commit before current changes: `4a3a176 Launch PBI sync directly before full refresh`
+- Latest commit before current changes: `6da96f2 Retry scheduled PBI sync when desktop returns`
 - Public repo: previously verified private, but pushed files must still remain generic and free of identifying details.
-- Push status: current scheduled retry and schedule-save fix is not committed yet.
+- Push status: current PBI import lock-retry fix is not committed yet.
 
 ## Decisions Made
 - Event Log is for user actions, not refresh-debug breadcrumbs. Scheduler debug event writes were removed.
@@ -17,25 +17,24 @@ Ensure scheduled refreshes trigger or retry Power BI sync when the desktop is no
 - Power BI sync now launches before scan/probe so the interactive scheduled task is created immediately.
 - If a scheduled run fires while the sync desktop is not usable, Power BI sync is marked pending in app state and retried every minute until the session becomes usable.
 - Refresh schedule settings writes need retry because SQLite can be briefly busy while the app scheduler/email loop is active.
+- PBI sync can now finish while scan/probe still has SQLite locked. The import endpoint must wait and retry instead of returning HTTP 500.
+- Blocking SQLite import retries should run in a FastAPI sync route/threadpool, not inside an async route event loop.
 - Accidental debug Event Log rows with `entity_type = 'scheduler'` should be removed on startup.
 
 ## Files Changed
-- `app/settings.py`: adds retry and longer busy timeout for app settings reads/writes.
-- `app/scanner/pbi_sync.py`: adds pending Power BI sync state, scheduled defer behavior, and retry behavior.
-- `app/routers/scanner.py`: full scanner run now calls `trigger_pbi_sync()` before scan/probe and returns the `pbi_sync` result.
-- `app/main.py`: scheduled overall refresh now calls `trigger_pbi_sync_or_defer()` before scan/probe, retries pending PBI sync once per minute, and hardens refresh schedule saving.
-- `app/static/app.js`: Scanner Power BI Sync panel shows pending sync state; refresh schedule save toast handles reschedule-warning payloads.
-- `app/database.py`: removes accidental scheduler diagnostic Event Log rows.
+- `app/database.py`: increases shared SQLite busy timeout to 60 seconds.
+- `app/scanner/pbi_sync.py`: wraps PBI refresh import with SQLite lock retry for up to 15 minutes and makes pending-state cleanup non-fatal.
+- `app/routers/scanner.py`: changes `/api/scanner/pbi-import` from async to sync so lock retries run off the event loop.
 - `docs/agent_handoff.md`: updated current repo context.
 
 ## Commands And Checks
-- Bundled Python 3.12 `-m py_compile app/config.py app/database.py app/main.py app/scanner/pbi_sync.py app/routers/scanner.py app/settings.py`: passed.
-- Node `--check app/static/app.js`: passed.
-- Pending PBI sync defer/retry unit checks: passed.
-- Refresh schedule settings save/read check with a temp database: passed.
+- Bundled Python `-m py_compile app/database.py app/scanner/pbi_sync.py app/routers/scanner.py`: passed.
+- SQLite lock retry unit check: passed.
+- `/api/scanner/pbi-import` route shape check: passed, route is sync and uses FastAPI body parsing.
+- Temp database exclusive-lock import check: passed, import waited until lock release and then updated report PBI fields.
 
 ## Open Questions
-- On the Windows host, confirm a scheduled refresh while RDP is disconnected creates a pending PBI sync if it cannot launch immediately, then launches the PBI sync window after reconnect or after the guard repairs the session.
+- On the Windows host, confirm the next scheduled PBI sync POSTs data successfully after scan/probe DB writes complete.
 
 ## Next Step
-Commit, push, pull/update on the Windows host, restart the app service, set a near-future refresh schedule, disconnect RDP, reconnect after the scheduled time, and verify Scanner shows either a launched/completed PBI sync or a pending retry that launches within one minute of reconnect.
+Commit, push, pull/update on the Windows host, restart the app service, run a near-future scheduled refresh, then confirm the PBI sync attempt moves from launched to completed and report refresh fields update.
