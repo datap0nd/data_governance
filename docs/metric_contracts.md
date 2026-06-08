@@ -18,7 +18,7 @@
 - Denominator: None.
 - Grain: Alert asset.
 - Date logic: Same 30-date CSV window as `Views last 30d`.
-- Premium viewer matching: Case-insensitive match against the admin-managed premium viewer email list, compared to the resolved `Users.UserId`.
+- Premium viewer matching: Case-insensitive match against the managed premium viewer email list, compared to the resolved `Users.UserId`.
 - Source impact: Sum weighted views for distinct reports fed by the degraded source.
 - Report impact: Weighted views for the stale or refresh-problem report.
 - Alert ordering: Open alerts sort before closed/expected alerts; within that, higher impact sorts before longer problem age.

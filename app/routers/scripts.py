@@ -169,8 +169,8 @@ def delete_script(script_id: int, request: Request):
 @router.post("/scan")
 def trigger_script_scan(request: Request, new_only: bool = Query(False)):
     """Trigger an async scan of the scripts directory."""
-    from app.routers.scanner import _require_local
-    _require_local(request)
+    from app.routers.scanner import _require_scan_access
+    _require_scan_access(request)
     with _scan_lock:
         if _scan_state["status"] == "running":
             return {"status": "already_running", "log": _scan_state["log"]}
@@ -211,8 +211,8 @@ def trigger_reparse(request: Request):
     Reads file content from already-known paths, re-runs detection logic,
     and updates script_tables. Skips the slow network directory walk.
     """
-    from app.routers.scanner import _require_local
-    _require_local(request)
+    from app.routers.scanner import _require_scan_access
+    _require_scan_access(request)
     with _scan_lock:
         if _scan_state["status"] == "running":
             return {"status": "already_running", "log": _scan_state["log"]}

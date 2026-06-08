@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Metronome</title>
-    <link rel="stylesheet" href="/static/style.css?v=39">
+    <link rel="stylesheet" href="/static/style.css?v=41">
 </head>
 <body>
     <a href="#app" class="skip-link">Skip to main content</a>
@@ -47,17 +47,16 @@
                 <a href="#export" data-page="export" role="menuitem">Full Export</a>
             </div>
         </div>
-        <div class="nav-group" data-pages="changelog,eventlog,faq,scanner,refreshschedule,adminaccess,premiumviewers" role="group" aria-label="Admin pages">
-            <span class="nav-group-label" tabindex="0" aria-haspopup="true">Admin <span class="nav-arrow">&#9662;</span></span>
+        <div class="nav-group" data-pages="changelog,eventlog,faq,scanner,refreshschedule,premiumviewers" role="group" aria-label="System pages">
+            <span class="nav-group-label" tabindex="0" aria-haspopup="true">System <span class="nav-arrow">&#9662;</span></span>
             <div class="nav-dropdown" role="menu">
                 <a href="#changelog" data-page="changelog" role="menuitem">Changelog</a>
                 <a href="#eventlog" data-page="eventlog" role="menuitem">Event Log</a>
                 <a href="#faq" data-page="faq" role="menuitem">FAQ</a>
                 <a href="#scanner" data-page="scanner" role="menuitem">Scanner</a>
-                <a href="#refreshschedule" data-page="refreshschedule" role="menuitem" id="nav-refresh-schedule" style="display:none">Refresh Schedule</a>
-                <a href="#adminaccess" data-page="adminaccess" role="menuitem" id="nav-admin-access" style="display:none">Admin Access</a>
-                <a href="#premiumviewers" data-page="premiumviewers" role="menuitem" id="nav-premium-viewers" style="display:none">Premium Viewers</a>
-                <a href="#" id="btn-update-app" role="menuitem" style="display:none">Update App</a>
+                <a href="#refreshschedule" data-page="refreshschedule" role="menuitem" id="nav-refresh-schedule">Refresh Schedule</a>
+                <a href="#premiumviewers" data-page="premiumviewers" role="menuitem" id="nav-premium-viewers">Premium Viewers</a>
+                <a href="#" id="btn-update-app" role="menuitem">Update App</a>
             </div>
         </div>
         <span id="app-version" style="margin-left:auto;font-size:0.68rem;color:var(--text-dim);font-family:monospace;opacity:0.6"></span>
@@ -68,6 +67,6 @@
     <main id="app" role="main" aria-label="Page content">
         <div class="loading">Loading...</div>
     </main>
-    <script src="/static/app.js?v=39"></script>
+    <script src="/static/app.js?v=41"></script>
 </body>
 </html>

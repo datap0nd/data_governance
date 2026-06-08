@@ -94,7 +94,6 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-ADMIN_EVERYONE = _bool_env("DG_ADMIN_EVERYONE", True)
 EMAIL_REQUIRE_FRESH_PBI = _bool_env("DG_EMAIL_REQUIRE_FRESH_PBI", True)
 EMAIL_MAX_PBI_SYNC_AGE_HOURS = _float_env("DG_EMAIL_MAX_PBI_SYNC_AGE_HOURS", 24.0)
 EMAIL_PBI_SYNC_GRACE_MINUTES = _float_env("DG_EMAIL_PBI_SYNC_GRACE_MINUTES", 30.0)

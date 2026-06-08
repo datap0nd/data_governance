@@ -65,7 +65,7 @@ FEATURES = {
     "7115534": ("Kanban Task Manager", "Drag-and-drop task board with priorities, due dates, and assignees"),
     "1899135": ("Event Log", "Track all platform changes with user, entity, action, and detail columns"),
     "748732c": ("Renamed to MX Analytics", "Platform renamed from Data Governance Panel to MX Analytics"),
-    "2dc3912": ("FAQ Page", "Frequently asked questions page under Admin dropdown"),
+    "2dc3912": ("FAQ Page", "Frequently asked questions page under System dropdown"),
     "87131d6": ("TMDL Checker", "Best practices scanner renamed, with report owner filter"),
 
     # ── Mar 5 ──

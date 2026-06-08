@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
-from app.local_access import require_admin
+from app.local_access import require_app_access
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.scanner.pbi_sync import (
@@ -32,15 +32,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
 
-def _require_local(request: Request):
-    """Raise 403 if request does not have admin capabilities."""
-    require_admin(request, "Scanner restricted to admins")
+def _require_scan_access(request: Request):
+    """Compatibility hook for scan actions that used to require elevated access."""
+    require_app_access(request)
 
 
 @router.post("/run")
 def do_scan(request: Request):
     """Trigger a full scan (reads .pbix files or TMDL exports)."""
-    _require_local(request)
+    _require_scan_access(request)
     result = run_scan()
     # After scan, probe sources for freshness
     try:
@@ -55,7 +55,7 @@ def do_scan(request: Request):
 @router.post("/probe")
 def do_probe(request: Request):
     """Probe all sources for freshness (file mod times)."""
-    _require_local(request)
+    _require_scan_access(request)
     return run_probe()
 
 
@@ -72,7 +72,7 @@ def list_probe_runs():
 @router.post("/pbi-sync")
 def do_pbi_sync(request: Request):
     """Launch PBI sync in the user's interactive session."""
-    _require_local(request)
+    _require_scan_access(request)
     return trigger_pbi_sync()
 
 
@@ -97,7 +97,7 @@ def pbi_sync_status():
 @router.post("/pbi-import")
 async def do_pbi_import(request: Request):
     """Receive PBI data from the PS1 script and update the DB."""
-    _require_local(request)
+    _require_scan_access(request)
     data = await request.json()
     return import_pbi_data(data)
 
@@ -130,7 +130,7 @@ def get_scan_run(run_id: int):
 @router.post("/pg-deps")
 def do_pg_deps(request: Request):
     """Scan PostgreSQL for materialized view dependencies."""
-    _require_local(request)
+    _require_scan_access(request)
     from app.scanner.pg_deps import scan_pg_dependencies
     return scan_pg_dependencies()
 
@@ -138,7 +138,7 @@ def do_pg_deps(request: Request):
 @router.post("/pg-cron")
 def do_pg_cron(request: Request):
     """Scan pg_cron for MV refresh schedules."""
-    _require_local(request)
+    _require_scan_access(request)
     from app.scanner.pg_cron import scan_pg_cron
     return scan_pg_cron()
 
@@ -157,7 +157,7 @@ class PbiSyncRunStatus(BaseModel):
 @router.post("/pbi-sync/run-status")
 def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
     """Record status from a PowerShell sync process that failed before import."""
-    _require_local(request)
+    _require_scan_access(request)
     sync_type = (body.sync_type or "refresh").strip().lower()
     if sync_type not in {"refresh", "usage"}:
         raise HTTPException(status_code=400, detail="sync_type must be refresh or usage")
@@ -171,7 +171,7 @@ def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
 @router.post("/open-path")
 def open_path(body: OpenPathRequest, request: Request):
     """Open the containing folder of a file path in the OS file explorer."""
-    _require_local(request)
+    _require_scan_access(request)
     target = Path(body.path)
 
     # If it's a file, open its parent folder; if directory, open it directly
@@ -419,7 +419,7 @@ def get_usage_days():
 @router.post("/pbi-usage-import")
 def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
     """Import PBI usage data from PS1 script."""
-    _require_local(request)
+    _require_scan_access(request)
     entries = data.get("entries") or []
     days_synced = data.get("days_synced") or []
 
@@ -469,7 +469,7 @@ def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
 @router.post("/pbi-usage-sync")
 def do_pbi_usage_sync(request: Request):
     """Sync usage from configured CSVs, falling back to the legacy PS1 sync."""
-    _require_local(request)
+    _require_scan_access(request)
     with get_db() as db:
         csv_result = sync_usage_from_csv(db, force=True)
         if csv_result.get("status") != "skipped":

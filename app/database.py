@@ -292,14 +292,6 @@ CREATE TABLE IF NOT EXISTS premium_viewers (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS admin_user_ips (
-    ip_address  TEXT PRIMARY KEY,
-    enabled     INTEGER DEFAULT 1,
-    granted_by  TEXT,
-    granted_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS pbi_sync_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_type   TEXT NOT NULL,
@@ -321,7 +313,6 @@ CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_da
 CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_report_id ON pbi_report_user_views(report_id);
 CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_date ON pbi_report_user_views(view_date);
 CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_user ON pbi_report_user_views(user_id);
-CREATE INDEX IF NOT EXISTS idx_admin_user_ips_enabled ON admin_user_ips(enabled);
 CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at);
 """
 
@@ -496,15 +487,6 @@ MIGRATIONS = [
         last_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_user_devices_client_key ON user_devices(client_key)",
-    # Admin access: remote IPs that can use server-machine capabilities
-    """CREATE TABLE IF NOT EXISTS admin_user_ips (
-        ip_address  TEXT PRIMARY KEY,
-        enabled     INTEGER DEFAULT 1,
-        granted_by  TEXT,
-        granted_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-    )""",
-    "CREATE INDEX IF NOT EXISTS idx_admin_user_ips_enabled ON admin_user_ips(enabled)",
     # Power BI sync run tracking for stale-email safeguards
     """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -516,7 +498,7 @@ MIGRATIONS = [
         details     TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at)",
-    # App settings used by admin-configurable scheduler controls
+    # App settings used by scheduler controls
     """CREATE TABLE IF NOT EXISTS app_settings (
         key        TEXT PRIMARY KEY,
         value      TEXT NOT NULL,

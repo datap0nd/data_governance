@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.local_access import require_admin
+from app.local_access import require_app_access
 from app.usage import PREMIUM_VIEW_WEIGHT, sync_usage_from_csv
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
@@ -12,8 +12,8 @@ class PremiumViewersUpdate(BaseModel):
     emails: list[str] = []
 
 
-def _require_local(request: Request):
-    require_admin(request, "Usage admin is restricted to admins")
+def _require_usage_access(request: Request):
+    require_app_access(request)
 
 
 def _clean_email(value: str) -> str | None:
@@ -27,7 +27,7 @@ def _clean_email(value: str) -> str | None:
 
 @router.get("/premium-viewers")
 def list_premium_viewers(request: Request):
-    _require_local(request)
+    _require_usage_access(request)
     with get_db() as db:
         rows = db.execute("SELECT email, created_at FROM premium_viewers ORDER BY email").fetchall()
     return {
@@ -38,7 +38,7 @@ def list_premium_viewers(request: Request):
 
 @router.put("/premium-viewers")
 def update_premium_viewers(body: PremiumViewersUpdate, request: Request):
-    _require_local(request)
+    _require_usage_access(request)
     cleaned = []
     seen = set()
     for value in body.emails:
@@ -58,6 +58,6 @@ def update_premium_viewers(body: PremiumViewersUpdate, request: Request):
 
 @router.post("/sync")
 def sync_usage(request: Request):
-    _require_local(request)
+    _require_usage_access(request)
     with get_db() as db:
         return sync_usage_from_csv(db, force=True)

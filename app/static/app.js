@@ -273,6 +273,338 @@ function actionTypeBadge(type) {
     return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
 
+function actionTypeLabel(type) {
+    const labels = {
+        stale_source: "Degraded source",
+        outdated_source: "Degraded source",
+        error_source: "Source error",
+        empty_source: "Empty source",
+        broken_ref: "Broken reference",
+        changed_query: "Query changed",
+        refresh_failed: "Refresh failed",
+        refresh_overdue: "Refresh overdue",
+        task_failed: "Scheduled task failed",
+        script_failed: "Script failed",
+        schedule_mismatch: "Stale vs source",
+    };
+    return labels[type] || String(type || "Alert").replace(/_/g, " ");
+}
+
+function _notifySlaIssueReasons(type) {
+    if (type === "refresh_failed" || type === "refresh_overdue" || type === "schedule_mismatch") {
+        return [
+            "The issue appears to be caused by an outdated data source.",
+            "The issue may be related to internet or gateway connectivity.",
+            "The issue may be related to scraping or automation.",
+            "The root cause is still under investigation.",
+        ];
+    }
+    if (type === "stale_source" || type === "outdated_source" || type === "error_source" || type === "empty_source") {
+        return [
+            "The source data has not arrived or has not refreshed as expected.",
+            "The upstream system appears to be delayed.",
+            "The issue may be related to scraping or automation.",
+            "The root cause is still under investigation.",
+        ];
+    }
+    if (type === "task_failed" || type === "script_failed") {
+        return [
+            "The scheduled automation failed and needs a rerun after investigation.",
+            "The issue may be related to credentials, access, or a script dependency.",
+            "The issue may be related to internet or gateway connectivity.",
+            "The root cause is still under investigation.",
+        ];
+    }
+    if (type === "broken_ref" || type === "changed_query") {
+        return [
+            "The source reference or query changed and needs confirmation.",
+            "The downstream report needs a source mapping review.",
+            "The root cause is still under investigation.",
+        ];
+    }
+    return ["The root cause is still under investigation."];
+}
+
+function _notifySlaDefaultSla(type) {
+    if (["refresh_failed", "error_source", "empty_source", "task_failed", "script_failed"].includes(type)) {
+        return { value: 4, unit: "hours" };
+    }
+    if (["refresh_overdue", "schedule_mismatch", "stale_source", "outdated_source"].includes(type)) {
+        return { value: 1, unit: "days" };
+    }
+    return { value: 2, unit: "days" };
+}
+
+function _notifySlaPersonByName(name) {
+    const target = String(name || "").trim().toLowerCase();
+    if (!target) return null;
+    return (window._dashboardPeople || []).find(p => String(p.name || "").trim().toLowerCase() === target) || null;
+}
+
+function _notifySlaReportForAction(action) {
+    const reports = window._dashboardReports || [];
+    const reportId = action.report_id || (action.asset_type === "report" ? action.asset_id : null) || action.top_report_id;
+    if (reportId) {
+        const found = reports.find(r => Number(r.id) === Number(reportId));
+        if (found) return found;
+    }
+    const name = action.report_name || (action.asset_type === "report" ? action.asset_name : null) || action.top_report_name;
+    if (!name) return null;
+    return reports.find(r => r.name === name) || null;
+}
+
+function _notifySlaSourceForAction(action) {
+    const sources = window._dashboardSources || [];
+    const sourceId = action.source_id || (action.asset_type === "source" ? action.asset_id : null);
+    if (sourceId) {
+        const found = sources.find(s => Number(s.id) === Number(sourceId));
+        if (found) return found;
+    }
+    const name = action.source_name || (action.asset_type === "source" ? action.asset_name : null);
+    if (!name) return null;
+    return sources.find(s => s.name === name) || null;
+}
+
+function _notifySlaRecipientSuggestions(action) {
+    const selected = new Map();
+    const add = (name, reason) => {
+        const person = _notifySlaPersonByName(name);
+        if (!person || !person.email) return;
+        const key = person.email.toLowerCase();
+        if (!selected.has(key)) selected.set(key, { person, reason });
+    };
+
+    add(action.assigned_to, "Assigned owner");
+    const source = _notifySlaSourceForAction(action);
+    const report = _notifySlaReportForAction(action);
+    if (source) add(source.owner, "Source owner");
+    if (report) {
+        add(report.owner, "Report owner");
+        add(report.business_owner, "Business owner");
+    }
+    return selected;
+}
+
+function _notifySlaEmailTokens(value) {
+    return String(value || "")
+        .split(/[\s,;]+/)
+        .map(v => v.trim())
+        .filter(Boolean);
+}
+
+function _notifySlaValidEmail(value) {
+    return /^[^\s@]+@[^\s@]+$/.test(String(value || "").trim());
+}
+
+function _notifySlaCollectRecipients() {
+    const picked = [];
+    document.querySelectorAll(".notify-sla-recipient-check:checked").forEach(input => {
+        if (input.dataset.email) picked.push(input.dataset.email);
+    });
+    const customInput = document.getElementById("notify-sla-custom-emails");
+    const tokens = _notifySlaEmailTokens(customInput ? customInput.value : "");
+    const invalid = tokens.filter(email => !_notifySlaValidEmail(email));
+    if (invalid.length) {
+        toast(`Check custom email: ${invalid[0]}`);
+        return null;
+    }
+    const seen = new Set();
+    return [...picked, ...tokens].filter(email => {
+        const key = email.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function _notifySlaAssetName(action) {
+    const raw = action.asset_name || action.source_name || action.report_name || "Unknown asset";
+    return shortNameFromPath(raw) || raw;
+}
+
+function _notifySlaBuildBody(action, reason, slaValue, slaUnit) {
+    const assetName = _notifySlaAssetName(action);
+    const issue = actionTypeLabel(action.type);
+    const report = _notifySlaReportForAction(action);
+    const source = _notifySlaSourceForAction(action);
+    const slaText = `${slaValue} ${slaUnit}`;
+    const lines = [
+        "Hi,",
+        "",
+        "This is an SLA notification for an active alert.",
+        "",
+        `Asset: ${assetName}`,
+        `Issue: ${issue}`,
+        `Status: ${action.status || "open"}`,
+        `Assigned owner: ${action.assigned_to || "Unassigned"}`,
+        `Impact: ${fmtInt(action.impact_views_30d || 0)} weighted views in the last 30 days`,
+        `Problem age: ${action.asset_days || 0} days`,
+        "",
+        `Reason: ${reason}`,
+        `Estimated SLA: ${slaText}`,
+    ];
+
+    if (action.recommendation) {
+        lines.push("", `Recommended next step: ${action.recommendation}`);
+    }
+    if (source && source.owner) {
+        lines.push(`Source owner: ${source.owner}`);
+    }
+    if (report) {
+        if (report.owner) lines.push(`Report owner: ${report.owner}`);
+        if (report.business_owner) lines.push(`Business owner: ${report.business_owner}`);
+    }
+    if (action.detail_items && action.detail_items.length) {
+        const details = action.detail_items.slice(0, 4).map(item => {
+            const gap = item.delta_hours < 48 ? `${item.delta_hours} hours` : `${Math.floor(item.delta_hours / 24)} days`;
+            return `- ${item.name}: ${gap} newer than the report`;
+        });
+        lines.push("", "Context:", ...details);
+    }
+
+    lines.push("", "Thanks,", "Metronome");
+    return lines.join("\n");
+}
+
+function _notifySlaModalHtml(action) {
+    const people = window._dashboardPeople || [];
+    const profiles = people.filter(p => p.email && (p.role === "BI" || p.role === "Business"));
+    const suggestions = _notifySlaRecipientSuggestions(action);
+    const suggestedEmails = new Set([...suggestions.keys()]);
+    const reasonOptions = _notifySlaIssueReasons(action.type);
+    const defaultSla = _notifySlaDefaultSla(action.type);
+    const assetName = _notifySlaAssetName(action);
+    const issue = actionTypeLabel(action.type);
+    const groupHtml = ["BI", "Business"].map(role => {
+        const rolePeople = profiles.filter(p => p.role === role);
+        const rows = rolePeople.length ? rolePeople.map(p => {
+            const emailKey = p.email.toLowerCase();
+            const suggestion = suggestions.get(emailKey);
+            return `
+                <label class="notify-sla-choice">
+                    <input type="checkbox" class="notify-sla-recipient-check" data-email="${esc(p.email)}" ${suggestedEmails.has(emailKey) ? "checked" : ""}>
+                    <span>
+                        <strong>${esc(p.name)}</strong>
+                        <small>${esc(p.email)}${suggestion ? ` - ${esc(suggestion.reason)}` : ""}</small>
+                    </span>
+                </label>
+            `;
+        }).join("") : '<div class="notify-sla-empty">No mapped emails</div>';
+        return `
+            <div class="notify-sla-recipient-group">
+                <div class="notify-sla-group-title">${role}</div>
+                ${rows}
+            </div>
+        `;
+    }).join("");
+
+    return `
+        <div class="task-modal-overlay" id="notify-sla-overlay">
+            <div class="task-modal notify-sla-modal" role="dialog" aria-modal="true" aria-labelledby="notify-sla-title">
+                <h2 id="notify-sla-title">Notify SLA</h2>
+                <div class="notify-sla-summary">
+                    <strong>${esc(assetName)}</strong>
+                    <span>${esc(issue)} - ${esc(action.status || "open")} - ${fmtInt(action.impact_views_30d || 0)} impact views</span>
+                </div>
+
+                <label>Recipients</label>
+                <div class="notify-sla-recipient-grid">${groupHtml}</div>
+
+                <label for="notify-sla-custom-emails">Custom emails</label>
+                <input id="notify-sla-custom-emails" type="text" placeholder="name@example.com; team@example.com">
+
+                <label for="notify-sla-reason-preset">Reason</label>
+                <select id="notify-sla-reason-preset">
+                    ${reasonOptions.map((reason, index) => `<option value="${esc(reason)}"${index === 0 ? " selected" : ""}>${esc(reason)}</option>`).join("")}
+                    <option value="__custom__">Custom reason</option>
+                </select>
+                <textarea id="notify-sla-reason" rows="4">${esc(reasonOptions[0])}</textarea>
+
+                <label>Estimated SLA</label>
+                <div class="notify-sla-estimate">
+                    <input id="notify-sla-value" type="number" min="1" step="1" value="${defaultSla.value}">
+                    <select id="notify-sla-unit">
+                        <option value="hours"${defaultSla.unit === "hours" ? " selected" : ""}>hours</option>
+                        <option value="days"${defaultSla.unit === "days" ? " selected" : ""}>days</option>
+                    </select>
+                </div>
+
+                <div class="task-modal-actions notify-sla-actions">
+                    <button type="button" id="notify-sla-cancel">Cancel</button>
+                    <button type="button" id="notify-sla-copy">Copy Email</button>
+                    <button type="button" class="btn-primary" id="notify-sla-open">Open Draft</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function _notifySlaReadEmail(action) {
+    const recipients = _notifySlaCollectRecipients();
+    if (!recipients) return null;
+    if (recipients.length === 0) {
+        toast("Choose at least one recipient or add a custom email");
+        return null;
+    }
+    const reason = (document.getElementById("notify-sla-reason")?.value || "").trim();
+    if (!reason) {
+        toast("Add a reason before opening the draft");
+        return null;
+    }
+    const slaValue = parseInt(document.getElementById("notify-sla-value")?.value || "", 10);
+    if (!Number.isFinite(slaValue) || slaValue < 1) {
+        toast("Enter an SLA of at least 1");
+        return null;
+    }
+    const slaUnit = document.getElementById("notify-sla-unit")?.value || "hours";
+    const subject = `SLA notice: ${actionTypeLabel(action.type)} - ${_notifySlaAssetName(action)}`;
+    const body = _notifySlaBuildBody(action, reason, slaValue, slaUnit);
+    return { recipients, subject, body };
+}
+
+function _notifySlaOpenDraft(action) {
+    const email = _notifySlaReadEmail(action);
+    if (!email) return;
+    const to = email.recipients.map(recipient => encodeURIComponent(recipient)).join(",");
+    window.location.href = `mailto:${to}?subject=${encodeURIComponent(email.subject)}&body=${encodeURIComponent(email.body)}`;
+}
+
+async function _notifySlaCopyEmail(action) {
+    const email = _notifySlaReadEmail(action);
+    if (!email) return;
+    try {
+        await navigator.clipboard.writeText(`To: ${email.recipients.join("; ")}\nSubject: ${email.subject}\n\n${email.body}`);
+        toast("Email copied");
+    } catch (_) {
+        toast("Clipboard unavailable");
+    }
+}
+
+function _openNotifySlaModal(actionId) {
+    const action = (window._dashboardActions || []).find(a => String(a.id) === String(actionId));
+    if (!action) {
+        toast("Alert not found");
+        return;
+    }
+    document.getElementById("notify-sla-overlay")?.remove();
+    document.body.insertAdjacentHTML("beforeend", _notifySlaModalHtml(action));
+    const overlay = document.getElementById("notify-sla-overlay");
+    const close = () => overlay?.remove();
+    overlay?.addEventListener("click", e => {
+        if (e.target === overlay) close();
+    });
+    document.getElementById("notify-sla-cancel")?.addEventListener("click", close);
+    document.getElementById("notify-sla-open")?.addEventListener("click", () => _notifySlaOpenDraft(action));
+    document.getElementById("notify-sla-copy")?.addEventListener("click", () => _notifySlaCopyEmail(action));
+    const preset = document.getElementById("notify-sla-reason-preset");
+    const reason = document.getElementById("notify-sla-reason");
+    preset?.addEventListener("change", () => {
+        if (!reason || preset.value === "__custom__") return;
+        reason.value = preset.value;
+    });
+    reason?.focus();
+}
+
 function typeBadge(type) {
     const colors = {
         csv: "badge-blue", excel: "badge-green", sql: "badge-yellow",
@@ -1715,10 +2047,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">stale vs: ${summary}${more}</div>`;
         }
 
-        const reportButton = a.asset_type === "report" && a.asset_id
-            ? `<button type="button" class="alerts-go-report" data-report-id="${a.asset_id}" title="Open report detail">Go to Report</button>`
-            : "";
-        const assetBody = `<div class="alerts-asset-title"><strong>${esc(assetName)}</strong>${reportButton}</div>${sub}`;
+        const assetBody = `<div class="alerts-asset-title"><strong>${esc(assetName)}</strong></div>${sub}`;
         const assetCell = linkData
             ? `<a class="alerts-link ${linkData}" title="Open detail">${assetBody}</a>`
             : `<div class="alerts-asset-plain">${assetBody}</div>`;
@@ -1731,6 +2060,16 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const days = a.asset_days || 0;
         const impact = a.impact_views_30d || 0;
         const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || (a.detail_items && a.detail_items.length > 0);
+        let openButton = '<button type="button" class="alerts-action-btn alerts-row-open" disabled>Open</button>';
+        if (a.asset_type === "source" && a.asset_id) {
+            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-source-link" data-source-id="${a.asset_id}">Open</button>`;
+        } else if (a.asset_type === "report" && a.asset_id) {
+            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-go-report" data-report-id="${a.asset_id}">Open</button>`;
+        } else if (a.asset_type === "scheduled_task" && a.asset_id) {
+            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-task-link" data-task-id="${a.asset_id}">Open</button>`;
+        } else if (a.asset_type === "script" && a.asset_id) {
+            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-script-link" data-script-id="${a.asset_id}">Open</button>`;
+        }
 
         const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
@@ -1761,6 +2100,12 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                         </div>
                     </div>
                 </td>
+                <td>
+                    <div class="alerts-row-actions">
+                        ${openButton}
+                        <button type="button" class="alerts-action-btn alerts-notify-sla" data-action-id="${a.id}">Notify SLA</button>
+                    </div>
+                </td>
             </tr>
         `;
 
@@ -1778,7 +2123,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
-                <td colspan="7" class="alerts-expand-cell">
+                <td colspan="8" class="alerts-expand-cell">
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
                 </td>
@@ -1793,13 +2138,14 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             <table class="alerts-table">
                 <thead>
                     <tr>
-                        <th style="width:34%">Asset</th>
-                        <th style="width:10%">Type</th>
-                        <th style="width:10%;text-align:right">Impact</th>
-                        <th style="width:8%;text-align:right">Days</th>
-                        <th style="width:14%">Issue</th>
-                        <th style="width:12%">Owner</th>
-                        <th style="width:12%">Status</th>
+                        <th style="width:30%">Asset</th>
+                        <th style="width:9%">Type</th>
+                        <th style="width:9%;text-align:right">Impact</th>
+                        <th style="width:7%;text-align:right">Days</th>
+                        <th style="width:13%">Issue</th>
+                        <th style="width:11%">Owner</th>
+                        <th style="width:10%">Status</th>
+                        <th style="width:11%">Action</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -2003,6 +2349,13 @@ function bindDashboardAlertsRowControls() {
                 const row = document.querySelector(`[data-script-id="${scid}"]`);
                 if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
             }, 150);
+        });
+    });
+
+    document.querySelectorAll(".alerts-notify-sla").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            _openNotifySlaModal(btn.dataset.actionId);
         });
     });
 
@@ -2555,8 +2908,8 @@ async function renderReports() {
                 <h1>Reports</h1>
                 <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
                 ${_archiveToggleHtml("reports")}
-                ${_isAdmin() ? '<button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>' : ''}
-                ${_isAdmin() ? '<button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>' : ''}
+                <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
+                <button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>
                 <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
                 <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
                 <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
@@ -2744,6 +3097,14 @@ async function renderScanner() {
     const latestPbiSuccess = refreshStatus.latest_success;
     const latestPbiAttempt = refreshStatus.latest_attempt;
     const pbiFresh = refreshStatus.freshness?.fresh;
+    const rdpGuard = pbiStatus?.rdp_guard;
+    const latestPbiAttemptMessage = latestPbiAttempt?.message || "";
+    const pbiAttemptWarning = latestPbiAttempt?.status === "failed" && latestPbiAttemptMessage
+        ? `<div class="pbi-sync-warning">${esc(latestPbiAttemptMessage)}</div>`
+        : "";
+    const rdpGuardWarning = rdpGuard && !rdpGuard.ready
+        ? `<div class="pbi-sync-warning">${esc(rdpGuard.message || "RDP console guard is not ready.")}</div>`
+        : "";
     const pbiStatusBadge = !pbiStatus
         ? '<span class="badge badge-muted">Unknown</span>'
         : pbiFresh
@@ -2757,8 +3118,11 @@ async function renderScanner() {
                 <span>Mode: <strong>${pbiStatus.auth_mode === "service_principal" ? "Service principal" : "Interactive"}</strong></span>
                 <span>Last success: <strong>${latestPbiSuccess?.finished_at ? timeAgo(latestPbiSuccess.finished_at) : "never"}</strong></span>
                 <span>Last attempt: <strong>${latestPbiAttempt?.status || "none"}</strong>${latestPbiAttempt?.started_at ? ` ${timeAgo(latestPbiAttempt.started_at)}` : ""}</span>
+                ${rdpGuard ? `<span>RDP guard: <strong>${rdpGuard.ready ? "Ready" : "Not ready"}</strong></span>` : ""}
             </div>
             ${refreshStatus.freshness?.reason ? `<div class="pbi-sync-warning">${esc(refreshStatus.freshness.reason)}</div>` : ""}
+            ${pbiAttemptWarning}
+            ${rdpGuardWarning}
         </div>
     ` : "";
 
@@ -2769,8 +3133,8 @@ async function renderScanner() {
         </div>
 
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
-            ${_isAdmin() ? '<button id="btn-scan">Run Scan Now</button>' : ''}
-            ${_isAdmin() ? '<button id="btn-probe" class="btn-outline">Probe Sources</button>' : ''}
+            <button id="btn-scan">Run Scan Now</button>
+            <button id="btn-probe" class="btn-outline">Probe Sources</button>
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
@@ -4792,7 +5156,7 @@ function _classifyTable(tableName) {
     const t = tableName.toLowerCase();
     if (t.startsWith("bi_reporting.")) return { label: "BI Reporting", cls: "badge-blue" };
     if (t.startsWith("smartswitch.")) return { label: "SmartSwitch", cls: "badge-purple" };
-    if (t.startsWith("samsung_health.")) return { label: "Samsung Health", cls: "badge-purple" };
+    if (t.startsWith("device_health.")) return { label: "Device Health", cls: "badge-purple" };
     if (t.startsWith("do_not_use_tables.")) return { label: "Internal", cls: "badge-dim" };
     if (t.includes("mdscm") || t.includes("gscm")) return { label: "GSCM", cls: "badge-green" };
     if (t.includes("asap")) return { label: "ASAP", cls: "badge-yellow" };
@@ -4889,9 +5253,9 @@ async function renderScripts() {
         <div class="page-header">
             <h1>Scripts</h1>
             <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
-            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
-            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>' : ''}
-            ${_isAdmin() ? '<button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>' : ''}
+            <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
+            <button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
@@ -5276,8 +5640,8 @@ async function renderScheduledTasks() {
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
             <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>' : ''}
-            ${_isAdmin() ? '<button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>' : ''}
+            <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
             <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
@@ -5564,7 +5928,7 @@ async function _renderPaForm(existing) {
                 <div class="create-field"><label>Name *</label><input id="pa-f-name" value="${esc(f.name || "")}" required></div>
                 <div class="create-field"><label>Status</label><select id="pa-f-status">${statusOptions}</select></div>
                 <div class="create-field"><label>Owner</label><select id="pa-f-owner"><option value="">-</option>${ownerOptions}</select></div>
-                <div class="create-field"><label>Account</label><input id="pa-f-account" value="${esc(f.account || "")}" placeholder="e.g. user@samsung.com"></div>
+                <div class="create-field"><label>Account</label><input id="pa-f-account" value="${esc(f.account || "")}" placeholder="e.g. user@example.com"></div>
                 <div class="create-field"><label>Schedule</label><input id="pa-f-schedule" value="${esc(f.schedule || "")}" placeholder="e.g. Daily 6:00 AM"></div>
                 <div class="create-field"><label>Source URL</label><input id="pa-f-source-url" value="${esc(f.source_url || "")}" placeholder="Website the flow scrapes"></div>
                 <div class="create-field"><label>Output Source</label><select id="pa-f-output-source"><option value="">- None -</option>${sourceOptions}</select></div>
@@ -7053,7 +7417,7 @@ function _renderLineageDiagram(data) {
     const taskNodes = [...taskMap.values()].filter(t => usedScriptIds.has(t.script_id));
 
     if (visualNodes.length === 0 && tableNodes.length === 0) {
-        container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Admin.</div>';
+        container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Scanner.</div>';
         return;
     }
 
@@ -8438,16 +8802,6 @@ function bindFaqPage() {
 }
 
 async function renderPremiumViewers() {
-    if (!_isAdmin()) {
-        return `
-            <div class="page-header">
-                <h1>Premium Viewers</h1>
-                <span class="subtitle">Admin only</span>
-            </div>
-            <div class="empty-state">This page is only available to admins.</div>
-        `;
-    }
-
     const data = await api("/api/usage/premium-viewers");
     const viewers = data.viewers || [];
     const emails = viewers.map(v => v.email).join("\n");
@@ -8506,104 +8860,8 @@ function bindPremiumViewersPage() {
     }
 }
 
-async function renderAdminAccess() {
-    if (!_isAdmin()) {
-        return `
-            <div class="page-header">
-                <h1>Admin Access</h1>
-                <span class="subtitle">Admin only</span>
-            </div>
-            <div class="empty-state">This page is only available to admins.</div>
-        `;
-    }
-
-    const data = await api("/api/admin/access");
-    const users = data.users || [];
-    const adminCount = users.filter(u => u.is_admin).length;
-    const rows = users.length ? users.map(u => {
-        const statusBadge = u.is_local
-            ? '<span class="badge badge-green">Server</span>'
-            : u.is_admin
-                ? '<span class="badge badge-blue">Admin</span>'
-                : '<span class="badge badge-muted">Standard</span>';
-        const checked = u.is_admin ? "checked" : "";
-        const disabled = u.can_toggle ? "" : "disabled";
-        const title = u.is_local ? "Server machine admin access is always enabled" : "Enable admin use from this IP";
-        return `
-            <tr>
-                <td><strong>${esc(u.person_name || "-")}</strong></td>
-                <td><code>${esc(u.ip_address || "-")}</code></td>
-                <td>${esc(u.hostname || "-")}</td>
-                <td>${u.last_seen_at ? `<span title="${esc(formatDate(u.last_seen_at))}">${timeAgo(u.last_seen_at)}</span>` : "-"}</td>
-                <td>${statusBadge}</td>
-                <td>
-                    <label class="admin-access-toggle" title="${esc(title)}">
-                        <input type="checkbox" data-ip="${esc(u.ip_address || "")}" ${checked} ${disabled}>
-                        <span>Admin</span>
-                    </label>
-                </td>
-            </tr>
-        `;
-    }).join("") : '<tr><td colspan="6" class="empty-row">No registered users yet</td></tr>';
-
-    return `
-        <div class="page-header">
-            <h1>Admin Access</h1>
-            <span class="subtitle">${users.length} registered IP${users.length === 1 ? "" : "s"} - ${adminCount} admin${adminCount === 1 ? "" : "s"}</span>
-        </div>
-        <div class="section admin-access-section">
-            <div class="table-wrap">
-                <table class="admin-access-table">
-                    <thead>
-                        <tr>
-                            <th>User</th>
-                            <th>IP</th>
-                            <th>Host</th>
-                            <th>Last seen</th>
-                            <th>Status</th>
-                            <th>Admin use</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            </div>
-        </div>
-    `;
-}
-
-function bindAdminAccessPage() {
-    document.querySelectorAll(".admin-access-toggle input[data-ip]").forEach(input => {
-        input.addEventListener("change", async () => {
-            const enabled = input.checked;
-            input.disabled = true;
-            try {
-                await apiPut("/api/admin/access/ip", {
-                    ip_address: input.dataset.ip,
-                    enabled,
-                });
-                toast(enabled ? "Admin access enabled" : "Admin access disabled");
-                await navigate("adminaccess");
-            } catch (err) {
-                input.checked = !enabled;
-                input.disabled = false;
-                toast("Admin update failed: " + err.message);
-            }
-        });
-    });
-}
-
 async function renderRefreshSchedule() {
-    if (!_isAdmin()) {
-        return `
-            <div class="page-header">
-                <h1>Refresh Schedule</h1>
-                <span class="subtitle">Admin only</span>
-            </div>
-            <div class="empty-state">This page is only available to admins.</div>
-        `;
-    }
-
-    const schedule = await api("/api/admin/refresh-schedule");
+    const schedule = await api("/api/system/refresh-schedule");
     return `
         <div class="page-header">
             <h1>Refresh Schedule</h1>
@@ -8639,7 +8897,7 @@ function bindRefreshSchedulePage() {
             saveBtn.disabled = true;
             saveBtn.textContent = "Saving...";
             try {
-                const updated = await apiPut("/api/admin/refresh-schedule", { refresh_time: input.value });
+                const updated = await apiPut("/api/system/refresh-schedule", { refresh_time: input.value });
                 toast(`Refresh schedule saved for ${updated.refresh_time}`);
                 await navigate("refreshschedule");
             } catch (err) {
@@ -8655,7 +8913,7 @@ function bindRefreshSchedulePage() {
             runBtn.disabled = true;
             runBtn.textContent = "Queueing...";
             try {
-                await apiPost("/api/admin/refresh-now");
+                await apiPost("/api/system/refresh-now");
                 toast("Overall refresh queued");
                 await navigate("scanner");
             } catch (err) {
@@ -8690,7 +8948,6 @@ const pages = {
     eventlog: renderEventLog,
     faq: renderFaq,
     refreshschedule: renderRefreshSchedule,
-    adminaccess: renderAdminAccess,
     premiumviewers: renderPremiumViewers,
 };
 
@@ -8826,7 +9083,6 @@ async function navigate(page) {
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
-        if (page === "adminaccess") bindAdminAccessPage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
@@ -9210,30 +9466,22 @@ function _isLocal() {
     return window._currentUser && window._currentUser.is_local;
 }
 
-function _isAdmin() {
-    return window._currentUser && window._currentUser.is_admin;
-}
-
 function _showConnectedUser(user) {
     const el = document.getElementById("connected-user");
     if (!el) return;
     const title = [user.hostname, user.ip].filter(Boolean).join(" - ");
     el.title = title ? `Connected from ${title}` : "";
-    const adminLabel = user.is_admin ? `<span class="user-admin">${user.is_local ? "local admin" : "admin"}</span>` : "";
-    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>${adminLabel}`;
+    el.innerHTML = `<span class="user-name">${esc(user.name)}</span>`;
 }
 
 function _applyAccessUi(user) {
     const refreshLink = document.getElementById("nav-refresh-schedule");
-    const adminLink = document.getElementById("nav-admin-access");
     const premiumLink = document.getElementById("nav-premium-viewers");
     const updateBtn = document.getElementById("btn-update-app");
-    const showAdmin = !!(user && user.is_admin);
-    if (refreshLink) refreshLink.style.display = showAdmin ? "" : "none";
-    if (adminLink) adminLink.style.display = showAdmin ? "" : "none";
-    if (premiumLink) premiumLink.style.display = showAdmin ? "" : "none";
-    if (updateBtn) updateBtn.style.display = showAdmin ? "" : "none";
-    if (showAdmin && (currentPage === "premiumviewers" || currentPage === "adminaccess" || currentPage === "refreshschedule")) {
+    if (refreshLink) refreshLink.style.display = "";
+    if (premiumLink) premiumLink.style.display = "";
+    if (updateBtn) updateBtn.style.display = "";
+    if (currentPage === "premiumviewers" || currentPage === "refreshschedule") {
         navigate(currentPage);
     }
 }

@@ -40,9 +40,9 @@ Open your browser to `http://localhost:8000`
 
 For other people on the network to access it, they go to `http://YOUR_COMPUTER_IP:8000`
 
-### Admin access
+### Access
 
-Everyone has admin access by default, including remote PCs on the network. Admin > Admin Access still lists registered users and IPs for visibility. To return to IP-based admin toggles, set `DG_ADMIN_EVERYONE=false` before starting the app.
+All registered users have the same application access, including remote PCs on the network. There is no app-level admin allowlist or IP toggle.
 
 ### Unattended Power BI sync
 
@@ -78,7 +78,7 @@ Scheduled emails are blocked by default if the latest completed Power BI refresh
 
 If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_CLIENT_ID`, and `DG_PBI_CLIENT_SECRET` to run the sync without an interactive account picker.
 
-Admins can change the daily overall refresh time from Admin > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
+Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
 
 ### 5. Run the scanner
 
