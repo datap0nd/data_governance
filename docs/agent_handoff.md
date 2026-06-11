@@ -19,6 +19,7 @@ Make the scheduled Power BI sync complete reliably without an interactive deskto
 - `_should_defer_interactive_sync` and `retry_pending_pbi_sync` skip the desktop wait / RDP guard whenever a headless mode (service principal or saved account) is available.
 - Usage import logic moved from the router into `import_pbi_usage_data()` in `pbi_sync.py` (now with the same SQLite lock retry as the refresh import); the router endpoint delegates to it.
 - The usage activity-events fetch still requires the Power BI/Fabric admin role, same as `Get-PowerBIActivityEvent`.
+- Connect diagnostics: transport failures reaching login.microsoftonline.com are caught and surfaced persistently in the Scanner card (and in `device_flow.status = failed`), the connect endpoint never 500s, the UI special-cases HTTP 404 (service running old code) and aborts after 75s. `truststore` is injected so corporate TLS interception (trusted by PowerShell via SChannel but not by certifi) does not break outbound HTTPS.
 
 ## Files Changed
 - `app/scanner/pbi_auth.py` (new): device-code flow, DPAPI token cache, silent refresh, auth status.

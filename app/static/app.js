@@ -9284,22 +9284,40 @@ function bindScannerButtons() {
         btnPbiConnect.addEventListener("click", async () => {
             btnPbiConnect.disabled = true;
             btnPbiConnect.textContent = "Starting sign-in...";
+            const box = document.getElementById("pbi-connect-box");
+            if (box) box.innerHTML = '<div class="pbi-sync-warning">Contacting the Microsoft sign-in service from the server... this can take up to a minute if the network blocks or proxies the connection.</div>';
             try {
-                const flow = await apiPost("/api/scanner/pbi-auth/connect");
-                const box = document.getElementById("pbi-connect-box");
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 75000);
+                const res = await fetch("/api/scanner/pbi-auth/connect", { method: "POST", headers: apiHeaders(), signal: controller.signal });
+                clearTimeout(timer);
+                if (!res.ok) {
+                    const hint = res.status === 404
+                        ? "The app service is still running old code. Update and restart the service, then reload this page."
+                        : `The connect endpoint returned HTTP ${res.status}. Check the service error log.`;
+                    if (box) box.innerHTML = `<div class="pbi-sync-warning">${esc(hint)}</div>`;
+                    toast("Connect failed: " + hint);
+                    return;
+                }
+                const flow = await res.json();
                 if (box) box.innerHTML = _pbiDeviceFlowHtml(flow);
                 if (flow.status === "pending") {
                     btnPbiConnect.textContent = "Waiting for sign-in...";
                     _watchPbiDeviceFlow();
-                } else {
-                    toast(flow.message || "Could not start the Microsoft sign-in");
+                    return;
+                }
+                toast(flow.message || "Could not start the Microsoft sign-in");
+            } catch (err) {
+                const msg = err.name === "AbortError"
+                    ? "No reply from the app after 75 seconds. The server may be unable to reach login.microsoftonline.com (firewall or missing proxy). Check the service error log."
+                    : "Connect failed: " + err.message;
+                if (box) box.innerHTML = `<div class="pbi-sync-warning">${esc(msg)}</div>`;
+                toast(msg);
+            } finally {
+                if (btnPbiConnect.textContent === "Starting sign-in...") {
                     btnPbiConnect.disabled = false;
                     btnPbiConnect.textContent = "Connect Power BI";
                 }
-            } catch (err) {
-                toast("Connect failed: " + err.message);
-                btnPbiConnect.disabled = false;
-                btnPbiConnect.textContent = "Connect Power BI";
             }
         });
     }

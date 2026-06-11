@@ -35,6 +35,15 @@ from pathlib import Path
 
 import httpx
 
+try:
+    # Trust the OS certificate store (needed when corporate TLS interception
+    # re-signs outbound HTTPS; PowerShell trusted it via SChannel, Python's
+    # default certifi bundle does not).
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 from app.config import PBI_AUTH_TENANT, PBI_PUBLIC_CLIENT_ID, PBI_TOKEN_CACHE_PATH
 
 logger = logging.getLogger(__name__)
@@ -290,10 +299,25 @@ def start_device_flow() -> dict:
         _DEVICE_FLOW_GENERATION += 1
         generation = _DEVICE_FLOW_GENERATION
 
-    body, status = _post_form(
-        f"{LOGIN_BASE}/{PBI_AUTH_TENANT}/oauth2/v2.0/devicecode",
-        {"client_id": PBI_PUBLIC_CLIENT_ID, "scope": PBI_SCOPE},
-    )
+    try:
+        body, status = _post_form(
+            f"{LOGIN_BASE}/{PBI_AUTH_TENANT}/oauth2/v2.0/devicecode",
+            {"client_id": PBI_PUBLIC_CLIENT_ID, "scope": PBI_SCOPE},
+        )
+    except Exception as exc:
+        logger.exception("Could not reach the Microsoft sign-in service")
+        with _LOCK:
+            _DEVICE_FLOW = {
+                "status": "failed",
+                "message": (
+                    f"The server could not reach login.microsoftonline.com: {exc}. "
+                    "If the network requires an outbound proxy, set HTTPS_PROXY in the "
+                    "app service environment and restart it."
+                ),
+                "updated_at": _now_iso(),
+            }
+            return dict(_DEVICE_FLOW)
+
     if "device_code" not in body:
         message = _short_aad_error(body)
         with _LOCK:

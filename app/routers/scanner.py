@@ -153,7 +153,11 @@ def get_pbi_auth_status():
 def start_pbi_auth(request: Request):
     """Start a device-code sign-in; the code can be entered from any device."""
     _require_scan_access(request)
-    return pbi_auth.start_device_flow()
+    try:
+        return pbi_auth.start_device_flow()
+    except Exception as exc:
+        logger.exception("Power BI connect failed")
+        return {"status": "failed", "message": f"Could not start the Microsoft sign-in: {exc}"}
 
 
 @router.post("/pbi-auth/disconnect")
