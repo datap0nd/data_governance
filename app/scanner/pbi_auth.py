@@ -227,6 +227,124 @@ def disconnect() -> dict:
     }
 
 
+# --- Connectivity probe ------------------------------------------------------
+
+def _read_http_head(sock, limit: int = 8192, timeout: float = 10.0) -> bytes:
+    sock.settimeout(timeout)
+    data = b""
+    try:
+        while b"\r\n\r\n" not in data and len(data) < limit:
+            chunk = sock.recv(2048)
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        pass
+    return data
+
+
+def probe_connectivity(target_host: str = "login.microsoftonline.com", target_port: int = 443) -> str:
+    """Explain, at socket level, what happens on the way to Microsoft.
+
+    Reports the proxy CONNECT status, the TLS handshake result, and whether
+    something in the path answers in plaintext HTTP (block or auth page).
+    """
+    import socket
+    import ssl as ssl_module
+
+    findings = []
+    try:
+        proxy = resolve_proxy(f"https://{target_host}")
+    except Exception:
+        proxy = None
+    if proxy:
+        findings.append(f"via proxy {proxy}")
+        parts = urlsplit(proxy)
+        if parts.scheme == "https":
+            findings.append(
+                "warning: the proxy value starts with https:// but PAC 'PROXY' entries are "
+                "plain-HTTP proxies - set it with http:// instead"
+            )
+        proxy_host, proxy_port = parts.hostname, parts.port or 8080
+    else:
+        findings.append("no proxy (direct)")
+
+    def open_tunnel():
+        if not proxy:
+            return socket.create_connection((target_host, target_port), timeout=10), None
+        sock = socket.create_connection((proxy_host, proxy_port), timeout=10)
+        sock.sendall(
+            f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
+            f"Host: {target_host}:{target_port}\r\n\r\n".encode("ascii")
+        )
+        head = _read_http_head(sock)
+        line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
+        return sock, line
+
+    try:
+        sock, connect_line = open_tunnel()
+    except Exception as exc:
+        findings.append(f"TCP connect failed: {exc}")
+        return "; ".join(findings)
+
+    tls_failed = False
+    try:
+        if connect_line is not None:
+            findings.append(f"CONNECT -> {connect_line or 'no response'}")
+            if not connect_line.startswith("HTTP/"):
+                findings.append("the proxy did not answer HTTP - it may be a SOCKS or non-proxy service on that port")
+                return "; ".join(findings)
+            if " 200" not in connect_line:
+                if " 407" in connect_line:
+                    findings.append(
+                        "the proxy requires authentication that Python cannot do natively "
+                        "(the browser does it silently with your Windows credentials)"
+                    )
+                return "; ".join(findings)
+        context = ssl_module.create_default_context()
+        try:
+            tls = context.wrap_socket(sock, server_hostname=target_host)
+            findings.append(f"TLS handshake OK ({tls.version()})")
+            tls.close()
+            return "; ".join(findings)
+        except Exception as exc:
+            findings.append(f"TLS handshake failed: {exc}")
+            tls_failed = True
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    if tls_failed:
+        # See whether the tunnel answers plaintext HTTP (block page, auth page)
+        try:
+            sock2, _ = open_tunnel()
+            sock2.sendall(
+                f"GET / HTTP/1.1\r\nHost: {target_host}\r\nConnection: close\r\n\r\n".encode("ascii")
+            )
+            raw = _read_http_head(sock2)
+            try:
+                sock2.close()
+            except OSError:
+                pass
+            if raw.startswith(b"HTTP/"):
+                status = raw.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+                findings.append(
+                    f"the tunnel answers PLAINTEXT HTTP ('{status}') - a filtering or auth device "
+                    "is intercepting this connection; it allows the browser (which authenticates "
+                    "silently) but not raw clients. This needs an IT exception for "
+                    "login.microsoftonline.com/api.powerbi.com or a local authenticating proxy."
+                )
+            elif raw:
+                findings.append(f"the tunnel returned non-TLS bytes: {raw[:60]!r}")
+            else:
+                findings.append("the tunnel went silent after the TLS attempt")
+        except Exception as exc:
+            findings.append(f"plaintext follow-up probe failed: {exc}")
+    return "; ".join(findings)
+
+
 # --- Token plumbing ---------------------------------------------------------
 
 def _decode_jwt_claims(token: str) -> dict:
@@ -360,17 +478,16 @@ def start_device_flow() -> dict:
     except Exception as exc:
         logger.exception("Could not reach the Microsoft sign-in service")
         try:
-            proxy_used = resolve_proxy(LOGIN_BASE) or "none (direct connection)"
-        except Exception:
-            proxy_used = "unknown"
+            diagnostics = probe_connectivity()
+        except Exception as probe_exc:
+            diagnostics = f"diagnostics unavailable: {probe_exc}"
+        logger.warning("Power BI connect diagnostics: %s", diagnostics)
         with _LOCK:
             _DEVICE_FLOW = {
                 "status": "failed",
                 "message": (
                     f"The server could not reach login.microsoftonline.com: {exc}. "
-                    f"Proxy used: {proxy_used}. If that proxy is wrong, set "
-                    "DG_PBI_PROXY=http://proxyhost:port in the service environment "
-                    "and restart it (a .pac script URL is not a valid proxy value)."
+                    f"Diagnostics: {diagnostics}"
                 ),
                 "updated_at": _now_iso(),
             }
