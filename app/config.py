@@ -76,6 +76,17 @@ PBI_CLIENT_ID = os.environ.get("DG_PBI_CLIENT_ID", "")
 PBI_CLIENT_SECRET = os.environ.get("DG_PBI_CLIENT_SECRET", "")
 PBI_SYNC_WINDOWS_USER = os.environ.get("DG_PBI_SYNC_WINDOWS_USER", os.environ.get("USERNAME", ""))
 
+# Headless Power BI sync with a saved Microsoft account (no tenant setup needed).
+# The default client id is Microsoft's first-party Azure CLI public application,
+# which is pre-consented in nearly every tenant and supports the device code
+# flow plus long-lived refresh tokens. Override only if your tenant blocks it
+# (the Azure PowerShell client 1950a258-227b-4e31-a9cf-717495945fc2 is a common
+# alternative).
+PBI_PUBLIC_CLIENT_ID = os.environ.get("DG_PBI_PUBLIC_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
+PBI_AUTH_TENANT = os.environ.get("DG_PBI_AUTH_TENANT", PBI_TENANT_ID or "organizations")
+PBI_TOKEN_CACHE_PATH = os.environ.get("DG_PBI_TOKEN_CACHE", str(BASE_DIR / "pbi_token.json"))
+PBI_USAGE_DAYS_BACK = int(os.environ.get("DG_PBI_USAGE_DAYS_BACK", "30"))
+
 
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.environ.get(name)

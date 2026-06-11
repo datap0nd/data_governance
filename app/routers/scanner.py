@@ -1,7 +1,6 @@
 import logging
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import fastapi
@@ -13,18 +12,20 @@ from app.local_access import require_app_access
 from app.scanner.control import ScannerWorkCancelled
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
+from app.scanner import pbi_auth
 from app.scanner.pbi_sync import (
     _record_sync_run,
     get_pending_pbi_sync,
     latest_pbi_sync,
     latest_successful_pbi_sync,
+    pbi_auth_mode,
     pbi_sync_freshness,
     rdp_console_guard_status,
-    service_principal_configured,
     stop_pbi_sync_processes,
     trigger_pbi_sync,
     trigger_pbi_sync_and_wait,
     import_pbi_data,
+    import_pbi_usage_data,
     trigger_pbi_usage_sync,
 )
 from app.scanner.walker import diagnose_reports_root
@@ -121,8 +122,13 @@ def stop_pbi_sync(request: Request):
 @router.get("/pbi-sync/status")
 def pbi_sync_status():
     """Return latest PBI sync status and freshness."""
+    try:
+        auth = pbi_auth.auth_status()
+    except Exception as exc:
+        auth = {"connected": False, "message": f"Could not read Power BI auth status: {exc}"}
     return {
-        "auth_mode": "service_principal" if service_principal_configured() else "interactive",
+        "auth_mode": pbi_auth_mode(),
+        "auth": auth,
         "refresh": {
             "latest_attempt": latest_pbi_sync("refresh"),
             "latest_success": latest_successful_pbi_sync("refresh"),
@@ -135,6 +141,26 @@ def pbi_sync_status():
         "pending": get_pending_pbi_sync(),
         "rdp_guard": rdp_console_guard_status(),
     }
+
+
+@router.get("/pbi-auth/status")
+def get_pbi_auth_status():
+    """Return saved Microsoft account sign-in state for headless PBI sync."""
+    return pbi_auth.auth_status()
+
+
+@router.post("/pbi-auth/connect")
+def start_pbi_auth(request: Request):
+    """Start a device-code sign-in; the code can be entered from any device."""
+    _require_scan_access(request)
+    return pbi_auth.start_device_flow()
+
+
+@router.post("/pbi-auth/disconnect")
+def disconnect_pbi_auth(request: Request):
+    """Forget the saved Microsoft account sign-in."""
+    _require_scan_access(request)
+    return pbi_auth.disconnect()
 
 
 @router.post("/pbi-import")
@@ -462,50 +488,7 @@ def get_usage_days():
 def import_pbi_usage(request: Request, data: dict = fastapi.Body(...)):
     """Import PBI usage data from PS1 script."""
     _require_scan_access(request)
-    entries = data.get("entries") or []
-    days_synced = data.get("days_synced") or []
-
-    matched = 0
-    now = datetime.now(timezone.utc).isoformat()
-
-    with get_db() as db:
-        # Build name -> id lookup
-        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
-        name_map = {r["name"].strip().lower(): r["id"] for r in all_reports}
-
-        # Record synced days
-        for day in days_synced:
-            db.execute(
-                "INSERT OR IGNORE INTO pbi_usage_days (date, synced_at) VALUES (?, ?)",
-                (day, now),
-            )
-
-        # Insert view counts
-        for entry in entries:
-            report_name = entry.get("report_name", "").strip()
-            if not report_name:
-                continue
-            report_id = name_map.get(report_name.lower())
-            db.execute(
-                """INSERT INTO pbi_report_views (report_name, report_id, view_date, view_count, unique_users)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(report_name, view_date) DO UPDATE SET
-                       view_count = excluded.view_count,
-                       unique_users = excluded.unique_users,
-                       report_id = COALESCE(excluded.report_id, report_id)""",
-                (report_name, report_id, entry.get("date"), entry.get("view_count", 0), entry.get("unique_users", 0)),
-            )
-            if report_id:
-                matched += 1
-
-    result = {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
-    _record_sync_run(
-        "usage",
-        "completed",
-        f"Power BI usage sync completed: {len(days_synced)} day(s), {matched} matched.",
-        result,
-    )
-    return result
+    return import_pbi_usage_data(data)
 
 
 @router.post("/pbi-usage-sync")

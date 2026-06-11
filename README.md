@@ -46,7 +46,23 @@ All registered users have the same application access, including remote PCs on t
 
 ### Unattended Power BI sync
 
-The refresh metadata sync uses the signed-in Windows user's delegated Power BI session. Without tenant-admin/service-principal access, it is not a true headless job: Windows must have an active, unlocked interactive session so the Microsoft account picker can be selected.
+The sync picks the first available auth mode, in this order:
+
+1. **Service principal** (`DG_PBI_TENANT_ID` + `DG_PBI_CLIENT_ID` + `DG_PBI_CLIENT_SECRET`): fully unattended, requires tenant-admin setup.
+2. **Saved Microsoft account (recommended when no tenant access exists)**: open the panel, go to Scanner, click **Connect Power BI**, and enter the shown code at microsoft.com/devicelogin from any device (your own laptop or phone works). After this one-time sign-in, every sync runs headless inside the app with a silently refreshed token: no PowerShell window, no account picker, and it works while the PC is locked or the RDP session is disconnected.
+3. **Interactive fallback**: the legacy scheduled-task flow that opens a PowerShell window plus the Microsoft account picker in the sync user's session. Only used when neither of the above is configured.
+
+#### Saved Microsoft account details
+
+- The sign-in is stored in `pbi_token.json` next to the app, encrypted with Windows DPAPI for the account that runs the service. Treat the file as a credential; it is gitignored and `Disconnect account` on the Scanner page deletes it.
+- The refresh token rotates on every sync, so daily syncs keep the sign-in alive indefinitely. If the org forces a re-auth (password change, revocation, or a conditional-access sign-in frequency policy), the sync fails with a clear "reconnect" message, raises a critical alert on the dashboard, and the Scanner page shows a **Reconnect needed** badge. Click Connect Power BI again to fix it; nothing hangs.
+- The default sign-in client is Microsoft's first-party Azure CLI public app, pre-consented in nearly every tenant. If your tenant blocks it or blocks the device code flow, set `DG_PBI_PUBLIC_CLIENT_ID` (the Azure PowerShell client `1950a258-227b-4e31-a9cf-717495945fc2` is a common alternative).
+- If the server needs an outbound proxy, set `HTTPS_PROXY` for the service so the app can reach `login.microsoftonline.com` and `api.powerbi.com`.
+- Usage sync (activity events) still requires the signed-in account to hold the Power BI/Fabric administrator role, same as before.
+
+#### Interactive fallback (legacy)
+
+Without a saved account or service principal, the sync needs an active, unlocked interactive session so the Microsoft account picker can be selected.
 
 For RDP-heavy machines, setup installs an automatic RDP console guard. The guard runs every five minutes, also runs after RDP disconnect events, and runs once immediately before a Power BI sync starts. It targets the configured sync Windows user and transfers that user's disconnected RDP session back to the console with `tscon`, so the sync does not depend on every RDP user remembering a manual step.
 

@@ -2972,7 +2972,7 @@ function bindReportsPage() {
             try {
                 const result = await apiPost("/api/scanner/pbi-sync");
                 if (result.status === "launched") {
-                    toast("PBI sync launched - check the PowerShell window on your desktop");
+                    toast(result.message || "PBI sync launched");
                     btnPbi.textContent = "Waiting for sync...";
                     // Poll until the PS1 script POSTs back (check updated_at on reports)
                     let attempts = 0;
@@ -3044,7 +3044,7 @@ function bindReportsPage() {
             try {
                 const result = await apiPost("/api/scanner/pbi-usage-sync");
                 if (result.status === "launched") {
-                    toast("Usage sync launched - check the PowerShell window");
+                    toast(result.message || "Usage sync launched");
                     btnUsage.textContent = "Syncing...";
                     let attempts = 0;
                     const poll = setInterval(async () => {
@@ -3085,6 +3085,46 @@ function bindReportsPage() {
     }
 }
 
+function _pbiDeviceFlowHtml(flow) {
+    if (!flow) return "";
+    if (flow.status === "pending") {
+        return `
+            <div style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 0.9rem;margin:0.6rem 0">
+                <div style="font-size:0.82rem;margin-bottom:0.45rem">Sign in from <strong>any device</strong> (your laptop or phone works - the server desktop is not needed):</div>
+                <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+                    <a href="${esc(flow.verification_uri || "https://microsoft.com/devicelogin")}" target="_blank" rel="noopener">${esc(flow.verification_uri || "https://microsoft.com/devicelogin")}</a>
+                    <code style="font-size:1.05rem;letter-spacing:0.12em;padding:0.2rem 0.55rem;border:1px solid var(--border);border-radius:4px">${esc(flow.user_code || "")}</code>
+                    <button class="btn-outline" style="font-size:0.72rem" onclick="navigator.clipboard && navigator.clipboard.writeText('${esc(flow.user_code || "")}')">Copy code</button>
+                    <span id="pbi-flow-note" style="color:var(--text-dim);font-size:0.78rem">Waiting for the sign-in to complete...</span>
+                </div>
+            </div>`;
+    }
+    if (flow.status === "failed" || flow.status === "expired") {
+        return `<div class="pbi-sync-warning">${esc(flow.message || "Sign-in did not complete.")}</div>`;
+    }
+    return "";
+}
+
+function _watchPbiDeviceFlow() {
+    if (window._pbiFlowPoll) clearInterval(window._pbiFlowPoll);
+    window._pbiFlowPoll = setInterval(async () => {
+        const box = document.getElementById("pbi-connect-box");
+        if (!box) { clearInterval(window._pbiFlowPoll); return; }
+        try {
+            const status = await api("/api/scanner/pbi-auth/status");
+            const flow = status.device_flow;
+            if (!flow || flow.status === "pending") return;
+            clearInterval(window._pbiFlowPoll);
+            if (flow.status === "completed") {
+                toast(`Power BI connected as ${status.account || "saved account"} - syncs now run headless`);
+            } else {
+                toast(flow.message || "Power BI sign-in did not complete");
+            }
+            navigate("scanner");
+        } catch (_) {}
+    }, 4000);
+}
+
 async function renderScanner() {
     const [runs, probeRuns, pbiStatus] = await Promise.all([
         api("/api/scanner/runs"),
@@ -3099,6 +3139,12 @@ async function renderScanner() {
     const pbiFresh = refreshStatus.freshness?.fresh;
     const rdpGuard = pbiStatus?.rdp_guard;
     const pendingPbiSync = pbiStatus?.pending;
+    const auth = pbiStatus?.auth || {};
+    const authMode = pbiStatus?.auth_mode || "interactive";
+    const isInteractiveMode = authMode === "interactive";
+    const modeLabel = authMode === "service_principal" ? "Service principal"
+        : authMode === "cached_account" ? "Saved Microsoft account (headless)"
+        : "Interactive window (fallback)";
     const latestPbiAttemptMessage = latestPbiAttempt?.message || "";
     const pbiAttemptWarning = ["failed", "stopped", "pending"].includes(latestPbiAttempt?.status) && latestPbiAttemptMessage
         ? `<div class="pbi-sync-warning">${esc(latestPbiAttemptMessage)}</div>`
@@ -3106,26 +3152,41 @@ async function renderScanner() {
     const pendingPbiWarning = pendingPbiSync
         ? `<div class="pbi-sync-warning">Pending Power BI sync: ${esc(pendingPbiSync.message || "waiting for an interactive desktop")}</div>`
         : "";
-    const rdpGuardWarning = rdpGuard && !rdpGuard.ready
+    const rdpGuardWarning = isInteractiveMode && rdpGuard && !rdpGuard.ready
         ? `<div class="pbi-sync-warning">${esc(rdpGuard.message || "RDP console guard is not ready.")}</div>`
+        : "";
+    const reconnectWarning = auth.reconnect_required
+        ? `<div class="pbi-sync-warning">${esc(auth.message || "The saved Power BI sign-in expired - use Connect Power BI.")}</div>`
+        : "";
+    const connectHint = isInteractiveMode && !auth.connected
+        ? `<div class="pbi-sync-warning">Syncs currently need a visible sign-in window on the server desktop. Click Connect Power BI once to switch to headless sync that also works while the PC is locked.</div>`
         : "";
     const pbiStatusBadge = !pbiStatus
         ? '<span class="badge badge-muted">Unknown</span>'
         : pbiFresh
             ? '<span class="badge badge-green">Fresh</span>'
             : '<span class="badge badge-red">Stale</span>';
+    const authButtons = authMode === "service_principal" ? "" : `
+        ${!auth.connected || auth.reconnect_required ? '<button id="btn-pbi-connect" class="btn-outline" style="font-size:0.78rem">Connect Power BI</button>' : ""}
+        ${auth.connected ? '<button id="btn-pbi-disconnect" class="btn-outline" style="font-size:0.78rem">Disconnect account</button>' : ""}
+    `;
     const pbiSyncMeta = pbiStatus ? `
         <div class="section pbi-sync-status">
             <h2>Power BI Sync</h2>
             <div class="pbi-sync-facts">
                 <span>${pbiStatusBadge}</span>
-                <span>Mode: <strong>${pbiStatus.auth_mode === "service_principal" ? "Service principal" : "Interactive"}</strong></span>
+                <span>Mode: <strong>${modeLabel}</strong></span>
+                ${auth.connected ? `<span>Account: <strong>${esc(auth.account || "saved account")}</strong>${auth.reconnect_required ? ' <span class="badge badge-red">Reconnect needed</span>' : ""}</span>` : ""}
                 <span>Last success: <strong>${latestPbiSuccess?.finished_at ? timeAgo(latestPbiSuccess.finished_at) : "never"}</strong></span>
                 <span>Last attempt: <strong>${latestPbiAttempt?.status || "none"}</strong>${latestPbiAttempt?.started_at ? ` ${timeAgo(latestPbiAttempt.started_at)}` : ""}</span>
                 ${pendingPbiSync ? `<span>Pending: <strong>Yes</strong>${pendingPbiSync.updated_at ? ` ${timeAgo(pendingPbiSync.updated_at)}` : ""}</span>` : ""}
-                ${rdpGuard ? `<span>RDP guard: <strong>${rdpGuard.ready ? "Ready" : "Not ready"}</strong></span>` : ""}
+                ${isInteractiveMode && rdpGuard ? `<span>RDP guard: <strong>${rdpGuard.ready ? "Ready" : "Not ready"}</strong></span>` : ""}
+                ${authButtons}
             </div>
+            <div id="pbi-connect-box">${_pbiDeviceFlowHtml(auth.device_flow)}</div>
             ${refreshStatus.freshness?.reason ? `<div class="pbi-sync-warning">${esc(refreshStatus.freshness.reason)}</div>` : ""}
+            ${reconnectWarning}
+            ${connectHint}
             ${pbiAttemptWarning}
             ${pendingPbiWarning}
             ${rdpGuardWarning}
@@ -9218,6 +9279,48 @@ function bindScannerButtons() {
         });
     }
 
+    const btnPbiConnect = $("#btn-pbi-connect");
+    if (btnPbiConnect) {
+        btnPbiConnect.addEventListener("click", async () => {
+            btnPbiConnect.disabled = true;
+            btnPbiConnect.textContent = "Starting sign-in...";
+            try {
+                const flow = await apiPost("/api/scanner/pbi-auth/connect");
+                const box = document.getElementById("pbi-connect-box");
+                if (box) box.innerHTML = _pbiDeviceFlowHtml(flow);
+                if (flow.status === "pending") {
+                    btnPbiConnect.textContent = "Waiting for sign-in...";
+                    _watchPbiDeviceFlow();
+                } else {
+                    toast(flow.message || "Could not start the Microsoft sign-in");
+                    btnPbiConnect.disabled = false;
+                    btnPbiConnect.textContent = "Connect Power BI";
+                }
+            } catch (err) {
+                toast("Connect failed: " + err.message);
+                btnPbiConnect.disabled = false;
+                btnPbiConnect.textContent = "Connect Power BI";
+            }
+        });
+    }
+
+    const btnPbiDisconnect = $("#btn-pbi-disconnect");
+    if (btnPbiDisconnect) {
+        btnPbiDisconnect.addEventListener("click", async () => {
+            if (!confirm("Forget the saved Microsoft account? Scheduled syncs will fall back to the interactive sign-in window until you connect again.")) return;
+            try {
+                const result = await apiPost("/api/scanner/pbi-auth/disconnect");
+                toast(result.message || "Disconnected");
+                navigate("scanner");
+            } catch (err) {
+                toast("Disconnect failed: " + err.message);
+            }
+        });
+    }
+
+    // Resume polling if a device-code sign-in is already in progress
+    const flowNote = document.getElementById("pbi-flow-note");
+    if (flowNote) _watchPbiDeviceFlow();
 }
 
 function renderDiagnosePanel(d) {

@@ -1,49 +1,42 @@
 # Agent Handoff
 
 ## Current Objective
-Ensure new scanner refresh, probe, and Power BI sync work stops older pending/running work, and prevent Power BI import from waiting behind scan/probe DB writes.
+Make the scheduled Power BI sync complete reliably without an interactive desktop. The interactive account-picker flow (PowerShell window + auto-clicker + RDP console guard) failed whenever the PC was locked or the picker click missed.
 
 ## Repo State
 - Path: repo root
 - Branch: `main`
-- Latest commit before current changes: `b7313b1 Retry PBI import through SQLite locks`
-- Public repo: previously verified private, but pushed files must still remain generic and free of identifying details.
-- Push status: current refresh-stop and sequencing fix is not committed yet.
+- Latest commit before current changes: `003d689 Stop stale refresh work before new scans`
+- Pushed files must remain generic and free of identifying details.
 
 ## Decisions Made
-- Event Log is for user actions, not refresh-debug breadcrumbs. Scheduler debug event writes were removed.
-- The Reports Sync PBI button works because `POST /api/scanner/pbi-sync` calls `trigger_pbi_sync()`.
-- Scanner full refresh and scheduled overall refresh must call `trigger_pbi_sync()` directly, without an internal HTTP self-call.
-- Power BI sync now launches before scan/probe so the interactive scheduled task is created immediately.
-- If a scheduled run fires while the sync desktop is not usable, Power BI sync is marked pending in app state and retried every minute until the session becomes usable.
-- Refresh schedule settings writes need retry because SQLite can be briefly busy while the app scheduler/email loop is active.
-- PBI sync can now finish while scan/probe still has SQLite locked. The import endpoint must wait and retry instead of returning HTTP 500.
-- Blocking SQLite import retries should run in a FastAPI sync route/threadpool, not inside an async route event loop.
-- Every new scanner refresh/probe/PBI sync should first stop pending/running scanner work, clear pending PBI retry state, stop PowerShell helper tasks/processes when available, and mark stale `running` rows as `stopped`.
-- Full refresh must wait for Power BI sync import to reach a terminal status before scan/probe starts; otherwise the PBI POST can sit behind scanner SQLite writes.
-- Accidental debug Event Log rows with `entity_type = 'scheduler'` should be removed on startup.
+- Root cause: Connect-PowerBIServiceAccount never persists tokens between processes, so every sync needed a live account-picker interaction; that can never be reliable on a locked desktop.
+- New auth mode "saved Microsoft account": one-time OAuth2 device-code sign-in (code can be entered from any device), refresh token cached in `pbi_token.json` (DPAPI-encrypted on Windows, owner-only plain JSON elsewhere). All later syncs acquire tokens silently and fetch Power BI REST data in-process (`app/scanner/pbi_fetch.py`), with no PowerShell window or desktop session.
+- Default public client id is the first-party Azure CLI app (pre-consented in nearly all tenants, no app registration needed); override with `DG_PBI_PUBLIC_CLIENT_ID`.
+- Auth mode order in `trigger_pbi_sync()` / `trigger_pbi_usage_sync()`: service principal (PS1 background) > saved account (headless in-process thread) > interactive scheduled task (legacy fallback, unchanged).
+- Headless runs reuse the existing run-status machinery: a `launched` row, then `completed` / `failed` / `stopped` rows, so `wait_for_pbi_sync_completion` and the overall-refresh gating work unchanged.
+- When the refresh token is rejected (revocation, CA sign-in frequency), the sync records a failed run with reconnect guidance and inserts a critical dashboard alert (`Power BI sign-in expired...`); nothing pops or hangs. Reconnect via Scanner page.
+- `_should_defer_interactive_sync` and `retry_pending_pbi_sync` skip the desktop wait / RDP guard whenever a headless mode (service principal or saved account) is available.
+- Usage import logic moved from the router into `import_pbi_usage_data()` in `pbi_sync.py` (now with the same SQLite lock retry as the refresh import); the router endpoint delegates to it.
+- The usage activity-events fetch still requires the Power BI/Fabric admin role, same as `Get-PowerBIActivityEvent`.
 
 ## Files Changed
-- `app/scanner/control.py`: adds shared cancellation generation and stale DB run cleanup.
-- `app/scanner/pbi_sync.py`: stop action now clears scanner/PBI state, PBI launch can cancel older work, full refresh can wait for import completion, and cancelled imports return `stopped`.
-- `app/scanner/runner.py`: scan work accepts a cancellation generation, checks it during long loops, and records cancelled scans as `stopped`.
-- `app/scanner/prober.py`: probe work accepts a cancellation generation and stops cooperatively.
-- `app/routers/scanner.py`: scanner refresh now stops older work, waits for PBI import completion, then runs scan/probe without duplicate probing.
-- `app/main.py`: scheduled/manual refresh-now paths stop older work, remove queued manual refresh jobs, wait for PBI import completion, and avoid overlapping daily refresh instances.
-- `app/static/app.js`: Stop button wording and scanner/probe toasts handle stopped/PBI-not-completed responses.
-- `tools/pbi_refresh_sync.ps1`: displays API `stopped` responses cleanly.
-- `docs/agent_handoff.md`: updated current repo context.
+- `app/scanner/pbi_auth.py` (new): device-code flow, DPAPI token cache, silent refresh, auth status.
+- `app/scanner/pbi_fetch.py` (new): headless REST fetch for refresh metadata and usage activity events.
+- `app/scanner/pbi_sync.py`: auth mode selection, `_launch_cached_account_sync` background thread, reconnect alert, `import_pbi_usage_data`, retry/defer logic skips desktop checks in headless modes.
+- `app/routers/scanner.py`: `/api/scanner/pbi-auth/status|connect|disconnect`, status payload includes `auth` + real `auth_mode`, usage import delegates to pbi_sync.
+- `app/config.py`: `DG_PBI_PUBLIC_CLIENT_ID`, `DG_PBI_AUTH_TENANT`, `DG_PBI_TOKEN_CACHE`, `DG_PBI_USAGE_DAYS_BACK`.
+- `app/static/app.js`: Scanner page Power BI Connection UI (Connect/Disconnect, device-code box, reconnect badge), RDP-guard warnings only shown in interactive mode, mode-aware toasts.
+- `README.md`, `docs/agent_handoff.md`: documentation.
 
 ## Commands And Checks
-- Bundled Python `-m py_compile app/scanner/control.py app/scanner/pbi_sync.py app/scanner/runner.py app/scanner/prober.py app/routers/scanner.py app/main.py`: passed.
-- Node `--check app/static/app.js`: passed.
-- `git diff --check` on changed files: passed.
-- Privacy scan on changed files for credentials, local paths, host/IP examples, and internal identifiers: passed.
-- Stop/cancellation/wait behavior check with temp database: passed.
-- Temp database exclusive-lock PBI import check: passed.
+- `python3 -m py_compile` on all changed Python files: passed.
+- `node --check app/static/app.js`: passed.
+- Smoke test (mocked token endpoint + REST): cache round-trip, silent refresh with rotation, invalid_grant -> reconnect_required + persisted error, device flow to completion, disconnect, refresh payload shape parity with the PS1 script: 26/26 passed.
 
 ## Open Questions
-- On the Windows host, confirm a new refresh first marks old running scan rows as stopped, then PBI sync reaches completed before scan/probe starts.
+- Confirm on the Windows host that the tenant allows the device code flow for the Azure CLI client id; if blocked, set `DG_PBI_PUBLIC_CLIENT_ID` and retry.
+- If the org enforces a conditional-access sign-in frequency, the reconnect alert cadence will reveal it; reconnect is a one-click device-code redo.
 
 ## Next Step
-Commit, push, pull/update on the Windows host, restart the app service, click Stop Refresh Work once, then run a near-future scheduled refresh and confirm the PowerShell window proceeds past the report-entry count into API completion.
+Pull/update on the Windows host, restart the service, open Scanner, click Connect Power BI, complete the code sign-in from any device, then click Sync PBI once to verify a headless completed run. The next scheduled overall refresh should complete with the PC locked.

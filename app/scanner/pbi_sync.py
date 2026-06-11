@@ -1,10 +1,17 @@
 """Power BI refresh schedule sync.
 
-Two modes:
-1. trigger_pbi_sync() - called from the API button. Creates a Windows scheduled task
-   that runs the PS1 script in the user's interactive session (so login popup works).
-   The PS1 script POSTs data back to /api/scanner/pbi-import.
-2. import_pbi_data() - receives the JSON from the PS1 script and updates the DB.
+Auth modes, tried in order by trigger_pbi_sync():
+1. Service principal (DG_PBI_TENANT_ID/CLIENT_ID/CLIENT_SECRET): runs the PS1
+   script unattended in the background.
+2. Saved Microsoft account (Connect Power BI on the Scanner page): fetches the
+   data headlessly in-process via app.scanner.pbi_fetch with a silently
+   refreshed token. No window, no account picker, works with the PC locked.
+3. Interactive fallback: creates a Windows scheduled task that runs the PS1
+   script in the user's session so the login popup is visible. Only used when
+   neither of the above is configured.
+
+import_pbi_data() / import_pbi_usage_data() receive the fetched JSON (from
+the PS1 scripts or the headless fetch) and update the DB.
 """
 
 import json
@@ -13,6 +20,7 @@ import os
 import platform
 import sqlite3
 import subprocess
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +63,25 @@ def _now_iso() -> str:
 def service_principal_configured() -> bool:
     """Return True when unattended Power BI auth has enough config to run."""
     return bool(PBI_TENANT_ID and PBI_CLIENT_ID and PBI_CLIENT_SECRET)
+
+
+def cached_account_available() -> bool:
+    """Return True when a saved Microsoft account sign-in exists for headless sync."""
+    try:
+        from app.scanner import pbi_auth
+        return pbi_auth.cached_token_available()
+    except Exception:
+        logger.exception("Could not check Power BI token cache")
+        return False
+
+
+def pbi_auth_mode() -> str:
+    """Which auth mode trigger_pbi_sync() would use right now."""
+    if service_principal_configured():
+        return "service_principal"
+    if cached_account_available():
+        return "cached_account"
+    return "interactive"
 
 
 def _record_sync_run(
@@ -344,6 +371,65 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
         "status": "launched",
         "message": "Power BI sync launched in unattended service-principal mode.",
         "auth_mode": "service_principal",
+        "run_id": run_id,
+    }
+
+
+def _create_reconnect_alert(message: str) -> None:
+    """Surface an expired Power BI sign-in as a critical dashboard alert."""
+    try:
+        with get_db() as db:
+            existing = db.execute(
+                """SELECT id FROM alerts
+                   WHERE message LIKE 'Power BI sign-in%' AND resolution_status IS NULL"""
+            ).fetchone()
+            if not existing:
+                db.execute(
+                    "INSERT INTO alerts (severity, message, created_at) VALUES ('critical', ?, ?)",
+                    (message, _now_iso()),
+                )
+    except Exception:
+        logger.exception("Could not create Power BI reconnect alert")
+
+
+def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_generation: int | None) -> dict:
+    """Run the sync headlessly in a background thread with the saved account."""
+    generation = current_cancel_generation() if cancel_generation is None else cancel_generation
+    if sync_type == "refresh":
+        clear_pending_pbi_sync()
+    run_id = _record_sync_run(
+        sync_type,
+        "launched",
+        "Power BI sync running headless with the saved Microsoft account.",
+    )
+
+    def _worker():
+        try:
+            from app.scanner import pbi_fetch
+            if sync_type == "refresh":
+                pbi_fetch.run_refresh_sync(workspace, cancel_generation=generation)
+            else:
+                from app.config import PBI_USAGE_DAYS_BACK
+                result = pbi_fetch.run_usage_sync(PBI_USAGE_DAYS_BACK, cancel_generation=generation)
+                logger.info("Headless PBI usage sync result: %s", result.get("status"))
+        except ScannerWorkCancelled as exc:
+            _record_sync_run(sync_type, "stopped", str(exc))
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            if getattr(exc, "reconnect_required", False):
+                message = (
+                    f"Power BI sign-in expired or was revoked: {message} "
+                    "Reconnect from the Scanner page (Connect Power BI)."
+                )
+                _create_reconnect_alert(message)
+            logger.exception("Headless Power BI %s sync failed", sync_type)
+            _record_sync_run(sync_type, "failed", message)
+
+    threading.Thread(target=_worker, name=f"pbi-{sync_type}-headless-sync", daemon=True).start()
+    return {
+        "status": "launched",
+        "message": "Power BI sync running headless with the saved Microsoft account (no window needed).",
+        "auth_mode": "cached_account",
         "run_id": run_id,
     }
 
@@ -858,17 +944,25 @@ def trigger_pbi_sync(
         _record_sync_run("refresh", "failed", message)
         return {"status": "error", "message": message}
 
-    if not PS1_SCRIPT.exists():
-        message = f"PowerShell script not found: {PS1_SCRIPT}"
-        _record_sync_run("refresh", "failed", message)
-        return {"status": "error", "message": message}
-
     if service_principal_configured():
+        if not PS1_SCRIPT.exists():
+            message = f"PowerShell script not found: {PS1_SCRIPT}"
+            _record_sync_run("refresh", "failed", message)
+            return {"status": "error", "message": message}
         return _launch_powershell_background(
             PS1_SCRIPT,
             ["-WorkspaceName", ws_name, "-ApiBase", f"http://localhost:{port}", "-NoPause"],
             "refresh",
         )
+
+    if cached_account_available():
+        assert_not_cancelled(cancel_generation, "Power BI sync")
+        return _launch_cached_account_sync("refresh", ws_name, cancel_generation)
+
+    if not PS1_SCRIPT.exists():
+        message = f"PowerShell script not found: {PS1_SCRIPT}"
+        _record_sync_run("refresh", "failed", message)
+        return {"status": "error", "message": message}
 
     assert_not_cancelled(cancel_generation, "Power BI sync")
     guard_result = _run_rdp_console_guard()
@@ -933,7 +1027,8 @@ def trigger_pbi_sync(
 
 
 def _should_defer_interactive_sync(result: dict) -> bool:
-    if service_principal_configured():
+    if service_principal_configured() or cached_account_available():
+        # Headless modes never need to wait for an interactive desktop.
         return False
     if (result.get("status") or "").lower() != "error":
         return False
@@ -1033,11 +1128,13 @@ def retry_pending_pbi_sync() -> dict:
     if not pending:
         return {"status": "idle", "message": "No pending Power BI sync."}
 
-    guard_result = _run_rdp_console_guard()
-    if not guard_result.get("ready"):
-        message = guard_result.get("message") or "Power BI sync is waiting for an interactive desktop."
-        updated = _update_pending_retry(message, guard_result)
-        return {"status": "waiting", "message": message, "pending": updated, "guard": guard_result}
+    if not (service_principal_configured() or cached_account_available()):
+        # Only the interactive fallback needs a usable desktop session.
+        guard_result = _run_rdp_console_guard()
+        if not guard_result.get("ready"):
+            message = guard_result.get("message") or "Power BI sync is waiting for an interactive desktop."
+            updated = _update_pending_retry(message, guard_result)
+            return {"status": "waiting", "message": message, "pending": updated, "guard": guard_result}
 
     result = trigger_pbi_sync()
     status = (result.get("status") or "").lower()
@@ -1217,6 +1314,61 @@ def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> d
     return summary
 
 
+def import_pbi_usage_data(data: dict) -> dict:
+    """Import PBI usage data (from the PS1 script or the headless fetch)."""
+    return _run_with_sqlite_lock_retry(
+        "Power BI usage import",
+        lambda: _import_pbi_usage_data_once(data),
+    )
+
+
+def _import_pbi_usage_data_once(data: dict) -> dict:
+    entries = data.get("entries") or []
+    days_synced = data.get("days_synced") or []
+
+    matched = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db() as db:
+        # Build name -> id lookup
+        all_reports = db.execute("SELECT id, name FROM reports").fetchall()
+        name_map = {r["name"].strip().lower(): r["id"] for r in all_reports}
+
+        # Record synced days
+        for day in days_synced:
+            db.execute(
+                "INSERT OR IGNORE INTO pbi_usage_days (date, synced_at) VALUES (?, ?)",
+                (day, now),
+            )
+
+        # Insert view counts
+        for entry in entries:
+            report_name = entry.get("report_name", "").strip()
+            if not report_name:
+                continue
+            report_id = name_map.get(report_name.lower())
+            db.execute(
+                """INSERT INTO pbi_report_views (report_name, report_id, view_date, view_count, unique_users)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(report_name, view_date) DO UPDATE SET
+                       view_count = excluded.view_count,
+                       unique_users = excluded.unique_users,
+                       report_id = COALESCE(excluded.report_id, report_id)""",
+                (report_name, report_id, entry.get("date"), entry.get("view_count", 0), entry.get("unique_users", 0)),
+            )
+            if report_id:
+                matched += 1
+
+    result = {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
+    _record_sync_run(
+        "usage",
+        "completed",
+        f"Power BI usage sync completed: {len(days_synced)} day(s), {matched} matched.",
+        result,
+    )
+    return result
+
+
 WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
 
 
@@ -1394,17 +1546,25 @@ def trigger_pbi_usage_sync(
         _record_sync_run("usage", "skipped", message)
         return {"status": "skipped", "message": message}
 
-    if not PS1_USAGE_SCRIPT.exists():
-        message = f"PowerShell script not found: {PS1_USAGE_SCRIPT}"
-        _record_sync_run("usage", "failed", message)
-        return {"status": "error", "message": message}
-
     if service_principal_configured():
+        if not PS1_USAGE_SCRIPT.exists():
+            message = f"PowerShell script not found: {PS1_USAGE_SCRIPT}"
+            _record_sync_run("usage", "failed", message)
+            return {"status": "error", "message": message}
         return _launch_powershell_background(
             PS1_USAGE_SCRIPT,
             ["-ApiBase", f"http://localhost:{port}", "-NoPause"],
             "usage",
         )
+
+    if cached_account_available():
+        assert_not_cancelled(cancel_generation, "Power BI usage sync")
+        return _launch_cached_account_sync("usage", None, cancel_generation)
+
+    if not PS1_USAGE_SCRIPT.exists():
+        message = f"PowerShell script not found: {PS1_USAGE_SCRIPT}"
+        _record_sync_run("usage", "failed", message)
+        return {"status": "error", "message": message}
 
     guard_result = _run_rdp_console_guard()
     logger.info("RDP console guard before usage sync: %s", guard_result.get("status"))
