@@ -20,6 +20,7 @@ Make the scheduled Power BI sync complete reliably without an interactive deskto
 - Usage import logic moved from the router into `import_pbi_usage_data()` in `pbi_sync.py` (now with the same SQLite lock retry as the refresh import); the router endpoint delegates to it.
 - The usage activity-events fetch still requires the Power BI/Fabric admin role, same as `Get-PowerBIActivityEvent`.
 - Connect diagnostics: transport failures reaching login.microsoftonline.com are caught and surfaced persistently in the Scanner card (and in `device_flow.status = failed`), the connect endpoint never 500s, the UI special-cases HTTP 404 (service running old code) and aborts after 75s. `truststore` is injected so corporate TLS interception (trusted by PowerShell via SChannel but not by certifi) does not break outbound HTTPS.
+- Proxy support (the host uses a PAC "setup script"): `resolve_proxy()` in pbi_auth picks DG_PBI_PROXY, then HTTPS_PROXY/HTTP_PROXY, then asks Windows to evaluate the system proxy for the target URL via PowerShell `GetSystemWebProxy().GetProxy()` (this evaluates the PAC under the service user), cached per host. All httpx clients (token endpoints and api.powerbi.com) use it. Failure messages state which proxy was used. If the proxy demands NTLM/Negotiate auth, httpx will surface 407 - that would need a local auth proxy or firewall exception; not implemented.
 
 ## Files Changed
 - `app/scanner/pbi_auth.py` (new): device-code flow, DPAPI token cache, silent refresh, auth status.

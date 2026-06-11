@@ -28,10 +28,12 @@ import json
 import logging
 import os
 import platform
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -44,9 +46,60 @@ try:
 except Exception:
     pass
 
-from app.config import PBI_AUTH_TENANT, PBI_PUBLIC_CLIENT_ID, PBI_TOKEN_CACHE_PATH
+from app.config import PBI_AUTH_TENANT, PBI_PROXY, PBI_PUBLIC_CLIENT_ID, PBI_TOKEN_CACHE_PATH
 
 logger = logging.getLogger(__name__)
+
+_PROXY_CACHE: dict = {}
+
+
+def _normalize_proxy(value: str) -> str:
+    value = value.strip().rstrip("/")
+    if value and "://" not in value:
+        value = "http://" + value
+    return value
+
+
+def resolve_proxy(target_url: str) -> str | None:
+    """Find the outbound proxy for a URL.
+
+    Order: DG_PBI_PROXY, standard proxy env vars, then the Windows system
+    proxy settings (which evaluate a configured PAC setup script). Returns
+    None for a direct connection. Cached per host for the process lifetime.
+    """
+    if PBI_PROXY:
+        return _normalize_proxy(PBI_PROXY)
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(name)
+        if value:
+            return _normalize_proxy(value)
+    if platform.system() != "Windows":
+        return None
+    host = urlsplit(target_url).netloc
+    if host in _PROXY_CACHE:
+        return _PROXY_CACHE[host]
+    proxy = None
+    try:
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            f"$u=[Uri]'{target_url}';"
+            "$p=[System.Net.WebRequest]::GetSystemWebProxy().GetProxy($u);"
+            "if ($p -and $p.AbsoluteUri -ne $u.AbsoluteUri) { Write-Output $p.AbsoluteUri }"
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if lines:
+            proxy = _normalize_proxy(lines[-1])
+    except Exception:
+        logger.exception("Could not resolve the Windows system proxy for %s", target_url)
+    _PROXY_CACHE[host] = proxy
+    logger.info("Outbound proxy for %s: %s", host, proxy or "none (direct)")
+    return proxy
 
 LOGIN_BASE = "https://login.microsoftonline.com"
 PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default offline_access openid profile"
@@ -204,7 +257,7 @@ def _token_endpoint(tenant: str) -> str:
 
 
 def _post_form(url: str, data: dict) -> tuple[dict, int]:
-    with httpx.Client(timeout=TOKEN_TIMEOUT_SECONDS) as client:
+    with httpx.Client(timeout=TOKEN_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
         response = client.post(url, data=data)
     try:
         body = response.json()
@@ -306,13 +359,18 @@ def start_device_flow() -> dict:
         )
     except Exception as exc:
         logger.exception("Could not reach the Microsoft sign-in service")
+        try:
+            proxy_used = resolve_proxy(LOGIN_BASE) or "none (direct connection)"
+        except Exception:
+            proxy_used = "unknown"
         with _LOCK:
             _DEVICE_FLOW = {
                 "status": "failed",
                 "message": (
                     f"The server could not reach login.microsoftonline.com: {exc}. "
-                    "If the network requires an outbound proxy, set HTTPS_PROXY in the "
-                    "app service environment and restart it."
+                    f"Proxy used: {proxy_used}. If that proxy is wrong, set "
+                    "DG_PBI_PROXY=http://proxyhost:port in the service environment "
+                    "and restart it (a .pac script URL is not a valid proxy value)."
                 ),
                 "updated_at": _now_iso(),
             }

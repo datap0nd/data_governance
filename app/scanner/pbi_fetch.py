@@ -15,7 +15,7 @@ import httpx
 
 from app.database import get_db
 from app.scanner.control import assert_not_cancelled
-from app.scanner.pbi_auth import get_access_token
+from app.scanner.pbi_auth import get_access_token, resolve_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = N
     auth = get_access_token()
     token = auth["access_token"]
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
         workspace = _find_workspace(client, token, workspace_name)
         if not workspace:
             raise PbiFetchError(f"Workspace '{workspace_name}' not found for {auth.get('account') or 'the signed-in account'}.")
@@ -180,7 +180,7 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
     entries: list[dict] = []
     days_synced: list[str] = []
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
         for day in days_to_fetch:
             assert_not_cancelled(cancel_generation, "Power BI usage sync")
             url = f"{PBI_API_BASE}/admin/activityevents"

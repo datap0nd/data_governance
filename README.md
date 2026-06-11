@@ -57,7 +57,7 @@ The sync picks the first available auth mode, in this order:
 - The sign-in is stored in `pbi_token.json` next to the app, encrypted with Windows DPAPI for the account that runs the service. Treat the file as a credential; it is gitignored and `Disconnect account` on the Scanner page deletes it.
 - The refresh token rotates on every sync, so daily syncs keep the sign-in alive indefinitely. If the org forces a re-auth (password change, revocation, or a conditional-access sign-in frequency policy), the sync fails with a clear "reconnect" message, raises a critical alert on the dashboard, and the Scanner page shows a **Reconnect needed** badge. Click Connect Power BI again to fix it; nothing hangs.
 - The default sign-in client is Microsoft's first-party Azure CLI public app, pre-consented in nearly every tenant. If your tenant blocks it or blocks the device code flow, set `DG_PBI_PUBLIC_CLIENT_ID` (the Azure PowerShell client `1950a258-227b-4e31-a9cf-717495945fc2` is a common alternative).
-- If the server needs an outbound proxy, set `HTTPS_PROXY` for the service so the app can reach `login.microsoftonline.com` and `api.powerbi.com`.
+- Proxy handling: the app resolves the outbound proxy automatically, in this order: `DG_PBI_PROXY`, standard `HTTPS_PROXY`/`HTTP_PROXY` env vars, then the Windows system proxy settings (including a configured PAC "setup script"), then direct. Set `DG_PBI_PROXY=http://proxyhost:port` only if auto-detection picks the wrong route; a `.pac` script URL itself is not a valid proxy value. Connect failures show which proxy was used.
 - Usage sync (activity events) still requires the signed-in account to hold the Power BI/Fabric administrator role, same as before.
 
 #### Interactive fallback (legacy)

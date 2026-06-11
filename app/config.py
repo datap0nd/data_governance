@@ -87,6 +87,13 @@ PBI_AUTH_TENANT = os.environ.get("DG_PBI_AUTH_TENANT", PBI_TENANT_ID or "organiz
 PBI_TOKEN_CACHE_PATH = os.environ.get("DG_PBI_TOKEN_CACHE", str(BASE_DIR / "pbi_token.json"))
 PBI_USAGE_DAYS_BACK = int(os.environ.get("DG_PBI_USAGE_DAYS_BACK", "30"))
 
+# Outbound proxy override for login.microsoftonline.com / api.powerbi.com,
+# e.g. DG_PBI_PROXY=http://proxyhost:8080. When unset, the app uses
+# HTTPS_PROXY/HTTP_PROXY if present, then asks Windows to evaluate the
+# system proxy settings (including a configured PAC setup script), then
+# goes direct. A PAC URL itself is NOT a valid value here.
+PBI_PROXY = os.environ.get("DG_PBI_PROXY", "")
+
 
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
