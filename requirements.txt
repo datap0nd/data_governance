@@ -6,3 +6,8 @@ httpx
 truststore
 pbixray
 psycopg2-binary
+# Import Data section (CSV/Excel -> Postgres)
+pandas==2.3.3
+sqlalchemy==2.0.50
+openpyxl==3.1.5
+python-multipart

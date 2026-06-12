@@ -134,3 +134,16 @@ PGHOST = os.environ.get("PGHOST", "")
 PGUSER = os.environ.get("PGUSER", "")
 PGPASSWORD = os.environ.get("PGPASSWORD", "")
 PGDATABASE = os.environ.get("PGDATABASE", "postgres")
+
+# PostgreSQL credentials for the Import Data section, which WRITES
+# (CREATE TABLE / TRUNCATE / INSERT). Kept separate from the read-only
+# probing credentials above on purpose: user and password have no fallback,
+# so imports stay disabled until DG_UPLOAD_PGUSER/DG_UPLOAD_PGPASSWORD are
+# set to an account that is allowed to write. Host/port/database fall back
+# to the probing connection's values.
+UPLOAD_PGHOST = os.environ.get("DG_UPLOAD_PGHOST", "") or PGHOST
+UPLOAD_PGPORT = os.environ.get("DG_UPLOAD_PGPORT", "") or os.environ.get("PGPORT", "") or "5432"
+UPLOAD_PGDATABASE = os.environ.get("DG_UPLOAD_PGDATABASE", "") or PGDATABASE
+UPLOAD_PGUSER = os.environ.get("DG_UPLOAD_PGUSER", "")
+UPLOAD_PGPASSWORD = os.environ.get("DG_UPLOAD_PGPASSWORD", "")
+UPLOAD_SCHEMA = os.environ.get("DG_UPLOAD_SCHEMA", "bi_reporting")

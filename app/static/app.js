@@ -8996,6 +8996,205 @@ function bindRefreshSchedulePage() {
 }
 
 
+// ── Import Data ──
+
+async function renderDataImport() {
+    let status = { configured: false, missing: [], dependencies_installed: true, host: "", database: "", schema: "" };
+    try {
+        status = await api("/api/data-import/status");
+    } catch (_) { /* endpoint unreachable; render unconfigured state */ }
+
+    const target = status.host && status.database
+        ? `${esc(status.database)} on ${esc(status.host)} &middot; schema <b>${esc(status.schema)}</b>`
+        : "connection not configured";
+
+    let warning = "";
+    if (!status.dependencies_installed) {
+        warning = `<div style="border:1px solid var(--yellow);border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.8rem;color:var(--text-secondary)">
+            Python dependencies for imports (pandas, sqlalchemy) are not installed on this machine. Re-run setup.ps1, then restart the service.</div>`;
+    } else if (status.missing.length) {
+        warning = `<div style="border:1px solid var(--yellow);border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.8rem;color:var(--text-secondary)">
+            Imports are disabled until these environment variables are set: <b>${status.missing.map(esc).join(", ")}</b>. Restart the service after setting them.</div>`;
+    }
+
+    return `
+    <div class="page-header">
+        <h1>Import Data</h1>
+        <span class="subtitle">Load a CSV or Excel file into PostgreSQL (${target})</span>
+    </div>
+    ${warning}
+    <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem">
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">1 &middot; File</legend>
+        <input type="file" id="di-file" accept=".csv,.xlsx,.xls" style="display:none">
+        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
+            <button class="btn-export" id="di-pick" style="float:none" ${status.configured ? "" : "disabled"}>Choose file...</button>
+            <span id="di-file-info" style="font-size:0.8rem;color:var(--text-dim)">CSV, XLSX or XLS. Column names are normalized to lowercase_with_underscores.</span>
+        </div>
+        <div id="di-preview" style="margin-top:0.75rem"></div>
+    </fieldset>
+    <fieldset id="di-target" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">2 &middot; Target table</legend>
+        <div style="display:flex;gap:1.25rem;flex-wrap:wrap;margin-bottom:0.6rem">
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-targettype" value="existing" checked> Existing table</label>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-targettype" value="new"> New table</label>
+        </div>
+        <div id="di-existing">
+            <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+                <select id="di-table" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px"></select>
+                <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="append" checked> Append rows</label>
+                <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="replace"> Replace all data <span style="color:var(--red)">(truncates first)</span></label>
+            </div>
+        </div>
+        <div id="di-new" style="display:none">
+            <input type="text" id="di-newname" placeholder="new_table_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
+            <span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.5rem">lowercase letters, numbers and underscores; column types are inferred</span>
+        </div>
+    </fieldset>
+    <div id="di-actions" style="display:none;margin-bottom:0.75rem;align-items:center;gap:0.75rem">
+        <button class="btn-export" id="di-load" style="float:none">Load</button>
+        <span id="di-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
+    </div>
+    `;
+}
+
+function bindDataImportPage() {
+    const pick = document.getElementById("di-pick");
+    if (!pick) return;
+    const fileInput = document.getElementById("di-file");
+    const fileInfo = document.getElementById("di-file-info");
+    const previewBox = document.getElementById("di-preview");
+    const targetBox = document.getElementById("di-target");
+    const actionsBox = document.getElementById("di-actions");
+    const tableSelect = document.getElementById("di-table");
+    const newName = document.getElementById("di-newname");
+    const loadBtn = document.getElementById("di-load");
+    const result = document.getElementById("di-result");
+
+    let staged = null;   // { token, filename, rows, columns, sample }
+    let tablesLoaded = false;
+
+    async function diFetch(path, opts = {}) {
+        const res = await fetch(path, { ...opts, headers: apiHeaders(opts.headers || {}) });
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        if (!res.ok) throw new Error(data.detail || `API error: ${res.status}`);
+        return data;
+    }
+
+    const targetType = () => document.querySelector('input[name="di-targettype"]:checked').value;
+    const mode = () => document.querySelector('input[name="di-mode"]:checked').value;
+    const tableName = () => targetType() === "new" ? newName.value.trim().toLowerCase() : tableSelect.value;
+
+    function refreshLoadButton() {
+        if (!staged || !tableName()) {
+            loadBtn.disabled = true;
+            loadBtn.textContent = "Load";
+            return;
+        }
+        loadBtn.disabled = false;
+        const t = tableName();
+        if (targetType() === "new") loadBtn.textContent = `Create ${t} (${staged.rows} rows)`;
+        else if (mode() === "replace") loadBtn.textContent = `Replace ${t} (${staged.rows} rows)`;
+        else loadBtn.textContent = `Append ${staged.rows} rows to ${t}`;
+    }
+
+    async function loadTables() {
+        if (tablesLoaded) return;
+        try {
+            const data = await diFetch("/api/data-import/tables");
+            tableSelect.innerHTML = data.tables.length
+                ? data.tables.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")
+                : '<option value="">(no tables in schema)</option>';
+            tablesLoaded = true;
+        } catch (err) {
+            tableSelect.innerHTML = '<option value="">(could not list tables)</option>';
+            toast("Could not list tables: " + err.message);
+        }
+        refreshLoadButton();
+    }
+
+    pick.addEventListener("click", () => fileInput.click());
+
+    fileInput.addEventListener("change", async () => {
+        const f = fileInput.files[0];
+        if (!f) return;
+        pick.disabled = true;
+        pick.textContent = "Parsing...";
+        result.textContent = "";
+        try {
+            const fd = new FormData();
+            fd.append("file", f);
+            const p = await diFetch("/api/data-import/preview", { method: "POST", body: fd });
+            staged = p;
+            fileInfo.textContent = `${p.filename} - ${p.rows} rows, ${p.columns.length} columns`;
+            const head = p.columns.map(c => `<th style="text-align:left;padding:0.25rem 0.6rem;border-bottom:1px solid var(--border);font-weight:600">${esc(c)}</th>`).join("");
+            const body = p.sample.map(r => `<tr>${r.map(v => `<td style="padding:0.25rem 0.6rem;border-bottom:1px solid var(--border);color:var(--text-secondary)">${esc(v)}</td>`).join("")}</tr>`).join("");
+            previewBox.innerHTML = `
+                <div style="overflow-x:auto;border:1px solid var(--border);border-radius:5px">
+                    <table style="border-collapse:collapse;font-size:0.75rem;font-family:monospace;min-width:100%">
+                        <thead><tr>${head}</tr></thead><tbody>${body}</tbody>
+                    </table>
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem">First ${p.sample.length} rows shown with normalized column names.</div>`;
+            targetBox.style.display = "";
+            actionsBox.style.display = "flex";
+            await loadTables();
+        } catch (err) {
+            staged = null;
+            previewBox.innerHTML = "";
+            fileInfo.textContent = "Parse failed: " + err.message;
+            toast("Parse failed: " + err.message);
+        } finally {
+            pick.disabled = false;
+            pick.textContent = "Choose file...";
+            fileInput.value = "";
+            refreshLoadButton();
+        }
+    });
+
+    document.querySelectorAll('input[name="di-targettype"]').forEach(r => {
+        r.addEventListener("change", () => {
+            document.getElementById("di-existing").style.display = targetType() === "existing" ? "" : "none";
+            document.getElementById("di-new").style.display = targetType() === "new" ? "" : "none";
+            refreshLoadButton();
+        });
+    });
+    document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", refreshLoadButton));
+    tableSelect.addEventListener("change", refreshLoadButton);
+    newName.addEventListener("input", refreshLoadButton);
+
+    loadBtn.addEventListener("click", async () => {
+        if (!staged) return;
+        const t = tableName();
+        const m = targetType() === "new" ? "create" : mode();
+        if (m === "replace" && !confirm(`Replace ALL data in ${t} with ${staged.rows} rows from ${staged.filename}?`)) return;
+        loadBtn.disabled = true;
+        loadBtn.textContent = "Loading...";
+        try {
+            const r = await diFetch("/api/data-import/load", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: staged.token, table: t, mode: m }),
+            });
+            let msg = `Done: ${r.rows} rows written to ${r.schema}.${r.table} (${r.mode}).`;
+            if (r.null_columns && r.null_columns.length) msg += ` Table columns left NULL: ${r.null_columns.join(", ")}.`;
+            result.textContent = msg;
+            toast(`${r.rows} rows loaded into ${r.schema}.${r.table}`);
+            tablesLoaded = false;
+            staged = null;
+            fileInfo.textContent = "Pick a new file to run another import.";
+            refreshLoadButton();
+        } catch (err) {
+            result.textContent = err.message;
+            toast("Load failed: " + err.message);
+            refreshLoadButton();
+        }
+    });
+
+    refreshLoadButton();
+}
+
+
 // ── Router ──
 
 const pages = {
@@ -9014,6 +9213,7 @@ const pages = {
     bestpractices: renderBestPractices,
     email: renderEmail,
     export: renderExport,
+    dataimport: renderDataImport,
     tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
@@ -9150,6 +9350,7 @@ async function navigate(page) {
         if (page === "bestpractices") bindBestPracticesPage();
         if (page === "email") bindEmailPage();
         if (page === "export") bindExportPage();
+        if (page === "dataimport") bindDataImportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
