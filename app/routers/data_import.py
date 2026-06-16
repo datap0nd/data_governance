@@ -50,6 +50,8 @@ NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 # the quoted identifier (quotes, whitespace, dots, semicolons, ...).
 SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 SCRIPT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+CRON_FIELD_RE = re.compile(r"^[A-Za-z0-9_*/,\-?#LW]+$")
+TIMEZONE_RE = re.compile(r"^[A-Za-z0-9_./+\-]+$")
 STAGING_DIR = Path(tempfile.gettempdir()) / "dg_data_import"
 STAGING_MAX_AGE_SECONDS = 2 * 3600
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls")
@@ -72,11 +74,18 @@ class RefreshMaterializedViewsRequest(BaseModel):
     materialized_views: list[MaterializedViewRef] = Field(default_factory=list)
 
 
+class PrefectScheduleRequest(BaseModel):
+    type: str = "manual"  # manual | daily | weekly | cron
+    cron: str | None = None
+    timezone: str | None = "UTC"
+
+
 class GenerateScriptRequest(BaseModel):
     token: str
     table: str
     mode: str  # append | replace
     materialized_views: list[MaterializedViewRef] = Field(default_factory=list)
+    schedule: PrefectScheduleRequest = Field(default_factory=PrefectScheduleRequest)
     script_name: str | None = None
 
 
@@ -186,6 +195,52 @@ def _clean_mode(mode: str) -> str:
     if mode not in ("append", "replace", "create"):
         raise HTTPException(400, f"Invalid mode: {mode}")
     return mode
+
+
+def _clean_timezone(timezone: str | None) -> str:
+    timezone = (timezone or "UTC").strip()
+    if not timezone:
+        timezone = "UTC"
+    if len(timezone) > 80 or not TIMEZONE_RE.match(timezone):
+        raise HTTPException(400, "Invalid Prefect schedule timezone. Use an IANA timezone like UTC or America/New_York.")
+    return timezone
+
+
+def _clean_cron(cron: str | None) -> str:
+    cron = re.sub(r"\s+", " ", (cron or "").strip())
+    fields = cron.split(" ")
+    if len(fields) != 5 or any(not CRON_FIELD_RE.match(field) for field in fields):
+        raise HTTPException(400, "Prefect cron schedule must use five cron fields, for example: 0 8 * * 1")
+    return cron
+
+
+def _clean_prefect_schedule(schedule: PrefectScheduleRequest | None) -> dict:
+    schedule = schedule or PrefectScheduleRequest()
+    schedule_type = (schedule.type or "manual").strip().lower()
+    if schedule_type not in ("manual", "daily", "weekly", "cron"):
+        raise HTTPException(400, f"Invalid Prefect schedule type: {schedule_type}")
+
+    timezone = _clean_timezone(schedule.timezone)
+    if schedule_type == "manual":
+        return {
+            "type": "manual",
+            "cron": None,
+            "timezone": timezone,
+            "label": "Manual / run once",
+        }
+
+    cron = _clean_cron(schedule.cron)
+    label_prefix = {
+        "daily": "Daily",
+        "weekly": "Weekly",
+        "cron": "Custom cron",
+    }[schedule_type]
+    return {
+        "type": schedule_type,
+        "cron": cron,
+        "timezone": timezone,
+        "label": f"{label_prefix}: {cron} ({timezone})",
+    }
 
 
 def _read_dataframe(path: Path, original_name: str):
@@ -421,6 +476,7 @@ def _render_import_script(
     table: str,
     mode: str,
     materialized_views: list[dict],
+    prefect_schedule: dict,
     flow_name: str,
 ) -> str:
     mv_sql = [
@@ -445,8 +501,10 @@ def _render_import_script(
 
         try:
             from prefect import flow, task
+            from prefect.schedules import Cron
             PREFECT_AVAILABLE = True
         except ImportError:
+            Cron = None
             PREFECT_AVAILABLE = False
 
             def _identity_decorator(*decorator_args, **decorator_kwargs):
@@ -469,6 +527,7 @@ def _render_import_script(
         DEFAULT_FLOW_NAME = __DEFAULT_FLOW_NAME__
         DEFAULT_DEPLOYMENT_NAME = __DEFAULT_DEPLOYMENT_NAME__
         DEFAULT_MATERIALIZED_VIEWS = __DEFAULT_MATERIALIZED_VIEWS__
+        DEFAULT_PREFECT_SCHEDULE = __DEFAULT_PREFECT_SCHEDULE__
 
         # These static SQL strings make lineage scanners aware of table writes.
         DEFAULT_TARGET_TABLE_SQL = __DEFAULT_TARGET_TABLE_SQL__
@@ -649,6 +708,14 @@ def _render_import_script(
                 engine.dispose()
 
 
+        def build_prefect_cron_schedule(cron: str | None, timezone: str | None):
+            if not cron:
+                return None
+            if Cron is None:
+                raise RuntimeError("Prefect is required to serve a scheduled deployment.")
+            return Cron(cron, timezone=timezone or None, slug="import-data-schedule")
+
+
         @task(retries=1, retry_delay_seconds=30)
         def import_file_task(source_file: str, target_schema: str, target_table: str, mode: str) -> dict:
             df = read_dataframe(source_file)
@@ -699,8 +766,10 @@ def _render_import_script(
             )
             parser.add_argument("--serve", action="store_true", help="Create and serve a Prefect deployment.")
             parser.add_argument("--deployment-name", default=DEFAULT_DEPLOYMENT_NAME)
-            parser.add_argument("--cron", help="Cron schedule for --serve, for example '0 8 * * *'.")
-            parser.add_argument("--interval", type=int, help="Interval schedule in seconds for --serve.")
+            parser.add_argument("--cron", help="Override the embedded Prefect cron schedule for --serve, for example '0 8 * * *'.")
+            parser.add_argument("--timezone", help="Override the embedded Prefect schedule timezone for --serve.")
+            parser.add_argument("--interval", type=int, help="Override the embedded schedule with an interval in seconds for --serve.")
+            parser.add_argument("--no-schedule", action="store_true", help="Serve a manual deployment without an automatic schedule.")
             args = parser.parse_args()
 
             if args.cron and args.interval:
@@ -728,10 +797,16 @@ def _render_import_script(
                     "parameters": parameters,
                     "pause_on_shutdown": False,
                 }
-                if args.cron:
-                    serve_kwargs["cron"] = args.cron
-                if args.interval:
+                if args.no_schedule:
+                    pass
+                elif args.interval:
                     serve_kwargs["interval"] = args.interval
+                else:
+                    schedule_cron = args.cron if args.cron is not None else DEFAULT_PREFECT_SCHEDULE.get("cron")
+                    schedule_timezone = args.timezone if args.timezone is not None else DEFAULT_PREFECT_SCHEDULE.get("timezone")
+                    schedule = build_prefect_cron_schedule(schedule_cron, schedule_timezone)
+                    if schedule is not None:
+                        serve_kwargs["schedules"] = [schedule]
                 import_data_flow.serve(**serve_kwargs)
                 return
 
@@ -756,6 +831,7 @@ def _render_import_script(
             [{"schema": v["schema"], "name": v["name"]} for v in materialized_views],
             indent=4,
         ),
+        "__DEFAULT_PREFECT_SCHEDULE__": json.dumps(prefect_schedule, indent=4),
         "__DEFAULT_MATERIALIZED_VIEW_SQL__": json.dumps(mv_sql, indent=4),
     }
     for needle, value in replacements.items():
@@ -768,6 +844,7 @@ def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
     if mode == "create":
         raise HTTPException(400, "Create the table once first, then generate an append or replace script for recurring imports.")
     table = _clean_table_name(req.table)
+    prefect_schedule = _clean_prefect_schedule(req.schedule)
     engine = _get_engine()
     try:
         materialized_views = _validate_materialized_views(engine, req.materialized_views)
@@ -795,7 +872,7 @@ def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
     script_path = _unique_path(script_dir, script_stem, ".py")
     flow_name = script_stem.replace("_", "-")
     script_path.write_text(
-        _render_import_script(data_path, table, mode, materialized_views, flow_name),
+        _render_import_script(data_path, table, mode, materialized_views, prefect_schedule, flow_name),
         encoding="utf-8",
     )
 
@@ -811,6 +888,7 @@ def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
         "rows": int(len(df)),
         "null_columns": null_columns,
         "materialized_views": selected_view_names,
+        "schedule": prefect_schedule,
         "run_command": f'python "{script_path}"',
         "serve_command": f'python "{script_path}" --serve',
     }

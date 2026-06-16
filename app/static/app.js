@@ -9082,6 +9082,36 @@ async function renderDataImport() {
             <button class="btn-outline" id="di-save-script-dir" type="button" style="font-size:0.78rem">Save folder</button>
             <span id="di-script-dir-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
         </div>
+        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem">
+            <span style="font-size:0.78rem;font-weight:600">Prefect schedule</span>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="manual" checked> One-time/manual</label>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="daily"> Daily</label>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="weekly"> Weekly</label>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="cron"> Custom cron</label>
+        </div>
+        <div id="di-prefect-schedule-fields" style="display:none;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.45rem">
+            <label id="di-schedule-time-wrap" style="font-size:0.78rem">Time
+                <input type="time" id="di-schedule-time" value="08:00" step="60" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-left:0.35rem">
+            </label>
+            <label id="di-schedule-day-wrap" style="font-size:0.78rem;display:none">Day
+                <select id="di-schedule-day" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-left:0.35rem">
+                    <option value="1">Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                    <option value="6">Saturday</option>
+                    <option value="0">Sunday</option>
+                </select>
+            </label>
+            <label id="di-schedule-cron-wrap" style="font-size:0.78rem;display:none">Cron
+                <input type="text" id="di-schedule-cron" value="0 8 * * 1" placeholder="0 8 * * 1" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:190px;margin-left:0.35rem">
+            </label>
+            <label id="di-schedule-timezone-wrap" style="font-size:0.78rem">Timezone
+                <input type="text" id="di-schedule-timezone" value="UTC" placeholder="UTC" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:180px;margin-left:0.35rem">
+            </label>
+        </div>
+        <div id="di-schedule-summary" style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.65rem">Manual / run once</div>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
             <input type="text" id="di-script-name" placeholder="optional_script_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
             <button class="btn-export" id="di-create-script" style="float:none">Create append/replace script</button>
@@ -9111,6 +9141,16 @@ function bindDataImportPage() {
     const scriptDir = document.getElementById("di-script-dir");
     const saveScriptDirBtn = document.getElementById("di-save-script-dir");
     const scriptDirStatus = document.getElementById("di-script-dir-status");
+    const scheduleFields = document.getElementById("di-prefect-schedule-fields");
+    const scheduleTimeWrap = document.getElementById("di-schedule-time-wrap");
+    const scheduleDayWrap = document.getElementById("di-schedule-day-wrap");
+    const scheduleCronWrap = document.getElementById("di-schedule-cron-wrap");
+    const scheduleTimezoneWrap = document.getElementById("di-schedule-timezone-wrap");
+    const scheduleTime = document.getElementById("di-schedule-time");
+    const scheduleDay = document.getElementById("di-schedule-day");
+    const scheduleCron = document.getElementById("di-schedule-cron");
+    const scheduleTimezone = document.getElementById("di-schedule-timezone");
+    const scheduleSummary = document.getElementById("di-schedule-summary");
     const scriptName = document.getElementById("di-script-name");
     const createScriptBtn = document.getElementById("di-create-script");
     const scriptResult = document.getElementById("di-script-result");
@@ -9141,6 +9181,13 @@ function bindDataImportPage() {
     const selectedMaterializedViews = () => materializedViews
         .filter(v => selectedMvKeys.has(mvKey(v)))
         .map(v => ({ schema: v.schema, name: v.name }));
+    const selectedScheduleType = () => document.querySelector('input[name="di-schedule-type"]:checked').value;
+
+    try {
+        scheduleTimezone.value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch (_) {
+        scheduleTimezone.value = "UTC";
+    }
 
     function invalidateScript() {
         if (scriptResult) scriptResult.innerHTML = "";
@@ -9155,6 +9202,74 @@ function bindDataImportPage() {
         const ready = canConfigureScript();
         scheduleBox.style.display = ready ? "" : "none";
         scriptBox.style.display = ready ? "" : "none";
+    }
+
+    function scheduleTimeParts() {
+        const raw = scheduleTime.value || "08:00";
+        const parts = raw.split(":");
+        const hour = Number(parts[0]);
+        const minute = Number(parts[1]);
+        if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+            throw new Error("Choose a valid Prefect schedule time");
+        }
+        return {
+            hour,
+            minute,
+            text: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+        };
+    }
+
+    function cleanScheduleTimezone() {
+        return (scheduleTimezone.value || "UTC").trim() || "UTC";
+    }
+
+    function cleanCron(value) {
+        const cron = (value || "").trim().replace(/\s+/g, " ");
+        if (cron.split(" ").filter(Boolean).length !== 5) {
+            throw new Error("Cron schedule must have five fields");
+        }
+        return cron;
+    }
+
+    function buildPrefectSchedule() {
+        const type = selectedScheduleType();
+        const timezone = cleanScheduleTimezone();
+        if (type === "manual") {
+            return { type: "manual", cron: null, timezone };
+        }
+        if (type === "cron") {
+            return { type: "cron", cron: cleanCron(scheduleCron.value), timezone };
+        }
+
+        const time = scheduleTimeParts();
+        if (type === "daily") {
+            return { type: "daily", cron: `${time.minute} ${time.hour} * * *`, timezone };
+        }
+        if (type === "weekly") {
+            return { type: "weekly", cron: `${time.minute} ${time.hour} * * ${scheduleDay.value}`, timezone };
+        }
+        throw new Error("Choose a Prefect schedule type");
+    }
+
+    function refreshPrefectScheduleControls() {
+        const type = selectedScheduleType();
+        const usesCron = type === "cron";
+        const usesTime = type === "daily" || type === "weekly";
+        scheduleFields.style.display = type === "manual" ? "none" : "flex";
+        scheduleTimeWrap.style.display = usesTime ? "" : "none";
+        scheduleDayWrap.style.display = type === "weekly" ? "" : "none";
+        scheduleCronWrap.style.display = usesCron ? "" : "none";
+        scheduleTimezoneWrap.style.display = type === "manual" ? "none" : "";
+        try {
+            const schedule = buildPrefectSchedule();
+            if (schedule.type === "manual") {
+                scheduleSummary.textContent = "Manual / run once";
+            } else {
+                scheduleSummary.textContent = `${schedule.type === "cron" ? "Custom cron" : schedule.type}: ${schedule.cron} (${schedule.timezone})`;
+            }
+        } catch (err) {
+            scheduleSummary.textContent = err.message;
+        }
     }
 
     function refreshMvToggle() {
@@ -9351,6 +9466,22 @@ function bindDataImportPage() {
     });
     scriptDir.addEventListener("input", invalidateScript);
     saveScriptDirBtn.addEventListener("click", () => saveScriptDir().catch(() => {}));
+    document.querySelectorAll('input[name="di-schedule-type"]').forEach(r => {
+        r.addEventListener("change", () => {
+            refreshPrefectScheduleControls();
+            invalidateScript();
+        });
+    });
+    [scheduleTime, scheduleDay, scheduleCron, scheduleTimezone].forEach(el => {
+        el.addEventListener("input", () => {
+            refreshPrefectScheduleControls();
+            invalidateScript();
+        });
+        el.addEventListener("change", () => {
+            refreshPrefectScheduleControls();
+            invalidateScript();
+        });
+    });
     scriptName.addEventListener("input", invalidateScript);
 
     createTableBtn.addEventListener("click", async () => {
@@ -9430,6 +9561,13 @@ function bindDataImportPage() {
             return;
         }
         const m = mode();
+        let prefectSchedule;
+        try {
+            prefectSchedule = buildPrefectSchedule();
+        } catch (err) {
+            toast(err.message);
+            return;
+        }
         createScriptBtn.disabled = true;
         createScriptBtn.textContent = "Creating...";
         scriptResult.innerHTML = "";
@@ -9440,6 +9578,7 @@ function bindDataImportPage() {
                 table: t,
                 mode: m,
                 materialized_views: selectedMaterializedViews(),
+                schedule: prefectSchedule,
                 script_name: scriptName.value.trim() || null,
             };
             const r = await diFetch("/api/data-import/script", {
@@ -9450,12 +9589,17 @@ function bindDataImportPage() {
             const mvLine = r.materialized_views && r.materialized_views.length
                 ? `<div>Refreshes: <code>${esc(r.materialized_views.join(", "))}</code></div>`
                 : "";
+            const sched = r.schedule || {};
+            const scheduleLine = sched.label
+                ? `<div>Prefect schedule: <code style="word-break:break-all">${esc(sched.label)}</code></div>`
+                : "";
             scriptResult.innerHTML = `
                 <div style="border:1px solid var(--border);border-radius:5px;padding:0.55rem 0.7rem">
                     <div>Script: <code style="word-break:break-all">${esc(r.script_path)}</code></div>
                     <div>Entrypoint: <code style="word-break:break-all">${esc(r.entrypoint)}</code></div>
                     <div>Run: <code style="word-break:break-all">${esc(r.run_command)}</code></div>
                     <div>Serve: <code style="word-break:break-all">${esc(r.serve_command)}</code></div>
+                    ${scheduleLine}
                     ${mvLine}
                 </div>`;
             toast("Import script created");
@@ -9470,6 +9614,7 @@ function bindDataImportPage() {
         }
     });
 
+    refreshPrefectScheduleControls();
     refreshLoadButton();
 }
 
