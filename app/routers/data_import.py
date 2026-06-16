@@ -1,9 +1,10 @@
 """Import Data - load a CSV/Excel file into a PostgreSQL table.
 
-Two-step flow: POST /preview parses the uploaded file and stages it under a
-token; POST /load writes the staged file into the target table (create new,
-append, or replace). Replace runs TRUNCATE + INSERT in one transaction so a
-failed load leaves the previous data intact.
+POST /preview parses the uploaded file and stages it under a token. POST /load
+writes the staged file into the target table for one-time table creation or
+manual imports. POST /script creates a recurring append/replace import script.
+Replace runs TRUNCATE + INSERT in one transaction so a failed load leaves the
+previous data intact.
 
 Writes use the dedicated DG_UPLOAD_* credentials from config, never the
 read-only probing credentials (PGUSER/PGPASSWORD).
@@ -74,7 +75,7 @@ class RefreshMaterializedViewsRequest(BaseModel):
 class GenerateScriptRequest(BaseModel):
     token: str
     table: str
-    mode: str  # append | replace | create
+    mode: str  # append | replace
     materialized_views: list[MaterializedViewRef] = Field(default_factory=list)
     script_name: str | None = None
 
@@ -578,32 +579,29 @@ def _render_import_script(
             target_schema = require_identifier(target_schema, "target schema")
             target_table = require_identifier(target_table, "target table")
             mode = (mode or "").strip().lower()
-            if mode not in ("append", "replace", "create"):
+            if mode not in ("append", "replace"):
                 raise ValueError(f"Invalid mode: {mode}")
 
             engine = create_engine_from_env()
             try:
                 existing = existing_tables(engine, target_schema)
-                if mode == "create" and target_table in existing:
-                    raise ValueError(f"{target_schema}.{target_table} already exists. Use append or replace.")
-                if mode != "create" and target_table not in existing:
-                    raise ValueError(f"{target_schema}.{target_table} does not exist. Use create.")
+                if target_table not in existing:
+                    raise ValueError(f"{target_schema}.{target_table} does not exist. Create the table once before scheduling imports.")
 
                 null_columns = []
-                if mode != "create":
-                    q = text(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_schema = :s AND table_name = :t"
+                q = text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = :t"
+                )
+                with engine.connect() as conn:
+                    table_cols = {row[0] for row in conn.execute(q, {"s": target_schema, "t": target_table})}
+                extra = [column for column in df.columns if column not in table_cols]
+                if extra:
+                    raise ValueError(
+                        f"The file has columns that do not exist in {target_schema}.{target_table}: "
+                        + ", ".join(extra)
                     )
-                    with engine.connect() as conn:
-                        table_cols = {row[0] for row in conn.execute(q, {"s": target_schema, "t": target_table})}
-                    extra = [column for column in df.columns if column not in table_cols]
-                    if extra:
-                        raise ValueError(
-                            f"The file has columns that do not exist in {target_schema}.{target_table}: "
-                            + ", ".join(extra)
-                        )
-                    null_columns = sorted(table_cols - set(df.columns))
+                null_columns = sorted(table_cols - set(df.columns))
 
                 with engine.begin() as conn:
                     if mode == "replace":
@@ -612,7 +610,7 @@ def _render_import_script(
                         target_table,
                         conn,
                         schema=target_schema,
-                        if_exists="fail" if mode == "create" else "append",
+                        if_exists="append",
                         index=False,
                         chunksize=5000,
                     )
@@ -691,7 +689,7 @@ def _render_import_script(
             parser.add_argument("--source-file", default=DEFAULT_SOURCE_FILE)
             parser.add_argument("--schema", default=DEFAULT_TARGET_SCHEMA)
             parser.add_argument("--table", default=DEFAULT_TARGET_TABLE)
-            parser.add_argument("--mode", choices=("append", "replace", "create"), default=DEFAULT_MODE)
+            parser.add_argument("--mode", choices=("append", "replace"), default=DEFAULT_MODE)
             parser.add_argument(
                 "--refresh-materialized-view",
                 action="append",
@@ -767,6 +765,8 @@ def _render_import_script(
 
 def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
     mode = _clean_mode(req.mode)
+    if mode == "create":
+        raise HTTPException(400, "Create the table once first, then generate an append or replace script for recurring imports.")
     table = _clean_table_name(req.table)
     engine = _get_engine()
     try:
@@ -993,7 +993,7 @@ def load_file(req: LoadRequest, request: Request):
             )
     finally:
         engine.dispose()
-        if table_loaded:
+        if table_loaded and mode != "create":
             staged.unlink(missing_ok=True)
 
     with get_db() as db:

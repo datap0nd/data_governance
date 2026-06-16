@@ -100,9 +100,11 @@ Users can change the daily overall refresh time from System > Refresh Schedule. 
 
 The Tools > Import Data page can load CSV, XLSX, or XLS files into PostgreSQL with the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Host, port, and database can be set with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; if host or database are omitted, the app falls back to the read-only probe connection values. `DG_UPLOAD_SCHEMA` defaults to `bi_reporting`.
 
-After choosing the target table, the page lists PostgreSQL materialized views from `pg_matviews`. Selected views can be refreshed immediately, or included in the generated Python import script so they refresh after rows are inserted.
+New table creation is a one-time action in the app and does not generate a scheduling script. After the table exists, the page offers recurring append or truncate-and-replace script generation. Existing tables go straight to that recurring-import setup.
 
-Generated scripts are written to the folder shown in Tools > Import Data. The initial default comes from `DG_IMPORT_SCRIPT_DIR`, falling back to `generated_imports/` under the repo, and can be changed from the app without restarting. Each generated script exposes a Prefect flow named `import_data_flow`, can run once with `python generated_imports/import_table.py`, and can be served as a Prefect deployment with `python generated_imports/import_table.py --serve`. The script reads database credentials from environment variables at runtime, not from the generated file.
+After choosing an existing target table, the page lists PostgreSQL materialized views from `pg_matviews`. Selected views can be refreshed immediately, or included in the generated Python import script so they refresh after rows are inserted.
+
+Generated scripts are written to the folder shown in Tools > Import Data. The initial default comes from `DG_IMPORT_SCRIPT_DIR`, falling back to `generated_imports/` under the repo, and can be changed from the app without restarting. Each generated script exposes a Prefect flow named `import_data_flow`, can run once with `python generated_imports/import_table.py`, and can be served as a Prefect deployment with `python generated_imports/import_table.py --serve`. Generated scripts support append or replace mode only, and read database credentials from environment variables at runtime, not from the generated file.
 
 ### 5. Run the scanner
 

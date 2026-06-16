@@ -462,7 +462,7 @@ function _notifySlaBuildBody(action, reason, slaValue, slaUnit) {
         lines.push("", "Context:", ...details);
     }
 
-    lines.push("", "Thanks,", "Metronome");
+    lines.push("", "Thanks,", "Data Governance");
     return lines.join("\n");
 }
 
@@ -9041,17 +9041,25 @@ async function renderDataImport() {
         <div id="di-existing">
             <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
                 <select id="di-table" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px"></select>
-                <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="append" checked> Append rows</label>
-                <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="replace"> Replace all data <span style="color:var(--red)">(truncates first)</span></label>
             </div>
         </div>
         <div id="di-new" style="display:none">
-            <input type="text" id="di-newname" placeholder="new_table_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
-            <span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.5rem">lowercase letters, numbers and underscores; column types are inferred</span>
+            <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
+                <input type="text" id="di-newname" placeholder="new_table_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
+                <button class="btn-export" id="di-create-table" type="button" style="float:none">Create table now</button>
+                <span id="di-create-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
+            </div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">lowercase letters, numbers and underscores; column types are inferred from this upload. No scheduled script is created in this step.</div>
         </div>
     </fieldset>
-    <fieldset id="di-mv" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Materialized views after SQL write</legend>
+    <fieldset id="di-schedule" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Recurring import options</legend>
+        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
+            <span style="font-size:0.78rem;font-weight:600">Script action</span>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="append" checked> Append rows</label>
+            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="replace"> Truncate and replace</label>
+        </div>
+        <div style="font-size:0.78rem;font-weight:600;margin-bottom:0.35rem">Materialized views included after SQL write</div>
         <div id="di-mv-picker" style="position:relative;max-width:520px;margin-bottom:0.7rem">
             <button class="btn-outline" id="di-mv-toggle" type="button" aria-expanded="false" style="width:100%;float:none;display:flex;justify-content:space-between;align-items:center;font-size:0.8rem">
                 <span id="di-mv-toggle-text">Select materialized views</span><span aria-hidden="true">v</span>
@@ -9062,12 +9070,12 @@ async function renderDataImport() {
             </div>
         </div>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now only</button>
+            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now</button>
             <span id="di-mv-status" style="font-size:0.8rem;color:var(--text-dim)"></span>
         </div>
     </fieldset>
     <fieldset id="di-script" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">4 &middot; Python script</legend>
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">4 &middot; Python scheduling script</legend>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem">
             <span style="font-size:0.78rem;font-weight:600">Script folder</span>
             <input type="text" id="di-script-dir" aria-label="Script folder" value="${esc(status.script_dir || "generated_imports")}" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:340px;max-width:100%">
@@ -9076,14 +9084,10 @@ async function renderDataImport() {
         </div>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
             <input type="text" id="di-script-name" placeholder="optional_script_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
-            <button class="btn-export" id="di-create-script" style="float:none">Create script with selected views</button>
+            <button class="btn-export" id="di-create-script" style="float:none">Create append/replace script</button>
         </div>
         <div id="di-script-result" style="margin-top:0.65rem;font-size:0.78rem;color:var(--text-secondary)"></div>
     </fieldset>
-    <div id="di-actions" style="display:none;margin-bottom:0.75rem;align-items:center;gap:0.75rem">
-        <button class="btn-export" id="di-load" style="float:none">Load now</button>
-        <span id="di-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
-    </div>
     `;
 }
 
@@ -9094,7 +9098,7 @@ function bindDataImportPage() {
     const fileInfo = document.getElementById("di-file-info");
     const previewBox = document.getElementById("di-preview");
     const targetBox = document.getElementById("di-target");
-    const mvBox = document.getElementById("di-mv");
+    const scheduleBox = document.getElementById("di-schedule");
     const mvPicker = document.getElementById("di-mv-picker");
     const mvToggle = document.getElementById("di-mv-toggle");
     const mvToggleText = document.getElementById("di-mv-toggle-text");
@@ -9110,11 +9114,10 @@ function bindDataImportPage() {
     const scriptName = document.getElementById("di-script-name");
     const createScriptBtn = document.getElementById("di-create-script");
     const scriptResult = document.getElementById("di-script-result");
-    const actionsBox = document.getElementById("di-actions");
     const tableSelect = document.getElementById("di-table");
     const newName = document.getElementById("di-newname");
-    const loadBtn = document.getElementById("di-load");
-    const result = document.getElementById("di-result");
+    const createTableBtn = document.getElementById("di-create-table");
+    const createResult = document.getElementById("di-create-result");
 
     let staged = null;   // { token, filename, rows, columns, sample }
     let tablesLoaded = false;
@@ -9122,7 +9125,6 @@ function bindDataImportPage() {
     let materializedViews = [];
     let selectedMvKeys = new Set();
     let currentScriptDir = scriptDir.value.trim();
-    let scriptCreated = null;
 
     async function diFetch(path, opts = {}) {
         const res = await fetch(path, { ...opts, headers: apiHeaders(opts.headers || {}) });
@@ -9141,27 +9143,18 @@ function bindDataImportPage() {
         .map(v => ({ schema: v.schema, name: v.name }));
 
     function invalidateScript() {
-        scriptCreated = null;
         if (scriptResult) scriptResult.innerHTML = "";
         refreshLoadButton();
     }
 
+    function canConfigureScript() {
+        return Boolean(staged && targetType() === "existing" && tableName());
+    }
+
     function refreshLoadButton() {
-        if (!staged || !tableName()) {
-            loadBtn.disabled = true;
-            loadBtn.textContent = "Load now";
-            return;
-        }
-        if (!scriptCreated) {
-            loadBtn.disabled = true;
-            loadBtn.textContent = "Create script first";
-            return;
-        }
-        loadBtn.disabled = false;
-        const t = tableName();
-        if (targetType() === "new") loadBtn.textContent = `Create ${t} (${staged.rows} rows)`;
-        else if (mode() === "replace") loadBtn.textContent = `Replace ${t} (${staged.rows} rows)`;
-        else loadBtn.textContent = `Append ${staged.rows} rows to ${t}`;
+        const ready = canConfigureScript();
+        scheduleBox.style.display = ready ? "" : "none";
+        scriptBox.style.display = ready ? "" : "none";
     }
 
     function refreshMvToggle() {
@@ -9237,8 +9230,8 @@ function bindDataImportPage() {
         });
     }
 
-    async function loadTables() {
-        if (tablesLoaded) return;
+    async function loadTables(force = false) {
+        if (tablesLoaded && !force) return;
         try {
             const data = await diFetch("/api/data-import/tables");
             tableSelect.innerHTML = data.tables.length
@@ -9304,8 +9297,7 @@ function bindDataImportPage() {
         if (!f) return;
         pick.disabled = true;
         pick.textContent = "Parsing...";
-        result.textContent = "";
-        scriptCreated = null;
+        createResult.textContent = "";
         if (scriptResult) scriptResult.innerHTML = "";
         if (mvStatus) mvStatus.textContent = "";
         try {
@@ -9324,18 +9316,15 @@ function bindDataImportPage() {
                 </div>
                 <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem">First ${p.sample.length} rows shown with normalized column names.</div>`;
             targetBox.style.display = "";
-            mvBox.style.display = "";
-            scriptBox.style.display = "";
-            actionsBox.style.display = "flex";
             await loadTables();
             await loadMaterializedViews();
+            refreshLoadButton();
         } catch (err) {
             staged = null;
             previewBox.innerHTML = "";
             targetBox.style.display = "none";
-            mvBox.style.display = "none";
+            scheduleBox.style.display = "none";
             scriptBox.style.display = "none";
-            actionsBox.style.display = "none";
             fileInfo.textContent = "Parse failed: " + err.message;
             toast("Parse failed: " + err.message);
         } finally {
@@ -9350,15 +9339,59 @@ function bindDataImportPage() {
         r.addEventListener("change", () => {
             document.getElementById("di-existing").style.display = targetType() === "existing" ? "" : "none";
             document.getElementById("di-new").style.display = targetType() === "new" ? "" : "none";
+            createResult.textContent = "";
             invalidateScript();
         });
     });
     document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", invalidateScript));
     tableSelect.addEventListener("change", invalidateScript);
-    newName.addEventListener("input", invalidateScript);
+    newName.addEventListener("input", () => {
+        createResult.textContent = "";
+        invalidateScript();
+    });
     scriptDir.addEventListener("input", invalidateScript);
     saveScriptDirBtn.addEventListener("click", () => saveScriptDir().catch(() => {}));
     scriptName.addEventListener("input", invalidateScript);
+
+    createTableBtn.addEventListener("click", async () => {
+        if (!staged) return;
+        const t = newName.value.trim().toLowerCase();
+        if (!t) {
+            toast("Enter a new table name");
+            return;
+        }
+        createTableBtn.disabled = true;
+        createTableBtn.textContent = "Creating...";
+        createResult.textContent = "";
+        try {
+            const r = await diFetch("/api/data-import/load", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: staged.token, table: t, mode: "create", materialized_views: [] }),
+            });
+            createResult.textContent = `Created ${r.schema}.${r.table} (${r.rows} rows).`;
+            fileInfo.textContent = `${staged.filename} - ${staged.rows} rows. Created ${r.schema}.${r.table}; configure the recurring script below.`;
+            toast(`${r.rows} rows loaded into ${r.schema}.${r.table}`);
+            tablesLoaded = false;
+            await loadTables(true);
+            if (![...tableSelect.options].some(option => option.value === r.table)) {
+                tableSelect.insertAdjacentHTML("beforeend", `<option value="${esc(r.table)}">${esc(r.table)}</option>`);
+            }
+            tableSelect.value = r.table;
+            const existingRadio = document.querySelector('input[name="di-targettype"][value="existing"]');
+            if (existingRadio) existingRadio.checked = true;
+            document.getElementById("di-existing").style.display = "";
+            document.getElementById("di-new").style.display = "none";
+            invalidateScript();
+        } catch (err) {
+            createResult.textContent = err.message;
+            toast("Create table failed: " + err.message);
+        } finally {
+            createTableBtn.disabled = false;
+            createTableBtn.textContent = "Create table now";
+            refreshLoadButton();
+        }
+    });
 
     mvRefreshBtn.addEventListener("click", async () => {
         const views = selectedMaterializedViews();
@@ -9382,18 +9415,21 @@ function bindDataImportPage() {
             toast("Refresh failed: " + err.message);
         } finally {
             mvRefreshBtn.disabled = false;
-            mvRefreshBtn.textContent = "Refresh selected now only";
+            mvRefreshBtn.textContent = "Refresh selected now";
         }
     });
 
     createScriptBtn.addEventListener("click", async () => {
-        if (!staged) return;
+        if (!canConfigureScript()) {
+            toast(targetType() === "new" ? "Create the table first" : "Choose an existing target table");
+            return;
+        }
         const t = tableName();
         if (!t) {
             toast("Choose a target table");
             return;
         }
-        const m = targetType() === "new" ? "create" : mode();
+        const m = mode();
         createScriptBtn.disabled = true;
         createScriptBtn.textContent = "Creating...";
         scriptResult.innerHTML = "";
@@ -9411,7 +9447,6 @@ function bindDataImportPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body),
             });
-            scriptCreated = r;
             const mvLine = r.materialized_views && r.materialized_views.length
                 ? `<div>Refreshes: <code>${esc(r.materialized_views.join(", "))}</code></div>`
                 : "";
@@ -9426,47 +9461,12 @@ function bindDataImportPage() {
             toast("Import script created");
             refreshLoadButton();
         } catch (err) {
-            scriptCreated = null;
             scriptResult.textContent = err.message;
             toast("Script creation failed: " + err.message);
             refreshLoadButton();
         } finally {
             createScriptBtn.disabled = false;
-            createScriptBtn.textContent = "Create script with selected views";
-        }
-    });
-
-    loadBtn.addEventListener("click", async () => {
-        if (!staged) return;
-        if (!scriptCreated) {
-            toast("Create the Python script first");
-            return;
-        }
-        const t = tableName();
-        const m = targetType() === "new" ? "create" : mode();
-        if (m === "replace" && !confirm(`Replace ALL data in ${t} with ${staged.rows} rows from ${staged.filename}?`)) return;
-        loadBtn.disabled = true;
-        loadBtn.textContent = "Loading...";
-        try {
-            const r = await diFetch("/api/data-import/load", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: staged.token, table: t, mode: m, materialized_views: selectedMaterializedViews() }),
-            });
-            let msg = `Done: ${r.rows} rows written to ${r.schema}.${r.table} (${r.mode}).`;
-            if (r.null_columns && r.null_columns.length) msg += ` Table columns left NULL: ${r.null_columns.join(", ")}.`;
-            if (r.refreshed_materialized_views && r.refreshed_materialized_views.length) msg += ` Refreshed: ${r.refreshed_materialized_views.join(", ")}.`;
-            result.textContent = msg;
-            toast(`${r.rows} rows loaded into ${r.schema}.${r.table}`);
-            tablesLoaded = false;
-            staged = null;
-            scriptCreated = null;
-            fileInfo.textContent = "Pick a new file to run another import.";
-            refreshLoadButton();
-        } catch (err) {
-            result.textContent = err.message;
-            toast("Load failed: " + err.message);
-            refreshLoadButton();
+            createScriptBtn.textContent = "Create append/replace script";
         }
     });
 
@@ -10144,7 +10144,7 @@ function _showRegistrationModal(ip) {
     overlay.className = "register-overlay";
     overlay.innerHTML = `
         <div class="register-modal">
-            <h2>Welcome to Metronome</h2>
+            <h2>Welcome to Data Governance</h2>
             <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
             <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
             <button id="register-submit">Continue</button>

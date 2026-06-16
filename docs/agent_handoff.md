@@ -1,44 +1,44 @@
 # Agent Handoff
 
 ## Current Objective
-Extend the Import Data tool so a CSV/Excel import can optionally refresh selected PostgreSQL materialized views, then generate a Prefect-compatible Python script before the user runs the import.
+Keep the Import Data tool split into a one-time table creation step and a recurring import scheduling step for existing tables.
 
 ## Repo State
 - Path: repo root
 - Branch: `main`
-- Latest commit: `2283188 Add Import Data section: load CSV/Excel files into Postgres tables`
+- Latest commit before this handoff: `82f11b2 Condense materialized view import controls`
 - Public repo: treat as public; keep pushed files generic and free of identifying details.
-- Push status: local changes only, not committed or pushed.
+- Push status: current flow change pending commit and push at handoff update time.
 
 ## Decisions Made
-- Import Data is now a four-step flow: file preview, target table, materialized-view refresh choice, Python script generation.
-- The load action is disabled until a script has been created for the current file/table/mode/MV selection.
-- Materialized views are listed from PostgreSQL `pg_matviews` using the configured upload/write connection, and selected views are validated against that catalog before refresh or script generation.
-- Direct imports and generated scripts both refresh selected materialized views after the table insert completes.
-- Generated scripts use the app-configurable Import Data script folder. The initial default comes from `DG_IMPORT_SCRIPT_DIR`, falling back to gitignored `generated_imports/`; the value can be changed in the app without restart. Generated scripts copy the staged upload into a local `data/` subfolder, read DB credentials from environment variables, expose `import_data_flow`, and support `--serve` for Prefect local-process deployments.
-- Static SQL strings are included in generated scripts so the existing script scanner can detect target-table and MV writes.
-- Import Data SQLAlchemy engines use `NullPool` so short-lived web requests and generated scripts close Postgres sessions immediately instead of holding idle pooled connections.
+- Creating a new target table is a one-time SQL write from the app and does not create a Python scheduling script.
+- After a new table is created, the UI switches back to Existing table with the created table selected, so the user can configure a recurring append or truncate-and-replace script.
+- Existing target tables go straight from file preview to recurring import options.
+- Generated Python scripts are for recurring imports only and accept append or replace mode, not create mode.
+- Selected materialized views are included in generated scripts after the SQL write. The separate refresh button is only for a manual immediate refresh.
+- The staged upload is preserved after one-time table creation so the follow-up recurring script can be generated from the same upload.
 
 ## Files Changed
-- `.gitignore`: ignores generated import scripts/data.
-- `README.md`: documents Import Data write credentials, materialized-view refresh, and Prefect script output.
-- `requirements.txt`: adds `prefect>=3,<4`.
-- `app/config.py`: adds `IMPORT_SCRIPT_DIR`.
-- `app/routers/data_import.py`: adds MV listing/refresh APIs, shared import helpers, script generation endpoint, selected-MV load behavior, app-configurable script folder, eager DB connection close, and schema identifier validation.
-- `app/static/app.js`: adds steps 3 and 4 to Import Data, compact MV dropdown/manual refresh, script folder editing, script generation, and script-gated load.
-- `app/static/index.html`: bumps app JS cache version to `v=43`.
+- `README.md`: documents the split between one-time table creation and recurring append/replace Prefect scripts.
+- `app/routers/data_import.py`: rejects create-mode script generation, narrows generated scripts to append/replace, and preserves the staged upload after one-time create.
+- `app/static/app.js`: removes the old Load now flow, adds Create table now for new tables, shows recurring options only for existing tables, and clarifies MV/script labels.
+- `app/static/index.html`: bumps the app JS cache version to `v=44`, bumps the CSS cache version to `v=42`, and keeps the touched shell labels generic.
+- `app/static/style.css`: keeps the touched design-system comment and logo selector names generic.
+- `docs/agent_handoff.md`: updates the durable handoff context for this flow.
 
 ## Commands And Checks
-- `git fetch origin`: origin/main still matched local `main` at `2283188`.
-- `python -m py_compile app/routers/data_import.py app/config.py`: passed with Python 3.12.
-- `node --check app/static/app.js`: passed.
-- Generated-script template compile check with Python 3.12 and minimal import stubs: passed.
-- Browser harness on `http://127.0.0.1:8765/` with mocked `/api/data-import/*`: passed. Verified the MV dropdown is closed by default, opens to a vertical checkbox list, preserves selected views through filtering, sends selected MVs for manual refresh and script creation, saves the script folder through the app API, and enables Load after script creation.
-- Not run: live PostgreSQL import/MV refresh, because no configured local app environment or target PostgreSQL connection was available in this shell.
+- `python3 -m py_compile app/routers/data_import.py app/config.py`: passed with system Python.
+- `node --check app/static/app.js`: passed with system Node.
+- `git diff --check`: passed.
+- Bundled Python `py_compile app/routers/data_import.py app/config.py`: passed.
+- Bundled Node `--check app/static/app.js`: passed.
+- Generated-script template compile check with import stubs: passed.
+- Browser harness on `http://127.0.0.1:8765/static/import_flow_harness.html#dataimport`: passed. Verified no Load now button, existing tables go straight to recurring setup, selected MVs are sent in script generation, new table creation calls create mode without MV refresh, post-create UI switches to existing-table scheduling, and script generation never sends create mode.
+- Not run: live PostgreSQL create/import/MV refresh, because no configured local target PostgreSQL connection was available in this shell.
 
 ## Open Questions
-- Confirm on the deployment machine that `DG_UPLOAD_PGUSER` can query `pg_matviews` and has permission to `REFRESH MATERIALIZED VIEW` for the selected views.
+- Confirm on the deployment machine that `DG_UPLOAD_PGUSER` can create tables, insert/truncate the target tables, query `pg_matviews`, and refresh the selected materialized views.
 - Decide whether scheduled Prefect deployments should use the generated copied file path as-is or override `source_file` with a stable upstream file path.
 
 ## Next Step
-Install updated requirements on the deployment machine, restart the app, open Tools > Import Data, test one small CSV import with a non-critical materialized view selected, then serve the generated script through Prefect with the desired schedule.
+Install updated requirements on the deployment machine if not already done, restart the app, open Tools > Import Data, create or select a non-critical table, generate an append/replace script with one selected materialized view, then serve it through Prefect with the desired schedule.
