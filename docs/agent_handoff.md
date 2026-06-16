@@ -17,6 +17,7 @@ Extend the Import Data tool so a CSV/Excel import can optionally refresh selecte
 - Direct imports and generated scripts both refresh selected materialized views after the table insert completes.
 - Generated scripts live under `DG_IMPORT_SCRIPT_DIR`, defaulting to gitignored `generated_imports/`, copy the staged upload into a local `data/` subfolder, read DB credentials from environment variables, expose `import_data_flow`, and support `--serve` for Prefect local-process deployments.
 - Static SQL strings are included in generated scripts so the existing script scanner can detect target-table and MV writes.
+- Import Data SQLAlchemy engines use `NullPool` so short-lived web requests and generated scripts close Postgres sessions immediately instead of holding idle pooled connections.
 
 ## Files Changed
 - `.gitignore`: ignores generated import scripts/data.

@@ -107,6 +107,7 @@ def _get_engine():
     try:
         from sqlalchemy import create_engine
         from sqlalchemy.engine import URL
+        from sqlalchemy.pool import NullPool
     except ImportError:
         raise HTTPException(500, "pandas/sqlalchemy are not installed on this machine. Re-run setup.ps1 to install dependencies.")
     url = URL.create(
@@ -118,7 +119,7 @@ def _get_engine():
         database=UPLOAD_PGDATABASE,
         query={"connect_timeout": "10"},
     )
-    return create_engine(url)
+    return create_engine(url, poolclass=NullPool, pool_pre_ping=True)
 
 
 def _quote_ident(value: str) -> str:
@@ -131,6 +132,17 @@ def _quote_ident(value: str) -> str:
 
 def _qualified_name(schema: str, name: str) -> str:
     return f"{_quote_ident(schema)}.{_quote_ident(name)}"
+
+
+def _postgres_error(action: str, exc: Exception) -> str:
+    message = str(exc)
+    lower = message.lower()
+    if "remaining connection slots are reserved" in lower or "too many clients already" in lower:
+        return (
+            f"{action}: PostgreSQL has no free connection slots for this role. "
+            "Close idle database sessions or raise the database connection limit, then retry."
+        )
+    return f"{action}: {message}"
 
 
 def _clean_table_name(table: str) -> str:
@@ -457,6 +469,7 @@ def _render_import_script(
         def create_engine_from_env():
             from sqlalchemy import create_engine
             from sqlalchemy.engine import URL
+            from sqlalchemy.pool import NullPool
 
             host = os.getenv("DG_UPLOAD_PGHOST") or os.getenv("PGHOST")
             port = os.getenv("DG_UPLOAD_PGPORT") or os.getenv("PGPORT") or "5432"
@@ -484,7 +497,7 @@ def _render_import_script(
                 database=database,
                 query={"connect_timeout": "10"},
             )
-            return create_engine(url)
+            return create_engine(url, poolclass=NullPool, pool_pre_ping=True)
 
 
         def read_dataframe(source_file: str):
@@ -735,7 +748,7 @@ def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
         raise
     except Exception as e:
         logger.warning("Import script validation failed for %s.%s: %s", UPLOAD_SCHEMA, table, e)
-        raise HTTPException(502, f"Could not validate import script: {e}")
+        raise HTTPException(502, _postgres_error("Could not validate import script", e))
     finally:
         engine.dispose()
 
@@ -806,7 +819,7 @@ def list_target_tables():
         raise
     except Exception as e:
         logger.warning("Import tables listing failed: %s", e)
-        raise HTTPException(502, f"Could not query Postgres: {e}")
+        raise HTTPException(502, _postgres_error("Could not query Postgres", e))
     finally:
         engine.dispose()
 
@@ -821,7 +834,7 @@ def list_materialized_views():
         raise
     except Exception as e:
         logger.warning("Import materialized view listing failed: %s", e)
-        raise HTTPException(502, f"Could not query materialized views: {e}")
+        raise HTTPException(502, _postgres_error("Could not query materialized views", e))
     finally:
         engine.dispose()
 
@@ -839,7 +852,7 @@ def refresh_materialized_views(req: RefreshMaterializedViewsRequest, request: Re
         raise
     except Exception as e:
         logger.warning("Materialized view refresh failed: %s", e)
-        raise HTTPException(502, f"Materialized view refresh failed: {e}")
+        raise HTTPException(502, _postgres_error("Materialized view refresh failed", e))
     finally:
         engine.dispose()
 
@@ -919,14 +932,17 @@ def load_file(req: LoadRequest, request: Request):
             table_loaded = True
         except HTTPException:
             raise
-        except Exception as e:
-            logger.warning("Import load failed for %s.%s: %s", UPLOAD_SCHEMA, table, e)
-            raise HTTPException(502, f"Load failed, nothing was committed: {e}")
+    except Exception as e:
+        logger.warning("Import load failed for %s.%s: %s", UPLOAD_SCHEMA, table, e)
+        raise HTTPException(502, _postgres_error("Load failed, nothing was committed", e))
         try:
             refreshed_views = _refresh_materialized_views(engine, materialized_views)
         except Exception as e:
             logger.warning("Materialized view refresh failed after import for %s.%s: %s", UPLOAD_SCHEMA, table, e)
-            raise HTTPException(502, f"Data loaded into {UPLOAD_SCHEMA}.{table}, but materialized view refresh failed: {e}")
+            raise HTTPException(
+                502,
+                _postgres_error(f"Data loaded into {UPLOAD_SCHEMA}.{table}, but materialized view refresh failed", e),
+            )
     finally:
         engine.dispose()
         if table_loaded:
