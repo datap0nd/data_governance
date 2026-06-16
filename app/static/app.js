@@ -9051,19 +9051,32 @@ async function renderDataImport() {
         </div>
     </fieldset>
     <fieldset id="di-mv" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Materialized views</legend>
-        <div id="di-mv-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.45rem;margin-bottom:0.7rem"></div>
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Materialized views after SQL write</legend>
+        <div id="di-mv-picker" style="position:relative;max-width:520px;margin-bottom:0.7rem">
+            <button class="btn-outline" id="di-mv-toggle" type="button" aria-expanded="false" style="width:100%;float:none;display:flex;justify-content:space-between;align-items:center;font-size:0.8rem">
+                <span id="di-mv-toggle-text">Select materialized views</span><span aria-hidden="true">v</span>
+            </button>
+            <div id="di-mv-menu" style="display:none;position:absolute;z-index:30;top:calc(100% + 0.25rem);left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 20px rgba(15,23,42,0.16);padding:0.5rem">
+                <input type="text" id="di-mv-filter" placeholder="Filter views" style="width:100%;box-sizing:border-box;font-size:0.8rem;padding:0.35rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-bottom:0.45rem">
+                <div id="di-mv-list" style="display:flex;flex-direction:column;gap:0.15rem;max-height:280px;overflow:auto"></div>
+            </div>
+        </div>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now</button>
+            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now only</button>
             <span id="di-mv-status" style="font-size:0.8rem;color:var(--text-dim)"></span>
         </div>
     </fieldset>
     <fieldset id="di-script" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
         <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">4 &middot; Python script</legend>
+        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem">
+            <span style="font-size:0.78rem;font-weight:600">Script folder</span>
+            <input type="text" id="di-script-dir" aria-label="Script folder" value="${esc(status.script_dir || "generated_imports")}" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:340px;max-width:100%">
+            <button class="btn-outline" id="di-save-script-dir" type="button" style="font-size:0.78rem">Save folder</button>
+            <span id="di-script-dir-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
+        </div>
         <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
             <input type="text" id="di-script-name" placeholder="optional_script_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
-            <button class="btn-export" id="di-create-script" style="float:none">Create script</button>
-            <span style="font-size:0.75rem;color:var(--text-dim)">Saved to ${esc(status.script_dir || "generated_imports")}</span>
+            <button class="btn-export" id="di-create-script" style="float:none">Create script with selected views</button>
         </div>
         <div id="di-script-result" style="margin-top:0.65rem;font-size:0.78rem;color:var(--text-secondary)"></div>
     </fieldset>
@@ -9082,10 +9095,18 @@ function bindDataImportPage() {
     const previewBox = document.getElementById("di-preview");
     const targetBox = document.getElementById("di-target");
     const mvBox = document.getElementById("di-mv");
+    const mvPicker = document.getElementById("di-mv-picker");
+    const mvToggle = document.getElementById("di-mv-toggle");
+    const mvToggleText = document.getElementById("di-mv-toggle-text");
+    const mvMenu = document.getElementById("di-mv-menu");
+    const mvFilter = document.getElementById("di-mv-filter");
     const mvList = document.getElementById("di-mv-list");
     const mvRefreshBtn = document.getElementById("di-refresh-mv");
     const mvStatus = document.getElementById("di-mv-status");
     const scriptBox = document.getElementById("di-script");
+    const scriptDir = document.getElementById("di-script-dir");
+    const saveScriptDirBtn = document.getElementById("di-save-script-dir");
+    const scriptDirStatus = document.getElementById("di-script-dir-status");
     const scriptName = document.getElementById("di-script-name");
     const createScriptBtn = document.getElementById("di-create-script");
     const scriptResult = document.getElementById("di-script-result");
@@ -9099,6 +9120,8 @@ function bindDataImportPage() {
     let tablesLoaded = false;
     let materializedViewsLoaded = false;
     let materializedViews = [];
+    let selectedMvKeys = new Set();
+    let currentScriptDir = scriptDir.value.trim();
     let scriptCreated = null;
 
     async function diFetch(path, opts = {}) {
@@ -9112,10 +9135,10 @@ function bindDataImportPage() {
     const targetType = () => document.querySelector('input[name="di-targettype"]:checked').value;
     const mode = () => document.querySelector('input[name="di-mode"]:checked').value;
     const tableName = () => targetType() === "new" ? newName.value.trim().toLowerCase() : tableSelect.value;
-    const selectedMaterializedViews = () => Array.from(document.querySelectorAll(".di-mv-check:checked")).map(cb => ({
-        schema: cb.dataset.schema,
-        name: cb.dataset.name,
-    }));
+    const mvKey = v => `${v.schema}.${v.name}`;
+    const selectedMaterializedViews = () => materializedViews
+        .filter(v => selectedMvKeys.has(mvKey(v)))
+        .map(v => ({ schema: v.schema, name: v.name }));
 
     function invalidateScript() {
         scriptCreated = null;
@@ -9141,6 +9164,79 @@ function bindDataImportPage() {
         else loadBtn.textContent = `Append ${staged.rows} rows to ${t}`;
     }
 
+    function refreshMvToggle() {
+        if (materializedViewsLoaded && !materializedViews.length) {
+            mvToggleText.textContent = "No materialized views found";
+            mvToggle.setAttribute("aria-expanded", "false");
+            return;
+        }
+        const count = selectedMvKeys.size;
+        mvToggleText.textContent = count ? `${count} materialized view${count === 1 ? "" : "s"} selected for script` : "No materialized views selected for script";
+        mvToggle.setAttribute("aria-expanded", mvMenu.style.display !== "none" ? "true" : "false");
+    }
+
+    async function saveScriptDir() {
+        const path = scriptDir.value.trim();
+        if (!path) {
+            toast("Script folder cannot be blank");
+            throw new Error("Script folder cannot be blank");
+        }
+        saveScriptDirBtn.disabled = true;
+        saveScriptDirBtn.textContent = "Saving...";
+        scriptDirStatus.textContent = "";
+        try {
+            const r = await diFetch("/api/data-import/script-dir", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path }),
+            });
+            currentScriptDir = r.script_dir;
+            scriptDir.value = r.script_dir;
+            scriptDirStatus.textContent = "Saved";
+            toast("Script folder saved");
+            return r;
+        } catch (err) {
+            scriptDirStatus.textContent = err.message;
+            toast("Script folder save failed: " + err.message);
+            throw err;
+        } finally {
+            saveScriptDirBtn.disabled = false;
+            saveScriptDirBtn.textContent = "Save folder";
+        }
+    }
+
+    function renderMaterializedViewList() {
+        const filter = (mvFilter.value || "").trim().toLowerCase();
+        const views = filter
+            ? materializedViews.filter(v => `${v.display_name} ${v.refresh_schedule || ""}`.toLowerCase().includes(filter))
+            : materializedViews;
+        if (!materializedViews.length) {
+            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim);padding:0.25rem">No materialized views found.</span>`;
+            return;
+        }
+        if (!views.length) {
+            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim);padding:0.25rem">No matches.</span>`;
+            return;
+        }
+        mvList.innerHTML = views.map((v, i) => {
+            const key = mvKey(v);
+            const id = `di-mv-${i}`;
+            const sched = v.refresh_schedule ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:0.35rem">${esc(v.refresh_schedule)}</span>` : "";
+            return `<label for="${id}" style="display:flex;gap:0.45rem;align-items:flex-start;font-size:0.8rem;cursor:pointer;padding:0.35rem 0.4rem;border-radius:4px">
+                <input type="checkbox" class="di-mv-check" id="${id}" data-key="${esc(key)}" ${selectedMvKeys.has(key) ? "checked" : ""} style="margin-top:0.1rem">
+                <span><strong>${esc(v.display_name)}</strong>${sched}</span>
+            </label>`;
+        }).join("");
+        document.querySelectorAll(".di-mv-check").forEach(cb => {
+            cb.addEventListener("change", () => {
+                if (cb.checked) selectedMvKeys.add(cb.dataset.key);
+                else selectedMvKeys.delete(cb.dataset.key);
+                refreshMvToggle();
+                invalidateScript();
+            });
+        });
+    }
+
     async function loadTables() {
         if (tablesLoaded) return;
         try {
@@ -9158,31 +9254,48 @@ function bindDataImportPage() {
 
     async function loadMaterializedViews() {
         if (materializedViewsLoaded) return;
-        mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim)">Loading...</span>`;
+        mvToggle.disabled = true;
+        mvToggleText.textContent = "Loading materialized views...";
         try {
             const data = await diFetch("/api/data-import/materialized-views");
             materializedViews = data.views || [];
-            if (!materializedViews.length) {
-                mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim)">No materialized views found.</span>`;
-            } else {
-                mvList.innerHTML = materializedViews.map((v, i) => {
-                    const id = `di-mv-${i}`;
-                    const sched = v.refresh_schedule ? `<span style="color:var(--text-dim);font-size:0.72rem"> ${esc(v.refresh_schedule)}</span>` : "";
-                    return `<label for="${id}" style="display:flex;gap:0.45rem;align-items:flex-start;font-size:0.8rem;cursor:pointer;border:1px solid var(--border);border-radius:5px;padding:0.4rem 0.5rem">
-                        <input type="checkbox" class="di-mv-check" id="${id}" data-schema="${esc(v.schema)}" data-name="${esc(v.name)}" style="margin-top:0.1rem">
-                        <span><strong>${esc(v.display_name)}</strong>${sched}</span>
-                    </label>`;
-                }).join("");
-                document.querySelectorAll(".di-mv-check").forEach(cb => cb.addEventListener("change", invalidateScript));
-            }
+            selectedMvKeys = new Set([...selectedMvKeys].filter(key => materializedViews.some(v => mvKey(v) === key)));
+            renderMaterializedViewList();
+            mvToggle.disabled = false;
+            if (!materializedViews.length) mvToggle.disabled = true;
+            refreshMvToggle();
             materializedViewsLoaded = true;
         } catch (err) {
             materializedViews = [];
-            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--red)">Could not list materialized views: ${esc(err.message)}</span>`;
+            selectedMvKeys = new Set();
+            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--red);padding:0.25rem">Could not list materialized views: ${esc(err.message)}</span>`;
+            mvToggleText.textContent = "Could not list materialized views";
+            mvToggle.disabled = true;
             toast("Could not list materialized views: " + err.message);
         }
         refreshLoadButton();
     }
+
+    mvToggle.addEventListener("click", () => {
+        if (mvToggle.disabled) return;
+        mvMenu.style.display = mvMenu.style.display === "none" ? "" : "none";
+        refreshMvToggle();
+        if (mvMenu.style.display !== "none") mvFilter.focus();
+    });
+    mvFilter.addEventListener("input", renderMaterializedViewList);
+    document.addEventListener("click", e => {
+        if (!mvPicker.contains(e.target)) {
+            mvMenu.style.display = "none";
+            refreshMvToggle();
+        }
+    });
+    document.addEventListener("keydown", e => {
+        if (e.key === "Escape" && mvMenu.style.display !== "none") {
+            mvMenu.style.display = "none";
+            refreshMvToggle();
+            mvToggle.focus();
+        }
+    });
 
     pick.addEventListener("click", () => fileInput.click());
 
@@ -9243,6 +9356,8 @@ function bindDataImportPage() {
     document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", invalidateScript));
     tableSelect.addEventListener("change", invalidateScript);
     newName.addEventListener("input", invalidateScript);
+    scriptDir.addEventListener("input", invalidateScript);
+    saveScriptDirBtn.addEventListener("click", () => saveScriptDir().catch(() => {}));
     scriptName.addEventListener("input", invalidateScript);
 
     mvRefreshBtn.addEventListener("click", async () => {
@@ -9267,7 +9382,7 @@ function bindDataImportPage() {
             toast("Refresh failed: " + err.message);
         } finally {
             mvRefreshBtn.disabled = false;
-            mvRefreshBtn.textContent = "Refresh selected now";
+            mvRefreshBtn.textContent = "Refresh selected now only";
         }
     });
 
@@ -9283,6 +9398,7 @@ function bindDataImportPage() {
         createScriptBtn.textContent = "Creating...";
         scriptResult.innerHTML = "";
         try {
+            if (scriptDir.value.trim() !== currentScriptDir) await saveScriptDir();
             const body = {
                 token: staged.token,
                 table: t,
@@ -9316,7 +9432,7 @@ function bindDataImportPage() {
             refreshLoadButton();
         } finally {
             createScriptBtn.disabled = false;
-            createScriptBtn.textContent = "Create script";
+            createScriptBtn.textContent = "Create script with selected views";
         }
     });
 

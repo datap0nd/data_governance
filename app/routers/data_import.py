@@ -24,6 +24,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import (
+    BASE_DIR,
     IMPORT_SCRIPT_DIR,
     UPLOAD_PGDATABASE,
     UPLOAD_PGHOST,
@@ -34,6 +35,7 @@ from app.config import (
 )
 from app.database import get_db
 from app.routers.eventlog import get_actor, log_event
+from app.settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ SCRIPT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 STAGING_DIR = Path(tempfile.gettempdir()) / "dg_data_import"
 STAGING_MAX_AGE_SECONDS = 2 * 3600
 ALLOWED_EXTENSIONS = (".csv", ".xlsx", ".xls")
+SCRIPT_DIR_SETTING = "import_script_dir"
 
 
 class MaterializedViewRef(BaseModel):
@@ -74,6 +77,10 @@ class GenerateScriptRequest(BaseModel):
     mode: str  # append | replace | create
     materialized_views: list[MaterializedViewRef] = Field(default_factory=list)
     script_name: str | None = None
+
+
+class ScriptDirRequest(BaseModel):
+    path: str
 
 
 def _missing_config() -> list[str]:
@@ -143,6 +150,27 @@ def _postgres_error(action: str, exc: Exception) -> str:
             "Close idle database sessions or raise the database connection limit, then retry."
         )
     return f"{action}: {message}"
+
+
+def _script_dir_setting() -> str:
+    value = (get_setting(SCRIPT_DIR_SETTING, IMPORT_SCRIPT_DIR) or IMPORT_SCRIPT_DIR).strip()
+    return value or IMPORT_SCRIPT_DIR
+
+
+def _resolve_script_dir(raw_path: str) -> Path:
+    raw_path = (raw_path or "").strip()
+    if not raw_path:
+        raise HTTPException(400, "Script folder cannot be blank.")
+    if "\x00" in raw_path:
+        raise HTTPException(400, "Script folder contains an invalid character.")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
+
+
+def _current_script_dir() -> Path:
+    return _resolve_script_dir(_script_dir_setting())
 
 
 def _clean_table_name(table: str) -> str:
@@ -752,7 +780,7 @@ def _create_import_script(req: GenerateScriptRequest, staged: Path, df) -> dict:
     finally:
         engine.dispose()
 
-    script_dir = Path(IMPORT_SCRIPT_DIR).expanduser()
+    script_dir = _current_script_dir()
     data_dir = script_dir / "data"
     script_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -805,8 +833,28 @@ def import_status():
         "host": UPLOAD_PGHOST,
         "database": UPLOAD_PGDATABASE,
         "schema": UPLOAD_SCHEMA,
-        "script_dir": IMPORT_SCRIPT_DIR,
+        "script_dir": str(_current_script_dir()),
     }
+
+
+@router.put("/script-dir")
+def update_script_dir(req: ScriptDirRequest, request: Request):
+    """Persist the default folder for generated import scripts."""
+    script_dir = _resolve_script_dir(req.path)
+    try:
+        script_dir.mkdir(parents=True, exist_ok=True)
+        data_dir = script_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(400, f"Could not create script folder: {e}")
+
+    set_setting(SCRIPT_DIR_SETTING, str(script_dir))
+    with get_db() as db:
+        log_event(
+            db, "app_settings", None, "Import script folder",
+            "updated", str(script_dir), get_actor(request),
+        )
+    return {"script_dir": str(script_dir)}
 
 
 @router.get("/tables")

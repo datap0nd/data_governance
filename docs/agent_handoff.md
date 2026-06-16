@@ -15,7 +15,7 @@ Extend the Import Data tool so a CSV/Excel import can optionally refresh selecte
 - The load action is disabled until a script has been created for the current file/table/mode/MV selection.
 - Materialized views are listed from PostgreSQL `pg_matviews` using the configured upload/write connection, and selected views are validated against that catalog before refresh or script generation.
 - Direct imports and generated scripts both refresh selected materialized views after the table insert completes.
-- Generated scripts live under `DG_IMPORT_SCRIPT_DIR`, defaulting to gitignored `generated_imports/`, copy the staged upload into a local `data/` subfolder, read DB credentials from environment variables, expose `import_data_flow`, and support `--serve` for Prefect local-process deployments.
+- Generated scripts use the app-configurable Import Data script folder. The initial default comes from `DG_IMPORT_SCRIPT_DIR`, falling back to gitignored `generated_imports/`; the value can be changed in the app without restart. Generated scripts copy the staged upload into a local `data/` subfolder, read DB credentials from environment variables, expose `import_data_flow`, and support `--serve` for Prefect local-process deployments.
 - Static SQL strings are included in generated scripts so the existing script scanner can detect target-table and MV writes.
 - Import Data SQLAlchemy engines use `NullPool` so short-lived web requests and generated scripts close Postgres sessions immediately instead of holding idle pooled connections.
 
@@ -24,16 +24,16 @@ Extend the Import Data tool so a CSV/Excel import can optionally refresh selecte
 - `README.md`: documents Import Data write credentials, materialized-view refresh, and Prefect script output.
 - `requirements.txt`: adds `prefect>=3,<4`.
 - `app/config.py`: adds `IMPORT_SCRIPT_DIR`.
-- `app/routers/data_import.py`: adds MV listing/refresh APIs, shared import helpers, script generation endpoint, selected-MV load behavior, and schema identifier validation.
-- `app/static/app.js`: adds steps 3 and 4 to Import Data, MV checkboxes/manual refresh, script generation, and script-gated load.
-- `app/static/index.html`: bumps app JS cache version to `v=42`.
+- `app/routers/data_import.py`: adds MV listing/refresh APIs, shared import helpers, script generation endpoint, selected-MV load behavior, app-configurable script folder, eager DB connection close, and schema identifier validation.
+- `app/static/app.js`: adds steps 3 and 4 to Import Data, compact MV dropdown/manual refresh, script folder editing, script generation, and script-gated load.
+- `app/static/index.html`: bumps app JS cache version to `v=43`.
 
 ## Commands And Checks
 - `git fetch origin`: origin/main still matched local `main` at `2283188`.
 - `python -m py_compile app/routers/data_import.py app/config.py`: passed with Python 3.12.
 - `node --check app/static/app.js`: passed.
 - Generated-script template compile check with Python 3.12 and minimal import stubs: passed.
-- Browser harness on `http://127.0.0.1:8765/` with mocked `/api/data-import/*`: passed. Verified four steps render, two MVs list, Load is disabled before script creation, selected MV is sent for manual refresh and script creation, and Load enables after script creation.
+- Browser harness on `http://127.0.0.1:8765/` with mocked `/api/data-import/*`: passed. Verified the MV dropdown is closed by default, opens to a vertical checkbox list, preserves selected views through filtering, sends selected MVs for manual refresh and script creation, saves the script folder through the app API, and enables Load after script creation.
 - Not run: live PostgreSQL import/MV refresh, because no configured local app environment or target PostgreSQL connection was available in this shell.
 
 ## Open Questions
