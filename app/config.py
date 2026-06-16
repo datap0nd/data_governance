@@ -147,3 +147,4 @@ UPLOAD_PGDATABASE = os.environ.get("DG_UPLOAD_PGDATABASE", "") or PGDATABASE
 UPLOAD_PGUSER = os.environ.get("DG_UPLOAD_PGUSER", "")
 UPLOAD_PGPASSWORD = os.environ.get("DG_UPLOAD_PGPASSWORD", "")
 UPLOAD_SCHEMA = os.environ.get("DG_UPLOAD_SCHEMA", "bi_reporting")
+IMPORT_SCRIPT_DIR = os.environ.get("DG_IMPORT_SCRIPT_DIR", str(BASE_DIR / "generated_imports"))

@@ -96,6 +96,14 @@ If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_C
 
 Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
 
+### Import Data and Prefect scripts
+
+The Tools > Import Data page can load CSV, XLSX, or XLS files into PostgreSQL with the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Host, port, and database can be set with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; if host or database are omitted, the app falls back to the read-only probe connection values. `DG_UPLOAD_SCHEMA` defaults to `bi_reporting`.
+
+After choosing the target table, the page lists PostgreSQL materialized views from `pg_matviews`. Selected views can be refreshed immediately, or included in the generated Python import script so they refresh after rows are inserted.
+
+Generated scripts are written to `DG_IMPORT_SCRIPT_DIR`, defaulting to `generated_imports/` under the repo. Each generated script exposes a Prefect flow named `import_data_flow`, can run once with `python generated_imports/import_table.py`, and can be served as a Prefect deployment with `python generated_imports/import_table.py --serve`. The script reads database credentials from environment variables at runtime, not from the generated file.
+
 ### 5. Run the scanner
 
 Click "Run Scan Now" on the Scanner page, or hit the API:

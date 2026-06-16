@@ -1,44 +1,43 @@
 # Agent Handoff
 
 ## Current Objective
-Make the scheduled Power BI sync complete reliably without an interactive desktop. The interactive account-picker flow (PowerShell window + auto-clicker + RDP console guard) failed whenever the PC was locked or the picker click missed.
+Extend the Import Data tool so a CSV/Excel import can optionally refresh selected PostgreSQL materialized views, then generate a Prefect-compatible Python script before the user runs the import.
 
 ## Repo State
 - Path: repo root
 - Branch: `main`
-- Latest commit before current changes: `003d689 Stop stale refresh work before new scans`
-- Pushed files must remain generic and free of identifying details.
+- Latest commit: `2283188 Add Import Data section: load CSV/Excel files into Postgres tables`
+- Public repo: treat as public; keep pushed files generic and free of identifying details.
+- Push status: local changes only, not committed or pushed.
 
 ## Decisions Made
-- Root cause: Connect-PowerBIServiceAccount never persists tokens between processes, so every sync needed a live account-picker interaction; that can never be reliable on a locked desktop.
-- New auth mode "saved Microsoft account": one-time OAuth2 device-code sign-in (code can be entered from any device), refresh token cached in `pbi_token.json` (DPAPI-encrypted on Windows, owner-only plain JSON elsewhere). All later syncs acquire tokens silently and fetch Power BI REST data in-process (`app/scanner/pbi_fetch.py`), with no PowerShell window or desktop session.
-- Default public client id is the first-party Azure CLI app (pre-consented in nearly all tenants, no app registration needed); override with `DG_PBI_PUBLIC_CLIENT_ID`.
-- Auth mode order in `trigger_pbi_sync()` / `trigger_pbi_usage_sync()`: service principal (PS1 background) > saved account (headless in-process thread) > interactive scheduled task (legacy fallback, unchanged).
-- Headless runs reuse the existing run-status machinery: a `launched` row, then `completed` / `failed` / `stopped` rows, so `wait_for_pbi_sync_completion` and the overall-refresh gating work unchanged.
-- When the refresh token is rejected (revocation, CA sign-in frequency), the sync records a failed run with reconnect guidance and inserts a critical dashboard alert (`Power BI sign-in expired...`); nothing pops or hangs. Reconnect via Scanner page.
-- `_should_defer_interactive_sync` and `retry_pending_pbi_sync` skip the desktop wait / RDP guard whenever a headless mode (service principal or saved account) is available.
-- Usage import logic moved from the router into `import_pbi_usage_data()` in `pbi_sync.py` (now with the same SQLite lock retry as the refresh import); the router endpoint delegates to it.
-- The usage activity-events fetch still requires the Power BI/Fabric admin role, same as `Get-PowerBIActivityEvent`.
-- Connect diagnostics: transport failures reaching login.microsoftonline.com are caught and surfaced persistently in the Scanner card (and in `device_flow.status = failed`), the connect endpoint never 500s, the UI special-cases HTTP 404 (service running old code) and aborts after 75s. `truststore` is injected so corporate TLS interception (trusted by PowerShell via SChannel but not by certifi) does not break outbound HTTPS.
-- Proxy support (the host uses a PAC "setup script"): `resolve_proxy()` in pbi_auth picks DG_PBI_PROXY, then HTTPS_PROXY/HTTP_PROXY, then asks Windows to evaluate the system proxy for the target URL via PowerShell `GetSystemWebProxy().GetProxy()` (this evaluates the PAC under the service user), cached per host. All httpx clients (token endpoints and api.powerbi.com) use it. Failure messages state which proxy was used. If the proxy demands NTLM/Negotiate auth, httpx will surface 407 - that would need a local auth proxy or firewall exception; not implemented.
+- Import Data is now a four-step flow: file preview, target table, materialized-view refresh choice, Python script generation.
+- The load action is disabled until a script has been created for the current file/table/mode/MV selection.
+- Materialized views are listed from PostgreSQL `pg_matviews` using the configured upload/write connection, and selected views are validated against that catalog before refresh or script generation.
+- Direct imports and generated scripts both refresh selected materialized views after the table insert completes.
+- Generated scripts live under `DG_IMPORT_SCRIPT_DIR`, defaulting to gitignored `generated_imports/`, copy the staged upload into a local `data/` subfolder, read DB credentials from environment variables, expose `import_data_flow`, and support `--serve` for Prefect local-process deployments.
+- Static SQL strings are included in generated scripts so the existing script scanner can detect target-table and MV writes.
 
 ## Files Changed
-- `app/scanner/pbi_auth.py` (new): device-code flow, DPAPI token cache, silent refresh, auth status.
-- `app/scanner/pbi_fetch.py` (new): headless REST fetch for refresh metadata and usage activity events.
-- `app/scanner/pbi_sync.py`: auth mode selection, `_launch_cached_account_sync` background thread, reconnect alert, `import_pbi_usage_data`, retry/defer logic skips desktop checks in headless modes.
-- `app/routers/scanner.py`: `/api/scanner/pbi-auth/status|connect|disconnect`, status payload includes `auth` + real `auth_mode`, usage import delegates to pbi_sync.
-- `app/config.py`: `DG_PBI_PUBLIC_CLIENT_ID`, `DG_PBI_AUTH_TENANT`, `DG_PBI_TOKEN_CACHE`, `DG_PBI_USAGE_DAYS_BACK`.
-- `app/static/app.js`: Scanner page Power BI Connection UI (Connect/Disconnect, device-code box, reconnect badge), RDP-guard warnings only shown in interactive mode, mode-aware toasts.
-- `README.md`, `docs/agent_handoff.md`: documentation.
+- `.gitignore`: ignores generated import scripts/data.
+- `README.md`: documents Import Data write credentials, materialized-view refresh, and Prefect script output.
+- `requirements.txt`: adds `prefect>=3,<4`.
+- `app/config.py`: adds `IMPORT_SCRIPT_DIR`.
+- `app/routers/data_import.py`: adds MV listing/refresh APIs, shared import helpers, script generation endpoint, selected-MV load behavior, and schema identifier validation.
+- `app/static/app.js`: adds steps 3 and 4 to Import Data, MV checkboxes/manual refresh, script generation, and script-gated load.
+- `app/static/index.html`: bumps app JS cache version to `v=42`.
 
 ## Commands And Checks
-- `python3 -m py_compile` on all changed Python files: passed.
+- `git fetch origin`: origin/main still matched local `main` at `2283188`.
+- `python -m py_compile app/routers/data_import.py app/config.py`: passed with Python 3.12.
 - `node --check app/static/app.js`: passed.
-- Smoke test (mocked token endpoint + REST): cache round-trip, silent refresh with rotation, invalid_grant -> reconnect_required + persisted error, device flow to completion, disconnect, refresh payload shape parity with the PS1 script: 26/26 passed.
+- Generated-script template compile check with Python 3.12 and minimal import stubs: passed.
+- Browser harness on `http://127.0.0.1:8765/` with mocked `/api/data-import/*`: passed. Verified four steps render, two MVs list, Load is disabled before script creation, selected MV is sent for manual refresh and script creation, and Load enables after script creation.
+- Not run: live PostgreSQL import/MV refresh, because no configured local app environment or target PostgreSQL connection was available in this shell.
 
 ## Open Questions
-- Confirm on the Windows host that the tenant allows the device code flow for the Azure CLI client id; if blocked, set `DG_PBI_PUBLIC_CLIENT_ID` and retry.
-- If the org enforces a conditional-access sign-in frequency, the reconnect alert cadence will reveal it; reconnect is a one-click device-code redo.
+- Confirm on the deployment machine that `DG_UPLOAD_PGUSER` can query `pg_matviews` and has permission to `REFRESH MATERIALIZED VIEW` for the selected views.
+- Decide whether scheduled Prefect deployments should use the generated copied file path as-is or override `source_file` with a stable upstream file path.
 
 ## Next Step
-Pull/update on the Windows host, restart the service, open Scanner, click Connect Power BI, complete the code sign-in from any device, then click Sync PBI once to verify a headless completed run. The next scheduled overall refresh should complete with the PC locked.
+Install updated requirements on the deployment machine, restart the app, open Tools > Import Data, test one small CSV import with a non-critical materialized view selected, then serve the generated script through Prefect with the desired schedule.

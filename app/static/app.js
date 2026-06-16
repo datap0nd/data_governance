@@ -8999,7 +8999,7 @@ function bindRefreshSchedulePage() {
 // ── Import Data ──
 
 async function renderDataImport() {
-    let status = { configured: false, missing: [], dependencies_installed: true, host: "", database: "", schema: "" };
+    let status = { configured: false, missing: [], dependencies_installed: true, host: "", database: "", schema: "", script_dir: "" };
     try {
         status = await api("/api/data-import/status");
     } catch (_) { /* endpoint unreachable; render unconfigured state */ }
@@ -9050,8 +9050,25 @@ async function renderDataImport() {
             <span style="font-size:0.75rem;color:var(--text-dim);margin-left:0.5rem">lowercase letters, numbers and underscores; column types are inferred</span>
         </div>
     </fieldset>
+    <fieldset id="di-mv" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Materialized views</legend>
+        <div id="di-mv-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.45rem;margin-bottom:0.7rem"></div>
+        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
+            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now</button>
+            <span id="di-mv-status" style="font-size:0.8rem;color:var(--text-dim)"></span>
+        </div>
+    </fieldset>
+    <fieldset id="di-script" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
+        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">4 &middot; Python script</legend>
+        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
+            <input type="text" id="di-script-name" placeholder="optional_script_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
+            <button class="btn-export" id="di-create-script" style="float:none">Create script</button>
+            <span style="font-size:0.75rem;color:var(--text-dim)">Saved to ${esc(status.script_dir || "generated_imports")}</span>
+        </div>
+        <div id="di-script-result" style="margin-top:0.65rem;font-size:0.78rem;color:var(--text-secondary)"></div>
+    </fieldset>
     <div id="di-actions" style="display:none;margin-bottom:0.75rem;align-items:center;gap:0.75rem">
-        <button class="btn-export" id="di-load" style="float:none">Load</button>
+        <button class="btn-export" id="di-load" style="float:none">Load now</button>
         <span id="di-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
     </div>
     `;
@@ -9064,6 +9081,14 @@ function bindDataImportPage() {
     const fileInfo = document.getElementById("di-file-info");
     const previewBox = document.getElementById("di-preview");
     const targetBox = document.getElementById("di-target");
+    const mvBox = document.getElementById("di-mv");
+    const mvList = document.getElementById("di-mv-list");
+    const mvRefreshBtn = document.getElementById("di-refresh-mv");
+    const mvStatus = document.getElementById("di-mv-status");
+    const scriptBox = document.getElementById("di-script");
+    const scriptName = document.getElementById("di-script-name");
+    const createScriptBtn = document.getElementById("di-create-script");
+    const scriptResult = document.getElementById("di-script-result");
     const actionsBox = document.getElementById("di-actions");
     const tableSelect = document.getElementById("di-table");
     const newName = document.getElementById("di-newname");
@@ -9072,6 +9097,9 @@ function bindDataImportPage() {
 
     let staged = null;   // { token, filename, rows, columns, sample }
     let tablesLoaded = false;
+    let materializedViewsLoaded = false;
+    let materializedViews = [];
+    let scriptCreated = null;
 
     async function diFetch(path, opts = {}) {
         const res = await fetch(path, { ...opts, headers: apiHeaders(opts.headers || {}) });
@@ -9084,11 +9112,26 @@ function bindDataImportPage() {
     const targetType = () => document.querySelector('input[name="di-targettype"]:checked').value;
     const mode = () => document.querySelector('input[name="di-mode"]:checked').value;
     const tableName = () => targetType() === "new" ? newName.value.trim().toLowerCase() : tableSelect.value;
+    const selectedMaterializedViews = () => Array.from(document.querySelectorAll(".di-mv-check:checked")).map(cb => ({
+        schema: cb.dataset.schema,
+        name: cb.dataset.name,
+    }));
+
+    function invalidateScript() {
+        scriptCreated = null;
+        if (scriptResult) scriptResult.innerHTML = "";
+        refreshLoadButton();
+    }
 
     function refreshLoadButton() {
         if (!staged || !tableName()) {
             loadBtn.disabled = true;
-            loadBtn.textContent = "Load";
+            loadBtn.textContent = "Load now";
+            return;
+        }
+        if (!scriptCreated) {
+            loadBtn.disabled = true;
+            loadBtn.textContent = "Create script first";
             return;
         }
         loadBtn.disabled = false;
@@ -9113,6 +9156,34 @@ function bindDataImportPage() {
         refreshLoadButton();
     }
 
+    async function loadMaterializedViews() {
+        if (materializedViewsLoaded) return;
+        mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim)">Loading...</span>`;
+        try {
+            const data = await diFetch("/api/data-import/materialized-views");
+            materializedViews = data.views || [];
+            if (!materializedViews.length) {
+                mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim)">No materialized views found.</span>`;
+            } else {
+                mvList.innerHTML = materializedViews.map((v, i) => {
+                    const id = `di-mv-${i}`;
+                    const sched = v.refresh_schedule ? `<span style="color:var(--text-dim);font-size:0.72rem"> ${esc(v.refresh_schedule)}</span>` : "";
+                    return `<label for="${id}" style="display:flex;gap:0.45rem;align-items:flex-start;font-size:0.8rem;cursor:pointer;border:1px solid var(--border);border-radius:5px;padding:0.4rem 0.5rem">
+                        <input type="checkbox" class="di-mv-check" id="${id}" data-schema="${esc(v.schema)}" data-name="${esc(v.name)}" style="margin-top:0.1rem">
+                        <span><strong>${esc(v.display_name)}</strong>${sched}</span>
+                    </label>`;
+                }).join("");
+                document.querySelectorAll(".di-mv-check").forEach(cb => cb.addEventListener("change", invalidateScript));
+            }
+            materializedViewsLoaded = true;
+        } catch (err) {
+            materializedViews = [];
+            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--red)">Could not list materialized views: ${esc(err.message)}</span>`;
+            toast("Could not list materialized views: " + err.message);
+        }
+        refreshLoadButton();
+    }
+
     pick.addEventListener("click", () => fileInput.click());
 
     fileInput.addEventListener("change", async () => {
@@ -9121,6 +9192,9 @@ function bindDataImportPage() {
         pick.disabled = true;
         pick.textContent = "Parsing...";
         result.textContent = "";
+        scriptCreated = null;
+        if (scriptResult) scriptResult.innerHTML = "";
+        if (mvStatus) mvStatus.textContent = "";
         try {
             const fd = new FormData();
             fd.append("file", f);
@@ -9137,11 +9211,18 @@ function bindDataImportPage() {
                 </div>
                 <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem">First ${p.sample.length} rows shown with normalized column names.</div>`;
             targetBox.style.display = "";
+            mvBox.style.display = "";
+            scriptBox.style.display = "";
             actionsBox.style.display = "flex";
             await loadTables();
+            await loadMaterializedViews();
         } catch (err) {
             staged = null;
             previewBox.innerHTML = "";
+            targetBox.style.display = "none";
+            mvBox.style.display = "none";
+            scriptBox.style.display = "none";
+            actionsBox.style.display = "none";
             fileInfo.textContent = "Parse failed: " + err.message;
             toast("Parse failed: " + err.message);
         } finally {
@@ -9156,15 +9237,95 @@ function bindDataImportPage() {
         r.addEventListener("change", () => {
             document.getElementById("di-existing").style.display = targetType() === "existing" ? "" : "none";
             document.getElementById("di-new").style.display = targetType() === "new" ? "" : "none";
-            refreshLoadButton();
+            invalidateScript();
         });
     });
-    document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", refreshLoadButton));
-    tableSelect.addEventListener("change", refreshLoadButton);
-    newName.addEventListener("input", refreshLoadButton);
+    document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", invalidateScript));
+    tableSelect.addEventListener("change", invalidateScript);
+    newName.addEventListener("input", invalidateScript);
+    scriptName.addEventListener("input", invalidateScript);
+
+    mvRefreshBtn.addEventListener("click", async () => {
+        const views = selectedMaterializedViews();
+        if (!views.length) {
+            toast("Choose at least one materialized view");
+            return;
+        }
+        mvRefreshBtn.disabled = true;
+        mvRefreshBtn.textContent = "Refreshing...";
+        mvStatus.textContent = "";
+        try {
+            const r = await diFetch("/api/data-import/materialized-views/refresh", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ materialized_views: views }),
+            });
+            mvStatus.textContent = `Refreshed ${r.refreshed.join(", ")}`;
+            toast(`Refreshed ${r.refreshed.length} materialized view${r.refreshed.length === 1 ? "" : "s"}`);
+        } catch (err) {
+            mvStatus.textContent = err.message;
+            toast("Refresh failed: " + err.message);
+        } finally {
+            mvRefreshBtn.disabled = false;
+            mvRefreshBtn.textContent = "Refresh selected now";
+        }
+    });
+
+    createScriptBtn.addEventListener("click", async () => {
+        if (!staged) return;
+        const t = tableName();
+        if (!t) {
+            toast("Choose a target table");
+            return;
+        }
+        const m = targetType() === "new" ? "create" : mode();
+        createScriptBtn.disabled = true;
+        createScriptBtn.textContent = "Creating...";
+        scriptResult.innerHTML = "";
+        try {
+            const body = {
+                token: staged.token,
+                table: t,
+                mode: m,
+                materialized_views: selectedMaterializedViews(),
+                script_name: scriptName.value.trim() || null,
+            };
+            const r = await diFetch("/api/data-import/script", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            scriptCreated = r;
+            const mvLine = r.materialized_views && r.materialized_views.length
+                ? `<div>Refreshes: <code>${esc(r.materialized_views.join(", "))}</code></div>`
+                : "";
+            scriptResult.innerHTML = `
+                <div style="border:1px solid var(--border);border-radius:5px;padding:0.55rem 0.7rem">
+                    <div>Script: <code style="word-break:break-all">${esc(r.script_path)}</code></div>
+                    <div>Entrypoint: <code style="word-break:break-all">${esc(r.entrypoint)}</code></div>
+                    <div>Run: <code style="word-break:break-all">${esc(r.run_command)}</code></div>
+                    <div>Serve: <code style="word-break:break-all">${esc(r.serve_command)}</code></div>
+                    ${mvLine}
+                </div>`;
+            toast("Import script created");
+            refreshLoadButton();
+        } catch (err) {
+            scriptCreated = null;
+            scriptResult.textContent = err.message;
+            toast("Script creation failed: " + err.message);
+            refreshLoadButton();
+        } finally {
+            createScriptBtn.disabled = false;
+            createScriptBtn.textContent = "Create script";
+        }
+    });
 
     loadBtn.addEventListener("click", async () => {
         if (!staged) return;
+        if (!scriptCreated) {
+            toast("Create the Python script first");
+            return;
+        }
         const t = tableName();
         const m = targetType() === "new" ? "create" : mode();
         if (m === "replace" && !confirm(`Replace ALL data in ${t} with ${staged.rows} rows from ${staged.filename}?`)) return;
@@ -9174,14 +9335,16 @@ function bindDataImportPage() {
             const r = await diFetch("/api/data-import/load", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: staged.token, table: t, mode: m }),
+                body: JSON.stringify({ token: staged.token, table: t, mode: m, materialized_views: selectedMaterializedViews() }),
             });
             let msg = `Done: ${r.rows} rows written to ${r.schema}.${r.table} (${r.mode}).`;
             if (r.null_columns && r.null_columns.length) msg += ` Table columns left NULL: ${r.null_columns.join(", ")}.`;
+            if (r.refreshed_materialized_views && r.refreshed_materialized_views.length) msg += ` Refreshed: ${r.refreshed_materialized_views.join(", ")}.`;
             result.textContent = msg;
             toast(`${r.rows} rows loaded into ${r.schema}.${r.table}`);
             tablesLoaded = false;
             staged = null;
+            scriptCreated = null;
             fileInfo.textContent = "Pick a new file to run another import.";
             refreshLoadButton();
         } catch (err) {
