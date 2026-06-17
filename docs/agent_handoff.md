@@ -1,44 +1,42 @@
 # Agent Handoff
 
 ## Current Objective
-Keep Import Data scripts Prefect-compatible, including UI-defined deployment schedules embedded in generated scripts.
+Keep the Import Data workflow stable while splitting the focused import-and-schedule experience into a standalone private platform named Cadence.
 
 ## Repo State
-- Path: repo root
+- Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit before this handoff: `5994f09 Split table creation from import scheduling`
-- Public repo: treat as public; keep pushed files generic and free of identifying details.
-- Push status: current Prefect schedule change pending commit and push at handoff update time.
+- Latest commit before this handoff: `99031ec Restore Metronome branding`
+- Public repo: no, GitHub reports `datap0nd/data_governance` as `PRIVATE`.
+- Push status: Metronome branding restoration is committed and pushed; this handoff update is pending commit and push.
 
 ## Decisions Made
-- Creating a new target table is a one-time SQL write from the app and does not create a Python scheduling script.
-- After a new table is created, the UI switches back to Existing table with the created table selected, so the user can configure a recurring append or truncate-and-replace script.
-- Existing target tables go straight from file preview to recurring import options.
-- Generated Python scripts are for recurring imports only and accept append or replace mode, not create mode.
-- Selected materialized views are included in generated scripts after the SQL write. The separate refresh button is only for a manual immediate refresh.
-- The staged upload is preserved after one-time table creation so the follow-up recurring script can be generated from the same upload.
-- Prefect scheduling is configured in the Import Data UI before script generation. Manual/one-time embeds no automatic schedule; daily, weekly, and custom cron embed a Prefect `Cron` schedule with the selected timezone.
-- One-time future scheduling is not modeled with RRule because current Prefect docs say RRule `COUNT` is not supported. Manual/one-time scripts are run once with `python script.py` or served as manual deployments without an automatic schedule.
+- The top-right app branding should remain `Metronome` in this repo. The prior `Data Governance` label came from commit `5994f09`, where branding was over-generalized during a privacy pass without first checking repo visibility.
+- The privacy pass was unnecessary for this private repo. Keep secrets and internal paths out of commits, but do not rename the product away from Metronome for privacy reasons here.
+- The standalone import platform name is `Cadence`, chosen as a musical sibling to Metronome and as a fit for scheduled, repeatable data movement.
+- Cadence now lives in a separate private repo: `https://github.com/datap0nd/cadence`.
+- Cadence is focused on CSV/Excel to PostgreSQL imports, one-time table creation, recurring append or truncate-and-replace scripts, selected materialized-view refreshes, and UI-defined Prefect schedules.
 
 ## Files Changed
-- `README.md`: documents UI-defined Prefect schedules in generated scripts.
-- `app/routers/data_import.py`: adds schedule request validation, embeds schedule defaults in generated scripts, and makes `--serve` use embedded cron schedules unless overridden.
-- `app/static/app.js`: adds Prefect schedule controls for manual, daily, weekly, and custom cron; sends schedule payloads with script generation; displays the resulting schedule.
-- `app/static/index.html`: bumps the app JS cache version to `v=45`.
-- `docs/agent_handoff.md`: updates the durable handoff context for this flow.
+- `app/static/index.html`: restored Metronome title/brand text and cache-busted static assets.
+- `app/static/app.js`: restored Metronome user-facing text in notifications and welcome copy.
+- `app/static/style.css`: restored Metronome logo selector names/comments.
+- `docs/agent_handoff.md`: updates durable context after the branding fix and Cadence repo split.
 
 ## Commands And Checks
-- Prefect docs reviewed: official v3 schedule docs, Python deployment docs, schedule API docs, and local-process serve docs.
-- `git diff --check`: passed.
-- Bundled Python `py_compile app/routers/data_import.py app/config.py`: passed.
-- Bundled Node `--check app/static/app.js`: passed.
-- Generated-script template compile check with import stubs and embedded weekly Prefect schedule: passed.
-- Browser harness on `http://127.0.0.1:8765/static/import_schedule_harness.html#dataimport`: passed. Verified manual schedule body, daily cron generation, weekly cron generation, custom cron payload, and schedule display in the script result.
-- Not run: live PostgreSQL create/import/MV refresh or live Prefect deployment serving, because no configured local target PostgreSQL connection or Prefect server was available in this shell.
+- `gh repo view datap0nd/data_governance --json nameWithOwner,visibility,url`: confirmed private repo.
+- `git log --oneline`: confirmed the branding regression came from `5994f09 Split table creation from import scheduling`.
+- Bundled Node `--check app/static/app.js`: passed for the branding restoration.
+- `git diff --check`: passed before the branding restoration commit.
+- `git push origin main`: pushed `99031ec Restore Metronome branding`.
+- Cadence checks in `/Users/rafaelcunha/Documents/cadence`: JS syntax passed, Python syntax passed, privacy scan passed, generated Prefect script compile check passed, browser UI harness passed, private repo creation and push passed.
+- Not run: live PostgreSQL imports/materialized-view refreshes or live Prefect deployment serving, because no configured local target PostgreSQL connection or Prefect server was available in this shell.
+- Not run: `setup.ps1` PowerShell parse check for Cadence, because `pwsh` is not installed on this Mac.
 
 ## Open Questions
-- Confirm on the deployment machine that `DG_UPLOAD_PGUSER` can create tables, insert/truncate the target tables, query `pg_matviews`, and refresh the selected materialized views.
-- Decide whether scheduled Prefect deployments should use the generated copied file path as-is or override `source_file` with a stable upstream file path.
+- Confirm on the Windows deployment machine that the Cadence `setup.ps1` installs and updates the private repo correctly with `CADENCE_GITHUB_TOKEN`.
+- Confirm with a non-critical PostgreSQL table that scheduled Cadence scripts can append, truncate-and-replace, and refresh selected materialized views without exhausting database connection slots.
+- Decide whether Metronome should link out to Cadence after the split, or whether the import workflow should eventually be removed from Metronome entirely.
 
 ## Next Step
-Restart the app, open Tools > Import Data, generate a script with each schedule mode against a non-critical table, then run one generated scheduled script with `--serve` on the deployment machine to confirm Prefect registers the expected cron schedule.
+Install Cadence on the Windows deployment machine with a read-capable GitHub token, then generate and serve one scheduled Prefect import against a non-critical table.
