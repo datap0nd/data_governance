@@ -462,7 +462,7 @@ function _notifySlaBuildBody(action, reason, slaValue, slaUnit) {
         lines.push("", "Context:", ...details);
     }
 
-    lines.push("", "Thanks,", "Data Governance");
+    lines.push("", "Thanks,", "Metronome");
     return lines.join("\n");
 }
 
@@ -10289,7 +10289,7 @@ function _showRegistrationModal(ip) {
     overlay.className = "register-overlay";
     overlay.innerHTML = `
         <div class="register-modal">
-            <h2>Welcome to Data Governance</h2>
+            <h2>Welcome to Metronome</h2>
             <p>Enter your name to get started. This will be remembered for this browser and IP address (${esc(ip)}) so the system knows who you are.</p>
             <input type="text" id="register-name" placeholder="Your name" autocomplete="off" autofocus>
             <button id="register-submit">Continue</button>
