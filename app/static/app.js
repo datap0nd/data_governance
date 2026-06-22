@@ -4489,6 +4489,12 @@ async function renderEmail() {
         return `
         <tr>
             <td>${esc(p.name)}</td>
+            <td>
+                <label class="email-all-alerts-toggle">
+                    <input class="email-all-alerts-check" data-person-id="${p.id}" type="checkbox" ${p.include_all_alerts ? "checked" : ""}>
+                    <span>Include all</span>
+                </label>
+            </td>
             <td>${p.pending_alert_count || 0}</td>
             <td>${p.pending_task_count || 0}</td>
             <td><input class="email-map-input" data-person-id="${p.id}" type="email" value="${esc(p.email || "")}" placeholder="name@example.com"></td>
@@ -4515,7 +4521,10 @@ async function renderEmail() {
                     </label>
                     <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
                 </div>
-                <div class="email-summary-meta"><span>${s.alert_count} active alert${s.alert_count === 1 ? "" : "s"}</span></div>
+                <div class="email-summary-meta">
+                    <span>${s.alert_count} active alert${s.alert_count === 1 ? "" : "s"}</span>
+                    ${s.include_all_alerts ? "<span>All alerts</span>" : ""}
+                </div>
                 <ul class="email-task-preview">${previewAlerts}</ul>
                 ${s.alerts.length > 4 ? `<div class="email-more">+${s.alerts.length - 4} more</div>` : ""}
                 <div class="email-summary-actions">
@@ -4572,7 +4581,7 @@ async function renderEmail() {
                 </div>
                 ${biPeople.length ? `
                     <table class="email-map-table">
-                        <thead><tr><th>BI Owner</th><th>Alerts</th><th>Tasks</th><th>Email</th><th></th></tr></thead>
+                        <thead><tr><th>BI Owner</th><th>All Alerts</th><th>Alerts</th><th>Tasks</th><th>Email</th><th></th></tr></thead>
                         <tbody>${mappingRows}</tbody>
                     </table>
                 ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
@@ -4634,10 +4643,14 @@ function bindEmailPage() {
         btn.addEventListener("click", async () => {
             const personId = btn.dataset.personId;
             const input = document.querySelector(`.email-map-input[data-person-id="${personId}"]`);
+            const allAlertsInput = document.querySelector(`.email-all-alerts-check[data-person-id="${personId}"]`);
             btn.disabled = true;
             try {
-                await apiPatch(`/api/email/people/${personId}`, { email: input.value.trim() || null });
-                toast("Email saved");
+                await apiPatch(`/api/email/people/${personId}`, {
+                    email: input.value.trim() || null,
+                    include_all_alerts: !!allAlertsInput?.checked,
+                });
+                toast("Email settings saved");
                 await navigate("email");
             } catch (err) {
                 btn.disabled = false;

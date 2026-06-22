@@ -5307,6 +5307,14 @@ tr.row-archived td:last-child {
     font: inherit;
     font-size: 0.8rem;
 }
+.email-all-alerts-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
 .email-profile-actions {
     display: flex;
     align-items: center;

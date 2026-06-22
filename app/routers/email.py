@@ -72,6 +72,7 @@ class OutlookEmailError(RuntimeError):
 
 class PersonEmailUpdate(BaseModel):
     email: str | None = None
+    include_all_alerts: bool | None = None
 
 
 class SendSummariesRequest(BaseModel):
@@ -624,6 +625,7 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
     return {
         "owner_name": owner_name,
         "email": owner.get("email"),
+        "include_all_alerts": bool(owner.get("include_all_alerts")),
         "alert_count": len(alerts),
         "subject": subject,
         "body_text": body_text,
@@ -671,11 +673,18 @@ def _load_task_summaries(owner_names: set[str] | None = None) -> list[dict]:
 def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
     with get_db() as db:
         people = db.execute(
-            "SELECT id, name, role, email, created_at FROM people WHERE role = 'BI' ORDER BY name"
+            """SELECT id, name, role, email, include_all_alerts, created_at
+               FROM people
+               WHERE role = 'BI'
+               ORDER BY name"""
         ).fetchall()
         if owner_names:
             people = [p for p in people if p["name"] in owner_names]
-        owners = {p["name"]: dict(p) for p in people}
+        owners = {}
+        for person in people:
+            owner = dict(person)
+            owner["include_all_alerts"] = bool(owner.get("include_all_alerts"))
+            owners[owner["name"]] = owner
         if not owners:
             return []
 
@@ -711,12 +720,19 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
         for row in report_rows:
             reports_by_source.setdefault(row["source_id"], []).append(dict(row))
 
-    alert_rows = [
-        a.model_dump()
-        for a in list_action_alerts()
-        if a.status not in ("resolved", "expected")
-        and a.assigned_to in owners
-    ]
+    include_all_owner_names = {
+        name for name, owner in owners.items()
+        if owner.get("include_all_alerts")
+    }
+    alert_rows = []
+    for action in list_action_alerts():
+        if action.status in ("resolved", "expected"):
+            continue
+        alert = action.model_dump()
+        assigned_to = alert.get("assigned_to")
+        if include_all_owner_names or assigned_to in owners:
+            alert_rows.append(alert)
+
     alerts_by_owner: dict[str, list[dict]] = {name: [] for name in owners}
     for alert in alert_rows:
         report_links: list[dict] = []
@@ -757,7 +773,12 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
         alert["source_links"] = list(dedup_sources.values())
         alert["issue_label"] = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
         alert["asset_name"] = alert.get("asset_name") or alert.get("source_name") or alert.get("report_name") or "Unknown asset"
-        alerts_by_owner[alert["assigned_to"]].append(alert)
+        target_owner_names = set(include_all_owner_names)
+        assigned_to = alert.get("assigned_to")
+        if assigned_to in owners:
+            target_owner_names.add(assigned_to)
+        for owner_name in sorted(target_owner_names):
+            alerts_by_owner[owner_name].append(alert)
 
     summaries = []
     for owner_name, owner in owners.items():
@@ -838,37 +859,74 @@ def list_people_email_status():
     """Return people with email mapping and pending task counts."""
     with get_db() as db:
         rows = db.execute(
-            """SELECT p.id, p.name, p.role, p.email, p.created_at,
+            """SELECT p.id, p.name, p.role, p.email, p.include_all_alerts, p.created_at,
                       SUM(CASE WHEN t.id IS NOT NULL AND t.status != 'done' THEN 1 ELSE 0 END) AS pending_task_count
                FROM people p
                LEFT JOIN tasks t ON t.assigned_to = p.name
-               GROUP BY p.id, p.name, p.role, p.email, p.created_at
+               GROUP BY p.id, p.name, p.role, p.email, p.include_all_alerts, p.created_at
                ORDER BY CASE p.role WHEN 'BI' THEN 0 ELSE 1 END, p.name"""
         ).fetchall()
     alert_counts: dict[str, int] = {}
+    all_alert_count = 0
     for action in list_action_alerts():
-        if action.status in ("resolved", "expected") or not action.assigned_to:
+        if action.status in ("resolved", "expected"):
+            continue
+        all_alert_count += 1
+        if not action.assigned_to:
             continue
         alert_counts[action.assigned_to] = alert_counts.get(action.assigned_to, 0) + 1
     result = []
     for row in rows:
         item = dict(row)
-        item["pending_alert_count"] = alert_counts.get(item["name"], 0)
+        item["include_all_alerts"] = bool(item.get("include_all_alerts"))
+        item["pending_alert_count"] = (
+            all_alert_count if item["include_all_alerts"] else alert_counts.get(item["name"], 0)
+        )
         result.append(item)
     return result
 
 
 @router.patch("/people/{person_id}")
 def update_person_email(person_id: int, body: PersonEmailUpdate, request: Request):
-    """Update the Outlook email address linked to a person."""
-    email = _normalize_email(body.email)
+    """Update the Outlook email settings linked to a person."""
+    data = body.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
     with get_db() as db:
         row = db.execute("SELECT id, name FROM people WHERE id = ?", (person_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Person not found")
-        db.execute("UPDATE people SET email = ? WHERE id = ?", (email, person_id))
-        log_event(db, "person", person_id, row["name"], "email_updated", email or "cleared", get_actor(request))
-    return {"status": "updated", "id": person_id, "email": email}
+
+        fields = []
+        values = []
+        detail_parts = []
+        if "email" in data:
+            email = _normalize_email(data.get("email"))
+            fields.append("email = ?")
+            values.append(email)
+            detail_parts.append(email or "cleared")
+        if "include_all_alerts" in data:
+            include_all_alerts = bool(data.get("include_all_alerts"))
+            fields.append("include_all_alerts = ?")
+            values.append(1 if include_all_alerts else 0)
+            detail_parts.append(f"include_all_alerts={include_all_alerts}")
+        if not fields:
+            raise HTTPException(status_code=400, detail="No changes provided")
+
+        values.append(person_id)
+        db.execute(f"UPDATE people SET {', '.join(fields)} WHERE id = ?", values)
+        updated = db.execute(
+            "SELECT email, include_all_alerts FROM people WHERE id = ?",
+            (person_id,),
+        ).fetchone()
+        log_event(db, "person", person_id, row["name"], "email_updated", ", ".join(detail_parts), get_actor(request))
+    return {
+        "status": "updated",
+        "id": person_id,
+        "email": updated["email"],
+        "include_all_alerts": bool(updated["include_all_alerts"]),
+    }
 
 
 @router.get("/task-summaries")
