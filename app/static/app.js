@@ -7352,7 +7352,7 @@ const LINEAGE_COLS = [
     { key: "visuals", label: "Visuals" },
     { key: "tables", label: "Tables" },
     { key: "sources", label: "Sources" },
-    { key: "mv_upstream", label: "MV Upstream" },
+    { key: "mv_upstream", label: "Upstream Sources" },
     { key: "scripts", label: "Scripts" },
     { key: "tasks", label: "Tasks" },
     { key: "upstreams", label: "Upstream" },
@@ -7435,10 +7435,145 @@ function _linCat(t) {
     return "Other";
 }
 
+function _lineageSourceLayers(data, directSourceIds) {
+    const sourceMap = new Map();
+    for (const source of (data.sources || [])) sourceMap.set(source.id, source);
+
+    // Backward-compatible fallback for an older API response where upstream
+    // source details lived only on dependency rows.
+    for (const dep of (data.source_deps || [])) {
+        if (!sourceMap.has(dep.depends_on_id)) {
+            sourceMap.set(dep.depends_on_id, {
+                id: dep.depends_on_id,
+                name: dep.depends_on_name,
+                type: dep.depends_on_type,
+                status: dep.depends_on_status,
+                last_data_at: dep.depends_on_last_data_at,
+                row_count: dep.depends_on_row_count,
+                custom_fresh_days: dep.depends_on_custom_fresh_days,
+                freshness_rule_type: dep.depends_on_freshness_rule_type,
+                freshness_schedule_days: dep.depends_on_freshness_schedule_days,
+            });
+        }
+    }
+
+    const depsBySource = new Map();
+    for (const dep of (data.source_deps || [])) {
+        if (!depsBySource.has(dep.source_id)) depsBySource.set(dep.source_id, []);
+        depsBySource.get(dep.source_id).push(dep.depends_on_id);
+    }
+
+    // First find the reachable subgraph and each source's nearest level. This
+    // pass is also the cycle-safe boundary for everything that follows.
+    const nearestDepth = new Map();
+    const discoveryQueue = [];
+    for (const sourceId of directSourceIds) {
+        if (!sourceMap.has(sourceId) || nearestDepth.has(sourceId)) continue;
+        nearestDepth.set(sourceId, 0);
+        discoveryQueue.push(sourceId);
+    }
+    for (let i = 0; i < discoveryQueue.length; i++) {
+        const sourceId = discoveryQueue[i];
+        const nextDepth = nearestDepth.get(sourceId) + 1;
+        for (const dependencyId of (depsBySource.get(sourceId) || [])) {
+            if (!sourceMap.has(dependencyId) || nearestDepth.has(dependencyId)) continue;
+            nearestDepth.set(dependencyId, nextDepth);
+            discoveryQueue.push(dependencyId);
+        }
+    }
+
+    // Assign the longest DAG depth so every non-cyclic dependency edge moves
+    // to the right, even when a shared ancestor is reached by unequal paths.
+    // If malformed data contains a cycle, deterministically break that cycle
+    // at the nearest remaining node; only the cycle's back-edge can then point
+    // left, while downstream dependencies continue at increasing levels.
+    const reachableIds = new Set(nearestDepth.keys());
+    const indegree = new Map([...reachableIds].map(sourceId => [sourceId, 0]));
+    for (const sourceId of reachableIds) {
+        for (const dependencyId of (depsBySource.get(sourceId) || [])) {
+            if (reachableIds.has(dependencyId)) {
+                indegree.set(dependencyId, indegree.get(dependencyId) + 1);
+            }
+        }
+    }
+
+    const depthById = new Map();
+    for (const sourceId of directSourceIds) {
+        if (reachableIds.has(sourceId)) depthById.set(sourceId, 0);
+    }
+    const processed = new Set();
+    const compareSourceIds = (a, b) =>
+        (nearestDepth.get(a) - nearestDepth.get(b)) ||
+        ((sourceMap.get(a)?.name || "").localeCompare(sourceMap.get(b)?.name || "")) ||
+        (a - b);
+    const ready = [...reachableIds].filter(sourceId => indegree.get(sourceId) === 0).sort(compareSourceIds);
+    const enqueueReady = sourceId => {
+        if (!processed.has(sourceId) && !ready.includes(sourceId)) {
+            ready.push(sourceId);
+            ready.sort(compareSourceIds);
+        }
+    };
+
+    while (processed.size < reachableIds.size) {
+        if (ready.length === 0) {
+            const remainingIds = [...reachableIds].filter(sourceId => !processed.has(sourceId));
+            const remainingSet = new Set(remainingIds);
+            const isInRemainingCycle = startId => {
+                const stack = (depsBySource.get(startId) || []).filter(id => remainingSet.has(id));
+                const seen = new Set();
+                while (stack.length > 0) {
+                    const sourceId = stack.pop();
+                    if (sourceId === startId) return true;
+                    if (seen.has(sourceId)) continue;
+                    seen.add(sourceId);
+                    for (const dependencyId of (depsBySource.get(sourceId) || [])) {
+                        if (remainingSet.has(dependencyId)) stack.push(dependencyId);
+                    }
+                }
+                return false;
+            };
+            const cycleIds = remainingIds.filter(isInRemainingCycle);
+            const cycleEntry = (cycleIds.length > 0 ? cycleIds : remainingIds)
+                .sort(compareSourceIds)[0];
+            enqueueReady(cycleEntry);
+        }
+
+        const sourceId = ready.shift();
+        if (processed.has(sourceId)) continue;
+        processed.add(sourceId);
+        const sourceDepth = depthById.get(sourceId) ?? nearestDepth.get(sourceId) ?? 0;
+        depthById.set(sourceId, sourceDepth);
+
+        for (const dependencyId of (depsBySource.get(sourceId) || [])) {
+            if (!reachableIds.has(dependencyId) || processed.has(dependencyId)) continue;
+            const candidateDepth = sourceDepth + 1;
+            if (candidateDepth > (depthById.get(dependencyId) ?? -1)) {
+                depthById.set(dependencyId, candidateDepth);
+            }
+            indegree.set(dependencyId, Math.max(0, indegree.get(dependencyId) - 1));
+            if (indegree.get(dependencyId) === 0) enqueueReady(dependencyId);
+        }
+    }
+
+    const layers = [];
+    for (const [sourceId, depth] of depthById) {
+        if (!layers[depth]) layers[depth] = [];
+        layers[depth].push(sourceMap.get(sourceId));
+    }
+    for (const layer of layers) {
+        if (layer) layer.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
+
+    return { sourceMap, depthById, layers };
+}
+
 function _renderLineageDiagram(data) {
     const container = document.getElementById("lineage-container");
+    if (window._lineageBindTimer) {
+        clearTimeout(window._lineageBindTimer);
+        window._lineageBindTimer = null;
+    }
     const colState = _getLineageCols();
-    const enabledCols = LINEAGE_COLS.filter(c => colState[c.key]).map(c => c.key);
 
     // === Process data ===
     const visualNodes = [];
@@ -7474,8 +7609,6 @@ function _renderLineageDiagram(data) {
     // Tables, sources, scripts, tasks, upstreams
     const tableMap = new Map();
     for (const t of data.tables) tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
-    const sourceMap = new Map();
-    for (const s of data.sources) sourceMap.set(s.id, s);
     const scriptMap = new Map();
     for (const s of (data.scripts || [])) scriptMap.set(s.id, s);
     const taskMap = new Map();
@@ -7487,11 +7620,11 @@ function _renderLineageDiagram(data) {
     const usedTableNames = new Set([...fieldMap.values()].map(f => f.table));
     const tableNodes = [...tableMap.values()].filter(t => usedTableNames.has(t.name) || t.source_id);
     const usedSourceIds = new Set(tableNodes.map(t => t.source_id).filter(Boolean));
-    const sourceNodes = [...sourceMap.values()].filter(s => usedSourceIds.has(s.id));
-    // Include MV upstream dependency source IDs so scripts/tasks linked to them also show
-    const allSourceIds = new Set(usedSourceIds);
-    for (const d of (data.source_deps || [])) allSourceIds.add(d.depends_on_id);
-    const usedUpstreamIds = new Set(sourceNodes.map(s => s.upstream_id).filter(Boolean));
+    const { layers: sourceLayers } = _lineageSourceLayers(data, usedSourceIds);
+    const sourceNodes = sourceLayers[0] || [];
+    const allSourceNodes = sourceLayers.flatMap(layer => layer || []);
+    const allSourceIds = new Set(allSourceNodes.map(s => s.id));
+    const usedUpstreamIds = new Set(allSourceNodes.map(s => s.upstream_id).filter(Boolean));
     const upstreamNodes = [...upstreamMap.values()].filter(u => usedUpstreamIds.has(u.id));
     const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => allSourceIds.has(sid)));
     const usedScriptIds = new Set(scriptNodes.map(s => s.id));
@@ -7585,19 +7718,17 @@ function _renderLineageDiagram(data) {
     }
     colHtml.tables = tblH;
 
-    // -- Sources (including MV dependencies) --
+    // -- Sources and every recursively upstream level --
     // Build dep map: source_id -> list of upstream source objects
     const depMap = new Map();
-    const depSourceMap = new Map();
     for (const d of (data.source_deps || [])) {
         if (!depMap.has(d.source_id)) depMap.set(d.source_id, []);
         depMap.get(d.source_id).push(d);
-        depSourceMap.set(d.depends_on_id, d);
     }
 
     // Check which MVs have stale upstream data
     const mvStaleUpstream = new Set();
-    for (const s of sourceNodes) {
+    for (const s of allSourceNodes) {
         const deps = depMap.get(s.id);
         if (!deps) continue;
         for (const d of deps) {
@@ -7607,27 +7738,23 @@ function _renderLineageDiagram(data) {
         }
     }
 
-    let srcH = "";
-    for (const s of sourceNodes) {
+    const sourceCardHtml = (s, isUpstream = false) => {
         const hasDeps = depMap.has(s.id);
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
-        srcH += `<div class="lin-card lin-src ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sourceFacts(s)}</div>`;
-    }
-    colHtml.sources = srcH;
+        const upstreamClass = isUpstream ? " lin-src-upstream" : "";
+        return `<div class="lin-card lin-src${upstreamClass} ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sourceFacts(s)}</div>`;
+    };
 
-    // -- MV Upstream (tables that feed materialized views, not directly used by report) --
-    const existingSourceIds = new Set(sourceNodes.map(s => s.id));
-    let mvUpH = "";
-    const mvUpSources = [];
-    for (const [depId, d] of depSourceMap) {
-        if (!existingSourceIds.has(depId)) {
-            // This upstream table only feeds the MV, not directly used by the report
-            mvUpSources.push(d);
-            mvUpH += `<div class="lin-card lin-src lin-src-upstream ${stCls(d, "depends_on_")}" data-lin-id="source-${d.depends_on_id}" title="${esc(d.depends_on_name)}"><div class="lin-card-hdr">${stDot(d, "depends_on_")}<span class="lin-card-lbl">${esc(d.depends_on_name)}</span></div>${sourceFacts(d, "depends_on_")}</div>`;
-        }
+    colHtml.sources = sourceNodes.map(s => sourceCardHtml(s)).join("");
+    const upstreamColumnDefs = [];
+    for (let depth = 1; depth < sourceLayers.length; depth++) {
+        const layer = sourceLayers[depth] || [];
+        if (layer.length === 0) continue;
+        const key = `mv_upstream_${depth}`;
+        colHtml[key] = layer.map(s => sourceCardHtml(s, true)).join("");
+        upstreamColumnDefs.push({ key, label: `Upstream ${depth}`, stateKey: "mv_upstream" });
     }
-    colHtml.mv_upstream = mvUpH;
 
     // -- Scripts --
     let scrH = "";
@@ -7654,16 +7781,26 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, mv_upstream: mvUpSources.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    for (let depth = 1; depth < sourceLayers.length; depth++) {
+        colCounts[`mv_upstream_${depth}`] = (sourceLayers[depth] || []).length;
+    }
 
     // Build grid
-    const activeCols = enabledCols.filter(k => colHtml[k] || k === "visuals" || k === "tables");
+    const columnDefs = [];
+    for (const col of LINEAGE_COLS) {
+        if (col.key === "mv_upstream") {
+            if (colState.mv_upstream) columnDefs.push(...upstreamColumnDefs);
+        } else if (colState[col.key]) {
+            columnDefs.push({ ...col, stateKey: col.key });
+        }
+    }
+    const activeCols = columnDefs.filter(col => colHtml[col.key] || col.key === "visuals" || col.key === "tables");
     const gridCols = activeCols.map(() => "minmax(150px, 1fr)").join(" ");
     let gridH = "";
-    for (const key of activeCols) {
-        const col = LINEAGE_COLS.find(c => c.key === key);
-        const empty = !colHtml[key];
-        gridH += `<div class="lin-col" data-lin-col="${key}"><div class="lin-col-hdr">${col.label} <span class="lin-col-cnt">${colCounts[key] || 0}</span></div>${empty ? '<div class="lin-empty">None linked</div>' : colHtml[key]}</div>`;
+    for (const col of activeCols) {
+        const empty = !colHtml[col.key];
+        gridH += `<div class="lin-col" data-lin-col="${col.key}"><div class="lin-col-hdr">${col.label} <span class="lin-col-cnt">${colCounts[col.key] || 0}</span></div>${empty ? '<div class="lin-empty">None linked</div>' : colHtml[col.key]}</div>`;
     }
 
     const stLabel = data.report.status || "unknown";
@@ -7677,11 +7814,15 @@ function _renderLineageDiagram(data) {
             <div class="lin-grid" id="lin-grid" style="grid-template-columns:${gridCols}">${gridH}</div>
             <svg class="lin-svg" id="lin-svg"></svg>
         </div>
-        <div class="lin-hint-bar">Click any node to trace its lineage. Click empty space to reset.</div>
+        <div class="lin-hint-bar">Click any node to trace its lineage. Scroll horizontally for deeper levels. Click empty space to reset.</div>
     `;
 
-    _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes);
-    setTimeout(() => { _drawLinEdges(); _bindLinInteractions(); }, 60);
+    _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, allSourceNodes, scriptNodes, taskNodes, upstreamNodes);
+    window._lineageBindTimer = setTimeout(() => {
+        window._lineageBindTimer = null;
+        _drawLinEdges();
+        _bindLinInteractions();
+    }, 60);
 }
 
 async function _showLineageSourceDetail(sourceId) {
@@ -7958,6 +8099,7 @@ function _bindLinInteractions() {
         });
     });
     wrap.addEventListener("click", (e) => { if (!e.target.closest("[data-lin-id]")) _resetLinHL(); });
+    if (window._linResize) window.removeEventListener("resize", window._linResize);
     window._linResize = () => _drawLinEdges();
     window.addEventListener("resize", window._linResize);
 }
@@ -8792,7 +8934,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "What is the Lineage view?",
-        a: "Lineage shows the full dependency chain as a horizontal DAG: Visuals, Tables, Sources, MV Upstream, Scripts, and Tasks. Select a report to see exactly which sources feed into which visuals, which materialized views sit upstream, and which scripts refresh the data."
+        a: "Lineage shows the full dependency chain as a horizontal DAG: Visuals, Tables, Sources, every upstream source level, Scripts, and Tasks. Select a report to see exactly which sources feed each visual, how materialized views depend on one another, and which scripts refresh the data."
     },
     {
         q: "What is the Pipeline Overview?",

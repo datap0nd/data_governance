@@ -133,39 +133,54 @@ def scan_pg_dependencies() -> dict:
             # Clear old dependency edges (rebuild each time)
             db.execute("DELETE FROM source_dependencies WHERE discovered_by = 'pg_matviews'")
 
-            for full_mv_name, refs in mv_deps.items():
-                # Find this MV in our sources table
-                mv_source = db.execute(
-                    "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
-                    (f"%{full_mv_name}",),
-                ).fetchone()
-                if not mv_source:
+            # An upstream dependency can itself be an MV that is not in the
+            # local source inventory yet. Keep resolving newly created MVs
+            # until the reachable catalog graph is exhausted. Processing each
+            # MV once also makes cycles harmless.
+            pending_mvs = set(mv_deps)
+            while pending_mvs:
+                progressed = False
+                for full_mv_name in sorted(pending_mvs):
+                    refs = mv_deps[full_mv_name]
+
+                    # Find this MV in our sources table. A downstream MV may
+                    # have registered it during an earlier fixed-point pass.
                     mv_source = db.execute(
-                        "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
-                        (f"%{full_mv_name}%",),
+                        "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
+                        (f"%{full_mv_name}",),
                     ).fetchone()
+                    if not mv_source:
+                        mv_source = db.execute(
+                            "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
+                            (f"%{full_mv_name}%",),
+                        ).fetchone()
 
-                if not mv_source:
-                    continue
+                    if not mv_source:
+                        continue
 
-                mv_source_id = mv_source["id"]
-                mvs_found += 1
+                    pending_mvs.remove(full_mv_name)
+                    progressed = True
+                    mv_source_id = mv_source["id"]
+                    mvs_found += 1
 
-                for dep_schema, dep_table in refs:
-                    dep_source_id = _find_or_create_source(db, dep_schema, dep_table, now)
-                    if dep_source_id and dep_source_id != mv_source_id:
-                        try:
-                            db.execute(
-                                """INSERT INTO source_dependencies (source_id, depends_on_id, discovered_by, created_at)
-                                   VALUES (?, ?, 'pg_matviews', ?)""",
-                                (mv_source_id, dep_source_id, now),
-                            )
-                            deps_created += 1
-                        except Exception:
-                            pass  # UNIQUE constraint
+                    for dep_schema, dep_table in refs:
+                        dep_source_id = _find_or_create_source(db, dep_schema, dep_table, now)
+                        if dep_source_id and dep_source_id != mv_source_id:
+                            try:
+                                db.execute(
+                                    """INSERT INTO source_dependencies (source_id, depends_on_id, discovered_by, created_at)
+                                       VALUES (?, ?, 'pg_matviews', ?)""",
+                                    (mv_source_id, dep_source_id, now),
+                                )
+                                deps_created += 1
+                            except Exception:
+                                pass  # UNIQUE constraint
 
-                ref_names = [f"{s}.{t}" for s, t in refs]
-                log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
+                    ref_names = [f"{s}.{t}" for s, t in refs]
+                    log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
+
+                if not progressed:
+                    break
 
             # Clean up orphaned sources created by pg_deps or pg_matviews
             # that no longer have any dependency edges or script references

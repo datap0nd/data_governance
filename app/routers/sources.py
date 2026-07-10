@@ -3,6 +3,7 @@ from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
 from app.usage import get_source_usage_map, sync_usage_from_csv_if_configured
+from app.asset_visibility import get_active_source_ids
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -52,13 +53,19 @@ def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
 def list_sources(include_archived: bool = Query(False)):
     with get_db() as db:
         sync_usage_from_csv_if_configured(db)
+        active_source_ids = get_active_source_ids(db)
         archive_filter = "" if include_archived else "WHERE s.archived = 0"
         rows = db.execute(f"""
             SELECT s.*,
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
                    sp.row_count AS latest_row_count,
-                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
+                   (SELECT COUNT(*)
+                    FROM report_tables rt
+                    JOIN reports r ON r.id = rt.report_id
+                    WHERE rt.source_id = s.id
+                      AND COALESCE(r.archived, 0) = 0
+                   ) AS report_count,
                    us.name AS upstream_name,
                    us.refresh_day AS upstream_refresh_day,
                    (SELECT GROUP_CONCAT(sc.display_name, ', ')
@@ -83,11 +90,11 @@ def list_sources(include_archived: bool = Query(False)):
         """).fetchall()
         usage_map = get_source_usage_map(db)
 
-    return [
-        _source_out_from_row(r, usage_map.get(r["id"]))
-        for r in rows
-        if (r["latest_status"] or "unknown") not in ("unknown", "no_connection") or r["discovered_by"] in ("manual", "pg_deps")
+    visible_rows = [
+        r for r in rows
+        if (include_archived or r["id"] in active_source_ids)
     ]
+    return [_source_out_from_row(r, usage_map.get(r["id"])) for r in visible_rows]
 
 
 @router.get("/{source_id}", response_model=SourceOut)
@@ -99,7 +106,12 @@ def get_source(source_id: int):
                    sp.status AS latest_status,
                    CAST(sp.last_data_at AS TEXT) AS latest_last_data_at,
                    sp.row_count AS latest_row_count,
-                   (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
+                   (SELECT COUNT(*)
+                    FROM report_tables rt
+                    JOIN reports r ON r.id = rt.report_id
+                    WHERE rt.source_id = s.id
+                      AND COALESCE(r.archived, 0) = 0
+                   ) AS report_count,
                    us.name AS upstream_name,
                    us.refresh_day AS upstream_refresh_day,
                    (SELECT GROUP_CONCAT(sc.display_name, ', ')
@@ -158,6 +170,7 @@ def get_source_reports(source_id: int):
             FROM report_tables rt
             JOIN reports r ON r.id = rt.report_id
             WHERE rt.source_id = ?
+              AND COALESCE(r.archived, 0) = 0
             ORDER BY r.name
         """, (source_id,)).fetchall()
 

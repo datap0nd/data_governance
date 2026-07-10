@@ -119,8 +119,32 @@ def get_lineage_diagram(report_id: int):
             for r in table_rows
         ]
 
-        # 4. Sources with latest probe status
-        source_ids = list({r["source_id"] for r in table_rows if r["source_id"]})
+        # 4. Follow every source dependency reachable from the report.
+        # UNION (rather than UNION ALL) makes the closure terminate safely if
+        # bad dependency data contains a cycle.
+        direct_source_ids = sorted({r["source_id"] for r in table_rows if r["source_id"]})
+        source_ids = list(direct_source_ids)
+        if direct_source_ids:
+            direct_ph = ",".join("?" * len(direct_source_ids))
+            reachable_rows = db.execute(f"""
+                WITH RECURSIVE reachable_sources(id) AS (
+                    SELECT id
+                    FROM sources
+                    WHERE id IN ({direct_ph})
+
+                    UNION
+
+                    SELECT sd.depends_on_id
+                    FROM source_dependencies sd
+                    JOIN reachable_sources rs ON rs.id = sd.source_id
+                )
+                SELECT id
+                FROM reachable_sources
+                ORDER BY id
+            """, direct_source_ids).fetchall()
+            source_ids = [r["id"] for r in reachable_rows]
+
+        # 5. Direct and recursively upstream sources with latest probe status
         sources = []
         if source_ids:
             placeholders = ",".join("?" * len(source_ids))
@@ -137,6 +161,7 @@ def get_lineage_diagram(report_id: int):
                     FROM source_probes
                 ) sp ON sp.source_id = s.id AND sp.rn = 1
                 WHERE s.id IN ({placeholders})
+                ORDER BY s.name
             """, source_ids).fetchall()
             sources = [
                 {
@@ -156,7 +181,7 @@ def get_lineage_diagram(report_id: int):
                 for r in source_rows
             ]
 
-        # 5. Upstream systems
+        # 6. Upstream systems linked to any source in the dependency chain
         upstream_ids = list({s["upstream_id"] for s in sources if s["upstream_id"]})
         upstreams = []
         if upstream_ids:
@@ -171,7 +196,7 @@ def get_lineage_diagram(report_id: int):
                 for r in up_rows
             ]
 
-        # 6. Source dependencies (MV -> upstream tables)
+        # 7. Every source dependency in the reachable chain (MV -> upstream)
         source_deps = []
         if source_ids:
             dep_ph = ",".join("?" * len(source_ids))
@@ -192,6 +217,7 @@ def get_lineage_diagram(report_id: int):
                     FROM source_probes
                 ) sp ON sp.source_id = sd.depends_on_id AND sp.rn = 1
                 WHERE sd.source_id IN ({dep_ph})
+                ORDER BY sd.source_id, sd.depends_on_id
             """, source_ids).fetchall()
             source_deps = [
                 {
@@ -209,9 +235,9 @@ def get_lineage_diagram(report_id: int):
                 for r in dep_rows
             ]
 
-        # 7. Scripts that write to these sources (including upstream deps)
+        # 8. Scripts that write to any source in the dependency chain
         scripts = []
-        all_source_ids = list(set(source_ids + [d["depends_on_id"] for d in source_deps]))
+        all_source_ids = source_ids
         if all_source_ids:
             src_ph = ",".join("?" * len(all_source_ids))
             script_rows = db.execute(f"""
@@ -237,7 +263,7 @@ def get_lineage_diagram(report_id: int):
                     script_map[sid]["source_ids"].append(src_id)
             scripts = list(script_map.values())
 
-        # 8. Scheduled tasks linked to these scripts
+        # 9. Scheduled tasks linked to these scripts
         scheduled_tasks = []
         script_id_list = [s["id"] for s in scripts]
         if script_id_list:
