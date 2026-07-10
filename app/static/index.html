@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Metronome</title>
-    <link rel="stylesheet" href="/static/style.css?v=43">
+    <link rel="stylesheet" href="/static/style.css?v=44">
 </head>
 <body>
     <a href="#app" class="skip-link">Skip to main content</a>
@@ -18,49 +18,30 @@
                 <path class="logo-metronome-base" d="M6 21h12"></path>
             </svg>
         </span>
-        <a href="#dashboard" data-page="dashboard" class="active"><span class="nav-health-dot" id="nav-health-dot"></span>Dashboard</a>
-        <a href="#lineage" data-page="lineage">Lineage</a>
-        <div class="nav-group" data-pages="overview,reports,sources,scripts,scheduledtasks,powerautomate" role="group" aria-label="Data pages">
-            <span class="nav-group-label" tabindex="0" aria-haspopup="true">Data <span class="nav-arrow">&#9662;</span></span>
-            <div class="nav-dropdown" role="menu">
-                <a href="#overview" data-page="overview" role="menuitem">Overview</a>
-                <a href="#reports" data-page="reports" role="menuitem">Reports</a>
-                <a href="#sources" data-page="sources" role="menuitem">Sources</a>
-                <a href="#scripts" data-page="scripts" role="menuitem">Scripts</a>
-                <a href="#scheduledtasks" data-page="scheduledtasks" role="menuitem">Scheduled Tasks</a>
-                <a href="#powerautomate" data-page="powerautomate" role="menuitem">Power Automate</a>
-            </div>
+        <div class="nav-primary" aria-label="Workspaces">
+            <a href="#dashboard" data-page="dashboard" data-workspace="work" class="active"><span class="nav-health-dot" id="nav-health-dot"></span>Work</a>
+            <a href="#reports" data-page="reports" data-workspace="catalog">Catalog</a>
+            <a href="#lineage" data-page="lineage" data-workspace="lineage">Lineage</a>
+            <a href="#scanner" data-page="scanner" data-workspace="operations">Operations</a>
         </div>
-        <div class="nav-group" data-pages="create,tasks,customreports" role="group" aria-label="Management pages">
-            <span class="nav-group-label" tabindex="0" aria-haspopup="true">Management <span class="nav-arrow">&#9662;</span></span>
-            <div class="nav-dropdown" role="menu">
-                <a href="#tasks" data-page="tasks" role="menuitem">Tasks</a>
-                <a href="#customreports" data-page="customreports" role="menuitem">Custom Reports</a>
-                <a href="#create" data-page="create" role="menuitem">Create</a>
-            </div>
+        <div class="nav-utilities">
+            <button type="button" class="nav-utility-btn" id="btn-global-search" aria-haspopup="dialog" aria-controls="global-search-dialog">Search <kbd>/</kbd></button>
+            <a href="#faq" data-page="faq" class="nav-utility-link">Help</a>
+            <details class="nav-settings" id="nav-settings">
+                <summary>Settings</summary>
+                <div class="nav-settings-menu" role="menu">
+                    <a href="#create" data-page="create" role="menuitem">People and manual assets</a>
+                    <a href="#email" data-page="email" role="menuitem">Notifications</a>
+                    <a href="#premiumviewers" data-page="premiumviewers" role="menuitem" id="nav-premium-viewers">Impact weighting</a>
+                    <a href="#eventlog" data-page="eventlog" role="menuitem">Audit log</a>
+                    <a href="#export" data-page="export" role="menuitem">Export</a>
+                    <a href="#dataimport" data-page="dataimport" role="menuitem">Legacy data loader</a>
+                    <a href="#changelog" data-page="changelog" role="menuitem">About and changelog</a>
+                    <button type="button" id="btn-update-app" role="menuitem">Update app</button>
+                </div>
+            </details>
         </div>
-        <div class="nav-group" data-pages="bestpractices,email,export,dataimport" role="group" aria-label="Tools pages">
-            <span class="nav-group-label" tabindex="0" aria-haspopup="true">Tools <span class="nav-arrow">&#9662;</span></span>
-            <div class="nav-dropdown" role="menu">
-                <a href="#bestpractices" data-page="bestpractices" role="menuitem">TMDL Checker</a>
-                <a href="#email" data-page="email" role="menuitem">Email</a>
-                <a href="#export" data-page="export" role="menuitem">Full Export</a>
-                <a href="#dataimport" data-page="dataimport" role="menuitem">Import Data</a>
-            </div>
-        </div>
-        <div class="nav-group" data-pages="changelog,eventlog,faq,scanner,refreshschedule,premiumviewers" role="group" aria-label="System pages">
-            <span class="nav-group-label" tabindex="0" aria-haspopup="true">System <span class="nav-arrow">&#9662;</span></span>
-            <div class="nav-dropdown" role="menu">
-                <a href="#changelog" data-page="changelog" role="menuitem">Changelog</a>
-                <a href="#eventlog" data-page="eventlog" role="menuitem">Event Log</a>
-                <a href="#faq" data-page="faq" role="menuitem">FAQ</a>
-                <a href="#scanner" data-page="scanner" role="menuitem">Scanner</a>
-                <a href="#refreshschedule" data-page="refreshschedule" role="menuitem" id="nav-refresh-schedule">Refresh Schedule</a>
-                <a href="#premiumviewers" data-page="premiumviewers" role="menuitem" id="nav-premium-viewers">Premium Viewers</a>
-                <a href="#" id="btn-update-app" role="menuitem">Update App</a>
-            </div>
-        </div>
-        <span id="app-version" style="margin-left:auto;font-size:0.68rem;color:var(--text-dim);font-family:monospace;opacity:0.6"></span>
+        <span id="app-version" class="app-version"></span>
         <span id="connected-user"></span>
         <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">&#9790;</button>
     </nav>
@@ -68,6 +49,18 @@
     <main id="app" role="main" aria-label="Page content">
         <div class="loading">Loading...</div>
     </main>
-    <script src="/static/app.js?v=46"></script>
+    <dialog id="global-search-dialog" class="global-search-dialog" aria-labelledby="global-search-title">
+        <div class="global-search-head">
+            <div>
+                <h2 id="global-search-title">Search the catalog</h2>
+                <p>Find reports, sources, and pipelines.</p>
+            </div>
+            <button type="button" class="dialog-close" id="btn-close-global-search" aria-label="Close search">&times;</button>
+        </div>
+        <label class="sr-only" for="global-search-input">Search assets</label>
+        <input id="global-search-input" class="global-search-input" type="search" placeholder="Search by name, owner, type, or path" autocomplete="off">
+        <div id="global-search-results" class="global-search-results" aria-live="polite"></div>
+    </dialog>
+    <script src="/static/app.js?v=47"></script>
 </body>
 </html>
