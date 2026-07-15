@@ -12,13 +12,17 @@ import logging
 import os
 import platform
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from app.config import PBI_VISUAL_EXPORT_MAX_ROWS, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS
 from app.scanner.pbi_auth import get_access_token
 
 logger = logging.getLogger(__name__)
 
-POWER_BI_CLIENT_URL = "https://cdn.powerbi.com/libs/powerbi-client/2.23.1/powerbi.min.js"
+POWER_BI_CLIENT_URLS = (
+    "https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js",
+    "https://unpkg.com/powerbi-client@2.23.1/dist/powerbi.min.js",
+)
 TABLE_VISUAL_TYPES = {"table", "tableex", "pivottable", "matrix"}
 
 
@@ -36,9 +40,7 @@ _RUNTIME_HTML = f"""<!doctype html>
 </head>
 <body>
   <div id="report"></div>
-  <script src="{POWER_BI_CLIENT_URL}"></script>
   <script>
-    window.metronomeReady = true;
     window.metronomeRun = function(config) {{
       return new Promise((resolve, reject) => {{
         const container = document.getElementById("report");
@@ -129,6 +131,30 @@ _RUNTIME_HTML = f"""<!doctype html>
 </body>
 </html>
 """
+
+
+def _load_power_bi_client(page) -> str:
+    """Load the browser client from the published npm package with a fallback CDN."""
+    attempts: list[str] = []
+    page.set_default_timeout(min(20000, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000))
+    for source_url in POWER_BI_CLIENT_URLS:
+        source_host = urlsplit(source_url).hostname or source_url
+        try:
+            page.add_script_tag(url=source_url)
+            ready = page.evaluate(
+                "() => !!window.powerbi && !!window['powerbi-client'] && "
+                "!!window['powerbi-client'].models"
+            )
+            if ready:
+                return source_url
+            attempts.append(f"{source_host}: script loaded without the Power BI client globals")
+        except Exception as exc:
+            message = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+            attempts.append(f"{source_host}: {message}")
+    raise PbiVisualExportError(
+        "The Power BI JavaScript client could not load. Allow cdn.jsdelivr.net or unpkg.com "
+        "through the Windows system proxy. " + " | ".join(attempts)
+    )
 
 
 def _edge_candidates() -> list[Path]:
@@ -225,9 +251,8 @@ def _run_visual_action(
                 page = context.new_page()
                 page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
                 page.set_content(_RUNTIME_HTML, wait_until="domcontentloaded")
-                page.wait_for_function(
-                    "window.metronomeReady === true && !!window.powerbi && !!window['powerbi-client']"
-                )
+                _load_power_bi_client(page)
+                page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
                 return page.evaluate("config => window.metronomeRun(config)", config)
             finally:
                 browser.close()

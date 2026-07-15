@@ -4,6 +4,8 @@
 
 Add Tools > Recurrences to Metronome so a user can select a live Power BI table visual, filter its rows, split them into recipient subgroups, and send scheduled HTML emails through the existing Outlook implementation.
 
+The first work-PC validation exposed a bootstrap failure before report loading: `page.wait_for_function` timed out because the original `cdn.powerbi.com` client URL no longer resolved. The client bootstrap now uses the published `powerbi-client` npm artifact from jsDelivr with an unpkg fallback and reports a direct proxy allow-list error instead of waiting for the full visual timeout.
+
 ## Repo State
 
 - Working clone: `/private/tmp/data_governance_metronome`
@@ -26,6 +28,7 @@ Add Tools > Recurrences to Metronome so a user can select a live Power BI table 
 - Added `Create drafts`, confirmed `Run now`, run history, pause/enable state, and deletion confirmation.
 - Added the Tools > Recurrences list and four-step creation/edit workflow.
 - Added runtime diagnostics for cached authentication, Playwright, Edge, local timezone, timeout, and row limit.
+- Replaced the non-resolving Power BI client URL with the package CDN URL used by Microsoft documentation and added a second CDN fallback.
 - Added product and design contracts in `PRODUCT.md` and `DESIGN.md` for future interface work.
 - Documented setup, runtime behavior, failure behavior, and environment variables in `README.md`.
 
@@ -60,7 +63,7 @@ Add Tools > Recurrences to Metronome so a user can select a live Power BI table 
 
 ## Verification
 
-- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 16 tests.
+- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 17 tests.
 - `node --test tests/test_lineage_layers.mjs`: passed.
 - `node --check app/static/app.js`: passed.
 - Python compilation of all changed backend modules: passed.

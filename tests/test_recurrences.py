@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from app import database
+from app import database, pbi_visual_export
 from app.routers import recurrences
 
 
@@ -164,6 +164,31 @@ def test_missing_recurrence_does_not_leave_run_lock(tmp_path, monkeypatch):
         recurrences.run_recurrence(999, mode="send", trigger_type="manual")
 
     assert 999 not in recurrences._RUNNING_IDS
+
+
+def test_power_bi_client_loader_falls_back_to_second_package_cdn():
+    class FakePage:
+        def __init__(self):
+            self.urls = []
+            self.timeouts = []
+
+        def set_default_timeout(self, value):
+            self.timeouts.append(value)
+
+        def add_script_tag(self, *, url):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                raise RuntimeError("DNS lookup failed")
+
+        def evaluate(self, expression):
+            return True
+
+    page = FakePage()
+    selected = pbi_visual_export._load_power_bi_client(page)
+
+    assert page.urls == list(pbi_visual_export.POWER_BI_CLIENT_URLS)
+    assert selected == pbi_visual_export.POWER_BI_CLIENT_URLS[1]
+    assert page.timeouts == [20000]
 
 
 def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch):
