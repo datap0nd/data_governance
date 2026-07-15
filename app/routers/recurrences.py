@@ -66,17 +66,19 @@ _RUNNING_IDS: set[int] = set()
 
 class RecurrenceGroupIn(BaseModel):
     match_value: str = Field(max_length=500)
-    display_name: str = Field(min_length=1, max_length=200)
-    recipients: str = Field(min_length=1, max_length=4000)
+    display_name: str = Field(default="", max_length=200)
+    recipients: str = Field(default="", max_length=4000)
     enabled: bool = True
 
-    @field_validator("display_name", "recipients")
+    @field_validator("display_name")
     @classmethod
-    def strip_required(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("This value is required.")
-        return value
+    def strip_display_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("recipients")
+    @classmethod
+    def strip_recipients(cls, value: str) -> str:
+        return value.strip()
 
 
 class RecurrenceRuleIn(BaseModel):
@@ -113,9 +115,11 @@ class RecurrenceWrite(BaseModel):
     visual_name: str = Field(min_length=1, max_length=300)
     visual_title: str | None = Field(default=None, max_length=500)
     visual_type: str = Field(min_length=1, max_length=100)
-    group_column: str = Field(min_length=1, max_length=300)
+    delivery_mode: Literal["single", "subgroups"] = "subgroups"
+    recipients: str | None = Field(default=None, max_length=4000)
+    group_column: str = Field(default="", max_length=300)
     subject_template: str = Field(
-        default="{recurrence} - {group} ({row_count} rows)",
+        default="{recurrence} ({row_count} rows)",
         min_length=1,
         max_length=500,
     )
@@ -123,7 +127,7 @@ class RecurrenceWrite(BaseModel):
     weekdays: list[str] = Field(default_factory=lambda: ["monday"])
     month_day: int | None = Field(default=None, ge=1, le=31)
     send_time: str = "08:00"
-    groups: list[RecurrenceGroupIn]
+    groups: list[RecurrenceGroupIn] = Field(default_factory=list)
     rules: list[RecurrenceRuleIn] = Field(default_factory=list)
 
     @field_validator(
@@ -173,16 +177,27 @@ class RecurrenceWrite(BaseModel):
         self.weekdays = normalized_days
         if self.recurrence == "monthly" and not self.month_day:
             raise ValueError("Choose a day of the month for a monthly recurrence.")
+        self.recipients = str(self.recipients or "").strip() or None
+        if self.delivery_mode == "single":
+            _parse_recipients(self.recipients or "")
+            self.group_column = ""
+            self.groups = []
+            return self
+        if not self.group_column:
+            raise ValueError("Choose a subgroup column or use single-email delivery.")
         enabled_groups = [group for group in self.groups if group.enabled]
         if not enabled_groups:
-            raise ValueError("Configure at least one enabled subgroup.")
+            raise ValueError("Configure at least one enabled subgroup or use single-email delivery.")
         seen_values: set[str] = set()
         for group in self.groups:
             key = _match_key(group.match_value)
             if key in seen_values:
                 raise ValueError("Each subgroup value can be configured only once.")
             seen_values.add(key)
-            _parse_recipients(group.recipients)
+            if group.enabled:
+                if not group.display_name:
+                    raise ValueError("Every enabled subgroup needs a name.")
+                _parse_recipients(group.recipients)
         return self
 
 
@@ -448,6 +463,8 @@ def build_html_email(recurrence: dict, group: dict, columns: list[str], rows: li
 def _row_to_recurrence(db, row) -> dict:
     item = dict(row)
     item["enabled"] = bool(item["enabled"])
+    item["delivery_mode"] = item.get("delivery_mode") or "subgroups"
+    item["recipients"] = item.get("recipients") or ""
     item["weekdays"] = _normalize_weekdays(item.get("weekdays"))
     groups = db.execute(
         "SELECT id, match_value, display_name, recipients, enabled FROM pbi_recurrence_groups WHERE recurrence_id = ? ORDER BY id",
@@ -504,6 +521,8 @@ def _write_values(body: RecurrenceWrite, next_run_at: str | None) -> tuple:
         body.visual_name,
         body.visual_title,
         body.visual_type,
+        body.delivery_mode,
+        body.recipients,
         body.group_column,
         body.subject_template,
         body.recurrence,
@@ -595,7 +614,10 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             PBI_VISUAL_EXPORT_MAX_ROWS,
         )
         columns, rows = parse_visual_csv(exported["data"])
-        required_columns = {recurrence["group_column"], *(rule["column_name"] for rule in recurrence["rules"])}
+        delivery_mode = recurrence.get("delivery_mode") or "subgroups"
+        required_columns = {rule["column_name"] for rule in recurrence["rules"]}
+        if delivery_mode == "subgroups":
+            required_columns.add(recurrence["group_column"])
         missing_columns = sorted(column for column in required_columns if column not in columns)
         if missing_columns:
             raise RuntimeError(
@@ -605,12 +627,21 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         messages: list[dict] = []
         group_results: list[dict] = []
         matched_total = 0
-        for group in recurrence["groups"]:
+        delivery_groups = (
+            [{
+                "display_name": "All rows",
+                "match_value": None,
+                "recipients": recurrence.get("recipients") or "",
+                "enabled": True,
+            }]
+            if delivery_mode == "single"
+            else recurrence["groups"]
+        )
+        for group in delivery_groups:
             if not group["enabled"]:
                 continue
-            group_rows = [
-                row
-                for row in filtered_rows
+            group_rows = filtered_rows if delivery_mode == "single" else [
+                row for row in filtered_rows
                 if _match_key(row.get(recurrence["group_column"])) == _match_key(group["match_value"])
             ]
             matched_total += len(group_rows)
@@ -795,9 +826,10 @@ def create_recurrence(body: RecurrenceWrite, request: Request):
             """INSERT INTO pbi_recurrences
                (name, enabled, workspace_id, workspace_name, report_id, report_name,
                 report_url, embed_url, dataset_id, page_name, page_display_name,
-                visual_name, visual_title, visual_type, group_column, subject_template,
-                recurrence, weekdays, month_day, send_time, next_run_at, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                visual_name, visual_title, visual_type, delivery_mode, recipients,
+                group_column, subject_template, recurrence, weekdays, month_day,
+                send_time, next_run_at, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (*_write_values(body, next_run), get_actor(request)),
         )
         recurrence_id = cursor.lastrowid
@@ -828,8 +860,9 @@ def update_recurrence(recurrence_id: int, body: RecurrenceWrite, request: Reques
                    name = ?, enabled = ?, workspace_id = ?, workspace_name = ?,
                    report_id = ?, report_name = ?, report_url = ?, embed_url = ?, dataset_id = ?,
                    page_name = ?, page_display_name = ?, visual_name = ?, visual_title = ?,
-                   visual_type = ?, group_column = ?, subject_template = ?, recurrence = ?,
-                   weekdays = ?, month_day = ?, send_time = ?, next_run_at = ?,
+                   visual_type = ?, delivery_mode = ?, recipients = ?, group_column = ?,
+                   subject_template = ?, recurrence = ?, weekdays = ?, month_day = ?,
+                   send_time = ?, next_run_at = ?,
                    updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             (*_write_values(body, next_run), recurrence_id),

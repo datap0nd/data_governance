@@ -2,17 +2,19 @@
 
 ## Current Objective
 
-Add Tools > Recurrences to Metronome so a user can select a live Power BI table visual, filter its rows, split them into recipient subgroups, and send scheduled HTML emails through the existing Outlook implementation.
+Add Tools > Recurrences to Metronome so a user can select a live Power BI table visual, optionally filter its rows, send them to one recipient list or split them into recipient subgroups, and schedule HTML emails through the existing Outlook implementation.
 
 The first work-PC validation exposed a bootstrap failure before report loading: `page.wait_for_function` timed out because the original `cdn.powerbi.com` client URL no longer resolved. The client bootstrap now uses the published `powerbi-client` npm artifact from jsDelivr with an unpkg fallback and reports a direct proxy allow-list error instead of waiting for the full visual timeout.
 
 The next work-PC validation exposed a page-level resource error from an unrelated chart before the selected table could be inspected. Visual discovery and export now use Power BI phased embedding. Discovery stops at the `loaded` event without rendering page visuals. Export hides every visual except the saved table before calling `report.render()`, so an unrelated expensive chart cannot block the table export.
 
+The next builder validation exposed raw Pydantic minimum-length messages and an incorrect requirement that every recurrence use subgroups. Delivery now supports one email to a normal recipient list with zero subgroups and zero row rules. Subgroup mode remains optional, and disabled subgroups no longer require recipients. API validation errors now identify the affected field in plain language.
+
 ## Repo State
 
 - Working clone: `/private/tmp/data_governance_metronome`
 - Branch: `main`
-- Base commit: `4f5b405 Update handoff after UI rollback`
+- Base commit: `76b0759 Isolate Power BI table rendering`
 - Repository visibility: private.
 - Delivery intent: commit the recurrence implementation and push it directly to `origin/main`, as explicitly requested by the owner.
 - The pre-redesign interface remains the baseline. This feature adds only the Recurrences workflow and one small-system-menu responsive alignment fix.
@@ -27,6 +29,8 @@ The next work-PC validation exposed a page-level resource error from an unrelate
 - Added fail-closed behavior when the visual, subgroup column, or any rule column disappears.
 - Added dynamic HTML table generation from every current exported column, so non-rule columns added by a report owner appear automatically.
 - Added subgroup-specific recipient lists, exact case-insensitive subgroup matching, AND-combined row rules, and one Outlook email per subgroup with matching rows.
+- Added single-email delivery for all eligible rows, with row rules and subgroup splitting both optional.
+- Added field-aware validation messages and allowed disabled subgroups to keep an empty recipient field.
 - Added `Create drafts`, confirmed `Run now`, run history, pause/enable state, and deletion confirmation.
 - Added the Tools > Recurrences list and four-step creation/edit workflow.
 - Added runtime diagnostics for cached authentication, Playwright, Edge, local timezone, timeout, and row limit.
@@ -66,14 +70,14 @@ The next work-PC validation exposed a page-level resource error from an unrelate
 
 ## Verification
 
-- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 18 tests.
+- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 22 tests.
 - `node --test tests/test_lineage_layers.mjs`: passed.
 - `node --check app/static/app.js`: passed.
 - Python compilation of all changed backend modules: passed.
 - `git diff --check`: passed.
 - Impeccable layout detector: no findings.
 - Impeccable typography detector: no findings.
-- Local browser pass: list view, runtime warning, missing-auth failure state, populated recurrence row, history expansion, and primary action visibility passed with no console errors.
+- Local browser pass: one-email delivery with zero rules and zero subgroups saved successfully; switching to subgroup mode, disabling an empty-recipient subgroup, and returning to the schedule also passed with no console errors.
 - Secret-pattern scan across the changed application, tests, and documentation: no findings.
 
 ## Remaining Live Validation
@@ -83,7 +87,7 @@ This environment does not have the work PC's encrypted Power BI token cache, rea
 1. Open Tools > Recurrences and confirm the cached account, Edge, and Playwright status indicators are ready.
 2. Select a real report, page, and table visual and fetch the preview.
 3. Save the recurrence paused or with a future schedule.
-4. Use Create drafts and inspect each subgroup draft, including HTML columns, rule filtering, and recipients.
+4. Use Create drafts and inspect the single draft or each subgroup draft, including HTML columns, optional rule filtering, and recipients.
 5. Use Run now only after the drafts are correct, then confirm the run history.
 6. Confirm whether the chosen report's filters and bookmarks produce the expected summarized export. This is the only known behavior that still requires a real-report test.
 

@@ -4699,6 +4699,34 @@ function bindEmailPage() {
 
 // ── Power BI email recurrences ──
 
+function _recValidationDetail(item) {
+    const location = (item?.loc || []).filter(part => part !== "body");
+    const fieldLabels = {
+        name: "Recurrence name",
+        report_name: "Power BI report",
+        embed_url: "Power BI embed URL",
+        page_name: "Report page",
+        visual_name: "Table visual",
+        visual_type: "Visual type",
+        recipients: "Recipients",
+        group_column: "Subgroup column",
+        subject_template: "Email subject",
+        send_time: "Send time",
+        weekdays: "Weekdays",
+        groups: "Subgroups",
+        rules: "Row rules",
+    };
+    let label = "Recurrence configuration";
+    if (location[0] === "groups" && Number.isInteger(location[1])) {
+        const suffix = location[2] === "display_name" ? "name" : fieldLabels[location[2]] || location[2] || "configuration";
+        label = `Subgroup ${Number(location[1]) + 1} ${suffix}`;
+    } else if (location.length) {
+        label = fieldLabels[location.at(-1)] || String(location.at(-1)).replaceAll("_", " ");
+    }
+    const message = String(item?.msg || item || "Invalid value").replace(/^Value error,\s*/i, "");
+    return `${label}: ${message}`;
+}
+
 async function _recRequest(path, options = {}) {
     const headers = apiHeaders(options.body ? { "Content-Type": "application/json" } : {});
     const response = await fetch(path, { ...options, headers });
@@ -4706,7 +4734,7 @@ async function _recRequest(path, options = {}) {
     try { payload = await response.json(); } catch (_) { payload = null; }
     if (!response.ok) {
         let detail = payload?.detail;
-        if (Array.isArray(detail)) detail = detail.map(item => item.msg || String(item)).join(" ");
+        if (Array.isArray(detail)) detail = detail.map(_recValidationDetail).join(" ");
         if (detail && typeof detail === "object") detail = JSON.stringify(detail);
         throw new Error(detail || `Request failed with status ${response.status}`);
     }
@@ -4758,6 +4786,9 @@ async function renderRecurrences() {
     const runtimeReady = status.cached_account && status.playwright_installed && status.edge_detected;
     const rows = window._recurrences.map(item => {
         const enabledGroups = (item.groups || []).filter(group => group.enabled).length;
+        const deliveryLabel = item.delivery_mode === "single"
+            ? "One recipient list"
+            : `${enabledGroups} subgroup${enabledGroups === 1 ? "" : "s"}`;
         return `
             <tr data-recurrence-id="${item.id}">
                 <td>
@@ -4766,7 +4797,7 @@ async function renderRecurrences() {
                 </td>
                 <td><div class="rec-source-path">${_recSourceText(item)}</div></td>
                 <td>
-                    <span class="rec-name">${enabledGroups} subgroup${enabledGroups === 1 ? "" : "s"}</span>
+                    <span class="rec-name">${deliveryLabel}</span>
                     <span class="rec-meta">${(item.rules || []).length} row rule${(item.rules || []).length === 1 ? "" : "s"}</span>
                 </td>
                 <td>
@@ -4829,7 +4860,7 @@ async function renderRecurrences() {
             ` : `
                 <div class="rec-empty">
                     <strong>No recurrences configured</strong>
-                    Create one to send filtered Power BI table rows to subgroup recipients on a schedule.
+                    Create one to send Power BI table rows to one recipient list or separate subgroups on a schedule.
                     <div class="rec-page-actions" style="justify-content:center;margin-top:var(--space-md)">
                         <button class="btn-new-task" id="rec-create-empty">Create recurrence</button>
                     </div>
@@ -4855,8 +4886,10 @@ function _recBaseConfig(existing = null) {
         visual_name: existing?.visual_name || "",
         visual_title: existing?.visual_title || "",
         visual_type: existing?.visual_type || "",
+        delivery_mode: existing?.delivery_mode || "single",
+        recipients: existing?.recipients || "",
         group_column: existing?.group_column || "",
-        subject_template: existing?.subject_template || "{recurrence} - {group} ({row_count} rows)",
+        subject_template: existing?.subject_template || "{recurrence} ({row_count} rows)",
         recurrence: existing?.recurrence || "weekly",
         weekdays: [...(existing?.weekdays || ["monday"])],
         month_day: existing?.month_day || 1,
@@ -4922,6 +4955,9 @@ async function _recOpenBuilder(existing = null) {
 function _recBuilderSummary(state) {
     const config = state.config;
     const enabledGroups = config.groups.filter(group => group.enabled).length;
+    const delivery = config.delivery_mode === "single"
+        ? (config.recipients ? "One recipient list" : "Recipients not entered")
+        : `${enabledGroups} subgroup${enabledGroups === 1 ? "" : "s"} enabled`;
     return `
         <aside class="rec-builder-summary" aria-label="Recurrence summary">
             <h2>Current configuration</h2>
@@ -4930,7 +4966,7 @@ function _recBuilderSummary(state) {
                 <div><dt>Page</dt><dd>${esc(config.page_display_name || "Not selected")}</dd></div>
                 <div><dt>Visual</dt><dd>${esc(config.visual_title || "Not selected")}</dd></div>
                 <div><dt>Preview</dt><dd>${state.preview ? `${state.preview.row_count.toLocaleString()} rows, ${state.preview.columns.length} columns` : "Not loaded"}</dd></div>
-                <div><dt>Subgroups</dt><dd>${enabledGroups} enabled</dd></div>
+                <div><dt>Delivery</dt><dd>${esc(delivery)}</dd></div>
                 <div><dt>Row rules</dt><dd>${config.rules.length}</dd></div>
                 <div><dt>Schedule</dt><dd>${esc(_recScheduleText(config))}</dd></div>
             </dl>
@@ -5062,26 +5098,39 @@ function _recStepThree(state) {
     return `
         <div class="rec-step-content">
             <h2>Preview and define email rows</h2>
-            <p class="rec-step-intro">Each subgroup receives only its own rows after all row rules are applied. If a required column disappears, the run fails and sends nothing.</p>
+            <p class="rec-step-intro">Row rules are optional. Send all eligible rows to one recipient list, or split them into subgroup emails. If a required rule or subgroup column disappears, the run fails and sends nothing.</p>
             ${_recPreviewTable(preview)}
             <section class="rec-config-section">
-                <h3>Subgroups</h3>
-                <p>Choose the column whose distinct values identify each recipient group. Rename the email group and add one or more recipients.</p>
-                <label class="rec-field">Subgroup column
-                    <select id="rec-group-column"><option value="">Select a column</option>${columnOptions}</select>
+                <h3>Email delivery</h3>
+                <p>Choose whether this recurrence sends one email or a separate email for each subgroup value.</p>
+                <label class="rec-field">Delivery method
+                    <select id="rec-delivery-mode">
+                        <option value="single" ${config.delivery_mode === "single" ? "selected" : ""}>One email with all eligible rows</option>
+                        <option value="subgroups" ${config.delivery_mode === "subgroups" ? "selected" : ""}>Separate emails by subgroup</option>
+                    </select>
                 </label>
-                ${config.group_column ? `
-                    <div class="rec-groups-wrap" style="margin-top:var(--space-md)">
-                        <table class="rec-groups-table">
-                            <thead><tr><th>Send</th><th>Column value</th><th>Email group name</th><th>Recipients</th></tr></thead>
-                            <tbody>${groupRows}</tbody>
-                        </table>
-                    </div>` : ""}
+                ${config.delivery_mode === "single" ? `
+                    <label class="rec-field" style="margin-top:var(--space-md)">Recipients
+                        <input id="rec-single-recipients" type="text" value="${esc(config.recipients)}" placeholder="name@example.com; team@example.com">
+                        <small>All rows that pass the optional rules will be included in one email.</small>
+                    </label>` : `
+                    <div style="margin-top:var(--space-md)">
+                        <label class="rec-field">Subgroup column
+                            <select id="rec-group-column"><option value="">Select a column</option>${columnOptions}</select>
+                        </label>
+                        ${config.group_column ? `
+                            <div class="rec-groups-wrap" style="margin-top:var(--space-md)">
+                                <table class="rec-groups-table">
+                                    <thead><tr><th>Send</th><th>Column value</th><th>Email group name</th><th>Recipients</th></tr></thead>
+                                    <tbody>${groupRows}</tbody>
+                                </table>
+                            </div>` : ""}
+                    </div>`}
             </section>
             <section class="rec-config-section">
                 <h3>Row rules</h3>
-                <p>All rules are combined. Only rows matching every rule are eligible for email.</p>
-                <div class="rec-rules-list">${ruleRows || '<div class="rec-table-note">No row rules. Every row in each configured subgroup is eligible.</div>'}</div>
+                <p>All configured rules are combined. Only rows matching every rule are eligible for email.</p>
+                <div class="rec-rules-list">${ruleRows || '<div class="rec-table-note">No row rules. Every exported row is eligible.</div>'}</div>
                 <button class="btn-outline" id="rec-add-rule" style="margin-top:var(--space-md)">Add row rule</button>
             </section>
             <div class="rec-step-footer">
@@ -5147,7 +5196,7 @@ function _recRenderBuilder() {
         : _recStepFour(state);
     $("#app").innerHTML = `
         <div class="rec-builder-heading">
-            <div><h1>${state.id ? "Edit recurrence" : "Create recurrence"}</h1><p>Configure one live Power BI table visual and its scheduled subgroup emails.</p></div>
+            <div><h1>${state.id ? "Edit recurrence" : "Create recurrence"}</h1><p>Configure one live Power BI table visual and its scheduled emails.</p></div>
             <button class="btn-outline" id="rec-close-builder">Close builder</button>
         </div>
         ${_recStepButtons(state.step)}
@@ -5194,13 +5243,17 @@ async function _recRunLoading(label, operation) {
     _recRenderBuilder();
 }
 
-function _recValidateGroups(state) {
-    if (!state.config.group_column) return "Choose a subgroup column.";
-    const enabled = state.config.groups.filter(group => group.enabled);
-    if (!enabled.length) return "Enable at least one subgroup.";
-    for (const group of enabled) {
-        if (!group.display_name.trim()) return `Enter a name for subgroup '${group.match_value || "(Blank)"}'.`;
-        if (!group.recipients.trim()) return `Enter recipients for subgroup '${group.display_name}'.`;
+function _recValidateDelivery(state) {
+    if (state.config.delivery_mode === "single") {
+        if (!state.config.recipients.trim()) return "Enter at least one recipient email address.";
+    } else {
+        if (!state.config.group_column) return "Choose a subgroup column or select one-email delivery.";
+        const enabled = state.config.groups.filter(group => group.enabled);
+        if (!enabled.length) return "Enable at least one subgroup or select one-email delivery.";
+        for (const group of enabled) {
+            if (!group.display_name.trim()) return `Enter a name for subgroup '${group.match_value || "(Blank)"}'.`;
+            if (!group.recipients.trim()) return `Enter recipients for subgroup '${group.display_name}'.`;
+        }
     }
     for (const rule of state.config.rules) {
         if (!["is_empty", "not_empty"].includes(rule.operator) && !String(rule.compare_value || "").trim()) {
@@ -5227,13 +5280,15 @@ function _recPayload(state) {
         visual_name: config.visual_name,
         visual_title: config.visual_title || null,
         visual_type: config.visual_type,
-        group_column: config.group_column,
+        delivery_mode: config.delivery_mode,
+        recipients: config.delivery_mode === "single" ? config.recipients.trim() : null,
+        group_column: config.delivery_mode === "subgroups" ? config.group_column : "",
         subject_template: config.subject_template.trim(),
         recurrence: config.recurrence,
         weekdays: config.weekdays,
         month_day: config.recurrence === "monthly" ? Number(config.month_day || 1) : null,
         send_time: config.send_time,
-        groups: config.groups.map(group => ({
+        groups: (config.delivery_mode === "subgroups" ? config.groups : []).map(group => ({
             match_value: String(group.match_value),
             display_name: group.display_name.trim(),
             recipients: group.recipients.trim(),
@@ -5342,6 +5397,14 @@ function _recBindBuilder() {
         });
     });
     $("#rec-back-visual")?.addEventListener("click", () => { state.step = 2; state.error = ""; _recRenderBuilder(); });
+    $("#rec-delivery-mode")?.addEventListener("change", event => {
+        state.config.delivery_mode = event.target.value;
+        state.error = "";
+        _recRenderBuilder();
+    });
+    $("#rec-single-recipients")?.addEventListener("input", event => {
+        state.config.recipients = event.target.value;
+    });
     $("#rec-group-column")?.addEventListener("change", event => {
         const changed = state.config.group_column !== event.target.value;
         state.config.group_column = event.target.value;
@@ -5379,7 +5442,7 @@ function _recBindBuilder() {
         _recRenderBuilder();
     }));
     $("#rec-next-schedule")?.addEventListener("click", () => {
-        const error = _recValidateGroups(state);
+        const error = _recValidateDelivery(state);
         if (error) { state.error = error; _recRenderBuilder(); return; }
         state.error = "";
         state.step = 4;
@@ -5403,8 +5466,8 @@ function _recBindBuilder() {
         if (!state.config.name.trim()) { state.error = "Enter a recurrence name."; _recRenderBuilder(); return; }
         if (!state.config.subject_template.trim()) { state.error = "Enter an email subject."; _recRenderBuilder(); return; }
         if (state.config.recurrence === "weekly" && !state.config.weekdays.length) { state.error = "Choose at least one weekday."; _recRenderBuilder(); return; }
-        const groupError = _recValidateGroups(state);
-        if (groupError) { state.error = groupError; _recRenderBuilder(); return; }
+        const deliveryError = _recValidateDelivery(state);
+        if (deliveryError) { state.error = deliveryError; _recRenderBuilder(); return; }
         await _recRunLoading(state.id ? "Saving recurrence changes..." : "Creating recurrence...", async () => {
             const method = state.id ? "PUT" : "POST";
             const path = state.id ? `/api/recurrences/${state.id}` : "/api/recurrences";

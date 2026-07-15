@@ -98,13 +98,13 @@ Users can change the daily overall refresh time from System > Refresh Schedule. 
 
 ### Power BI email recurrences
 
-Tools > Recurrences creates scheduled Outlook emails from the summarized data behind a live Power BI table or matrix visual. The builder selects a report from the configured workspace, then an exact page and visual, previews its current columns, maps subgroup values to recipients, applies optional row rules, and saves a daily, weekday, weekly, or monthly schedule. Each subgroup with matching rows receives one HTML table email. A subgroup with no matching rows receives nothing.
+Tools > Recurrences creates scheduled Outlook emails from the summarized data behind a live Power BI table or matrix visual. The builder selects a report from the configured workspace, then an exact page and visual, previews its current columns, applies optional row rules, and saves a daily, weekday, weekly, or monthly schedule. Delivery can send all eligible rows to one recipient list or split rows into separate emails by a subgroup column. A delivery with no matching rows sends nothing.
 
 Recurrences deliberately reuse the saved Microsoft account connected from Scanner. The bearer token stays inside the Metronome server process and is silently refreshed through the existing token cache. Service-principal-only authentication is not used for visual export. Microsoft Edge, the Playwright package from `requirements.txt`, a connected saved account, and an Outlook profile for the Windows account running Metronome are required.
 
 The scheduler checks for due recurrences every minute and interprets the saved time in the Windows host's local timezone. `Create drafts` runs the complete export and filtering path without sending, while `Run now` sends immediately after confirmation. Scheduled runs send automatically through the existing Outlook implementation.
 
-The saved source uses Power BI's technical page and visual identifiers. Renaming or moving the visual, and adding or removing non-rule columns, does not require editing the recurrence. Every run exports the visual's current columns, so newly added columns appear automatically in the HTML table. If the visual is deleted, export is disabled, or a subgroup/rule column disappears, the run fails closed and sends no email. Summarized export is capped at 30,000 rows. The timeout and lower row limit can be configured with `DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS` and `DG_PBI_VISUAL_EXPORT_MAX_ROWS`.
+The saved source uses Power BI's technical page and visual identifiers. Renaming or moving the visual, and adding or removing non-rule columns, does not require editing the recurrence. Every run exports the visual's current columns, so newly added columns appear automatically in the HTML table. If the visual is deleted, export is disabled, or a configured subgroup/rule column disappears, the run fails closed and sends no email. Summarized export is capped at 30,000 rows. The timeout and lower row limit can be configured with `DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS` and `DG_PBI_VISUAL_EXPORT_MAX_ROWS`.
 
 ### Import Data and Prefect scripts
 

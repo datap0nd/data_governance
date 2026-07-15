@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,6 +156,63 @@ def test_configuration_rejects_non_powerbi_embed_url_and_non_table_visual():
         _valid_write(visual_type="lineChart")
 
 
+def test_configuration_allows_single_email_without_subgroups_or_rules():
+    body = _valid_write(
+        delivery_mode="single",
+        recipients="team@example.com",
+        group_column="",
+        groups=[],
+        rules=[],
+    )
+
+    assert body.delivery_mode == "single"
+    assert body.recipients == "team@example.com"
+    assert body.groups == []
+
+
+def test_disabled_subgroup_does_not_require_recipients():
+    body = _valid_write(groups=[
+        {
+            "match_value": "North",
+            "display_name": "North team",
+            "recipients": "north@example.com",
+            "enabled": True,
+        },
+        {
+            "match_value": "South",
+            "display_name": "",
+            "recipients": "",
+            "enabled": False,
+        },
+    ])
+
+    assert body.groups[1].display_name == ""
+    assert body.groups[1].recipients == ""
+
+
+def test_single_email_configuration_persists_without_subgroups(tmp_path, monkeypatch):
+    database.DB_PATH = str(tmp_path / "governance.db")
+    database.init_db()
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    request = SimpleNamespace(state=SimpleNamespace(actor="Test User"))
+    body = _valid_write(
+        delivery_mode="single",
+        recipients="team@example.com",
+        group_column="",
+        groups=[],
+        rules=[],
+    )
+
+    created = recurrences.create_recurrence(body, request)
+    body.name = "Updated single email"
+    updated = recurrences.update_recurrence(created["id"], body, request)
+
+    assert created["delivery_mode"] == "single"
+    assert created["groups"] == []
+    assert updated["name"] == "Updated single email"
+    assert updated["recipients"] == "team@example.com"
+
+
 def test_missing_recurrence_does_not_leave_run_lock(tmp_path, monkeypatch):
     database.DB_PATH = str(tmp_path / "governance.db")
     database.init_db()
@@ -236,6 +294,40 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
     assert all("New Column" in message["html_body"] for message in messages)
     assert "below threshold" not in "".join(message["html_body"] for message in messages)
+
+
+def test_run_sends_one_email_for_all_filtered_rows_without_subgroups(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE pbi_recurrences SET delivery_mode = 'single', recipients = ?, group_column = '' WHERE id = ?",
+            ("team@example.com", recurrence_id),
+        )
+        db.execute("DELETE FROM pbi_recurrence_groups WHERE recurrence_id = ?", (recurrence_id,))
+    monkeypatch.setattr(
+        recurrences,
+        "export_visual_data",
+        lambda *args, **kwargs: {
+            "data": "Subsidiary,Value\nNorth,5\nNorth,15\nSouth,20\n",
+            "visual": {"name": "visual456", "type": "tableEx", "title": "Exceptions"},
+        },
+    )
+    launched = []
+    monkeypatch.setattr(
+        recurrences,
+        "_launch_outlook_payload",
+        lambda messages, mode: launched.append((messages, mode)) or len(messages),
+    )
+
+    result = recurrences.run_recurrence(recurrence_id, mode="draft", trigger_type="manual")
+
+    assert result["status"] == "drafted"
+    assert result["matched_rows"] == 2
+    assert result["email_count"] == 1
+    assert launched[0][0][0]["to"] == "team@example.com"
+    assert "North" in launched[0][0][0]["html_body"]
+    assert "South" in launched[0][0][0]["html_body"]
 
 
 def test_run_fails_closed_when_required_column_disappears(tmp_path, monkeypatch):

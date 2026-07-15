@@ -222,6 +222,8 @@ CREATE TABLE IF NOT EXISTS pbi_recurrences (
     visual_name         TEXT NOT NULL,
     visual_title        TEXT,
     visual_type         TEXT,
+    delivery_mode       TEXT DEFAULT 'subgroups',
+    recipients          TEXT,
     group_column        TEXT NOT NULL,
     subject_template    TEXT NOT NULL,
     recurrence          TEXT DEFAULT 'weekly',
@@ -687,6 +689,9 @@ MIGRATIONS = [
     "ALTER TABLE actions ADD COLUMN script_id INTEGER REFERENCES scripts(id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_scheduled_task_id ON actions(scheduled_task_id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_script_id ON actions(script_id)",
+    # Power BI recurrence delivery without subgroup splitting
+    "ALTER TABLE pbi_recurrences ADD COLUMN delivery_mode TEXT DEFAULT 'subgroups'",
+    "ALTER TABLE pbi_recurrences ADD COLUMN recipients TEXT",
 ]
 
 
