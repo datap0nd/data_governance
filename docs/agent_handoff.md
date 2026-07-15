@@ -1,42 +1,44 @@
 # Agent Handoff
 
 ## Current Objective
-Keep the Import Data workflow stable while splitting the focused import-and-schedule experience into a standalone private platform named Cadence.
+Keep `main` on the established interface that preceded the coordinated frontend redesign while retaining the existing backend and unlimited-depth lineage work.
 
 ## Repo State
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit before this handoff: `99031ec Restore Metronome branding`
-- Public repo: no, GitHub reports `datap0nd/data_governance` as `PRIVATE`.
-- Push status: Metronome branding restoration is committed and pushed; this handoff update is pending commit and push.
+- Latest functional commit: `81bca00 Revert coordinated frontend redesign`
+- Public repo: no, the GitHub repository is private.
+- Push status: rollback commit `81bca00` is pushed to `origin/main`; this handoff records the final verified state.
+- Preserved local work: the previously dirty `codex/coordinated-redesign` worktree, including untracked files, is stored in stash `preserve coordinated redesign work before main rollback 2026-07-15`.
 
 ## Decisions Made
-- The top-right app branding should remain `Metronome` in this repo. The prior `Data Governance` label came from commit `5994f09`, where branding was over-generalized during a privacy pass without first checking repo visibility.
-- The privacy pass was unnecessary for this private repo. Keep secrets and internal paths out of commits, but do not rename the product away from Metronome for privacy reasons here.
-- The standalone import platform name is `Cadence`, chosen as a musical sibling to Metronome and as a fit for scheduled, repeatable data movement.
-- Cadence now lives in a separate private repo: `https://github.com/datap0nd/cadence`.
-- Cadence is focused on CSV/Excel to PostgreSQL imports, one-time table creation, recurring append or truncate-and-replace scripts, selected materialized-view refreshes, and UI-defined Prefect schedules.
+- Revert the single redesign commit instead of rewriting `main` history.
+- Restore `app/static/app.js`, `app/static/index.html`, and `app/static/style.css` to commit `67d540b`, the direct parent of the redesign.
+- Remove `tests/test_ui_redesign.mjs` because it tests the reverted interface.
+- Keep all backend, email, archive-visibility, and unlimited-depth lineage changes already present before the redesign.
 
 ## Files Changed
-- `app/static/index.html`: restored Metronome title/brand text and cache-busted static assets.
-- `app/static/app.js`: restored Metronome user-facing text in notifications and welcome copy.
-- `app/static/style.css`: restored Metronome logo selector names/comments.
-- `docs/agent_handoff.md`: updates durable context after the branding fix and Cadence repo split.
+- `app/static/app.js`: restored the pre-redesign application behavior.
+- `app/static/index.html`: restored the pre-redesign navigation and page shell.
+- `app/static/style.css`: restored the pre-redesign styling.
+- `tests/test_ui_redesign.mjs`: removed with the reverted redesign.
+- `docs/agent_handoff.md`: records the rollback and preserved work.
 
 ## Commands And Checks
-- `gh repo view datap0nd/data_governance --json nameWithOwner,visibility,url`: confirmed private repo.
-- `git log --oneline`: confirmed the branding regression came from `5994f09 Split table creation from import scheduling`.
-- Bundled Node `--check app/static/app.js`: passed for the branding restoration.
-- `git diff --check`: passed before the branding restoration commit.
-- `git push origin main`: pushed `99031ec Restore Metronome branding`.
-- Cadence checks in `/Users/rafaelcunha/Documents/cadence`: JS syntax passed, Python syntax passed, privacy scan passed, generated Prefect script compile check passed, browser UI harness passed, private repo creation and push passed.
-- Not run: live PostgreSQL imports/materialized-view refreshes or live Prefect deployment serving, because no configured local target PostgreSQL connection or Prefect server was available in this shell.
-- Not run: `setup.ps1` PowerShell parse check for Cadence, because `pwsh` is not installed on this Mac.
+- `git fetch origin --prune`: confirmed `origin/main` at `1553fdb`.
+- `git revert --no-commit 1553fdb`: applied cleanly with no conflicts.
+- `node --check app/static/app.js`: passed.
+- `node tests/test_lineage_layers.mjs`: passed.
+- Bundled Python `-m unittest discover -s tests -p 'test_*.py'`: passed, 4 tests.
+- `git diff --cached --check`: passed.
+- Exact comparison of the reverted UI files with commit `67d540b`: passed with no differences.
+- `git commit -m 'Revert coordinated frontend redesign'`: created `81bca00`.
+- `git push origin main`: pushed `81bca00` to `origin/main`.
+- Not run: a live browser pass or deployment against production data.
 
 ## Open Questions
-- Confirm on the Windows deployment machine that the Cadence `setup.ps1` installs and updates the private repo correctly with `CADENCE_GITHUB_TOKEN`.
-- Confirm with a non-critical PostgreSQL table that scheduled Cadence scripts can append, truncate-and-replace, and refresh selected materialized views without exhausting database connection slots.
-- Decide whether Metronome should link out to Cadence after the split, or whether the import workflow should eventually be removed from Metronome entirely.
+- Confirm the restored interface against production data after deployment.
+- The coordinated redesign remains recoverable from its branch and the named stash if selected pieces are wanted later.
 
 ## Next Step
-Install Cadence on the Windows deployment machine with a read-capable GitHub token, then generate and serve one scheduled Prefect import against a non-critical table.
+Run the normal deployment update, then verify the restored interface against production data.
