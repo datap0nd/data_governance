@@ -10,11 +10,13 @@ The next work-PC validation exposed a page-level resource error from an unrelate
 
 The next builder validation exposed raw Pydantic minimum-length messages and an incorrect requirement that every recurrence use subgroups. Delivery now supports one email to a normal recipient list with zero subgroups and zero row rules. Subgroup mode remains optional, and disabled subgroups no longer require recipients. API validation errors now identify the affected field in plain language.
 
+A later work-PC run exposed a transient Edge startup exit at `BrowserContext.new_page`, reported by Playwright as `Target page, context or browser has been closed`. Visual operations are now serialized within the Metronome process, a closed target is retried once with a fresh Edge process, and already-closed Playwright resources cannot mask the original result or error during cleanup.
+
 ## Repo State
 
 - Working clone: `/private/tmp/data_governance_metronome`
 - Branch: `main`
-- Base commit: `76b0759 Isolate Power BI table rendering`
+- Base commit: `b9b7ce1 Allow recurrences without subgroups`
 - Repository visibility: private.
 - Delivery intent: commit the recurrence implementation and push it directly to `origin/main`, as explicitly requested by the owner.
 - The pre-redesign interface remains the baseline. This feature adds only the Recurrences workflow and one small-system-menu responsive alignment fix.
@@ -36,6 +38,8 @@ The next builder validation exposed raw Pydantic minimum-length messages and an 
 - Added runtime diagnostics for cached authentication, Playwright, Edge, local timezone, timeout, and row limit.
 - Replaced the non-resolving Power BI client URL with the package CDN URL used by Microsoft documentation and added a second CDN fallback.
 - Switched visual discovery and export to phased embedding so only the selected table is rendered during export.
+- Serialized visual discovery, preview, and scheduled export operations to avoid competing headless Edge startups.
+- Added one fresh-browser retry for transient Playwright closed-target failures and a direct error if Edge closes again.
 - Added product and design contracts in `PRODUCT.md` and `DESIGN.md` for future interface work.
 - Documented setup, runtime behavior, failure behavior, and environment variables in `README.md`.
 
@@ -71,6 +75,10 @@ The next builder validation exposed raw Pydantic minimum-length messages and an 
 ## Verification
 
 - `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 22 tests.
+- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: passed, 24 tests after the Edge lifecycle fix.
+- `uv run --python 3.14 python -m py_compile app/pbi_visual_export.py tests/test_recurrences.py`: passed.
+- Full dependency installation on macOS Python 3.14 was not available because the existing `pbixray` dependency's `xmhuffman` source package failed to build. This is unrelated to the exporter change and may differ on Windows where wheels are available.
+- A local real-browser context smoke test could not run because Microsoft Edge is not installed on this Mac. The work PC remains the required live Windows Edge validation environment.
 - `node --test tests/test_lineage_layers.mjs`: passed.
 - `node --check app/static/app.js`: passed.
 - Python compilation of all changed backend modules: passed.

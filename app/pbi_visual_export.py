@@ -11,6 +11,7 @@ import importlib.util
 import logging
 import os
 import platform
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,6 +25,8 @@ POWER_BI_CLIENT_URLS = (
     "https://unpkg.com/powerbi-client@2.23.1/dist/powerbi.min.js",
 )
 TABLE_VISUAL_TYPES = {"table", "tableex", "pivottable", "matrix"}
+_BROWSER_START_ATTEMPTS = 2
+_VISUAL_ACTION_LOCK = threading.Lock()
 
 
 class PbiVisualExportError(RuntimeError):
@@ -207,7 +210,13 @@ def visual_export_runtime_status() -> dict:
 def _launch_browser(playwright):
     launch_args = {
         "headless": True,
-        "args": ["--disable-gpu", "--no-first-run", "--disable-default-apps"],
+        "args": [
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+        ],
     }
     try:
         return playwright.chromium.launch(channel="msedge", **launch_args)
@@ -221,6 +230,87 @@ def _launch_browser(playwright):
             "Headless Microsoft Edge could not start. Confirm Edge is installed for the Windows "
             "account running Metronome and that browser execution is not blocked by policy."
         ) from channel_error
+
+
+def _is_transient_browser_close(exc: BaseException) -> bool:
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "target page, context or browser has been closed",
+            "browser has been closed",
+            "target closed",
+        )
+    )
+
+
+def _safe_close(resource) -> None:
+    if resource is None:
+        return
+    try:
+        resource.close()
+    except Exception:
+        logger.debug("Playwright resource had already closed", exc_info=True)
+
+
+def _run_browser_attempt(playwright, config: dict):
+    browser = None
+    context = None
+    try:
+        browser = _launch_browser(playwright)
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            ignore_https_errors=False,
+        )
+        page = context.new_page()
+        page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
+        page.set_content(_RUNTIME_HTML, wait_until="domcontentloaded")
+        _load_power_bi_client(page)
+        page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
+        return page.evaluate("config => window.metronomeRun(config)", config)
+    finally:
+        _safe_close(context)
+        _safe_close(browser)
+
+
+def _run_browser_with_retry(
+    *,
+    playwright_factory,
+    playwright_error_types: tuple[type[BaseException], ...],
+    config: dict,
+):
+    # Edge is relatively expensive and can exit during startup when multiple API
+    # requests launch headless instances at the same time. Serialize all visual
+    # work in this process, and retry a closed target once with a fresh process.
+    with _VISUAL_ACTION_LOCK:
+        for attempt in range(1, _BROWSER_START_ATTEMPTS + 1):
+            try:
+                with playwright_factory() as playwright:
+                    return _run_browser_attempt(playwright, config)
+            except PbiVisualExportError:
+                raise
+            except playwright_error_types as exc:
+                if attempt < _BROWSER_START_ATTEMPTS and _is_transient_browser_close(exc):
+                    logger.warning(
+                        "Headless Edge closed during Power BI visual export startup; retrying once"
+                    )
+                    continue
+                message = (
+                    str(exc).strip().splitlines()[0]
+                    if str(exc).strip()
+                    else exc.__class__.__name__
+                )
+                if _is_transient_browser_close(exc):
+                    message = (
+                        "Headless Edge closed before the Power BI export page was ready, "
+                        "including one retry with a fresh browser. Technical detail: " + message
+                    )
+                raise PbiVisualExportError(f"Power BI visual export failed: {message}") from exc
+            except Exception as exc:
+                message = str(exc).strip() or exc.__class__.__name__
+                raise PbiVisualExportError(f"Power BI visual export failed: {message}") from exc
+
+    raise PbiVisualExportError("Power BI visual export failed before Edge could start.")
 
 
 def _run_visual_action(
@@ -258,30 +348,11 @@ def _run_visual_action(
             "Power BI visual export is not installed. Run setup.ps1 to install the Playwright dependency."
         ) from exc
 
-    try:
-        with sync_playwright() as playwright:
-            browser = _launch_browser(playwright)
-            try:
-                context = browser.new_context(
-                    viewport={"width": 1440, "height": 900},
-                    ignore_https_errors=False,
-                )
-                page = context.new_page()
-                page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
-                page.set_content(_RUNTIME_HTML, wait_until="domcontentloaded")
-                _load_power_bi_client(page)
-                page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
-                return page.evaluate("config => window.metronomeRun(config)", config)
-            finally:
-                browser.close()
-    except PbiVisualExportError:
-        raise
-    except (PlaywrightTimeoutError, PlaywrightError) as exc:
-        message = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
-        raise PbiVisualExportError(f"Power BI visual export failed: {message}") from exc
-    except Exception as exc:
-        message = str(exc).strip() or exc.__class__.__name__
-        raise PbiVisualExportError(f"Power BI visual export failed: {message}") from exc
+    return _run_browser_with_retry(
+        playwright_factory=sync_playwright,
+        playwright_error_types=(PlaywrightTimeoutError, PlaywrightError),
+        config=config,
+    )
 
 
 def list_visuals(report_id: str, embed_url: str, page_name: str) -> list[dict]:

@@ -259,6 +259,73 @@ def test_visual_export_uses_phased_embedding_and_hides_unselected_visuals():
     assert "window.powerbi.embed" not in runtime
 
 
+def test_visual_export_retries_once_when_edge_closes_during_startup(monkeypatch):
+    class FakePlaywrightError(RuntimeError):
+        pass
+
+    class FakePlaywrightContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    attempts = []
+
+    def run_attempt(playwright, config):
+        attempts.append((playwright, config))
+        if len(attempts) == 1:
+            raise FakePlaywrightError(
+                "BrowserContext.new_page: Target page, context or browser has been closed"
+            )
+        return {"data": "Column\nValue\n"}
+
+    monkeypatch.setattr(pbi_visual_export, "_run_browser_attempt", run_attempt)
+
+    result = pbi_visual_export._run_browser_with_retry(
+        playwright_factory=FakePlaywrightContext,
+        playwright_error_types=(FakePlaywrightError,),
+        config={"action": "export"},
+    )
+
+    assert result == {"data": "Column\nValue\n"}
+    assert len(attempts) == 2
+
+
+def test_visual_export_reports_repeated_edge_close_after_retry(monkeypatch):
+    class FakePlaywrightError(RuntimeError):
+        pass
+
+    class FakePlaywrightContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    attempts = []
+
+    def run_attempt(playwright, config):
+        attempts.append((playwright, config))
+        raise FakePlaywrightError(
+            "BrowserContext.new_page: Target page, context or browser has been closed"
+        )
+
+    monkeypatch.setattr(pbi_visual_export, "_run_browser_attempt", run_attempt)
+
+    with pytest.raises(
+        pbi_visual_export.PbiVisualExportError,
+        match="including one retry with a fresh browser",
+    ):
+        pbi_visual_export._run_browser_with_retry(
+            playwright_factory=FakePlaywrightContext,
+            playwright_error_types=(FakePlaywrightError,),
+            config={"action": "export"},
+        )
+
+    assert len(attempts) == 2
+
+
 def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch):
     recurrence_id = _seed_recurrence(tmp_path / "governance.db")
     monkeypatch.setattr(recurrences, "get_db", database.get_db)
