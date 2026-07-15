@@ -96,6 +96,16 @@ If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_C
 
 Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
 
+### Power BI email recurrences
+
+Tools > Recurrences creates scheduled Outlook emails from the summarized data behind a live Power BI table or matrix visual. The builder selects a report from the configured workspace, then an exact page and visual, previews its current columns, maps subgroup values to recipients, applies optional row rules, and saves a daily, weekday, weekly, or monthly schedule. Each subgroup with matching rows receives one HTML table email. A subgroup with no matching rows receives nothing.
+
+Recurrences deliberately reuse the saved Microsoft account connected from Scanner. The bearer token stays inside the Metronome server process and is silently refreshed through the existing token cache. Service-principal-only authentication is not used for visual export. Microsoft Edge, the Playwright package from `requirements.txt`, a connected saved account, and an Outlook profile for the Windows account running Metronome are required.
+
+The scheduler checks for due recurrences every minute and interprets the saved time in the Windows host's local timezone. `Create drafts` runs the complete export and filtering path without sending, while `Run now` sends immediately after confirmation. Scheduled runs send automatically through the existing Outlook implementation.
+
+The saved source uses Power BI's technical page and visual identifiers. Renaming or moving the visual, and adding or removing non-rule columns, does not require editing the recurrence. Every run exports the visual's current columns, so newly added columns appear automatically in the HTML table. If the visual is deleted, export is disabled, or a subgroup/rule column disappears, the run fails closed and sends no email. Summarized export is capped at 30,000 rows. The timeout and lower row limit can be configured with `DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS` and `DG_PBI_VISUAL_EXPORT_MAX_ROWS`.
+
 ### Import Data and Prefect scripts
 
 The Tools > Import Data page can load CSV, XLSX, or XLS files into PostgreSQL with the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Host, port, and database can be set with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; if host or database are omitted, the app falls back to the read-only probe connection values. `DG_UPLOAD_SCHEMA` defaults to `bi_reporting`.

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import httpx
 
 from app.database import get_db
+from app.config import PBI_WORKSPACE
 from app.scanner.control import assert_not_cancelled
 from app.scanner.pbi_auth import get_access_token, resolve_proxy
 
@@ -30,6 +32,13 @@ class PbiFetchError(RuntimeError):
     def __init__(self, message: str, *, permission: bool = False):
         super().__init__(message)
         self.permission = permission
+
+
+def _uuid_text(value: str, label: str) -> str:
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise PbiFetchError(f"{label} is not a valid Power BI identifier.") from exc
 
 
 def _get_json(client: httpx.Client, token: str, url: str, params: dict | None = None) -> dict:
@@ -64,6 +73,66 @@ def _find_workspace(client: httpx.Client, token: str, workspace_name: str) -> di
         if (group.get("name") or "").strip().lower() == workspace_name.strip().lower():
             return group
     return None
+
+
+def fetch_workspace_reports(workspace_name: str | None = None) -> dict:
+    """Return the live report list for the configured Power BI workspace."""
+    selected_workspace = (workspace_name or PBI_WORKSPACE or "").strip()
+    if not selected_workspace:
+        raise PbiFetchError("No Power BI workspace is configured. Set DG_PBI_WORKSPACE.")
+
+    auth = get_access_token()
+    token = auth["access_token"]
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+        workspace = _find_workspace(client, token, selected_workspace)
+        if not workspace:
+            account = auth.get("account") or "the signed-in account"
+            raise PbiFetchError(f"Workspace '{selected_workspace}' was not found for {account}.")
+        workspace_id = _uuid_text(workspace.get("id"), "Workspace ID")
+        reports = _get_json(
+            client,
+            token,
+            f"{PBI_API_BASE}/groups/{workspace_id}/reports",
+        ).get("value") or []
+
+    return {
+        "workspace": {"id": workspace_id, "name": workspace.get("name") or selected_workspace},
+        "reports": [
+            {
+                "id": report.get("id"),
+                "name": report.get("name"),
+                "dataset_id": report.get("datasetId"),
+                "web_url": report.get("webUrl"),
+                "embed_url": report.get("embedUrl"),
+            }
+            for report in reports
+            if report.get("id") and report.get("name") and report.get("embedUrl")
+        ],
+    }
+
+
+def fetch_report_pages(workspace_id: str, report_id: str) -> list[dict]:
+    """Return live report pages using stable technical page names."""
+    workspace_guid = _uuid_text(workspace_id, "Workspace ID")
+    report_guid = _uuid_text(report_id, "Report ID")
+    auth = get_access_token()
+    token = auth["access_token"]
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+        body = _get_json(
+            client,
+            token,
+            f"{PBI_API_BASE}/groups/{workspace_guid}/reports/{report_guid}/pages",
+        )
+    pages = body.get("value") or []
+    return [
+        {
+            "name": page.get("name"),
+            "display_name": page.get("displayName") or page.get("name"),
+            "order": page.get("order", index),
+        }
+        for index, page in enumerate(pages)
+        if page.get("name")
+    ]
 
 
 def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = None) -> dict:

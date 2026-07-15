@@ -206,6 +206,73 @@ CREATE TABLE IF NOT EXISTS email_schedules (
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS pbi_recurrences (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL,
+    enabled             INTEGER DEFAULT 0,
+    workspace_id        TEXT NOT NULL,
+    workspace_name      TEXT,
+    report_id           TEXT NOT NULL,
+    report_name         TEXT NOT NULL,
+    report_url          TEXT,
+    embed_url           TEXT NOT NULL,
+    dataset_id          TEXT,
+    page_name           TEXT NOT NULL,
+    page_display_name   TEXT,
+    visual_name         TEXT NOT NULL,
+    visual_title        TEXT,
+    visual_type         TEXT,
+    group_column        TEXT NOT NULL,
+    subject_template    TEXT NOT NULL,
+    recurrence          TEXT DEFAULT 'weekly',
+    weekdays            TEXT DEFAULT 'monday',
+    month_day           INTEGER,
+    send_time           TEXT DEFAULT '08:00',
+    next_run_at         DATETIME,
+    last_run_at         DATETIME,
+    last_sent_at        DATETIME,
+    last_status         TEXT,
+    last_error          TEXT,
+    last_row_count      INTEGER,
+    created_by          TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pbi_recurrence_groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    recurrence_id   INTEGER NOT NULL REFERENCES pbi_recurrences(id) ON DELETE CASCADE,
+    match_value     TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    recipients      TEXT NOT NULL,
+    enabled         INTEGER DEFAULT 1,
+    UNIQUE(recurrence_id, match_value)
+);
+
+CREATE TABLE IF NOT EXISTS pbi_recurrence_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    recurrence_id   INTEGER NOT NULL REFERENCES pbi_recurrences(id) ON DELETE CASCADE,
+    position        INTEGER DEFAULT 0,
+    column_name     TEXT NOT NULL,
+    operator        TEXT NOT NULL,
+    compare_value   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pbi_recurrence_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    recurrence_id   INTEGER NOT NULL REFERENCES pbi_recurrences(id) ON DELETE CASCADE,
+    trigger_type    TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at     DATETIME,
+    exported_rows   INTEGER DEFAULT 0,
+    matched_rows    INTEGER DEFAULT 0,
+    email_count     INTEGER DEFAULT 0,
+    detail          TEXT,
+    error           TEXT
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
@@ -257,6 +324,10 @@ CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_pbi_recurrences_next_run ON pbi_recurrences(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_pbi_recurrence_groups_parent ON pbi_recurrence_groups(recurrence_id);
+CREATE INDEX IF NOT EXISTS idx_pbi_recurrence_rules_parent ON pbi_recurrence_rules(recurrence_id, position);
+CREATE INDEX IF NOT EXISTS idx_pbi_recurrence_runs_parent ON pbi_recurrence_runs(recurrence_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_report_pages_report_id ON report_pages(report_id);
 CREATE INDEX IF NOT EXISTS idx_report_visuals_page_id ON report_visuals(page_id);
 CREATE INDEX IF NOT EXISTS idx_visual_fields_visual_id ON visual_fields(visual_id);

@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH
 from app.database import init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules, usage, data_import
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules, usage, data_import, recurrences
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
@@ -320,6 +320,18 @@ def _scheduled_email_dispatch():
         log.exception("Email schedule dispatch failed: %s", e)
 
 
+def _scheduled_recurrence_dispatch():
+    """Export due Power BI visuals and launch subgroup emails."""
+    from app.routers.recurrences import dispatch_due_recurrences
+    log = logging.getLogger("scheduler")
+    try:
+        results = dispatch_due_recurrences()
+        if results:
+            log.info("Power BI recurrence runs: %s", results)
+    except Exception as e:
+        log.exception("Power BI recurrence dispatch failed: %s", e)
+
+
 def _configure_overall_refresh_job() -> dict:
     refresh_time = get_overall_refresh_time()
     _scheduler.add_job(
@@ -344,6 +356,15 @@ def _configure_scheduler_jobs() -> dict:
         minutes=1,
         id="email_schedule_dispatch",
         replace_existing=True,
+    )
+    _scheduler.add_job(
+        _scheduled_recurrence_dispatch,
+        "interval",
+        minutes=1,
+        id="pbi_recurrence_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     _scheduler.add_job(
         _scheduled_pending_pbi_sync_retry,
@@ -407,6 +428,7 @@ app.include_router(email.router)
 app.include_router(email_schedules.router)
 app.include_router(usage.router)
 app.include_router(data_import.router)
+app.include_router(recurrences.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

@@ -1,44 +1,86 @@
 # Agent Handoff
 
 ## Current Objective
-Keep `main` on the established interface that preceded the coordinated frontend redesign while retaining the existing backend and unlimited-depth lineage work.
+
+Add Tools > Recurrences to Metronome so a user can select a live Power BI table visual, filter its rows, split them into recipient subgroups, and send scheduled HTML emails through the existing Outlook implementation.
 
 ## Repo State
-- Path: `/Users/rafaelcunha/Documents/data_governance`
-- Branch: `main`
-- Latest functional commit: `81bca00 Revert coordinated frontend redesign`
-- Public repo: no, the GitHub repository is private.
-- Push status: rollback commit `81bca00` is pushed to `origin/main`; this handoff records the final verified state.
-- Preserved local work: the previously dirty `codex/coordinated-redesign` worktree, including untracked files, is stored in stash `preserve coordinated redesign work before main rollback 2026-07-15`.
 
-## Decisions Made
-- Revert the single redesign commit instead of rewriting `main` history.
-- Restore `app/static/app.js`, `app/static/index.html`, and `app/static/style.css` to commit `67d540b`, the direct parent of the redesign.
-- Remove `tests/test_ui_redesign.mjs` because it tests the reverted interface.
-- Keep all backend, email, archive-visibility, and unlimited-depth lineage changes already present before the redesign.
+- Working clone: `/private/tmp/data_governance_metronome`
+- Branch: `main`
+- Base commit: `4f5b405 Update handoff after UI rollback`
+- Repository visibility: private.
+- Delivery intent: commit the recurrence implementation and push it directly to `origin/main`, as explicitly requested by the owner.
+- The pre-redesign interface remains the baseline. This feature adds only the Recurrences workflow and one small-system-menu responsive alignment fix.
+
+## Implemented
+
+- Added SQLite persistence for recurrence definitions, subgroup recipients, row rules, and run history.
+- Added a one-minute scheduler dispatcher with daily, weekdays, selected-weekday weekly, and monthly schedules in the host's local timezone.
+- Reused the existing saved Microsoft account token cache for Power BI report discovery and visual embedding. The token remains server-side.
+- Added live workspace report and report-page discovery through the Power BI REST API.
+- Added headless Microsoft Edge visual discovery and summarized CSV export through the official Power BI JavaScript client. The implementation selects exact technical page and visual identifiers and does not scrape the DOM.
+- Added fail-closed behavior when the visual, subgroup column, or any rule column disappears.
+- Added dynamic HTML table generation from every current exported column, so non-rule columns added by a report owner appear automatically.
+- Added subgroup-specific recipient lists, exact case-insensitive subgroup matching, AND-combined row rules, and one Outlook email per subgroup with matching rows.
+- Added `Create drafts`, confirmed `Run now`, run history, pause/enable state, and deletion confirmation.
+- Added the Tools > Recurrences list and four-step creation/edit workflow.
+- Added runtime diagnostics for cached authentication, Playwright, Edge, local timezone, timeout, and row limit.
+- Added product and design contracts in `PRODUCT.md` and `DESIGN.md` for future interface work.
+- Documented setup, runtime behavior, failure behavior, and environment variables in `README.md`.
+
+## Important Decisions
+
+- Recurrences use the saved delegated Power BI account, not the Data Governance scan output and not a copied bearer token. `get_access_token()` silently refreshes the existing encrypted token cache.
+- The Power BI REST API discovers reports and pages. The official Power BI JavaScript client is required for visual discovery and `visual.exportData`, because the REST API does not expose arbitrary report visual data.
+- Only table and matrix visuals are selectable.
+- Export uses summarized data and is capped at 30,000 rows. `DG_PBI_VISUAL_EXPORT_MAX_ROWS` can lower but not raise the cap.
+- The existing Outlook PowerShell launcher remains the delivery mechanism. A successful run means Outlook accepted the launch request, consistent with current Metronome email semantics.
+- Scheduled failures advance to the next recurrence time instead of retrying every minute. Manual runs do not alter the saved next-run time.
+- Runs with zero matching rows send nothing and record `no_rows`.
+- Existing detector warnings for legacy side-tab accents, bounce easing, and layout-property transitions were left unchanged because they predate this feature and the owner explicitly requested preserving the established interface.
 
 ## Files Changed
-- `app/static/app.js`: restored the pre-redesign application behavior.
-- `app/static/index.html`: restored the pre-redesign navigation and page shell.
-- `app/static/style.css`: restored the pre-redesign styling.
-- `tests/test_ui_redesign.mjs`: removed with the reverted redesign.
-- `docs/agent_handoff.md`: records the rollback and preserved work.
 
-## Commands And Checks
-- `git fetch origin --prune`: confirmed `origin/main` at `1553fdb`.
-- `git revert --no-commit 1553fdb`: applied cleanly with no conflicts.
+- `app/config.py`
+- `app/database.py`
+- `app/main.py`
+- `app/scanner/pbi_fetch.py`
+- `app/pbi_visual_export.py`
+- `app/routers/recurrences.py`
+- `app/static/index.html`
+- `app/static/app.js`
+- `app/static/style.css`
+- `requirements.txt`
+- `tests/test_recurrences.py`
+- `README.md`
+- `PRODUCT.md`
+- `DESIGN.md`
+- `docs/agent_handoff.md`
+
+## Verification
+
+- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 16 tests.
+- `node --test tests/test_lineage_layers.mjs`: passed.
 - `node --check app/static/app.js`: passed.
-- `node tests/test_lineage_layers.mjs`: passed.
-- Bundled Python `-m unittest discover -s tests -p 'test_*.py'`: passed, 4 tests.
-- `git diff --cached --check`: passed.
-- Exact comparison of the reverted UI files with commit `67d540b`: passed with no differences.
-- `git commit -m 'Revert coordinated frontend redesign'`: created `81bca00`.
-- `git push origin main`: pushed `81bca00` to `origin/main`.
-- Not run: a live browser pass or deployment against production data.
+- Python compilation of all changed backend modules: passed.
+- `git diff --check`: passed.
+- Impeccable layout detector: no findings.
+- Impeccable typography detector: no findings.
+- Local browser pass: list view, runtime warning, missing-auth failure state, populated recurrence row, history expansion, and primary action visibility passed with no console errors.
+- Secret-pattern scan across the changed application, tests, and documentation: no findings.
 
-## Open Questions
-- Confirm the restored interface against production data after deployment.
-- The coordinated redesign remains recoverable from its branch and the named stash if selected pieces are wanted later.
+## Remaining Live Validation
+
+This environment does not have the work PC's encrypted Power BI token cache, real workspace access, Windows Edge runtime, or Outlook profile. On the work PC, validate one real recurrence in this order:
+
+1. Open Tools > Recurrences and confirm the cached account, Edge, and Playwright status indicators are ready.
+2. Select a real report, page, and table visual and fetch the preview.
+3. Save the recurrence paused or with a future schedule.
+4. Use Create drafts and inspect each subgroup draft, including HTML columns, rule filtering, and recipients.
+5. Use Run now only after the drafts are correct, then confirm the run history.
+6. Confirm whether the chosen report's filters and bookmarks produce the expected summarized export. This is the only known behavior that still requires a real-report test.
 
 ## Next Step
-Run the normal deployment update, then verify the restored interface against production data.
+
+Deploy or update Metronome on the Windows work PC, then perform the live validation above before relying on the first unattended send.

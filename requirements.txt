@@ -4,6 +4,7 @@ pydantic==2.10.4
 apscheduler==3.10.4
 httpx
 truststore
+playwright>=1.50,<2
 pbixray
 psycopg2-binary
 # Import Data section (CSV/Excel -> Postgres)

@@ -4697,6 +4697,804 @@ function bindEmailPage() {
 }
 
 
+// ── Power BI email recurrences ──
+
+async function _recRequest(path, options = {}) {
+    const headers = apiHeaders(options.body ? { "Content-Type": "application/json" } : {});
+    const response = await fetch(path, { ...options, headers });
+    let payload = null;
+    try { payload = await response.json(); } catch (_) { payload = null; }
+    if (!response.ok) {
+        let detail = payload?.detail;
+        if (Array.isArray(detail)) detail = detail.map(item => item.msg || String(item)).join(" ");
+        if (detail && typeof detail === "object") detail = JSON.stringify(detail);
+        throw new Error(detail || `Request failed with status ${response.status}`);
+    }
+    return payload;
+}
+
+function _recDateTime(value) {
+    if (!value) return "-";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+    }).format(parsed);
+}
+
+function _recScheduleText(item) {
+    const time = item.send_time || "08:00";
+    if (item.recurrence === "daily") return `Daily at ${time}`;
+    if (item.recurrence === "weekdays") return `Weekdays at ${time}`;
+    if (item.recurrence === "monthly") return `Monthly on day ${item.month_day || 1} at ${time}`;
+    const days = (item.weekdays || []).map(day => day.slice(0, 3).replace(/^./, c => c.toUpperCase())).join(", ");
+    return `${days || "Mon"} at ${time}`;
+}
+
+function _recStatusHtml(status) {
+    const key = (status || "never run").toLowerCase();
+    const success = ["sent", "drafted"].includes(key);
+    const warning = ["no_rows", "running", "never run"].includes(key);
+    const error = key === "failed";
+    const label = key === "no_rows" ? "No matching rows" : key.replaceAll("_", " ");
+    return `<span class="rec-status${success ? " success" : warning ? " warning" : error ? " error" : ""}">${esc(label)}</span>`;
+}
+
+function _recSourceText(item) {
+    return [item.report_name, item.page_display_name || item.page_name, item.visual_title || item.visual_name]
+        .filter(Boolean)
+        .map(esc)
+        .join(" / ");
+}
+
+async function renderRecurrences() {
+    const [status, recurrences] = await Promise.all([
+        _recRequest("/api/recurrences/status"),
+        _recRequest("/api/recurrences"),
+    ]);
+    window._recurrenceStatus = status;
+    window._recurrences = recurrences || [];
+    const runtimeReady = status.cached_account && status.playwright_installed && status.edge_detected;
+    const rows = window._recurrences.map(item => {
+        const enabledGroups = (item.groups || []).filter(group => group.enabled).length;
+        return `
+            <tr data-recurrence-id="${item.id}">
+                <td>
+                    <span class="rec-name">${esc(item.name)}</span>
+                    <span class="rec-meta">${item.enabled ? "Enabled" : "Paused"}</span>
+                </td>
+                <td><div class="rec-source-path">${_recSourceText(item)}</div></td>
+                <td>
+                    <span class="rec-name">${enabledGroups} subgroup${enabledGroups === 1 ? "" : "s"}</span>
+                    <span class="rec-meta">${(item.rules || []).length} row rule${(item.rules || []).length === 1 ? "" : "s"}</span>
+                </td>
+                <td>
+                    <span class="rec-name">${esc(_recScheduleText(item))}</span>
+                    <span class="rec-meta">Next: ${esc(_recDateTime(item.next_run_at))}</span>
+                </td>
+                <td>
+                    ${_recStatusHtml(item.last_status)}
+                    <div class="rec-meta">${item.last_row_count ?? 0} rows - ${esc(_recDateTime(item.last_run_at))}</div>
+                    ${item.last_error ? `<div class="rec-history-error">${esc(item.last_error)}</div>` : ""}
+                </td>
+                <td>
+                    <div class="rec-row-actions">
+                        <button class="btn-sm btn-outline rec-edit" data-id="${item.id}">Edit</button>
+                        <button class="btn-sm btn-outline rec-draft" data-id="${item.id}">Create drafts</button>
+                        <button class="btn-sm btn-outline btn-danger-outline rec-run" data-id="${item.id}">Run now</button>
+                        <button class="btn-sm btn-outline rec-history" data-id="${item.id}">History</button>
+                        <button class="btn-sm btn-outline rec-delete" data-id="${item.id}">Delete</button>
+                    </div>
+                </td>
+            </tr>
+            <tr class="rec-history-panel" id="rec-history-${item.id}" hidden>
+                <td colspan="6"><div class="rec-loading">Loading run history...</div></td>
+            </tr>
+        `;
+    }).join("");
+    return `
+        <div class="rec-page-header">
+            <div class="page-header">
+                <h1>Recurrences</h1>
+                <span class="subtitle">Scheduled Outlook emails from live Power BI table visuals</span>
+            </div>
+            <div class="rec-page-actions">
+                <button class="btn-new-task" id="rec-create">Create recurrence</button>
+            </div>
+        </div>
+        <div class="rec-status-strip" aria-label="Recurrence runtime status">
+            <span>Power BI: <strong>${status.cached_account ? "Cached account connected" : "Reconnect required"}</strong></span>
+            <span>Visual export: <strong>${status.playwright_installed && status.edge_detected ? "Headless Edge ready" : "Setup required"}</strong></span>
+            <span>Schedule timezone: <strong>${esc(status.system_timezone || "Local machine time")}</strong></span>
+            <span>Export limit: <strong>${Number(status.max_rows || 30000).toLocaleString()} rows</strong></span>
+        </div>
+        ${runtimeReady ? "" : `
+            <div class="rec-runtime-warning" role="alert">
+                Recurrences cannot export visuals yet. Connect the cached Power BI account, run the latest setup.ps1 so Playwright is installed, and confirm Microsoft Edge is installed for the Windows account running Metronome.
+            </div>
+        `}
+        <section class="rec-list-section">
+            <div class="rec-list-head">
+                <h2>Saved recurrences</h2>
+                <span>${window._recurrences.length} configured</span>
+            </div>
+            ${rows ? `
+                <div class="rec-table-wrap">
+                    <table class="rec-table">
+                        <thead><tr><th>Name</th><th>Power BI source</th><th>Delivery</th><th>Schedule</th><th>Last run</th><th>Actions</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            ` : `
+                <div class="rec-empty">
+                    <strong>No recurrences configured</strong>
+                    Create one to send filtered Power BI table rows to subgroup recipients on a schedule.
+                    <div class="rec-page-actions" style="justify-content:center;margin-top:var(--space-md)">
+                        <button class="btn-new-task" id="rec-create-empty">Create recurrence</button>
+                    </div>
+                </div>
+            `}
+        </section>
+    `;
+}
+
+function _recBaseConfig(existing = null) {
+    return {
+        name: existing?.name || "",
+        enabled: existing ? !!existing.enabled : true,
+        workspace_id: existing?.workspace_id || "",
+        workspace_name: existing?.workspace_name || "",
+        report_id: existing?.report_id || "",
+        report_name: existing?.report_name || "",
+        report_url: existing?.report_url || null,
+        embed_url: existing?.embed_url || "",
+        dataset_id: existing?.dataset_id || null,
+        page_name: existing?.page_name || "",
+        page_display_name: existing?.page_display_name || "",
+        visual_name: existing?.visual_name || "",
+        visual_title: existing?.visual_title || "",
+        visual_type: existing?.visual_type || "",
+        group_column: existing?.group_column || "",
+        subject_template: existing?.subject_template || "{recurrence} - {group} ({row_count} rows)",
+        recurrence: existing?.recurrence || "weekly",
+        weekdays: [...(existing?.weekdays || ["monday"])],
+        month_day: existing?.month_day || 1,
+        send_time: existing?.send_time || "08:00",
+        groups: (existing?.groups || []).map(group => ({
+            match_value: group.match_value ?? "",
+            display_name: group.display_name || group.match_value || "Group",
+            recipients: group.recipients || "",
+            enabled: group.enabled !== false,
+        })),
+        rules: (existing?.rules || []).map(rule => ({
+            column_name: rule.column_name || "",
+            operator: rule.operator || "gt",
+            compare_value: rule.compare_value ?? "",
+        })),
+    };
+}
+
+async function _recOpenBuilder(existing = null) {
+    const app = $("#app");
+    app.innerHTML = '<div class="loading">Loading live Power BI reports...</div>';
+    try {
+        const reportPayload = await _recRequest("/api/recurrences/reports");
+        const config = _recBaseConfig(existing);
+        const reports = [...(reportPayload.reports || [])];
+        if (existing && !reports.some(report => report.id === existing.report_id)) {
+            reports.push({
+                id: existing.report_id,
+                name: existing.report_name,
+                dataset_id: existing.dataset_id,
+                web_url: existing.report_url,
+                embed_url: existing.embed_url,
+                unavailable: true,
+            });
+        }
+        window._recBuilder = {
+            id: existing?.id || null,
+            step: 1,
+            config,
+            reports,
+            workspace: reportPayload.workspace,
+            pages: [],
+            visuals: [],
+            preview: null,
+            loading: "",
+            error: "",
+        };
+        _recRenderBuilder();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+        app.innerHTML = `
+            <div class="rec-empty">
+                <strong>Power BI reports could not be loaded</strong>
+                <div class="rec-inline-error">${esc(error.message)}</div>
+                <div class="rec-page-actions" style="justify-content:center;margin-top:var(--space-md)">
+                    <button class="btn-outline" id="rec-builder-return">Return to recurrences</button>
+                </div>
+            </div>`;
+        $("#rec-builder-return")?.addEventListener("click", () => navigate("recurrences"));
+    }
+}
+
+function _recBuilderSummary(state) {
+    const config = state.config;
+    const enabledGroups = config.groups.filter(group => group.enabled).length;
+    return `
+        <aside class="rec-builder-summary" aria-label="Recurrence summary">
+            <h2>Current configuration</h2>
+            <dl class="rec-summary-list">
+                <div><dt>Report</dt><dd>${esc(config.report_name || "Not selected")}</dd></div>
+                <div><dt>Page</dt><dd>${esc(config.page_display_name || "Not selected")}</dd></div>
+                <div><dt>Visual</dt><dd>${esc(config.visual_title || "Not selected")}</dd></div>
+                <div><dt>Preview</dt><dd>${state.preview ? `${state.preview.row_count.toLocaleString()} rows, ${state.preview.columns.length} columns` : "Not loaded"}</dd></div>
+                <div><dt>Subgroups</dt><dd>${enabledGroups} enabled</dd></div>
+                <div><dt>Row rules</dt><dd>${config.rules.length}</dd></div>
+                <div><dt>Schedule</dt><dd>${esc(_recScheduleText(config))}</dd></div>
+            </dl>
+        </aside>`;
+}
+
+function _recStepButtons(step) {
+    const labels = ["Report", "Page and visual", "Data rules", "Schedule"];
+    return `<div class="rec-stepper" aria-label="Recurrence setup progress">${labels.map((label, index) => {
+        const number = index + 1;
+        const cls = number === step ? " current" : number < step ? " complete" : "";
+        return `<div class="rec-step-button${cls}" ${number === step ? 'aria-current="step"' : ""}>
+            <span class="rec-step-number">${number}</span><span>${label}</span>
+        </div>`;
+    }).join("")}</div>`;
+}
+
+function _recStepOne(state) {
+    const options = state.reports.map(report => `
+        <option value="${esc(report.id)}" ${report.id === state.config.report_id ? "selected" : ""}>
+            ${esc(report.name)}${report.unavailable ? " (not in current workspace list)" : ""}
+        </option>`).join("");
+    return `
+        <div class="rec-step-content">
+            <h2>Choose a Power BI report</h2>
+            <p class="rec-step-intro">This list comes directly from the Power BI workspace configured in Metronome. The saved account token remains on the server.</p>
+            <div class="rec-form-grid">
+                <label class="rec-field full">Report
+                    <select id="rec-report-select">
+                        <option value="">Select a report</option>
+                        ${options}
+                    </select>
+                    <small>Workspace: ${esc(state.workspace?.name || state.config.workspace_name || "Configured workspace")}</small>
+                </label>
+            </div>
+            <div class="rec-step-footer">
+                <span class="rec-table-note">The report must remain accessible to the cached Power BI account.</span>
+                <button class="btn-new-task" id="rec-next-report">Continue to pages</button>
+            </div>
+        </div>`;
+}
+
+function _recStepTwo(state) {
+    const pageOptions = state.pages.map(page => `
+        <option value="${esc(page.name)}" ${page.name === state.config.page_name ? "selected" : ""}>${esc(page.display_name)}</option>
+    `).join("");
+    const visualOptions = state.visuals.length ? state.visuals.map(visual => {
+        const selectable = visual.is_table;
+        return `
+            <label class="rec-visual-option${selectable ? "" : " disabled"}">
+                <input type="radio" name="rec-visual" value="${esc(visual.name)}" ${visual.name === state.config.visual_name ? "checked" : ""} ${selectable ? "" : "disabled"}>
+                <span>
+                    <span class="rec-visual-title">${esc(visual.title || "Untitled visual")}</span>
+                    <span class="rec-visual-id">${esc(visual.name)}</span>
+                </span>
+                <span class="rec-status${selectable ? " success" : " warning"}">${selectable ? "Table" : esc(visual.type || "Unknown")}</span>
+            </label>`;
+    }).join("") : "";
+    return `
+        <div class="rec-step-content">
+            <h2>Choose the page and table visual</h2>
+            <p class="rec-step-intro">Metronome uses the technical page and visual identifiers. Moving, renaming, or changing the columns does not change the saved selection.</p>
+            <div class="rec-form-grid">
+                <label class="rec-field">Report page
+                    <select id="rec-page-select">
+                        <option value="">Select a page</option>
+                        ${pageOptions}
+                    </select>
+                </label>
+                <div class="rec-field">
+                    <span>Live visuals</span>
+                    <button class="btn-outline" id="rec-load-visuals" ${state.config.page_name ? "" : "disabled"}>Load page visuals</button>
+                    <small>This usually takes 10-60 seconds.</small>
+                </div>
+            </div>
+            ${visualOptions ? `<div class="rec-config-section"><h3>Table visuals</h3><p>Select the exact visual that should drive the email.</p><div class="rec-visual-list">${visualOptions}</div></div>` : ""}
+            <div class="rec-step-footer">
+                <button class="btn-outline" id="rec-back-page">Back to report</button>
+                <button class="btn-new-task" id="rec-next-preview" ${state.config.visual_name ? "" : "disabled"}>Fetch data preview</button>
+            </div>
+        </div>`;
+}
+
+function _recPreviewTable(preview) {
+    if (!preview?.columns?.length) return '<div class="rec-empty"><strong>The visual returned no columns</strong>Check the visual export settings in Power BI.</div>';
+    const header = preview.columns.map(column => `<th>${esc(column)}</th>`).join("");
+    const rows = (preview.rows || []).slice(0, 10).map(row => `<tr>${preview.columns.map(column => `<td>${esc(row[column] ?? "")}</td>`).join("")}</tr>`).join("");
+    return `
+        <div class="rec-preview-summary">
+            <span><strong>${preview.row_count.toLocaleString()}</strong> exported rows</span>
+            <span><strong>${preview.columns.length}</strong> columns</span>
+            ${preview.export_limit_reached ? '<span class="rec-status warning">30,000 row limit reached</span>' : ""}
+        </div>
+        <div class="rec-preview-wrap">
+            <table class="rec-preview-table"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>
+        </div>
+        <p class="rec-table-note">Showing the first ${Math.min(10, preview.rows.length)} rows. Emails use all exported rows that match the saved rules.</p>`;
+}
+
+function _recStepThree(state) {
+    const config = state.config;
+    const preview = state.preview;
+    const columnOptions = (preview?.columns || []).map(column => `<option value="${esc(column)}" ${column === config.group_column ? "selected" : ""}>${esc(column)}</option>`).join("");
+    const groupRows = config.groups.map((group, index) => `
+        <tr>
+            <td><input class="rec-group-enabled" data-index="${index}" type="checkbox" ${group.enabled ? "checked" : ""} aria-label="Enable ${esc(group.display_name)}"></td>
+            <td class="rec-group-value">${esc(group.match_value || "(Blank)")}</td>
+            <td><input class="rec-group-name" data-index="${index}" type="text" value="${esc(group.display_name)}" maxlength="200" aria-label="Subgroup name"></td>
+            <td><input class="rec-group-recipients" data-index="${index}" type="text" value="${esc(group.recipients)}" placeholder="name@example.com; team@example.com" aria-label="Subgroup recipients"></td>
+        </tr>`).join("");
+    const operatorOptions = [
+        ["gt", "Above (>)"], ["gte", "At least (>=)"], ["lt", "Below (<)"], ["lte", "At most (<=)"],
+        ["eq", "Equals"], ["ne", "Does not equal"], ["contains", "Contains"], ["not_contains", "Does not contain"],
+        ["is_empty", "Is empty"], ["not_empty", "Is not empty"],
+    ];
+    const ruleRows = config.rules.map((rule, index) => {
+        const noValue = ["is_empty", "not_empty"].includes(rule.operator);
+        return `<div class="rec-rule-row" data-index="${index}">
+            <select class="rec-rule-column" data-index="${index}" aria-label="Rule column">
+                ${(preview?.columns || []).map(column => `<option value="${esc(column)}" ${column === rule.column_name ? "selected" : ""}>${esc(column)}</option>`).join("")}
+            </select>
+            <select class="rec-rule-operator" data-index="${index}" aria-label="Rule operator">
+                ${operatorOptions.map(([value, label]) => `<option value="${value}" ${value === rule.operator ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+            <input class="rec-rule-value" data-index="${index}" type="text" value="${esc(rule.compare_value || "")}" placeholder="Threshold or value" aria-label="Rule comparison value" ${noValue ? "disabled" : ""}>
+            <button class="btn-sm btn-outline rec-rule-remove" data-index="${index}">Remove rule</button>
+        </div>`;
+    }).join("");
+    return `
+        <div class="rec-step-content">
+            <h2>Preview and define email rows</h2>
+            <p class="rec-step-intro">Each subgroup receives only its own rows after all row rules are applied. If a required column disappears, the run fails and sends nothing.</p>
+            ${_recPreviewTable(preview)}
+            <section class="rec-config-section">
+                <h3>Subgroups</h3>
+                <p>Choose the column whose distinct values identify each recipient group. Rename the email group and add one or more recipients.</p>
+                <label class="rec-field">Subgroup column
+                    <select id="rec-group-column"><option value="">Select a column</option>${columnOptions}</select>
+                </label>
+                ${config.group_column ? `
+                    <div class="rec-groups-wrap" style="margin-top:var(--space-md)">
+                        <table class="rec-groups-table">
+                            <thead><tr><th>Send</th><th>Column value</th><th>Email group name</th><th>Recipients</th></tr></thead>
+                            <tbody>${groupRows}</tbody>
+                        </table>
+                    </div>` : ""}
+            </section>
+            <section class="rec-config-section">
+                <h3>Row rules</h3>
+                <p>All rules are combined. Only rows matching every rule are eligible for email.</p>
+                <div class="rec-rules-list">${ruleRows || '<div class="rec-table-note">No row rules. Every row in each configured subgroup is eligible.</div>'}</div>
+                <button class="btn-outline" id="rec-add-rule" style="margin-top:var(--space-md)">Add row rule</button>
+            </section>
+            <div class="rec-step-footer">
+                <button class="btn-outline" id="rec-back-visual">Back to visual</button>
+                <button class="btn-new-task" id="rec-next-schedule">Continue to schedule</button>
+            </div>
+        </div>`;
+}
+
+function _recStepFour(state) {
+    const config = state.config;
+    const weekdayLabels = Object.entries({ monday: "Monday", tuesday: "Tuesday", wednesday: "Wednesday", thursday: "Thursday", friday: "Friday", saturday: "Saturday", sunday: "Sunday" });
+    return `
+        <div class="rec-step-content">
+            <h2>Name and schedule the recurrence</h2>
+            <p class="rec-step-intro">Metronome checks due recurrences every minute using the Windows host's local timezone. A run with no matching rows sends no email.</p>
+            <div class="rec-form-grid">
+                <label class="rec-field full">Recurrence name
+                    <input id="rec-name" type="text" maxlength="200" value="${esc(config.name)}" placeholder="Weekly subsidiary exceptions">
+                </label>
+                <label class="rec-enable-row full"><input id="rec-enabled" type="checkbox" ${config.enabled ? "checked" : ""}> Enable scheduled sending after save</label>
+                <label class="rec-field full">Email subject
+                    <input id="rec-subject" type="text" maxlength="500" value="${esc(config.subject_template)}">
+                    <small>Available placeholders: {recurrence}, {group}, {row_count}, {report}, {date}</small>
+                </label>
+                <label class="rec-field">Frequency
+                    <select id="rec-frequency">
+                        <option value="daily" ${config.recurrence === "daily" ? "selected" : ""}>Daily</option>
+                        <option value="weekly" ${config.recurrence === "weekly" ? "selected" : ""}>Weekly</option>
+                        <option value="weekdays" ${config.recurrence === "weekdays" ? "selected" : ""}>Weekdays</option>
+                        <option value="monthly" ${config.recurrence === "monthly" ? "selected" : ""}>Monthly</option>
+                    </select>
+                </label>
+                <label class="rec-field">Send time
+                    <input id="rec-send-time" type="time" value="${esc(config.send_time)}">
+                    <small>${esc(window._recurrenceStatus?.system_timezone || "Windows host local time")}</small>
+                </label>
+                ${config.recurrence === "monthly" ? `
+                    <label class="rec-field">Day of month
+                        <input id="rec-month-day" type="number" min="1" max="31" value="${config.month_day || 1}">
+                        <small>Short months use their final calendar day.</small>
+                    </label>` : ""}
+                ${config.recurrence === "weekly" ? `
+                    <div class="rec-field full"><span>Send on</span>
+                        <div class="rec-weekdays">${weekdayLabels.map(([value, label]) => `
+                            <label class="rec-weekday"><input class="rec-weekday-input" type="checkbox" value="${value}" ${config.weekdays.includes(value) ? "checked" : ""}> ${label}</label>
+                        `).join("")}</div>
+                    </div>` : ""}
+            </div>
+            <div class="rec-step-footer">
+                <button class="btn-outline" id="rec-back-rules">Back to data rules</button>
+                <button class="btn-new-task" id="rec-save">${state.id ? "Save changes" : "Create recurrence"}</button>
+            </div>
+        </div>`;
+}
+
+function _recRenderBuilder() {
+    const state = window._recBuilder;
+    if (!state) return;
+    const stepContent = state.step === 1 ? _recStepOne(state)
+        : state.step === 2 ? _recStepTwo(state)
+        : state.step === 3 ? _recStepThree(state)
+        : _recStepFour(state);
+    $("#app").innerHTML = `
+        <div class="rec-builder-heading">
+            <div><h1>${state.id ? "Edit recurrence" : "Create recurrence"}</h1><p>Configure one live Power BI table visual and its scheduled subgroup emails.</p></div>
+            <button class="btn-outline" id="rec-close-builder">Close builder</button>
+        </div>
+        ${_recStepButtons(state.step)}
+        ${state.error ? `<div class="rec-inline-error" role="alert" style="margin-bottom:var(--space-lg)">${esc(state.error)}</div>` : ""}
+        ${state.loading ? `<div class="rec-loading" role="status" style="margin-bottom:var(--space-lg)"><strong>${esc(state.loading)}</strong><br>Keep this page open. Power BI visual operations usually take 10-60 seconds.</div>` : ""}
+        <div class="rec-builder-shell">
+            <main class="rec-builder-main">${stepContent}</main>
+            ${_recBuilderSummary(state)}
+        </div>`;
+    _recBindBuilder();
+}
+
+function _recSelectedReport(state) {
+    return state.reports.find(report => report.id === state.config.report_id) || null;
+}
+
+function _recMergeGroups(state, reset = false) {
+    const column = state.config.group_column;
+    const values = state.preview?.values?.[column] || [];
+    const existing = new Map((reset ? [] : state.config.groups).map(group => [String(group.match_value).trim().toLowerCase(), group]));
+    state.config.groups = values.map(value => {
+        const found = existing.get(String(value).trim().toLowerCase());
+        return found || {
+            match_value: String(value),
+            display_name: String(value).trim() || "Blank",
+            recipients: "",
+            enabled: true,
+        };
+    });
+}
+
+async function _recRunLoading(label, operation) {
+    const state = window._recBuilder;
+    state.loading = label;
+    state.error = "";
+    _recRenderBuilder();
+    try {
+        await operation();
+        state.loading = "";
+    } catch (error) {
+        state.loading = "";
+        state.error = error.message;
+    }
+    _recRenderBuilder();
+}
+
+function _recValidateGroups(state) {
+    if (!state.config.group_column) return "Choose a subgroup column.";
+    const enabled = state.config.groups.filter(group => group.enabled);
+    if (!enabled.length) return "Enable at least one subgroup.";
+    for (const group of enabled) {
+        if (!group.display_name.trim()) return `Enter a name for subgroup '${group.match_value || "(Blank)"}'.`;
+        if (!group.recipients.trim()) return `Enter recipients for subgroup '${group.display_name}'.`;
+    }
+    for (const rule of state.config.rules) {
+        if (!["is_empty", "not_empty"].includes(rule.operator) && !String(rule.compare_value || "").trim()) {
+            return `Enter a comparison value for the ${rule.column_name} rule.`;
+        }
+    }
+    return "";
+}
+
+function _recPayload(state) {
+    const config = state.config;
+    return {
+        name: config.name.trim(),
+        enabled: !!config.enabled,
+        workspace_id: config.workspace_id,
+        workspace_name: config.workspace_name || null,
+        report_id: config.report_id,
+        report_name: config.report_name,
+        report_url: config.report_url || null,
+        embed_url: config.embed_url,
+        dataset_id: config.dataset_id || null,
+        page_name: config.page_name,
+        page_display_name: config.page_display_name || null,
+        visual_name: config.visual_name,
+        visual_title: config.visual_title || null,
+        visual_type: config.visual_type,
+        group_column: config.group_column,
+        subject_template: config.subject_template.trim(),
+        recurrence: config.recurrence,
+        weekdays: config.weekdays,
+        month_day: config.recurrence === "monthly" ? Number(config.month_day || 1) : null,
+        send_time: config.send_time,
+        groups: config.groups.map(group => ({
+            match_value: String(group.match_value),
+            display_name: group.display_name.trim(),
+            recipients: group.recipients.trim(),
+            enabled: !!group.enabled,
+        })),
+        rules: config.rules.map(rule => ({
+            column_name: rule.column_name,
+            operator: rule.operator,
+            compare_value: ["is_empty", "not_empty"].includes(rule.operator) ? null : String(rule.compare_value || "").trim(),
+        })),
+    };
+}
+
+function _recBindBuilder() {
+    const state = window._recBuilder;
+    $("#rec-close-builder")?.addEventListener("click", () => {
+        if (confirm("Close the recurrence builder? Unsaved changes will be lost.")) {
+            window._recBuilder = null;
+            navigate("recurrences");
+        }
+    });
+    $("#rec-report-select")?.addEventListener("change", event => {
+        const report = state.reports.find(item => item.id === event.target.value);
+        state.config.report_id = report?.id || "";
+        state.config.report_name = report?.name || "";
+        state.config.report_url = report?.web_url || null;
+        state.config.embed_url = report?.embed_url || "";
+        state.config.dataset_id = report?.dataset_id || null;
+        state.config.workspace_id = state.workspace?.id || state.config.workspace_id;
+        state.config.workspace_name = state.workspace?.name || state.config.workspace_name;
+        state.config.page_name = "";
+        state.config.page_display_name = "";
+        state.config.visual_name = "";
+        state.config.visual_title = "";
+        state.config.visual_type = "";
+        state.pages = [];
+        state.visuals = [];
+        state.preview = null;
+    });
+    $("#rec-next-report")?.addEventListener("click", async () => {
+        if (!state.config.report_id) { state.error = "Choose a Power BI report."; _recRenderBuilder(); return; }
+        await _recRunLoading("Loading report pages...", async () => {
+            const data = await _recRequest(`/api/recurrences/reports/${encodeURIComponent(state.config.report_id)}/pages?workspace_id=${encodeURIComponent(state.config.workspace_id)}`);
+            state.pages = data.pages || [];
+            if (!state.pages.some(page => page.name === state.config.page_name)) {
+                state.config.page_name = "";
+                state.config.page_display_name = "";
+            }
+            state.step = 2;
+        });
+    });
+    $("#rec-back-page")?.addEventListener("click", () => { state.step = 1; state.error = ""; _recRenderBuilder(); });
+    $("#rec-page-select")?.addEventListener("change", event => {
+        const page = state.pages.find(item => item.name === event.target.value);
+        state.config.page_name = page?.name || "";
+        state.config.page_display_name = page?.display_name || "";
+        state.config.visual_name = "";
+        state.config.visual_title = "";
+        state.config.visual_type = "";
+        state.visuals = [];
+        state.preview = null;
+        _recRenderBuilder();
+    });
+    $("#rec-load-visuals")?.addEventListener("click", async () => {
+        if (!state.config.page_name) return;
+        await _recRunLoading("Loading live table visuals...", async () => {
+            const data = await _recRequest("/api/recurrences/visuals/discover", {
+                method: "POST",
+                body: JSON.stringify({ report_id: state.config.report_id, embed_url: state.config.embed_url, page_name: state.config.page_name }),
+            });
+            state.visuals = data.visuals || [];
+            if (!state.visuals.some(visual => visual.name === state.config.visual_name && visual.is_table)) {
+                state.config.visual_name = "";
+                state.config.visual_title = "";
+                state.config.visual_type = "";
+            }
+        });
+    });
+    document.querySelectorAll('input[name="rec-visual"]').forEach(input => input.addEventListener("change", () => {
+        const visual = state.visuals.find(item => item.name === input.value);
+        state.config.visual_name = visual?.name || "";
+        state.config.visual_title = visual?.title || "";
+        state.config.visual_type = visual?.type || "";
+        _recRenderBuilder();
+    }));
+    $("#rec-next-preview")?.addEventListener("click", async () => {
+        if (!state.config.visual_name) return;
+        await _recRunLoading("Exporting a live data preview...", async () => {
+            state.preview = await _recRequest("/api/recurrences/preview", {
+                method: "POST",
+                body: JSON.stringify({
+                    report_id: state.config.report_id,
+                    embed_url: state.config.embed_url,
+                    page_name: state.config.page_name,
+                    visual_name: state.config.visual_name,
+                }),
+            });
+            if (!state.preview.columns.includes(state.config.group_column)) {
+                state.config.group_column = "";
+                state.config.groups = [];
+            } else {
+                _recMergeGroups(state);
+            }
+            state.config.rules = state.config.rules.filter(rule => state.preview.columns.includes(rule.column_name));
+            state.step = 3;
+        });
+    });
+    $("#rec-back-visual")?.addEventListener("click", () => { state.step = 2; state.error = ""; _recRenderBuilder(); });
+    $("#rec-group-column")?.addEventListener("change", event => {
+        const changed = state.config.group_column !== event.target.value;
+        state.config.group_column = event.target.value;
+        _recMergeGroups(state, changed);
+        _recRenderBuilder();
+    });
+    document.querySelectorAll(".rec-group-enabled").forEach(input => input.addEventListener("change", () => {
+        state.config.groups[Number(input.dataset.index)].enabled = input.checked;
+    }));
+    document.querySelectorAll(".rec-group-name").forEach(input => input.addEventListener("input", () => {
+        state.config.groups[Number(input.dataset.index)].display_name = input.value;
+    }));
+    document.querySelectorAll(".rec-group-recipients").forEach(input => input.addEventListener("input", () => {
+        state.config.groups[Number(input.dataset.index)].recipients = input.value;
+    }));
+    $("#rec-add-rule")?.addEventListener("click", () => {
+        const firstColumn = state.preview?.columns?.[0] || "";
+        state.config.rules.push({ column_name: firstColumn, operator: "gt", compare_value: "" });
+        _recRenderBuilder();
+    });
+    document.querySelectorAll(".rec-rule-column").forEach(input => input.addEventListener("change", () => {
+        state.config.rules[Number(input.dataset.index)].column_name = input.value;
+    }));
+    document.querySelectorAll(".rec-rule-operator").forEach(input => input.addEventListener("change", () => {
+        const rule = state.config.rules[Number(input.dataset.index)];
+        rule.operator = input.value;
+        if (["is_empty", "not_empty"].includes(rule.operator)) rule.compare_value = "";
+        _recRenderBuilder();
+    }));
+    document.querySelectorAll(".rec-rule-value").forEach(input => input.addEventListener("input", () => {
+        state.config.rules[Number(input.dataset.index)].compare_value = input.value;
+    }));
+    document.querySelectorAll(".rec-rule-remove").forEach(button => button.addEventListener("click", () => {
+        state.config.rules.splice(Number(button.dataset.index), 1);
+        _recRenderBuilder();
+    }));
+    $("#rec-next-schedule")?.addEventListener("click", () => {
+        const error = _recValidateGroups(state);
+        if (error) { state.error = error; _recRenderBuilder(); return; }
+        state.error = "";
+        state.step = 4;
+        _recRenderBuilder();
+    });
+    $("#rec-back-rules")?.addEventListener("click", () => { state.step = 3; state.error = ""; _recRenderBuilder(); });
+    $("#rec-name")?.addEventListener("input", event => { state.config.name = event.target.value; });
+    $("#rec-enabled")?.addEventListener("change", event => { state.config.enabled = event.target.checked; });
+    $("#rec-subject")?.addEventListener("input", event => { state.config.subject_template = event.target.value; });
+    $("#rec-send-time")?.addEventListener("change", event => { state.config.send_time = event.target.value; });
+    $("#rec-month-day")?.addEventListener("input", event => { state.config.month_day = Number(event.target.value || 1); });
+    $("#rec-frequency")?.addEventListener("change", event => {
+        state.config.recurrence = event.target.value;
+        if (state.config.recurrence === "weekly" && !state.config.weekdays.length) state.config.weekdays = ["monday"];
+        _recRenderBuilder();
+    });
+    document.querySelectorAll(".rec-weekday-input").forEach(input => input.addEventListener("change", () => {
+        state.config.weekdays = [...document.querySelectorAll(".rec-weekday-input:checked")].map(item => item.value);
+    }));
+    $("#rec-save")?.addEventListener("click", async () => {
+        if (!state.config.name.trim()) { state.error = "Enter a recurrence name."; _recRenderBuilder(); return; }
+        if (!state.config.subject_template.trim()) { state.error = "Enter an email subject."; _recRenderBuilder(); return; }
+        if (state.config.recurrence === "weekly" && !state.config.weekdays.length) { state.error = "Choose at least one weekday."; _recRenderBuilder(); return; }
+        const groupError = _recValidateGroups(state);
+        if (groupError) { state.error = groupError; _recRenderBuilder(); return; }
+        await _recRunLoading(state.id ? "Saving recurrence changes..." : "Creating recurrence...", async () => {
+            const method = state.id ? "PUT" : "POST";
+            const path = state.id ? `/api/recurrences/${state.id}` : "/api/recurrences";
+            await _recRequest(path, { method, body: JSON.stringify(_recPayload(state)) });
+            toast(state.id ? "Recurrence saved" : "Recurrence created");
+            window._recBuilder = null;
+            await navigate("recurrences");
+        });
+    });
+}
+
+async function _recLoadHistory(id, row) {
+    try {
+        const runs = await _recRequest(`/api/recurrences/${id}/runs`);
+        if (!runs.length) {
+            row.querySelector("td").innerHTML = '<div class="rec-empty"><strong>No run history yet</strong>Use Create drafts or Run now to test this recurrence.</div>';
+            return;
+        }
+        const body = runs.map(run => `
+            <tr>
+                <td>${_recStatusHtml(run.status)}</td>
+                <td>${esc(run.trigger_type)}</td>
+                <td>${esc(_recDateTime(run.started_at))}</td>
+                <td>${Number(run.exported_rows || 0).toLocaleString()}</td>
+                <td>${Number(run.matched_rows || 0).toLocaleString()}</td>
+                <td>${Number(run.email_count || 0).toLocaleString()}</td>
+                <td class="rec-history-error">${esc(run.error || "")}</td>
+            </tr>`).join("");
+        row.querySelector("td").innerHTML = `<div class="rec-history-wrap"><table class="rec-history-table"><thead><tr><th>Status</th><th>Trigger</th><th>Started</th><th>Exported</th><th>Matched</th><th>Emails</th><th>Error</th></tr></thead><tbody>${body}</tbody></table></div>`;
+    } catch (error) {
+        row.querySelector("td").innerHTML = `<div class="rec-inline-error">Run history could not be loaded. ${esc(error.message)}</div>`;
+    }
+}
+
+function bindRecurrencesPage() {
+    const create = () => _recOpenBuilder();
+    $("#rec-create")?.addEventListener("click", create);
+    $("#rec-create-empty")?.addEventListener("click", create);
+    document.querySelectorAll(".rec-edit").forEach(button => button.addEventListener("click", () => {
+        const item = (window._recurrences || []).find(value => String(value.id) === button.dataset.id);
+        if (item) _recOpenBuilder(item);
+    }));
+    document.querySelectorAll(".rec-draft").forEach(button => button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+            const result = await _recRequest(`/api/recurrences/${button.dataset.id}/run`, { method: "POST", body: JSON.stringify({ mode: "draft" }) });
+            toast(result.email_count ? `${result.email_count} Outlook draft${result.email_count === 1 ? "" : "s"} launched` : "No matching rows. No drafts created.");
+            await navigate("recurrences");
+        } catch (error) {
+            button.disabled = false;
+            toast("Draft test failed: " + error.message);
+        }
+    }));
+    document.querySelectorAll(".rec-run").forEach(button => button.addEventListener("click", async () => {
+        const item = (window._recurrences || []).find(value => String(value.id) === button.dataset.id);
+        if (!item || !confirm(`Run '${item.name}' now and send all matching subgroup emails through Outlook?`)) return;
+        button.disabled = true;
+        try {
+            const result = await _recRequest(`/api/recurrences/${button.dataset.id}/run`, { method: "POST", body: JSON.stringify({ mode: "send" }) });
+            toast(result.email_count ? `${result.email_count} email${result.email_count === 1 ? "" : "s"} launched through Outlook` : "No matching rows. No emails sent.");
+            await navigate("recurrences");
+        } catch (error) {
+            button.disabled = false;
+            toast("Recurrence failed: " + error.message);
+        }
+    }));
+    document.querySelectorAll(".rec-delete").forEach(button => button.addEventListener("click", async () => {
+        const item = (window._recurrences || []).find(value => String(value.id) === button.dataset.id);
+        if (!item || !confirm(`Delete recurrence '${item.name}' and its run history? This cannot be undone.`)) return;
+        try {
+            await _recRequest(`/api/recurrences/${button.dataset.id}`, { method: "DELETE" });
+            toast("Recurrence deleted");
+            await navigate("recurrences");
+        } catch (error) {
+            toast("Delete failed: " + error.message);
+        }
+    }));
+    document.querySelectorAll(".rec-history").forEach(button => button.addEventListener("click", async () => {
+        const row = $(`#rec-history-${button.dataset.id}`);
+        if (!row) return;
+        row.hidden = !row.hidden;
+        button.textContent = row.hidden ? "History" : "Hide history";
+        if (!row.hidden && !row.dataset.loaded) {
+            row.dataset.loaded = "1";
+            await _recLoadHistory(button.dataset.id, row);
+        }
+    }));
+}
+
+
 // ── Full Export ──
 
 async function renderExport() {
@@ -9791,6 +10589,7 @@ const pages = {
     create: renderCreate,
     bestpractices: renderBestPractices,
     email: renderEmail,
+    recurrences: renderRecurrences,
     export: renderExport,
     dataimport: renderDataImport,
     tasks: renderTasks,
@@ -9928,6 +10727,7 @@ async function navigate(page) {
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
         if (page === "email") bindEmailPage();
+        if (page === "recurrences") bindRecurrencesPage();
         if (page === "export") bindExportPage();
         if (page === "dataimport") bindDataImportPage();
         if (page === "faq") bindFaqPage();

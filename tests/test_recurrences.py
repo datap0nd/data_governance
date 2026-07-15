@@ -1,0 +1,231 @@
+from datetime import datetime
+
+import pytest
+
+from app import database
+from app.routers import recurrences
+
+
+def _valid_write(**overrides):
+    data = {
+        "name": "Weekly exceptions",
+        "enabled": True,
+        "workspace_id": "11111111-1111-1111-1111-111111111111",
+        "workspace_name": "Analytics",
+        "report_id": "22222222-2222-2222-2222-222222222222",
+        "report_name": "Operations",
+        "report_url": "https://app.powerbi.com/groups/111/reports/222",
+        "embed_url": "https://app.powerbi.com/reportEmbed?reportId=22222222-2222-2222-2222-222222222222",
+        "dataset_id": "33333333-3333-3333-3333-333333333333",
+        "page_name": "ReportSection123",
+        "page_display_name": "Summary",
+        "visual_name": "visual456",
+        "visual_title": "Exceptions",
+        "visual_type": "tableEx",
+        "group_column": "Subsidiary",
+        "subject_template": "{recurrence} - {group}",
+        "recurrence": "weekly",
+        "weekdays": ["monday"],
+        "send_time": "08:00",
+        "groups": [
+            {
+                "match_value": "North",
+                "display_name": "North team",
+                "recipients": "north@example.com",
+                "enabled": True,
+            }
+        ],
+        "rules": [{"column_name": "Value", "operator": "gt", "compare_value": "10"}],
+    }
+    data.update(overrides)
+    return recurrences.RecurrenceWrite(**data)
+
+
+def _seed_recurrence(db_path):
+    database.DB_PATH = str(db_path)
+    database.init_db()
+    with database.get_db() as db:
+        cursor = db.execute(
+            """INSERT INTO pbi_recurrences
+               (name, enabled, workspace_id, workspace_name, report_id, report_name,
+                report_url, embed_url, dataset_id, page_name, page_display_name,
+                visual_name, visual_title, visual_type, group_column, subject_template,
+                recurrence, weekdays, send_time, next_run_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'weekly', 'monday', '08:00', ?)""",
+            (
+                "Weekly exceptions",
+                "11111111-1111-1111-1111-111111111111",
+                "Analytics",
+                "22222222-2222-2222-2222-222222222222",
+                "Operations",
+                "https://app.powerbi.com/groups/111/reports/222",
+                "https://app.powerbi.com/reportEmbed?reportId=22222222-2222-2222-2222-222222222222",
+                "33333333-3333-3333-3333-333333333333",
+                "ReportSection123",
+                "Summary",
+                "visual456",
+                "Exceptions",
+                "tableEx",
+                "Subsidiary",
+                "{recurrence} - {group} ({row_count})",
+                "2099-01-05T08:00:00",
+            ),
+        )
+        recurrence_id = cursor.lastrowid
+        db.executemany(
+            """INSERT INTO pbi_recurrence_groups
+               (recurrence_id, match_value, display_name, recipients, enabled)
+               VALUES (?, ?, ?, ?, 1)""",
+            [
+                (recurrence_id, "North", "North team", "north@example.com"),
+                (recurrence_id, "South", "South team", "south@example.com"),
+            ],
+        )
+        db.execute(
+            """INSERT INTO pbi_recurrence_rules
+               (recurrence_id, position, column_name, operator, compare_value)
+               VALUES (?, 0, 'Value', 'gt', '10')""",
+            (recurrence_id,),
+        )
+    return recurrence_id
+
+
+def test_parse_visual_csv_preserves_dynamic_columns_and_deduplicates_headers():
+    columns, rows = recurrences.parse_visual_csv(
+        "\ufeffSubsidiary,Value,Value,New Column\nNorth,10,11,Owner added\n"
+    )
+    assert columns == ["Subsidiary", "Value", "Value (2)", "New Column"]
+    assert rows == [
+        {
+            "Subsidiary": "North",
+            "Value": "10",
+            "Value (2)": "11",
+            "New Column": "Owner added",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "operator", "result"),
+    [
+        ("1,234.50", "1000", "gt", True),
+        ("12.5%", "10", "gt", True),
+        ("9", "10", "gte", False),
+        ("North Region", "north", "contains", True),
+        ("", "", "is_empty", True),
+    ],
+)
+def test_rule_matches_numeric_and_text_values(actual, expected, operator, result):
+    rule = {"column_name": "Metric", "operator": operator, "compare_value": expected}
+    assert recurrences.rule_matches({"Metric": actual}, rule) is result
+
+
+def test_rules_are_combined_with_and():
+    rows = [
+        {"Subsidiary": "North", "Value": "20"},
+        {"Subsidiary": "South", "Value": "20"},
+        {"Subsidiary": "North", "Value": "5"},
+    ]
+    rules = [
+        {"column_name": "Subsidiary", "operator": "eq", "compare_value": "North"},
+        {"column_name": "Value", "operator": "gt", "compare_value": "10"},
+    ]
+    assert recurrences.apply_rules(rows, rules) == [{"Subsidiary": "North", "Value": "20"}]
+
+
+def test_next_run_weekly_and_monthly_clamping():
+    monday_after = recurrences.calculate_next_run(
+        "weekly", "08:00", ["monday"], None, datetime(2026, 7, 13, 9, 0)
+    )
+    assert monday_after == datetime(2026, 7, 20, 8, 0)
+    february = recurrences.calculate_next_run(
+        "monthly", "08:00", [], 31, datetime(2026, 2, 1, 9, 0)
+    )
+    assert february == datetime(2026, 2, 28, 8, 0)
+
+
+def test_configuration_rejects_non_powerbi_embed_url_and_non_table_visual():
+    with pytest.raises(ValueError, match="app.powerbi.com"):
+        _valid_write(embed_url="https://example.com/reportEmbed")
+    with pytest.raises(ValueError, match="HTTPS app.powerbi.com"):
+        _valid_write(embed_url="http://app.powerbi.com/reportEmbed")
+    with pytest.raises(ValueError, match="report URL"):
+        _valid_write(report_url="https://example.com/report")
+    with pytest.raises(ValueError, match="table or matrix"):
+        _valid_write(visual_type="lineChart")
+
+
+def test_missing_recurrence_does_not_leave_run_lock(tmp_path, monkeypatch):
+    database.DB_PATH = str(tmp_path / "governance.db")
+    database.init_db()
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+
+    with pytest.raises(KeyError, match="Recurrence not found"):
+        recurrences.run_recurrence(999, mode="send", trigger_type="manual")
+
+    assert 999 not in recurrences._RUNNING_IDS
+
+
+def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    monkeypatch.setattr(
+        recurrences,
+        "export_visual_data",
+        lambda *args, **kwargs: {
+            "data": (
+                "Subsidiary,Value,New Column\n"
+                "North,5,below threshold\n"
+                "North,15,owner added this\n"
+                "South,20,owner added this too\n"
+            ),
+            "visual": {"name": "visual456", "type": "tableEx", "title": "Exceptions"},
+        },
+    )
+    launched = []
+    monkeypatch.setattr(
+        recurrences,
+        "_launch_outlook_payload",
+        lambda messages, mode: launched.append((messages, mode)) or len(messages),
+    )
+
+    result = recurrences.run_recurrence(recurrence_id, mode="send", trigger_type="manual")
+
+    assert result["status"] == "sent"
+    assert result["exported_rows"] == 3
+    assert result["matched_rows"] == 2
+    assert result["email_count"] == 2
+    assert len(launched) == 1
+    messages, mode = launched[0]
+    assert mode == "send"
+    assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
+    assert all("New Column" in message["html_body"] for message in messages)
+    assert "below threshold" not in "".join(message["html_body"] for message in messages)
+
+
+def test_run_fails_closed_when_required_column_disappears(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    monkeypatch.setattr(
+        recurrences,
+        "export_visual_data",
+        lambda *args, **kwargs: {
+            "data": "Subsidiary,Other\nNorth,20\n",
+            "visual": {"name": "visual456", "type": "tableEx", "title": "Exceptions"},
+        },
+    )
+    monkeypatch.setattr(
+        recurrences,
+        "_launch_outlook_payload",
+        lambda *args, **kwargs: pytest.fail("Outlook must not launch when a required column is missing"),
+    )
+
+    with pytest.raises(RuntimeError, match="required columns are missing: Value"):
+        recurrences.run_recurrence(recurrence_id, mode="send", trigger_type="manual")
+
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT last_status, last_error FROM pbi_recurrences WHERE id = ?", (recurrence_id,)
+        ).fetchone()
+    assert row["last_status"] == "failed"
+    assert "Value" in row["last_error"]

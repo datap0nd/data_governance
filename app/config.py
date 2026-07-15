@@ -93,6 +93,8 @@ PBI_USAGE_DAYS_BACK = int(os.environ.get("DG_PBI_USAGE_DAYS_BACK", "30"))
 # system proxy settings (including a configured PAC setup script), then
 # goes direct. A PAC URL itself is NOT a valid value here.
 PBI_PROXY = os.environ.get("DG_PBI_PROXY", "")
+PBI_VISUAL_EXPORT_TIMEOUT_SECONDS = int(os.environ.get("DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS", "120"))
+PBI_VISUAL_EXPORT_MAX_ROWS = min(30000, max(1, int(os.environ.get("DG_PBI_VISUAL_EXPORT_MAX_ROWS", "30000"))))
 
 
 def _bool_env(name: str, default: bool) -> bool:
