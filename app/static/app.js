@@ -913,14 +913,7 @@ const COL_W = { xs: 50, sm: 75, md: 110, lg: 170, xl: 300 };
 function _saveDTState(tableId) {
     const dt = window._dt[tableId];
     if (!dt) return;
-    const state = {
-        filters: dt.filters,
-        sortCol: dt.sortCol,
-        sortDir: dt.sortDir,
-        globalQuery: dt.globalQuery,
-        filtersVisible: dt.filtersVisible,
-        hiddenColumns: dt.hiddenColumns,
-    };
+    const state = { filters: dt.filters, sortCol: dt.sortCol, sortDir: dt.sortDir };
     try { sessionStorage.setItem("dt_state_" + tableId, JSON.stringify(state)); } catch (_) {}
 }
 
@@ -934,35 +927,19 @@ function _loadDTState(tableId) {
 function dataTable(tableId, columns, rows, opts) {
     window._dt = window._dt || {};
     const saved = _loadDTState(tableId);
-    const tableOpts = opts || {};
-    const validColumnKeys = new Set(columns.map(c => c.key));
-    const savedHidden = Array.isArray(saved?.hiddenColumns)
-        ? saved.hiddenColumns.filter(key => validColumnKeys.has(key))
-        : null;
     window._dt[tableId] = {
         columns, rows,
         sortCol: saved ? saved.sortCol : null,
         sortDir: saved ? saved.sortDir : "asc",
-        filters: saved?.filters || {},
-        globalQuery: saved?.globalQuery || "",
-        filtersVisible: saved?.filtersVisible || false,
-        hiddenColumns: savedHidden || [...(tableOpts.defaultHidden || [])],
-        opts: tableOpts,
+        filters: saved ? saved.filters : {},
+        opts: opts || {},
     };
     return _renderDT(tableId);
 }
 
 function _filterAndSortDT(dt) {
-    const { columns, sortCol, sortDir, filters, globalQuery } = dt;
-    const queryTokens = String(globalQuery || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const { columns, sortCol, sortDir, filters } = dt;
     let rows = dt.rows.filter(r => {
-        if (queryTokens.length) {
-            const haystack = columns.map(col => {
-                const value = col.filterVal ? col.filterVal(r) : col.sortVal ? col.sortVal(r) : (r[col.key] ?? "");
-                return String(value);
-            }).join(" ").toLowerCase();
-            if (!queryTokens.every(token => haystack.includes(token))) return false;
-        }
         for (const col of columns) {
             if (col.filterable === false) continue;
             const f = (filters[col.key] || "").toLowerCase();
@@ -1001,97 +978,60 @@ function _colStyle(c) {
     return ` style="min-width:${w}px;width:${w}px"`;
 }
 
-function _visibleDTColumns(dt) {
-    const hidden = new Set(dt.hiddenColumns || []);
-    return dt.columns.filter(c => !hidden.has(c.key));
-}
-
-function _scheduleDTRefresh(tableId, options = {}, delayMs = 80) {
-    const dt = window._dt?.[tableId];
-    if (!dt) return;
-    if (dt._refreshTimer) clearTimeout(dt._refreshTimer);
-    dt._refreshTimer = setTimeout(() => {
-        dt._refreshTimer = null;
-        _refreshDT(tableId, options);
-    }, delayMs);
-}
-
 function _renderDT(tableId) {
     const dt = window._dt[tableId];
-    const { columns, sortCol, sortDir, filters, globalQuery, filtersVisible } = dt;
-    const visibleColumns = _visibleDTColumns(dt);
+    const { columns, sortCol, sortDir, filters } = dt;
     let rows = _filterAndSortDT(dt);
 
-    const headerCells = visibleColumns.map(c => {
+    const arrow = (key) => {
+        if (sortCol !== key) return '<span class="sort-arrow">&#9650;</span>';
+        return sortDir === "asc"
+            ? '<span class="sort-arrow">&#9650;</span>'
+            : '<span class="sort-arrow">&#9660;</span>';
+    };
+
+    const headerCells = columns.map(c => {
         const isSortable = c.sortable !== false;
+        const sortCls = isSortable ? 'sortable' : '';
         const activeCls = isSortable && sortCol === c.key ? ' sort-' + sortDir : '';
-        const ariaSort = sortCol === c.key ? (sortDir === "asc" ? "ascending" : "descending") : "none";
-        const label = esc(c.label);
-        const content = isSortable
-            ? `<button type="button" class="dt-sort-button" data-dt="${tableId}" data-col="${c.key}">${label}<span class="sort-arrow" aria-hidden="true">${sortCol === c.key && sortDir === "desc" ? "&#9660;" : "&#9650;"}</span></button>`
-            : `<span class="dt-header-label">${label}</span>`;
-        return `<th class="resizable${activeCls}" data-dt="${tableId}" data-col="${c.key}"${isSortable ? ` aria-sort="${ariaSort}"` : ""}${_colStyle(c)}>${content}<div class="col-resizer" aria-hidden="true"></div></th>`;
+        const sortArrow = isSortable ? arrow(c.key) : '';
+        return `<th class="resizable ${sortCls}${activeCls}" data-dt="${tableId}" data-col="${c.key}"${_colStyle(c)}>${c.label}${sortArrow}<div class="col-resizer"></div></th>`;
     }).join("");
 
-    const filterCells = visibleColumns.map(c => {
+    const filterCells = columns.map(c => {
         if (c.filterable === false) return '<th></th>';
         const ph = c.filterPlaceholder || "Filter...";
-        return `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" aria-label="Filter ${esc(c.label)}" placeholder="${esc(ph)}" value="${esc(filters[c.key] || "")}"></th>`;
+        return `<th><input type="text" data-dt="${tableId}" data-fcol="${c.key}" placeholder="${ph}" value="${filters[c.key] || ""}"></th>`;
     }).join("");
 
     const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
     const bodyRows = rows.map((r, i) => {
         const archivedCls = r.archived ? ' class="row-archived"' : '';
-        const keyboard = clickable ? ' tabindex="0"' : '';
-        return `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}${keyboard}${archivedCls}>${visibleColumns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`;
+        return `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}${archivedCls}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`;
     }).join("");
 
     dt._displayRows = rows;
 
-    const activeFilterCount = Object.values(filters || {}).filter(Boolean).length;
-    const hiddenCount = columns.length - visibleColumns.length;
-    const columnOptions = columns.map(c => {
-        const checked = !dt.hiddenColumns.includes(c.key);
-        const locked = c.required === true;
-        return `<label><input type="checkbox" data-dt="${tableId}" data-toggle-col="${c.key}"${checked ? " checked" : ""}${locked ? " disabled" : ""}> <span>${esc(c.label)}</span></label>`;
-    }).join("");
-
     return `
-        <div class="datatable-shell" data-dt-shell="${tableId}">
-            <div class="datatable-toolbar" role="group" aria-label="Table controls">
-                <label class="datatable-search">
-                    <span class="sr-only">Search this table</span>
-                    <input type="search" data-dt-search="${tableId}" placeholder="Search this table" value="${esc(globalQuery || "")}">
-                </label>
-                <button type="button" class="btn-outline dt-filter-toggle${filtersVisible ? " active" : ""}" data-dt-filter-toggle="${tableId}" aria-pressed="${filtersVisible ? "true" : "false"}">Filters${activeFilterCount ? ` (${activeFilterCount})` : ""}</button>
-                <details class="dt-columns">
-                    <summary>Columns${hiddenCount ? ` (${visibleColumns.length}/${columns.length})` : ""}</summary>
-                    <div class="dt-columns-menu">${columnOptions}<button type="button" class="dt-columns-apply" data-dt-columns-apply="${tableId}">Apply columns</button></div>
-                </details>
-                <button type="button" class="btn-quiet dt-reset" data-dt-reset="${tableId}">Reset view</button>
-                <span class="datatable-count" aria-live="polite">${rows.length} of ${dt.rows.length}</span>
-            </div>
-            <div class="table-wrapper">
-                <table id="${tableId}">
-                    <thead>
-                        <tr>${headerCells}</tr>
-                        <tr class="filter-row${filtersVisible ? " visible" : ""}">${filterCells}</tr>
-                    </thead>
-                    <tbody>${bodyRows || '<tr><td colspan="' + Math.max(visibleColumns.length, 1) + '" class="datatable-empty">No matching data</td></tr>'}</tbody>
-                </table>
-            </div>
-            <div class="table-count">${rows.length} of ${dt.rows.length} rows</div>
+        <div class="table-wrapper">
+            <table id="${tableId}">
+                <thead>
+                    <tr>${headerCells}</tr>
+                    <tr class="filter-row">${filterCells}</tr>
+                </thead>
+                <tbody>${bodyRows || '<tr><td colspan="' + columns.length + '" style="text-align:center;color:var(--text-dim);padding:2rem">No data</td></tr>'}</tbody>
+            </table>
         </div>
+        <div class="table-count">${rows.length} of ${dt.rows.length} rows</div>
     `;
 }
 
 function bindDataTables() {
-    document.querySelectorAll(".dt-sort-button[data-dt]").forEach(btn => {
-        if (btn._dtBound) return;
-        btn._dtBound = true;
-        btn.addEventListener("click", () => {
-            const id = btn.dataset.dt;
-            const col = btn.dataset.col;
+    document.querySelectorAll("th.sortable[data-dt]").forEach(th => {
+        th.addEventListener("click", (e) => {
+            if (e.target.classList.contains("col-resizer")) return;
+            const id = th.dataset.dt;
+            const col = th.dataset.col;
             const dt = window._dt[id];
             if (dt.sortCol === col) {
                 dt.sortDir = dt.sortDir === "asc" ? "desc" : "asc";
@@ -1105,82 +1045,18 @@ function bindDataTables() {
     });
 
     document.querySelectorAll("tr.filter-row input[data-dt]").forEach(inp => {
-        if (inp._dtBound) return;
-        inp._dtBound = true;
         inp.addEventListener("input", () => {
             const id = inp.dataset.dt;
             const col = inp.dataset.fcol;
             window._dt[id].filters[col] = inp.value;
-            _saveDTState(id);
-            _scheduleDTRefresh(id, { preserveFocus: "filter", filterColumn: col });
-        });
-    });
-
-    document.querySelectorAll("input[data-dt-search]").forEach(inp => {
-        if (inp._dtBound) return;
-        inp._dtBound = true;
-        inp.addEventListener("input", () => {
-            const id = inp.dataset.dtSearch;
-            window._dt[id].globalQuery = inp.value;
-            _saveDTState(id);
-            _scheduleDTRefresh(id, { preserveFocus: "search" });
-        });
-    });
-
-    document.querySelectorAll("[data-dt-filter-toggle]").forEach(btn => {
-        if (btn._dtBound) return;
-        btn._dtBound = true;
-        btn.addEventListener("click", () => {
-            const id = btn.dataset.dtFilterToggle;
-            const dt = window._dt[id];
-            dt.filtersVisible = !dt.filtersVisible;
-            _saveDTState(id);
-            _refreshDT(id);
-        });
-    });
-
-    document.querySelectorAll("input[data-toggle-col]").forEach(inp => {
-        if (inp._dtBound) return;
-        inp._dtBound = true;
-        inp.addEventListener("change", () => {
-            const id = inp.dataset.dt;
-            const key = inp.dataset.toggleCol;
-            const dt = window._dt[id];
-            dt.hiddenColumns = inp.checked
-                ? dt.hiddenColumns.filter(k => k !== key)
-                : [...new Set([...dt.hiddenColumns, key])];
-            _saveDTState(id);
-        });
-    });
-
-    document.querySelectorAll("[data-dt-columns-apply]").forEach(btn => {
-        if (btn._dtBound) return;
-        btn._dtBound = true;
-        btn.addEventListener("click", () => _refreshDT(btn.dataset.dtColumnsApply));
-    });
-
-    document.querySelectorAll("[data-dt-reset]").forEach(btn => {
-        if (btn._dtBound) return;
-        btn._dtBound = true;
-        btn.addEventListener("click", () => {
-            const id = btn.dataset.dtReset;
-            const dt = window._dt[id];
-            dt.filters = {};
-            dt.globalQuery = "";
-            dt.filtersVisible = false;
-            dt.sortCol = null;
-            dt.sortDir = "asc";
-            dt.hiddenColumns = [...(dt.opts.defaultHidden || [])];
             _saveDTState(id);
             _refreshDT(id);
         });
     });
 
     document.querySelectorAll("tr[data-clickable]").forEach(tr => {
-        if (tr._dtBound) return;
-        tr._dtBound = true;
         tr.addEventListener("click", (e) => {
-            if (e.target.closest("button, a, input, select, textarea, .btn-archive-action")) return;
+            if (e.target.closest(".btn-archive-action")) return;
             const id = tr.dataset.dt;
             const idx = parseInt(tr.dataset.rowIdx);
             const dt = window._dt[id];
@@ -1188,20 +1064,9 @@ function bindDataTables() {
                 dt.opts.onRowClick(dt._displayRows[idx]);
             }
         });
-        tr.addEventListener("keydown", (e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            if (e.target.closest("button, a, input, select, textarea")) return;
-            e.preventDefault();
-            const id = tr.dataset.dt;
-            const idx = parseInt(tr.dataset.rowIdx);
-            const dt = window._dt[id];
-            if (dt.opts && dt.opts.onRowClick && dt._displayRows) dt.opts.onRowClick(dt._displayRows[idx]);
-        });
     });
 
     document.querySelectorAll("td .cell-expandable").forEach(el => {
-        if (el._dtBound) return;
-        el._dtBound = true;
         el.addEventListener("dblclick", (e) => {
             e.stopPropagation();
             el.classList.toggle("expanded");
@@ -1224,8 +1089,6 @@ function bindDataTables() {
 
 function _bindColumnResizers() {
     document.querySelectorAll(".col-resizer").forEach(resizer => {
-        if (resizer._dtBound) return;
-        resizer._dtBound = true;
         resizer.addEventListener("mousedown", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1278,94 +1141,56 @@ function detectTableScroll() {
     });
 }
 
-function _refreshDT(tableId, options = {}) {
+function _refreshDT(tableId) {
     const dt = window._dt[tableId];
-    const shell = document.querySelector(`[data-dt-shell="${tableId}"]`);
-    if (!dt || !shell) return;
-    const focusKind = options.preserveFocus;
-    const focusSelector = focusKind === "search"
-        ? `[data-dt-search="${tableId}"]`
-        : focusKind === "filter" && options.filterColumn
-            ? `input[data-dt="${tableId}"][data-fcol="${options.filterColumn}"]`
-            : null;
-    const selectionStart = focusSelector ? shell.querySelector(focusSelector)?.selectionStart : null;
-    shell.outerHTML = _renderDT(tableId);
-    bindDataTables();
-    detectTableScroll();
-    if (typeof dt.opts.onRefresh === "function") dt.opts.onRefresh();
-    if (focusSelector) {
-        const input = document.querySelector(focusSelector);
-        if (input) {
-            input.focus();
-            if (selectionStart != null) input.setSelectionRange(selectionStart, selectionStart);
+    const table = document.getElementById(tableId);
+    if (!table) return;
+
+    const { columns, sortCol, sortDir } = dt;
+    let rows = _filterAndSortDT(dt);
+    dt._displayRows = rows;
+
+    const clickable = dt.opts && dt.opts.onRowClick ? ' data-clickable="1"' : '';
+    const bodyHTML = rows.map((r, i) =>
+        `<tr data-dt="${tableId}" data-row-idx="${i}"${clickable}>${columns.map(c => `<td>${c.render ? c.render(r) : (r[c.key] ?? "-")}</td>`).join("")}</tr>`
+    ).join("") || `<tr><td colspan="${columns.length}" style="text-align:center;color:var(--text-dim);padding:2rem">No data</td></tr>`;
+
+    const tbody = table.querySelector("tbody");
+    if (tbody) tbody.innerHTML = bodyHTML;
+
+    // Update sort arrows in header
+    table.querySelectorAll("thead tr:first-child th[data-dt]").forEach(th => {
+        const col = th.dataset.col;
+        const cDef = columns.find(c => c.key === col);
+        const isSortable = cDef && cDef.sortable !== false;
+        th.className = `resizable${isSortable ? ' sortable' : ''}${isSortable && sortCol === col ? ' sort-' + sortDir : ''}`;
+        const arrow = th.querySelector(".sort-arrow");
+        if (arrow) arrow.innerHTML = sortCol === col && sortDir === "desc" ? "&#9660;" : "&#9650;";
+    });
+
+    // Update count
+    const wrapper = table.closest(".table-wrapper");
+    if (wrapper) {
+        const countDiv = wrapper.nextElementSibling;
+        if (countDiv && countDiv.classList.contains("table-count")) {
+            countDiv.textContent = `${rows.length} of ${dt.rows.length} rows`;
         }
     }
-}
 
-function _bindInlineTableControls(tableId) {
-    if (tableId === "dt-sources") {
-        document.querySelectorAll(".source-owner-select").forEach(sel => {
-            if (sel._inlineBound) return;
-            sel._inlineBound = true;
-            sel.addEventListener("click", e => e.stopPropagation());
-            sel.addEventListener("change", async e => {
-                e.stopPropagation();
-                try {
-                    await apiPatch(`/api/sources/${sel.dataset.sourceId}`, { owner: sel.value });
-                    toast("Owner updated");
-                } catch (err) { toast("Failed: " + err.message); }
-            });
+    // Re-bind only tbody row clicks and expandable cells (not filter inputs or sort headers)
+    table.querySelectorAll("tr[data-clickable]").forEach(tr => {
+        tr.addEventListener("click", (e) => {
+            if (e.target.closest(".btn-archive-action")) return;
+            const idx = parseInt(tr.dataset.rowIdx);
+            if (dt.opts && dt.opts.onRowClick && dt._displayRows) {
+                dt.opts.onRowClick(dt._displayRows[idx]);
+            }
         });
-    }
-    if (tableId === "dt-reports") {
-        document.querySelectorAll(".report-owner-select, .report-bo-select").forEach(sel => {
-            if (sel._inlineBound) return;
-            sel._inlineBound = true;
-            sel.addEventListener("click", e => e.stopPropagation());
-            sel.addEventListener("change", async e => {
-                e.stopPropagation();
-                const field = sel.classList.contains("report-bo-select") ? "business_owner" : "owner";
-                try {
-                    await apiPatch(`/api/reports/${sel.dataset.reportId}`, { [field]: sel.value });
-                    toast(field === "owner" ? "Report owner updated" : "Business owner updated");
-                } catch (err) { toast("Failed: " + err.message); }
-            });
-        });
-        document.querySelectorAll(".btn-lineage[data-lineage-report]").forEach(btn => {
-            if (btn._inlineBound) return;
-            btn._inlineBound = true;
-            btn.addEventListener("click", async () => {
-                await navigate("lineage");
-                const select = document.getElementById("lineage-report-select");
-                if (select) {
-                    select.value = btn.dataset.lineageReport;
-                    select.dispatchEvent(new Event("change"));
-                }
-            });
-        });
-    }
-    if (tableId === "dt-scripts") {
-        document.querySelectorAll(".script-owner-select").forEach(sel => {
-            if (sel._inlineBound) return;
-            sel._inlineBound = true;
-            sel.addEventListener("click", e => e.stopPropagation());
-            sel.addEventListener("change", async e => {
-                e.stopPropagation();
-                try {
-                    await apiPatch(`/api/scripts/${sel.dataset.scriptId}`, { owner: sel.value });
-                    toast("Owner updated");
-                } catch (err) { toast("Failed: " + err.message); }
-            });
-        });
-    }
-    document.querySelectorAll(".cell-copyable").forEach(el => {
-        if (el._copyBound) return;
-        el._copyBound = true;
-        el.addEventListener("click", e => {
+    });
+    table.querySelectorAll("td .cell-expandable").forEach(el => {
+        el.addEventListener("dblclick", (e) => {
             e.stopPropagation();
-            const path = el.dataset.copy;
-            if (!path || path === "-") return;
-            navigator.clipboard.writeText(path).then(() => toast("Path copied to clipboard")).catch(() => toast("Failed to copy path"));
+            el.classList.toggle("expanded");
         });
     });
 }
@@ -1374,7 +1199,7 @@ function _bindInlineTableControls(tableId) {
 // ── Source detail panel ──
 
 function _viewPathBtn(filePath) {
-    if (!filePath || !_isLocal()) return "";
+    if (!filePath) return "";
     return `<button class="btn-xs btn-outline view-path-btn" data-path="${esc(filePath)}" title="Open containing folder">View</button>`;
 }
 
@@ -1382,10 +1207,9 @@ async function showSourceDetail(source) {
     const existing = $("#source-detail");
     if (existing) existing.remove();
 
-    const [reports, scripts, probes] = await Promise.all([
+    const [reports, scripts] = await Promise.all([
         api(`/api/sources/${source.id}/reports`),
         api(`/api/sources/${source.id}/scripts`),
-        api(`/api/sources/${source.id}/probes`).catch(() => []),
     ]);
     const parsed = parseSourceName(source);
 
@@ -1440,21 +1264,6 @@ async function showSourceDetail(source) {
                     </tr>
                 `).join("")
                 : '<tr><td colspan="4" class="empty-state" style="border:none">No scripts linked to this source</td></tr>'
-            }</tbody>
-        </table>
-
-        <h2>Probe evidence (${probes.length})</h2>
-        <table class="detail-table probe-history-table">
-            <thead><tr><th>Checked</th><th>Status</th><th>Last data</th><th>Rows</th><th>Message</th></tr></thead>
-            <tbody>${probes.length > 0
-                ? probes.slice(0, 12).map(probe => `<tr>
-                    <td title="${esc(probe.probed_at || "")}">${probe.probed_at ? timeAgo(probe.probed_at) : "-"}</td>
-                    <td>${statusBadge(probe.status || "unknown")}</td>
-                    <td title="${esc(probe.last_data_at || "")}">${probe.last_data_at ? formatDate(probe.last_data_at) : "-"}</td>
-                    <td>${rowCountHtml(probe.row_count)}</td>
-                    <td>${esc(probe.message || "-")}</td>
-                </tr>`).join("")
-                : '<tr><td colspan="5" class="empty-state" style="border:none">No probe evidence recorded</td></tr>'
             }</tbody>
         </table>
 
@@ -1928,116 +1737,118 @@ function _autoVisualTitle(v) {
 // ── Pages ──
 
 async function renderDashboard() {
-    const [data, sources, reports, actions, people, probeRuns, pbiSync, events, docs] = await Promise.all([
+    const [data, sources, reports, actions, healthTrend, people, userActivity] = await Promise.all([
         api("/api/dashboard"),
         api("/api/sources"),
         api("/api/reports"),
         api("/api/actions"),
+        api("/api/schedules/health-trend"),
         api("/api/people"),
-        api("/api/scanner/probe/runs").catch(() => []),
-        api("/api/scanner/pbi-sync/status").catch(() => null),
-        api("/api/eventlog?limit=8").catch(() => []),
-        api("/api/documentation").catch(() => []),
+        api("/api/dashboard/user-activity"),
     ]);
     const scan = data.last_scan;
     window._dashboardData = data;
+    window._healthTrend = healthTrend;
+
+    const total = data.sources_total;
+    const hasSources = total > 0;
+    const allUnknown = hasSources && data.sources_fresh === 0 && data.sources_stale === 0 && data.sources_outdated === 0;
+    const freshPct = hasSources ? pct(data.sources_fresh, total) : 0;
+    const outdatedPct = hasSources ? pct(data.sources_outdated, total) : 0;
+    const unknownPct = hasSources ? 100 - freshPct - outdatedPct : 0;
+
+    // Health label
+    let healthLabel;
+    if (!hasSources) healthLabel = "No sources yet";
+    else if (allUnknown) healthLabel = "Not yet probed";
+    else healthLabel = freshPct + "% healthy";
 
     // Store for click-through navigation
     window._dashboardSources = sources;
     window._dashboardReports = reports;
     window._dashboardActions = actions;
     window._dashboardPeople = people;
-
-    const openActions = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
-    const unassigned = openActions.filter(a => !a.assigned_to).length;
-    const degradedSources = sources.filter(s => s.status === "outdated" || s.status === "stale" || s.status === "error").length;
-    const missingSourceOwners = sources.filter(s => !s.owner).length;
-    const missingReportOwners = reports.filter(r => !r.owner).length;
-    const missingFreshnessRules = sources.filter(s => !sourceHasFreshnessRule(s)).length;
-    const docsByReport = new Map();
-    docs.forEach(d => { if (d.report_id && !docsByReport.has(d.report_id)) docsByReport.set(d.report_id, d); });
-    const incompleteDocs = reports.filter(r => {
-        const d = docsByReport.get(r.id);
-        if (!d) return true;
-        return [d.business_purpose, d.business_audience, d.technical_transformations].filter(v => v && v.trim()).length < 3;
-    }).length;
-
-    const latestProbe = probeRuns[0] || null;
-    const pbiRefresh = pbiSync?.refresh?.latest_success || pbiSync?.refresh?.latest_attempt || null;
-    const pbiFresh = pbiSync?.refresh?.freshness?.fresh;
-    const heartbeat = [
-        {
-            label: "Metadata scan",
-            state: scan?.status || "not run",
-            tone: scan?.status === "completed" ? "healthy" : scan?.status === "failed" ? "critical" : "neutral",
-            detail: scan ? `${timeAgo(scan.started_at)} - ${scan.reports_scanned || 0} reports` : "No scan recorded",
-            page: "scanner",
-        },
-        {
-            label: "Source probe",
-            state: latestProbe?.status || "not run",
-            tone: latestProbe?.status === "completed" ? "healthy" : latestProbe?.status === "failed" ? "critical" : "neutral",
-            detail: latestProbe ? `${timeAgo(latestProbe.started_at)} - ${latestProbe.sources_probed || 0} sources` : "No probe recorded",
-            page: "scanner",
-        },
-        {
-            label: "Power BI sync",
-            state: pbiFresh === true ? "fresh" : pbiFresh === false ? "attention" : (pbiRefresh?.status || "not connected"),
-            tone: pbiFresh === true ? "healthy" : pbiFresh === false || pbiRefresh?.status === "failed" ? "critical" : "neutral",
-            detail: pbiRefresh?.started_at ? timeAgo(pbiRefresh.started_at) : (pbiSync?.auth?.message || "No sync recorded"),
-            page: "scanner",
-        },
-    ];
-
-    const recentChanges = events.length ? events.map(event => `
-        <li>
-            <span class="change-marker" aria-hidden="true"></span>
-            <div><strong>${esc(event.entity_name || event.entity_type || "System")}</strong><span>${esc(String(event.action || "updated").replaceAll("_", " "))}${event.actor ? ` by ${esc(event.actor)}` : ""}</span></div>
-            <time title="${esc(event.created_at || "")}">${event.created_at ? timeAgo(event.created_at) : "-"}</time>
-        </li>
-    `).join("") : '<li class="empty-compact">No recent changes recorded</li>';
+    window._dashboardUserActivity = userActivity;
 
     return `
-        <div class="page-header work-page-header">
-            <div>
-                <h1>Work</h1>
-                <p class="subtitle">Triage reliability issues, close ownership gaps, and confirm the platform is current.</p>
+        <div class="stat-grid">
+            <div class="stat-card card-purple stat-card-clickable" data-navigate="reports" role="button" tabindex="0" aria-label="Reports: ${data.reports_total} total">
+                <div class="stat-label">Reports</div>
+                <div class="stat-value">${data.reports_total}</div>
+                <div class="stat-breakdown">
+                    <span class="stat-dot dot-green" title="All data sources are fresh and up to date">${reports.filter(r => r.status === "healthy").length} healthy</span>
+                    <span class="stat-dot dot-red" title="Data sources are past freshness threshold">${reports.filter(r => r.status === "degraded" || r.status === "at risk").length} degraded</span>
+                    ${reports.filter(r => r.status === "unknown").length ? `<span class="stat-dot dot-yellow" title="Status has not been probed yet">${reports.filter(r => r.status === "unknown").length} unknown</span>` : ""}
+                </div>
+                <div class="stat-card-link">View &rarr;</div>
             </div>
-            <div class="work-summary" aria-label="Open work summary">
-                <strong>${openActions.length}</strong> open
-                <span>${unassigned} unassigned</span>
-                <span class="${degradedSources ? "text-critical" : ""}">${degradedSources} degraded sources</span>
+            <div class="stat-card card-blue stat-card-clickable${data.sources_outdated > 0 ? ' pulse-border-red' : ''}" data-navigate="sources" role="button" tabindex="0" aria-label="Total Sources: ${data.sources_total}, ${data.sources_fresh} healthy, ${data.sources_outdated} degraded">
+                <div class="stat-label">Total Sources</div>
+                <div class="stat-value">${data.sources_total}</div>
+                <div class="stat-breakdown">
+                    <span class="stat-dot dot-green stat-filter" data-filter="healthy" title="Data updated within freshness threshold">${data.sources_fresh} healthy</span>
+                    <span class="stat-dot dot-red stat-filter" data-filter="degraded" title="Data past freshness threshold">${data.sources_outdated} degraded</span>
+                    ${data.sources_unknown ? `<span class="stat-dot dot-yellow stat-filter" data-filter="unknown" title="Source has not been probed yet or has no rule">${data.sources_unknown} unknown</span>` : ""}
+                </div>
+                <div class="stat-card-link">View &rarr;</div>
+            </div>
+            <div class="stat-card ${data.alerts_active > 0 ? 'card-red pulse-border-red' : 'card-green'} stat-card-clickable" data-scroll-to="dashboard-alerts" role="button" tabindex="0" aria-label="Active Alerts: ${data.alerts_active}">
+                <div class="stat-label">Active Alerts</div>
+                <div class="stat-value">${data.alerts_active}</div>
+                <div class="stat-card-link">View &darr;</div>
+            </div>
+            <div class="stat-card card-green stat-card-clickable" data-navigate="scanner" role="button" tabindex="0" aria-label="Last Scan: ${scan ? timeAgo(scan.started_at) : 'never'}" title="Click to view scanner details and trigger new scans">
+                <div class="stat-label">Last Scan</div>
+                <div class="stat-value" style="font-size:1.1rem">${scan ? timeAgo(scan.started_at) : "never"}</div>
+                ${scan ? `<div class="stat-breakdown">${scan.reports_scanned} reports &middot; ${scan.sources_found} sources</div>` : ""}
+                <div class="stat-card-link">View &rarr;</div>
             </div>
         </div>
 
-        <section class="heartbeat-strip" aria-label="Platform heartbeat">
-            ${heartbeat.map(item => `
-                <button type="button" class="heartbeat-item" data-navigate="${item.page}">
-                    <span class="heartbeat-dot ${item.tone}" aria-hidden="true"></span>
-                    <span><small>${esc(item.label)}</small><strong>${esc(item.state)}</strong></span>
-                    <span class="heartbeat-detail">${esc(item.detail)}</span>
-                </button>
-            `).join("")}
-        </section>
-
-        <div class="work-layout">
-            <div id="dashboard-alerts" class="dashboard-alerts-section work-queue-panel">
-                ${renderDashboardAlertsSection(actions, people)}
+        <div class="health-bar-container">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <h2 style="margin-bottom:0" title="Freshness status of all registered data sources">Source Health</h2>
+                <span style="color:var(--text-dim);font-size:0.78rem" title="Healthy = within freshness threshold. Degraded = past threshold.">${healthLabel}</span>
             </div>
-            <aside class="work-context" aria-label="Governance coverage and recent changes">
-                <section class="work-side-section">
-                    <div class="section-heading"><h2>Coverage gaps</h2><a href="#reports" data-page="reports">Open catalog</a></div>
-                    <dl class="coverage-list">
-                        <div><dt>Missing technical owner</dt><dd>${missingSourceOwners + missingReportOwners}</dd></div>
-                        <div><dt>Sources without a freshness rule</dt><dd>${missingFreshnessRules}</dd></div>
-                        <div><dt>Reports missing core documentation</dt><dd>${incompleteDocs}</dd></div>
-                    </dl>
-                </section>
-                <section class="work-side-section">
-                    <div class="section-heading"><h2>Recent changes</h2><a href="#eventlog" data-page="eventlog">Audit log</a></div>
-                    <ol class="recent-changes">${recentChanges}</ol>
-                </section>
-            </aside>
+            ${!hasSources ? `
+            <div class="health-bar">
+                <div class="segment segment-muted" style="width:100%"></div>
+            </div>
+            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">Run a scan to discover data sources</div>
+            ` : allUnknown ? `
+            <div class="health-bar">
+                <div class="segment segment-yellow" style="width:100%"></div>
+            </div>
+            <div style="text-align:center;color:var(--text-dim);font-size:0.78rem;margin-top:0.5rem">${total} sources discovered  - probe to check freshness</div>
+            ` : `
+            <div class="health-bar">
+                ${freshPct > 0 ? `<div class="segment segment-green segment-clickable" data-tooltip="${data.sources_fresh} healthy (${freshPct}%)" data-filter="healthy" style="width:${freshPct}%"></div>` : ""}
+                ${outdatedPct > 0 ? `<div class="segment segment-red segment-clickable" data-tooltip="${data.sources_outdated} degraded (${outdatedPct}%)" data-filter="degraded" style="width:${outdatedPct}%"></div>` : ""}
+                ${unknownPct > 0 ? `<div class="segment segment-yellow" data-tooltip="${data.sources_unknown || 0} unknown (${unknownPct}%)" style="width:${unknownPct}%"></div>` : ""}
+            </div>
+            <div class="health-tooltip" id="health-tooltip"></div>
+            <div class="health-legend">
+                <span class="stat-dot dot-green">${data.sources_fresh} Healthy</span>
+                <span class="stat-dot dot-red">${data.sources_outdated} Degraded</span>
+                ${data.sources_unknown ? `<span class="stat-dot dot-yellow">${data.sources_unknown} Unknown</span>` : ""}
+            </div>
+            `}
+        </div>
+
+        <div class="dashboard-trend">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem">
+                <h2 style="margin:0">Health Trend <span style="font-weight:400;font-size:0.78rem;color:var(--text-dim)">past 30 days</span></h2>
+            </div>
+            <div class="alert-trend-container" style="position:relative">
+                <canvas id="health-trend-canvas" height="120" role="img" aria-label="Health trend chart showing source freshness over the past 30 days"></canvas>
+                <div id="health-trend-tooltip" class="chart-tooltip"></div>
+            </div>
+        </div>
+
+        ${renderUserActivityTable(userActivity)}
+
+        <div id="dashboard-alerts" class="dashboard-alerts-section">
+            ${renderDashboardAlertsSection(actions, people)}
         </div>
     `;
 }
@@ -2170,25 +1981,23 @@ function renderDashboardAlertsSection(actions, people) {
         }
     });
 
-    const currentName = window._currentUser?.name || "";
-    const hasCurrentOwner = biPeople.includes(currentName);
-    const defaultFilter = hasCurrentOwner ? currentName : unassignedCount > 0 ? "__unassigned__" : "all";
     const chipsHtml = `
-        ${hasCurrentOwner ? `<button class="alerts-chip active" data-filter-person="${esc(currentName)}">My work <span class="alerts-chip-count">${personCounts[currentName] || 0}</span></button>` : ""}
-        <button class="alerts-chip${!hasCurrentOwner && unassignedCount > 0 ? " active" : ""}" data-filter-person="__unassigned__">Unassigned <span class="alerts-chip-count">${unassignedCount}</span></button>
-        <button class="alerts-chip${!hasCurrentOwner && unassignedCount === 0 ? " active" : ""}" data-filter-person="all">All issues <span class="alerts-chip-count">${openActions.length}</span></button>
-        ${biPeople.filter(p => p !== currentName).map(p => `
+        <button class="alerts-chip active" data-filter-person="all">All <span class="alerts-chip-count">${openActions.length}</span></button>
+        <button class="alerts-chip" data-filter-person="__unassigned__">Unassigned <span class="alerts-chip-count">${unassignedCount}</span></button>
+        ${biPeople.map(p => `
             <button class="alerts-chip" data-filter-person="${esc(p)}">${esc(p)} <span class="alerts-chip-count">${personCounts[p]}</span></button>
         `).join("")}
     `;
 
-    const tableHtml = renderDashboardAlertsTable(actions, biPeople, defaultFilter);
+    const tableHtml = renderDashboardAlertsTable(actions, biPeople, "all");
+    const fixFirstHtml = renderFixFirstPanel(openActions);
 
     return `
-        <div class="queue-heading">
-            <div><h2>Issue queue</h2><p>Ranked by business impact, problem age, and ownership.</p></div>
-            <span>${openActions.length} open</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
+            <h2 style="margin:0">Alerts</h2>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by weighted impact, then days in problem state</span>
         </div>
+        ${fixFirstHtml}
         <div class="alerts-chips">${chipsHtml}</div>
         <div id="dashboard-alerts-tbody-wrap">${tableHtml}</div>
     `;
@@ -2209,13 +2018,10 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
     }
 
     const statusOptions = ["open", "acknowledged", "investigating", "expected", "resolved"];
-    const ownerOptions = (currentOwner) => {
-        const knownOwners = currentOwner && !biPeople.includes(currentOwner) ? [currentOwner, ...biPeople] : biPeople;
-        return `
-            <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
-            ${knownOwners.map(p => `<option value="${esc(p)}"${p === currentOwner ? ' selected' : ''}>${esc(p)}</option>`).join("")}
-        `;
-    };
+    const ownerOptions = (currentOwner) => `
+        <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
+        ${biPeople.map(p => `<option value="${esc(p)}"${p === currentOwner ? ' selected' : ''}>${esc(p)}</option>`).join("")}
+    `;
 
     const rows = filtered.map(a => {
         const rawName = a.asset_name || a.source_name || a.report_name || "-";
@@ -2286,7 +2092,14 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                         ${ownerOptions(a.assigned_to || "")}
                     </select>
                 </td>
-                <td><select class="dashboard-action-status-select status-${a.status}" data-action-id="${a.id}" aria-label="Status for ${esc(assetName)}">${statusOptions.map(s => `<option value="${s}"${s === a.status ? " selected" : ""}>${s}</option>`).join("")}</select></td>
+                <td>
+                    <div class="status-pill-wrapper">
+                        <button class="status-pill status-${a.status}" data-action-id="${a.id}" data-current="${a.status}">${a.status} <span class="pill-chevron">&#9662;</span></button>
+                        <div class="status-dropdown" data-action-id="${a.id}">
+                            ${statusOptions.map(s => `<div class="status-option status-${s}${s === a.status ? ' active' : ''}" data-value="${s}">${s}</div>`).join("")}
+                        </div>
+                    </div>
+                </td>
                 <td>
                     <div class="alerts-row-actions">
                         ${openButton}
@@ -2546,11 +2359,39 @@ function bindDashboardAlertsRowControls() {
         });
     });
 
-    // Native status controls remain usable with keyboard and assistive technology.
-    document.querySelectorAll(".dashboard-action-status-select").forEach(select => {
-        select.addEventListener("change", async () => {
-            const actionId = select.dataset.actionId;
-            const newStatus = select.value;
+    // Status pill dropdowns (reuse open/close behavior) + dashboard-aware state update
+    if (!window._statusDropdownOutsideClick) {
+        window._statusDropdownOutsideClick = true;
+        document.addEventListener("click", (e) => {
+            if (!e.target.closest(".status-pill-wrapper")) {
+                document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+                document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+            }
+        });
+    }
+
+    document.querySelectorAll(".alerts-table .status-pill").forEach(pill => {
+        pill.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const wrapper = pill.closest(".status-pill-wrapper");
+            const dropdown = wrapper.querySelector(".status-dropdown");
+            const wasOpen = dropdown.classList.contains("visible");
+            document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
+            document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
+            if (!wasOpen) {
+                dropdown.classList.add("visible");
+                pill.classList.add("open");
+            }
+        });
+    });
+
+    document.querySelectorAll(".alerts-table .status-option").forEach(option => {
+        option.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const dropdown = option.closest(".status-dropdown");
+            const actionId = dropdown.dataset.actionId;
+            const newStatus = option.dataset.value;
+            dropdown.classList.remove("visible");
             try {
                 await apiPatch(`/api/actions/${actionId}`, { status: newStatus });
                 if (window._dashboardActions) {
@@ -2867,9 +2708,8 @@ async function renderSources() {
             return `<span style="cursor:help" title="${title}">${fmtInt(s.views_30d)}</span>`;
         }, sortVal: s => s.views_30d || 0 },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
-            const ownerPeople = s.owner && !people.some(p => p.name === s.owner) ? [{ name: s.owner, role: "Current" }, ...people] : people;
-            const opts = ownerPeople.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}" aria-label="Owner for ${esc(s._shortName)}"><option value="">Unassigned</option>${opts}</select>`;
+            const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
         { key: "linked_scripts", label: "Scripts", width: COL_W.sm, render: s => {
             if (!s.linked_scripts) return '-';
@@ -2888,9 +2728,8 @@ async function renderSources() {
 
     const scriptCount = sources.filter(s => !s.archived && s.linked_scripts).length;
     const excelCount = sources.filter(s => !s.archived && (s.type === "excel" || s.type === "csv")).length;
-    const databaseCount = sources.filter(s => !s.archived && (s.type === "sql" || s.type === "postgresql")).length;
-    const unhealthyStates = new Set(["outdated", "stale", "degraded", "unknown", "error", "no_connection", "no_rule"]);
-    const unhealthyCount = sources.filter(s => !s.archived && unhealthyStates.has(s.status)).length;
+    const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
+    const unhealthyCount = degradedCount;
 
     return `
         <div class="sources-wide-section">
@@ -2903,32 +2742,16 @@ async function renderSources() {
             <div class="source-filters" style="display:flex;gap:0.4rem;margin-bottom:0.75rem;flex-wrap:wrap">
                 <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="database">Database (${databaseCount})</button>
+                <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
                 <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy">Not Healthy (${unhealthyCount})</button>
             </div>
-            ${dataTable("dt-sources", cols, sources, {
-                onRowClick: showSourceDetail,
-                onRefresh: () => _bindInlineTableControls("dt-sources"),
-                defaultHidden: ["_folderSchema", "row_count", "age_days", "views_30d", "linked_scripts", "linked_task_count", "_archive"],
-            })}
+            ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
         </div>
     `;
 }
 
 function bindSourcesPage() {
-    const sourceTable = window._dt?.["dt-sources"];
-    if (sourceTable) {
-        const typeFilter = sourceTable.filters.type || "";
-        const activeKey = sourceTable.filters.linked_scripts ? "has-script"
-            : sourceTable.filters.status ? "unhealthy"
-            : typeFilter === "excel|csv" ? "excel"
-            : typeFilter === "sql|postgresql" ? "database"
-            : "all";
-        document.querySelectorAll(".source-filter-btn").forEach(button => {
-            button.classList.toggle("btn-outline", button.dataset.filter !== activeKey);
-        });
-    }
     // Source filter buttons
     document.querySelectorAll(".source-filter-btn").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -2943,12 +2766,12 @@ function bindSourcesPage() {
 
             if (filter === "excel") {
                 dt.filters["type"] = "excel|csv";
-            } else if (filter === "database") {
-                dt.filters["type"] = "sql|postgresql";
+            } else if (filter === "postgresql") {
+                dt.filters["type"] = "postgresql";
             } else if (filter === "has-script") {
                 dt.filters["linked_scripts"] = "yes";
             } else if (filter === "unhealthy") {
-                dt.filters["status"] = "outdated|stale|degraded|unknown|error|no_connection|no_rule";
+                dt.filters["status"] = "outdated|degraded|unknown";
             }
             // else "all" - no filter
 
@@ -3031,13 +2854,14 @@ async function renderReports() {
             : `<strong>${esc(r.name)}</strong>` },
         { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
         { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
-        { key: "_doc_pct", label: "Core docs", width: COL_W.sm, filterable: false, render: r => {
+        { key: "_doc_pct", label: "Doc %", width: COL_W.sm, filterable: false, render: r => {
             const doc = docMap.get(r.id);
-            if (!doc) return '<span style="color:var(--text-muted)">0/3</span>';
+            if (!doc) return '<span style="color:var(--text-dim)">0%</span>';
             const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
             const filled = fields.filter(f => f && f.trim()).length;
-            const cls = filled === 3 ? 'badge-green' : filled >= 2 ? 'badge-yellow' : 'badge-muted';
-            return `<span class="badge ${cls}" title="Purpose, audience, and key formulas">${filled}/3</span>`;
+            const pct = Math.round((filled / 3) * 100);
+            const cls = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-yellow' : 'badge-muted';
+            return `<span class="badge ${cls}">${pct}%</span>`;
         }, sortVal: r => {
             const doc = docMap.get(r.id);
             if (!doc) return 0;
@@ -3050,16 +2874,14 @@ async function renderReports() {
             return `<span style="cursor:help" title="${title}">${fmtInt(r.views_30d)}</span>`;
         }, sortVal: r => r.views_30d || 0 },
         { key: "owner", label: "Report Owner", width: COL_W.md, render: r => {
-            const ownerPeople = r.owner && !people.some(p => p.name === r.owner) ? [{ name: r.owner, role: "Current" }, ...people] : people;
-            const biFirst = [...ownerPeople].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
+            const biFirst = [...people].sort((a, b) => a.role === "BI" && b.role !== "BI" ? -1 : a.role !== "BI" && b.role === "BI" ? 1 : 0);
             const opts = biFirst.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline report-owner-select" data-report-id="${r.id}" aria-label="Technical owner for ${esc(r.name)}"><option value="">Unassigned</option>${opts}</select>`;
+            return `<select class="freq-select-inline report-owner-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.owner || "" },
         { key: "business_owner", label: "Business Owner", width: COL_W.md, render: r => {
-            const ownerPeople = r.business_owner && !people.some(p => p.name === r.business_owner) ? [{ name: r.business_owner, role: "Current" }, ...people] : people;
-            const bizFirst = [...ownerPeople].sort((a, b) => a.role === "Business" && b.role !== "Business" ? -1 : a.role !== "Business" && b.role === "Business" ? 1 : 0);
+            const bizFirst = [...people].sort((a, b) => a.role === "Business" && b.role !== "Business" ? -1 : a.role !== "Business" && b.role === "Business" ? 1 : 0);
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}" aria-label="Business owner for ${esc(r.name)}"><option value="">Unassigned</option>${opts}</select>`;
+            return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
         { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
         { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
@@ -3086,15 +2908,14 @@ async function renderReports() {
                 <h1>Reports</h1>
                 <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
                 ${_archiveToggleHtml("reports")}
-                <button class="btn-outline" id="btn-generate-all-docs">Generate missing docs</button>
+                <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
+                <button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>
+                <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
+                <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
                 <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
             </div>
 
-            ${dataTable("dt-reports", cols, reports, {
-                onRowClick: showReportDetail,
-                onRefresh: () => _bindInlineTableControls("dt-reports"),
-                defaultHidden: ["source_count", "_doc_pct", "linked_task_count", "_lineage", "_archive"],
-            })}
+            ${dataTable("dt-reports", cols, reports, { onRowClick: showReportDetail })}
         </div>
     `;
 }
@@ -3318,7 +3139,6 @@ async function renderScanner() {
     const pbiFresh = refreshStatus.freshness?.fresh;
     const rdpGuard = pbiStatus?.rdp_guard;
     const pendingPbiSync = pbiStatus?.pending;
-    const hasActiveRefresh = Boolean(pendingPbiSync) || ["running", "pending"].includes(lastRun?.status) || ["running", "pending"].includes(lastProbe?.status);
     const auth = pbiStatus?.auth || {};
     const authMode = pbiStatus?.auth_mode || "interactive";
     const isInteractiveMode = authMode === "interactive";
@@ -3375,15 +3195,15 @@ async function renderScanner() {
 
     return `
         <div class="page-header">
-            <h1>Runs</h1>
-            <span class="subtitle">Refresh metadata, probe source freshness, and review execution history.</span>
+            <h1>Scanner</h1>
+            <span class="subtitle">Scan Power BI reports to detect sources and track changes</span>
         </div>
 
         <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
-            <button id="btn-scan">Refresh metadata</button>
+            <button id="btn-scan">Run Scan Now</button>
             <button id="btn-probe" class="btn-outline">Probe Sources</button>
-            <button id="btn-diagnose" class="btn-outline">Inspect scanner path</button>
-            ${hasActiveRefresh ? '<button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop refresh work</button>' : ""}
+            <button id="btn-diagnose" class="btn-outline">Diagnose</button>
+            <button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop Refresh Work</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
                 ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
@@ -3426,8 +3246,8 @@ async function renderScanner() {
                     { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
                     { key: "sources_probed", label: "Probed", width: COL_W.sm, render: r => `${r.sources_probed ?? "-"}` },
                     { key: "fresh", label: "Healthy", width: COL_W.sm, render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
-                    { key: "stale", label: "Stale", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--yellow)">${r.stale}</span>` : '-' },
-                    { key: "outdated", label: "Outdated", width: COL_W.sm, render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
+                    { key: "stale", label: "Degraded", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--red)">${r.stale}</span>` : '-' },
+                    { key: "outdated", label: "Degraded", width: COL_W.sm, render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
                 ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
             </div>
         </div>
@@ -4508,15 +4328,15 @@ async function renderBestPractices() {
         </select>
     </div>
     <div class="stat-row" style="margin-bottom:1.25rem" id="bp-stat-row">
-        <div class="stat-card bp-filter-card bp-severity-high" data-bp-filter="high" style="cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="high" style="border-left:3px solid var(--red);cursor:pointer">
             <div class="stat-value" id="bp-count-high">${counts.high}</div>
             <div class="stat-label">High</div>
         </div>
-        <div class="stat-card bp-filter-card bp-severity-medium" data-bp-filter="medium" style="cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="medium" style="border-left:3px solid var(--yellow);cursor:pointer">
             <div class="stat-value" id="bp-count-medium">${counts.medium}</div>
             <div class="stat-label">Medium</div>
         </div>
-        <div class="stat-card bp-filter-card bp-severity-low" data-bp-filter="low" style="cursor:pointer">
+        <div class="stat-card bp-filter-card" data-bp-filter="low" style="border-left:3px solid var(--text-dim);cursor:pointer">
             <div class="stat-value" id="bp-count-low">${counts.low}</div>
             <div class="stat-label">Low</div>
         </div>
@@ -5450,9 +5270,8 @@ async function renderScripts() {
             return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(s.path || "-")}</span> ${_viewPathBtn(s.path)}`;
         }, sortVal: s => s.path || "" },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
-            const ownerPeople = s.owner && !people.some(p => p.name === s.owner) ? [{ name: s.owner, role: "Current" }, ...people] : people;
-            const opts = ownerPeople.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}" aria-label="Owner for ${esc(s.display_name)}"><option value="">Unassigned</option>${opts}</select>`;
+            const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
+            return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: s => s.owner || "" },
         { key: "tables_written", label: "Writes to", width: COL_W.lg, render: s => {
             const all = s.tables_written || [];
@@ -5513,36 +5332,25 @@ async function renderScripts() {
 
     return `
         <div class="page-header">
-            <h1>Pipeline scripts</h1>
+            <h1>Scripts</h1>
             <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
-            <details class="page-actions-menu">
-                <summary>Scan options</summary>
-                <div>
-                    <button class="btn-outline" id="btn-scan-scripts-new">Scan new</button>
-                    <button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts without scanning directories">Re-parse known</button>
-                    <button class="btn-outline" id="btn-scan-scripts-full">Full directory scan</button>
-                </div>
-            </details>
-            ${_archiveToggleHtml("scripts")}
-            <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
-        </div>
-        <div class="catalog-quick-filters" aria-label="Script filters">
-            <select id="scripts-machine-filter" class="freq-select-inline" aria-label="Script machine"><option value="">All machines</option>${machineOpts}</select>
+            <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
+            <button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>
+            <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'excel' ? 'active' : ''}" id="btn-filter-excel" style="font-size:0.75rem">Data to Excel (${excelCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'other' ? 'active' : ''}" id="btn-filter-other" style="font-size:0.75rem">Other (${otherCount})</button>
+            ${_archiveToggleHtml("scripts")}
+            <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
         </div>
         <div id="script-scan-log-wrap" class="scan-log-wrap" style="display:none">
             <button class="scan-log-toggle" id="btn-toggle-scan-log">Scan Log <span class="nav-arrow">&#9662;</span></button>
             <div id="script-scan-log-status" class="scan-log-status"></div>
             <pre id="script-scan-log" class="scan-log-pre" style="display:none"></pre>
         </div>
-        ${dataTable("dt-scripts", cols, filtered, {
-            onRowClick: showScriptDetail,
-            onRefresh: () => _bindInlineTableControls("dt-scripts"),
-            defaultHidden: ["path", "age_days", "_archive"],
-        })}
+        ${dataTable("dt-scripts", cols, filtered, { onRowClick: showScriptDetail })}
     `;
 }
 
@@ -5911,21 +5719,14 @@ async function renderScheduledTasks() {
 
     return `
         <div class="page-header">
-            <h1>Scheduled jobs</h1>
-            <span class="subtitle">${active.length} jobs, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            <details class="page-actions-menu">
-                <summary>Scan options</summary>
-                <div>
-                    <button class="btn-outline" id="btn-scan-schtasks-new">Scan new</button>
-                    <button class="btn-outline" id="btn-scan-schtasks-full">Full scan</button>
-                </div>
-            </details>
+            <h1>Scheduled Tasks</h1>
+            <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
+            <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
+            <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
+            <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
+            <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
             <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
-        </div>
-        <div class="catalog-quick-filters" aria-label="Scheduled job filters">
-            <select id="schtasks-machine-filter" class="freq-select-inline" aria-label="Job machine"><option value="">All machines</option>${machineOpts}</select>
-            <select id="schtasks-cat-filter" class="freq-select-inline" aria-label="Job category"><option value="">All categories</option>${catOpts}</select>
         </div>
         ${filtered.length === 0
             ? '<div class="empty-state" style="margin-top:2rem">No scheduled tasks found. Click <strong>Scan Task Scheduler</strong> to import from Windows Task Scheduler.<br><span style="color:var(--text-dim);font-size:0.8rem">This feature only works on Windows.</span></div>'
@@ -6102,13 +5903,13 @@ async function renderPowerAutomate() {
         <div class="page-header">
             <h1>Power Automate</h1>
             <span class="subtitle">${active.length} flow${active.length !== 1 ? 's' : ''}${errorNote}</span>
-            <button class="btn-outline" id="btn-pa-new-flow">New flow</button>
+            <button class="btn-outline" id="btn-pa-new-flow" style="margin-left:0.5rem">+ New Flow</button>
             ${_archiveToggleHtml("powerautomate")}
             <button class="btn-export" onclick="exportTableCSV('dt-pa-flows','power_automate_flows.csv')">Export CSV</button>
         </div>
         <div id="pa-create-form-area"></div>
         ${flows.length === 0
-            ? '<div class="empty-state" style="margin-top:2rem">No Power Automate flows registered yet. Click <strong>New flow</strong> to add one.</div>'
+            ? '<div class="empty-state" style="margin-top:2rem">No Power Automate flows registered yet. Click <strong>+ New Flow</strong> to add one.</div>'
             : dataTable("dt-pa-flows", cols, flows, { onRowClick: showPowerAutomateDetail })
         }
     `;
@@ -7549,55 +7350,37 @@ function _initOverviewGraph(data, container) {
 
 const LINEAGE_COLS = [
     { key: "visuals", label: "Visuals" },
-    { key: "tables", label: "Model tables" },
-    { key: "sources", label: "Direct sources" },
-    { key: "mv_upstream", label: "Upstream data" },
+    { key: "tables", label: "Tables" },
+    { key: "sources", label: "Sources" },
+    { key: "mv_upstream", label: "Upstream Sources" },
     { key: "scripts", label: "Scripts" },
-    { key: "tasks", label: "Scheduled jobs" },
-    { key: "upstreams", label: "Origin systems" },
+    { key: "tasks", label: "Tasks" },
+    { key: "upstreams", label: "Upstream" },
 ];
 
-const LINEAGE_PRESETS = {
-    summary: { visuals: false, tables: true, sources: true, mv_upstream: true, scripts: false, tasks: false, upstreams: true },
-    technical: Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true])),
-};
-
 function _getLineageCols() {
-    const defaults = { ...LINEAGE_PRESETS.summary };
+    const defaults = Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
     try { const s = sessionStorage.getItem("lineage_cols"); if (s) return { ...defaults, ...JSON.parse(s) }; } catch (_) {}
     return defaults;
 }
 function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
 
-function _lineagePresetName(state) {
-    return Object.entries(LINEAGE_PRESETS).find(([, preset]) => LINEAGE_COLS.every(col => Boolean(state[col.key]) === Boolean(preset[col.key])))?.[0] || "custom";
-}
-
 async function renderLineageDiagram() {
-    const reports = await api("/api/reports");
+    const reports = await api("/api/reports?include_archived=true");
     const colState = _getLineageCols();
-    const presetName = _lineagePresetName(colState);
-    const visibleColumnCount = Object.values(colState).filter(Boolean).length;
     return `
         <div class="page-header">
-            <h1>Lineage</h1>
+            <h2>Lineage Diagram</h2>
             <p class="page-subtitle">Trace data flow from visuals to upstream systems</p>
         </div>
         <div class="lineage-controls">
-            <select id="lineage-report-select" class="lineage-dropdown" aria-label="Report for lineage">
+            <select id="lineage-report-select" class="lineage-dropdown">
                 <option value="">Select a report...</option>
-                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.status === "degraded" ? " - needs attention" : ""}</option>`).join("")}
+                ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
-            <div class="lineage-mode-toggles" role="group" aria-label="Lineage detail level">
-                <button type="button" class="lineage-mode-toggle${presetName === "summary" ? " active" : ""}" data-lineage-mode="summary" aria-pressed="${presetName === "summary"}">Summary</button>
-                <button type="button" class="lineage-mode-toggle${presetName === "technical" ? " active" : ""}" data-lineage-mode="technical" aria-pressed="${presetName === "technical"}">Technical</button>
+            <div class="lineage-col-toggles" id="lineage-col-toggles">
+                ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
             </div>
-            <details class="lineage-column-menu">
-                <summary id="lineage-columns-summary">Columns (${visibleColumnCount}/${LINEAGE_COLS.length})</summary>
-                <div class="lineage-col-toggles" id="lineage-col-toggles">
-                    ${LINEAGE_COLS.map(c => `<button type="button" class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}" aria-pressed="${Boolean(colState[c.key])}">${c.label}</button>`).join("")}
-                </div>
-            </details>
         </div>
         <div id="lineage-container" class="lineage-container">
             <div class="lineage-placeholder">Select a report above to view its data lineage</div>
@@ -7626,31 +7409,6 @@ function bindLineageDiagramPage() {
                 `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
         }
     });
-    const syncLineageControls = () => {
-        const state = _getLineageCols();
-        const presetName = _lineagePresetName(state);
-        document.querySelectorAll(".lineage-mode-toggle").forEach(btn => {
-            const active = btn.dataset.lineageMode === presetName;
-            btn.classList.toggle("active", active);
-            btn.setAttribute("aria-pressed", String(active));
-        });
-        document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
-            const active = Boolean(state[btn.dataset.col]);
-            btn.classList.toggle("active", active);
-            btn.setAttribute("aria-pressed", String(active));
-        });
-        const summary = document.getElementById("lineage-columns-summary");
-        if (summary) summary.textContent = `Columns (${Object.values(state).filter(Boolean).length}/${LINEAGE_COLS.length})`;
-    };
-    document.querySelectorAll(".lineage-mode-toggle").forEach(btn => {
-        btn.addEventListener("click", () => {
-            const preset = LINEAGE_PRESETS[btn.dataset.lineageMode];
-            if (!preset) return;
-            _setLineageCols({ ...preset });
-            syncLineageControls();
-            if (window._lineageData) _renderLineageDiagram(window._lineageData);
-        });
-    });
     document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
         btn.addEventListener("click", () => {
             const key = btn.dataset.col;
@@ -7658,7 +7416,7 @@ function bindLineageDiagramPage() {
             state[key] = !state[key];
             if (Object.values(state).filter(Boolean).length === 0) { state[key] = true; return; }
             _setLineageCols(state);
-            syncLineageControls();
+            btn.classList.toggle("active", state[key]);
             if (window._lineageData) _renderLineageDiagram(window._lineageData);
         });
     });
@@ -8571,8 +8329,8 @@ async function renderTasks() {
 
     return `
         <div class="page-header">
-            <h1>Team tasks</h1>
-            <button class="btn-new-task" id="btn-new-task">New task</button>
+            <h1>Tasks</h1>
+            <button class="btn-new-task" id="btn-new-task">+ New Task</button>
             <button class="btn-outline" id="btn-export-tasks" style="font-size:0.78rem">Export</button>
         </div>
         <div class="kanban-toolbar">
@@ -10016,97 +9774,6 @@ function bindDataImportPage() {
 }
 
 
-async function renderDiagnostics() {
-    const [diagnostic, scheduleData] = await Promise.all([
-        api("/api/scanner/diagnostic"),
-        api("/api/schedules/discrepancies").catch(() => ({ summary: {}, discrepancies: [] })),
-    ]);
-    const duplicates = diagnostic.potential_duplicate_sources || [];
-    const unlinked = diagnostic.unlinked_script_tables || [];
-    const noSources = diagnostic.reports_with_no_sources || [];
-    const broken = diagnostic.broken_fk_references || {};
-    const brokenCount = Object.values(broken).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0);
-    const discrepancies = scheduleData.discrepancies || [];
-    const summary = scheduleData.summary || {};
-
-    const findings = [
-        { label: "Candidate source pairs", count: duplicates.length, detail: "Heuristic review list, not confirmed duplicates.", tone: duplicates.length ? "neutral" : "healthy" },
-        { label: "Broken references", count: brokenCount, detail: "Script, report, or dependency records point to missing sources.", tone: brokenCount ? "critical" : "healthy" },
-        { label: "Unlinked script tables", count: unlinked.length, detail: "Parsed reads or writes are not connected to a catalog source.", tone: unlinked.length ? "warning" : "healthy" },
-        { label: "Reports without sources", count: noSources.length, detail: "Reports have no source lineage recorded.", tone: noSources.length ? "warning" : "healthy" },
-        { label: "Schedule discrepancies", count: Number(summary.discrepancy_count || discrepancies.length), detail: "Refresh ordering may expose stale data to reports.", tone: Number(summary.critical_count || 0) ? "critical" : discrepancies.length ? "warning" : "healthy" },
-    ];
-
-    const duplicateRows = duplicates.length ? duplicates.map(pair => `
-        <tr><td title="${esc(pair.name1 || "")}">${esc(shortNameFromPath(pair.name1) || "-")}</td><td title="${esc(pair.name2 || "")}">${esc(shortNameFromPath(pair.name2) || "-")}</td><td>${pair.id1 ?? "-"} / ${pair.id2 ?? "-"}</td></tr>
-    `).join("") : '<tr><td colspan="3" class="datatable-empty">No potential duplicates found</td></tr>';
-
-    const unlinkedRows = unlinked.length ? unlinked.map(item => `
-        <tr><td>${esc(item.script || "-")}</td><td><code>${esc(item.table || "-")}</code></td><td>${esc(item.direction || "-")}</td></tr>
-    `).join("") : '<tr><td colspan="3" class="datatable-empty">No unlinked script tables found</td></tr>';
-
-    const discrepancyRows = discrepancies.length ? discrepancies.map(item => {
-        const issues = (item.issues || []).map(issue => `<span class="diagnostic-issue ${esc(issue.severity || "warning")}">${esc(issue.message || issue.type || "Schedule mismatch")}</span>`).join("");
-        return `<tr><td>${esc(item.upstream_name || "-")}</td><td>${esc(item.source_name || "-")}</td><td>${esc(item.report_name || "-")}</td><td>${issues || "-"}</td></tr>`;
-    }).join("") : '<tr><td colspan="4" class="datatable-empty">No schedule discrepancies found</td></tr>';
-
-    return `
-        <div class="page-header">
-            <div><h1>Diagnostics</h1><p class="subtitle">Catalog integrity checks derived from the current application records.</p></div>
-            <button type="button" class="btn-outline" onclick="navigate('diagnostics')">Run again</button>
-        </div>
-        <section class="diagnostics-summary" aria-label="Diagnostic summary">
-            ${findings.map(item => `<div><span class="heartbeat-dot ${item.tone}" aria-hidden="true"></span><strong>${item.count}</strong><span><b>${item.label}</b><small>${item.detail}</small></span></div>`).join("")}
-        </section>
-        <div class="diagnostics-grid">
-            <section class="diagnostics-section">
-                <div class="section-heading"><h2>Potential duplicate candidates</h2><span>${duplicates.length}</span></div>
-                <div class="table-wrapper"><table class="compact-table"><thead><tr><th>First source</th><th>Possible match</th><th>Record IDs</th></tr></thead><tbody>${duplicateRows}</tbody></table></div>
-            </section>
-            <section class="diagnostics-section">
-                <div class="section-heading"><h2>Unlinked script tables</h2><span>${unlinked.length}</span></div>
-                <div class="table-wrapper"><table class="compact-table"><thead><tr><th>Script</th><th>Table</th><th>Direction</th></tr></thead><tbody>${unlinkedRows}</tbody></table></div>
-            </section>
-        </div>
-        <section class="diagnostics-section">
-            <div class="section-heading"><h2>Refresh-order discrepancies</h2><span>${discrepancies.length}</span></div>
-            <div class="table-wrapper"><table class="compact-table"><thead><tr><th>Origin system</th><th>Source</th><th>Report</th><th>Finding</th></tr></thead><tbody>${discrepancyRows}</tbody></table></div>
-        </section>
-        ${noSources.length ? `<details class="diagnostics-technical"><summary>Reports without source lineage (${noSources.length})</summary><ul>${noSources.map(r => `<li>${esc(r.name || `Report ${r.id}`)}</li>`).join("")}</ul></details>` : ""}
-        <details class="diagnostics-technical"><summary>Technical environment and record counts</summary><div class="diagnostic-tech-grid"><pre>${esc(JSON.stringify(diagnostic.environment || {}, null, 2))}</pre><pre>${esc(JSON.stringify(diagnostic.row_counts || {}, null, 2))}</pre></div></details>
-    `;
-}
-
-const WORKSPACE_PAGES = {
-    work: new Set(["dashboard", "tasks", "bestpractices"]),
-    catalog: new Set(["reports", "sources", "scripts", "scheduledtasks", "powerautomate", "overview"]),
-    lineage: new Set(["lineage"]),
-    operations: new Set(["scanner", "diagnostics", "refreshschedule"]),
-};
-
-function workspaceForPage(page) {
-    return Object.entries(WORKSPACE_PAGES).find(([, pages]) => pages.has(page))?.[0] || "settings";
-}
-
-function _workspaceLink(page, label, active, extraClass = "") {
-    return `<a href="#${page}" data-page="${page}" class="workspace-tab${active ? " active" : ""}${extraClass ? ` ${extraClass}` : ""}"${active ? ' aria-current="page"' : ""}>${label}</a>`;
-}
-
-function renderWorkspaceChrome(page) {
-    const workspace = workspaceForPage(page);
-    if (workspace === "lineage" || workspace === "settings") return "";
-    if (workspace === "work") {
-        return `<nav class="workspace-tabs" aria-label="Work views">${_workspaceLink("dashboard", "Issues", page === "dashboard")}${_workspaceLink("tasks", "Team tasks", page === "tasks")}${_workspaceLink("bestpractices", "Quality", page === "bestpractices")}</nav>`;
-    }
-    if (workspace === "catalog") {
-        const pipelinePages = new Set(["scripts", "scheduledtasks", "powerautomate", "overview"]);
-        const pipelineActive = pipelinePages.has(page);
-        return `<nav class="workspace-tabs" aria-label="Catalog views">${_workspaceLink("reports", "Reports", page === "reports")}${_workspaceLink("sources", "Sources", page === "sources")}${_workspaceLink("scripts", "Pipelines", pipelineActive)}</nav>${pipelineActive ? `<nav class="workspace-subtabs" aria-label="Pipeline views">${_workspaceLink("scripts", "Scripts", page === "scripts", "workspace-subtab")}${_workspaceLink("scheduledtasks", "Scheduled jobs", page === "scheduledtasks", "workspace-subtab")}${_workspaceLink("powerautomate", "Power Automate", page === "powerautomate", "workspace-subtab")}</nav>` : ""}`;
-    }
-    return `<nav class="workspace-tabs" aria-label="Operations views">${_workspaceLink("scanner", "Runs", page === "scanner")}${_workspaceLink("diagnostics", "Diagnostics", page === "diagnostics")}${_workspaceLink("refreshschedule", "Schedule", page === "refreshschedule")}</nav>`;
-}
-
-
 // ── Router ──
 
 const pages = {
@@ -10120,7 +9787,6 @@ const pages = {
     customreports: renderCustomReports,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
-    diagnostics: renderDiagnostics,
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
@@ -10138,30 +9804,29 @@ const pages = {
 const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard" };
 
 let currentPage = "dashboard";
-let navigationRequestId = 0;
 
 async function navigate(page) {
-    const requestId = ++navigationRequestId;
     // Resolve aliases for old routes
     if (pageAliases[page]) page = pageAliases[page];
     if (!pages[page]) page = "dashboard";
     currentPage = page;
 
-    // hashchange is harmless because currentPage is already updated above.
+    // Update URL hash without triggering hashchange
+    window._skipHash = true;
     location.hash = page === "dashboard" ? "" : page;
 
     // Reset lazy-init flags
     window._lineageBound = false;
     if (window._ovCleanup) { window._ovCleanup(); window._ovCleanup = null; }
 
-    const workspace = workspaceForPage(page);
-    $$("body > nav a[data-page]").forEach(a => {
-        const active = a.dataset.workspace ? a.dataset.workspace === workspace : a.dataset.page === page;
-        a.classList.toggle("active", active);
-        if (active) a.setAttribute("aria-current", "page");
-        else a.removeAttribute("aria-current");
+    $$("nav a[data-page]").forEach(a => {
+        a.classList.toggle("active", a.dataset.page === page);
     });
-    document.getElementById("nav-settings")?.classList.toggle("active", workspace === "settings");
+    // Highlight parent nav-group when a child page is active
+    $$("nav .nav-group").forEach(g => {
+        const childPages = (g.dataset.pages || "").split(",");
+        g.classList.toggle("active", childPages.includes(page));
+    });
 
     // Save scroll position before destroying the page
     const prevPage = window._prevNavPage;
@@ -10176,21 +9841,10 @@ async function navigate(page) {
 
     try {
         const html = await pages[page]();
-        if (requestId !== navigationRequestId) return;
-        app.innerHTML = renderWorkspaceChrome(page) + html;
-
-        app.querySelectorAll("a[data-page]").forEach(a => {
-            a.addEventListener("click", (e) => {
-                e.preventDefault();
-                navigate(a.dataset.page);
-            });
-        });
+        app.innerHTML = html;
 
         bindDataTables();
         detectTableScroll();
-        const pageHeading = app.querySelector("h1, h2");
-        const announcer = document.getElementById("page-announcer");
-        if (announcer) announcer.textContent = pageHeading ? `${pageHeading.textContent.trim()} loaded` : "Page loaded";
 
         // Restore scroll position if returning to same page
         if (prevPage === page) {
@@ -10206,11 +9860,62 @@ async function navigate(page) {
                 else if (dd.sources_stale > 0) navDot.style.background = "var(--red)"; // degraded (legacy stale)
                 else navDot.style.background = "var(--green)"; // healthy
             }
+            // Clickable stat card sub-labels: filter navigation
+            document.querySelectorAll(".stat-filter[data-filter]").forEach(dot => {
+                dot.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const filterVal = dot.dataset.filter;
+                    await navigate("sources");
+                    const dt = window._dt && window._dt["dt-sources"];
+                    if (dt) {
+                        dt.filters["status"] = filterVal;
+                        const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-sources"][data-fcol="status"]');
+                        if (filterInput) filterInput.value = filterVal;
+                        _refreshDT("dt-sources");
+                    }
+                });
+            });
+            // Clickable stat cards: navigate to target page
+            document.querySelectorAll(".stat-card-clickable[data-navigate]").forEach(card => {
+                card.addEventListener("click", () => navigate(card.dataset.navigate));
+                card.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(card.dataset.navigate); }
+                });
+            });
+            // Health bar tooltips
+            const healthTooltip = document.getElementById("health-tooltip");
+            if (healthTooltip) {
+                document.querySelectorAll(".health-bar .segment[data-tooltip]").forEach(seg => {
+                    seg.addEventListener("mouseenter", () => {
+                        healthTooltip.textContent = seg.dataset.tooltip;
+                        healthTooltip.classList.add("visible");
+                        const rect = seg.getBoundingClientRect();
+                        const containerRect = seg.closest(".health-bar-container").getBoundingClientRect();
+                        healthTooltip.style.left = (rect.left + rect.width / 2 - containerRect.left) + "px";
+                    });
+                    seg.addEventListener("mouseleave", () => {
+                        healthTooltip.classList.remove("visible");
+                    });
+                });
+            }
+            // Health bar click-to-filter navigation
+            document.querySelectorAll(".segment-clickable[data-filter]").forEach(seg => {
+                seg.addEventListener("click", async () => {
+                    const filterVal = seg.dataset.filter;
+                    await navigate("sources");
+                    const dt = window._dt && window._dt["dt-sources"];
+                    if (dt) {
+                        dt.filters["status"] = filterVal;
+                        const filterInput = document.querySelector('tr.filter-row input[data-dt="dt-sources"][data-fcol="status"]');
+                        if (filterInput) filterInput.value = filterVal;
+                        _refreshDT("dt-sources");
+                    }
+                });
+            });
             // Dashboard alerts (table + person filter chips)
             bindDashboardAlerts();
-            document.querySelectorAll(".heartbeat-item[data-navigate]").forEach(item => {
-                item.addEventListener("click", () => navigate(item.dataset.navigate));
-            });
+            // Draw health trend chart
+            drawHealthTrendChart();
         }
         if (page === "scanner") bindScannerButtons();
         if (page === "sources") bindSourcesPage();
@@ -10233,7 +9938,6 @@ async function navigate(page) {
         if (page === "lineage") bindLineageDiagramPage();
         if (page === "overview") bindOverviewPage();
     } catch (err) {
-        if (requestId !== navigationRequestId) return;
         app.innerHTML = '<div class="empty-state" style="margin-top:2rem"><strong>Failed to load page</strong><br><span style="color:var(--text-dim);font-size:0.8rem">' + esc(err.message) + '</span><br><br><button onclick="navigate(\'' + page + '\')" class="btn-outline" style="font-size:0.8rem">Retry</button></div>';
     }
 }
@@ -10273,7 +9977,7 @@ function bindScannerButtons() {
                 if (result.status === "failed") {
                     toast("Scanner refresh failed: " + (result.error || result.message || "unknown error"));
                     btnScan.disabled = false;
-                    btnScan.textContent = "Refresh metadata";
+                    btnScan.textContent = "Run Scan Now";
                     return;
                 }
                 const pbi = result.pbi_sync || {};
@@ -10285,7 +9989,7 @@ function bindScannerButtons() {
             } catch (err) {
                 toast("Scan failed: " + err.message);
                 btnScan.disabled = false;
-                btnScan.textContent = "Refresh metadata";
+                btnScan.textContent = "Run Scan Now";
             }
         });
     }
@@ -10329,11 +10033,11 @@ function bindScannerButtons() {
                 panel.innerHTML = renderDiagnosePanel(d);
                 panel.style.display = "";
             } catch (err) {
-                panel.innerHTML = `<div class="section scanner-diagnostic-error"><h2>Diagnostics Error</h2><pre class="scan-log">${esc(err.message)}</pre></div>`;
+                panel.innerHTML = `<div class="section" style="border-left:3px solid var(--red);padding-left:0.75rem;margin-bottom:1.25rem"><h2>Diagnostics Error</h2><pre class="scan-log">${esc(err.message)}</pre></div>`;
                 panel.style.display = "";
             }
             btnDiagnose.disabled = false;
-            btnDiagnose.textContent = "Inspect scanner path";
+            btnDiagnose.textContent = "Diagnose";
         });
     }
 
@@ -10477,7 +10181,7 @@ function renderDiagnosePanel(d) {
     }
 
     return `
-        <div class="section scanner-diagnostic-panel">
+        <div class="section" style="border-left:3px solid var(--blue);padding-left:0.75rem;margin-bottom:1.25rem">
             <h2>Scanner Diagnostics</h2>
             ${errBlock}
             <table style="font-size:0.82rem;margin-bottom:0.75rem">
@@ -10697,79 +10401,6 @@ async function renderAISuggestions() {
 
 // ── Init ──
 
-let _globalSearchItems = null;
-
-async function _loadGlobalSearchItems() {
-    if (_globalSearchItems) return _globalSearchItems;
-    const [reports, sources, scripts] = await Promise.all([
-        api("/api/reports").catch(() => []),
-        api("/api/sources").catch(() => []),
-        api("/api/scripts").catch(() => []),
-    ]);
-    _globalSearchItems = [
-        ...reports.map(item => ({ kind: "Report", page: "reports", table: "dt-reports", id: item.id, name: item.name || "Untitled report", meta: [item.owner, item.status].filter(Boolean).join(" - ") })),
-        ...sources.map(item => ({ kind: "Source", page: "sources", table: "dt-sources", id: item.id, name: parseSourceName(item).shortName || item.name || "Untitled source", meta: [item.type, item.owner, item.connection_info || item.name].filter(Boolean).join(" - ") })),
-        ...scripts.map(item => ({ kind: "Pipeline", page: "scripts", table: "dt-scripts", id: item.id, name: item.display_name || item.name || item.path || "Untitled script", meta: [item.owner, item.path].filter(Boolean).join(" - ") })),
-    ];
-    return _globalSearchItems;
-}
-
-function initGlobalSearch() {
-    const dialog = document.getElementById("global-search-dialog");
-    const openButton = document.getElementById("btn-global-search");
-    const closeButton = document.getElementById("btn-close-global-search");
-    const input = document.getElementById("global-search-input");
-    const results = document.getElementById("global-search-results");
-    if (!dialog || !openButton || !input || !results) return;
-
-    const renderResults = async () => {
-        const items = await _loadGlobalSearchItems();
-        const tokens = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
-        const matches = (tokens.length ? items.filter(item => {
-            const haystack = `${item.kind} ${item.name} ${item.meta}`.toLowerCase();
-            return tokens.every(token => haystack.includes(token));
-        }) : items).slice(0, 20);
-        results.innerHTML = matches.length ? matches.map((item, index) => `
-            <button type="button" class="global-search-result" data-search-index="${index}">
-                <span class="global-search-kind">${esc(item.kind)}</span>
-                <span><strong>${esc(item.name)}</strong><small>${esc(item.meta || "No additional metadata")}</small></span>
-            </button>
-        `).join("") : '<div class="empty-compact">No matching assets</div>';
-        results.querySelectorAll("[data-search-index]").forEach(button => {
-            button.addEventListener("click", async () => {
-                const item = matches[Number(button.dataset.searchIndex)];
-                dialog.close();
-                await navigate(item.page);
-                const dt = window._dt?.[item.table];
-                if (dt) {
-                    dt.globalQuery = item.name;
-                    _saveDTState(item.table);
-                    _refreshDT(item.table);
-                }
-            });
-        });
-    };
-
-    const open = async () => {
-        if (typeof dialog.showModal === "function") dialog.showModal();
-        else dialog.setAttribute("open", "");
-        input.value = "";
-        results.innerHTML = '<div class="empty-compact">Loading catalog...</div>';
-        await renderResults();
-        input.focus();
-    };
-
-    openButton.addEventListener("click", open);
-    closeButton?.addEventListener("click", () => dialog.close());
-    input.addEventListener("input", renderResults);
-    document.addEventListener("keydown", (event) => {
-        if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
-        if (event.target.closest("input, textarea, select, [contenteditable=true]")) return;
-        event.preventDefault();
-        open();
-    });
-}
-
 function getInitialPage() {
     // Support hash-based routing: /#sources, /#reports, etc.
     if (location.hash && location.hash.length > 1) {
@@ -10869,12 +10500,10 @@ function updateThemeIcon() {
 
 document.addEventListener("DOMContentLoaded", () => {
     bindEmailProfileSchedules();
-    initGlobalSearch();
 
     $$("nav a[data-page]").forEach(a => {
         a.addEventListener("click", (e) => {
             e.preventDefault();
-            document.getElementById("nav-settings")?.removeAttribute("open");
             navigate(a.dataset.page);
         });
     });
@@ -10914,8 +10543,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     window.addEventListener("hashchange", () => {
-        let page = location.hash.length > 1 ? location.hash.substring(1) : "dashboard";
-        if (pageAliases[page]) page = pageAliases[page];
+        if (window._skipHash) { window._skipHash = false; return; }
+        const page = location.hash.length > 1 ? location.hash.substring(1) : "dashboard";
         if (pages[page] && page !== currentPage) navigate(page);
     });
 
@@ -10931,6 +10560,7 @@ document.addEventListener("DOMContentLoaded", () => {
         _applyAccessUi(me);
     }).catch(() => {});
 
+    initAIChatPanel();
     navigate(getInitialPage());
 
     // Show version in nav
