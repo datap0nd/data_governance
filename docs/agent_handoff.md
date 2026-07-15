@@ -6,6 +6,8 @@ Add Tools > Recurrences to Metronome so a user can select a live Power BI table 
 
 The first work-PC validation exposed a bootstrap failure before report loading: `page.wait_for_function` timed out because the original `cdn.powerbi.com` client URL no longer resolved. The client bootstrap now uses the published `powerbi-client` npm artifact from jsDelivr with an unpkg fallback and reports a direct proxy allow-list error instead of waiting for the full visual timeout.
 
+The next work-PC validation exposed a page-level resource error from an unrelated chart before the selected table could be inspected. Visual discovery and export now use Power BI phased embedding. Discovery stops at the `loaded` event without rendering page visuals. Export hides every visual except the saved table before calling `report.render()`, so an unrelated expensive chart cannot block the table export.
+
 ## Repo State
 
 - Working clone: `/private/tmp/data_governance_metronome`
@@ -29,6 +31,7 @@ The first work-PC validation exposed a bootstrap failure before report loading: 
 - Added the Tools > Recurrences list and four-step creation/edit workflow.
 - Added runtime diagnostics for cached authentication, Playwright, Edge, local timezone, timeout, and row limit.
 - Replaced the non-resolving Power BI client URL with the package CDN URL used by Microsoft documentation and added a second CDN fallback.
+- Switched visual discovery and export to phased embedding so only the selected table is rendered during export.
 - Added product and design contracts in `PRODUCT.md` and `DESIGN.md` for future interface work.
 - Documented setup, runtime behavior, failure behavior, and environment variables in `README.md`.
 
@@ -63,7 +66,7 @@ The first work-PC validation exposed a bootstrap failure before report loading: 
 
 ## Verification
 
-- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 17 tests.
+- `env PYTHONPATH=. /tmp/data-governance-test-venv312/bin/python -m pytest -q`: passed, 18 tests.
 - `node --test tests/test_lineage_layers.mjs`: passed.
 - `node --check app/static/app.js`: passed.
 - Python compilation of all changed backend modules: passed.

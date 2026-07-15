@@ -46,7 +46,7 @@ _RUNTIME_HTML = f"""<!doctype html>
         const container = document.getElementById("report");
         const models = window["powerbi-client"].models;
         let finished = false;
-        let operationStarted = false;
+        let loadOperationStarted = false;
         const stop = (fn, value) => {{
           if (finished) return;
           finished = true;
@@ -59,12 +59,12 @@ _RUNTIME_HTML = f"""<!doctype html>
                  (error && error.message) || "Power BI returned an unknown error.";
         }};
         const timer = setTimeout(
-          () => stop(reject, "Power BI did not finish rendering within the configured timeout."),
+          () => stop(reject, "Power BI did not finish the visual export within the configured timeout."),
           config.timeoutMs
         );
 
         window.powerbi.reset(container);
-        const report = window.powerbi.embed(container, {{
+        const report = window.powerbi.load(container, {{
           type: "report",
           id: config.reportId,
           embedUrl: config.embedUrl,
@@ -81,9 +81,9 @@ _RUNTIME_HTML = f"""<!doctype html>
         }});
 
         report.on("error", event => stop(reject, describeError(event)));
-        report.on("rendered", async () => {{
-          if (operationStarted || finished) return;
-          operationStarted = true;
+        report.on("loaded", async () => {{
+          if (loadOperationStarted || finished) return;
+          loadOperationStarted = true;
           try {{
             const pages = await report.getPages();
             const selectedPage = pages.find(page => page.name === config.pageName);
@@ -109,18 +109,36 @@ _RUNTIME_HTML = f"""<!doctype html>
             if (!selectedVisual) {{
               throw new Error("The saved table visual no longer exists on this page.");
             }}
-            const result = await selectedVisual.exportData(
-              models.ExportDataType.Summarized,
-              config.maxRows
+            await Promise.all(
+              visuals.map(visual => selectedPage.setVisualDisplayState(
+                visual.name,
+                visual.name === selectedVisual.name
+                  ? models.VisualContainerDisplayMode.Visible
+                  : models.VisualContainerDisplayMode.Hidden
+              ))
             );
-            stop(resolve, {{
-              data: result.data,
-              visual: {{
-                name: selectedVisual.name,
-                type: selectedVisual.type,
-                title: selectedVisual.title || ""
+            let exportStarted = false;
+            report.on("rendered", async () => {{
+              if (exportStarted || finished) return;
+              exportStarted = true;
+              try {{
+                const result = await selectedVisual.exportData(
+                  models.ExportDataType.Summarized,
+                  config.maxRows
+                );
+                stop(resolve, {{
+                  data: result.data,
+                  visual: {{
+                    name: selectedVisual.name,
+                    type: selectedVisual.type,
+                    title: selectedVisual.title || ""
+                  }}
+                }});
+              }} catch (error) {{
+                stop(reject, describeError(error));
               }}
             }});
+            await report.render();
           }} catch (error) {{
             stop(reject, describeError(error));
           }}
