@@ -2,55 +2,56 @@
 
 ## Current Objective
 
-Ship a stronger, Outlook-safe visual design for Power BI recurrence alert emails
-and owner failure notifications.
+Keep the recurrence output email polished while removing internal and technical
+language that business recipients do not need.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `2c0834a Polish recurrence alert emails`
+- Feature commit: `d20c6b3 Simplify recurrence emails for recipients`
 - Public repo: no, private
-- Push status: output-email polish is pushed to `origin/main`
+- Push status: feature and handoff are ready for direct `origin/main` push
 
 ## Decisions Made
 
-- Keep recurrence emails table-based with inline CSS for Outlook compatibility.
-- Use the existing Metronome palette more decisively instead of adding gradients,
-  images, new fonts, or decorative effects.
-- Standard alerts use a teal masthead, prominent matching-row count, report
-  context band, Power BI button, and zebra-striped results table.
-- Failure alerts use a red blocked-delivery masthead, structured run context,
-  a prominent failure-reason panel, and the same direct Power BI action.
-- Preserve all escaping, dynamic columns, subgroup filtering, report links, and
-  refresh-failure content from the existing delivery behavior.
+- The recipient email no longer names the internal application.
+- The masthead identifies the schedule as Daily, Weekday, Weekly, Monthly, or
+  Scheduled alert.
+- Remove the matching-row count from the masthead. The table itself is the
+  useful output.
+- Remove technical Power BI page and visual identifiers from the recipient email.
+- Keep the report name and simplify the action to `Open report`.
+- End with `Daily/Weekly/Monthly alert created by the METO MX Analytics team.`
+- Use `For questions or issues with this report, contact [owner], the report
+  owner.` as the business-facing ownership statement.
+- The technical owner failure notification remains detailed because page,
+  visual, refresh, and failure context help the owner repair the alert.
 
 ## Files Changed
 
-- `app/routers/recurrences.py`: redesign standard and failure recurrence email HTML.
-- `tests/test_recurrences.py`: assert the new alert hierarchy and status treatments.
-- `docs/agent_handoff.md`: record the email-design decisions and verification.
+- `app/routers/recurrences.py`: simplify the recipient email and add dynamic
+  cadence and report-owner wording.
+- `tests/test_recurrences.py`: verify the business-facing copy and absence of
+  product name, page, visual, and row-count language.
+- `docs/agent_handoff.md`: record the recipient-facing communication contract.
 
 ## Commands And Checks
 
-- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 38 passed.
+- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 43 passed.
 - `uv run --python /opt/homebrew/bin/python3.11 python -m py_compile app/routers/recurrences.py tests/test_recurrences.py`: passed.
 - `git diff --check`: passed.
-- Both email variants were rendered through macOS Quick Look and visually
-  inspected for hierarchy, spacing, contrast, table density, and wrapping.
-- HTML Tidy reported only expected email-fragment and legacy-validator warnings,
-  with no malformed markup errors.
-- Playwright screenshot rendering was unavailable because its local Chromium
-  runtime is not installed. Quick Look provided the visual verification instead.
+- The revised weekly alert was rendered through macOS Quick Look and visually
+  inspected. The reduced masthead and single report context row remain balanced.
 - Live Outlook rendering was not run because this Mac does not have the work PC
   Outlook profile.
 
 ## Open Questions
 
-- Outlook's Word-based renderer may ignore rounded corners, but the hierarchy,
-  backgrounds, table borders, and buttons do not depend on them.
+- Outlook's Word-based renderer may ignore rounded corners, but the message
+  hierarchy, table, backgrounds, and action remain usable without them.
 
 ## Next Step
 
-Update Metronome on the work PC and use Create drafts on one recurrence to verify
-the final desktop Outlook rendering with a real wide Power BI table.
+Push the change, then use Create drafts on the work PC to confirm the wording
+with a real report owner and recurrence cadence.
