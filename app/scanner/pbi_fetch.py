@@ -8,6 +8,7 @@ picker, or unlocked desktop session is needed.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -133,6 +134,67 @@ def fetch_report_pages(workspace_id: str, report_id: str) -> list[dict]:
         for index, page in enumerate(pages)
         if page.get("name")
     ]
+
+
+def _refresh_error_text(raw_error) -> str | None:
+    if not raw_error:
+        return None
+    value = raw_error
+    if isinstance(raw_error, str):
+        try:
+            value = json.loads(raw_error)
+        except (ValueError, TypeError):
+            return raw_error.strip()[:1000] or None
+
+    def find_message(item) -> str | None:
+        if isinstance(item, dict):
+            for key in ("errorDescription", "message", "errorCode"):
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            for candidate in item.values():
+                found = find_message(candidate)
+                if found:
+                    return found
+        elif isinstance(item, list):
+            for candidate in item:
+                found = find_message(candidate)
+                if found:
+                    return found
+        return None
+
+    message = find_message(value)
+    return (message or str(value)).strip()[:1000] or None
+
+
+def fetch_dataset_last_refresh(workspace_id: str, dataset_id: str) -> dict:
+    """Return the latest semantic-model refresh attempt from Power BI Service."""
+    workspace_guid = _uuid_text(workspace_id, "Workspace ID")
+    dataset_guid = _uuid_text(dataset_id, "Dataset ID")
+    auth = get_access_token()
+    url = f"{PBI_API_BASE}/groups/{workspace_guid}/datasets/{dataset_guid}/refreshes"
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+        history = _get_json(
+            client,
+            auth["access_token"],
+            url,
+            params={"$top": 1},
+        )
+    entries = history.get("value") or []
+    if not entries:
+        return {
+            "status": None,
+            "start_time": None,
+            "end_time": None,
+            "error": None,
+        }
+    entry = entries[0]
+    return {
+        "status": entry.get("status"),
+        "start_time": entry.get("startTime"),
+        "end_time": entry.get("endTime"),
+        "error": _refresh_error_text(entry.get("serviceExceptionJson")),
+    }
 
 
 def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = None) -> dict:

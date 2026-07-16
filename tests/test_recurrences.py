@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -5,6 +6,20 @@ import pytest
 
 from app import database, pbi_visual_export
 from app.routers import recurrences
+
+
+@pytest.fixture(autouse=True)
+def _successful_refresh(monkeypatch):
+    monkeypatch.setattr(
+        recurrences.pbi_fetch,
+        "fetch_dataset_last_refresh",
+        lambda workspace_id, dataset_id: {
+            "status": "Completed",
+            "start_time": "2026-07-16T07:55:00Z",
+            "end_time": "2026-07-16T08:00:00Z",
+            "error": None,
+        },
+    )
 
 
 def _valid_write(**overrides):
@@ -42,17 +57,35 @@ def _valid_write(**overrides):
     return recurrences.RecurrenceWrite(**data)
 
 
+def _seed_owner_data():
+    with database.get_db() as db:
+        db.execute(
+            "INSERT INTO people (name, role, email) VALUES (?, ?, ?)",
+            ("Report Owner", "BI", "owner@example.com"),
+        )
+        db.execute(
+            """INSERT INTO reports (name, owner, pbi_dataset_id)
+               VALUES (?, ?, ?)""",
+            (
+                "Operations",
+                "Report Owner",
+                "33333333-3333-3333-3333-333333333333",
+            ),
+        )
+
+
 def _seed_recurrence(db_path):
     database.DB_PATH = str(db_path)
     database.init_db()
+    _seed_owner_data()
     with database.get_db() as db:
         cursor = db.execute(
             """INSERT INTO pbi_recurrences
                (name, enabled, workspace_id, workspace_name, report_id, report_name,
                 report_url, embed_url, dataset_id, page_name, page_display_name,
-                visual_name, visual_title, visual_type, group_column, subject_template,
+                visual_name, visual_title, visual_type, owner_name, group_column, subject_template,
                 recurrence, weekdays, send_time, next_run_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'weekly', 'monday', '08:00', ?)""",
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'weekly', 'monday', '08:00', ?)""",
             (
                 "Weekly exceptions",
                 "11111111-1111-1111-1111-111111111111",
@@ -67,6 +100,7 @@ def _seed_recurrence(db_path):
                 "visual456",
                 "Exceptions",
                 "tableEx",
+                "Report Owner",
                 "Subsidiary",
                 "{recurrence} - {group} ({row_count})",
                 "2099-01-05T08:00:00",
@@ -193,6 +227,7 @@ def test_disabled_subgroup_does_not_require_recipients():
 def test_single_email_configuration_persists_without_subgroups(tmp_path, monkeypatch):
     database.DB_PATH = str(tmp_path / "governance.db")
     database.init_db()
+    _seed_owner_data()
     monkeypatch.setattr(recurrences, "get_db", database.get_db)
     request = SimpleNamespace(state=SimpleNamespace(actor="Test User"))
     body = _valid_write(
@@ -209,8 +244,44 @@ def test_single_email_configuration_persists_without_subgroups(tmp_path, monkeyp
 
     assert created["delivery_mode"] == "single"
     assert created["groups"] == []
+    assert created["owner_name"] == "Report Owner"
     assert updated["name"] == "Updated single email"
     assert updated["recipients"] == "team@example.com"
+
+
+def test_report_picker_includes_default_owner_and_people_email(tmp_path, monkeypatch):
+    database.DB_PATH = str(tmp_path / "governance.db")
+    database.init_db()
+    _seed_owner_data()
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    monkeypatch.setattr(
+        recurrences.pbi_fetch,
+        "fetch_workspace_reports",
+        lambda: {
+            "workspace": {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Analytics",
+            },
+            "reports": [
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "name": "Operations",
+                    "dataset_id": "33333333-3333-3333-3333-333333333333",
+                    "web_url": "https://app.powerbi.com/groups/111/reports/222",
+                    "embed_url": "https://app.powerbi.com/reportEmbed?reportId=222",
+                }
+            ],
+        },
+    )
+
+    payload = recurrences.recurrence_reports()
+
+    assert payload["reports"][0]["owner_name"] == "Report Owner"
+    assert payload["reports"][0]["owner_email"] == "owner@example.com"
+    assert len(payload["people"]) == 1
+    assert payload["people"][0]["name"] == "Report Owner"
+    assert payload["people"][0]["role"] == "BI"
+    assert payload["people"][0]["email"] == "owner@example.com"
 
 
 def test_missing_recurrence_does_not_leave_run_lock(tmp_path, monkeypatch):
@@ -408,18 +479,113 @@ def test_run_fails_closed_when_required_column_disappears(tmp_path, monkeypatch)
             "visual": {"name": "visual456", "type": "tableEx", "title": "Exceptions"},
         },
     )
+    launched = []
     monkeypatch.setattr(
         recurrences,
         "_launch_outlook_payload",
-        lambda *args, **kwargs: pytest.fail("Outlook must not launch when a required column is missing"),
+        lambda messages, mode: launched.append((messages, mode)) or len(messages),
     )
 
     with pytest.raises(RuntimeError, match="required columns are missing: Value"):
         recurrences.run_recurrence(recurrence_id, mode="send", trigger_type="manual")
 
+    assert len(launched) == 1
+    messages, mode = launched[0]
+    assert mode == "send"
+    assert len(messages) == 1
+    assert messages[0]["to"] == "owner@example.com"
+    assert "Metronome alert failed" in messages[0]["subject"]
+    assert "Value" in messages[0]["html_body"]
     with database.get_db() as db:
         row = db.execute(
             "SELECT last_status, last_error FROM pbi_recurrences WHERE id = ?", (recurrence_id,)
         ).fetchone()
     assert row["last_status"] == "failed"
     assert "Value" in row["last_error"]
+
+
+def test_failed_latest_refresh_blocks_export_and_notifies_owner(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    monkeypatch.setattr(
+        recurrences.pbi_fetch,
+        "fetch_dataset_last_refresh",
+        lambda workspace_id, dataset_id: {
+            "status": "Failed",
+            "start_time": "2026-07-16T07:55:00Z",
+            "end_time": "2026-07-16T08:00:00Z",
+            "error": "Gateway could not reach the data source.",
+        },
+    )
+    monkeypatch.setattr(
+        recurrences,
+        "export_visual_data",
+        lambda *args, **kwargs: pytest.fail("Visual export must not run after a failed refresh"),
+    )
+    launched = []
+    monkeypatch.setattr(
+        recurrences,
+        "_launch_outlook_payload",
+        lambda messages, mode: launched.append((messages, mode)) or len(messages),
+    )
+
+    with pytest.raises(recurrences.RecurrenceRefreshError, match="latest refresh did not succeed"):
+        recurrences.run_recurrence(recurrence_id, mode="send", trigger_type="manual")
+
+    assert len(launched) == 1
+    messages, mode = launched[0]
+    assert mode == "send"
+    assert messages[0]["to"] == "owner@example.com"
+    assert "Latest refresh" in messages[0]["html_body"]
+    assert "Failed" in messages[0]["html_body"]
+    assert "Gateway could not reach the data source" in messages[0]["html_body"]
+    assert "Open the Power BI report" in messages[0]["html_body"]
+    with database.get_db() as db:
+        run = db.execute(
+            """SELECT status, detail, error
+               FROM pbi_recurrence_runs
+               WHERE recurrence_id = ?
+               ORDER BY id DESC
+               LIMIT 1""",
+            (recurrence_id,),
+        ).fetchone()
+    detail = json.loads(run["detail"])
+    assert run["status"] == "failed"
+    assert "latest refresh did not succeed" in run["error"]
+    assert detail["refresh"]["status"] == "Failed"
+    assert detail["failure_notification"]["status"] == "launched"
+
+
+def test_draft_failure_does_not_email_owner(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    monkeypatch.setattr(
+        recurrences.pbi_fetch,
+        "fetch_dataset_last_refresh",
+        lambda workspace_id, dataset_id: {
+            "status": "InProgress",
+            "start_time": "2026-07-16T07:55:00Z",
+            "end_time": None,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        recurrences,
+        "_launch_outlook_payload",
+        lambda *args, **kwargs: pytest.fail("Draft failures must not email the owner"),
+    )
+
+    with pytest.raises(recurrences.RecurrenceRefreshError, match="InProgress"):
+        recurrences.run_recurrence(recurrence_id, mode="draft", trigger_type="manual")
+
+    with database.get_db() as db:
+        run = db.execute(
+            """SELECT detail
+               FROM pbi_recurrence_runs
+               WHERE recurrence_id = ?
+               ORDER BY id DESC
+               LIMIT 1""",
+            (recurrence_id,),
+        ).fetchone()
+    detail = json.loads(run["detail"])
+    assert detail["failure_notification"]["status"] == "not_applicable"

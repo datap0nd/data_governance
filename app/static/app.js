@@ -4708,6 +4708,7 @@ function _recValidationDetail(item) {
         page_name: "Report page",
         visual_name: "Table visual",
         visual_type: "Visual type",
+        owner_name: "Alert owner",
         recipients: "Recipients",
         group_column: "Subgroup column",
         subject_template: "Email subject",
@@ -4793,7 +4794,7 @@ async function renderRecurrences() {
             <tr data-recurrence-id="${item.id}">
                 <td>
                     <span class="rec-name">${esc(item.name)}</span>
-                    <span class="rec-meta">${item.enabled ? "Enabled" : "Paused"}</span>
+                    <span class="rec-meta">${item.enabled ? "Enabled" : "Paused"} - Owner: ${esc(item.owner_name || "Not assigned")}</span>
                 </td>
                 <td><div class="rec-source-path">${_recSourceText(item)}</div></td>
                 <td>
@@ -4837,6 +4838,7 @@ async function renderRecurrences() {
         <div class="rec-status-strip" aria-label="Recurrence runtime status">
             <span>Power BI: <strong>${status.cached_account ? "Cached account connected" : "Reconnect required"}</strong></span>
             <span>Visual export: <strong>${status.playwright_installed && status.edge_detected ? "Headless Edge ready" : "Setup required"}</strong></span>
+            <span>Refresh gate: <strong>Latest refresh must succeed</strong></span>
             <span>Schedule timezone: <strong>${esc(status.system_timezone || "Local machine time")}</strong></span>
             <span>Export limit: <strong>${Number(status.max_rows || 30000).toLocaleString()} rows</strong></span>
         </div>
@@ -4886,6 +4888,7 @@ function _recBaseConfig(existing = null) {
         visual_name: existing?.visual_name || "",
         visual_title: existing?.visual_title || "",
         visual_type: existing?.visual_type || "",
+        owner_name: existing?.owner_name || "",
         delivery_mode: existing?.delivery_mode || "single",
         recipients: existing?.recipients || "",
         group_column: existing?.group_column || "",
@@ -4922,14 +4925,20 @@ async function _recOpenBuilder(existing = null) {
                 dataset_id: existing.dataset_id,
                 web_url: existing.report_url,
                 embed_url: existing.embed_url,
+                owner_name: existing.owner_name,
                 unavailable: true,
             });
+        }
+        if (!config.owner_name) {
+            const selectedReport = reports.find(report => report.id === config.report_id);
+            config.owner_name = selectedReport?.owner_name || "";
         }
         window._recBuilder = {
             id: existing?.id || null,
             step: 1,
             config,
             reports,
+            people: [...(reportPayload.people || [])],
             workspace: reportPayload.workspace,
             pages: [],
             visuals: [],
@@ -4965,6 +4974,7 @@ function _recBuilderSummary(state) {
                 <div><dt>Report</dt><dd>${esc(config.report_name || "Not selected")}</dd></div>
                 <div><dt>Page</dt><dd>${esc(config.page_display_name || "Not selected")}</dd></div>
                 <div><dt>Visual</dt><dd>${esc(config.visual_title || "Not selected")}</dd></div>
+                <div><dt>Alert owner</dt><dd>${esc(config.owner_name || "Not assigned")}</dd></div>
                 <div><dt>Preview</dt><dd>${state.preview ? `${state.preview.row_count.toLocaleString()} rows, ${state.preview.columns.length} columns` : "Not loaded"}</dd></div>
                 <div><dt>Delivery</dt><dd>${esc(delivery)}</dd></div>
                 <div><dt>Row rules</dt><dd>${config.rules.length}</dd></div>
@@ -5143,15 +5153,30 @@ function _recStepThree(state) {
 function _recStepFour(state) {
     const config = state.config;
     const weekdayLabels = Object.entries({ monday: "Monday", tuesday: "Tuesday", wednesday: "Wednesday", thursday: "Thursday", friday: "Friday", saturday: "Saturday", sunday: "Sunday" });
+    const knownOwner = state.people.some(person => person.name === config.owner_name);
+    const ownerOptions = [
+        ...(!knownOwner && config.owner_name ? [{ name: config.owner_name, email: null, unavailable: true }] : []),
+        ...state.people,
+    ].map(person => `
+        <option value="${esc(person.name)}" ${person.name === config.owner_name ? "selected" : ""}>
+            ${esc(person.name)}${person.email ? ` - ${esc(person.email)}` : " - email not mapped"}${person.unavailable ? " (unavailable)" : ""}
+        </option>`).join("");
     return `
         <div class="rec-step-content">
             <h2>Name and schedule the recurrence</h2>
-            <p class="rec-step-intro">Metronome checks due recurrences every minute using the Windows host's local timezone. A run with no matching rows sends no email.</p>
+            <p class="rec-step-intro">Metronome checks due recurrences every minute using the Windows host's local timezone. It sends only after the semantic model's latest refresh succeeds. If a send run fails, the alert owner receives the reason by email.</p>
             <div class="rec-form-grid">
                 <label class="rec-field full">Recurrence name
                     <input id="rec-name" type="text" maxlength="200" value="${esc(config.name)}" placeholder="Weekly subsidiary exceptions">
                 </label>
                 <label class="rec-enable-row full"><input id="rec-enabled" type="checkbox" ${config.enabled ? "checked" : ""}> Enable scheduled sending after save</label>
+                <label class="rec-field full">Alert owner
+                    <select id="rec-owner">
+                        <option value="">Select an owner</option>
+                        ${ownerOptions}
+                    </select>
+                    <small>Defaults to the selected report owner. The owner's email comes from Management &gt; Create &gt; People.</small>
+                </label>
                 <label class="rec-field full">Email subject
                     <input id="rec-subject" type="text" maxlength="500" value="${esc(config.subject_template)}">
                     <small>Available placeholders: {recurrence}, {group}, {row_count}, {report}, {date}</small>
@@ -5280,6 +5305,7 @@ function _recPayload(state) {
         visual_name: config.visual_name,
         visual_title: config.visual_title || null,
         visual_type: config.visual_type,
+        owner_name: config.owner_name || null,
         delivery_mode: config.delivery_mode,
         recipients: config.delivery_mode === "single" ? config.recipients.trim() : null,
         group_column: config.delivery_mode === "subgroups" ? config.group_column : "",
@@ -5324,6 +5350,7 @@ function _recBindBuilder() {
         state.config.visual_name = "";
         state.config.visual_title = "";
         state.config.visual_type = "";
+        state.config.owner_name = report?.owner_name || "";
         state.pages = [];
         state.visuals = [];
         state.preview = null;
@@ -5452,6 +5479,7 @@ function _recBindBuilder() {
     });
     $("#rec-back-rules")?.addEventListener("click", () => { state.step = 3; state.error = ""; _recRenderBuilder(); });
     $("#rec-name")?.addEventListener("input", event => { state.config.name = event.target.value; });
+    $("#rec-owner")?.addEventListener("change", event => { state.config.owner_name = event.target.value; });
     $("#rec-enabled")?.addEventListener("change", event => { state.config.enabled = event.target.checked; });
     $("#rec-subject")?.addEventListener("input", event => { state.config.subject_template = event.target.value; });
     $("#rec-send-time")?.addEventListener("change", event => { state.config.send_time = event.target.value; });
@@ -5466,6 +5494,13 @@ function _recBindBuilder() {
     }));
     $("#rec-save")?.addEventListener("click", async () => {
         if (!state.config.name.trim()) { state.error = "Enter a recurrence name."; _recRenderBuilder(); return; }
+        if (!state.config.owner_name) { state.error = "Choose an alert owner."; _recRenderBuilder(); return; }
+        const alertOwner = state.people.find(person => person.name === state.config.owner_name);
+        if (!alertOwner?.email) {
+            state.error = `Alert owner '${state.config.owner_name}' needs an email in Management > Create > People.`;
+            _recRenderBuilder();
+            return;
+        }
         if (!state.config.subject_template.trim()) { state.error = "Enter an email subject."; _recRenderBuilder(); return; }
         if (state.config.recurrence === "weekly" && !state.config.weekdays.length) { state.error = "Choose at least one weekday."; _recRenderBuilder(); return; }
         const deliveryError = _recValidateDelivery(state);

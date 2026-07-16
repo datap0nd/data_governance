@@ -2,79 +2,74 @@
 
 ## Current Objective
 
-Keep Tools > Recurrences tied to an exact Power BI table visual while fixing
-`Error running visual data query` without automating the Power BI export menu.
+Make Power BI recurrence delivery fail closed unless the semantic model's latest
+refresh succeeded, default each alert owner from its report, and notify that
+owner by email when an actual send run fails before delivery is launched.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Base commit: `750b8bb Harden Power BI Edge lifecycle`
+- Base commit: `74bed17 Add Power BI visual query fallback`
 - Public repo: no, private
 - Push status: implementation is ready for its direct `origin/main` commit and push
 
 ## Decisions Made
 
-- Keep the existing official embedded-client path for exact report, page, and
-  visual discovery. Do not click Power BI UI controls or scrape the report DOM.
-- Continue trying `visual.exportData` first because it preserves native Power BI
-  summarized export when the API supports the visual.
-- When Power BI returns a visual-data-query error, use Microsoft's report
-  authoring APIs to read the selected visual's current fields, format strings,
-  report/page/visual filters, and slicer filters.
-- Convert only structured Power BI targets into escaped DAX and call the official
-  Execute Queries REST endpoint with the existing cached delegated account.
-  No user-supplied DAX, copied token, or second authentication flow is introduced.
-- Fail closed instead of sending approximated or partial data. The REST fallback
-  currently supports normal columns, explicit column aggregations, measures,
-  basic filters, advanced filters, and standard slicer selections. It rejects
-  visual calculations, hierarchies, percent-of-grand-total fields, Top N,
-  relative date/time, identity, and multi-field filters.
-- Execute Queries fallback access depends on semantic-model Read and Build
-  permission and the tenant setting `Dataset Execute Queries REST API`.
-- The existing side accent borders flagged by the design hook are intentional
-  severity and diagnostics markers that predate this backend-focused change.
-  They were reviewed and left unchanged.
+- Refresh verification is a mandatory delivery gate, not an optional row rule.
+- Every draft and send run queries the live Power BI refresh-history endpoint
+  through the existing cached delegated account. Only status `Completed` passes.
+- Failed, cancelled, running, missing, or unavailable refresh status blocks
+  visual export and sends no alert data.
+- A recurrence stores the alert owner's name. New alerts default from the local
+  report owner, while the current owner email is resolved dynamically from the
+  central People registry.
+- Saving requires a People entry with a valid email. Existing recurrences without
+  an owner derive and persist the current report owner on their next run.
+- Failed send runs notify the owner with the failure reason, refresh result when
+  available, report/page/visual context, and the Power BI report link.
+- Draft-test failures do not send owner notifications.
+- Failure notifications use the existing Outlook task delivery. If Outlook
+  itself is unavailable, the attempt is recorded in run detail but email cannot
+  be delivered through that same unavailable channel.
 
 ## Files Changed
 
-- `app/pbi_visual_export.py`: load Microsoft's authoring extension, capture
-  structured Power BI errors, and invoke the query fallback whether the error
-  arrives from render, the report error event, or `exportData`.
-- `app/pbi_visual_query.py`: build escaped DAX from visual metadata, execute it
-  with the cached account, apply static visual formats, convert results to CSV,
-  and enforce fail-closed limits and permissions errors.
-- `app/routers/recurrences.py`: pass workspace and dataset IDs to previews and
-  scheduled runs, and expose the preview export method.
-- `app/static/app.js`: include workspace and dataset IDs in preview requests.
-- `tests/test_pbi_visual_query.py`: cover DAX generation, escaping, formatting,
-  filters, unsupported constructs, row-limit handling, cached authentication,
-  CDN fallback, and exporter integration.
-- `README.md`: document the no-UI-automation architecture, permissions, dynamic
-  field behavior, and fail-closed limitations.
+- `app/database.py`: add recurrence ownership and backfill existing alerts by
+  report name.
+- `app/scanner/pbi_fetch.py`: fetch the latest live semantic-model refresh and
+  extract useful Power BI failure details.
+- `app/routers/recurrences.py`: enforce the refresh gate, resolve owners and
+  emails, send owner failure notices, persist run details, and enrich report
+  picker data.
+- `app/static/app.js`: show alert owners and the refresh gate, default owners
+  from reports, and require a mapped owner email before saving.
+- `tests/test_recurrences.py`: cover owner defaults, picker data, refresh
+  blocking, owner notifications, and draft behavior.
+- `tests/test_pbi_fetch.py`: cover cached authentication, endpoint construction,
+  and refresh-error extraction.
+- `README.md`: document the refresh gate, ownership, and notification behavior.
 
 ## Commands And Checks
 
-- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 34 passed.
-- `uv run --python 3.14 python -m py_compile ...`: passed for all changed Python modules and tests.
+- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 38 passed.
 - `node --check app/static/app.js`: passed.
-- Extracted JavaScript from `_RUNTIME_HTML` and ran `node --check`: passed.
+- `python3 -m py_compile app/database.py app/routers/recurrences.py app/scanner/pbi_fetch.py tests/test_recurrences.py tests/test_pbi_fetch.py`: passed with the host Python 3.9 parser.
 - `git diff --check`: passed.
-- Secret-pattern review of changed files: no real credentials or internal identifiers found.
-- Live Windows Power BI validation was not run because this Mac does not have
-  the work PC token cache, workspace access, Edge runtime, or Outlook profile.
+- Python 3.14 validation was not run because Python 3.14 is not installed on this Mac.
+- Live Windows Power BI and Outlook validation was not run because this Mac does
+  not have the work PC token cache, workspace access, Edge runtime, or Outlook profile.
 
 ## Open Questions
 
-- The work PC account may already have Build permission and the tenant Execute
-  Queries setting, but only a live preview can confirm that tenant-side access.
-- Report authoring field introspection is official but still needs one live test
-  against the affected table and its real filter configuration.
+- The work PC must confirm that the cached account can read refresh history for
+  the selected semantic model.
+- The current Outlook launcher confirms that the interactive task was launched,
+  not final Exchange delivery. Pre-delivery and launcher failures are detected;
+  a complete Outlook outage cannot email its own failure notice.
 
 ## Next Step
 
-Update Metronome on the work PC, restart it, open the affected recurrence, and
-fetch the preview. If tenant access is available, the preview should report
-`execute_queries` and return the table instead of the visual-query error. If it
-is not available, Metronome will show the exact Build/tenant-setting requirement
-and send no email.
+Update and restart Metronome on the work PC, ensure each report owner has an
+email in Management > Create > People, then use Create drafts once and test one
+send against both a completed and a deliberately failed latest refresh.

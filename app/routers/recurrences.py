@@ -100,6 +100,12 @@ class RecurrenceRuleIn(BaseModel):
         return self
 
 
+class RecurrenceRefreshError(RuntimeError):
+    def __init__(self, message: str, refresh: dict | None = None):
+        super().__init__(message)
+        self.refresh = refresh or {}
+
+
 class RecurrenceWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     enabled: bool = True
@@ -115,6 +121,7 @@ class RecurrenceWrite(BaseModel):
     visual_name: str = Field(min_length=1, max_length=300)
     visual_title: str | None = Field(default=None, max_length=500)
     visual_type: str = Field(min_length=1, max_length=100)
+    owner_name: str | None = Field(default=None, max_length=200)
     delivery_mode: Literal["single", "subgroups"] = "subgroups"
     recipients: str | None = Field(default=None, max_length=4000)
     group_column: str = Field(default="", max_length=300)
@@ -144,6 +151,11 @@ class RecurrenceWrite(BaseModel):
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("owner_name")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
 
     @model_validator(mode="after")
     def validate_configuration(self):
@@ -327,6 +339,115 @@ def _parse_recipients(value: str) -> list[str]:
     return recipients
 
 
+def _report_owner_name(db, dataset_id: str | None, report_name: str) -> str | None:
+    row = db.execute(
+        """SELECT owner
+           FROM reports
+           WHERE archived = 0
+             AND (
+                 (? IS NOT NULL AND pbi_dataset_id = ?)
+                 OR lower(trim(name)) = lower(trim(?))
+             )
+           ORDER BY CASE
+               WHEN ? IS NOT NULL AND pbi_dataset_id = ? THEN 0
+               ELSE 1
+           END, id
+           LIMIT 1""",
+        (dataset_id, dataset_id, report_name, dataset_id, dataset_id),
+    ).fetchone()
+    return str(row["owner"] or "").strip() or None if row else None
+
+
+def _person_for_name(db, owner_name: str | None) -> dict | None:
+    if not owner_name:
+        return None
+    row = db.execute(
+        """SELECT id, name, role, email
+           FROM people
+           WHERE lower(trim(name)) = lower(trim(?))
+           ORDER BY id
+           LIMIT 1""",
+        (owner_name,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _ensure_write_owner(body: RecurrenceWrite) -> dict:
+    with get_db() as db:
+        if not body.owner_name:
+            body.owner_name = _report_owner_name(db, body.dataset_id, body.report_name)
+        owner = _person_for_name(db, body.owner_name)
+    if not body.owner_name:
+        raise ValueError(
+            "The selected report has no report owner. Assign one on the Reports page "
+            "or choose an alert owner."
+        )
+    if not owner:
+        raise ValueError(
+            f"Alert owner '{body.owner_name}' is not in Management > Create > People."
+        )
+    try:
+        _parse_recipients(owner.get("email") or "")
+    except ValueError as exc:
+        raise ValueError(
+            f"Alert owner '{owner['name']}' needs a valid email in "
+            "Management > Create > People."
+        ) from exc
+    body.owner_name = owner["name"]
+    return owner
+
+
+def _resolve_recurrence_owner(recurrence: dict) -> dict | None:
+    with get_db() as db:
+        owner_name = str(recurrence.get("owner_name") or "").strip() or None
+        if not owner_name:
+            owner_name = _report_owner_name(
+                db,
+                recurrence.get("dataset_id"),
+                recurrence["report_name"],
+            )
+            if owner_name:
+                db.execute(
+                    """UPDATE pbi_recurrences
+                       SET owner_name = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (owner_name, recurrence["id"]),
+                )
+                recurrence["owner_name"] = owner_name
+        return _person_for_name(db, owner_name)
+
+
+def _require_successful_refresh(recurrence: dict) -> dict:
+    if not recurrence.get("dataset_id"):
+        raise RecurrenceRefreshError(
+            "The alert has no semantic model ID, so Metronome cannot verify that the "
+            "latest Power BI refresh succeeded."
+        )
+    try:
+        refresh = pbi_fetch.fetch_dataset_last_refresh(
+            recurrence["workspace_id"],
+            recurrence["dataset_id"],
+        )
+    except Exception as exc:
+        raise RecurrenceRefreshError(
+            "Metronome could not verify the semantic model's latest refresh through "
+            f"Power BI Service: {str(exc).strip() or exc.__class__.__name__}",
+            {"status": "unavailable", "error": str(exc).strip() or exc.__class__.__name__},
+        ) from exc
+    status = str(refresh.get("status") or "").strip()
+    if status.casefold() != "completed":
+        completed_at = refresh.get("end_time") or refresh.get("start_time") or "unknown time"
+        reason = refresh.get("error")
+        message = (
+            "The alert was blocked because the semantic model's latest refresh did not "
+            f"succeed. Latest status: {status or 'no refresh history'} at {completed_at}."
+        )
+        if reason:
+            message += f" Power BI reason: {reason}"
+        raise RecurrenceRefreshError(message, refresh)
+    return refresh
+
+
 def _dedupe_headers(raw_headers: list[str]) -> list[str]:
     headers: list[str] = []
     counts: dict[str, int] = {}
@@ -472,6 +593,91 @@ def build_html_email(recurrence: dict, group: dict, columns: list[str], rows: li
     """
 
 
+def _failure_notification_message(
+    recurrence: dict,
+    owner: dict,
+    error: str,
+    refresh: dict | None = None,
+) -> dict:
+    report_link = ""
+    if recurrence.get("report_url"):
+        report_link = (
+            f'<p style="margin:12px 0"><a href="{html.escape(recurrence["report_url"], quote=True)}" '
+            'style="color:#0d7377">Open the Power BI report</a></p>'
+        )
+    refresh_html = ""
+    if refresh:
+        refresh_html = (
+            "<tr>"
+            '<td style="padding:6px 10px;border:1px solid #d6d3cb;font-weight:600">Latest refresh</td>'
+            f'<td style="padding:6px 10px;border:1px solid #d6d3cb">'
+            f'{html.escape(str(refresh.get("status") or "Unknown"))}'
+            f' - {html.escape(str(refresh.get("end_time") or refresh.get("start_time") or "No timestamp"))}'
+            "</td></tr>"
+        )
+    visual_label = recurrence.get("visual_title") or recurrence["visual_name"]
+    page_label = recurrence.get("page_display_name") or recurrence["page_name"]
+    body = f"""
+    <div style="font-family:Segoe UI,Arial,sans-serif;color:#1a1814;line-height:1.45">
+      <h2 style="margin:0 0 8px;font-size:20px">Power BI alert failed</h2>
+      <p style="margin:0 0 14px">No alert data was sent. Metronome detected a failure that needs attention.</p>
+      <table cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+        <tr><td style="padding:6px 10px;border:1px solid #d6d3cb;font-weight:600">Alert</td>
+            <td style="padding:6px 10px;border:1px solid #d6d3cb">{html.escape(recurrence["name"])}</td></tr>
+        <tr><td style="padding:6px 10px;border:1px solid #d6d3cb;font-weight:600">Report</td>
+            <td style="padding:6px 10px;border:1px solid #d6d3cb">{html.escape(recurrence["report_name"])}</td></tr>
+        <tr><td style="padding:6px 10px;border:1px solid #d6d3cb;font-weight:600">Page / visual</td>
+            <td style="padding:6px 10px;border:1px solid #d6d3cb">{html.escape(page_label)} / {html.escape(visual_label)}</td></tr>
+        {refresh_html}
+        <tr><td style="padding:6px 10px;border:1px solid #d6d3cb;font-weight:600">Failure reason</td>
+            <td style="padding:6px 10px;border:1px solid #d6d3cb">{html.escape(error)}</td></tr>
+      </table>
+      {report_link}
+      <p style="margin:12px 0 0;color:#433f38">
+        Fix the refresh, visual, permissions, or alert configuration, then use Create drafts
+        before running the alert again.
+      </p>
+      <p style="margin:16px 0 0;color:#928d87;font-size:11px">
+        Alert owner: {html.escape(owner["name"])}. Detected by Metronome at
+        {html.escape(_now().isoformat(timespec="minutes"))} local time.
+      </p>
+    </div>
+    """
+    return {
+        "to": ";".join(_parse_recipients(owner.get("email") or "")),
+        "subject": f"Metronome alert failed: {recurrence['name']}"[:500],
+        "html_body": body,
+    }
+
+
+def _notify_owner_of_failure(
+    recurrence: dict,
+    owner: dict | None,
+    error: str,
+    refresh: dict | None = None,
+) -> dict:
+    if not owner:
+        return {
+            "status": "not_sent",
+            "reason": "The alert owner could not be resolved from the People registry.",
+        }
+    try:
+        message = _failure_notification_message(recurrence, owner, error, refresh)
+        _launch_outlook_payload([message], "send")
+        return {
+            "status": "launched",
+            "owner_name": owner["name"],
+            "owner_email": message["to"],
+        }
+    except Exception as exc:
+        logger.exception("Could not notify recurrence owner %s about a failure", owner.get("name"))
+        return {
+            "status": "failed",
+            "owner_name": owner.get("name"),
+            "reason": str(exc).strip() or exc.__class__.__name__,
+        }
+
+
 def _row_to_recurrence(db, row) -> dict:
     item = dict(row)
     item["enabled"] = bool(item["enabled"])
@@ -533,6 +739,7 @@ def _write_values(body: RecurrenceWrite, next_run_at: str | None) -> tuple:
         body.visual_name,
         body.visual_title,
         body.visual_type,
+        body.owner_name,
         body.delivery_mode,
         body.recipients,
         body.group_column,
@@ -613,11 +820,29 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         _RUNNING_IDS.add(recurrence_id)
 
     run_id: int | None = None
+    recurrence: dict | None = None
+    owner: dict | None = None
+    refresh: dict | None = None
+    failure_notification_eligible = True
     try:
         run_id = _record_run_start(recurrence_id, trigger_type, mode)
         with get_db() as db:
             recurrence = _load_recurrence(db, recurrence_id)
 
+        owner = _resolve_recurrence_owner(recurrence)
+        if not owner:
+            raise RuntimeError(
+                "The alert owner is missing from Management > Create > People. "
+                "Assign a valid owner before this alert can run."
+            )
+        try:
+            _parse_recipients(owner.get("email") or "")
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Alert owner '{owner['name']}' needs a valid email in "
+                "Management > Create > People."
+            ) from exc
+        refresh = _require_successful_refresh(recurrence)
         exported = export_visual_data(
             recurrence["report_id"],
             recurrence["embed_url"],
@@ -685,10 +910,13 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             status = "sent" if mode == "send" else "drafted"
         else:
             status = "no_rows"
+        failure_notification_eligible = False
         detail = {
             "columns": columns,
             "groups": group_results,
             "visual": exported.get("visual"),
+            "owner": {"name": owner["name"], "email": owner["email"]},
+            "refresh": refresh,
             "export_limit_reached": len(rows) >= PBI_VISUAL_EXPORT_MAX_ROWS,
         }
         _finish_run(
@@ -711,12 +939,34 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         }
     except Exception as exc:
         error = str(exc).strip() or exc.__class__.__name__
+        if isinstance(exc, RecurrenceRefreshError):
+            refresh = exc.refresh
+        failure_notification = (
+            _notify_owner_of_failure(recurrence, owner, error, refresh)
+            if mode == "send" and recurrence and failure_notification_eligible
+            else {
+                "status": "not_applicable",
+                "reason": (
+                    "Failure notifications are sent only when an actual send run fails "
+                    "before its delivery outcome is established."
+                ),
+            }
+        )
         if run_id is not None:
             _finish_run(
                 recurrence_id,
                 run_id,
                 trigger_type=trigger_type,
                 status="failed",
+                detail={
+                    "owner": (
+                        {"name": owner.get("name"), "email": owner.get("email")}
+                        if owner
+                        else None
+                    ),
+                    "refresh": refresh,
+                    "failure_notification": failure_notification,
+                },
                 error=error,
             )
         raise
@@ -764,15 +1014,33 @@ def recurrence_reports():
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     with get_db() as db:
         local_rows = db.execute(
-            "SELECT id, name, pbi_dataset_id FROM reports WHERE archived = 0"
+            """SELECT r.id, r.name, r.pbi_dataset_id,
+                      COALESCE(p.name, r.owner) AS owner,
+                      r.pbi_last_refresh_at, r.pbi_refresh_status,
+                      p.email AS owner_email
+               FROM reports r
+               LEFT JOIN people p
+                 ON lower(trim(p.name)) = lower(trim(r.owner))
+               WHERE r.archived = 0"""
         ).fetchall()
-    by_dataset = {row["pbi_dataset_id"]: row["id"] for row in local_rows if row["pbi_dataset_id"]}
-    by_name = {row["name"].strip().casefold(): row["id"] for row in local_rows}
+        people = db.execute(
+            "SELECT id, name, role, email FROM people ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+    by_dataset = {
+        row["pbi_dataset_id"]: dict(row) for row in local_rows if row["pbi_dataset_id"]
+    }
+    by_name = {row["name"].strip().casefold(): dict(row) for row in local_rows}
     for report in payload["reports"]:
-        report["local_report_id"] = by_dataset.get(report.get("dataset_id")) or by_name.get(
-            report["name"].strip().casefold()
+        local = by_dataset.get(report.get("dataset_id")) or by_name.get(
+            report["name"].strip().casefold(),
         )
+        report["local_report_id"] = local.get("id") if local else None
+        report["owner_name"] = local.get("owner") if local else None
+        report["owner_email"] = local.get("owner_email") if local else None
+        report["last_refresh_at"] = local.get("pbi_last_refresh_at") if local else None
+        report["refresh_status"] = local.get("pbi_refresh_status") if local else None
     payload["reports"].sort(key=lambda report: report["name"].casefold())
+    payload["people"] = [dict(person) for person in people]
     return payload
 
 
@@ -835,6 +1103,10 @@ def list_recurrences():
 
 @router.post("")
 def create_recurrence(body: RecurrenceWrite, request: Request):
+    try:
+        _ensure_write_owner(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     next_run = _iso(
         calculate_next_run(body.recurrence, body.send_time, body.weekdays, body.month_day)
     ) if body.enabled else None
@@ -843,10 +1115,10 @@ def create_recurrence(body: RecurrenceWrite, request: Request):
             """INSERT INTO pbi_recurrences
                (name, enabled, workspace_id, workspace_name, report_id, report_name,
                 report_url, embed_url, dataset_id, page_name, page_display_name,
-                visual_name, visual_title, visual_type, delivery_mode, recipients,
+                visual_name, visual_title, visual_type, owner_name, delivery_mode, recipients,
                 group_column, subject_template, recurrence, weekdays, month_day,
                 send_time, next_run_at, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (*_write_values(body, next_run), get_actor(request)),
         )
         recurrence_id = cursor.lastrowid
@@ -866,6 +1138,10 @@ def get_recurrence(recurrence_id: int):
 
 @router.put("/{recurrence_id}")
 def update_recurrence(recurrence_id: int, body: RecurrenceWrite, request: Request):
+    try:
+        _ensure_write_owner(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     next_run = _iso(
         calculate_next_run(body.recurrence, body.send_time, body.weekdays, body.month_day)
     ) if body.enabled else None
@@ -877,7 +1153,7 @@ def update_recurrence(recurrence_id: int, body: RecurrenceWrite, request: Reques
                    name = ?, enabled = ?, workspace_id = ?, workspace_name = ?,
                    report_id = ?, report_name = ?, report_url = ?, embed_url = ?, dataset_id = ?,
                    page_name = ?, page_display_name = ?, visual_name = ?, visual_title = ?,
-                   visual_type = ?, delivery_mode = ?, recipients = ?, group_column = ?,
+                   visual_type = ?, owner_name = ?, delivery_mode = ?, recipients = ?, group_column = ?,
                    subject_template = ?, recurrence = ?, weekdays = ?, month_day = ?,
                    send_time = ?, next_run_at = ?,
                    updated_at = CURRENT_TIMESTAMP

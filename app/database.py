@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS pbi_recurrences (
     visual_name         TEXT NOT NULL,
     visual_title        TEXT,
     visual_type         TEXT,
+    owner_name          TEXT,
     delivery_mode       TEXT DEFAULT 'subgroups',
     recipients          TEXT,
     group_column        TEXT NOT NULL,
@@ -692,6 +693,17 @@ MIGRATIONS = [
     # Power BI recurrence delivery without subgroup splitting
     "ALTER TABLE pbi_recurrences ADD COLUMN delivery_mode TEXT DEFAULT 'subgroups'",
     "ALTER TABLE pbi_recurrences ADD COLUMN recipients TEXT",
+    # Recurrence ownership and failure notification routing
+    "ALTER TABLE pbi_recurrences ADD COLUMN owner_name TEXT",
+    """UPDATE pbi_recurrences
+       SET owner_name = (
+           SELECT r.owner
+           FROM reports r
+           WHERE lower(trim(r.name)) = lower(trim(pbi_recurrences.report_name))
+           ORDER BY r.id
+           LIMIT 1
+       )
+       WHERE owner_name IS NULL OR trim(owner_name) = ''""",
 ]
 
 
