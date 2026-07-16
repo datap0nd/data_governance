@@ -10,9 +10,9 @@ owner by email when an actual send run fails before delivery is launched.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Base commit: `74bed17 Add Power BI visual query fallback`
+- Feature commit: `0e13728 Guard recurrence sends by refresh status`
 - Public repo: no, private
-- Push status: implementation is ready for its direct `origin/main` commit and push
+- Push status: feature implementation is pushed to `origin/main`
 
 ## Decisions Made
 
