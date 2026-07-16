@@ -5384,6 +5384,8 @@ function _recBindBuilder() {
                     embed_url: state.config.embed_url,
                     page_name: state.config.page_name,
                     visual_name: state.config.visual_name,
+                    workspace_id: state.config.workspace_id,
+                    dataset_id: state.config.dataset_id,
                 }),
             });
             if (!state.preview.columns.includes(state.config.group_column)) {

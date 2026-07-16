@@ -1,8 +1,9 @@
 """Live Power BI visual discovery and summarized-data export.
 
-Power BI exposes visual data through its browser JavaScript client rather than
-through the REST API. This module hosts that supported client in headless Edge
-and keeps the saved Power BI bearer token inside the server process.
+The official JavaScript client identifies the exact saved visual and first
+attempts Power BI's summarized export. If that API rejects a table that uses
+model or report measures, the authoring extension reads the visual's current
+field bindings and filters for an official Execute Queries REST fallback.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app.config import PBI_VISUAL_EXPORT_MAX_ROWS, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS
+from app.pbi_visual_query import PbiVisualQueryError, execute_visual_query
 from app.scanner.pbi_auth import get_access_token
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,10 @@ logger = logging.getLogger(__name__)
 POWER_BI_CLIENT_URLS = (
     "https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js",
     "https://unpkg.com/powerbi-client@2.23.1/dist/powerbi.min.js",
+)
+POWER_BI_AUTHORING_URLS = (
+    "https://cdn.jsdelivr.net/npm/powerbi-report-authoring@3.0.0/dist/powerbi-report-authoring.min.js",
+    "https://unpkg.com/powerbi-report-authoring@3.0.0/dist/powerbi-report-authoring.min.js",
 )
 TABLE_VISUAL_TYPES = {"table", "tableex", "pivottable", "matrix"}
 _BROWSER_START_ATTEMPTS = 2
@@ -50,19 +56,122 @@ _RUNTIME_HTML = f"""<!doctype html>
         const models = window["powerbi-client"].models;
         let finished = false;
         let loadOperationStarted = false;
+        let lastReportError = null;
+        let activePage = null;
+        let activeVisual = null;
+        let pageVisuals = [];
+        let fallbackStarted = false;
+        let queryFallbackArmed = false;
         const stop = (fn, value) => {{
           if (finished) return;
           finished = true;
           clearTimeout(timer);
           fn(value);
         }};
-        const describeError = (error) => {{
+        const errorDetails = (error) => {{
           const detail = error && error.detail ? error.detail : error;
-          return (detail && (detail.detailedMessage || detail.message)) ||
-                 (error && error.message) || "Power BI returned an unknown error.";
+          const technicalDetails = detail && detail.technicalDetails ? detail.technicalDetails : {{}};
+          return {{
+            message: (detail && (detail.detailedMessage || detail.message)) ||
+                     (error && error.message) || "Power BI returned an unknown error.",
+            detailedMessage: detail && detail.detailedMessage ? detail.detailedMessage : null,
+            errorCode: detail && detail.errorCode ? detail.errorCode : null,
+            level: detail && detail.level ? detail.level : null,
+            requestId: technicalDetails.requestId || null
+          }};
+        }};
+        const describeError = error => errorDetails(error).message;
+        const isVisualQueryError = (...errors) => errors.some(error => {{
+          const details = error && error.message ? error : errorDetails(error);
+          const text = [details.message, details.detailedMessage, details.errorCode]
+            .filter(Boolean).join(" ").toLowerCase();
+          return text.includes("error running visual data query") ||
+                 text.includes("visual data query");
+        }});
+        const safeCall = async (operation, fallback = null) => {{
+          try {{ return await operation(); }} catch (_) {{ return fallback; }}
+        }};
+        const collectQuerySpec = async (report, page, selectedVisual, visuals) => {{
+          const capabilities = await selectedVisual.getCapabilities();
+          const roles = capabilities && Array.isArray(capabilities.dataRoles)
+            ? capabilities.dataRoles
+            : [];
+          const fields = [];
+          for (const role of roles) {{
+            const targets = await selectedVisual.getDataFields(role.name);
+            for (let index = 0; index < targets.length; index += 1) {{
+              const target = targets[index];
+              fields.push({{
+                roleName: role.name,
+                roleDisplayName: role.displayName || role.name,
+                roleKind: role.kind,
+                index,
+                target,
+                displayName: await safeCall(
+                  () => selectedVisual.getDataFieldDisplayName(role.name, index),
+                  null
+                ),
+                formatString: await safeCall(
+                  () => selectedVisual.getFieldFormatString(role.name, index),
+                  null
+                ),
+                fieldName: await safeCall(
+                  () => selectedVisual.getDataFieldName(role.name, index),
+                  null
+                )
+              }});
+            }}
+          }}
+
+          const filters = [];
+          const addFilters = (source, values) => {{
+            for (const filter of values || []) filters.push({{source, filter}});
+          }};
+          addFilters("report", await report.getFilters());
+          addFilters("page", await page.getFilters());
+          addFilters("visual", await selectedVisual.getFilters());
+          for (const visual of visuals) {{
+            if (visual.name === selectedVisual.name || visual.type.toLowerCase() !== "slicer") continue;
+            const state = await visual.getSlicerState();
+            addFilters(`slicer:${{visual.name}}`, state && state.filters);
+          }}
+          return {{fields, filters}};
+        }};
+        const resolveQueryFallback = async exportError => {{
+          if (fallbackStarted || finished || !activePage || !activeVisual) return false;
+          fallbackStarted = true;
+          try {{
+            const querySpec = await collectQuerySpec(
+              report,
+              activePage,
+              activeVisual,
+              pageVisuals
+            );
+            stop(resolve, {{
+              exportError,
+              querySpec,
+              visual: {{
+                name: activeVisual.name,
+                type: activeVisual.type,
+                title: activeVisual.title || ""
+              }}
+            }});
+          }} catch (querySpecError) {{
+            stop(
+              reject,
+              `${{exportError.message}} The visual query definition could not be read: ` +
+              describeError(querySpecError)
+            );
+          }}
+          return true;
         }};
         const timer = setTimeout(
-          () => stop(reject, "Power BI did not finish the visual export within the configured timeout."),
+          () => stop(
+            reject,
+            lastReportError
+              ? `Power BI did not finish the visual export. ${{lastReportError.message}}`
+              : "Power BI did not finish the visual export within the configured timeout."
+          ),
           config.timeoutMs
         );
 
@@ -83,7 +192,16 @@ _RUNTIME_HTML = f"""<!doctype html>
           }}
         }});
 
-        report.on("error", event => stop(reject, describeError(event)));
+        report.on("error", async event => {{
+          lastReportError = errorDetails(event);
+          if (
+            config.action === "export" &&
+            queryFallbackArmed &&
+            isVisualQueryError(lastReportError)
+          ) {{
+            await resolveQueryFallback(lastReportError);
+          }}
+        }});
         report.on("loaded", async () => {{
           if (loadOperationStarted || finished) return;
           loadOperationStarted = true;
@@ -93,10 +211,12 @@ _RUNTIME_HTML = f"""<!doctype html>
             if (!selectedPage) {{
               throw new Error("The saved report page no longer exists.");
             }}
+            activePage = selectedPage;
             if (!selectedPage.isActive) {{
               await selectedPage.setActive();
             }}
             const visuals = await selectedPage.getVisuals();
+            pageVisuals = visuals;
             if (config.action === "list") {{
               stop(resolve, visuals.map(visual => ({{
                 name: visual.name,
@@ -112,6 +232,7 @@ _RUNTIME_HTML = f"""<!doctype html>
             if (!selectedVisual) {{
               throw new Error("The saved table visual no longer exists on this page.");
             }}
+            activeVisual = selectedVisual;
             await Promise.all(
               visuals.map(visual => selectedPage.setVisualDisplayState(
                 visual.name,
@@ -122,7 +243,7 @@ _RUNTIME_HTML = f"""<!doctype html>
             );
             let exportStarted = false;
             report.on("rendered", async () => {{
-              if (exportStarted || finished) return;
+              if (exportStarted || finished || fallbackStarted) return;
               exportStarted = true;
               try {{
                 const result = await selectedVisual.exportData(
@@ -138,12 +259,27 @@ _RUNTIME_HTML = f"""<!doctype html>
                   }}
                 }});
               }} catch (error) {{
-                stop(reject, describeError(error));
+                const exportError = errorDetails(error);
+                if (isVisualQueryError(exportError, lastReportError)) {{
+                  await resolveQueryFallback(exportError);
+                  return;
+                }}
+                stop(reject, exportError.message);
               }}
             }});
+            lastReportError = null;
+            queryFallbackArmed = true;
             await report.render();
           }} catch (error) {{
-            stop(reject, describeError(error));
+            const operationError = errorDetails(error);
+            if (
+              config.action === "export" &&
+              isVisualQueryError(operationError, lastReportError) &&
+              await resolveQueryFallback(operationError)
+            ) {{
+              return;
+            }}
+            stop(reject, operationError.message);
           }}
         }});
       }});
@@ -174,6 +310,29 @@ def _load_power_bi_client(page) -> str:
             attempts.append(f"{source_host}: {message}")
     raise PbiVisualExportError(
         "The Power BI JavaScript client could not load. Allow cdn.jsdelivr.net or unpkg.com "
+        "through the Windows system proxy. " + " | ".join(attempts)
+    )
+
+
+def _load_power_bi_authoring(page) -> str:
+    """Load Microsoft's report-authoring extension after the core client."""
+    attempts: list[str] = []
+    for source_url in POWER_BI_AUTHORING_URLS:
+        source_host = urlsplit(source_url).hostname or source_url
+        try:
+            page.add_script_tag(url=source_url)
+            ready = page.evaluate(
+                "() => !!window['powerbi-client'] && "
+                "typeof window['powerbi-client'].VisualDescriptor.prototype.getDataFields === 'function'"
+            )
+            if ready:
+                return source_url
+            attempts.append(f"{source_host}: script loaded without the authoring APIs")
+        except Exception as exc:
+            message = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+            attempts.append(f"{source_host}: {message}")
+    raise PbiVisualExportError(
+        "The Power BI report-authoring client could not load. Allow cdn.jsdelivr.net or unpkg.com "
         "through the Windows system proxy. " + " | ".join(attempts)
     )
 
@@ -266,6 +425,7 @@ def _run_browser_attempt(playwright, config: dict):
         page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
         page.set_content(_RUNTIME_HTML, wait_until="domcontentloaded")
         _load_power_bi_client(page)
+        _load_power_bi_authoring(page)
         page.set_default_timeout(PBI_VISUAL_EXPORT_TIMEOUT_SECONDS * 1000)
         return page.evaluate("config => window.metronomeRun(config)", config)
     finally:
@@ -381,6 +541,9 @@ def export_visual_data(
     page_name: str,
     visual_name: str,
     max_rows: int | None = None,
+    *,
+    workspace_id: str | None = None,
+    dataset_id: str | None = None,
 ) -> dict:
     """Export summarized CSV data for the exact saved visual identifier."""
     result = _run_visual_action(
@@ -391,6 +554,28 @@ def export_visual_data(
         visual_name=visual_name,
         max_rows=max_rows,
     )
+    if isinstance(result, dict) and result.get("exportError") and result.get("querySpec"):
+        if not workspace_id or not dataset_id:
+            raise PbiVisualExportError(
+                "Power BI's visual export API cannot query this table. Re-select the report so "
+                "Metronome can use its workspace and semantic model for the REST fallback."
+            )
+        try:
+            fallback = execute_visual_query(
+                workspace_id=workspace_id,
+                dataset_id=dataset_id,
+                query_spec=result["querySpec"],
+                max_rows=min(30000, max_rows or PBI_VISUAL_EXPORT_MAX_ROWS),
+            )
+        except PbiVisualQueryError as exc:
+            raise PbiVisualExportError(
+                f"Power BI visual export failed, and the semantic-model fallback failed: {exc}"
+            ) from exc
+        return {
+            **fallback,
+            "visual": result.get("visual") or {},
+            "export_method": "execute_queries",
+        }
     if not isinstance(result, dict) or not isinstance(result.get("data"), str):
         raise PbiVisualExportError("Power BI returned an empty visual export response.")
-    return result
+    return {**result, "export_method": "visual_export"}

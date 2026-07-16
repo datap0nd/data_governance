@@ -205,6 +205,8 @@ class VisualSelection(BaseModel):
     report_id: str
     embed_url: str
     page_name: str
+    workspace_id: str | None = None
+    dataset_id: str | None = None
 
     @model_validator(mode="after")
     def validate_selection(self):
@@ -212,6 +214,16 @@ class VisualSelection(BaseModel):
             UUID(self.report_id)
         except (ValueError, TypeError, AttributeError) as exc:
             raise ValueError("Report ID is not valid.") from exc
+        for identifier, label in (
+            (self.workspace_id, "Workspace ID"),
+            (self.dataset_id, "Dataset ID"),
+        ):
+            if not identifier:
+                continue
+            try:
+                UUID(identifier)
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError(f"{label} is not valid.") from exc
         embed_parts = urlsplit(self.embed_url)
         if (
             embed_parts.scheme.casefold() != "https"
@@ -612,6 +624,8 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             recurrence["page_name"],
             recurrence["visual_name"],
             PBI_VISUAL_EXPORT_MAX_ROWS,
+            workspace_id=recurrence["workspace_id"],
+            dataset_id=recurrence.get("dataset_id"),
         )
         columns, rows = parse_visual_csv(exported["data"])
         delivery_mode = recurrence.get("delivery_mode") or "subgroups"
@@ -788,6 +802,8 @@ def preview_report_visual(body: VisualPreview):
             body.page_name,
             body.visual_name,
             PBI_VISUAL_EXPORT_MAX_ROWS,
+            workspace_id=body.workspace_id,
+            dataset_id=body.dataset_id,
         )
         columns, rows = parse_visual_csv(exported["data"])
     except PbiVisualExportError as exc:
@@ -800,6 +816,7 @@ def preview_report_visual(body: VisualPreview):
         "columns": columns,
         "rows": rows[:200],
         "row_count": len(rows),
+        "export_method": exported.get("export_method"),
         "values": values,
         "values_limited": {column: len({str(row.get(column, "")) for row in rows}) > 500 for column in columns},
         "export_limit_reached": len(rows) >= PBI_VISUAL_EXPORT_MAX_ROWS,
