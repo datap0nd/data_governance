@@ -11,7 +11,7 @@ language that business recipients do not need.
 - Branch: `main`
 - Feature commit: `d20c6b3 Simplify recurrence emails for recipients`
 - Public repo: no, private
-- Push status: feature and handoff are ready for direct `origin/main` push
+- Push status: feature and handoff are pushed to `origin/main`
 
 ## Decisions Made
 
@@ -53,5 +53,5 @@ language that business recipients do not need.
 
 ## Next Step
 
-Push the change, then use Create drafts on the work PC to confirm the wording
-with a real report owner and recurrence cadence.
+Use Create drafts on the work PC to confirm the wording with a real report owner
+and recurrence cadence.
