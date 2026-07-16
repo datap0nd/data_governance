@@ -549,6 +549,15 @@ def _format_subject(template: str, recurrence: dict, group: dict, row_count: int
     return subject[:500]
 
 
+def _alert_cadence(recurrence: dict) -> str:
+    return {
+        "daily": "Daily",
+        "weekdays": "Weekday",
+        "weekly": "Weekly",
+        "monthly": "Monthly",
+    }.get(str(recurrence.get("recurrence") or "").casefold(), "Scheduled")
+
+
 def build_html_email(
     recurrence: dict,
     group: dict,
@@ -580,19 +589,15 @@ def build_html_email(
             f'<a href="{html.escape(recurrence["report_url"], quote=True)}" '
             'style="display:inline-block;padding:10px 16px;color:#0d7377;'
             'font-size:13px;font-weight:700;text-decoration:none">'
-            "Open the Power BI report</a></td></tr></table>"
+            "Open report</a></td></tr></table>"
         )
     recurrence_name = html.escape(recurrence["name"])
     group_name = html.escape(group["display_name"])
     report_name = html.escape(recurrence["report_name"])
-    page_name = html.escape(
-        recurrence.get("page_display_name") or recurrence["page_name"]
+    owner_name = html.escape(
+        str(recurrence.get("owner_name") or "the report owner")
     )
-    visual_name = html.escape(
-        recurrence.get("visual_title") or recurrence["visual_name"]
-    )
-    generated_at = html.escape(_now().isoformat(timespec="minutes"))
-    row_label = "matching row" if len(rows) == 1 else "matching rows"
+    cadence = _alert_cadence(recurrence)
     return f"""
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
            style="width:100%;border-collapse:collapse;background:#eef2f1;
@@ -607,10 +612,10 @@ def build_html_email(
                          border-radius:12px 12px 0 0">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                   <tr>
-                    <td style="padding-right:20px;vertical-align:middle">
+                    <td style="vertical-align:middle">
                       <div style="margin:0 0 6px;color:#d8f0ef;font-size:11px;
                                   font-weight:700;letter-spacing:1.2px">
-                        METRONOME ALERT
+                        {cadence.upper()} ALERT
                       </div>
                       <div style="margin:0;color:#ffffff;font-size:25px;
                                   font-weight:700;line-height:1.2">
@@ -620,12 +625,6 @@ def build_html_email(
                                   line-height:1.35">
                         {group_name}
                       </div>
-                    </td>
-                    <td align="right" style="vertical-align:middle">
-                      <div style="color:#ffffff;font-size:32px;font-weight:700;
-                                  line-height:1">{len(rows)}</div>
-                      <div style="margin-top:5px;color:#d8f0ef;font-size:11px;
-                                  font-weight:600;white-space:nowrap">{row_label}</div>
                     </td>
                   </tr>
                 </table>
@@ -638,22 +637,10 @@ def build_html_email(
                        style="width:100%;border-collapse:collapse;background:#e8f3f2;
                               border:1px solid #c4ddda">
                   <tr>
-                    <td width="34%" style="padding:13px 14px;vertical-align:top">
+                    <td style="padding:13px 14px;vertical-align:top">
                       <div style="color:#526561;font-size:10px;font-weight:700">REPORT</div>
                       <div style="margin-top:4px;color:#183c3d;font-size:13px;
                                   font-weight:600;line-height:1.3">{report_name}</div>
-                    </td>
-                    <td width="33%" style="padding:13px 14px;vertical-align:top;
-                                           border-left:1px solid #c4ddda">
-                      <div style="color:#526561;font-size:10px;font-weight:700">PAGE</div>
-                      <div style="margin-top:4px;color:#183c3d;font-size:13px;
-                                  font-weight:600;line-height:1.3">{page_name}</div>
-                    </td>
-                    <td width="33%" style="padding:13px 14px;vertical-align:top;
-                                           border-left:1px solid #c4ddda">
-                      <div style="color:#526561;font-size:10px;font-weight:700">VISUAL</div>
-                      <div style="margin-top:4px;color:#183c3d;font-size:13px;
-                                  font-weight:600;line-height:1.3">{visual_name}</div>
                     </td>
                   </tr>
                 </table>
@@ -678,9 +665,14 @@ def build_html_email(
             <tr>
               <td style="padding:15px 30px;background:#f5f7f6;color:#66716f;
                          border-top:1px solid #dbe3e1;border-radius:0 0 12px 12px;
-                         font-size:11px;line-height:1.4">
-                Generated by Metronome at {generated_at} local time.
-                This email contains the current rows returned by the saved Power BI visual.
+                         font-size:12px;line-height:1.5">
+                <div style="color:#344744;font-weight:600">
+                  {cadence} alert created by the METO MX Analytics team.
+                </div>
+                <div style="margin-top:3px">
+                  For questions or issues with this report, contact {owner_name},
+                  the report owner.
+                </div>
               </td>
             </tr>
           </table>

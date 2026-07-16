@@ -179,6 +179,20 @@ def test_next_run_weekly_and_monthly_clamping():
     assert february == datetime(2026, 2, 28, 8, 0)
 
 
+@pytest.mark.parametrize(
+    ("frequency", "label"),
+    [
+        ("daily", "Daily"),
+        ("weekdays", "Weekday"),
+        ("weekly", "Weekly"),
+        ("monthly", "Monthly"),
+        ("unexpected", "Scheduled"),
+    ],
+)
+def test_alert_cadence_uses_business_facing_schedule_labels(frequency, label):
+    assert recurrences._alert_cadence({"recurrence": frequency}) == label
+
+
 def test_configuration_rejects_non_powerbi_embed_url_and_non_table_visual():
     with pytest.raises(ValueError, match="app.powerbi.com"):
         _valid_write(embed_url="https://example.com/reportEmbed")
@@ -431,10 +445,21 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert mode == "send"
     assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
     assert all("New Column" in message["html_body"] for message in messages)
-    assert all("METRONOME ALERT" in message["html_body"] for message in messages)
+    assert all("WEEKLY ALERT" in message["html_body"] for message in messages)
     assert all("Alert results" in message["html_body"] for message in messages)
     assert all("background:#0d7377" in message["html_body"] for message in messages)
-    assert all("Open the Power BI report" in message["html_body"] for message in messages)
+    assert all("Open report" in message["html_body"] for message in messages)
+    assert all(
+        "Weekly alert created by the METO MX Analytics team." in message["html_body"]
+        for message in messages
+    )
+    assert all(
+        "contact Report Owner" in message["html_body"] for message in messages
+    )
+    assert all("matching rows" not in message["html_body"] for message in messages)
+    assert all(">PAGE<" not in message["html_body"] for message in messages)
+    assert all(">VISUAL<" not in message["html_body"] for message in messages)
+    assert all("Metronome" not in message["html_body"] for message in messages)
     assert "below threshold" not in "".join(message["html_body"] for message in messages)
 
 
