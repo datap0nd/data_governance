@@ -2,74 +2,55 @@
 
 ## Current Objective
 
-Make Power BI recurrence delivery fail closed unless the semantic model's latest
-refresh succeeded, default each alert owner from its report, and notify that
-owner by email when an actual send run fails before delivery is launched.
+Ship a stronger, Outlook-safe visual design for Power BI recurrence alert emails
+and owner failure notifications.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `0e13728 Guard recurrence sends by refresh status`
+- Base commit: `73b20b9 Update recurrence handoff`
 - Public repo: no, private
-- Push status: feature implementation is pushed to `origin/main`
+- Push status: output-email polish is ready for direct `origin/main` commit and push
 
 ## Decisions Made
 
-- Refresh verification is a mandatory delivery gate, not an optional row rule.
-- Every draft and send run queries the live Power BI refresh-history endpoint
-  through the existing cached delegated account. Only status `Completed` passes.
-- Failed, cancelled, running, missing, or unavailable refresh status blocks
-  visual export and sends no alert data.
-- A recurrence stores the alert owner's name. New alerts default from the local
-  report owner, while the current owner email is resolved dynamically from the
-  central People registry.
-- Saving requires a People entry with a valid email. Existing recurrences without
-  an owner derive and persist the current report owner on their next run.
-- Failed send runs notify the owner with the failure reason, refresh result when
-  available, report/page/visual context, and the Power BI report link.
-- Draft-test failures do not send owner notifications.
-- Failure notifications use the existing Outlook task delivery. If Outlook
-  itself is unavailable, the attempt is recorded in run detail but email cannot
-  be delivered through that same unavailable channel.
+- Keep recurrence emails table-based with inline CSS for Outlook compatibility.
+- Use the existing Metronome palette more decisively instead of adding gradients,
+  images, new fonts, or decorative effects.
+- Standard alerts use a teal masthead, prominent matching-row count, report
+  context band, Power BI button, and zebra-striped results table.
+- Failure alerts use a red blocked-delivery masthead, structured run context,
+  a prominent failure-reason panel, and the same direct Power BI action.
+- Preserve all escaping, dynamic columns, subgroup filtering, report links, and
+  refresh-failure content from the existing delivery behavior.
 
 ## Files Changed
 
-- `app/database.py`: add recurrence ownership and backfill existing alerts by
-  report name.
-- `app/scanner/pbi_fetch.py`: fetch the latest live semantic-model refresh and
-  extract useful Power BI failure details.
-- `app/routers/recurrences.py`: enforce the refresh gate, resolve owners and
-  emails, send owner failure notices, persist run details, and enrich report
-  picker data.
-- `app/static/app.js`: show alert owners and the refresh gate, default owners
-  from reports, and require a mapped owner email before saving.
-- `tests/test_recurrences.py`: cover owner defaults, picker data, refresh
-  blocking, owner notifications, and draft behavior.
-- `tests/test_pbi_fetch.py`: cover cached authentication, endpoint construction,
-  and refresh-error extraction.
-- `README.md`: document the refresh gate, ownership, and notification behavior.
+- `app/routers/recurrences.py`: redesign standard and failure recurrence email HTML.
+- `tests/test_recurrences.py`: assert the new alert hierarchy and status treatments.
+- `docs/agent_handoff.md`: record the email-design decisions and verification.
 
 ## Commands And Checks
 
 - `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 38 passed.
-- `node --check app/static/app.js`: passed.
-- `python3 -m py_compile app/database.py app/routers/recurrences.py app/scanner/pbi_fetch.py tests/test_recurrences.py tests/test_pbi_fetch.py`: passed with the host Python 3.9 parser.
+- `uv run --python /opt/homebrew/bin/python3.11 python -m py_compile app/routers/recurrences.py tests/test_recurrences.py`: passed.
 - `git diff --check`: passed.
-- Python 3.14 validation was not run because Python 3.14 is not installed on this Mac.
-- Live Windows Power BI and Outlook validation was not run because this Mac does
-  not have the work PC token cache, workspace access, Edge runtime, or Outlook profile.
+- Both email variants were rendered through macOS Quick Look and visually
+  inspected for hierarchy, spacing, contrast, table density, and wrapping.
+- HTML Tidy reported only expected email-fragment and legacy-validator warnings,
+  with no malformed markup errors.
+- Playwright screenshot rendering was unavailable because its local Chromium
+  runtime is not installed. Quick Look provided the visual verification instead.
+- Live Outlook rendering was not run because this Mac does not have the work PC
+  Outlook profile.
 
 ## Open Questions
 
-- The work PC must confirm that the cached account can read refresh history for
-  the selected semantic model.
-- The current Outlook launcher confirms that the interactive task was launched,
-  not final Exchange delivery. Pre-delivery and launcher failures are detected;
-  a complete Outlook outage cannot email its own failure notice.
+- Outlook's Word-based renderer may ignore rounded corners, but the hierarchy,
+  backgrounds, table borders, and buttons do not depend on them.
 
 ## Next Step
 
-Update and restart Metronome on the work PC, ensure each report owner has an
-email in Management > Create > People, then use Create drafts once and test one
-send against both a completed and a deliberately failed latest refresh.
+Update Metronome on the work PC and use Create drafts on one recurrence to verify
+the final desktop Outlook rendering with a real wide Power BI table.

@@ -431,6 +431,10 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert mode == "send"
     assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
     assert all("New Column" in message["html_body"] for message in messages)
+    assert all("METRONOME ALERT" in message["html_body"] for message in messages)
+    assert all("Alert results" in message["html_body"] for message in messages)
+    assert all("background:#0d7377" in message["html_body"] for message in messages)
+    assert all("Open the Power BI report" in message["html_body"] for message in messages)
     assert "below threshold" not in "".join(message["html_body"] for message in messages)
 
 
@@ -539,6 +543,9 @@ def test_failed_latest_refresh_blocks_export_and_notifies_owner(tmp_path, monkey
     assert "Latest refresh" in messages[0]["html_body"]
     assert "Failed" in messages[0]["html_body"]
     assert "Gateway could not reach the data source" in messages[0]["html_body"]
+    assert "DELIVERY BLOCKED" in messages[0]["html_body"]
+    assert "What needs attention" in messages[0]["html_body"]
+    assert "background:#8f2d2d" in messages[0]["html_body"]
     assert "Open the Power BI report" in messages[0]["html_body"]
     with database.get_db() as db:
         run = db.execute(
