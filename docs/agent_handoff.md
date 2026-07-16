@@ -9,9 +9,9 @@ and owner failure notifications.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Base commit: `73b20b9 Update recurrence handoff`
+- Feature commit: `2c0834a Polish recurrence alert emails`
 - Public repo: no, private
-- Push status: output-email polish is ready for direct `origin/main` commit and push
+- Push status: output-email polish is pushed to `origin/main`
 
 ## Decisions Made
 
