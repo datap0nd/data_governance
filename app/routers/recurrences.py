@@ -19,7 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.config import PBI_VISUAL_EXPORT_MAX_ROWS
+from app.config import BASE_DIR, PBI_VISUAL_EXPORT_MAX_ROWS
 from app.database import get_db
 from app.pbi_visual_export import (
     PbiVisualExportError,
@@ -62,6 +62,8 @@ RULE_OPERATORS = {
 EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
 _RUN_LOCK = threading.Lock()
 _RUNNING_IDS: set[int] = set()
+ALERT_BELL_ICON = BASE_DIR / "app" / "static" / "email-alert-bell.png"
+ALERT_BELL_CID = "recurrence-alert-bell"
 
 
 class RecurrenceGroupIn(BaseModel):
@@ -565,18 +567,20 @@ def build_html_email(
     rows: list[dict[str, str]],
 ) -> str:
     heading_cells = "".join(
-        f'<th style="padding:11px 12px;border:1px solid #0a6266;'
-        f'background:#0d7377;color:#ffffff;text-align:left;font-size:12px;'
-        f'font-weight:700;white-space:nowrap">{html.escape(column)}</th>'
+        f'<th style="padding:13px 14px;border-right:1px solid #292c82;'
+        f'background:#10136f;color:#ffffff;text-align:left;font-size:12px;'
+        f'font-weight:600;line-height:1.35;vertical-align:middle">'
+        f'{html.escape(column)}</th>'
         for column in columns
     )
     body_rows = []
     for index, row in enumerate(rows):
-        background = "#ffffff" if index % 2 == 0 else "#f2f7f6"
+        background = "#ffffff" if index % 2 == 0 else "#f7f8fc"
         cells = "".join(
-            f'<td style="padding:10px 12px;border:1px solid #d7e1df;'
-            f'background:{background};color:#1a1814;font-size:12px;'
-            f'vertical-align:top">{html.escape(str(row.get(column, "")))}</td>'
+            f'<td style="padding:13px 14px;border-bottom:1px solid #e4e6ef;'
+            f'background:{background};color:#17182d;font-size:12px;'
+            f'font-weight:500;line-height:1.45;vertical-align:top;'
+            f'overflow-wrap:anywhere">{html.escape(str(row.get(column, "")))}</td>'
             for column in columns
         )
         body_rows.append(f"<tr>{cells}</tr>")
@@ -584,12 +588,13 @@ def build_html_email(
     if recurrence.get("report_url"):
         report_button = (
             '<table role="presentation" cellspacing="0" cellpadding="0" '
-            'style="border-collapse:separate"><tr><td style="background:#ffffff;'
-            'border:1px solid #ffffff;border-radius:6px">'
+            'style="margin-top:18px;border-collapse:separate"><tr>'
+            '<td style="background:#10136f;border:1px solid #10136f;'
+            'border-radius:6px">'
             f'<a href="{html.escape(recurrence["report_url"], quote=True)}" '
-            'style="display:inline-block;padding:10px 16px;color:#0d7377;'
-            'font-size:13px;font-weight:700;text-decoration:none">'
-            "Open report</a></td></tr></table>"
+            'style="display:inline-block;padding:11px 18px;color:#ffffff;'
+            'font-size:13px;font-weight:600;line-height:1;text-decoration:none">'
+            "Open report&nbsp;&nbsp;&rarr;</a></td></tr></table>"
         )
     recurrence_name = html.escape(recurrence["name"])
     group_name = html.escape(group["display_name"])
@@ -598,64 +603,107 @@ def build_html_email(
         str(recurrence.get("owner_name") or "the report owner")
     )
     cadence = _alert_cadence(recurrence)
+    alert_icon = (
+        f'<img src="cid:{ALERT_BELL_CID}" width="56" height="56" '
+        'alt="Alert" style="display:block;width:56px;height:56px;border:0">'
+        if ALERT_BELL_ICON.is_file()
+        else '<span style="color:#10136f;font-size:27px;font-weight:700">!</span>'
+    )
     return f"""
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
-           style="width:100%;border-collapse:collapse;background:#eef2f1;
+           bgcolor="#f3f4f8"
+           style="width:100%;border-collapse:collapse;background:#f3f4f8;
                   font-family:Segoe UI,Arial,sans-serif">
       <tr>
         <td align="center" style="padding:24px 12px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+                 bgcolor="#ffffff"
                  style="width:100%;max-width:960px;border-collapse:separate;
-                        background:#ffffff;border:1px solid #cfdad8;border-radius:12px">
+                        background:#ffffff;border:1px solid #dfe1ea;border-radius:12px">
             <tr>
-              <td style="padding:26px 30px;background:#0d7377;color:#ffffff;
+              <td bgcolor="#10136f"
+                  style="padding:28px 32px;background:#10136f;color:#ffffff;
                          border-radius:12px 12px 0 0">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                   <tr>
+                    <td width="66" style="width:66px;vertical-align:middle">
+                      <table role="presentation" cellspacing="0" cellpadding="0"
+                             aria-label="Alert chart"
+                             style="width:44px;height:44px;border-collapse:separate">
+                        <tr>
+                          <td width="8" height="44" valign="bottom" style="padding-right:5px">
+                            <div style="width:8px;height:17px;background:#ffffff;border-radius:2px"></div>
+                          </td>
+                          <td width="8" height="44" valign="bottom" style="padding-right:5px">
+                            <div style="width:8px;height:27px;background:#ffffff;border-radius:2px"></div>
+                          </td>
+                          <td width="8" height="44" valign="bottom">
+                            <div style="width:8px;height:38px;background:#ffffff;border-radius:2px"></div>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
                     <td style="vertical-align:middle">
-                      <div style="margin:0 0 6px;color:#d8f0ef;font-size:11px;
-                                  font-weight:700;letter-spacing:1.2px">
-                        {cadence.upper()} ALERT
+                      <div style="margin:0;color:#ffffff;font-size:26px;
+                                  font-weight:600;line-height:1.2">
+                        {cadence} Alert
                       </div>
-                      <div style="margin:0;color:#ffffff;font-size:25px;
-                                  font-weight:700;line-height:1.2">
+                      <div style="margin-top:6px;color:#dfe1ff;font-size:14px;
+                                  line-height:1.35">
                         {recurrence_name}
                       </div>
-                      <div style="margin-top:7px;color:#e7f5f4;font-size:14px;
-                                  line-height:1.35">
-                        {group_name}
-                      </div>
                     </td>
                   </tr>
                 </table>
-                <div style="margin-top:20px">{report_button}</div>
               </td>
             </tr>
             <tr>
-              <td style="padding:0 30px">
+              <td style="padding:30px 32px 28px;border-bottom:1px solid #e4e6ef">
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
-                       style="width:100%;border-collapse:collapse;background:#e8f3f2;
-                              border:1px solid #c4ddda">
+                       style="width:100%;border-collapse:collapse">
                   <tr>
-                    <td style="padding:13px 14px;vertical-align:top">
-                      <div style="color:#526561;font-size:10px;font-weight:700">REPORT</div>
-                      <div style="margin-top:4px;color:#183c3d;font-size:13px;
-                                  font-weight:600;line-height:1.3">{report_name}</div>
+                    <td width="76" style="width:76px;vertical-align:top">
+                      <table role="presentation" cellspacing="0" cellpadding="0"
+                             style="width:56px;height:56px;border-collapse:separate;
+                                    background:#f0f1fb;border-radius:10px">
+                        <tr>
+                          <td align="center" valign="middle"
+                              style="width:56px;height:56px;line-height:56px">
+                            {alert_icon}
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                    <td style="vertical-align:top">
+                      <div style="color:#5e6075;font-size:11px;font-weight:700;
+                                  line-height:1.2">REPORT</div>
+                      <div style="margin-top:6px;color:#111226;font-size:22px;
+                                  font-weight:700;line-height:1.25">{report_name}</div>
+                      <div style="margin-top:5px;color:#686a7d;font-size:12px;
+                                  line-height:1.4">Results for {group_name}</div>
+                      {report_button}
                     </td>
                   </tr>
                 </table>
               </td>
             </tr>
             <tr>
-              <td style="padding:24px 30px 28px">
-                <div style="margin:0 0 12px;color:#1a1814;font-size:15px;
-                            font-weight:700">
+              <td style="padding:28px 32px 32px">
+                <div style="margin:0;color:#111226;font-size:22px;
+                            font-weight:700;line-height:1.25">
                   Alert results
                 </div>
-                <div style="width:100%;overflow-x:auto">
+                <table role="presentation" cellspacing="0" cellpadding="0"
+                       style="margin:12px 0 22px;border-collapse:collapse">
+                  <tr><td width="88" height="4" bgcolor="#2639a5"
+                          style="width:88px;height:4px;background:#2639a5;
+                                 font-size:0;line-height:0">&nbsp;</td></tr>
+                </table>
+                <div style="width:100%;overflow-x:auto;border:1px solid #dfe1ea;
+                            border-radius:9px">
                   <table width="100%" cellspacing="0" cellpadding="0"
                          style="width:100%;border-collapse:collapse;
-                                border:1px solid #bfcfcd">
+                                table-layout:auto">
                     <thead><tr>{heading_cells}</tr></thead>
                     <tbody>{''.join(body_rows)}</tbody>
                   </table>
@@ -663,10 +711,11 @@ def build_html_email(
               </td>
             </tr>
             <tr>
-              <td style="padding:15px 30px;background:#f5f7f6;color:#66716f;
-                         border-top:1px solid #dbe3e1;border-radius:0 0 12px 12px;
+              <td bgcolor="#f7f8fb"
+                  style="padding:16px 32px;background:#f7f8fb;color:#686a7d;
+                         border-top:1px solid #e4e6ef;border-radius:0 0 12px 12px;
                          font-size:12px;line-height:1.5">
-                <div style="color:#344744;font-weight:600">
+                <div style="color:#34364b;font-weight:600">
                   {cadence} alert created by the METO MX Analytics team.
                 </div>
                 <div style="margin-top:3px">
@@ -1063,6 +1112,11 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
                         recurrence["subject_template"], recurrence, group, len(group_rows)
                     ),
                     "html_body": build_html_email(recurrence, group, columns, group_rows),
+                    "inline_images": (
+                        [{"path": str(ALERT_BELL_ICON), "cid": ALERT_BELL_CID}]
+                        if ALERT_BELL_ICON.is_file()
+                        else []
+                    ),
                 }
             )
 
