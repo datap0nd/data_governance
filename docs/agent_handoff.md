@@ -2,26 +2,26 @@
 
 ## Current Objective
 
-Keep the recurrence output email polished while removing internal and technical
-language that business recipients do not need.
+Publish and validate the redesigned recurrence alert email, including its
+inline bell icon, in desktop Outlook.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
-- Branch: `main`
-- Feature commit: `d20c6b3 Simplify recurrence emails for recipients`
+- Branch: `agent/recurrence-email-design`
+- Latest baseline commit: `8af028f Finalize recipient email handoff`
 - Public repo: no, private
-- Push status: feature and handoff are pushed to `origin/main`
+- Push status: pending publication to `origin/agent/recurrence-email-design`
 
 ## Decisions Made
 
-- The recipient email no longer names the internal application.
-- The masthead identifies the schedule as Daily, Weekday, Weekly, Monthly, or
-  Scheduled alert.
-- Remove the matching-row count from the masthead. The table itself is the
-  useful output.
-- Remove technical Power BI page and visual identifiers from the recipient email.
-- Keep the report name and simplify the action to `Open report`.
+- Use a navy Power BI-style hierarchy: cadence masthead, alert name, report
+  summary and action, ruled results title, navy table header, and alternating
+  data rows.
+- Keep technical page and visual identifiers out of the recipient email.
+- Embed the project-owned transparent bell PNG with a CID Outlook attachment.
+  Do not use a remote URL or base64 image.
+- Keep the report name, subgroup context, and `Open report` action.
 - End with `Daily/Weekly/Monthly alert created by the METO MX Analytics team.`
 - Use `For questions or issues with this report, contact [owner], the report
   owner.` as the business-facing ownership statement.
@@ -30,19 +30,26 @@ language that business recipients do not need.
 
 ## Files Changed
 
-- `app/routers/recurrences.py`: simplify the recipient email and add dynamic
-  cadence and report-owner wording.
-- `tests/test_recurrences.py`: verify the business-facing copy and absence of
-  product name, page, visual, and row-count language.
+- `app/routers/recurrences.py`: render the redesigned recipient email and add
+  its inline bell attachment to recurrence messages.
+- `app/static/email-alert-bell.png`: transparent 112px navy and orange bell.
+- `tools/outlook_task_email.ps1`: attach optional inline images and assign
+  their Content-ID and hidden-attachment MAPI properties.
+- `tests/test_recurrences.py`: verify recipient copy, navy styling, CID markup,
+  and the inline-image payload.
 - `docs/agent_handoff.md`: record the recipient-facing communication contract.
 
 ## Commands And Checks
 
-- `uv run --python /opt/homebrew/bin/python3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: 43 passed.
-- `uv run --python /opt/homebrew/bin/python3.11 python -m py_compile app/routers/recurrences.py tests/test_recurrences.py`: passed.
+- `PYTHONPATH=. uv run --python 3.11 --with pytest --with fastapi==0.115.6
+  --with pydantic==2.10.4 --with httpx --with 'playwright>=1.50,<2' pytest -q
+  tests/test_recurrences.py`: 28 passed.
+- Python compile check for `app/routers/recurrences.py`: passed.
 - `git diff --check`: passed.
-- The revised weekly alert was rendered through macOS Quick Look and visually
-  inspected. The reduced masthead and single report context row remain balanced.
+- Browser render of a representative six-column, four-row email at 1180px:
+  visually inspected; hierarchy, table alignment, bell transparency, and
+  footer wording passed.
+- Bell PNG validation: RGBA, 112x112, transparent corners, 5,825 bytes.
 - Live Outlook rendering was not run because this Mac does not have the work PC
   Outlook profile.
 
@@ -50,8 +57,10 @@ language that business recipients do not need.
 
 - Outlook's Word-based renderer may ignore rounded corners, but the message
   hierarchy, table, backgrounds, and action remain usable without them.
+- CID embedding has not yet been exercised against the work PC's installed
+  Outlook COM version.
 
 ## Next Step
 
-Use Create drafts on the work PC to confirm the wording with a real report owner
-and recurrence cadence.
+Use Create drafts on the work PC for a recurrence with representative wide
+columns, then confirm the bell and results table in desktop Outlook.

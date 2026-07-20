@@ -445,12 +445,21 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert mode == "send"
     assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
     assert all("New Column" in message["html_body"] for message in messages)
-    assert all("WEEKLY ALERT" in message["html_body"] for message in messages)
+    assert all("Weekly Alert" in message["html_body"] for message in messages)
     assert all("Alert results" in message["html_body"] for message in messages)
-    assert all("background:#0d7377" in message["html_body"] for message in messages)
+    assert all("background:#10136f" in message["html_body"] for message in messages)
     assert all("Open report" in message["html_body"] for message in messages)
     assert all(
         "Weekly alert created by the METO MX Analytics team." in message["html_body"]
+        for message in messages
+    )
+    assert all(
+        'src="cid:recurrence-alert-bell"' in message["html_body"]
+        for message in messages
+    )
+    assert all(
+        message["inline_images"]
+        == [{"path": str(recurrences.ALERT_BELL_ICON), "cid": "recurrence-alert-bell"}]
         for message in messages
     )
     assert all(
