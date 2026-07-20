@@ -9,10 +9,9 @@ emails and desktop Outlook.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest baseline commit: `87a99e8 Update merged recurrence email handoff`
+- Feature commit: `fa78e39 Add recurrence alert messages`
 - Public repo: no, private
-- Push status: current alert-message change is pending direct push to
-  `origin/main`
+- Push status: alert-message feature is pushed to `origin/main`
 
 ## Decisions Made
 
