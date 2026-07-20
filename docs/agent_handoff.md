@@ -8,11 +8,11 @@ inline bell icon, in desktop Outlook.
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
-- Branch: `agent/recurrence-email-design`
+- Branch: `main`
 - Feature commit: `83ae04d Redesign recurrence alert emails`
+- Merge commit: `18d508c Merge recurrence email redesign`
 - Public repo: no, private
-- Push status: pushed to `origin/agent/recurrence-email-design`; draft PR #2
-  targets `main`
+- Push status: PR #2 merged and pushed to `origin/main`
 
 ## Decisions Made
 
