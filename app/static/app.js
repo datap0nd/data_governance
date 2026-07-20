@@ -4712,6 +4712,7 @@ function _recValidationDetail(item) {
         recipients: "Recipients",
         group_column: "Subgroup column",
         subject_template: "Email subject",
+        alert_message: "Alert message",
         send_time: "Send time",
         weekdays: "Weekdays",
         groups: "Subgroups",
@@ -4893,6 +4894,7 @@ function _recBaseConfig(existing = null) {
         recipients: existing?.recipients || "",
         group_column: existing?.group_column || "",
         subject_template: existing?.subject_template || "{recurrence} ({row_count} rows)",
+        alert_message: existing?.alert_message || "",
         recurrence: existing?.recurrence || "weekly",
         weekdays: [...(existing?.weekdays || ["monday"])],
         month_day: existing?.month_day || 1,
@@ -4978,6 +4980,7 @@ function _recBuilderSummary(state) {
                 <div><dt>Preview</dt><dd>${state.preview ? `${state.preview.row_count.toLocaleString()} rows, ${state.preview.columns.length} columns` : "Not loaded"}</dd></div>
                 <div><dt>Delivery</dt><dd>${esc(delivery)}</dd></div>
                 <div><dt>Row rules</dt><dd>${config.rules.length}</dd></div>
+                <div><dt>Alert message</dt><dd>${config.alert_message.trim() ? "Added" : "Not added"}</dd></div>
                 <div><dt>Schedule</dt><dd>${esc(_recScheduleText(config))}</dd></div>
             </dl>
         </aside>`;
@@ -5169,6 +5172,10 @@ function _recStepFour(state) {
                 <label class="rec-field full">Recurrence name
                     <input id="rec-name" type="text" maxlength="200" value="${esc(config.name)}" placeholder="Weekly subsidiary exceptions">
                 </label>
+                <label class="rec-field full">Alert message
+                    <textarea id="rec-alert-message" maxlength="2000" placeholder="Action required: Review these alerts and update the affected records before the next refresh.">${esc(config.alert_message)}</textarea>
+                    <small>Optional. Shown in an information box above the results. Use it for definitions, key actions, warnings, ownership, or other context specific to this alert.</small>
+                </label>
                 <label class="rec-enable-row full"><input id="rec-enabled" type="checkbox" ${config.enabled ? "checked" : ""}> Enable scheduled sending after save</label>
                 <label class="rec-field full">Alert owner
                     <select id="rec-owner">
@@ -5310,6 +5317,7 @@ function _recPayload(state) {
         recipients: config.delivery_mode === "single" ? config.recipients.trim() : null,
         group_column: config.delivery_mode === "subgroups" ? config.group_column : "",
         subject_template: config.subject_template.trim(),
+        alert_message: config.alert_message.trim() || null,
         recurrence: config.recurrence,
         weekdays: config.weekdays,
         month_day: config.recurrence === "monthly" ? Number(config.month_day || 1) : null,
@@ -5482,6 +5490,7 @@ function _recBindBuilder() {
     $("#rec-owner")?.addEventListener("change", event => { state.config.owner_name = event.target.value; });
     $("#rec-enabled")?.addEventListener("change", event => { state.config.enabled = event.target.checked; });
     $("#rec-subject")?.addEventListener("input", event => { state.config.subject_template = event.target.value; });
+    $("#rec-alert-message")?.addEventListener("input", event => { state.config.alert_message = event.target.value; });
     $("#rec-send-time")?.addEventListener("change", event => { state.config.send_time = event.target.value; });
     $("#rec-month-day")?.addEventListener("input", event => { state.config.month_day = Number(event.target.value || 1); });
     $("#rec-frequency")?.addEventListener("change", event => {

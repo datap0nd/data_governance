@@ -2,17 +2,17 @@
 
 ## Current Objective
 
-Publish and validate the redesigned recurrence alert email, including its
-inline bell icon, in desktop Outlook.
+Publish and validate the optional per-alert information message in recurrence
+emails and desktop Outlook.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `83ae04d Redesign recurrence alert emails`
-- Merge commit: `18d508c Merge recurrence email redesign`
+- Latest baseline commit: `87a99e8 Update merged recurrence email handoff`
 - Public repo: no, private
-- Push status: PR #2 merged and pushed to `origin/main`
+- Push status: current alert-message change is pending direct push to
+  `origin/main`
 
 ## Decisions Made
 
@@ -23,6 +23,12 @@ inline bell icon, in desktop Outlook.
 - Embed the project-owned transparent bell PNG with a CID Outlook attachment.
   Do not use a remote URL or base64 image.
 - Keep the report name, subgroup context, and `Open report` action.
+- Each recurrence can store one optional `alert_message` of up to 2,000
+  characters. It may contain definitions, key actions, warnings, ownership, or
+  any other recipient-specific context.
+- Display the message in an `Alert information` box above the results only when
+  text is present. Do not generate automatic filler content for a blank field.
+- Preserve line breaks and HTML-escape all message content before email output.
 - End with `Daily/Weekly/Monthly alert created by the METO MX Analytics team.`
 - Use `For questions or issues with this report, contact [owner], the report
   owner.` as the business-facing ownership statement.
@@ -31,26 +37,25 @@ inline bell icon, in desktop Outlook.
 
 ## Files Changed
 
-- `app/routers/recurrences.py`: render the redesigned recipient email and add
-  its inline bell attachment to recurrence messages.
-- `app/static/email-alert-bell.png`: transparent 112px navy and orange bell.
-- `tools/outlook_task_email.ps1`: attach optional inline images and assign
-  their Content-ID and hidden-attachment MAPI properties.
-- `tests/test_recurrences.py`: verify recipient copy, navy styling, CID markup,
-  and the inline-image payload.
+- `app/database.py`: add the nullable recurrence `alert_message` column and
+  migration.
+- `app/routers/recurrences.py`: validate, persist, escape, and render the
+  optional alert message.
+- `app/static/app.js`: add the Schedule-step Alert message textarea, summary
+  state, payload mapping, and validation label.
+- `README.md`: document the optional recipient-context box.
+- `tests/test_recurrences.py`: verify persistence, updates, escaping,
+  multi-line rendering, empty omission, and delivered-email content.
 - `docs/agent_handoff.md`: record the recipient-facing communication contract.
 
 ## Commands And Checks
 
-- `PYTHONPATH=. uv run --python 3.11 --with pytest --with fastapi==0.115.6
-  --with pydantic==2.10.4 --with httpx --with 'playwright>=1.50,<2' pytest -q
-  tests/test_recurrences.py`: 28 passed.
-- Python compile check for `app/routers/recurrences.py`: passed.
+- Full `pytest -q` suite in the Python 3.11 uv environment: 44 passed.
+- `node --check app/static/app.js`: passed.
 - `git diff --check`: passed.
 - Browser render of a representative six-column, four-row email at 1180px:
-  visually inspected; hierarchy, table alignment, bell transparency, and
-  footer wording passed.
-- Bell PNG validation: RGBA, 112x112, transparent corners, 5,825 bytes.
+  visually inspected; information-box placement, wrapping, contrast, and
+  table spacing passed.
 - Live Outlook rendering was not run because this Mac does not have the work PC
   Outlook profile.
 
@@ -63,5 +68,5 @@ inline bell icon, in desktop Outlook.
 
 ## Next Step
 
-Use Create drafts on the work PC for a recurrence with representative wide
-columns, then confirm the bell and results table in desktop Outlook.
+Enter an Alert message on a representative recurrence, use Create drafts on
+the work PC, and confirm the information box in desktop Outlook.

@@ -132,6 +132,7 @@ class RecurrenceWrite(BaseModel):
         min_length=1,
         max_length=500,
     )
+    alert_message: str | None = Field(default=None, max_length=2000)
     recurrence: str = "weekly"
     weekdays: list[str] = Field(default_factory=lambda: ["monday"])
     month_day: int | None = Field(default=None, ge=1, le=31)
@@ -154,7 +155,7 @@ class RecurrenceWrite(BaseModel):
     def strip_text(cls, value: str) -> str:
         return value.strip()
 
-    @field_validator("owner_name")
+    @field_validator("owner_name", "alert_message")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         return (value or "").strip() or None
@@ -603,6 +604,31 @@ def build_html_email(
         str(recurrence.get("owner_name") or "the report owner")
     )
     cadence = _alert_cadence(recurrence)
+    alert_message = str(recurrence.get("alert_message") or "").strip()
+    alert_message_block = ""
+    if alert_message:
+        alert_message_html = "<br>".join(
+            html.escape(line) for line in alert_message.splitlines()
+        )
+        alert_message_block = f"""
+            <tr>
+              <td style="padding:24px 32px 0">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+                       bgcolor="#f3f4fb"
+                       style="width:100%;border-collapse:separate;background:#f3f4fb;
+                              border:1px solid #d9dced;border-radius:8px">
+                  <tr>
+                    <td style="padding:15px 17px;color:#34364b;font-size:13px;
+                               line-height:1.55">
+                      <div style="margin:0 0 4px;color:#111226;font-size:13px;
+                                  font-weight:700">Alert information</div>
+                      <div>{alert_message_html}</div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+        """
     alert_icon = (
         f'<img src="cid:{ALERT_BELL_CID}" width="56" height="56" '
         'alt="Alert" style="display:block;width:56px;height:56px;border:0">'
@@ -687,6 +713,7 @@ def build_html_email(
                 </table>
               </td>
             </tr>
+            {alert_message_block}
             <tr>
               <td style="padding:28px 32px 32px">
                 <div style="margin:0;color:#111226;font-size:22px;
@@ -954,6 +981,7 @@ def _write_values(body: RecurrenceWrite, next_run_at: str | None) -> tuple:
         body.recipients,
         body.group_column,
         body.subject_template,
+        body.alert_message,
         body.recurrence,
         ",".join(body.weekdays),
         body.month_day,
@@ -1331,9 +1359,9 @@ def create_recurrence(body: RecurrenceWrite, request: Request):
                (name, enabled, workspace_id, workspace_name, report_id, report_name,
                 report_url, embed_url, dataset_id, page_name, page_display_name,
                 visual_name, visual_title, visual_type, owner_name, delivery_mode, recipients,
-                group_column, subject_template, recurrence, weekdays, month_day,
+                group_column, subject_template, alert_message, recurrence, weekdays, month_day,
                 send_time, next_run_at, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (*_write_values(body, next_run), get_actor(request)),
         )
         recurrence_id = cursor.lastrowid
@@ -1369,7 +1397,7 @@ def update_recurrence(recurrence_id: int, body: RecurrenceWrite, request: Reques
                    report_id = ?, report_name = ?, report_url = ?, embed_url = ?, dataset_id = ?,
                    page_name = ?, page_display_name = ?, visual_name = ?, visual_title = ?,
                    visual_type = ?, owner_name = ?, delivery_mode = ?, recipients = ?, group_column = ?,
-                   subject_template = ?, recurrence = ?, weekdays = ?, month_day = ?,
+                   subject_template = ?, alert_message = ?, recurrence = ?, weekdays = ?, month_day = ?,
                    send_time = ?, next_run_at = ?,
                    updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",

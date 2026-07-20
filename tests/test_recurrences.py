@@ -40,6 +40,10 @@ def _valid_write(**overrides):
         "visual_type": "tableEx",
         "group_column": "Subsidiary",
         "subject_template": "{recurrence} - {group}",
+        "alert_message": (
+            "Action required: review these out-of-stock alerts and contact the "
+            "inventory owner before the next refresh."
+        ),
         "recurrence": "weekly",
         "weekdays": ["monday"],
         "send_time": "08:00",
@@ -84,8 +88,8 @@ def _seed_recurrence(db_path):
                (name, enabled, workspace_id, workspace_name, report_id, report_name,
                 report_url, embed_url, dataset_id, page_name, page_display_name,
                 visual_name, visual_title, visual_type, owner_name, group_column, subject_template,
-                recurrence, weekdays, send_time, next_run_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'weekly', 'monday', '08:00', ?)""",
+                alert_message, recurrence, weekdays, send_time, next_run_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'weekly', 'monday', '08:00', ?)""",
             (
                 "Weekly exceptions",
                 "11111111-1111-1111-1111-111111111111",
@@ -103,6 +107,10 @@ def _seed_recurrence(db_path):
                 "Report Owner",
                 "Subsidiary",
                 "{recurrence} - {group} ({row_count})",
+                (
+                    "Action required: review these out-of-stock alerts and contact the "
+                    "inventory owner before the next refresh."
+                ),
                 "2099-01-05T08:00:00",
             ),
         )
@@ -254,13 +262,41 @@ def test_single_email_configuration_persists_without_subgroups(tmp_path, monkeyp
 
     created = recurrences.create_recurrence(body, request)
     body.name = "Updated single email"
+    body.alert_message = "Updated action for recipients."
     updated = recurrences.update_recurrence(created["id"], body, request)
 
     assert created["delivery_mode"] == "single"
     assert created["groups"] == []
     assert created["owner_name"] == "Report Owner"
+    assert created["alert_message"].startswith("Action required")
     assert updated["name"] == "Updated single email"
     assert updated["recipients"] == "team@example.com"
+    assert updated["alert_message"] == "Updated action for recipients."
+
+
+def test_alert_message_is_escaped_and_omitted_when_empty():
+    recurrence = _valid_write(
+        alert_message="<strong>Stock alert</strong>\nReview immediately.",
+    ).model_dump()
+    email = recurrences.build_html_email(
+        recurrence,
+        {"display_name": "North team"},
+        ["Value"],
+        [{"Value": "12"}],
+    )
+
+    assert "&lt;strong&gt;Stock alert&lt;/strong&gt;<br>Review immediately." in email
+    assert "<strong>Stock alert</strong>" not in email
+
+    recurrence["alert_message"] = None
+    email_without_message = recurrences.build_html_email(
+        recurrence,
+        {"display_name": "North team"},
+        ["Value"],
+        [{"Value": "12"}],
+    )
+
+    assert "Alert information" not in email_without_message
 
 
 def test_report_picker_includes_default_owner_and_people_email(tmp_path, monkeypatch):
@@ -447,6 +483,8 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert all("New Column" in message["html_body"] for message in messages)
     assert all("Weekly Alert" in message["html_body"] for message in messages)
     assert all("Alert results" in message["html_body"] for message in messages)
+    assert all("Alert information" in message["html_body"] for message in messages)
+    assert all("inventory owner before the next refresh" in message["html_body"] for message in messages)
     assert all("background:#10136f" in message["html_body"] for message in messages)
     assert all("Open report" in message["html_body"] for message in messages)
     assert all(

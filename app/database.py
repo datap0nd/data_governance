@@ -227,6 +227,7 @@ CREATE TABLE IF NOT EXISTS pbi_recurrences (
     recipients          TEXT,
     group_column        TEXT NOT NULL,
     subject_template    TEXT NOT NULL,
+    alert_message       TEXT,
     recurrence          TEXT DEFAULT 'weekly',
     weekdays            TEXT DEFAULT 'monday',
     month_day           INTEGER,
@@ -704,6 +705,8 @@ MIGRATIONS = [
            LIMIT 1
        )
        WHERE owner_name IS NULL OR trim(owner_name) = ''""",
+    # Recipient-facing context or action displayed above recurrence alert results
+    "ALTER TABLE pbi_recurrences ADD COLUMN alert_message TEXT",
 ]
 
 
