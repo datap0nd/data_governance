@@ -9,9 +9,10 @@ inline bell icon, in desktop Outlook.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `agent/recurrence-email-design`
-- Latest baseline commit: `8af028f Finalize recipient email handoff`
+- Feature commit: `83ae04d Redesign recurrence alert emails`
 - Public repo: no, private
-- Push status: pending publication to `origin/agent/recurrence-email-design`
+- Push status: pushed to `origin/agent/recurrence-email-design`; draft PR #2
+  targets `main`
 
 ## Decisions Made
 
