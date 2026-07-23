@@ -9,9 +9,9 @@ recurrence previews and recipient emails.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `7f39f90 Update alert message handoff`
+- Feature commit: `07b48f6 Match recurrence formatting and titles`
 - Public repo: no, private
-- Push status: implementation is complete locally and pending publication
+- Push status: feature commit is pushed to `origin/main`
 
 ## Decisions Made
 
