@@ -2,70 +2,60 @@
 
 ## Current Objective
 
-Publish and validate the optional per-alert information message in recurrence
-emails and desktop Outlook.
+Deliver Power BI field-format fidelity and the missing business title in
+recurrence previews and recipient emails.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `fa78e39 Add recurrence alert messages`
+- Latest base commit: `7f39f90 Update alert message handoff`
 - Public repo: no, private
-- Push status: alert-message feature is pushed to `origin/main`
+- Push status: implementation is complete locally and pending publication
 
 ## Decisions Made
 
-- Use a navy Power BI-style hierarchy: cadence masthead, alert name, report
-  summary and action, ruled results title, navy table header, and alternating
-  data rows.
-- Keep technical page and visual identifiers out of the recipient email.
-- Embed the project-owned transparent bell PNG with a CID Outlook attachment.
-  Do not use a remote URL or base64 image.
-- Keep the report name, subgroup context, and `Open report` action.
-- Each recurrence can store one optional `alert_message` of up to 2,000
-  characters. It may contain definitions, key actions, warnings, ownership, or
-  any other recipient-specific context.
-- Display the message in an `Alert information` box above the results only when
-  text is present. Do not generate automatic filler content for a blank field.
-- Preserve line breaks and HTML-escape all message content before email output.
-- End with `Daily/Weekly/Monthly alert created by the METO MX Analytics team.`
-- Use `For questions or issues with this report, contact [owner], the report
-  owner.` as the business-facing ownership statement.
-- The technical owner failure notification remains detailed because page,
-  visual, refresh, and failure context help the owner repair the alert.
+- Keep Power BI's native summarized CSV as the authority for rich currency,
+  percentage, locale, date, and dynamic formatting.
+- Read the selected visual's live field format strings on the primary export
+  path as well as the existing Execute Queries fallback.
+- Locally normalize only fields explicitly formatted as whole numbers, including
+  custom `0`/`#,0` formats and standard `F0`/`N0` formats.
+- Apply normalization before recurrence previewing, rule evaluation, subgroup
+  extraction, and email rendering.
+- Use the selected Power BI visual title as the results heading. The report name
+  remains the report-summary title, and untitled visuals fall back to `Alert
+  results`.
 
 ## Files Changed
 
-- `app/database.py`: add the nullable recurrence `alert_message` column and
-  migration.
-- `app/routers/recurrences.py`: validate, persist, escape, and render the
-  optional alert message.
-- `app/static/app.js`: add the Schedule-step Alert message textarea, summary
-  state, payload mapping, and validation label.
-- `README.md`: document the optional recipient-context box.
-- `tests/test_recurrences.py`: verify persistence, updates, escaping,
-  multi-line rendering, empty omission, and delivered-email content.
-- `docs/agent_handoff.md`: record the recipient-facing communication contract.
+- `app/pbi_visual_export.py`: collect field metadata on successful summarized
+  exports and apply safe whole-number normalization.
+- `app/pbi_visual_query.py`: detect whole-number Power BI formats, normalize
+  numeric CSV cells, and recognize the authoring API's `isHidden` field marker.
+- `app/routers/recurrences.py`: render the escaped visual title above the email
+  results table.
+- `tests/test_pbi_visual_query.py`: cover custom and standard integer formats,
+  scaling-format exclusion, runtime metadata, and primary-export integration.
+- `tests/test_recurrences.py`: cover escaped visual titles and delivered-email
+  headings.
+- `README.md`: document title and field-format behavior.
 
 ## Commands And Checks
 
-- Full `pytest -q` suite in the Python 3.11 uv environment: 44 passed.
+- Full Python 3.11 `pytest -q` suite: 48 passed.
+- Python `compileall` for `app`: passed.
 - `node --check app/static/app.js`: passed.
 - `git diff --check`: passed.
-- Browser render of a representative six-column, four-row email at 1180px:
-  visually inspected; information-box placement, wrapping, contrast, and
-  table spacing passed.
-- Live Outlook rendering was not run because this Mac does not have the work PC
-  Outlook profile.
 
 ## Open Questions
 
-- Outlook's Word-based renderer may ignore rounded corners, but the message
-  hierarchy, table, backgrounds, and action remain usable without them.
-- CID embedding has not yet been exercised against the work PC's installed
-  Outlook COM version.
+- Live validation against the work PC's Power BI report and Outlook profile has
+  not been run from this Mac. The safe formatter intentionally leaves scaled,
+  percentage, currency, date, locale-specific, and dynamic formats to Power BI.
 
 ## Next Step
 
-Enter an Alert message on a representative recurrence, use Create drafts on
-the work PC, and confirm the information box in desktop Outlook.
+Create Outlook drafts from a recurrence containing a whole-number field and
+confirm the preview and email show the Power BI visual title and no redundant
+decimal places.

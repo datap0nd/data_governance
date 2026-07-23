@@ -17,7 +17,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app.config import PBI_VISUAL_EXPORT_MAX_ROWS, PBI_VISUAL_EXPORT_TIMEOUT_SECONDS
-from app.pbi_visual_query import PbiVisualQueryError, execute_visual_query
+from app.pbi_visual_query import (
+    PbiVisualQueryError,
+    apply_visual_field_formats,
+    execute_visual_query,
+)
 from app.scanner.pbi_auth import get_access_token
 
 logger = logging.getLogger(__name__)
@@ -246,12 +250,17 @@ _RUNTIME_HTML = f"""<!doctype html>
               if (exportStarted || finished || fallbackStarted) return;
               exportStarted = true;
               try {{
+                const querySpec = await safeCall(
+                  () => collectQuerySpec(report, activePage, selectedVisual, pageVisuals),
+                  null
+                );
                 const result = await selectedVisual.exportData(
                   models.ExportDataType.Summarized,
                   config.maxRows
                 );
                 stop(resolve, {{
                   data: result.data,
+                  querySpec,
                   visual: {{
                     name: selectedVisual.name,
                     type: selectedVisual.type,
@@ -578,4 +587,8 @@ def export_visual_data(
         }
     if not isinstance(result, dict) or not isinstance(result.get("data"), str):
         raise PbiVisualExportError("Power BI returned an empty visual export response.")
-    return {**result, "export_method": "visual_export"}
+    return {
+        **result,
+        "data": apply_visual_field_formats(result["data"], result.get("querySpec")),
+        "export_method": "visual_export",
+    }

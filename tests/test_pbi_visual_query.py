@@ -106,6 +106,55 @@ def test_build_visual_query_escapes_identifiers_and_filter_literals():
     assert '"He said ""yes"""' in dax
 
 
+def test_apply_visual_field_formats_normalizes_whole_number_columns():
+    formatted = pbi_visual_query.apply_visual_field_formats(
+        "Subsidiary,Active policies,Premium,Ratio\r\n"
+        "North,1234.000000,20.50,0.125\r\n"
+        "South,-2.6,30.00,n/a\r\n",
+        _query_spec()
+        | {
+            "fields": [
+                *_query_spec()["fields"],
+                {
+                    "target": {"table": "Measures", "measure": "Ratio"},
+                    "displayName": "Ratio",
+                    "formatString": "0.0%",
+                },
+            ]
+        },
+    )
+
+    assert formatted == (
+        "Subsidiary,Active policies,Premium,Ratio\r\n"
+        'North,"1,234",20.50,0.125\r\n'
+        "South,-3,30.00,n/a\r\n"
+    )
+
+
+def test_apply_visual_field_formats_supports_standard_and_ignores_scaling_formats():
+    query_spec = {
+        "fields": [
+            {
+                "target": {"table": "Measures", "measure": "Count"},
+                "displayName": "Count",
+                "formatString": "N0",
+            },
+            {
+                "target": {"table": "Measures", "measure": "Millions"},
+                "displayName": "Millions",
+                "formatString": "0,,",
+            },
+        ]
+    }
+
+    formatted = pbi_visual_query.apply_visual_field_formats(
+        "Count,Millions\n1000.0,2000000.0\n",
+        query_spec,
+    )
+
+    assert formatted == 'Count,Millions\r\n"1,000",2000000.0\r\n'
+
+
 @pytest.mark.parametrize(
     "target, message",
     [
@@ -273,6 +322,36 @@ def test_visual_export_uses_execute_queries_only_for_visual_query_failure(monkey
     assert calls[0]["dataset_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_visual_export_applies_whole_number_format_metadata(monkeypatch):
+    monkeypatch.setattr(
+        pbi_visual_export,
+        "_run_visual_action",
+        lambda **kwargs: {
+            "data": "Count\r\n42.000000\r\n",
+            "querySpec": {
+                "fields": [
+                    {
+                        "target": {"table": "Measures", "measure": "Count"},
+                        "displayName": "Count",
+                        "formatString": "#,0",
+                    }
+                ]
+            },
+            "visual": {"name": "visual1", "type": "table", "title": "Exceptions"},
+        },
+    )
+
+    result = pbi_visual_export.export_visual_data(
+        "22222222-2222-2222-2222-222222222222",
+        "https://app.powerbi.com/reportEmbed?reportId=22222222-2222-2222-2222-222222222222",
+        "ReportSection",
+        "visual1",
+    )
+
+    assert result["data"] == "Count\r\n42\r\n"
+    assert result["export_method"] == "visual_export"
+
+
 def test_authoring_loader_falls_back_to_second_package_cdn():
     class FakePage:
         def __init__(self):
@@ -299,5 +378,7 @@ def test_runtime_reads_visual_fields_and_slicer_filters_for_rest_fallback():
     assert "selectedVisual.getCapabilities()" in runtime
     assert "selectedVisual.getDataFields(role.name)" in runtime
     assert "selectedVisual.getFieldFormatString" in runtime
+    assert "data: result.data" in runtime
+    assert "querySpec," in runtime
     assert "visual.getSlicerState()" in runtime
     assert "querySpec" in runtime

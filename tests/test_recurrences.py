@@ -299,6 +299,20 @@ def test_alert_message_is_escaped_and_omitted_when_empty():
     assert "Alert information" not in email_without_message
 
 
+def test_email_uses_visual_title_for_alert_results_heading():
+    recurrence = _valid_write(visual_title="<Open exceptions>").model_dump()
+    email = recurrences.build_html_email(
+        recurrence,
+        {"display_name": "North team"},
+        ["Value"],
+        [{"Value": "12"}],
+    )
+
+    assert "ALERT RESULTS" in email
+    assert "&lt;Open exceptions&gt;" in email
+    assert "<Open exceptions>" not in email
+
+
 def test_report_picker_includes_default_owner_and_people_email(tmp_path, monkeypatch):
     database.DB_PATH = str(tmp_path / "governance.db")
     database.init_db()
@@ -482,7 +496,8 @@ def test_run_sends_one_html_message_per_matching_subgroup(tmp_path, monkeypatch)
     assert {message["to"] for message in messages} == {"north@example.com", "south@example.com"}
     assert all("New Column" in message["html_body"] for message in messages)
     assert all("Weekly Alert" in message["html_body"] for message in messages)
-    assert all("Alert results" in message["html_body"] for message in messages)
+    assert all("ALERT RESULTS" in message["html_body"] for message in messages)
+    assert all("Exceptions" in message["html_body"] for message in messages)
     assert all("Alert information" in message["html_body"] for message in messages)
     assert all("inventory owner before the next refresh" in message["html_body"] for message in messages)
     assert all("background:#10136f" in message["html_body"] for message in messages)

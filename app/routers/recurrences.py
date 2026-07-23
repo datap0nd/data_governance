@@ -600,6 +600,9 @@ def build_html_email(
     recurrence_name = html.escape(recurrence["name"])
     group_name = html.escape(group["display_name"])
     report_name = html.escape(recurrence["report_name"])
+    visual_title = html.escape(
+        str(recurrence.get("visual_title") or "").strip() or "Alert results"
+    )
     owner_name = html.escape(
         str(recurrence.get("owner_name") or "the report owner")
     )
@@ -716,9 +719,13 @@ def build_html_email(
             {alert_message_block}
             <tr>
               <td style="padding:28px 32px 32px">
-                <div style="margin:0;color:#111226;font-size:22px;
+                <div style="margin:0;color:#5e6075;font-size:11px;
+                            font-weight:700;line-height:1.2">
+                  ALERT RESULTS
+                </div>
+                <div style="margin:6px 0 0;color:#111226;font-size:22px;
                             font-weight:700;line-height:1.25">
-                  Alert results
+                  {visual_title}
                 </div>
                 <table role="presentation" cellspacing="0" cellpadding="0"
                        style="margin:12px 0 22px;border-collapse:collapse">

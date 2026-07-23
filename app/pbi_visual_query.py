@@ -12,7 +12,7 @@ import io
 import json
 import math
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import UUID
 
 import httpx
@@ -186,6 +186,104 @@ def _deduplicate_headers(headers: list[str]) -> list[str]:
     return result
 
 
+def _whole_number_format(format_string: str) -> tuple[bool, bool]:
+    """Return whether a Power BI format is integer-only and uses digit grouping."""
+    value = str(format_string or "").strip()
+    if not value:
+        return False, False
+    standard = re.fullmatch(r"(?i)([nf])(\d+)", value)
+    if standard:
+        return int(standard.group(2)) == 0, standard.group(1).casefold() == "n"
+
+    # Inspect the positive custom-format section. Remove literal and escaped
+    # content so dates, percentages, and text formats are not treated as numbers.
+    section = value.split(";", 1)[0]
+    visible = re.sub(r'"(?:[^"]|"")*"', "", section)
+    visible = re.sub(r"\\.|_.|\*.", "", visible)
+    visible = re.sub(r"\[[^\]]*\]", "", visible)
+    if "%" in visible or re.search(r"[a-z]", visible, re.IGNORECASE):
+        return False, False
+    placeholders = [index for index, char in enumerate(visible) if char in "0#"]
+    if not placeholders:
+        return False, False
+    last_placeholder = placeholders[-1]
+    if "," in visible[last_placeholder + 1 :]:
+        # Trailing commas scale values by thousands and need the full Power BI
+        # formatter. Do not reinterpret them locally.
+        return False, False
+    decimal_marker = visible.find(".")
+    if decimal_marker >= 0:
+        decimals = sum(
+            char in "0#" for char in visible[decimal_marker + 1 : last_placeholder + 1]
+        )
+        if decimals:
+            return False, False
+    grouping = "," in visible[: last_placeholder + 1]
+    return True, grouping
+
+
+def _format_whole_number(value, *, grouping: bool) -> str:
+    text = str(value if value is not None else "").strip()
+    if not re.fullmatch(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text):
+        return str(value if value is not None else "")
+    try:
+        number = Decimal(text.replace(",", "")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return str(value if value is not None else "")
+    if number == 0:
+        number = abs(number)
+    return format(number, ",.0f" if grouping else ".0f")
+
+
+def apply_visual_field_formats(csv_text: str, query_spec: dict | None) -> str:
+    """Apply safe local normalization for Power BI fields formatted as whole numbers."""
+    fields = query_spec.get("fields") if isinstance(query_spec, dict) else None
+    if not isinstance(fields, list) or not fields or not csv_text:
+        return csv_text
+
+    field_headers: list[str] = []
+    field_formats: list[str] = []
+    for field in fields:
+        target = field.get("target") if isinstance(field, dict) else None
+        if not isinstance(target, dict) or target.get("hidden") or target.get("isHidden"):
+            continue
+        field_headers.append(_field_header(field, target))
+        field_formats.append(str(field.get("formatString") or "").strip())
+    field_headers = _deduplicate_headers(field_headers)
+    integer_formats = {
+        header.casefold(): grouping
+        for header, format_string in zip(field_headers, field_formats, strict=True)
+        if (format_details := _whole_number_format(format_string))[0]
+        for grouping in [format_details[1]]
+    }
+    if not integer_formats:
+        return csv_text
+
+    reader = csv.reader(io.StringIO(csv_text.replace("\x00", "")))
+    try:
+        headers = next(reader)
+    except StopIteration:
+        return csv_text
+    formatted_indexes = {
+        index: integer_formats[header.lstrip("\ufeff").strip().casefold()]
+        for index, header in enumerate(headers)
+        if header.lstrip("\ufeff").strip().casefold() in integer_formats
+    }
+    if not formatted_indexes:
+        return csv_text
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(headers)
+    for row in reader:
+        normalized = list(row)
+        for index, grouping in formatted_indexes.items():
+            if index < len(normalized):
+                normalized[index] = _format_whole_number(normalized[index], grouping=grouping)
+        writer.writerow(normalized)
+    return output.getvalue()
+
+
 def _filter_kind(filter_body: dict) -> str:
     schema = str(filter_body.get("$schema") or "").casefold()
     if "#basic" in schema:
@@ -312,7 +410,7 @@ def build_visual_query(query_spec: dict, max_rows: int) -> dict:
         target = field.get("target") if isinstance(field, dict) else None
         if not isinstance(target, dict):
             raise PbiVisualQueryError("The selected visual contains an invalid data field.")
-        if target.get("hidden"):
+        if target.get("hidden") or target.get("isHidden"):
             continue
         field_kind, expression = _target_expression(target)
         if field_kind == "group":
