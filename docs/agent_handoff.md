@@ -9,10 +9,9 @@ Power BI title instead of the generic `matrix` type.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `039f9fd Update recurrence formatting handoff`
+- Feature commit: `1effd3d Resolve recurrence visual titles`
 - Public repo: no, private
-- Push status: title-resolution correction is complete locally and pending
-  publication
+- Push status: feature commit is pushed to `origin/main`
 
 ## Decisions Made
 
