@@ -10,9 +10,9 @@ when the visual is still set to its default.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `c114319 Match recurrence formatting and dynamic titles`
+- Latest formatting commit: `d2e82d9 Harden recurrence matrix formatting`
 - Public repo: no, private
-- Push status: feature commit is pushed; follow-up formatting fix is uncommitted
+- Push status: formatting fix is pushed to `origin/main`
 
 ## Decisions Made
 
