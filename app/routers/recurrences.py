@@ -561,6 +561,38 @@ def _alert_cadence(recurrence: dict) -> str:
     }.get(str(recurrence.get("recurrence") or "").casefold(), "Scheduled")
 
 
+def _is_generic_visual_title(title: str | None, visual_type: str | None) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", str(title or "").casefold())
+    normalized_type = re.sub(r"[^a-z0-9]", "", str(visual_type or "").casefold())
+    return bool(normalized) and (
+        normalized == normalized_type
+        or normalized in {"matrix", "pivottable", "table", "tableex"}
+    )
+
+
+def _apply_live_visual_title(recurrence: dict, exported: dict) -> None:
+    visual = exported.get("visual") if isinstance(exported, dict) else None
+    live_title = str(visual.get("title") or "").strip() if isinstance(visual, dict) else ""
+    title_source = str(visual.get("titleSource") or "").strip() if isinstance(visual, dict) else ""
+    live_type = (
+        str(visual.get("type") or recurrence.get("visual_type") or "").strip()
+        if isinstance(visual, dict)
+        else str(recurrence.get("visual_type") or "").strip()
+    )
+    if live_title and (
+        title_source == "property" or not _is_generic_visual_title(live_title, live_type)
+    ):
+        if live_title != str(recurrence.get("visual_title") or "").strip():
+            with get_db() as db:
+                db.execute(
+                    "UPDATE pbi_recurrences SET visual_title = ? WHERE id = ?",
+                    (live_title, recurrence["id"]),
+                )
+        recurrence["visual_title"] = live_title
+    elif _is_generic_visual_title(recurrence.get("visual_title"), recurrence.get("visual_type")):
+        recurrence["visual_title"] = None
+
+
 def build_html_email(
     recurrence: dict,
     group: dict,
@@ -1097,6 +1129,7 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
             workspace_id=recurrence["workspace_id"],
             dataset_id=recurrence.get("dataset_id"),
         )
+        _apply_live_visual_title(recurrence, exported)
         columns, rows = parse_visual_csv(exported["data"])
         delivery_mode = recurrence.get("delivery_mode") or "subgroups"
         required_columns = {rule["column_name"] for rule in recurrence["rules"]}

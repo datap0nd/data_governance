@@ -375,6 +375,13 @@ def test_authoring_loader_falls_back_to_second_package_cdn():
 def test_runtime_reads_visual_fields_and_slicer_filters_for_rest_fallback():
     runtime = pbi_visual_export._RUNTIME_HTML
 
+    assert 'objectName: "title"' in runtime
+    assert '["titleText", "text"]' in runtime
+    assert "propertyName" in runtime
+    assert "visual.getProperty" in runtime
+    assert 'titleSource: "property"' in runtime
+    assert 'genericTitles = new Set(["matrix", "pivottable", "table", "tableex"])' in runtime
+    assert 'report.on("rendered"' in runtime
     assert "selectedVisual.getCapabilities()" in runtime
     assert "selectedVisual.getDataFields(role.name)" in runtime
     assert "selectedVisual.getFieldFormatString" in runtime

@@ -5395,10 +5395,16 @@ function _recBindBuilder() {
                 body: JSON.stringify({ report_id: state.config.report_id, embed_url: state.config.embed_url, page_name: state.config.page_name }),
             });
             state.visuals = data.visuals || [];
-            if (!state.visuals.some(visual => visual.name === state.config.visual_name && visual.is_table)) {
+            const selectedVisual = state.visuals.find(
+                visual => visual.name === state.config.visual_name && visual.is_table
+            );
+            if (!selectedVisual) {
                 state.config.visual_name = "";
                 state.config.visual_title = "";
                 state.config.visual_type = "";
+            } else {
+                state.config.visual_title = selectedVisual.title || "";
+                state.config.visual_type = selectedVisual.type || state.config.visual_type;
             }
         });
     });
@@ -5423,6 +5429,10 @@ function _recBindBuilder() {
                     dataset_id: state.config.dataset_id,
                 }),
             });
+            if (state.preview.visual?.title) {
+                state.config.visual_title = state.preview.visual.title;
+                state.config.visual_type = state.preview.visual.type || state.config.visual_type;
+            }
             if (!state.preview.columns.includes(state.config.group_column)) {
                 state.config.group_column = "";
                 state.config.groups = [];

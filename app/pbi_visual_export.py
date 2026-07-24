@@ -95,6 +95,41 @@ _RUNTIME_HTML = f"""<!doctype html>
         const safeCall = async (operation, fallback = null) => {{
           try {{ return await operation(); }} catch (_) {{ return fallback; }}
         }};
+        const resolveVisualTitle = async visual => {{
+          for (const propertyName of ["titleText", "text"]) {{
+            const titleProperty = await safeCall(
+              () => visual.getProperty({{
+                objectName: "title",
+                propertyName
+              }}),
+              null
+            );
+            const propertyTitle = titleProperty && typeof titleProperty.value === "string"
+              ? titleProperty.value.trim()
+              : "";
+            if (propertyTitle) return {{title: propertyTitle, titleSource: "property"}};
+          }}
+
+          const descriptorTitle = typeof visual.title === "string"
+            ? visual.title.trim()
+            : "";
+          const normalizedDescriptor = descriptorTitle.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const normalizedType = String(visual.type || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          const genericTitles = new Set(["matrix", "pivottable", "table", "tableex"]);
+          if (
+            descriptorTitle &&
+            normalizedDescriptor !== normalizedType &&
+            !genericTitles.has(normalizedDescriptor)
+          ) {{
+            return {{title: descriptorTitle, titleSource: "descriptor"}};
+          }}
+          return {{title: "", titleSource: null}};
+        }};
+        const describeVisual = async visual => ({{
+          name: visual.name,
+          type: visual.type,
+          ...(await resolveVisualTitle(visual))
+        }});
         const collectQuerySpec = async (report, page, selectedVisual, visuals) => {{
           const capabilities = await selectedVisual.getCapabilities();
           const roles = capabilities && Array.isArray(capabilities.dataRoles)
@@ -154,11 +189,7 @@ _RUNTIME_HTML = f"""<!doctype html>
             stop(resolve, {{
               exportError,
               querySpec,
-              visual: {{
-                name: activeVisual.name,
-                type: activeVisual.type,
-                title: activeVisual.title || ""
-              }}
+              visual: await describeVisual(activeVisual)
             }});
           }} catch (querySpecError) {{
             stop(
@@ -222,14 +253,21 @@ _RUNTIME_HTML = f"""<!doctype html>
             const visuals = await selectedPage.getVisuals();
             pageVisuals = visuals;
             if (config.action === "list") {{
-              stop(resolve, visuals.map(visual => ({{
-                name: visual.name,
-                type: visual.type,
-                title: visual.title || "",
-                displayMode: visual.layout && visual.layout.displayState
-                  ? visual.layout.displayState.mode
-                  : null
-              }})));
+              let listStarted = false;
+              report.on("rendered", async () => {{
+                if (listStarted || finished) return;
+                listStarted = true;
+                const describedVisuals = await Promise.all(
+                  visuals.map(async visual => ({{
+                    ...(await describeVisual(visual)),
+                    displayMode: visual.layout && visual.layout.displayState
+                      ? visual.layout.displayState.mode
+                      : null
+                  }}))
+                );
+                stop(resolve, describedVisuals);
+              }});
+              await report.render();
               return;
             }}
             const selectedVisual = visuals.find(visual => visual.name === config.visualName);
@@ -261,11 +299,7 @@ _RUNTIME_HTML = f"""<!doctype html>
                 stop(resolve, {{
                   data: result.data,
                   querySpec,
-                  visual: {{
-                    name: selectedVisual.name,
-                    type: selectedVisual.type,
-                    title: selectedVisual.title || ""
-                  }}
+                  visual: await describeVisual(selectedVisual)
                 }});
               }} catch (error) {{
                 const exportError = errorDetails(error);

@@ -2,60 +2,61 @@
 
 ## Current Objective
 
-Deliver Power BI field-format fidelity and the missing business title in
-recurrence previews and recipient emails.
+Correct recurrence visual-title discovery so matrix visuals use their visible
+Power BI title instead of the generic `matrix` type.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Feature commit: `07b48f6 Match recurrence formatting and titles`
+- Latest base commit: `039f9fd Update recurrence formatting handoff`
 - Public repo: no, private
-- Push status: feature commit is pushed to `origin/main`
+- Push status: title-resolution correction is complete locally and pending
+  publication
 
 ## Decisions Made
 
-- Keep Power BI's native summarized CSV as the authority for rich currency,
-  percentage, locale, date, and dynamic formatting.
-- Read the selected visual's live field format strings on the primary export
-  path as well as the existing Execute Queries fallback.
-- Locally normalize only fields explicitly formatted as whole numbers, including
-  custom `0`/`#,0` formats and standard `F0`/`N0` formats.
-- Apply normalization before recurrence previewing, rule evaluation, subgroup
-  extraction, and email rendering.
-- Use the selected Power BI visual title as the results heading. The report name
-  remains the report-summary title, and untitled visuals fall back to `Alert
-  results`.
+- Do not trust `VisualDescriptor.title` by itself. Power BI can return a generic
+  visual type such as `matrix`, `pivotTable`, `table`, or `tableEx`.
+- Render the report before resolving visual titles.
+- Read the supported authoring title property using the `titleText` selector,
+  with `text` as a compatibility fallback for newer visual definitions.
+- Accept generic words such as `Matrix` when they came from the explicit title
+  property, but reject them when they came only from the descriptor.
+- Refresh the builder title after visual discovery and preview.
+- Refresh and persist an existing recurrence's title on its next draft or send
+  run. If no usable live title is available, use `Alert results` in the email.
 
 ## Files Changed
 
-- `app/pbi_visual_export.py`: collect field metadata on successful summarized
-  exports and apply safe whole-number normalization.
-- `app/pbi_visual_query.py`: detect whole-number Power BI formats, normalize
-  numeric CSV cells, and recognize the authoring API's `isHidden` field marker.
-- `app/routers/recurrences.py`: render the escaped visual title above the email
-  results table.
-- `tests/test_pbi_visual_query.py`: cover custom and standard integer formats,
-  scaling-format exclusion, runtime metadata, and primary-export integration.
-- `tests/test_recurrences.py`: cover escaped visual titles and delivered-email
-  headings.
-- `README.md`: document title and field-format behavior.
+- `app/pbi_visual_export.py`: resolve titles from rendered visual properties for
+  discovery, summarized export, and Execute Queries fallback metadata.
+- `app/routers/recurrences.py`: reject generic descriptor titles, update saved
+  recurrence titles from live export metadata, and fall back safely.
+- `app/static/app.js`: refresh the selected title after discovery and preview.
+- `tests/test_pbi_visual_query.py`: verify the browser runtime uses the title
+  property and filters generic descriptor values.
+- `tests/test_recurrences.py`: verify saved generic titles are replaced, missing
+  titles are omitted, and an explicit title named `Matrix` remains valid.
+- `README.md`: document title resolution and existing-recurrence refresh.
 
 ## Commands And Checks
 
-- Full Python 3.11 `pytest -q` suite: 48 passed.
+- Full Python 3.11 `pytest -q` suite: 51 passed.
+- Targeted recurrence and visual-query suite: 46 passed.
 - Python `compileall` for `app`: passed.
 - `node --check app/static/app.js`: passed.
+- Generated Power BI browser-runtime JavaScript syntax check: passed.
 - `git diff --check`: passed.
 
 ## Open Questions
 
-- Live validation against the work PC's Power BI report and Outlook profile has
-  not been run from this Mac. The safe formatter intentionally leaves scaled,
-  percentage, currency, date, locale-specific, and dynamic formats to Power BI.
+- Live title-property retrieval still needs validation against the work PC's
+  Power BI report. Static titles are supported directly. If a conditionally
+  formatted title is returned as a non-string expression rather than resolved
+  text, the email will use `Alert results` instead of guessing.
 
 ## Next Step
 
-Create Outlook drafts from a recurrence containing a whole-number field and
-confirm the preview and email show the Power BI visual title and no redundant
-decimal places.
+Create a draft from the affected matrix recurrence and confirm the builder and
+email show the same visible title as Power BI.

@@ -313,6 +313,64 @@ def test_email_uses_visual_title_for_alert_results_heading():
     assert "<Open exceptions>" not in email
 
 
+def test_live_visual_title_replaces_saved_generic_matrix_title(tmp_path, monkeypatch):
+    recurrence_id = _seed_recurrence(tmp_path / "governance.db")
+    monkeypatch.setattr(recurrences, "get_db", database.get_db)
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE pbi_recurrences SET visual_title = 'matrix', visual_type = 'matrix' WHERE id = ?",
+            (recurrence_id,),
+        )
+    recurrence = {"id": recurrence_id, "visual_title": "matrix", "visual_type": "matrix"}
+
+    recurrences._apply_live_visual_title(
+        recurrence,
+        {
+            "visual": {
+                "type": "matrix",
+                "title": "Open exceptions by subsidiary",
+                "titleSource": "property",
+            }
+        },
+    )
+
+    assert recurrence["visual_title"] == "Open exceptions by subsidiary"
+    with database.get_db() as db:
+        saved = db.execute(
+            "SELECT visual_title FROM pbi_recurrences WHERE id = ?",
+            (recurrence_id,),
+        ).fetchone()
+    assert saved["visual_title"] == "Open exceptions by subsidiary"
+
+
+def test_generic_visual_title_is_omitted_when_live_title_is_unavailable():
+    recurrence = {"id": 1, "visual_title": "matrix", "visual_type": "matrix"}
+
+    recurrences._apply_live_visual_title(
+        recurrence,
+        {"visual": {"type": "matrix", "title": "", "titleSource": None}},
+    )
+
+    assert recurrence["visual_title"] is None
+
+
+def test_explicit_visual_title_can_legitimately_be_named_matrix():
+    recurrence = {"id": 1, "visual_title": "Matrix", "visual_type": "matrix"}
+
+    recurrences._apply_live_visual_title(
+        recurrence,
+        {
+            "visual": {
+                "type": "matrix",
+                "title": "Matrix",
+                "titleSource": "property",
+            }
+        },
+    )
+
+    assert recurrence["visual_title"] == "Matrix"
+
+
 def test_report_picker_includes_default_owner_and_people_email(tmp_path, monkeypatch):
     database.DB_PATH = str(tmp_path / "governance.db")
     database.init_db()
