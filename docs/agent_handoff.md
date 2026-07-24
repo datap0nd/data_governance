@@ -10,9 +10,9 @@ when the visual is still set to its default.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit: `fa36df9 Update visual title handoff`
+- Feature commit: `c114319 Match recurrence formatting and dynamic titles`
 - Public repo: no, private
-- Push status: current scoped changes are not committed yet
+- Push status: feature commit is pushed to `origin/main`
 
 ## Decisions Made
 
