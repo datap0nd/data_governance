@@ -12,7 +12,7 @@ when the visual is still set to its default.
 - Branch: `main`
 - Feature commit: `c114319 Match recurrence formatting and dynamic titles`
 - Public repo: no, private
-- Push status: feature commit is pushed to `origin/main`
+- Push status: feature commit is pushed; follow-up formatting fix is uncommitted
 
 ## Decisions Made
 
@@ -31,9 +31,12 @@ when the visual is still set to its default.
 - When the title property contains a supported semantic-model measure
   expression, evaluate that measure through Execute Queries using the same
   report, page, visual, and slicer filters as the recurrence.
-- Apply a visual decimal-place setting only when Power BI marks it with the
-  explicit property schema. Ignore default or `Auto` property values and keep
-  the field or measure format string instead.
+- Apply a scalar visual decimal-place setting when Power BI marks it explicit
+  or omits the optional schema. Reject values explicitly marked with the
+  default schema so `Auto` keeps the field or measure format string.
+- Collect matrix data roles independently. One unsupported or empty role must
+  not discard all field-format metadata. Fall back to the standard matrix
+  `Rows`, `Columns`, and `Values` roles when capabilities are unavailable.
 - Formatting changes only the recurrence's displayed CSV values or DAX output.
   It does not alter the semantic model or source values.
 
@@ -41,7 +44,8 @@ when the visual is still set to its default.
 
 - `app/pbi_visual_export.py`: resolve titles from rendered visual properties for
   discovery and export, recognize title measure expressions, evaluate dynamic
-  titles, and capture only explicit visual decimal-place settings.
+  titles, tolerate schema-less numeric precision, and collect matrix roles
+  independently with standard-role fallback.
 - `app/pbi_visual_query.py`: apply explicit zero-decimal visual formatting to
   value fields while retaining field formats when the visual setting is
   default.
@@ -56,8 +60,9 @@ when the visual is still set to its default.
 
 ## Commands And Checks
 
-- Full Python `pytest -q` suite: 57 passed.
-- Targeted recurrence and visual-query suite: 52 passed.
+- Full Python `pytest -q` suite after the follow-up collector change: 57 passed.
+- Targeted recurrence and visual-query suite after the follow-up collector
+  change: 52 passed.
 - Python `compileall` for `app`: passed.
 - `node --check app/static/app.js`: passed.
 - Generated Power BI browser-runtime JavaScript syntax check: passed.
@@ -65,9 +70,8 @@ when the visual is still set to its default.
 
 ## Open Questions
 
-- Live validation is still required against the affected Power BI matrix. The
-  authoring API must expose the explicit precision property and the title
-  property's measure expression in the documented property payload shapes.
+- The first live draft after `c114319` still showed decimals. The follow-up
+  collector fix must be deployed and validated against the affected matrix.
 - Unsupported title expressions or unavailable Build permission leave the
   existing safe `Alert results` fallback in place.
 

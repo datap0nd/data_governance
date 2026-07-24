@@ -197,25 +197,39 @@ _RUNTIME_HTML = f"""<!doctype html>
           const precisionSchema = String(
             precisionProperty && precisionProperty.schema || ""
           ).toLowerCase();
-          const precisionIsExplicit = precisionSchema.endsWith("#property");
+          const precisionIsDefault = precisionSchema.endsWith("#default");
+          const precisionIsExplicit = !precisionIsDefault &&
+            (precisionSchema === "" || precisionSchema.endsWith("#property")) &&
+            Number.isInteger(parsedPrecision) &&
+            parsedPrecision >= 0 &&
+            parsedPrecision <= 15;
           return {{
-            valueDecimalPlaces: precisionIsExplicit &&
-              Number.isInteger(parsedPrecision) &&
-              parsedPrecision >= 0 &&
-              parsedPrecision <= 15
-              ? parsedPrecision
-              : null,
+            valueDecimalPlaces: precisionIsExplicit ? parsedPrecision : null,
             valueDecimalPlacesSource: precisionIsExplicit ? "visual" : null
           }};
         }};
         const collectQuerySpec = async (report, page, selectedVisual, visuals) => {{
-          const capabilities = await selectedVisual.getCapabilities();
-          const roles = capabilities && Array.isArray(capabilities.dataRoles)
+          const capabilities = await safeCall(
+            () => selectedVisual.getCapabilities(),
+            null
+          );
+          const capabilityRoles = capabilities && Array.isArray(capabilities.dataRoles)
             ? capabilities.dataRoles
             : [];
+          const roles = capabilityRoles.length
+            ? capabilityRoles
+            : (
+              String(selectedVisual.type || "").toLowerCase() === "pivottable"
+                ? ["Rows", "Columns", "Values"]
+                : ["Values"]
+            ).map(name => ({{name, displayName: name, kind: null}}));
           const fields = [];
           for (const role of roles) {{
-            const targets = await selectedVisual.getDataFields(role.name);
+            const roleTargets = await safeCall(
+              () => selectedVisual.getDataFields(role.name),
+              []
+            );
+            const targets = Array.isArray(roleTargets) ? roleTargets : [];
             for (let index = 0; index < targets.length; index += 1) {{
               const target = targets[index];
               fields.push({{
@@ -244,12 +258,12 @@ _RUNTIME_HTML = f"""<!doctype html>
           const addFilters = (source, values) => {{
             for (const filter of values || []) filters.push({{source, filter}});
           }};
-          addFilters("report", await report.getFilters());
-          addFilters("page", await page.getFilters());
-          addFilters("visual", await selectedVisual.getFilters());
+          addFilters("report", await safeCall(() => report.getFilters(), []));
+          addFilters("page", await safeCall(() => page.getFilters(), []));
+          addFilters("visual", await safeCall(() => selectedVisual.getFilters(), []));
           for (const visual of visuals) {{
             if (visual.name === selectedVisual.name || visual.type.toLowerCase() !== "slicer") continue;
-            const state = await visual.getSlicerState();
+            const state = await safeCall(() => visual.getSlicerState(), null);
             addFilters(`slicer:${{visual.name}}`, state && state.filters);
           }}
           return {{
