@@ -222,6 +222,43 @@ def _whole_number_format(format_string: str) -> tuple[bool, bool]:
     return True, grouping
 
 
+def _explicit_value_decimal_places(query_spec: dict | None) -> int | None:
+    """Return only a confirmed visual override, never a Power BI default."""
+    formatting = query_spec.get("visualFormatting") if isinstance(query_spec, dict) else None
+    source = formatting.get("valueDecimalPlacesSource") if isinstance(formatting, dict) else None
+    if source != "visual":
+        return None
+    value = formatting.get("valueDecimalPlaces") if isinstance(formatting, dict) else None
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if str(value).strip() == str(parsed) and 0 <= parsed <= 15 else None
+
+
+def _is_value_target(target: dict) -> bool:
+    return bool(target.get("measure")) or target.get("aggregationFunction") not in {None, ""}
+
+
+def _zero_decimal_format_string(format_string: str) -> str:
+    value = str(format_string or "").strip()
+    if not value:
+        return "0"
+    standard = re.fullmatch(r"(?i)([nfp])(\d+)", value)
+    if standard:
+        return f"{standard.group(1)}0"
+    return re.sub(r"\.[0#]+", "", value)
+
+
+def _format_uses_grouping(format_string: str) -> bool:
+    value = str(format_string or "").split(";", 1)[0]
+    decimal_marker = value.find(".")
+    whole_section = value if decimal_marker < 0 else value[:decimal_marker]
+    return "," in whole_section
+
+
 def _format_whole_number(value, *, grouping: bool) -> str:
     text = str(value if value is not None else "").strip()
     if not re.fullmatch(r"[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", text):
@@ -242,20 +279,32 @@ def apply_visual_field_formats(csv_text: str, query_spec: dict | None) -> str:
         return csv_text
 
     field_headers: list[str] = []
-    field_formats: list[str] = []
+    field_formats: list[tuple[str, bool]] = []
+    visual_decimals = _explicit_value_decimal_places(query_spec)
     for field in fields:
         target = field.get("target") if isinstance(field, dict) else None
         if not isinstance(target, dict) or target.get("hidden") or target.get("isHidden"):
             continue
+        format_string = str(field.get("formatString") or "").strip()
         field_headers.append(_field_header(field, target))
-        field_formats.append(str(field.get("formatString") or "").strip())
+        field_formats.append(
+            (
+                format_string,
+                visual_decimals == 0 and _is_value_target(target),
+            )
+        )
     field_headers = _deduplicate_headers(field_headers)
-    integer_formats = {
-        header.casefold(): grouping
-        for header, format_string in zip(field_headers, field_formats, strict=True)
-        if (format_details := _whole_number_format(format_string))[0]
-        for grouping in [format_details[1]]
-    }
+    integer_formats: dict[str, bool] = {}
+    for header, (format_string, visual_integer) in zip(
+        field_headers,
+        field_formats,
+        strict=True,
+    ):
+        format_details = _whole_number_format(format_string)
+        if visual_integer:
+            integer_formats[header.casefold()] = _format_uses_grouping(format_string)
+        elif format_details[0]:
+            integer_formats[header.casefold()] = format_details[1]
     if not integer_formats:
         return csv_text
 
@@ -395,6 +444,7 @@ def build_visual_query(query_spec: dict, max_rows: int) -> dict:
     named_expressions: list[tuple[str, str]] = []
     value_aliases: dict[tuple, str] = {}
     output_columns: list[dict] = []
+    visual_decimals = _explicit_value_decimal_places(query_spec)
 
     def add_value_expression(target: dict, expression: str, *, prefix: str = "__value") -> str:
         key = _target_key(target)
@@ -420,12 +470,15 @@ def build_visual_query(query_spec: dict, max_rows: int) -> dict:
         else:
             alias = add_value_expression(target, expression)
             output_expression = _dax_name(alias, "query alias")
+        format_string = str(field.get("formatString") or "").strip()
+        if field_kind == "value" and visual_decimals == 0:
+            format_string = _zero_decimal_format_string(format_string)
         output_columns.append(
             {
                 "header": _field_header(field, target),
                 "output_alias": f"__out{len(output_columns)}",
                 "expression": output_expression,
-                "format_string": str(field.get("formatString") or "").strip(),
+                "format_string": format_string,
             }
         )
 

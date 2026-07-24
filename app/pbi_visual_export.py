@@ -8,6 +8,8 @@ field bindings and filters for an official Execute Queries REST fallback.
 
 from __future__ import annotations
 
+import csv
+import io
 import importlib.util
 import logging
 import os
@@ -95,7 +97,37 @@ _RUNTIME_HTML = f"""<!doctype html>
         const safeCall = async (operation, fallback = null) => {{
           try {{ return await operation(); }} catch (_) {{ return fallback; }}
         }};
+        const titleMeasureTarget = value => {{
+          const visit = node => {{
+            if (!node || typeof node !== "object") return null;
+            const measure = node.Measure || node.measure;
+            if (measure && typeof measure === "object") {{
+              const sourceRef = measure.Expression && measure.Expression.SourceRef
+                ? measure.Expression.SourceRef
+                : measure.expression && measure.expression.SourceRef
+                  ? measure.expression.SourceRef
+                  : null;
+              const table = sourceRef && (sourceRef.Entity || sourceRef.entity);
+              const measureName = measure.Property || measure.property;
+              if (
+                typeof table === "string" &&
+                table.trim() &&
+                typeof measureName === "string" &&
+                measureName.trim()
+              ) {{
+                return {{table: table.trim(), measure: measureName.trim()}};
+              }}
+            }}
+            for (const child of Object.values(node)) {{
+              const found = visit(child);
+              if (found) return found;
+            }}
+            return null;
+          }};
+          return visit(value);
+        }};
         const resolveVisualTitle = async visual => {{
+          let dynamicTitleTarget = null;
           for (const propertyName of ["titleText", "text"]) {{
             const titleProperty = await safeCall(
               () => visual.getProperty({{
@@ -108,6 +140,9 @@ _RUNTIME_HTML = f"""<!doctype html>
               ? titleProperty.value.trim()
               : "";
             if (propertyTitle) return {{title: propertyTitle, titleSource: "property"}};
+            dynamicTitleTarget = dynamicTitleTarget || titleMeasureTarget(
+              titleProperty && titleProperty.value
+            );
           }}
 
           const descriptorTitle = typeof visual.title === "string"
@@ -121,15 +156,58 @@ _RUNTIME_HTML = f"""<!doctype html>
             normalizedDescriptor !== normalizedType &&
             !genericTitles.has(normalizedDescriptor)
           ) {{
-            return {{title: descriptorTitle, titleSource: "descriptor"}};
+            return {{
+              title: descriptorTitle,
+              titleSource: "descriptor",
+              titleTarget: dynamicTitleTarget
+            }};
           }}
-          return {{title: "", titleSource: null}};
+          return {{
+            title: "",
+            titleSource: dynamicTitleTarget ? "expression" : null,
+            titleTarget: dynamicTitleTarget
+          }};
         }};
-        const describeVisual = async visual => ({{
-          name: visual.name,
-          type: visual.type,
-          ...(await resolveVisualTitle(visual))
-        }});
+        const renderedVisual = async visual => {{
+          const refreshedVisuals = await safeCall(() => visual.page.getVisuals(), []);
+          return refreshedVisuals.find(candidate => candidate.name === visual.name) || visual;
+        }};
+        const describeVisual = async (visual, refreshAfterRender = false) => {{
+          const currentVisual = refreshAfterRender ? await renderedVisual(visual) : visual;
+          return {{
+            name: currentVisual.name,
+            type: currentVisual.type,
+            ...(await resolveVisualTitle(currentVisual))
+          }};
+        }};
+        const collectVisualFormatting = async visual => {{
+          const precisionProperty = await safeCall(
+            () => visual.getProperty({{
+              objectName: "columnFormatting",
+              propertyName: "labelPrecision"
+            }}),
+            null
+          );
+          const parsedPrecision = precisionProperty &&
+            precisionProperty.value !== null &&
+            precisionProperty.value !== undefined &&
+            precisionProperty.value !== ""
+            ? Number(precisionProperty.value)
+            : NaN;
+          const precisionSchema = String(
+            precisionProperty && precisionProperty.schema || ""
+          ).toLowerCase();
+          const precisionIsExplicit = precisionSchema.endsWith("#property");
+          return {{
+            valueDecimalPlaces: precisionIsExplicit &&
+              Number.isInteger(parsedPrecision) &&
+              parsedPrecision >= 0 &&
+              parsedPrecision <= 15
+              ? parsedPrecision
+              : null,
+            valueDecimalPlacesSource: precisionIsExplicit ? "visual" : null
+          }};
+        }};
         const collectQuerySpec = async (report, page, selectedVisual, visuals) => {{
           const capabilities = await selectedVisual.getCapabilities();
           const roles = capabilities && Array.isArray(capabilities.dataRoles)
@@ -174,7 +252,11 @@ _RUNTIME_HTML = f"""<!doctype html>
             const state = await visual.getSlicerState();
             addFilters(`slicer:${{visual.name}}`, state && state.filters);
           }}
-          return {{fields, filters}};
+          return {{
+            fields,
+            filters,
+            visualFormatting: await collectVisualFormatting(selectedVisual)
+          }};
         }};
         const resolveQueryFallback = async exportError => {{
           if (fallbackStarted || finished || !activePage || !activeVisual) return false;
@@ -189,7 +271,7 @@ _RUNTIME_HTML = f"""<!doctype html>
             stop(resolve, {{
               exportError,
               querySpec,
-              visual: await describeVisual(activeVisual)
+              visual: await describeVisual(activeVisual, true)
             }});
           }} catch (querySpecError) {{
             stop(
@@ -257,8 +339,9 @@ _RUNTIME_HTML = f"""<!doctype html>
               report.on("rendered", async () => {{
                 if (listStarted || finished) return;
                 listStarted = true;
+                const renderedVisuals = await selectedPage.getVisuals();
                 const describedVisuals = await Promise.all(
-                  visuals.map(async visual => ({{
+                  renderedVisuals.map(async visual => ({{
                     ...(await describeVisual(visual)),
                     displayMode: visual.layout && visual.layout.displayState
                       ? visual.layout.displayState.mode
@@ -299,7 +382,7 @@ _RUNTIME_HTML = f"""<!doctype html>
                 stop(resolve, {{
                   data: result.data,
                   querySpec,
-                  visual: await describeVisual(selectedVisual)
+                  visual: await describeVisual(selectedVisual, true)
                 }});
               }} catch (error) {{
                 const exportError = errorDetails(error);
@@ -578,6 +661,59 @@ def list_visuals(report_id: str, embed_url: str, page_name: str) -> list[dict]:
     return visuals
 
 
+def _apply_dynamic_visual_title(
+    result: dict,
+    *,
+    workspace_id: str | None,
+    dataset_id: str | None,
+) -> None:
+    """Resolve a supported expression-based title without changing export data."""
+    visual = result.get("visual")
+    query_spec = result.get("querySpec")
+    if not isinstance(visual, dict) or not isinstance(query_spec, dict):
+        return
+    if str(visual.get("title") or "").strip():
+        return
+    target = visual.get("titleTarget")
+    if (
+        not workspace_id
+        or not dataset_id
+        or not isinstance(target, dict)
+        or not target.get("table")
+        or not target.get("measure")
+    ):
+        return
+
+    title_spec = {
+        "fields": [
+            {
+                "target": {
+                    "table": target["table"],
+                    "measure": target["measure"],
+                },
+                "displayName": "Visual title",
+                "formatString": "",
+            }
+        ],
+        "filters": query_spec.get("filters") or [],
+    }
+    try:
+        title_result = execute_visual_query(
+            workspace_id=workspace_id,
+            dataset_id=dataset_id,
+            query_spec=title_spec,
+            max_rows=1,
+        )
+        rows = list(csv.reader(io.StringIO(title_result.get("data") or "")))
+        title = rows[1][0].strip() if len(rows) > 1 and rows[1] else ""
+    except (PbiVisualQueryError, TypeError, ValueError, csv.Error):
+        logger.warning("Could not evaluate the Power BI expression-based visual title", exc_info=True)
+        return
+    if title:
+        visual["title"] = title
+        visual["titleSource"] = "expression"
+
+
 def export_visual_data(
     report_id: str,
     embed_url: str,
@@ -614,6 +750,11 @@ def export_visual_data(
             raise PbiVisualExportError(
                 f"Power BI visual export failed, and the semantic-model fallback failed: {exc}"
             ) from exc
+        _apply_dynamic_visual_title(
+            result,
+            workspace_id=workspace_id,
+            dataset_id=dataset_id,
+        )
         return {
             **fallback,
             "visual": result.get("visual") or {},
@@ -621,6 +762,11 @@ def export_visual_data(
         }
     if not isinstance(result, dict) or not isinstance(result.get("data"), str):
         raise PbiVisualExportError("Power BI returned an empty visual export response.")
+    _apply_dynamic_visual_title(
+        result,
+        workspace_id=workspace_id,
+        dataset_id=dataset_id,
+    )
     return {
         **result,
         "data": apply_visual_field_formats(result["data"], result.get("querySpec")),

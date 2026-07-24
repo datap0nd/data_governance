@@ -79,6 +79,32 @@ def test_build_visual_query_reproduces_fields_formats_and_filters():
     ]
 
 
+def test_build_visual_query_applies_matrix_value_decimal_places():
+    spec = _query_spec()
+    spec["visualFormatting"] = {
+        "valueDecimalPlaces": 0,
+        "valueDecimalPlacesSource": "visual",
+    }
+
+    built = pbi_visual_query.build_visual_query(spec, 500)
+
+    assert 'FORMAT([__value0], "#,0")' in built["dax"]
+    assert 'FORMAT([__value1], "#,0")' in built["dax"]
+
+
+def test_build_visual_query_ignores_default_matrix_decimal_value():
+    spec = _query_spec()
+    spec["visualFormatting"] = {
+        "valueDecimalPlaces": 0,
+        "valueDecimalPlacesSource": None,
+    }
+
+    built = pbi_visual_query.build_visual_query(spec, 500)
+
+    assert 'FORMAT([__value0], "#,0")' in built["dax"]
+    assert 'FORMAT([__value1], "#,0.00")' in built["dax"]
+
+
 def test_build_visual_query_escapes_identifiers_and_filter_literals():
     spec = {
         "fields": [
@@ -153,6 +179,36 @@ def test_apply_visual_field_formats_supports_standard_and_ignores_scaling_format
     )
 
     assert formatted == 'Count,Millions\r\n"1,000",2000000.0\r\n'
+
+
+def test_apply_visual_field_formats_honors_matrix_value_decimal_places():
+    spec = _query_spec()
+    spec["visualFormatting"] = {
+        "valueDecimalPlaces": 0,
+        "valueDecimalPlacesSource": "visual",
+    }
+
+    formatted = pbi_visual_query.apply_visual_field_formats(
+        "Subsidiary,Active policies,Premium\r\nNorth,2.25,370.75\r\n",
+        spec,
+    )
+
+    assert formatted == "Subsidiary,Active policies,Premium\r\nNorth,2,371\r\n"
+
+
+def test_apply_visual_field_formats_keeps_field_format_when_visual_value_is_default():
+    spec = _query_spec()
+    spec["visualFormatting"] = {
+        "valueDecimalPlaces": 0,
+        "valueDecimalPlacesSource": None,
+    }
+
+    formatted = pbi_visual_query.apply_visual_field_formats(
+        "Subsidiary,Active policies,Premium\r\nNorth,2.25,370.75\r\n",
+        spec,
+    )
+
+    assert formatted == "Subsidiary,Active policies,Premium\r\nNorth,2,370.75\r\n"
 
 
 @pytest.mark.parametrize(
@@ -352,6 +408,100 @@ def test_visual_export_applies_whole_number_format_metadata(monkeypatch):
     assert result["export_method"] == "visual_export"
 
 
+def test_visual_export_applies_matrix_value_decimal_places(monkeypatch):
+    monkeypatch.setattr(
+        pbi_visual_export,
+        "_run_visual_action",
+        lambda **kwargs: {
+            "data": "Sales (Qty) L4W Avg\r\n370.75\r\n",
+            "querySpec": {
+                "fields": [
+                    {
+                        "target": {"table": "Measures", "measure": "Sales Qty L4W Avg"},
+                        "displayName": "Sales (Qty) L4W Avg",
+                        "formatString": "#,0.00",
+                    }
+                ],
+                "visualFormatting": {
+                    "valueDecimalPlaces": 0,
+                    "valueDecimalPlacesSource": "visual",
+                },
+            },
+            "visual": {"name": "visual1", "type": "pivotTable", "title": ""},
+        },
+    )
+
+    result = pbi_visual_export.export_visual_data(
+        "22222222-2222-2222-2222-222222222222",
+        "https://app.powerbi.com/reportEmbed?reportId=22222222-2222-2222-2222-222222222222",
+        "ReportSection",
+        "visual1",
+    )
+
+    assert result["data"] == "Sales (Qty) L4W Avg\r\n371\r\n"
+
+
+def test_visual_export_evaluates_expression_based_title(monkeypatch):
+    monkeypatch.setattr(
+        pbi_visual_export,
+        "_run_visual_action",
+        lambda **kwargs: {
+            "data": "Value\r\n1\r\n",
+            "querySpec": {
+                "fields": [
+                    {
+                        "target": {"table": "Measures", "measure": "Value"},
+                        "displayName": "Value",
+                        "formatString": "#,0",
+                    }
+                ],
+                "filters": [
+                    {
+                        "source": "slicer:region",
+                        "filter": {
+                            "$schema": "http://powerbi.com/product/schema#basic",
+                            "target": {"table": "Region", "column": "Name"},
+                            "operator": "In",
+                            "values": ["North"],
+                        },
+                    }
+                ],
+            },
+            "visual": {
+                "name": "visual1",
+                "type": "pivotTable",
+                "title": "",
+                "titleSource": "expression",
+                "titleTarget": {"table": "Measures", "measure": "Title Alert 2"},
+            },
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        pbi_visual_export,
+        "execute_visual_query",
+        lambda **kwargs: calls.append(kwargs)
+        or {"data": "Visual title\r\nRecommended S/I Qty - Week 202629\r\n"},
+    )
+
+    result = pbi_visual_export.export_visual_data(
+        "22222222-2222-2222-2222-222222222222",
+        "https://app.powerbi.com/reportEmbed?reportId=22222222-2222-2222-2222-222222222222",
+        "ReportSection",
+        "visual1",
+        workspace_id="11111111-1111-1111-1111-111111111111",
+        dataset_id="33333333-3333-3333-3333-333333333333",
+    )
+
+    assert result["visual"]["title"] == "Recommended S/I Qty - Week 202629"
+    assert result["visual"]["titleSource"] == "expression"
+    assert calls[0]["query_spec"]["fields"][0]["target"] == {
+        "table": "Measures",
+        "measure": "Title Alert 2",
+    }
+    assert calls[0]["query_spec"]["filters"][0]["source"] == "slicer:region"
+
+
 def test_authoring_loader_falls_back_to_second_package_cdn():
     class FakePage:
         def __init__(self):
@@ -380,8 +530,15 @@ def test_runtime_reads_visual_fields_and_slicer_filters_for_rest_fallback():
     assert "propertyName" in runtime
     assert "visual.getProperty" in runtime
     assert 'titleSource: "property"' in runtime
+    assert "titleMeasureTarget" in runtime
+    assert 'titleSource: dynamicTitleTarget ? "expression" : null' in runtime
     assert 'genericTitles = new Set(["matrix", "pivottable", "table", "tableex"])' in runtime
     assert 'report.on("rendered"' in runtime
+    assert "visual.page.getVisuals()" in runtime
+    assert 'objectName: "columnFormatting"' in runtime
+    assert 'propertyName: "labelPrecision"' in runtime
+    assert "valueDecimalPlaces" in runtime
+    assert 'valueDecimalPlacesSource: precisionIsExplicit ? "visual" : null' in runtime
     assert "selectedVisual.getCapabilities()" in runtime
     assert "selectedVisual.getDataFields(role.name)" in runtime
     assert "selectedVisual.getFieldFormatString" in runtime
