@@ -787,7 +787,6 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None) -> int:
     ).fetchone()
     if active:
         return active["id"]
-    scope = _loads(site["discovery_scope_json"], ["Mobile"])
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -795,7 +794,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None) -> int:
             "id": site["id"], "name": site["name"], "adapter": site["adapter"],
             "base_url": site["base_url"], "auth_url": site["auth_url"],
         },
-        "discovery": {"scope": scope, "delete_missing": False, "max_duration_minutes": 90},
+        "discovery": {"scope": ["*"], "delete_missing": False, "max_duration_minutes": 90},
     }
     cursor = db.execute(
         """INSERT INTO flow_catalog_scans

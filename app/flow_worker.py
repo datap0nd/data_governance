@@ -309,30 +309,116 @@ def _unique_visible_text(locator, limit: int = 2000) -> list[str]:
     return values
 
 
-def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]:
+def _clean_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _visible_anchor_records(page: Page) -> list[dict]:
+    records = []
+    for link in page.locator("a:visible").all():
+        text = _clean_text(link.inner_text())
+        box = link.bounding_box()
+        if not text or not box:
+            continue
+        records.append({
+            "link": link,
+            "text": text,
+            "href": link.get_attribute("href") or "",
+            "onclick": link.get_attribute("onclick") or "",
+            "box": box,
+        })
+    return records
+
+
+def _navigation_roots(records: list[dict]) -> list[dict]:
+    """Find the dense horizontal row of top-level ASAP navigation links."""
+    candidates = [
+        item for item in records
+        if item["box"]["y"] < 180 and item["box"]["height"] < 70 and len(item["text"]) <= 50
+    ]
+    if not candidates:
+        return []
+    buckets: dict[int, list[dict]] = {}
+    for item in candidates:
+        center = item["box"]["y"] + item["box"]["height"] / 2
+        buckets.setdefault(round(center / 12), []).append(item)
+    row = max(buckets.values(), key=lambda items: len({round(item["box"]["x"] / 20) for item in items}))
+    if len(row) < 2:
+        return []
+    ignored = {"asap", "home", "logout", "log out", "help", "profile"}
+    return [
+        item for item in sorted(row, key=lambda item: item["box"]["x"])
+        if item["text"].casefold() not in ignored
+    ]
+
+
+def _menu_report_paths(root: dict, before: list[dict], after: list[dict]) -> list[list[str]]:
+    """Convert links revealed by one mega-menu into category/report paths."""
+    before_keys = {
+        (item["text"].casefold(), item["href"], item["onclick"], round(item["box"]["x"]), round(item["box"]["y"]))
+        for item in before
+    }
+    revealed = [
+        item for item in after
+        if (item["text"].casefold(), item["href"], item["onclick"],
+            round(item["box"]["x"]), round(item["box"]["y"])) not in before_keys
+        and item["text"].casefold() != root["text"].casefold()
+    ]
+    if not revealed:
+        return []
+
+    columns: list[list[dict]] = []
+    for item in sorted(revealed, key=lambda value: value["box"]["x"]):
+        target = next((column for column in columns if abs(
+            sum(entry["box"]["x"] for entry in column) / len(column) - item["box"]["x"]
+        ) <= 70), None)
+        (target if target is not None else columns.append([]) or columns[-1]).append(item)
+
     paths = []
-    for root in scope:
-        root_link = page.get_by_text(root, exact=True).first
-        root_link.click()
-        page.wait_for_timeout(500)
-        # ASAP exposes report targets as links inside the open mega-menu. The
-        # scanner records only visible leaf links and reconstructs their visible
-        # parent group from the nearest heading/list container.
-        visible_links = page.locator("a:visible")
-        for link in visible_links.all():
-            name = re.sub(r"\s+", " ", link.inner_text()).strip()
-            if not name or name == root:
+    for column in columns:
+        column.sort(key=lambda item: (item["box"]["y"], item["box"]["x"]))
+        first = column[0]
+        first_target = (first["href"] + first["onclick"]).casefold()
+        has_heading = len(column) > 1 and "report" not in first_target
+        group = first["text"] if has_heading else None
+        for item in column[1:] if has_heading else column:
+            target = (item["href"] + item["onclick"]).casefold()
+            # The new ASAP UI no longer consistently includes "report" in the
+            # target. Links revealed beneath a column heading are report leaves.
+            if not has_heading and "report" not in target:
                 continue
-            href = link.get_attribute("href") or ""
-            onclick = link.get_attribute("onclick") or ""
-            if "report" not in (href + onclick).casefold():
-                continue
-            parent = link.locator("xpath=ancestor::*[self::li or self::div][1]")
-            parent_text = re.sub(r"\s+", " ", parent.inner_text()).strip() if parent.count() else ""
-            group = parent_text.removesuffix(name).strip(" -›>")
-            path = [root, group, name] if group and group != name else [root, name]
+            path = [root["text"], group, item["text"]] if group else [root["text"], item["text"]]
             if path not in paths:
                 paths.append(path)
+    return paths
+
+
+def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]:
+    # Discovery is deliberately page-driven. The old implementation required a
+    # configured label such as "Mobile", which made every navigation rename a
+    # deployment incident. Scope remains in the job schema for compatibility,
+    # but the scanner now inventories every top-level menu it can see.
+    initial = _visible_anchor_records(page)
+    roots = _navigation_roots(initial)
+    if not roots:
+        raise RuntimeError("ASAP top-level navigation could not be detected.")
+    paths: list[list[str]] = []
+    for root in roots:
+        before = _visible_anchor_records(page)
+        root["link"].click(timeout=15_000)
+        page.wait_for_timeout(500)
+        for path in _menu_report_paths(root, before, _visible_anchor_records(page)):
+            if path not in paths:
+                paths.append(path)
+        # Close the menu before measuring the next root. Clicking the active
+        # trigger is reversible and avoids confusing links from two menus.
+        try:
+            root["link"].click(timeout=5_000)
+            page.wait_for_timeout(150)
+        except Exception:
+            pass
+    if not paths:
+        raise RuntimeError("ASAP navigation was detected, but no report links were revealed.")
     return paths
 
 
