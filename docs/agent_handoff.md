@@ -11,7 +11,7 @@ deleting, overwriting, or inserting anything into SQL.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: delivered to `origin/main` in commit `a8e2350`
+- Push status: delivered to `origin/main` through commit `4f4dc39`
 
 ## Decisions Made
 
@@ -33,9 +33,12 @@ deleting, overwriting, or inserting anything into SQL.
 - ASAP Select2 controls are matched by their complete discovered option set and
   selected through the owning native select. This avoids clicking hidden option
   elements and disambiguates controls sharing one value.
-- ASAP week members are selected using an exact visible match. The report run
-  response match is case-insensitive because MicroStrategy endpoint casing can
-  differ between sessions.
+- ASAP week members are selected using an exact visible match. Report
+  completion is detected from the rendered row summary across replacement
+  MicroStrategy frames, rather than an unstable internal response URL.
+- CSV export uses the first icon-only toolbar control beside RUN, which opens
+  MicroStrategy Export Options. The worker selects `CSV file format`, activates
+  `Export`, and supports both popup and in-page wizard shapes.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
@@ -96,7 +99,8 @@ deleting, overwriting, or inserting anything into SQL.
 - `app/routers/flows.py`: validated catalog/flow APIs, scheduler queue, worker
   claim/progress protocol, per-week job expansion, and disabled SQL handoff.
 - `app/flow_worker.py`: persistent-profile Playwright worker with semantic
-  controls, CSV validation, checksums, and collision-safe filenames.
+  controls, replacement-frame readiness, current ASAP Export Options handling,
+  CSV validation, checksums, and collision-safe filenames.
 - `app/flow_local_runner.py`, `tools/run_flow_worker.ps1`: BI-desktop task
   launchers, mode-specific worker identities, and headed idle shutdown.
 - `setup.ps1`: headless service identity plus the on-demand interactive task.
@@ -160,12 +164,14 @@ deleting, overwriting, or inserting anything into SQL.
 - Full Python suite: `125 passed`.
 - BI desktop setup: downloaded `main`, preserved the existing SQLite database,
   restarted Metronome and the headless worker, and registered the headed task.
-- Live headed run #4: selected Data Configuration, executed the report, and
-  rendered 1,787 rows. It then exposed and failed at a case-sensitive response
-  URL wait; commit `a8e2350` fixes that wait and exact week selection.
-- The latest code was deployed on BI Desktop. The next test attempt was
-  interrupted by a Citrix disconnect caused by the Mac sleeping before its run
-  result could be observed.
+- Live headed runs #12 and #13 succeeded end to end on the BI desktop. Run #13
+  completed in 53 seconds: navigation 14s, configuration 30s, report execution
+  4s, and CSV export 5s.
+- Run #13 saved `Mobile - Installed Base - Installed Base (MENA) (2).csv` under
+  `C:\Users\meto.mx\Documents\Downloads_Flows`, 346,052 bytes, with a stored
+  checksum. The numbered suffix confirms the existing CSV was not overwritten.
+- Run #12 also saved one CSV and completed in 1m 6s. No files were deleted and
+  SQL handoff remained disabled.
 - Existing Flows desktop and 390px mobile Playwright screenshots passed with
   no horizontal overflow after their responsive fix.
 - Node lineage suite: `1 passed`.
@@ -177,6 +183,6 @@ deleting, overwriting, or inserting anything into SQL.
 
 ## Next Step
 
-Reconnect Citrix after the Mac is unlocked, open Tools > Flows, run
-`Inflow_Outflow test` in headed mode, and verify that Run history records one
-saved CSV artifact. Do not delete files and do not enable SQL handoff.
+Add automatic handling for the optional ASAP Notice popup, then run the same
+flow headless to verify parity with the proven headed CSV path. Do not delete
+files and do not enable SQL handoff.
