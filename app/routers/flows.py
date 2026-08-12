@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.database import get_db
+from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_local_runner import WORKER_ID as LOCAL_WORKER_ID, launch_local_worker
 from app.routers.eventlog import get_actor, log_event
 
@@ -176,6 +177,18 @@ class SiteWrite(BaseModel):
             raise ValueError("Choose a valid discovery weekday.")
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", self.discovery_time):
             raise ValueError("Discovery time must use HH:MM format.")
+        return self
+
+
+class CredentialWrite(BaseModel):
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def clean_credentials(self):
+        self.username = self.username.strip()
+        if not self.username or not self.password:
+            raise ValueError("ASAP username and password are required.")
         return self
 
 
@@ -495,12 +508,32 @@ def catalog():
         site["enabled"] = bool(site["enabled"])
         site["discovery_enabled"] = bool(site.get("discovery_enabled"))
         site["discovery_scope"] = _loads(site.pop("discovery_scope_json", None), ["Mobile"])
+        site["credentials_configured"] = (
+            asap_credential_status()["configured"] if site["adapter"] == ASAP_PORTAL_ADAPTER else False
+        )
     for report in reports:
         report["enabled"] = bool(report["enabled"])
         report["stale"] = bool(report.get("stale"))
         report["automation"] = _loads(report.pop("automation_json", None), {})
         report["filters"] = by_report.get(report["id"], [])
     return {"sites": sites, "reports": reports, "control_types": sorted(CONTROL_TYPES)}
+
+
+@router.post("/sites/{site_id}/credentials")
+def configure_site_credentials(site_id: int, body: CredentialWrite, request: Request):
+    with get_db() as db:
+        site = db.execute("SELECT id, name, adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
+        if not site:
+            raise HTTPException(404, "Website not found.")
+        if site["adapter"] != ASAP_PORTAL_ADAPTER:
+            raise HTTPException(400, "Local credential storage is only supported for ASAP.")
+    try:
+        result = save_asap_credentials(body.username, body.password)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(500, f"ASAP credentials were not stored: {exc}") from exc
+    with get_db() as db:
+        log_event(db, "flow_site", site_id, site["name"], "credentials_configured", actor=get_actor(request))
+    return result
 
 
 @router.post("/sites")

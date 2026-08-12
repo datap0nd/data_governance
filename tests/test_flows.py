@@ -379,6 +379,13 @@ def test_setup_installs_interactive_flow_worker():
     assert "Flows worker registered with Metronome." in source
 
 
+def test_setup_does_not_require_visible_asap_login_without_encrypted_credential():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    assert '$FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"' in source
+    assert "(Test-Path $FlowCredentialPath)" in source
+    assert "ASAP automatic sign-in is not configured yet." in source
+
+
 def test_setup_bounds_stale_port_process_cleanup():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
     assert "$KillProcess.WaitForExit(10000)" in source

@@ -114,6 +114,8 @@ Every scan and download records total duration and phase timings. Scan phases in
 
 Metronome queues each run for a resident browser worker on the BI desktop. The app creates and starts the `DG_Flow_Worker` Windows task in the logged-in BI desktop user's interactive session. Manual and scheduled runs therefore use the same machine, Windows identity, browser profile, and target-folder access.
 
+ASAP credentials are enrolled once in the website dialog and stored only on the BI desktop as a Windows DPAPI-encrypted blob beside the dedicated automation browser profile. The API reports only whether a credential is configured and never returns its values. When ASAP redirects to SSO because a session expired, the worker detects the password form, fills it with Playwright DOM APIs, signs in, and resumes the scan or download. Credentials are not stored in SQLite, logs, or the repository.
+
 The default worker is headless. If its dedicated automation profile needs an initial interactive sign-in, set `DG_FLOW_HEADED=true`, restart Metronome, complete the sign-in once, then remove the setting and restart again. The persistent profile is stored under the BI desktop Windows user's profile.
 
 For diagnostics, the same worker can still be started manually:

@@ -22,6 +22,11 @@ from typing import Any
 import httpx
 from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+try:
+    from app.flow_credentials import load_asap_credentials
+except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
+    from flow_credentials import load_asap_credentials
+
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
@@ -218,13 +223,67 @@ def _asap_frame(page: Page) -> Frame:
     return frame
 
 
-def _asap_open_report(page: Page, job: dict) -> Frame:
+def _asap_login_visible(page: Page) -> bool:
+    try:
+        password = page.locator('input[type="password"]:visible')
+        return password.count() > 0 and password.first.is_visible()
+    except Exception:
+        return False
+
+
+def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
+    """Recover an expired ASAP session using the local DPAPI credential."""
+    if not _asap_login_visible(page):
+        return False
+    credentials = load_asap_credentials(profile_dir)
+    if not credentials:
+        raise RuntimeError(
+            "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
+        )
+    visible_inputs = page.locator('input:visible')
+    username = page.locator('input[type="text"]:visible, input:not([type]):visible').first
+    password = page.locator('input[type="password"]:visible').first
+    if not username.count() and visible_inputs.count() >= 2:
+        username = visible_inputs.nth(0)
+    username.fill(credentials["username"])
+    password.fill(credentials["password"])
+    submit = page.get_by_role("button", name=re.compile(r"^login$", re.I)).first
+    if not submit.count():
+        submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
+    if not submit.count():
+        raise RuntimeError("ASAP sign-in form was found, but its Login action was not recognized.")
+    submit.click()
+    roots = _wait_for_navigation_roots(page, 120_000)
+    if not roots:
+        error = page.locator("text=/incorrect user id|incorrect password|try again/i").first
+        detail = _clean_text(error.text_content()) if error.count() else "ASAP did not open after automatic sign-in."
+        raise RuntimeError(f"ASAP automatic sign-in failed: {detail}")
+    return True
+
+
+def _asap_goto(page: Page, url: str, profile_dir: Path) -> bool:
+    page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+    # ASAP may render /expiredSession before redirecting to its SSO host. Wait
+    # for either terminal state so a delayed login form is never missed.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if _asap_login_visible(page):
+            return _asap_authenticate_if_needed(page, profile_dir)
+        if _navigation_roots(_visible_anchor_records(page)):
+            return False
+        page.wait_for_timeout(500)
+    if _asap_login_visible(page):
+        return _asap_authenticate_if_needed(page, profile_dir)
+    return False
+
+
+def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
     report = job["report"]
     automation = report.get("automation") or {}
     path = automation.get("category_path") or []
     if len(path) < 2:
         raise RuntimeError("ASAP reports need a category path with a menu and report name.")
-    page.goto(job["site"].get("auth_url") or report["url"], wait_until="domcontentloaded", timeout=120_000)
+    _asap_goto(page, job["site"].get("auth_url") or report["url"], profile_dir)
     def navigate():
         page.get_by_text(path[0], exact=True).first.click()
         if len(path) > 2:
@@ -500,13 +559,13 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     return definitions
 
 
-def discover_asap_catalog(page: Page, job: dict, report_progress) -> tuple[list[dict], list[dict], bool]:
+def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict], bool]:
     timings = _Timings()
     deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
     site = job["site"]
     report_progress("running", {"stage": "navigation", "message": "Opening ASAP for catalog discovery."})
     with timings.measure("navigation"):
-        page.goto(site.get("auth_url") or site.get("base_url"), wait_until="domcontentloaded", timeout=120_000)
+        _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
     with timings.measure("report_discovery"):
         paths = _asap_discover_menu_reports(page, job["discovery"].get("scope") or ["Mobile"])
     reports = []
@@ -533,7 +592,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress) -> tuple[list[
         }
         try:
             with timings.measure("report_navigation"):
-                frame = _asap_open_report(page, lightweight_job)
+                frame = _asap_open_report(page, lightweight_job, profile_dir)
             with timings.measure("filter_inspection"):
                 tabs = _unique_visible_text(frame.locator("[role=tab]:visible, .tab:visible"), 100)
                 ready_text = tabs[0] if tabs else None
@@ -556,7 +615,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress) -> tuple[list[
                 "phase": "report_inspection", "duration_ms": 0, "status": "failed",
                 "metadata": {"path": path, "error": str(exc)},
             })
-            page.goto(site.get("auth_url") or site.get("base_url"), wait_until="domcontentloaded", timeout=120_000)
+            _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
     return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
 
 
@@ -580,12 +639,12 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
-def execute_job(page: Page, job: dict, report_progress) -> tuple[list[dict], list[dict]]:
+def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict]]:
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
     with timings.measure("navigation", report_id=job["report"].get("id")):
-        frame = _asap_open_report(page, job) if is_asap else None
+        frame = _asap_open_report(page, job, profile_dir) if is_asap else None
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
     if not is_asap:
@@ -605,7 +664,7 @@ def execute_job(page: Page, job: dict, report_progress) -> tuple[list[dict], lis
         if index > 1:
             if is_asap:
                 with timings.measure("navigation", report_id=job["report"].get("id")):
-                    frame = _asap_open_report(page, job)
+                    frame = _asap_open_report(page, job, profile_dir)
             else:
                 page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
                 if ready_text:
@@ -695,7 +754,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         })
 
                     try:
-                        reports, timings, complete = discover_asap_catalog(page, scan["job"], scan_progress)
+                        reports, timings, complete = discover_asap_catalog(page, scan["job"], scan_progress, profile_dir)
                         scan_progress(
                             "succeeded",
                             {"stage": "complete", "message": f"Discovered {len(reports)} report(s)."},
@@ -721,7 +780,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     })
 
                 try:
-                    artifacts, timings = execute_job(page, run["job"], progress)
+                    artifacts, timings = execute_job(page, run["job"], progress, profile_dir)
                     progress(
                         "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."},
                         artifacts, timings,
@@ -750,7 +809,7 @@ def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
                 accept_downloads=True,
             )
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(auth_url, wait_until="domcontentloaded", timeout=120_000)
+            _asap_goto(page, auth_url, profile_dir)
             print("Complete ASAP sign-in in the browser window if prompted.", flush=True)
             roots = _wait_for_navigation_roots(page, timeout_minutes * 60_000)
             if not roots:

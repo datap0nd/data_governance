@@ -285,7 +285,11 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 
 # Bootstrap the dedicated automation browser profile once. The website URL is
 # read from this machine's SQLite configuration and is never stored in source.
-if (Test-Path $DbPath) {
+# Do not block setup on a visible login. Once the local DPAPI credential is
+# enrolled in Flows, this helper can validate/refresh the browser session
+# without user interaction. Otherwise the worker reports a clear UI action.
+$FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
+if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
     $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
     if (Test-Path $AuthUrlScript) {
         $FlowAuthUrl = (& $PyExe $AuthUrlScript $DbPath).Trim()
@@ -307,6 +311,9 @@ if (Test-Path $DbPath) {
             }
         }
     }
+} elseif (Test-Path $DbPath) {
+    Write-Host "ASAP automatic sign-in is not configured yet." -ForegroundColor DarkGray
+    Write-Host "  Open Metronome > Flows > Catalog > ASAP and store the encrypted BI-desktop credential once." -ForegroundColor DarkGray
 }
 
 & $NssmExe start $ServiceName

@@ -1,4 +1,4 @@
-from app.flow_worker import _menu_report_paths, _navigation_roots, _wait_for_navigation_roots
+from app.flow_worker import _asap_goto, _menu_report_paths, _navigation_roots, _wait_for_navigation_roots
 
 
 def _record(text, x, y, *, href="", onclick=""):
@@ -51,3 +51,24 @@ def test_navigation_waits_for_client_rendered_controls(monkeypatch):
             pass
 
     assert [item["text"] for item in _wait_for_navigation_roots(Page(), 1_000)] == ["Market", "Mobile"]
+
+
+def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
+    states = [False, False, True]
+    calls = []
+    monkeypatch.setattr("app.flow_worker._asap_login_visible", lambda _page: states.pop(0) if states else True)
+    monkeypatch.setattr("app.flow_worker._visible_anchor_records", lambda _page: [])
+    monkeypatch.setattr(
+        "app.flow_worker._asap_authenticate_if_needed",
+        lambda _page, profile: calls.append(profile) or True,
+    )
+
+    class Page:
+        def goto(self, url, **_kwargs):
+            calls.append(url)
+
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    assert _asap_goto(Page(), "https://portal.example/login", tmp_path) is True
+    assert calls == ["https://portal.example/login", tmp_path]
