@@ -813,7 +813,7 @@ def _scan_out(row) -> dict:
     return result
 
 
-def _queue_scan(db, site, trigger_type: str, requested_by: str | None) -> int:
+def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=None) -> int:
     active = db.execute(
         "SELECT id FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
         (site["id"],),
@@ -827,7 +827,12 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None) -> int:
             "id": site["id"], "name": site["name"], "adapter": site["adapter"],
             "base_url": site["base_url"], "auth_url": site["auth_url"],
         },
-        "discovery": {"scope": ["*"], "delete_missing": False, "max_duration_minutes": 90},
+        "discovery": {
+            "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
+            "report_paths": [
+                _loads(report["automation_json"], {}).get("category_path", [])
+            ] if report else [],
+        },
     }
     cursor = db.execute(
         """INSERT INTO flow_catalog_scans
@@ -873,6 +878,30 @@ def queue_catalog_scan(site_id: int, request: Request):
         log_event(db, "flow_site", site_id, site["name"], "scan_queued", f"scan_id={scan_id}", get_actor(request))
     worker = launch_local_worker()
     return {"id": scan_id, "site_id": site_id, "status": "queued", "worker": worker}
+
+
+@router.post("/reports/{report_id}/scan")
+def queue_report_scan(report_id: int, request: Request):
+    """Refresh one discovered report without staling or deleting other catalog entries."""
+    with get_db() as db:
+        report = db.execute(
+            "SELECT * FROM flow_reports WHERE id=? AND source_kind='discovered'", (report_id,)
+        ).fetchone()
+        if not report:
+            raise HTTPException(404, "Discovered report not found.")
+        site = db.execute(
+            "SELECT * FROM flow_sites WHERE id=? AND enabled=1", (report["site_id"],)
+        ).fetchone()
+        if not site or site["adapter"] != ASAP_PORTAL_ADAPTER:
+            raise HTTPException(400, "Targeted discovery is currently available for ASAP only.")
+        scan_id = _queue_scan(db, site, "report", get_actor(request), report)
+        log_event(
+            db, "flow_report", report_id, report["name"], "scan_queued",
+            f"scan_id={scan_id}", get_actor(request),
+        )
+    worker = launch_local_worker()
+    return {"id": scan_id, "site_id": site["id"], "report_id": report_id,
+            "status": "queued", "worker": worker}
 
 
 def queue_due_catalog_scans() -> dict:

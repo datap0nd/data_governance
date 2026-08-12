@@ -661,17 +661,23 @@ def _asap_activate_export_view(page: Page, frame: Frame) -> tuple[Frame, str | N
     """Open the report's export-oriented view using visible ASAP semantics."""
     visible = []
     # The current portal places this control in the outer ASAP shell, while
-    # some older reports render it inside the MicroStrategy frame.
-    for root in (page, frame):
-        candidates = root.get_by_text(re.compile(r"^Export Wizard(?:\s*\([^)]*\))?$", re.I))
-        for candidate in candidates.all():
-            try:
-                if candidate.is_visible():
-                    label = _clean_text(candidate.inner_text())
-                    if label and label.casefold() not in {item[0].casefold() for item in visible}:
-                        visible.append((label, candidate))
-            except Exception:
-                continue
+    # some older reports render it inside a nested MicroStrategy frame. The
+    # control can also arrive after the report iframe itself is attached.
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline and not visible:
+        roots = list(dict.fromkeys([page.main_frame, frame, *page.frames]))
+        for root in roots:
+            candidates = root.get_by_text(re.compile(r"^Export Wizard(?:\s*\([^)]*\))?$", re.I))
+            for candidate in candidates.all():
+                try:
+                    if candidate.is_visible():
+                        label = _clean_text(candidate.inner_text())
+                        if label and label.casefold() not in {item[0].casefold() for item in visible}:
+                            visible.append((label, candidate))
+                except Exception:
+                    continue
+        if not visible:
+            page.wait_for_timeout(250)
     if not visible:
         return frame, None
     label, control = next(
@@ -699,10 +705,13 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     report_progress("running", {"stage": "navigation", "message": "Opening ASAP for catalog discovery."})
     with timings.measure("navigation"):
         _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
+    target_paths = [path for path in job["discovery"].get("report_paths", []) if len(path) >= 2]
     with timings.measure("report_discovery"):
-        paths = _asap_discover_menu_reports(page, job["discovery"].get("scope") or ["Mobile"])
+        paths = target_paths or _asap_discover_menu_reports(
+            page, job["discovery"].get("scope") or ["Mobile"]
+        )
     reports = []
-    complete = True
+    complete = not target_paths
     for index, path in enumerate(paths, start=1):
         if time.monotonic() >= deadline:
             complete = False

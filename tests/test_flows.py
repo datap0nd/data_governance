@@ -276,6 +276,26 @@ def test_scan_discovery_keeps_duplicate_leaf_names_from_different_menu_paths(flo
     ]
 
 
+def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_entries(flow_db, monkeypatch):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.DiscoveredReport(
+        discovery_key="Mobile > Installed Base > Installed Base (MENA)",
+        name="Installed Base (MENA)",
+        report_url="https://portal.example.test",
+        automation={"category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"]},
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
+        report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+    monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "online"})
+    queued = flows.queue_report_scan(report_id, _request())
+    with database.get_db() as db:
+        scan = db.execute("SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)).fetchone()
+    job = json.loads(scan["job_json"])
+    assert job["discovery"]["report_paths"] == [["Mobile", "Installed Base", "Installed Base (MENA)"]]
+    assert job["discovery"]["delete_missing"] is False
+
+
 def test_scan_estimate_uses_recorded_median(flow_db):
     site = flows.create_site(_asap_site(), _request())
     with database.get_db() as db:
