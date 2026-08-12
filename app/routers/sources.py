@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
@@ -8,6 +10,25 @@ from app.asset_visibility import get_active_source_ids
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_WEEKDAY_BY_CRON = {
+    0: "Sunday",
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+}
+_WEEKDAY_ALIASES = {
+    "sun": 0,
+    "mon": 1,
+    "tue": 2,
+    "wed": 3,
+    "thu": 4,
+    "fri": 5,
+    "sat": 6,
+}
 
 
 def _row_value(r, key: str, default=None):
@@ -47,6 +68,109 @@ def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
+
+
+def _owner_suggestions(rows) -> dict[int, dict]:
+    """Choose the unique most common report owner for each source.
+
+    A source is deliberately left untouched when the leading owners are tied.
+    Report IDs are counted once even if a report references several tables from
+    the same source.
+    """
+    grouped: dict[int, dict[str, dict]] = {}
+    for row in rows:
+        owner = str(row["owner"] or "").strip()
+        if not owner:
+            continue
+        source_id = int(row["source_id"])
+        owner_key = owner.casefold()
+        source_owners = grouped.setdefault(source_id, {})
+        bucket = source_owners.setdefault(owner_key, {"owner": owner, "report_ids": set()})
+        bucket["report_ids"].add(int(row["report_id"]))
+
+    suggestions = {}
+    for source_id, owners in grouped.items():
+        ranked = sorted(
+            owners.values(),
+            key=lambda item: (-len(item["report_ids"]), item["owner"].casefold()),
+        )
+        top_count = len(ranked[0]["report_ids"])
+        tied = sum(1 for item in ranked if len(item["report_ids"]) == top_count) > 1
+        suggestions[source_id] = {
+            "owner": None if tied else ranked[0]["owner"],
+            "owner_report_count": top_count,
+            "total_owned_reports": len(set().union(*(item["report_ids"] for item in ranked))),
+            "tied": tied,
+        }
+    return suggestions
+
+
+def _cron_value(value: str) -> int | None:
+    clean = value.strip().lower()
+    if clean.isdigit():
+        number = int(clean)
+        return number if 0 <= number <= 7 else None
+    return _WEEKDAY_ALIASES.get(clean[:3])
+
+
+def _cron_weekdays(field: str) -> list[str] | None:
+    """Parse a standard cron day-of-week field, or return None if ambiguous."""
+    field = field.strip().lower()
+    if field == "*":
+        return list(WEEKDAYS)
+    if any(marker in field for marker in ("/", "#", "l", "?")):
+        return None
+
+    values: set[int] = set()
+    for token in field.split(","):
+        token = token.strip()
+        if not token:
+            return None
+        if "-" in token:
+            start_raw, end_raw = token.split("-", 1)
+            start = _cron_value(start_raw)
+            end = _cron_value(end_raw)
+            if start is None or end is None or start > end:
+                return None
+            values.update(range(start, end + 1))
+        else:
+            value = _cron_value(token)
+            if value is None:
+                return None
+            values.add(value)
+
+    names = {_WEEKDAY_BY_CRON[value] for value in values}
+    return [day for day in WEEKDAYS if day in names]
+
+
+def _freshness_rule_from_schedule(schedule: str | None) -> dict | None:
+    """Infer a freshness rule only from an explicit source refresh schedule."""
+    raw = str(schedule or "").strip()
+    if not raw or "disabled" in raw.casefold():
+        return None
+
+    lower = raw.casefold()
+    if lower in {"daily", "every day", "@daily", "@hourly"}:
+        return {"rule_type": "daily", "fresh_days": 1, "refresh_days": []}
+    if lower == "@weekly":
+        return {"rule_type": "fixed", "fresh_days": None, "refresh_days": ["Sunday"]}
+
+    cron_parts = raw.split()
+    if len(cron_parts) == 5:
+        days = _cron_weekdays(cron_parts[4])
+        if days:
+            if len(days) == 7:
+                return {"rule_type": "daily", "fresh_days": 1, "refresh_days": []}
+            return {"rule_type": "fixed", "fresh_days": None, "refresh_days": days}
+
+    named_days = [
+        day for day in WEEKDAYS
+        if re.search(rf"\b{day.casefold()}\b", lower)
+        or re.search(rf"\b{day[:3].casefold()}\b", lower)
+    ]
+    if named_days:
+        return {"rule_type": "fixed", "fresh_days": None, "refresh_days": named_days}
+    return None
 
 
 @router.get("", response_model=list[SourceOut])
@@ -95,6 +219,124 @@ def list_sources(include_archived: bool = Query(False)):
         if (include_archived or r["id"] in active_source_ids)
     ]
     return [_source_out_from_row(r, usage_map.get(r["id"])) for r in visible_rows]
+
+
+@router.post("/auto-assign-owners")
+def auto_assign_source_owners(request: Request):
+    """Fill blank source owners from the unique most common report owner."""
+    actor = get_actor(request)
+    with get_db() as db:
+        candidates = db.execute(
+            """SELECT id, name
+               FROM sources
+               WHERE COALESCE(archived, 0) = 0
+                 AND (owner IS NULL OR trim(owner) = '')
+               ORDER BY id"""
+        ).fetchall()
+        owner_rows = db.execute(
+            """SELECT s.id AS source_id, r.id AS report_id, r.owner
+               FROM sources s
+               JOIN report_tables rt ON rt.source_id = s.id
+               JOIN reports r ON r.id = rt.report_id
+               WHERE COALESCE(s.archived, 0) = 0
+                 AND COALESCE(r.archived, 0) = 0
+                 AND (s.owner IS NULL OR trim(s.owner) = '')
+                 AND r.owner IS NOT NULL
+                 AND trim(r.owner) != ''
+               GROUP BY s.id, r.id, r.owner"""
+        ).fetchall()
+        suggestions = _owner_suggestions(owner_rows)
+        assigned = []
+        tied = 0
+        no_report_owner = 0
+        for source in candidates:
+            suggestion = suggestions.get(source["id"])
+            if not suggestion:
+                no_report_owner += 1
+                continue
+            if suggestion["tied"]:
+                tied += 1
+                continue
+            owner = suggestion["owner"]
+            cursor = db.execute(
+                """UPDATE sources
+                   SET owner = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND (owner IS NULL OR trim(owner) = '')""",
+                (owner, source["id"]),
+            )
+            if not cursor.rowcount:
+                continue
+            detail = (
+                f"assigned {owner} from {suggestion['owner_report_count']} of "
+                f"{suggestion['total_owned_reports']} linked reports with owners"
+            )
+            log_event(db, "source", source["id"], source["name"], "owner_auto_assigned", detail, actor)
+            assigned.append({
+                "source_id": source["id"],
+                "source_name": source["name"],
+                **suggestion,
+            })
+
+    return {
+        "assigned": len(assigned),
+        "skipped_ties": tied,
+        "skipped_no_report_owner": no_report_owner,
+        "assignments": assigned,
+    }
+
+
+@router.post("/auto-set-freshness-rules")
+def auto_set_source_freshness_rules(request: Request):
+    """Fill only missing freshness rules from explicit source schedules."""
+    actor = get_actor(request)
+    with get_db() as db:
+        candidates = db.execute(
+            """SELECT id, name, refresh_schedule
+               FROM sources
+               WHERE COALESCE(archived, 0) = 0
+                 AND COALESCE(trim(freshness_rule_type), '') = ''
+                 AND COALESCE(custom_fresh_days, 0) = 0
+                 AND COALESCE(trim(freshness_schedule_days), '') = ''
+               ORDER BY id"""
+        ).fetchall()
+        configured = []
+        skipped = 0
+        for source in candidates:
+            rule = _freshness_rule_from_schedule(source["refresh_schedule"])
+            if not rule:
+                skipped += 1
+                continue
+            schedule_days = ",".join(rule["refresh_days"]) or None
+            cursor = db.execute(
+                """UPDATE sources
+                   SET freshness_rule_type = ?,
+                       custom_fresh_days = ?,
+                       freshness_schedule_days = ?,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?
+                     AND COALESCE(trim(freshness_rule_type), '') = ''
+                     AND COALESCE(custom_fresh_days, 0) = 0
+                     AND COALESCE(trim(freshness_schedule_days), '') = ''""",
+                (rule["rule_type"], rule["fresh_days"], schedule_days, source["id"]),
+            )
+            if not cursor.rowcount:
+                continue
+            rule_label = "daily" if rule["rule_type"] == "daily" else schedule_days
+            detail = f"set {rule_label} from source refresh schedule: {source['refresh_schedule']}"
+            log_event(db, "source", source["id"], source["name"], "freshness_rule_auto_set", detail, actor)
+            configured.append({
+                "source_id": source["id"],
+                "source_name": source["name"],
+                "rule_type": rule["rule_type"],
+                "refresh_days": rule["refresh_days"],
+                "source_schedule": source["refresh_schedule"],
+            })
+
+    return {
+        "configured": len(configured),
+        "skipped_unsupported_schedule": skipped,
+        "rules": configured,
+    }
 
 
 @router.get("/{source_id}", response_model=SourceOut)
@@ -232,8 +474,6 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Requ
                 days.append(clean)
         if not days:
             raise HTTPException(status_code=400, detail="Choose at least one refresh day")
-        if len(days) > 3:
-            raise HTTPException(status_code=400, detail="Choose no more than 3 refresh days")
         schedule_days = ",".join(days)
 
     with get_db() as db:

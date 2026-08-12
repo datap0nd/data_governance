@@ -338,6 +338,32 @@ main {
     font-size: 0.85rem;
 }
 
+.source-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md, 0.75rem);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-md, 0.75rem);
+}
+
+.source-filters,
+.source-bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm, 0.5rem);
+    flex-wrap: wrap;
+}
+
+.source-bulk-actions {
+    margin-inline-start: auto;
+}
+
+.source-bulk-actions .btn-sm:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
 .btn-export {
     float: right;
     font-size: 0.78rem;

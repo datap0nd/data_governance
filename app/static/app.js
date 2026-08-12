@@ -706,7 +706,7 @@ function _freshnessRuleFormHtml(source, opts = {}) {
             <div class="freshness-fixed-options">
                 <span class="freshness-label">Refresh days</span>
                 <div class="freshness-day-list">${dayBoxes}</div>
-                <span class="freshness-help">Choose up to 3</span>
+                <span class="freshness-help">Choose the expected refresh days</span>
             </div>
             <button class="btn-sm btn-blue" id="${esc(prefix)}-save-freshness">Save</button>
             ${hasFreshnessRule ? `<button class="btn-sm btn-outline" id="${esc(prefix)}-reset-freshness">Clear rule</button>` : ""}
@@ -734,16 +734,6 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
         ruleTypeSelect.addEventListener("change", syncFreshnessOptions);
         syncFreshnessOptions();
     }
-    panel.querySelectorAll(".freshness-day-pill input").forEach(box => {
-        box.addEventListener("change", () => {
-            const checked = [...panel.querySelectorAll(".freshness-day-pill input:checked")];
-            if (checked.length > 3) {
-                box.checked = false;
-                toast("Choose up to 3 refresh days");
-            }
-        });
-    });
-
     const saveFreshBtn = panel.querySelector(`#${prefix}-save-freshness`);
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
@@ -772,10 +762,6 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
                 const days = [...panel.querySelectorAll(".freshness-day-pill input:checked")].map(el => el.value);
                 if (days.length === 0) {
                     toast("Choose at least one refresh day");
-                    return;
-                }
-                if (days.length > 3) {
-                    toast("Choose up to 3 refresh days");
                     return;
                 }
                 payload.refresh_days = days;
@@ -937,6 +923,10 @@ function dataTable(tableId, columns, rows, opts) {
     return _renderDT(tableId);
 }
 
+function _isInteractiveTableTarget(target) {
+    return !!target.closest("button, a, input, select, textarea, label, [role='button']");
+}
+
 function _filterAndSortDT(dt) {
     const { columns, sortCol, sortDir, filters } = dt;
     let rows = dt.rows.filter(r => {
@@ -1056,7 +1046,7 @@ function bindDataTables() {
 
     document.querySelectorAll("tr[data-clickable]").forEach(tr => {
         tr.addEventListener("click", (e) => {
-            if (e.target.closest(".btn-archive-action")) return;
+            if (_isInteractiveTableTarget(e.target)) return;
             const id = tr.dataset.dt;
             const idx = parseInt(tr.dataset.rowIdx);
             const dt = window._dt[id];
@@ -1180,7 +1170,7 @@ function _refreshDT(tableId) {
     // Re-bind only tbody row clicks and expandable cells (not filter inputs or sort headers)
     table.querySelectorAll("tr[data-clickable]").forEach(tr => {
         tr.addEventListener("click", (e) => {
-            if (e.target.closest(".btn-archive-action")) return;
+            if (_isInteractiveTableTarget(e.target)) return;
             const idx = parseInt(tr.dataset.rowIdx);
             if (dt.opts && dt.opts.onRowClick && dt._displayRows) {
                 dt.opts.onRowClick(dt._displayRows[idx]);
@@ -2708,8 +2698,12 @@ async function renderSources() {
             return `<span style="cursor:help" title="${title}">${fmtInt(s.views_30d)}</span>`;
         }, sortVal: s => s.views_30d || 0 },
         { key: "owner", label: "Owner", width: COL_W.md, render: s => {
+            const knownOwner = people.some(p => p.name === s.owner);
+            const currentOption = s.owner && !knownOwner
+                ? `<option value="${esc(s.owner)}" selected>${esc(s.owner)} (not in People)</option>`
+                : "";
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}"><option value="">--</option>${opts}</select>`;
+            return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}" aria-label="Owner for ${esc(s._shortName)}"><option value="">--</option>${currentOption}${opts}</select>`;
         }, sortVal: s => s.owner || "" },
         { key: "linked_scripts", label: "Scripts", width: COL_W.sm, render: s => {
             if (!s.linked_scripts) return '-';
@@ -2730,6 +2724,8 @@ async function renderSources() {
     const excelCount = sources.filter(s => !s.archived && (s.type === "excel" || s.type === "csv")).length;
     const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
     const unhealthyCount = degradedCount;
+    const missingOwnerCount = active.filter(s => !String(s.owner || "").trim()).length;
+    const missingRuleCount = active.filter(s => !sourceHasFreshnessRule(s)).length;
 
     return `
         <div class="sources-wide-section">
@@ -2739,12 +2735,18 @@ async function renderSources() {
                 ${_archiveToggleHtml("sources")}
                 <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
             </div>
-            <div class="source-filters" style="display:flex;gap:0.4rem;margin-bottom:0.75rem;flex-wrap:wrap">
-                <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
-                <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy">Not Healthy (${unhealthyCount})</button>
+            <div class="source-toolbar">
+                <div class="source-filters">
+                    <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
+                    <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
+                    <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
+                    <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
+                    <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy">Not Healthy (${unhealthyCount})</button>
+                </div>
+                <div class="source-bulk-actions" aria-label="Fill missing source information">
+                    <button class="btn-sm btn-outline" id="btn-auto-source-owners" ${missingOwnerCount ? "" : "disabled"} title="Assign each unowned source to the most common owner among its linked reports. Ties are skipped.">Fill missing owners (${missingOwnerCount})</button>
+                    <button class="btn-sm btn-outline" id="btn-auto-source-freshness" ${missingRuleCount ? "" : "disabled"} title="Create rules only for sources with no rule, using their saved source refresh schedule.">Set missing freshness rules (${missingRuleCount})</button>
+                </div>
             </div>
             ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
         </div>
@@ -2792,20 +2794,71 @@ function bindSourcesPage() {
         });
     });
 
-    // Inline owner select dropdowns for sources
-    document.querySelectorAll(".source-owner-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
-            e.stopPropagation();
-            const sourceId = sel.dataset.sourceId;
+    // Delegate owner edits to the table so sorting and filtering cannot remove
+    // the handler when the table body is rebuilt.
+    const sourcesTable = document.getElementById("dt-sources");
+    if (sourcesTable) {
+        sourcesTable.addEventListener("focusin", (e) => {
+            const sel = e.target.closest(".source-owner-select");
+            if (sel) sel.dataset.previousValue = sel.value;
+        });
+        sourcesTable.addEventListener("change", async (e) => {
+            const sel = e.target.closest(".source-owner-select");
+            if (!sel) return;
+            const sourceId = Number(sel.dataset.sourceId);
+            const previousValue = sel.dataset.previousValue || "";
+            sel.disabled = true;
             try {
-                await apiPatch(`/api/sources/${sourceId}`, { owner: sel.value });
+                const updated = await apiPatch(`/api/sources/${sourceId}`, { owner: sel.value || null });
+                const source = window._dt?.["dt-sources"]?.rows.find(item => item.id === sourceId);
+                if (source) source.owner = updated.owner;
+                sel.dataset.previousValue = updated.owner || "";
                 toast("Owner updated");
             } catch (err) {
-                toast("Failed: " + err.message);
+                sel.value = previousValue;
+                toast("Owner was not saved: " + err.message);
+            } finally {
+                sel.disabled = false;
             }
         });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
+    }
+
+    const autoOwnerBtn = document.getElementById("btn-auto-source-owners");
+    if (autoOwnerBtn) {
+        autoOwnerBtn.addEventListener("click", async () => {
+            const original = autoOwnerBtn.textContent;
+            autoOwnerBtn.disabled = true;
+            autoOwnerBtn.textContent = "Filling owners...";
+            try {
+                const result = await apiPost("/api/sources/auto-assign-owners");
+                const skipped = result.skipped_ties + result.skipped_no_report_owner;
+                toast(`Assigned ${result.assigned} source owner${result.assigned === 1 ? "" : "s"}${skipped ? `; skipped ${skipped}` : ""}`);
+                await navigate("sources");
+            } catch (err) {
+                autoOwnerBtn.disabled = false;
+                autoOwnerBtn.textContent = original;
+                toast("Owners were not filled: " + err.message);
+            }
+        });
+    }
+
+    const autoFreshnessBtn = document.getElementById("btn-auto-source-freshness");
+    if (autoFreshnessBtn) {
+        autoFreshnessBtn.addEventListener("click", async () => {
+            const original = autoFreshnessBtn.textContent;
+            autoFreshnessBtn.disabled = true;
+            autoFreshnessBtn.textContent = "Setting rules...";
+            try {
+                const result = await apiPost("/api/sources/auto-set-freshness-rules");
+                toast(`Set ${result.configured} freshness rule${result.configured === 1 ? "" : "s"}${result.skipped_unsupported_schedule ? `; skipped ${result.skipped_unsupported_schedule}` : ""}`);
+                await navigate("sources");
+            } catch (err) {
+                autoFreshnessBtn.disabled = false;
+                autoFreshnessBtn.textContent = original;
+                toast("Freshness rules were not set: " + err.message);
+            }
+        });
+    }
     // Click-to-copy on full location paths
     document.querySelectorAll(".cell-copyable").forEach(el => {
         el.addEventListener("click", (e) => {
