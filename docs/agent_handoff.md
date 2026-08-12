@@ -2,9 +2,8 @@
 
 ## Current Objective
 
-Make website-report flows debuggable without weakening background automation.
-Each flow now selects a headed or headless browser from the UI, and Metronome
-routes it to the matching BI desktop worker.
+Complete a live headed Inflow/Outflow ASAP download from Metronome without
+deleting, overwriting, or inserting anything into SQL.
 
 ## Repo State
 
@@ -12,7 +11,7 @@ routes it to the matching BI desktop worker.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: delivered to `origin/main` in commit `8c66c58`
+- Push status: delivered to `origin/main` in commit `a8e2350`
 
 ## Decisions Made
 
@@ -31,6 +30,12 @@ routes it to the matching BI desktop worker.
   startup without creating a duplicate run.
 - The interactive task launches the installed Python worker directly. It does
   not add a PowerShell wrapper between Task Scheduler and Playwright.
+- ASAP Select2 controls are matched by their complete discovered option set and
+  selected through the owning native select. This avoids clicking hidden option
+  elements and disambiguates controls sharing one value.
+- ASAP week members are selected using an exact visible match. The report run
+  response match is case-insensitive because MicroStrategy endpoint casing can
+  differ between sessions.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
@@ -152,11 +157,15 @@ routes it to the matching BI desktop worker.
 
 ## Commands And Checks
 
-- Full Python suite: `123 passed`.
+- Full Python suite: `125 passed`.
 - BI desktop setup: downloaded `main`, preserved the existing SQLite database,
   restarted Metronome and the headless worker, and registered the headed task.
-- Live Flows UI: both browser choices and the execution-summary mode were
-  visible. The existing test flow was closed without saving or running.
+- Live headed run #4: selected Data Configuration, executed the report, and
+  rendered 1,787 rows. It then exposed and failed at a case-sensitive response
+  URL wait; commit `a8e2350` fixes that wait and exact week selection.
+- The latest code was deployed on BI Desktop. The next test attempt was
+  interrupted by a Citrix disconnect caused by the Mac sleeping before its run
+  result could be observed.
 - Existing Flows desktop and 390px mobile Playwright screenshots passed with
   no horizontal overflow after their responsive fix.
 - Node lineage suite: `1 passed`.
@@ -168,6 +177,6 @@ routes it to the matching BI desktop worker.
 
 ## Next Step
 
-Deploy the headed-task launch fix, retry queued run #2 from the Flows page, and
-watch the visible Edge window. Use that observation to replace the hidden
-Select2 option click with the current visible ASAP control path.
+Reconnect Citrix after the Mac is unlocked, open Tools > Flows, run
+`Inflow_Outflow test` in headed mode, and verify that Run history records one
+saved CSV artifact. Do not delete files and do not enable SQL handoff.
