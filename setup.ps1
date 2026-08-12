@@ -292,12 +292,35 @@ if (Test-Path $WorkerLauncher) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: Could not install $WorkerTaskName. ASAP scans will remain queued." -ForegroundColor Yellow
     } else {
-        & schtasks.exe /Run /TN $WorkerTaskName | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  Flows worker launched in the current desktop session." -ForegroundColor Green
-        } else {
-            Write-Host "  WARNING: $WorkerTaskName was installed but did not start." -ForegroundColor Yellow
+        Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
+    }
+
+    # Launch directly from this setup process. A service cannot reliably start
+    # an /IT task in the user's existing desktop session, which left scans
+    # queued even though Task Scheduler accepted the command.
+    $WorkerOnline = $false
+    try {
+        $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+        $WorkerOnline = $ExistingWorkers.Count -gt 0
+    } catch {}
+    if (-not $WorkerOnline) {
+        $WorkerArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$WorkerLauncher`""
+        Start-Process -FilePath "powershell.exe" -ArgumentList $WorkerArgs -WindowStyle Hidden
+        for ($attempt = 0; $attempt -lt 15; $attempt++) {
+            Start-Sleep -Seconds 2
+            try {
+                $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+                if ($RegisteredWorkers.Count -gt 0) {
+                    $WorkerOnline = $true
+                    break
+                }
+            } catch {}
         }
+    }
+    if ($WorkerOnline) {
+        Write-Host "  Flows worker registered with Metronome." -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: Flows worker did not register. Check $LogDir\flow_worker.log" -ForegroundColor Yellow
     }
 }
 

@@ -372,7 +372,15 @@ def test_setup_installs_interactive_flow_worker():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
     assert '$WorkerTaskName = "DG_Flow_Worker"' in source
     assert "/SC ONLOGON /IT /F" in source
-    assert "schtasks.exe /Run /TN $WorkerTaskName" in source
+    assert 'Start-Process -FilePath "powershell.exe"' in source
+    assert '/api/flows/workers' in source
+    assert "Flows worker registered with Metronome." in source
+
+
+def test_worker_launcher_appends_diagnostic_log():
+    source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
+    assert 'Start-Transcript -Path $WorkerLog -Append' in source
+    assert '"flow_worker.log"' in source
 
 
 def test_catalog_monitor_reports_worker_and_auto_refreshes():

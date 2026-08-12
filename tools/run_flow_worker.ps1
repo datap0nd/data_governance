@@ -4,11 +4,15 @@ $ErrorActionPreference = "Stop"
 $CodeDir = Split-Path $PSScriptRoot
 $ProjectDir = Split-Path $CodeDir
 $Python = Join-Path $ProjectDir "python313\python.exe"
+$LogDir = Join-Path $ProjectDir "logs"
+$WorkerLog = Join-Path $LogDir "flow_worker.log"
 
 if (-not (Test-Path $Python)) {
     throw "Metronome Python was not found at $Python"
 }
 
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Start-Transcript -Path $WorkerLog -Append | Out-Null
 Set-Location $CodeDir
 $env:PYTHONPATH = $CodeDir
 $arguments = @(
