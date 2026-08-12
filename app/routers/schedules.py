@@ -219,7 +219,8 @@ def get_health_trend():
     """
     with get_db() as db:
         rows = db.execute("""
-            SELECT DATE(started_at) AS day, fresh, stale, outdated
+            SELECT DATE(started_at) AS day, sources_probed, fresh, stale, outdated,
+                   unknown, COALESCE(no_rule, 0) AS no_rule
             FROM probe_runs
             WHERE started_at >= date('now', '-30 days') AND status = 'completed'
             ORDER BY started_at
@@ -228,18 +229,23 @@ def get_health_trend():
     # Group by day, take latest per day
     daily = {}
     for r in rows:
+        accounted = sum((r[key] or 0) for key in ("fresh", "stale", "outdated", "unknown", "no_rule"))
+        if accounted != (r["sources_probed"] or 0):
+            continue
         daily[r["day"]] = {
             "healthy": r["fresh"] or 0,
             "degraded": (r["stale"] or 0) + (r["outdated"] or 0),
+            "unknown": (r["unknown"] or 0) + (r["no_rule"] or 0),
         }
 
     today = datetime.now(timezone.utc).date()
     trend = []
-    last_known = {"healthy": 0, "degraded": 0}
+    last_known = None
     for i in range(29, -1, -1):
         day = (today - timedelta(days=i)).isoformat()
         if day in daily:
             last_known = daily[day]
-        trend.append({"day": day, **last_known})
+        if last_known is not None:
+            trend.append({"day": day, **last_known})
 
     return trend

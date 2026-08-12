@@ -1,6 +1,6 @@
 import re
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
@@ -101,8 +101,77 @@ def _owner_suggestions(rows) -> dict[int, dict]:
             "owner_report_count": top_count,
             "total_owned_reports": len(set().union(*(item["report_ids"] for item in ranked))),
             "tied": tied,
+            "confidence": round(top_count / len(set().union(*(item["report_ids"] for item in ranked))), 2),
+            "candidates": [
+                {"owner": item["owner"], "report_count": len(item["report_ids"])}
+                for item in ranked
+            ],
         }
     return suggestions
+
+
+def _recalculate_latest_probe_status(db, source_id: int) -> str | None:
+    """Apply a changed rule to existing probe evidence immediately."""
+    from app.scanner.prober import _compute_status_for_rule, _rule_for_source
+
+    source = db.execute(
+        """SELECT custom_fresh_days, freshness_rule_type, freshness_schedule_days
+           FROM sources WHERE id = ?""",
+        (source_id,),
+    ).fetchone()
+    probe = db.execute(
+        """SELECT id, CAST(last_data_at AS TEXT) AS last_data_at
+           FROM source_probes WHERE source_id = ?
+           ORDER BY probed_at DESC, id DESC LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    if not source or not probe:
+        return None
+    status = _compute_status_for_rule(probe["last_data_at"], _rule_for_source(source))
+    db.execute("UPDATE source_probes SET status = ? WHERE id = ?", (status, probe["id"]))
+    return status
+
+
+@router.get("/owner-suggestions")
+def get_source_owner_suggestions():
+    """Return the review queue for active sources that do not have owners."""
+    with get_db() as db:
+        active_source_ids = get_active_source_ids(db)
+        candidates = db.execute(
+            """SELECT id, name FROM sources
+               WHERE COALESCE(archived, 0) = 0
+                 AND (owner IS NULL OR trim(owner) = '')
+               ORDER BY name"""
+        ).fetchall()
+        owner_rows = db.execute(
+            """SELECT s.id AS source_id, r.id AS report_id, r.owner
+               FROM sources s
+               JOIN report_tables rt ON rt.source_id = s.id
+               JOIN reports r ON r.id = rt.report_id
+               WHERE COALESCE(s.archived, 0) = 0
+                 AND COALESCE(r.archived, 0) = 0
+                 AND (s.owner IS NULL OR trim(s.owner) = '')
+                 AND COALESCE(trim(r.owner), '') != ''
+               GROUP BY s.id, r.id, r.owner"""
+        ).fetchall()
+    candidates = [source for source in candidates if source["id"] in active_source_ids]
+    suggestions = _owner_suggestions(owner_rows)
+    return [
+        {
+            "source_id": source["id"],
+            "source_name": source["name"],
+            "state": "tie" if suggestions.get(source["id"], {}).get("tied") else "suggested" if source["id"] in suggestions else "no_evidence",
+            **suggestions.get(source["id"], {
+                "owner": None,
+                "owner_report_count": 0,
+                "total_owned_reports": 0,
+                "tied": False,
+                "confidence": 0,
+                "candidates": [],
+            }),
+        }
+        for source in candidates
+    ]
 
 
 def _cron_value(value: str) -> int | None:
@@ -174,7 +243,7 @@ def _freshness_rule_from_schedule(schedule: str | None) -> dict | None:
 
 
 @router.get("", response_model=list[SourceOut])
-def list_sources(include_archived: bool = Query(False)):
+def list_sources(include_archived: bool = False):
     with get_db() as db:
         sync_usage_from_csv_if_configured(db)
         active_source_ids = get_active_source_ids(db)
@@ -226,6 +295,7 @@ def auto_assign_source_owners(request: Request):
     """Fill blank source owners from the unique most common report owner."""
     actor = get_actor(request)
     with get_db() as db:
+        active_source_ids = get_active_source_ids(db)
         candidates = db.execute(
             """SELECT id, name
                FROM sources
@@ -233,6 +303,7 @@ def auto_assign_source_owners(request: Request):
                  AND (owner IS NULL OR trim(owner) = '')
                ORDER BY id"""
         ).fetchall()
+        candidates = [source for source in candidates if source["id"] in active_source_ids]
         owner_rows = db.execute(
             """SELECT s.id AS source_id, r.id AS report_id, r.owner
                FROM sources s
@@ -270,7 +341,8 @@ def auto_assign_source_owners(request: Request):
                 f"assigned {owner} from {suggestion['owner_report_count']} of "
                 f"{suggestion['total_owned_reports']} linked reports with owners"
             )
-            log_event(db, "source", source["id"], source["name"], "owner_auto_assigned", detail, actor)
+            detail += f"; requested_by={actor}"
+            log_event(db, "source", source["id"], source["name"], "owner_auto_assigned", detail, "System")
             assigned.append({
                 "source_id": source["id"],
                 "source_name": source["name"],
@@ -290,6 +362,7 @@ def auto_set_source_freshness_rules(request: Request):
     """Fill only missing freshness rules from explicit source schedules."""
     actor = get_actor(request)
     with get_db() as db:
+        active_source_ids = get_active_source_ids(db)
         candidates = db.execute(
             """SELECT id, name, refresh_schedule
                FROM sources
@@ -299,6 +372,7 @@ def auto_set_source_freshness_rules(request: Request):
                  AND COALESCE(trim(freshness_schedule_days), '') = ''
                ORDER BY id"""
         ).fetchall()
+        candidates = [source for source in candidates if source["id"] in active_source_ids]
         configured = []
         skipped = 0
         for source in candidates:
@@ -321,15 +395,17 @@ def auto_set_source_freshness_rules(request: Request):
             )
             if not cursor.rowcount:
                 continue
+            recalculated_status = _recalculate_latest_probe_status(db, source["id"])
             rule_label = "daily" if rule["rule_type"] == "daily" else schedule_days
-            detail = f"set {rule_label} from source refresh schedule: {source['refresh_schedule']}"
-            log_event(db, "source", source["id"], source["name"], "freshness_rule_auto_set", detail, actor)
+            detail = f"set {rule_label} from source refresh schedule: {source['refresh_schedule']}; requested_by={actor}"
+            log_event(db, "source", source["id"], source["name"], "freshness_rule_auto_set", detail, "System")
             configured.append({
                 "source_id": source["id"],
                 "source_name": source["name"],
                 "rule_type": rule["rule_type"],
                 "refresh_days": rule["refresh_days"],
                 "source_schedule": source["refresh_schedule"],
+                "status": recalculated_status,
             })
 
     return {
@@ -489,13 +565,14 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Requ
                WHERE id = ?""",
             (rule_type, fresh_days, schedule_days, source_id),
         )
+        recalculated_status = _recalculate_latest_probe_status(db, source_id)
         detail = f"type={rule_type}"
         if fresh_days is not None:
             detail += f", healthy_days={fresh_days}"
         if schedule_days:
             detail += f", refresh_days={schedule_days}"
         log_event(db, "source", source_id, None, "freshness_rule_set", detail, get_actor(request))
-    return {"status": "ok", "rule_type": rule_type, "fresh_days": fresh_days, "refresh_days": schedule_days}
+    return {"status": "ok", "rule_type": rule_type, "fresh_days": fresh_days, "refresh_days": schedule_days, "source_status": recalculated_status}
 
 
 @router.delete("/{source_id}/freshness-rule")
@@ -515,5 +592,6 @@ def delete_freshness_rule(source_id: int, request: Request):
             f"UPDATE sources SET {', '.join(fields)} WHERE id = ?",
             (source_id,),
         )
+        recalculated_status = _recalculate_latest_probe_status(db, source_id)
         log_event(db, "source", source_id, None, "freshness_rule_reset", None, get_actor(request))
-    return {"status": "ok", "fresh_days": None}
+    return {"status": "ok", "fresh_days": None, "source_status": recalculated_status}

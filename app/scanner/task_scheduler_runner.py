@@ -24,10 +24,44 @@ _TASK_SUCCESS_CODES = {"0", "0x0", "0x00000000"}
 _TASK_BENIGN_CODES = {
     "267009", "0x41301",   # currently running
     "267011", "0x41303",   # not yet run / ready
-    "267045", "0x41325",   # scheduled
-    "1057",                # service cannot be started
+    "267045", "0x41325",   # queued
     "",                    # never populated
 }
+
+_TASK_RESULT_LABELS = {
+    "0": ("success", "Succeeded"),
+    "0x0": ("success", "Succeeded"),
+    "0x00000000": ("success", "Succeeded"),
+    "267009": ("running", "Running"),
+    "0x41301": ("running", "Running"),
+    "267011": ("never_run", "Not run yet"),
+    "0x41303": ("never_run", "Not run yet"),
+    "267045": ("queued", "Queued"),
+    "0x41325": ("queued", "Queued"),
+}
+
+
+def task_result_details(last_result: str | None) -> tuple[str, str]:
+    """Translate Task Scheduler result codes into user-facing states."""
+    code = str(last_result or "").strip()
+    if not code:
+        return "never_run", "Not run yet"
+    normalized = code.lower()
+    if normalized in _TASK_RESULT_LABELS:
+        return _TASK_RESULT_LABELS[normalized]
+    if not _is_task_failed(code):
+        return "inactive", "Not actionable"
+    return "failed", f"Failed ({code})"
+
+
+def _is_actionable_task(task) -> bool:
+    """Only governed, enabled tasks with an observed run can create incidents."""
+    return bool(
+        task["script_id"]
+        and task["enabled"]
+        and task["last_run_time"]
+        and str(task["status"] or "").strip().casefold() != "disabled"
+    )
 
 
 def _is_task_failed(last_result: str | None) -> bool:
@@ -35,11 +69,12 @@ def _is_task_failed(last_result: str | None) -> bool:
     if last_result is None:
         return False
     code = last_result.strip()
+    normalized = code.lower()
     if not code:
         return False
-    if code in _TASK_SUCCESS_CODES:
+    if normalized in _TASK_SUCCESS_CODES:
         return False
-    if code in _TASK_BENIGN_CODES:
+    if normalized in _TASK_BENIGN_CODES:
         return False
     # Normalize 0x-prefix hex - if it reduces to 0, it's success
     try:
@@ -198,7 +233,7 @@ def _sync_task_alerts(db, now: str) -> tuple[int, int]:
     Returns (created, resolved).
     """
     rows = db.execute(
-        """SELECT id, task_name, last_result, script_id
+        """SELECT id, task_name, status, enabled, last_run_time, last_result, script_id
            FROM scheduled_tasks
            WHERE COALESCE(archived, 0) = 0"""
     ).fetchall()
@@ -209,7 +244,8 @@ def _sync_task_alerts(db, now: str) -> tuple[int, int]:
         task_id = t["id"]
         task_name = t["task_name"]
         script_id = t["script_id"]
-        failing = _is_task_failed(t["last_result"])
+        actionable = _is_actionable_task(t)
+        failing = actionable and _is_task_failed(t["last_result"])
 
         if failing:
             msg = f"Scheduled task last run returned {t['last_result']!r}: {task_name}"
@@ -259,13 +295,14 @@ def _sync_task_alerts(db, now: str) -> tuple[int, int]:
                 # to this script is still failing
                 any_other_failing = False
                 other_tasks = db.execute(
-                    """SELECT last_result FROM scheduled_tasks
+                    """SELECT status, enabled, last_run_time, last_result, script_id
+                       FROM scheduled_tasks
                        WHERE script_id = ? AND id != ?
                          AND COALESCE(archived, 0) = 0""",
                     (script_id, task_id),
                 ).fetchall()
                 for ot in other_tasks:
-                    if _is_task_failed(ot["last_result"]):
+                    if _is_actionable_task(ot) and _is_task_failed(ot["last_result"]):
                         any_other_failing = True
                         break
                 if not any_other_failing:

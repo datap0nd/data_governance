@@ -37,7 +37,7 @@ def list_reports(include_archived: bool = Query(False)):
     results = []
     for r in rows:
         rid = r["id"]
-        status, worst_date = status_map.get(rid, ("current", None))
+        status, worst_date = status_map.get(rid, ("unknown", None))
         view_data = views_map.get(rid, {})
         results.append(ReportOut(
             id=rid,
@@ -316,7 +316,7 @@ def _derive_report_status(report_id: int) -> tuple[str, str | None]:
     """
     with get_db() as db:
         result = _batch_report_statuses(db)
-    return result.get(report_id, ("current", None))
+    return result.get(report_id, ("unknown", None))
 
 
 def _batch_report_statuses(db) -> dict[int, tuple[str, str | None]]:

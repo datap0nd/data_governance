@@ -1,4 +1,8 @@
-"""Outlook task summary email helpers."""
+"""Outlook alert summary email helpers.
+
+Legacy task-summary endpoints remain for compatibility with older clients, but
+the current product surface and scheduled owner emails are alert-only.
+"""
 
 import html
 import json
@@ -453,172 +457,134 @@ def _build_task_summary(owner: dict, tasks: list[dict]) -> dict:
 def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
     today = datetime.now(timezone.utc).strftime("%d %b %Y")
     owner_name = owner["name"]
-    subject = f"Active alert summary - {owner_name} - {today}"
+    subject = f"{len(alerts)} active alert{'s' if len(alerts) != 1 else ''} need attention - {owner_name} - {today}"
 
-    degraded_sources = sorted(
-        [a for a in alerts if a.get("type") in SOURCE_ALERT_TYPES],
-        key=lambda a: (
-            -len(a.get("report_links") or []),
-            -(a.get("asset_days") or 0),
-            a.get("asset_name") or "",
+    failure_types = {"refresh_failed", "error_source", "script_failed", "task_failed", "broken_ref"}
+
+    def priority(alert: dict) -> tuple[str, int]:
+        impact = int(alert.get("impact_views_30d") or 0)
+        reports = len(alert.get("report_links") or [])
+        age = int(alert.get("asset_days") or 0)
+        if alert.get("type") in failure_types or impact >= 100:
+            return "Urgent", 0
+        if impact > 0 or reports >= 3 or age >= 7:
+            return "High", 1
+        return "Normal", 2
+
+    ranked = sorted(
+        alerts,
+        key=lambda alert: (
+            priority(alert)[1],
+            -(alert.get("impact_views_30d") or 0),
+            -len(alert.get("report_links") or []),
+            -(alert.get("asset_days") or 0),
+            alert.get("asset_name") or "",
         ),
     )
-    stale_vs_source = sorted(
-        [a for a in alerts if a.get("type") == "schedule_mismatch"],
-        key=lambda a: -max([d.get("delta_hours") or 0 for d in (a.get("detail_items") or [])] or [0]),
-    )
-    other_alerts = [
-        a for a in alerts
-        if a.get("type") not in SOURCE_ALERT_TYPES and a.get("type") != "schedule_mismatch"
-    ]
+    for alert in ranked:
+        alert["email_priority"] = priority(alert)[0].lower()
+    urgent_count = sum(1 for alert in ranked if priority(alert)[0] == "Urgent")
+    affected_reports = {
+        report.get("report_id")
+        for alert in ranked
+        for report in (alert.get("report_links") or [])
+        if report.get("report_id") is not None
+    }
+
+    def impact_text(alert: dict) -> str:
+        report_count = len(alert.get("report_links") or [])
+        views = int(alert.get("impact_views_30d") or 0)
+        bits = []
+        if report_count:
+            bits.append(f"{report_count} report{'s' if report_count != 1 else ''}")
+        if views:
+            bits.append(f"{views:,} weighted views in 30d")
+        return ", ".join(bits) or "No measured report impact"
+
+    def next_action(alert: dict) -> str:
+        return alert.get("recommendation") or alert.get("triage_cta") or "Open the alert and review the evidence."
+
+    def asset_html(alert: dict) -> str:
+        if alert.get("report_detail"):
+            return _report_cell_html(alert.get("report_detail"), alert.get("asset_name"))
+        if alert.get("source_detail"):
+            return _source_cell_html(alert.get("source_detail"), alert.get("asset_name"))
+        return html.escape(alert.get("asset_name") or "Unknown asset")
+
+    def asset_text(alert: dict) -> str:
+        if alert.get("report_detail"):
+            return _report_text(alert.get("report_detail"), alert.get("asset_name"))
+        if alert.get("source_detail"):
+            return _source_text(alert.get("source_detail"), alert.get("asset_name"))
+        return alert.get("asset_name") or "Unknown asset"
 
     lines = [
         f"Hi {owner_name},",
         "",
-        f"Here are your active alerts as of {today}.",
+        f"{len(ranked)} active alert{'s' if len(ranked) != 1 else ''} need attention as of {today}.",
+        f"Urgent: {urgent_count} | Reports affected: {len(affected_reports)}",
         "",
+        "WHAT TO DO FIRST",
     ]
+    for index, alert in enumerate(ranked[:3], start=1):
+        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        lines.append(f"{index}. [{priority(alert)[0]}] {label}: {asset_text(alert)}")
+        lines.append(f"   Impact: {impact_text(alert)} | Open: {alert.get('asset_days') or 0}d")
+        lines.append(f"   Next action: {next_action(alert)}")
 
-    if degraded_sources:
-        lines.append(f"Degraded Sources ({len(degraded_sources)})")
-        lines.append(DEGRADED_SOURCE_RECOMMENDATION)
-        for alert in degraded_sources:
-            source = alert.get("source_detail")
-            max_age = _source_max_age_days(source)
-            lines.append(
-                f"- {_source_text(source, alert.get('asset_name'))} | "
-                f"max age days: {max_age} | "
-                f"current age days: {alert.get('asset_days') or 0} | "
-                f"reports affected: {_report_links_text(alert.get('report_links') or [])}"
-            )
-        lines.append("")
-
-    if stale_vs_source:
-        lines.append(f"Stale vs Source ({len(stale_vs_source)})")
-        for alert in stale_vs_source:
-            report = alert.get("report_detail")
-            details = alert.get("detail_items") or []
-            if not details:
-                lines.append(f"- {_report_text(report, alert.get('asset_name'))}: {alert.get('notes') or 'Source data is newer than report data'}")
-                continue
-            for detail in details:
-                source = detail.get("source_detail")
-                delta = _duration_text_from_hours(detail.get("delta_hours"))
-                lines.append(
-                    f"- report: {_report_text(report, alert.get('asset_name'))} | "
-                    f"report age: {_age_text(detail.get('report_last_refresh_at') or (report or {}).get('pbi_last_refresh_at'))} | "
-                    f"source: {_source_text(source, detail.get('name'))} | "
-                    f"source age: {_age_text(detail.get('source_last_data_at'))} | "
-                    f"This source has fresher data than the report, by {delta}"
-                )
-        lines.append("")
-
-    if other_alerts:
-        lines.append(f"Other Alerts ({len(other_alerts)})")
-        for alert in other_alerts:
-            label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-            lines.append(f"- [{label}] {alert.get('asset_name') or 'Unknown asset'} ({alert.get('asset_days') or 0}d)")
-            if alert.get("recommendation"):
-                lines.append(f"  Fix: {alert['recommendation']}")
-        lines.append("")
+    lines.extend(["", "ALL ACTIVE ALERTS"])
+    for alert in ranked:
+        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        lines.append(
+            f"- [{priority(alert)[0]}] {label} | {asset_text(alert)} | "
+            f"{impact_text(alert)} | Open {alert.get('asset_days') or 0}d"
+        )
+        lines.append(f"  Next action: {next_action(alert)}")
 
     lines.extend(["", "Thanks,", "Metronome"])
     body_text = "\n".join(lines)
 
     html_parts = [
-        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#202124;max-width:980px\">",
+        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:1.45;color:#1f2937;max-width:920px\">",
         f"<p>Hi {html.escape(owner_name)},</p>",
-        f"<p>Here are your active alerts as of {html.escape(today)}.</p>",
+        f"<p><strong>{len(ranked)} active alert{'s' if len(ranked) != 1 else ''} need attention.</strong> This summary is ranked by failure risk, measured usage, affected reports, and age.</p>",
+        '<table role="presentation" style="width:100%;border-collapse:collapse;margin:14px 0 20px"><tr>',
+        f'<td style="padding:12px 14px;background:#f3f7f6;border:1px solid #d8e4e1"><div style="font-size:22px;font-weight:700">{len(ranked)}</div><div style="color:#5b6670">Active alerts</div></td>',
+        f'<td style="padding:12px 14px;background:#fff7ed;border:1px solid #f1ddc7"><div style="font-size:22px;font-weight:700">{urgent_count}</div><div style="color:#5b6670">Urgent</div></td>',
+        f'<td style="padding:12px 14px;background:#f3f7f6;border:1px solid #d8e4e1"><div style="font-size:22px;font-weight:700">{len(affected_reports)}</div><div style="color:#5b6670">Reports affected</div></td>',
+        "</tr></table>",
+        '<h2 style="font-size:16px;margin:0 0 10px">What to do first</h2>',
     ]
-
-    if degraded_sources:
-        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Degraded Sources ({len(degraded_sources)})</h3>")
-        html_parts.append(f"<p style=\"margin:0 0 8px;color:#4b5563\">{html.escape(DEGRADED_SOURCE_RECOMMENDATION)}</p>")
-        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
+    for index, alert in enumerate(ranked[:3], start=1):
+        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
         html_parts.append(
-            "<tr style=\"background:#f3f4f6;text-align:left\">"
-            + _th("Source")
-            + _th("Max Age Days")
-            + _th("Current Age Days")
-            + _th("Reports Affected")
+            '<div style="border:1px solid #d7dce2;border-left:4px solid #18766d;padding:11px 13px;margin:0 0 8px">'
+            f'<div style="font-size:12px;color:#5b6670;margin-bottom:3px">{index}. {html.escape(priority(alert)[0])} - {html.escape(label)}</div>'
+            f'<div style="font-weight:700;margin-bottom:4px">{asset_html(alert)}</div>'
+            f'<div style="color:#5b6670">{html.escape(impact_text(alert))} - Open {int(alert.get("asset_days") or 0)}d</div>'
+            f'<div style="margin-top:6px"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
+            "</div>"
+        )
+
+    html_parts.extend([
+        f'<h2 style="font-size:16px;margin:22px 0 10px">All active alerts ({len(ranked)})</h2>',
+        '<table style="width:100%;border-collapse:collapse;font-size:12px">',
+        '<tr style="background:#eef3f2;text-align:left">'
+        + _th("Priority") + _th("Issue") + _th("Asset") + _th("Impact") + _th("Open") + _th("Next action") + "</tr>",
+    ])
+    for alert in ranked:
+        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        html_parts.append(
+            "<tr>"
+            + _td(f"<strong>{html.escape(priority(alert)[0])}</strong>")
+            + _td(html.escape(label))
+            + _td(f"<strong>{asset_html(alert)}</strong>")
+            + _td(html.escape(impact_text(alert)))
+            + _td(f"{int(alert.get('asset_days') or 0)}d")
+            + _td(html.escape(next_action(alert)), "color:#4b5563;min-width:210px")
             + "</tr>"
         )
-        for alert in degraded_sources:
-            source = alert.get("source_detail")
-            html_parts.append(
-                "<tr>"
-                + _td(f"<strong>{_source_cell_html(source, alert.get('asset_name'))}</strong>")
-                + _td(html.escape(_source_max_age_days(source)))
-                + _td(str(alert.get("asset_days") or 0))
-                + _td(_report_links_html(alert.get("report_links") or []), "min-width:220px")
-                + "</tr>"
-            )
-        html_parts.append("</table>")
-
-    if stale_vs_source:
-        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Stale vs Source ({len(stale_vs_source)})</h3>")
-        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
-        html_parts.append(
-            "<tr style=\"background:#f3f4f6;text-align:left\">"
-            + _th("Report")
-            + _th("Report Age")
-            + _th("Sources")
-            + _th("Source Age")
-            + _th("Differential")
-            + "</tr>"
-        )
-        for alert in stale_vs_source:
-            report = alert.get("report_detail")
-            details = alert.get("detail_items") or []
-            if not details:
-                html_parts.append(
-                    "<tr>"
-                    + _td(f"<strong>{_report_cell_html(report, alert.get('asset_name'))}</strong>")
-                    + _td(_age_text((report or {}).get("pbi_last_refresh_at")))
-                    + _td("-")
-                    + _td("-")
-                    + _td(html.escape(alert.get("notes") or "Source data is newer than the report."))
-                    + "</tr>"
-                )
-                continue
-            for detail in details:
-                source = detail.get("source_detail")
-                delta = _duration_text_from_hours(detail.get("delta_hours"))
-                report_age = _age_text(detail.get("report_last_refresh_at") or (report or {}).get("pbi_last_refresh_at"))
-                source_age = _age_text(detail.get("source_last_data_at"))
-                html_parts.append(
-                    "<tr>"
-                    + _td(f"<strong>{_report_cell_html(report, alert.get('asset_name'))}</strong>")
-                    + _td(html.escape(report_age))
-                    + _td(_source_cell_html(source, detail.get("name")))
-                    + _td(html.escape(source_age))
-                    + _td(html.escape(f"This source has fresher data than the report, by {delta}"))
-                    + "</tr>"
-                )
-        html_parts.append("</table>")
-
-    if other_alerts:
-        html_parts.append(f"<h3 style=\"font-size:14px;margin:18px 0 6px\">Other Alerts ({len(other_alerts)})</h3>")
-        html_parts.append("<table style=\"width:100%;border-collapse:collapse;font-size:13px\">")
-        html_parts.append(
-            "<tr style=\"background:#f3f4f6;text-align:left\">"
-            + _th("Issue")
-            + _th("Asset")
-            + _th("Days")
-            + _th("Recommendation")
-            + "</tr>"
-        )
-        for alert in other_alerts:
-            label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-            html_parts.append(
-                "<tr>"
-                + _td(html.escape(label))
-                + _td(f"<strong>{html.escape(alert.get('asset_name') or 'Unknown asset')}</strong>")
-                + _td(f"{alert.get('asset_days') or 0}d")
-                + _td(html.escape(alert.get("recommendation") or "-"), "color:#4b5563")
-                + "</tr>"
-            )
-        html_parts.append("</table>")
+    html_parts.append("</table>")
 
     html_parts.append("<p>Thanks,<br>Metronome</p></div>")
 

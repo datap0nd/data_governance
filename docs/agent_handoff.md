@@ -3,8 +3,9 @@
 ## Current Objective
 
 Keep Metronome focused on actionable governance workflows. The latest change
-removes the unusable Pipeline Overview surface while preserving Dashboard and
-Lineage as the supported summary and dependency views.
+implements the findings from the live-app audit, removes the manual Tasks
+surface, and makes owner, freshness, scheduler, scanner, and alert-email
+behavior more trustworthy.
 
 ## Repo State
 
@@ -36,6 +37,20 @@ Lineage as the supported summary and dependency views.
   update does not destroy historical user data.
 - Pipeline Overview navigation, frontend graph code, dedicated CSS, FAQ copy,
   and API router were removed. Old `#overview` bookmarks redirect to Dashboard.
+- The manual Tasks page and task-email UI were removed. Old `#tasks` bookmarks
+  redirect to Dashboard. Legacy task APIs and tables remain in place so old
+  saved data is not destroyed.
+- Sources with no owner now have an evidence review queue. Auto-assignment uses
+  the unique majority owner across active linked reports and skips ties.
+- Freshness rules are auto-filled only from explicit source schedules. Rule
+  changes immediately re-evaluate the latest stored probe, and thresholds over
+  90 days are flagged for review.
+- Scheduled Tasks defaults to governed jobs linked to scripts. Unlinked,
+  disabled, and never-run Windows tasks do not create incidents. Known Task
+  Scheduler result codes have user-facing states.
+- Owner emails are alert-only, ranked by risk and impact, and require explicit
+  recipient selection. Immediate sends show recipients and alert counts in the
+  confirmation.
 
 ## Files Changed
 
@@ -60,24 +75,33 @@ Lineage as the supported summary and dependency views.
 - `app/static/index.html`, `app/static/app.js`, `app/static/style.css`,
   `app/main.py`, `app/routers/overview.py`: removed Pipeline Overview end to end.
 - `tests/test_overview_removed.py`: guards the removed route and navigation.
+- `app/routers/sources.py`, `app/scanner/task_scheduler_runner.py`,
+  `app/routers/scheduled_tasks.py`: owner evidence, immediate freshness status,
+  governed job filtering, and false-positive suppression.
+- `app/routers/email.py`, `app/routers/email_schedules.py`: ranked alert email
+  format and alert-only profile schedules.
+- `app/routers/dashboard.py`, `app/routers/reports.py`,
+  `app/routers/schedules.py`, `app/scanner/runner.py`: consistent live counts,
+  explicit unknown status, and complete probe history accounting.
+- `app/static/app.js`, `app/static/style.css`, `app/static/index.html`: removed
+  Tasks UI, fixed asynchronous navigation races, added owner review, clarified
+  report governance, reduced script/task noise, and improved email safeguards.
+- `tests/test_sources.py`, `tests/test_task_scheduler_runner.py`,
+  `tests/test_email_alert_summary.py`, `tests/test_overview_removed.py`: focused
+  regression coverage for the new behavior.
 
 ## Commands And Checks
 
-- Full Python suite: `68 passed`.
+- Full Python suite: `81 passed`.
 - Node lineage suite: `1 passed`.
 - Python `compileall` for `app`: passed.
 - JavaScript syntax check: passed.
-- Fresh SQLite initialization and migration smoke check: passed.
-- Full application route smoke check: Data Quality routes present and Custom
-  Reports and Pipeline Overview routes absent.
-- Browser verification at 1440x1000 and 390x844: Data Quality page and form
-  rendered without console errors; mobile AI panel opened and closed without
-  obscuring the page while closed.
-- Impeccable detector: remaining warnings are pre-existing patterns outside the
-  new Data Quality surface.
+- Impeccable detector: only pre-existing side-border, bounce, and layout
+  transition warnings remain; none came from the changed product surfaces.
 - `git diff --check`: passed.
 
 ## Next Step
 
-Update the installed service from `main`. Old Pipeline Overview bookmarks now
-open Dashboard; dependency exploration remains available under Lineage.
+Update the installed service from `main`, then validate one owner save, one
+freshness-rule change, one governed Task Scheduler failure, and one Outlook
+draft against live Windows data.

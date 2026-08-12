@@ -573,6 +573,9 @@ class ScheduledTaskOut(BaseModel):
     script_name: str | None = None
     hostname: str | None = None
     machine_alias: str | None = None
+    governed: bool = False
+    result_state: str = "unknown"
+    result_label: str = "Unknown"
     archived: bool = False
     last_scanned: str | None = None
     created_at: str | None = None

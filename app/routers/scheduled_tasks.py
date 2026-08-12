@@ -4,12 +4,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.database import get_db
 from app.models import ScheduledTaskOut
 from app.scanner.task_scheduler_runner import run_task_scheduler_scan
+from app.scanner.task_scheduler_runner import task_result_details
 
 router = APIRouter(prefix="/api/scheduled-tasks", tags=["scheduled-tasks"])
 
 
 def _build_task_out(row) -> ScheduledTaskOut:
     keys = row.keys()
+    result_state, result_label = task_result_details(row["last_result"])
     return ScheduledTaskOut(
         id=row["id"],
         task_name=row["task_name"],
@@ -28,6 +30,9 @@ def _build_task_out(row) -> ScheduledTaskOut:
         script_name=row["script_name"] if "script_name" in keys else None,
         hostname=row["hostname"] if "hostname" in keys else None,
         machine_alias=row["machine_alias"] if "machine_alias" in keys else None,
+        governed=bool(row["script_id"]),
+        result_state=result_state,
+        result_label=result_label,
         archived=bool(row["archived"]),
         last_scanned=row["last_scanned"],
         created_at=row["created_at"],
@@ -36,14 +41,22 @@ def _build_task_out(row) -> ScheduledTaskOut:
 
 
 @router.get("", response_model=list[ScheduledTaskOut])
-def list_scheduled_tasks(include_archived: bool = Query(False)):
+def list_scheduled_tasks(
+    include_archived: bool = False,
+    include_unlinked: bool = False,
+):
     with get_db() as db:
-        archive_filter = "" if include_archived else "WHERE st.archived = 0"
+        filters = []
+        if not include_archived:
+            filters.append("st.archived = 0")
+        if not include_unlinked:
+            filters.append("st.script_id IS NOT NULL")
+        where_clause = "WHERE " + " AND ".join(filters) if filters else ""
         rows = db.execute(f"""
             SELECT st.*, s.display_name AS script_name
             FROM scheduled_tasks st
             LEFT JOIN scripts s ON s.id = st.script_id
-            {archive_filter}
+            {where_clause}
             ORDER BY st.task_name
         """).fetchall()
     return [_build_task_out(r) for r in rows]

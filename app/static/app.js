@@ -642,9 +642,7 @@ function timeAgo(dateStr) {
     if (!dateStr) return "-";
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) {
-        // Handle DD/MM/YYYY format that JS can't parse natively
-        if (/1999/.test(dateStr)) return "-";
-        return dateStr;
+        return "-";
     }
     if (d.getFullYear() < 2000) return "-";
     const now = new Date();
@@ -1318,10 +1316,9 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, unusedData, linkedTasks, docData] = await Promise.all([
+    const [tables, unusedData, docData] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
-        api(`/api/tasks/for-entity?entity_type=report&entity_id=${report.id}`).catch(() => []),
         api(`/api/documentation?report_id=${report.id}`).catch(() => []),
     ]);
     let doc = docData.length > 0 ? docData[0] : null;
@@ -1452,10 +1449,6 @@ async function showReportDetail(report) {
         </div>
     ` : '<div class="rx-l2" style="color:var(--text-dim);font-size:0.78rem">No scan data</div>';
 
-    // ── Linked Tasks ──
-    const activeLinked = linkedTasks.filter(t => t.status !== "done");
-    const archivedLinked = linkedTasks.filter(t => t.status === "done");
-
     // ── Assemble ──
     expandRow.innerHTML = `<td colspan="${colCount}" class="report-expand-cell">
         <div class="report-expand-content">
@@ -1523,29 +1516,6 @@ async function showReportDetail(report) {
                 <div class="rx-body" id="optimization-section" style="display:none">${optimizationInner}</div>
             </div>
 
-            ${linkedTasks.length > 0 ? `
-            <div class="rx-section rx-l1">
-                <div class="rx-toggle" data-target="linked-tasks-list">
-                    <span class="rx-arrow">&#9656;</span> Linked Tasks
-                    ${activeLinked.length > 0
-                        ? `<span class="badge badge-blue" style="margin-left:0.35rem;font-size:0.58rem">${activeLinked.length} active</span>`
-                        : `<span class="badge badge-green" style="margin-left:0.35rem;font-size:0.58rem">all done</span>`}
-                </div>
-                <div class="rx-body" id="linked-tasks-list" style="display:none">
-                    ${activeLinked.map(t => `
-                        <div class="linked-task-item rx-l2">
-                            <span class="priority-tag ${t.priority}" style="font-size:0.65rem">${t.priority}</span>
-                            <span class="linked-task-title">${esc(t.title)}</span>
-                            ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
-                            <span class="badge badge-${t.status === 'in_progress' ? 'yellow' : 'muted'}" style="font-size:0.62rem">${t.status}</span>
-                        </div>`).join('')}
-                    ${archivedLinked.length > 0 ? archivedLinked.map(t => `
-                        <div class="linked-task-item rx-l2" style="opacity:0.5">
-                            <span class="linked-task-title">${esc(t.title)}</span>
-                            <span class="badge badge-green" style="font-size:0.62rem">done</span>
-                        </div>`).join('') : ''}
-                </div>
-            </div>` : ''}
         </div>
     </td>`;
 
@@ -2484,7 +2454,7 @@ function drawHealthTrendChart() {
     const chartH = H - padT - padB;
 
     // Compute max total (stacked)
-    const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.degraded || 0)), 1);
+    const maxVal = Math.max(...trend.map(t => (t.healthy || 0) + (t.degraded || 0) + (t.unknown || 0)), 1);
 
     // Grid lines
     ctx.strokeStyle = gridColor;
@@ -2500,18 +2470,20 @@ function drawHealthTrendChart() {
     }
 
     // Helper to get x position for index
-    const xAt = (i) => padL + (i / (trend.length - 1)) * chartW;
+    const xAt = (i) => trend.length === 1 ? padL + chartW / 2 : padL + (i / (trend.length - 1)) * chartW;
     const yAt = (val) => padT + chartH - (val / maxVal) * chartH;
 
     // Build stacked y-values per point
     const series = trend.map(t => ({
         degraded: (t.degraded || 0) + (t.at_risk || 0),
+        unknown: t.unknown || 0,
         healthy: t.healthy || 0,
     }));
 
     const colors = {
         healthy: { fill: "rgba(22, 128, 61, 0.12)", stroke: "#15803d" },
         degraded: { fill: "rgba(185, 28, 28, 0.12)", stroke: "#b91c1c" },
+        unknown: { fill: "rgba(100, 116, 139, 0.12)", stroke: "#64748b" },
     };
 
     // Degraded area (bottom)
@@ -2527,16 +2499,31 @@ function drawHealthTrendChart() {
     ctx.fillStyle = colors.degraded.fill;
     ctx.fill();
 
-    // Healthy area (top)
+    // Unknown area (middle)
     ctx.beginPath();
     for (let i = 0; i < trend.length; i++) {
         const x = xAt(i);
-        const total = series[i].degraded + series[i].healthy;
+        const total = series[i].degraded + series[i].unknown;
         const y = yAt(total);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     for (let i = trend.length - 1; i >= 0; i--) {
         ctx.lineTo(xAt(i), yAt(series[i].degraded));
+    }
+    ctx.closePath();
+    ctx.fillStyle = colors.unknown.fill;
+    ctx.fill();
+
+    // Healthy area (top)
+    ctx.beginPath();
+    for (let i = 0; i < trend.length; i++) {
+        const x = xAt(i);
+        const total = series[i].degraded + series[i].unknown + series[i].healthy;
+        const y = yAt(total);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    for (let i = trend.length - 1; i >= 0; i--) {
+        ctx.lineTo(xAt(i), yAt(series[i].degraded + series[i].unknown));
     }
     ctx.closePath();
     ctx.fillStyle = colors.healthy.fill;
@@ -2554,7 +2541,8 @@ function drawHealthTrendChart() {
         ctx.lineWidth = 1.5;
         ctx.stroke();
     }
-    drawLine(i => series[i].degraded + series[i].healthy, colors.healthy.stroke);
+    drawLine(i => series[i].degraded + series[i].unknown + series[i].healthy, colors.healthy.stroke);
+    drawLine(i => series[i].degraded + series[i].unknown, colors.unknown.stroke);
     drawLine(i => series[i].degraded, colors.degraded.stroke);
 
     // X-axis labels (every 7 days)
@@ -2576,8 +2564,9 @@ function drawHealthTrendChart() {
     [
         { color: colors.healthy.stroke, label: "Healthy" },
         { color: colors.degraded.stroke, label: "Degraded" },
+        { color: colors.unknown.stroke, label: "Unknown" },
     ].forEach((item, idx) => {
-        const x = legendX + idx * 72;
+        const x = legendX + idx * 78;
         ctx.fillStyle = item.color;
         ctx.fillRect(x, legendY - 6, 8, 8);
         ctx.fillStyle = labelColor;
@@ -2618,13 +2607,14 @@ function _healthChartMouseMove(e) {
 
     const t = g.trend[idx];
     const s = g.series[idx];
-    const total = s.healthy + s.degraded;
+    const total = s.healthy + s.degraded + s.unknown;
     const parts = t.day.split("-");
     const dayLabel = `${parts[2]}/${parts[1]}/${parts[0]}`;
 
     tip.innerHTML = `<div style="font-weight:600;margin-bottom:3px">${dayLabel}</div>
         <div><span style="color:#15803d">&#9679;</span> Healthy: ${s.healthy}</div>
         <div><span style="color:#b91c1c">&#9679;</span> Degraded: ${s.degraded}</div>
+        <div><span style="color:#64748b">&#9679;</span> Unknown: ${s.unknown}</div>
         <div style="border-top:1px solid rgba(255,255,255,0.15);margin-top:3px;padding-top:3px;color:var(--text-dim)">Total: ${total}</div>`;
     tip.style.display = "block";
 
@@ -2667,9 +2657,10 @@ async function renderDashboardAlerts() {
 
 async function renderSources() {
     const showArchived = _isShowingArchived("sources");
-    const [sources, options] = await Promise.all([
+    const [sources, options, ownerSuggestions] = await Promise.all([
         api("/api/sources" + (showArchived ? "?include_archived=true" : "")),
         api("/api/create/options"),
+        api("/api/sources/owner-suggestions"),
     ]);
     const people = options.people || [];
 
@@ -2695,7 +2686,8 @@ async function renderSources() {
             if (!sourceHasFreshnessRule(s)) {
                 return '<span style="color:var(--yellow)" title="No freshness rule set">no rule</span>';
             }
-            return `<span style="color:var(--text-muted)">${esc(freshnessRuleLabel(s))}</span>`;
+            const unusual = Number(s.custom_fresh_days || 0) > 90;
+            return `<span style="color:${unusual ? 'var(--yellow)' : 'var(--text-muted)'}"${unusual ? ' title="Unusually long threshold. Review whether this source is still active."' : ''}>${esc(freshnessRuleLabel(s))}${unusual ? ' - review' : ''}</span>`;
         }, sortVal: s => freshnessRuleLabel(s) },
         { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
             const d = daysOld(s.last_updated);
@@ -2724,10 +2716,6 @@ async function renderSources() {
             if (!s.linked_scripts) return '-';
             return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
         }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no", filterVal: s => s.linked_scripts ? `yes has script ${s.linked_scripts}` : "no script" },
-        { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: s => {
-            if (!s.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
-            return `<span class="badge badge-blue" style="cursor:help" title="${s.linked_task_count} active task${s.linked_task_count !== 1 ? 's' : ''}">${s.linked_task_count}</span>`;
-        }, sortVal: s => s.linked_task_count || 0 },
         _archiveColDef("source"),
     ];
 
@@ -2741,12 +2729,24 @@ async function renderSources() {
     const unhealthyCount = degradedCount;
     const missingOwnerCount = active.filter(s => !String(s.owner || "").trim()).length;
     const missingRuleCount = active.filter(s => !sourceHasFreshnessRule(s)).length;
+    const unusualRuleCount = active.filter(s => Number(s.custom_fresh_days || 0) > 90).length;
+    const ownershipRows = ownerSuggestions.map(item => {
+        const evidence = item.candidates.length
+            ? item.candidates.map(candidate => `${candidate.owner}: ${candidate.report_count}`).join(", ")
+            : "No linked report has an owner";
+        const result = item.state === "suggested"
+            ? `<strong>${esc(item.owner)}</strong> <span class="badge badge-green">${Math.round(item.confidence * 100)}%</span>`
+            : item.state === "tie"
+                ? '<span class="badge badge-yellow">Tie - review</span>'
+                : '<span class="badge badge-muted">No evidence</span>';
+        return `<tr><td>${esc(shortNameFromPath(item.source_name))}</td><td>${result}</td><td>${esc(evidence)}</td></tr>`;
+    }).join("");
 
     return `
         <div class="sources-wide-section">
             <div class="page-header">
                 <h1>Sources</h1>
-                <span class="subtitle">${active.length} data sources tracked - ${healthy} healthy, ${degradedCount} degraded</span>
+                <span class="subtitle">${active.length} data sources tracked - ${healthy} healthy, ${degradedCount} degraded${unusualRuleCount ? `, ${unusualRuleCount} long rule${unusualRuleCount === 1 ? "" : "s"} to review` : ""}</span>
                 ${_archiveToggleHtml("sources")}
                 <button class="btn-export" onclick="exportTableCSV('dt-sources','sources.csv')">Export CSV</button>
             </div>
@@ -2760,15 +2760,26 @@ async function renderSources() {
                 </div>
                 <div class="source-bulk-actions" aria-label="Fill missing source information">
                     <button class="btn-sm btn-outline" id="btn-auto-source-owners" ${missingOwnerCount ? "" : "disabled"} title="Assign each unowned source to the most common owner among its linked reports. Ties are skipped.">Fill missing owners (${missingOwnerCount})</button>
+                    <button class="btn-sm btn-outline" id="btn-review-source-owners" ${ownerSuggestions.length ? "" : "disabled"}>Review owner evidence (${ownerSuggestions.length})</button>
                     <button class="btn-sm btn-outline" id="btn-auto-source-freshness" ${missingRuleCount ? "" : "disabled"} title="Create rules only for sources with no rule, using their saved source refresh schedule.">Set missing freshness rules (${missingRuleCount})</button>
                 </div>
             </div>
+            <section class="source-owner-review" id="source-owner-review" hidden>
+                <div class="source-owner-review-head"><div><h2>Owner evidence</h2><p>Suggestions use only active linked reports with assigned report owners. Ties and missing evidence are never auto-assigned.</p></div><button class="btn-sm btn-outline" id="btn-close-owner-review">Close</button></div>
+                <div class="table-scroll"><table class="mini-table"><thead><tr><th>Source</th><th>Suggested owner</th><th>Linked report evidence</th></tr></thead><tbody>${ownershipRows}</tbody></table></div>
+            </section>
             ${dataTable("dt-sources", cols, sources, { onRowClick: showSourceDetail })}
         </div>
     `;
 }
 
 function bindSourcesPage() {
+    const reviewPanel = document.getElementById("source-owner-review");
+    document.getElementById("btn-review-source-owners")?.addEventListener("click", () => {
+        reviewPanel.hidden = false;
+        reviewPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    document.getElementById("btn-close-owner-review")?.addEventListener("click", () => { reviewPanel.hidden = true; });
     // Source filter buttons
     document.querySelectorAll(".source-filter-btn").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -2900,6 +2911,31 @@ function _freqDetailOpts(type, selected) {
     return items.map(d => `<option value="${d}"${d === selected ? " selected" : ""}>${d}</option>`).join("");
 }
 
+function _reportDocPct(reportId, docMap) {
+    const doc = docMap.get(reportId);
+    if (!doc) return 0;
+    const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
+    return Math.round((fields.filter(field => field && field.trim()).length / fields.length) * 100);
+}
+
+function _compactPbiSchedule(value) {
+    if (!value) return "-";
+    let text = String(value).trim();
+    try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) text = parsed.join(", ");
+        else if (parsed && typeof parsed === "object") {
+            const days = parsed.days || parsed.weekdays || parsed.schedule_days || [];
+            const time = parsed.time || parsed.refresh_time || "";
+            text = `${Array.isArray(days) ? days.join(", ") : days}${time ? ` at ${time}` : ""}`;
+        }
+    } catch (_) {}
+    return text
+        .replace(/Monday,?\s*Tuesday,?\s*Wednesday,?\s*Thursday,?\s*Friday,?\s*Saturday,?\s*Sunday/gi, "Daily")
+        .replace(/Monday,?\s*Tuesday,?\s*Wednesday,?\s*Thursday,?\s*Friday/gi, "Weekdays")
+        .replace(/\bat\s+/i, "@ ");
+}
+
 async function renderReports() {
     const showArchived = _isShowingArchived("reports");
     const [reports, edges, sources, options, allDocs] = await Promise.all([
@@ -2920,22 +2956,22 @@ async function renderReports() {
         { key: "name", label: "Report", width: COL_W.lg, render: r => r.powerbi_url
             ? `<strong><a href="${r.powerbi_url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--text-dim)">${esc(r.name)}</a></strong>`
             : `<strong>${esc(r.name)}</strong>` },
-        { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
+        { key: "status", label: "Data health", width: COL_W.sm, render: r => statusBadge(r.status), sortVal: r => ({ healthy: "0_healthy", degraded: "1_degraded" })[r.status] ?? "2_" + r.status },
         { key: "source_count", label: "Sources", width: COL_W.sm, sortVal: r => r.source_count || 0 },
         { key: "_doc_pct", label: "Doc %", width: COL_W.sm, filterable: false, render: r => {
-            const doc = docMap.get(r.id);
-            if (!doc) return '<span style="color:var(--text-dim)">0%</span>';
-            const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
-            const filled = fields.filter(f => f && f.trim()).length;
-            const pct = Math.round((filled / 3) * 100);
+            const pct = _reportDocPct(r.id, docMap);
             const cls = pct === 100 ? 'badge-green' : pct >= 50 ? 'badge-yellow' : 'badge-muted';
             return `<span class="badge ${cls}">${pct}%</span>`;
-        }, sortVal: r => {
-            const doc = docMap.get(r.id);
-            if (!doc) return 0;
-            const fields = [doc.business_purpose, doc.business_audience, doc.technical_transformations];
-            return fields.filter(f => f && f.trim()).length;
-        }},
+        }, sortVal: r => _reportDocPct(r.id, docMap) },
+        { key: "_governance", label: "Governance", width: COL_W.md, render: r => {
+            const gaps = [];
+            if (!r.owner) gaps.push("report owner");
+            if (!r.business_owner) gaps.push("business owner");
+            if (_reportDocPct(r.id, docMap) < 100) gaps.push("documentation");
+            return gaps.length
+                ? `<span class="badge badge-yellow" title="Missing ${esc(gaps.join(', '))}">Needs ${gaps.length} item${gaps.length === 1 ? "" : "s"}</span>`
+                : '<span class="badge badge-green">Complete</span>';
+        }, sortVal: r => Number(!r.owner) + Number(!r.business_owner) + Number(_reportDocPct(r.id, docMap) < 100) },
         { key: "views_30d", label: "Views last 30d", width: COL_W.sm, render: r => {
             if (!r.views_30d) return '<span style="color:var(--text-dim)">-</span>';
             const title = r.unique_users_30d ? `${r.views_30d} views by ${r.unique_users_30d} user${r.unique_users_30d !== 1 ? 's' : ''}` : `${r.views_30d} views`;
@@ -2951,12 +2987,8 @@ async function renderReports() {
             const opts = bizFirst.map(p => `<option value="${esc(p.name)}"${r.business_owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline report-bo-select" data-report-id="${r.id}"><option value="">--</option>${opts}</select>`;
         }, sortVal: r => r.business_owner || "" },
-        { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem">${esc(r.pbi_refresh_schedule)}</span>` : '-' },
+        { key: "pbi_refresh_schedule", label: "PBI Schedule", width: COL_W.md, render: r => r.pbi_refresh_schedule ? `<span style="font-size:0.78rem" title="${esc(r.pbi_refresh_schedule)}">${esc(_compactPbiSchedule(r.pbi_refresh_schedule))}</span>` : '-' },
         { key: "pbi_last_refresh_at", label: "Last Refresh", width: COL_W.md, render: r => r.pbi_last_refresh_at ? `<span title="${formatDate(r.pbi_last_refresh_at)}">${timeAgo(r.pbi_last_refresh_at)}</span>` : '-' },
-        { key: "linked_task_count", label: "Tasks", width: COL_W.xs, render: r => {
-            if (!r.linked_task_count) return '<span style="color:var(--text-dim)">-</span>';
-            return `<span class="badge badge-blue" style="cursor:help" title="${r.linked_task_count} active task${r.linked_task_count !== 1 ? 's' : ''}">${r.linked_task_count}</span>`;
-        }, sortVal: r => r.linked_task_count || 0 },
         { key: "_lineage", label: "Lineage", width: COL_W.xs, filterable: false, sortable: false, render: r =>
             `<button class="btn-table-link btn-lineage" data-lineage-report="${r.id}" title="View lineage diagram" onclick="event.stopPropagation()">View</button>` },
         _archiveColDef("report"),
@@ -2966,6 +2998,9 @@ async function renderReports() {
     const healthy = active.filter(r => r.status === "healthy").length;
     const atRisk = active.filter(r => r.status !== "healthy" && r.status !== "unknown").length;
     const overdue = active.filter(r => _isPbiOverdue(r)).length;
+    const unknown = active.filter(r => r.status === "unknown").length;
+    const governanceGaps = active.filter(r => !r.owner || !r.business_owner || _reportDocPct(r.id, docMap) < 100).length;
+    window._incompleteReportDocCount = active.filter(r => _reportDocPct(r.id, docMap) < 100).length;
 
     // Store sources for inline expansion lookups
     window._reportPageSources = sources;
@@ -2974,12 +3009,12 @@ async function renderReports() {
         <div class="reports-wide-section">
             <div class="page-header">
                 <h1>Reports</h1>
-                <span class="subtitle">${active.length} Power BI reports - ${healthy} healthy${atRisk ? `, ${atRisk} need attention` : ''}${overdue ? `, <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
+                <span class="subtitle">${active.length} Power BI reports - data: ${healthy} healthy, ${atRisk} need attention, ${unknown} unknown - governance: ${governanceGaps} incomplete${overdue ? ` - <span style="color:var(--red)">${overdue} overdue</span>` : ''}</span>
                 ${_archiveToggleHtml("reports")}
                 <button class="btn-outline" id="btn-pbi-sync" style="font-size:0.78rem">Sync PBI</button>
                 <button class="btn-outline" id="btn-pbi-usage-sync" style="font-size:0.78rem">Sync Usage</button>
                 <span class="info-tip-wrap"><span class="info-tip-icon">?</span><span class="info-tip-box">PBI Status checks if a report's last refresh matches its schedule cadence.<br><br><strong>Overdue thresholds</strong><br>Daily (7/week): 2 days<br>Business days (5/week): ~2.5 days<br>3x/week: ~3.5 days<br>2x/week: ~4.5 days<br>Weekly (1/week): 8 days<br><br>Overdue reports generate alerts automatically.</span></span>
-                <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem">Generate All Docs</button>
+                <button class="btn-outline" id="btn-generate-all-docs" style="font-size:0.78rem" ${window._incompleteReportDocCount ? "" : "disabled"}>Generate Missing Docs (${window._incompleteReportDocCount})</button>
                 <button class="btn-export" onclick="exportTableCSV('dt-reports','reports.csv')">Export CSV</button>
             </div>
 
@@ -2989,34 +3024,39 @@ async function renderReports() {
 }
 
 function bindReportsPage() {
-    // Inline report owner select dropdowns
-    document.querySelectorAll(".report-owner-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
+    // Delegate owner edits so sorting or filtering the table cannot detach the
+    // controls while a user is working in a dropdown.
+    const reportsTable = document.getElementById("dt-reports");
+    if (reportsTable) {
+        reportsTable.addEventListener("focusin", e => {
+            const select = e.target.closest(".report-owner-select, .report-bo-select");
+            if (select) select.dataset.previousValue = select.value;
+        });
+        reportsTable.addEventListener("click", e => {
+            if (e.target.closest(".report-owner-select, .report-bo-select")) e.stopPropagation();
+        });
+        reportsTable.addEventListener("change", async e => {
+            const select = e.target.closest(".report-owner-select, .report-bo-select");
+            if (!select) return;
             e.stopPropagation();
-            const reportId = sel.dataset.reportId;
+            const reportId = Number(select.dataset.reportId);
+            const field = select.classList.contains("report-bo-select") ? "business_owner" : "owner";
+            const previousValue = select.dataset.previousValue || "";
+            select.disabled = true;
             try {
-                await apiPatch(`/api/reports/${reportId}`, { owner: sel.value });
-                toast("Report owner updated");
+                const updated = await apiPatch(`/api/reports/${reportId}`, { [field]: select.value || null });
+                const report = window._dt?.["dt-reports"]?.rows.find(item => item.id === reportId);
+                if (report) report[field] = updated[field];
+                select.dataset.previousValue = updated[field] || "";
+                toast(field === "business_owner" ? "Business owner updated" : "Report owner updated");
             } catch (err) {
-                toast("Failed: " + err.message);
+                select.value = previousValue;
+                toast("Owner was not saved: " + err.message);
+            } finally {
+                select.disabled = false;
             }
         });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
-    // Inline business owner select dropdowns
-    document.querySelectorAll(".report-bo-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
-            e.stopPropagation();
-            const reportId = sel.dataset.reportId;
-            try {
-                await apiPatch(`/api/reports/${reportId}`, { business_owner: sel.value });
-                toast("Business owner updated");
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
+    }
     // Lineage button: navigate to Lineage tab with report pre-selected
     document.querySelectorAll(".btn-lineage[data-lineage-report]").forEach(btn => {
         btn.addEventListener("click", async () => {
@@ -3081,7 +3121,7 @@ function bindReportsPage() {
     const btnGenDocs = document.getElementById("btn-generate-all-docs");
     if (btnGenDocs) {
         btnGenDocs.addEventListener("click", async () => {
-            if (!confirm("This will use AI to generate documentation for all reports that don't have complete docs yet. Reports with 5+ fields filled will be skipped.\n\nThis may take a few minutes. Continue?")) return;
+            if (!confirm(`Use AI to generate documentation for ${window._incompleteReportDocCount || 0} report${window._incompleteReportDocCount === 1 ? "" : "s"} with incomplete docs?\n\nExisting completed documentation is left unchanged. This may take a few minutes.`)) return;
             btnGenDocs.disabled = true;
             btnGenDocs.textContent = "Generating...";
             try {
@@ -3098,7 +3138,7 @@ function bindReportsPage() {
                 toast("Generation failed: " + err.message);
             } finally {
                 btnGenDocs.disabled = false;
-                btnGenDocs.textContent = "Generate All Docs";
+                btnGenDocs.textContent = `Generate Missing Docs (${window._incompleteReportDocCount || 0})`;
             }
         });
     }
@@ -3314,8 +3354,14 @@ async function renderScanner() {
                     { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
                     { key: "sources_probed", label: "Probed", width: COL_W.sm, render: r => `${r.sources_probed ?? "-"}` },
                     { key: "fresh", label: "Healthy", width: COL_W.sm, render: r => r.fresh ? `<span style="color:var(--green)">${r.fresh}</span>` : '-' },
-                    { key: "stale", label: "Degraded", width: COL_W.sm, render: r => r.stale ? `<span style="color:var(--red)">${r.stale}</span>` : '-' },
-                    { key: "outdated", label: "Degraded", width: COL_W.sm, render: r => r.outdated ? `<span style="color:var(--red)">${r.outdated}</span>` : '-' },
+                    { key: "_degraded", label: "Degraded", width: COL_W.sm, render: r => (r.stale || r.outdated) ? `<span style="color:var(--red)">${(r.stale || 0) + (r.outdated || 0)}</span>` : '-', sortVal: r => (r.stale || 0) + (r.outdated || 0) },
+                    { key: "unknown", label: "Unknown", width: COL_W.sm, render: r => r.unknown ? `<span style="color:var(--text-muted)">${r.unknown}</span>` : '-' },
+                    { key: "no_rule", label: "No rule", width: COL_W.sm, render: r => r.no_rule ? `<span style="color:var(--yellow)">${r.no_rule}</span>` : '-' },
+                    { key: "_coverage", label: "Coverage", width: COL_W.sm, render: r => {
+                        const accounted = (r.fresh || 0) + (r.stale || 0) + (r.outdated || 0) + (r.unknown || 0) + (r.no_rule || 0);
+                        const complete = accounted === (r.sources_probed || 0);
+                        return `<span class="badge ${complete ? 'badge-green' : 'badge-yellow'}" title="${complete ? 'Every probe result is accounted for' : 'This historical row predates complete status accounting'}">${accounted}/${r.sources_probed || 0}</span>`;
+                    }, sortVal: r => (r.fresh || 0) + (r.stale || 0) + (r.outdated || 0) + (r.unknown || 0) + (r.no_rule || 0) },
                 ], probeRuns) : '<div class="empty-state">No probes yet. Click "Probe Sources" to check freshness.</div>'}
             </div>
         </div>
@@ -4686,32 +4732,6 @@ function bindDataQualityPage() {
 
 // ── Email ──
 
-const EMAIL_STATUS_LABELS = {
-    backlog: "Backlog",
-    todo: "To Do",
-    in_progress: "In Progress",
-    review: "Review",
-};
-
-const EMAIL_KIND_LABELS = {
-    alert: "alert",
-    task: "task",
-};
-
-function _emailStatusCounts(tasks) {
-    const counts = { backlog: 0, todo: 0, in_progress: 0, review: 0 };
-    (tasks || []).forEach(t => {
-        if (counts[t.status] != null) counts[t.status] += 1;
-    });
-    return counts;
-}
-
-function _emailTaskLine(task) {
-    const due = task.due_date ? ` due ${task.due_date}` : "";
-    const status = EMAIL_STATUS_LABELS[task.status] || task.status;
-    return `<li><strong>${esc(task.title)}</strong><span>${esc(task.priority || "medium")} - ${esc(status)}${esc(due)}</span></li>`;
-}
-
 function _emailFixLinks(alert) {
     const reportLinks = (alert.report_links || [])
         .filter(r => r.powerbi_url)
@@ -4727,26 +4747,31 @@ function _emailFixLinks(alert) {
 
 function _emailAlertLine(alert) {
     const days = alert.asset_days || 0;
-    const links = _emailFixLinks(alert).slice(0, 4).join("");
+    const impact = [];
+    if ((alert.report_links || []).length) impact.push(`${alert.report_links.length} report${alert.report_links.length === 1 ? "" : "s"}`);
+    if (alert.impact_views_30d) impact.push(`${Number(alert.impact_views_30d).toLocaleString()} weighted views`);
+    const nextAction = alert.recommendation || alert.triage_cta || "Open the alert and review the evidence.";
+    const links = _emailFixLinks(alert).slice(0, 3).join("");
     return `<li>
-        <strong>${esc(alert.issue_label || alert.type)}</strong>
-        <span>${esc(alert.asset_name || "Unknown asset")} - ${days}d</span>
+        <div class="email-alert-title">
+            <span class="email-priority priority-${esc(alert.email_priority || "normal")}">${esc(alert.email_priority || "normal")}</span>
+            <strong>${esc(alert.issue_label || alert.type)}</strong>
+        </div>
+        <span>${esc(alert.asset_name || "Unknown asset")} - open ${days}d${impact.length ? ` - ${esc(impact.join(", "))}` : ""}</span>
+        <span class="email-next-action"><strong>Next:</strong> ${esc(nextAction)}</span>
         ${links ? `<div class="email-fix-links">${links}</div>` : ""}
     </li>`;
 }
 
 async function renderEmail() {
-    const [people, alertData, taskData, emailSchedules] = await Promise.all([
+    const [people, alertData, emailSchedules] = await Promise.all([
         api("/api/email/people"),
         api("/api/email/alert-summaries"),
-        api("/api/email/task-summaries"),
         api("/api/email-schedules/people"),
     ]);
     const alertSummaries = alertData.summaries || [];
-    const taskSummaries = taskData.summaries || [];
     window._emailPeople = people;
     window._emailAlertSummaries = alertSummaries;
-    window._emailTaskSummaries = taskSummaries;
     window._emailSchedulesByPerson = new Map((emailSchedules || []).map(s => [String(s.person_id), s]));
 
     const biPeople = people.filter(p => p.role === "BI");
@@ -4763,7 +4788,6 @@ async function renderEmail() {
                 </label>
             </td>
             <td>${p.pending_alert_count || 0}</td>
-            <td>${p.pending_task_count || 0}</td>
             <td><input class="email-map-input" data-person-id="${p.id}" type="email" value="${esc(p.email || "")}" placeholder="name@example.com"></td>
             <td>
                 <div class="email-profile-actions">
@@ -4783,7 +4807,7 @@ async function renderEmail() {
             <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
                 <div class="email-summary-head">
                     <label class="email-summary-check">
-                        <input type="checkbox" class="email-alert-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
+                        <input type="checkbox" class="email-alert-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>
                         <span>${esc(s.owner_name)}</span>
                     </label>
                     <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
@@ -4795,50 +4819,20 @@ async function renderEmail() {
                 <ul class="email-task-preview">${previewAlerts}</ul>
                 ${s.alerts.length > 4 ? `<div class="email-more">+${s.alerts.length - 4} more</div>` : ""}
                 <div class="email-summary-actions">
-                    <button class="btn-outline email-open-draft" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
-                    <button class="btn-outline email-copy-summary" data-kind="alert" data-owner="${esc(s.owner_name)}">Copy Summary</button>
-                    <button class="btn-outline email-server-draft" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
-                    <button class="btn-outline btn-danger-outline email-server-send" data-kind="alert" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
+                    <button class="btn-outline email-open-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
+                    <button class="btn-outline email-copy-summary" data-owner="${esc(s.owner_name)}">Copy Summary</button>
+                    <button class="btn-outline email-server-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Create Outlook Draft</button>
+                    <button class="btn-outline btn-danger-outline email-server-send" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send Now</button>
                 </div>
             </div>
         `;
     }).join("") : '<div class="empty-state">No active alerts assigned to BI owners.</div>';
 
-    const taskCards = taskSummaries.length ? taskSummaries.map(s => {
-        const counts = _emailStatusCounts(s.tasks);
-        const statusBits = Object.entries(counts)
-            .filter(([, count]) => count > 0)
-            .map(([status, count]) => `<span>${esc(EMAIL_STATUS_LABELS[status] || status)}: ${count}</span>`)
-            .join("");
-        const previewTasks = (s.tasks || []).slice(0, 4).map(_emailTaskLine).join("");
-        const missingEmail = !s.email;
-        return `
-            <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
-                <div class="email-summary-head">
-                    <label class="email-summary-check">
-                        <input type="checkbox" class="email-task-owner-check" value="${esc(s.owner_name)}" ${missingEmail ? "disabled" : "checked"}>
-                        <span>${esc(s.owner_name)}</span>
-                    </label>
-                    <span class="email-address">${missingEmail ? "No email mapped" : esc(s.email)}</span>
-                </div>
-                <div class="email-summary-meta">${statusBits || "<span>No active status counts</span>"}</div>
-                <ul class="email-task-preview">${previewTasks}</ul>
-                ${s.tasks.length > 4 ? `<div class="email-more">+${s.tasks.length - 4} more</div>` : ""}
-                <div class="email-summary-actions">
-                    <button class="btn-outline email-open-draft" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>
-                    <button class="btn-outline email-copy-summary" data-kind="task" data-owner="${esc(s.owner_name)}">Copy Summary</button>
-                    <button class="btn-outline email-server-draft" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Server Draft</button>
-                    <button class="btn-outline btn-danger-outline email-server-send" data-kind="task" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Send</button>
-                </div>
-            </div>
-        `;
-    }).join("") : '<div class="empty-state">No pending tasks assigned to BI owners.</div>';
-
     const mappedCount = biPeople.filter(p => p.email).length;
     return `
         <div class="page-header">
             <h1>Email</h1>
-            <span class="subtitle">Outlook alerts and task summaries by owner</span>
+            <span class="subtitle">Ranked Outlook alert summaries by owner</span>
         </div>
         <div class="email-layout">
             <section class="email-section">
@@ -4848,7 +4842,7 @@ async function renderEmail() {
                 </div>
                 ${biPeople.length ? `
                     <table class="email-map-table">
-                        <thead><tr><th>BI Owner</th><th>All Alerts</th><th>Alerts</th><th>Tasks</th><th>Email</th><th></th></tr></thead>
+                        <thead><tr><th>BI Owner</th><th>Scope</th><th>Active Alerts</th><th>Email</th><th></th></tr></thead>
                         <tbody>${mappingRows}</tbody>
                     </table>
                 ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
@@ -4858,45 +4852,36 @@ async function renderEmail() {
                 <div class="email-section-head">
                     <h2>Active Alert Summaries</h2>
                     <div class="email-bulk-actions">
-                        <button class="btn-outline" id="email-alert-draft-selected">Server Draft Selected</button>
-                        <button class="btn-outline btn-danger-outline" id="email-alert-send-selected">Send Selected</button>
+                        <button class="btn-outline" id="email-alert-draft-selected">Create Drafts for Selected</button>
+                        <button class="btn-outline btn-danger-outline" id="email-alert-send-selected">Send Selected Now</button>
                     </div>
                 </div>
+                <p class="email-send-note">Nothing is selected by default. Review the ranked preview, select recipients, then create drafts or send.</p>
                 <div class="email-summary-list">${alertCards}</div>
-            </section>
-
-            <section class="email-section">
-                <div class="email-section-head">
-                    <h2>Pending Task Summaries</h2>
-                    <div class="email-bulk-actions">
-                        <button class="btn-outline" id="email-task-draft-selected">Server Draft Selected</button>
-                        <button class="btn-outline btn-danger-outline" id="email-task-send-selected">Send Selected</button>
-                    </div>
-                </div>
-                <div class="email-summary-list">${taskCards}</div>
             </section>
         </div>
     `;
 }
 
-function _emailSelectedOwners(kind, fallbackOwner) {
+function _emailSelectedOwners(fallbackOwner) {
     if (fallbackOwner) return [fallbackOwner];
-    return Array.from(document.querySelectorAll(`.email-${kind}-owner-check:checked`)).map(i => i.value);
+    return Array.from(document.querySelectorAll(".email-alert-owner-check:checked")).map(i => i.value);
 }
 
-function _emailFindSummary(kind, owner) {
-    const list = kind === "alert" ? window._emailAlertSummaries : window._emailTaskSummaries;
-    return (list || []).find(s => s.owner_name === owner);
+function _emailFindSummary(owner) {
+    return (window._emailAlertSummaries || []).find(s => s.owner_name === owner);
 }
 
-async function _emailLaunchServer(kind, mode, owner) {
-    const ownerNames = _emailSelectedOwners(kind, owner);
+async function _emailLaunchServer(mode, owner) {
+    const ownerNames = _emailSelectedOwners(owner);
     if (ownerNames.length === 0) { toast("Select at least one owner with an email"); return; }
-    const label = EMAIL_KIND_LABELS[kind] || kind;
-    if (mode === "send" && !confirm(`Send ${ownerNames.length} ${label} summary email${ownerNames.length === 1 ? "" : "s"} through Outlook?`)) return;
+    const summaries = ownerNames.map(_emailFindSummary).filter(Boolean);
+    if (mode === "send") {
+        const recipients = summaries.map(s => `- ${s.owner_name} <${s.email}>: ${s.alert_count} alert${s.alert_count === 1 ? "" : "s"}`).join("\n");
+        if (!confirm(`Send ${summaries.length} alert summary email${summaries.length === 1 ? "" : "s"} through Outlook now?\n\nRecipients:\n${recipients}\n\nThis action sends immediately.`)) return;
+    }
     try {
-        const endpoint = kind === "alert" ? "/api/email/send-alert-summaries" : "/api/email/send-task-summaries";
-        const result = await apiPostJson(endpoint, { mode, owner_names: ownerNames });
+        const result = await apiPostJson("/api/email/send-alert-summaries", { mode, owner_names: ownerNames });
         toast(`${mode === "send" ? "Send" : "Draft"} launched for ${result.count} owner${result.count === 1 ? "" : "s"}`);
     } catch (err) {
         toast("Outlook email failed: " + err.message);
@@ -4928,7 +4913,7 @@ function bindEmailPage() {
 
     document.querySelectorAll(".email-open-draft").forEach(btn => {
         btn.addEventListener("click", () => {
-            const summary = _emailFindSummary(btn.dataset.kind, btn.dataset.owner);
+            const summary = _emailFindSummary(btn.dataset.owner);
             if (!summary || !summary.email) { toast("Map an email first"); return; }
             window.location.href = summary.mailto;
         });
@@ -4936,7 +4921,7 @@ function bindEmailPage() {
 
     document.querySelectorAll(".email-copy-summary").forEach(btn => {
         btn.addEventListener("click", async () => {
-            const summary = _emailFindSummary(btn.dataset.kind, btn.dataset.owner);
+            const summary = _emailFindSummary(btn.dataset.owner);
             if (!summary) return;
             try {
                 await navigator.clipboard.writeText(summary.body_text);
@@ -4948,19 +4933,15 @@ function bindEmailPage() {
     });
 
     document.querySelectorAll(".email-server-draft").forEach(btn => {
-        btn.addEventListener("click", () => _emailLaunchServer(btn.dataset.kind, "draft", btn.dataset.owner));
+        btn.addEventListener("click", () => _emailLaunchServer("draft", btn.dataset.owner));
     });
     document.querySelectorAll(".email-server-send").forEach(btn => {
-        btn.addEventListener("click", () => _emailLaunchServer(btn.dataset.kind, "send", btn.dataset.owner));
+        btn.addEventListener("click", () => _emailLaunchServer("send", btn.dataset.owner));
     });
     const alertDraftSelected = document.getElementById("email-alert-draft-selected");
-    if (alertDraftSelected) alertDraftSelected.addEventListener("click", () => _emailLaunchServer("alert", "draft"));
+    if (alertDraftSelected) alertDraftSelected.addEventListener("click", () => _emailLaunchServer("draft"));
     const alertSendSelected = document.getElementById("email-alert-send-selected");
-    if (alertSendSelected) alertSendSelected.addEventListener("click", () => _emailLaunchServer("alert", "send"));
-    const taskDraftSelected = document.getElementById("email-task-draft-selected");
-    if (taskDraftSelected) taskDraftSelected.addEventListener("click", () => _emailLaunchServer("task", "draft"));
-    const taskSendSelected = document.getElementById("email-task-send-selected");
-    if (taskSendSelected) taskSendSelected.addEventListener("click", () => _emailLaunchServer("task", "send"));
+    if (alertSendSelected) alertSendSelected.addEventListener("click", () => _emailLaunchServer("send"));
 }
 
 
@@ -5915,7 +5896,7 @@ async function renderExport() {
             </label>
         </fieldset>
         <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
-            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Scripts & Tasks</legend>
+            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Scripts & Schedules</legend>
             <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
                 <input type="checkbox" class="export-opt" data-section="scripts"> Python scripts (path, owner, tables read/written)
             </label>
@@ -6449,6 +6430,10 @@ async function renderScripts() {
             return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
         }, sortVal: s => _scriptCategory(s) },
         { key: "display_name", label: "Script", width: COL_W.lg, render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
+        { key: "_scope", label: "Role", width: COL_W.sm, render: s => {
+            const connected = (s.tables_written || []).length || (s.tables_read || []).length;
+            return connected ? '<span class="badge badge-blue">Pipeline</span>' : '<span class="badge badge-muted">Helper</span>';
+        }, sortVal: s => ((s.tables_written || []).length || (s.tables_read || []).length) ? "0_pipeline" : "1_helper" },
         { key: "path", label: "Path", width: COL_W.xl, render: s => {
             const escaped = (s.path || "").replace(/"/g, '&quot;');
             return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(s.path || "-")}</span> ${_viewPathBtn(s.path)}`;
@@ -6500,7 +6485,10 @@ async function renderScripts() {
 
     const scriptTypeFilter = sessionStorage.getItem("scripts_type_filter") || "all";
     const machineFilter = sessionStorage.getItem("scripts_machine") || "";
+    const scopeFilter = sessionStorage.getItem("scripts_scope") || "connected";
+    const connectedScripts = scripts.filter(s => (s.tables_written || []).length || (s.tables_read || []).length);
     let filtered = scripts;
+    if (scopeFilter === "connected") filtered = filtered.filter(s => (s.tables_written || []).length || (s.tables_read || []).length);
     if (scriptTypeFilter === "sql") filtered = filtered.filter(s => _scriptCategory(s) === "Data to SQL");
     else if (scriptTypeFilter === "excel") filtered = filtered.filter(s => _scriptCategory(s) === "Data to Excel");
     else if (scriptTypeFilter === "other") filtered = filtered.filter(s => _scriptCategory(s) === "Other");
@@ -6517,10 +6505,11 @@ async function renderScripts() {
     return `
         <div class="page-header">
             <h1>Scripts</h1>
-            <span class="subtitle">${activeCount}${machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''}</span>
+            <span class="subtitle">${activeCount}${scopeFilter === "connected" || machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''} - ${connectedScripts.filter(s => !s.archived).length} connected to governed data</span>
             <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
             <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
             <button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>
+            <button class="btn-outline btn-archive-toggle ${scopeFilter === 'connected' ? 'active' : ''}" id="btn-scripts-scope">${scopeFilter === "connected" ? "Show all scripts" : "Show connected only"}</button>
             <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
             <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
@@ -6649,6 +6638,11 @@ async function showScriptDetail(script) {
 }
 
 function bindScriptsPage() {
+    document.getElementById("btn-scripts-scope")?.addEventListener("click", () => {
+        const current = sessionStorage.getItem("scripts_scope") || "connected";
+        sessionStorage.setItem("scripts_scope", current === "connected" ? "all" : "connected");
+        navigate("scripts");
+    });
     // Machine filter dropdown
     const machSel = document.getElementById("scripts-machine-filter");
     if (machSel) {
@@ -6795,20 +6789,37 @@ function bindScriptsPage() {
         }, 2000);
     }
 
-    // Inline owner select dropdowns
-    document.querySelectorAll(".script-owner-select").forEach(sel => {
-        sel.addEventListener("change", async (e) => {
+    // Keep owner controls alive when the data table rebuilds its rows.
+    const scriptsTable = document.getElementById("dt-scripts");
+    if (scriptsTable) {
+        scriptsTable.addEventListener("focusin", e => {
+            const select = e.target.closest(".script-owner-select");
+            if (select) select.dataset.previousValue = select.value;
+        });
+        scriptsTable.addEventListener("click", e => {
+            if (e.target.closest(".script-owner-select")) e.stopPropagation();
+        });
+        scriptsTable.addEventListener("change", async e => {
+            const select = e.target.closest(".script-owner-select");
+            if (!select) return;
             e.stopPropagation();
-            const scriptId = sel.dataset.scriptId;
+            const scriptId = Number(select.dataset.scriptId);
+            const previousValue = select.dataset.previousValue || "";
+            select.disabled = true;
             try {
-                await apiPatch(`/api/scripts/${scriptId}`, { owner: sel.value });
+                const updated = await apiPatch(`/api/scripts/${scriptId}`, { owner: select.value || null });
+                const script = window._dt?.["dt-scripts"]?.rows.find(item => item.id === scriptId);
+                if (script) script.owner = updated.owner;
+                select.dataset.previousValue = updated.owner || "";
                 toast("Owner updated");
             } catch (err) {
-                toast("Failed: " + err.message);
+                select.value = previousValue;
+                toast("Owner was not saved: " + err.message);
+            } finally {
+                select.disabled = false;
             }
         });
-        sel.addEventListener("click", (e) => e.stopPropagation());
-    });
+    }
 
     // Click-to-copy on path cells
     document.querySelectorAll(".cell-copyable").forEach(el => {
@@ -6840,7 +6851,11 @@ function _taskCategory(task) {
 
 async function renderScheduledTasks() {
     const showArchived = _isShowingArchived("scheduledtasks");
-    const tasks = await api("/api/scheduled-tasks" + (showArchived ? "?include_archived=true" : ""));
+    const showOtherTasks = sessionStorage.getItem("schtasks_show_other") === "1";
+    const query = new URLSearchParams();
+    if (showArchived) query.set("include_archived", "true");
+    if (showOtherTasks) query.set("include_unlinked", "true");
+    const tasks = await api("/api/scheduled-tasks" + (query.size ? `?${query}` : ""));
     const catFilter = sessionStorage.getItem("schtasks_category") || "";
     const machineFilter = sessionStorage.getItem("schtasks_machine") || "";
     let filtered = catFilter ? tasks.filter(t => _taskCategory(t) === catFilter) : tasks;
@@ -6873,10 +6888,9 @@ async function renderScheduledTasks() {
             : '<span style="color:var(--text-dim)">Never</span>',
           sortVal: t => t.last_run_time || "" },
         { key: "last_result", label: "Result", width: COL_W.sm, render: t => {
-            if (!t.last_result) return '<span style="color:var(--text-dim)">-</span>';
-            const ok = t.last_result === "0";
-            return `<span class="badge ${ok ? 'badge-green' : 'badge-red'}">${ok ? 'OK' : 'Failed'}</span>`;
-        }, sortVal: t => t.last_result || "" },
+            const cls = t.result_state === "success" ? "badge-green" : t.result_state === "failed" ? "badge-red" : t.result_state === "benign" ? "badge-muted" : "badge-dim";
+            return `<span class="badge ${cls}" title="${esc(t.last_result || '')}">${esc(t.result_label || "Unknown")}</span>`;
+        }, sortVal: t => `${t.result_state || "unknown"}_${t.result_label || ""}` },
         { key: "next_run_time", label: "Next Run", width: COL_W.md, render: t => t.next_run_time
             ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${timeAgo(t.next_run_time)}</span>`
             : '<span style="color:var(--text-dim)">-</span>',
@@ -6895,7 +6909,7 @@ async function renderScheduledTasks() {
     ];
 
     const active = filtered.filter(t => !t.archived);
-    const failedCount = active.filter(t => t.last_result && t.last_result !== "0").length;
+    const failedCount = active.filter(t => t.result_state === "failed").length;
     const linkedCount = active.filter(t => t.script_id).length;
     const disabledCount = active.filter(t => !t.enabled).length;
     const failedNote = failedCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${failedCount} failed</span>` : "";
@@ -6904,16 +6918,17 @@ async function renderScheduledTasks() {
     return `
         <div class="page-header">
             <h1>Scheduled Tasks</h1>
-            <span class="subtitle">${active.length} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
+            <span class="subtitle">${active.length} ${showOtherTasks ? "Windows" : "governed refresh"} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
             <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
             <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
+            <button class="btn-outline btn-archive-toggle ${showOtherTasks ? 'active' : ''}" id="btn-schtasks-scope">${showOtherTasks ? "Show governed only" : "Show other Windows tasks"}</button>
             <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
             <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
             ${_archiveToggleHtml("scheduledtasks")}
             <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
         </div>
         ${filtered.length === 0
-            ? '<div class="empty-state" style="margin-top:2rem">No scheduled tasks found. Click <strong>Scan Task Scheduler</strong> to import from Windows Task Scheduler.<br><span style="color:var(--text-dim);font-size:0.8rem">This feature only works on Windows.</span></div>'
+            ? `<div class="empty-state" style="margin-top:2rem">${showOtherTasks ? "No Windows scheduled tasks found." : "No governed refresh tasks are linked to a script yet."}<br><span style="color:var(--text-dim);font-size:0.8rem">Run a scan to import Task Scheduler data. Use Show other Windows tasks to inspect unrelated entries.</span></div>`
             : dataTable("dt-schtasks", cols, filtered, { onRowClick: showScheduledTaskDetail })
         }
     `;
@@ -6927,9 +6942,8 @@ async function showScheduledTaskDetail(task) {
     panel.id = "schtask-detail";
     panel.className = "source-detail-panel";
 
-    const resultBadge = !task.last_result ? '-'
-        : task.last_result === "0" ? '<span class="badge badge-green">0 (Success)</span>'
-        : `<span class="badge badge-red">${esc(task.last_result)} (Failed)</span>`;
+    const resultClass = task.result_state === "success" ? "badge-green" : task.result_state === "failed" ? "badge-red" : task.result_state === "benign" ? "badge-muted" : "badge-dim";
+    const resultBadge = `<span class="badge ${resultClass}" title="${esc(task.last_result || '')}">${esc(task.result_label || "Unknown")}</span>`;
 
     const enabledBadge = task.enabled
         ? '<span class="badge badge-green">Enabled</span>'
@@ -6991,6 +7005,11 @@ async function showScheduledTaskDetail(task) {
 }
 
 function bindScheduledTasksPage() {
+    document.getElementById("btn-schtasks-scope")?.addEventListener("click", () => {
+        const showOther = sessionStorage.getItem("schtasks_show_other") === "1";
+        sessionStorage.setItem("schtasks_show_other", showOther ? "0" : "1");
+        navigate("scheduledtasks");
+    });
     // Machine filter
     const machSel = document.getElementById("schtasks-machine-filter");
     if (machSel) {
@@ -7855,10 +7874,10 @@ const LINEAGE_COLS = [
     { key: "visuals", label: "Visuals" },
     { key: "tables", label: "Tables" },
     { key: "sources", label: "Sources" },
-    { key: "mv_upstream", label: "Upstream Sources" },
+    { key: "mv_upstream", label: "Source Dependencies" },
     { key: "scripts", label: "Scripts" },
-    { key: "tasks", label: "Tasks" },
-    { key: "upstreams", label: "Upstream" },
+    { key: "tasks", label: "Scheduled Tasks" },
+    { key: "upstreams", label: "Upstream Systems" },
 ];
 
 function _getLineageCols() {
@@ -7869,7 +7888,8 @@ function _getLineageCols() {
 function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
 
 async function renderLineageDiagram() {
-    const reports = await api("/api/reports?include_archived=true");
+    const showArchived = sessionStorage.getItem("lineage_show_archived") === "1";
+    const reports = await api("/api/reports" + (showArchived ? "?include_archived=true" : ""));
     const colState = _getLineageCols();
     return `
         <div class="page-header">
@@ -7881,6 +7901,7 @@ async function renderLineageDiagram() {
                 <option value="">Select a report...</option>
                 ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
+            <label class="lineage-archive-toggle"><input type="checkbox" id="lineage-show-archived" ${showArchived ? "checked" : ""}> Show archived reports</label>
             <div class="lineage-col-toggles" id="lineage-col-toggles">
                 ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
             </div>
@@ -7894,6 +7915,10 @@ async function renderLineageDiagram() {
 function bindLineageDiagramPage() {
     const sel = document.getElementById("lineage-report-select");
     if (!sel) return;
+    document.getElementById("lineage-show-archived")?.addEventListener("change", event => {
+        sessionStorage.setItem("lineage_show_archived", event.target.checked ? "1" : "0");
+        navigate("lineage");
+    });
     sel.addEventListener("change", async () => {
         const id = sel.value;
         if (!id) {
@@ -8175,7 +8200,8 @@ function _renderLineageDiagram(data) {
         if (hasLineageRule(item, prefix)) {
             title = lastDate ? `${status}: refreshed ${timeAgo(lastDate)}` : `${status}: no refresh date`;
         }
-        return `<span class="lin-dot" style="background:${c[state]}" title="${esc(title)}"></span>`;
+        const label = state === "ok" ? "Healthy" : state === "err" ? "Degraded" : "Unknown";
+        return `<span class="lin-status"><span class="lin-dot" style="background:${c[state]}" title="${esc(title)}"></span><span>${label}</span></span>`;
     };
 
     // === Column HTML builders ===
@@ -8306,7 +8332,7 @@ function _renderLineageDiagram(data) {
         gridH += `<div class="lin-col" data-lin-col="${col.key}"><div class="lin-col-hdr">${col.label} <span class="lin-col-cnt">${colCounts[col.key] || 0}</span></div>${empty ? '<div class="lin-empty">None linked</div>' : colHtml[col.key]}</div>`;
     }
 
-    const stLabel = data.report.status || "unknown";
+    const stLabel = data.report.archived ? "archived" : (data.report.status || "unknown");
     container.innerHTML = `
         <div class="lineage-report-header">
             <strong>${esc(data.report.name)}</strong>
@@ -8649,15 +8675,6 @@ function _resetLinHL() {
 }
 
 
-// ── Tasks / Kanban ──
-
-const TASK_STATUSES = [
-    { key: "backlog", label: "Backlog" },
-    { key: "todo", label: "To Do" },
-    { key: "in_progress", label: "In Progress" },
-];
-const TASK_ALL_STATUSES = [...TASK_STATUSES, { key: "done", label: "Done" }];
-
 const ENTITY_TYPE_LABELS = {
     report: "Report",
     source: "Data Source",
@@ -8665,25 +8682,6 @@ const ENTITY_TYPE_LABELS = {
     upstream_system: "Upstream System",
     scheduled_task: "Scheduled Task",
 };
-
-function _taskCard(task) {
-    const today = new Date().toISOString().slice(0, 10);
-    const overdue = task.due_date && task.due_date < today && task.status !== "done";
-    const dueFmt = task.due_date ? new Date(task.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "";
-    const linkBadges = (task.linked_entities || []).map(le => {
-        const typeShort = { report: "RPT", source: "SRC", script: "SCR", upstream_system: "UPS", scheduled_task: "SCH" }[le.entity_type] || le.entity_type;
-        return `<span class="task-link-chip" title="${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}: ${esc(le.entity_name || '')}">${typeShort}: ${esc(le.entity_name || "ID " + le.entity_id)}</span>`;
-    }).join("");
-    return `<div class="kanban-card priority-${task.priority}" draggable="true" data-task-id="${task.id}" tabindex="0" role="listitem" aria-label="Task: ${esc(task.title)}, Priority: ${task.priority}${task.assigned_to ? ', Assigned to: ' + esc(task.assigned_to) : ''}">
-        <div class="kanban-card-title">${esc(task.title)}</div>
-        ${linkBadges ? `<div class="kanban-card-links">${linkBadges}</div>` : ""}
-        <div class="kanban-card-meta">
-            <span class="priority-tag ${task.priority}">${task.priority}</span>
-            ${task.assigned_to ? `<span class="assignee-chip" title="${esc(task.assigned_to)}">${esc(task.assigned_to)}</span>` : ""}
-            ${dueFmt ? `<span class="due-date${overdue ? " overdue" : ""}">${overdue ? "Overdue: " : ""}${dueFmt}</span>` : ""}
-        </div>
-    </div>`;
-}
 
 function _emailPersonById(personId) {
     return (window._emailPeople || []).find(p => String(p.id) === String(personId));
@@ -8695,7 +8693,7 @@ function _emailScheduleForPerson(personId) {
 
 function _emailScheduleModalHtml(person, schedule) {
     const s = schedule || {};
-    const contentTypes = new Set(s.content_types || ["tasks", "alerts"]);
+    const contentTypes = new Set(["alerts"]);
     const recurrence = s.recurrence === "daily" ? "daily" : "weekdays";
     const nextRun = s.next_run_at ? formatDate(s.next_run_at) : "-";
     const lastSent = s.last_sent_at ? formatDate(s.last_sent_at) : "-";
@@ -8726,8 +8724,7 @@ function _emailScheduleModalHtml(person, schedule) {
                     <div class="email-scheduler-field email-schedule-content-field">
                         <span>Send</span>
                         <div class="email-schedule-content-options">
-                            <label><input type="checkbox" class="email-profile-schedule-content" value="tasks" ${contentTypes.has("tasks") ? "checked" : ""}> Open tasks</label>
-                            <label><input type="checkbox" class="email-profile-schedule-content" value="alerts" ${contentTypes.has("alerts") ? "checked" : ""}> Alerts</label>
+                            <label><input type="checkbox" class="email-profile-schedule-content" value="alerts" checked disabled> Active alerts</label>
                         </div>
                     </div>
                 </div>
@@ -8774,7 +8771,7 @@ async function _openEmailScheduleModal(personId) {
         const enabled = document.getElementById("email-profile-schedule-enabled")?.checked || false;
         const contentTypes = [...document.querySelectorAll(".email-profile-schedule-content:checked")].map(el => el.value);
         if (contentTypes.length === 0) {
-            toast("Choose open tasks, alerts, or both");
+            toast("Alert summaries must remain selected");
             return;
         }
         if (enabled && !person.email) {
@@ -8814,548 +8811,6 @@ function bindEmailProfileSchedules() {
 }
 
 window.openEmailScheduleModal = _openEmailScheduleModal;
-
-async function renderTasks() {
-    const [tasks, owners] = await Promise.all([
-        api("/api/tasks"),
-        api("/api/tasks/owners"),
-    ]);
-
-    window._tasksData = tasks;
-    window._tasksOwners = owners;
-
-    const activeTasks = tasks.filter(t => t.status !== "done");
-    const archivedTasks = tasks.filter(t => t.status === "done");
-
-    const ownerOptions = owners.map(o => `<option value="${o}">${o}</option>`).join("");
-    const boardHtml = _buildKanbanBoard(activeTasks);
-
-    return `
-        <div class="page-header">
-            <h1>Tasks</h1>
-            <button class="btn-new-task" id="btn-new-task">+ New Task</button>
-            <button class="btn-outline" id="btn-export-tasks" style="font-size:0.78rem">Export</button>
-        </div>
-        <div class="kanban-toolbar">
-            <span class="owner-filter-label">View:</span>
-            <select id="task-owner-filter">
-                <option value="">All Team Members</option>
-                ${ownerOptions}
-            </select>
-        </div>
-        <div id="kanban-board-container">
-            ${boardHtml}
-        </div>
-        <div class="tasks-archive-section">
-            <button class="btn-outline tasks-archive-toggle" id="btn-archive-toggle" style="font-size:0.78rem">
-                ${archivedTasks.length > 0 ? `Show Archive (${archivedTasks.length})` : 'Archive (empty)'}
-            </button>
-            <div id="tasks-archive-list" style="display:none">
-                ${_buildArchiveList(archivedTasks)}
-            </div>
-        </div>
-    `;
-}
-
-function _buildArchiveList(tasks) {
-    if (tasks.length === 0) return '<div class="kanban-empty" style="padding:0.75rem">No archived tasks</div>';
-    return `<div class="tasks-archive-cards">
-        ${tasks.map(t => {
-            const links = (t.linked_entities || []).map(le =>
-                `<span class="task-link-chip">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}: ${esc(le.entity_name || "ID " + le.entity_id)}</span>`
-            ).join("");
-            const updated = t.updated_at ? timeAgo(t.updated_at) : "";
-            return `<div class="archive-task-card" data-task-id="${t.id}" tabindex="0">
-                <div class="archive-task-title">${esc(t.title)}</div>
-                <div class="archive-task-meta">
-                    ${t.assigned_to ? `<span class="assignee-chip" style="font-size:0.68rem">${esc(t.assigned_to)}</span>` : ''}
-                    ${updated ? `<span style="color:var(--text-dim);font-size:0.68rem">completed ${updated}</span>` : ''}
-                    ${links ? `<span class="kanban-card-links" style="display:inline-flex;margin-left:0.25rem">${links}</span>` : ''}
-                </div>
-            </div>`;
-        }).join("")}
-    </div>`;
-}
-
-function _exportTasksEmail() {
-    const tasks = window._tasksData || [];
-    const activeTasks = tasks.filter(t => t.status !== "done");
-    const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-
-    // Group by status
-    const grouped = {};
-    TASK_STATUSES.forEach(s => grouped[s.key] = []);
-    activeTasks.forEach(t => {
-        if (grouped[t.status]) grouped[t.status].push(t);
-        else grouped.backlog.push(t);
-    });
-
-    // Build HTML table
-    let html = `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:800px">`;
-    html += `<h2 style="margin:0 0 4px;font-size:16px">Task Board Summary</h2>`;
-    html += `<p style="margin:0 0 16px;color:#666;font-size:13px">${today} - ${activeTasks.length} active task${activeTasks.length !== 1 ? 's' : ''}</p>`;
-
-    for (const s of TASK_STATUSES) {
-        const list = grouped[s.key];
-        if (list.length === 0) continue;
-        html += `<h3 style="margin:16px 0 6px;font-size:14px;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px">${s.label} (${list.length})</h3>`;
-        html += `<table style="width:100%;border-collapse:collapse;font-size:13px">`;
-        html += `<tr style="background:#f5f5f5;text-align:left">
-            <th style="padding:5px 8px;border:1px solid #ddd">Task</th>
-            <th style="padding:5px 8px;border:1px solid #ddd;width:70px">Priority</th>
-            <th style="padding:5px 8px;border:1px solid #ddd;width:100px">Assigned To</th>
-            <th style="padding:5px 8px;border:1px solid #ddd;width:80px">Due Date</th>
-            <th style="padding:5px 8px;border:1px solid #ddd">Linked To</th>
-        </tr>`;
-        for (const t of list) {
-            const prioColor = t.priority === "high" ? "#e74c3c" : t.priority === "low" ? "#999" : "#333";
-            const dueFmt = t.due_date ? new Date(t.due_date + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "-";
-            const isOverdue = t.due_date && t.due_date < new Date().toISOString().slice(0, 10);
-            const dueStyle = isOverdue ? 'color:#e74c3c;font-weight:600' : '';
-            const links = (t.linked_entities || []).map(le => {
-                const label = ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type;
-                return `${label}: ${le.entity_name || "ID " + le.entity_id}`;
-            }).join(", ");
-            html += `<tr>
-                <td style="padding:5px 8px;border:1px solid #ddd"><strong>${esc(t.title)}</strong>${t.description ? `<br><span style="color:#888;font-size:12px">${esc(t.description)}</span>` : ''}</td>
-                <td style="padding:5px 8px;border:1px solid #ddd;color:${prioColor}">${t.priority}</td>
-                <td style="padding:5px 8px;border:1px solid #ddd">${esc(t.assigned_to) || '-'}</td>
-                <td style="padding:5px 8px;border:1px solid #ddd;${dueStyle}">${dueFmt}</td>
-                <td style="padding:5px 8px;border:1px solid #ddd;font-size:12px;color:#666">${links || '-'}</td>
-            </tr>`;
-        }
-        html += `</table>`;
-    }
-    html += `</div>`;
-
-    // Copy to clipboard
-    const blob = new Blob([html], { type: "text/html" });
-    const plainText = _tasksToPlainText(grouped);
-    const item = new ClipboardItem({
-        "text/html": blob,
-        "text/plain": new Blob([plainText], { type: "text/plain" }),
-    });
-    navigator.clipboard.write([item]).then(() => {
-        toast("Task summary copied to clipboard - paste into email");
-    }).catch(() => {
-        // Fallback: open in new window
-        const w = window.open("", "_blank");
-        if (w) { w.document.write(html); w.document.close(); }
-    });
-}
-
-function _tasksToPlainText(grouped) {
-    let text = "TASK BOARD SUMMARY\n";
-    text += new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) + "\n\n";
-    for (const s of TASK_STATUSES) {
-        const list = grouped[s.key];
-        if (list.length === 0) continue;
-        text += `--- ${s.label.toUpperCase()} (${list.length}) ---\n`;
-        for (const t of list) {
-            const links = (t.linked_entities || []).map(le => {
-                const label = ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type;
-                return `${label}: ${le.entity_name || "ID " + le.entity_id}`;
-            }).join(", ");
-            text += `  [${t.priority.toUpperCase()}] ${t.title}`;
-            if (t.assigned_to) text += ` (${t.assigned_to})`;
-            if (t.due_date) text += ` due: ${t.due_date}`;
-            if (links) text += ` | ${links}`;
-            text += "\n";
-            if (t.description) text += `    ${t.description}\n`;
-        }
-        text += "\n";
-    }
-    return text;
-}
-
-function _buildKanbanBoard(tasks, filterOwner) {
-    const filtered = filterOwner ? tasks.filter(t => t.assigned_to === filterOwner) : tasks;
-
-    // Show message when filter yields nothing
-    if (filterOwner && filtered.length === 0) {
-        return `<div class="kanban-empty-filtered">No tasks assigned to <strong>${filterOwner}</strong></div>`;
-    }
-
-    const grouped = {};
-    TASK_STATUSES.forEach(s => grouped[s.key] = []);
-    filtered.forEach(t => {
-        if (t.status === "done") return; // archived, skip
-        if (grouped[t.status]) grouped[t.status].push(t);
-        else grouped.backlog.push(t);
-    });
-    const prioOrder = { high: 0, medium: 1, low: 2 };
-    Object.values(grouped).forEach(arr => arr.sort((a, b) => {
-        const pa = prioOrder[a.priority] ?? 1;
-        const pb = prioOrder[b.priority] ?? 1;
-        if (pa !== pb) return pa - pb;
-        return a.position - b.position;
-    }));
-
-    return `<div class="kanban-board">
-        ${TASK_STATUSES.map(s => `
-            <div class="kanban-column" data-status="${s.key}">
-                <div class="kanban-col-header">
-                    <span>${s.label}</span>
-                    <span class="col-count">${grouped[s.key].length}</span>
-                </div>
-                <div class="kanban-col-body" data-status="${s.key}" role="list">
-                    ${grouped[s.key].length === 0
-                        ? '<div class="kanban-empty">No tasks</div>'
-                        : grouped[s.key].map(t => _taskCard(t)).join("")}
-                </div>
-            </div>
-        `).join("")}
-    </div>`;
-}
-
-function _taskModalHtml(task, owners) {
-    const isEdit = !!task;
-    const title = isEdit ? "Edit Task" : "New Task";
-    const t = task || { title: "", description: "", status: "backlog", priority: "medium", assigned_to: "", due_date: "", email_owner: false, linked_entities: [] };
-    const ownerOptions = owners.map(o =>
-        `<option value="${o}" ${t.assigned_to === o ? "selected" : ""}>${o}</option>`
-    ).join("");
-    const statusOptions = TASK_ALL_STATUSES.map(s =>
-        `<option value="${s.key}" ${t.status === s.key ? "selected" : ""}>${s.label}${s.key === "done" ? " (archive)" : ""}</option>`
-    ).join("");
-
-    const existingLinks = (t.linked_entities || []).map(le =>
-        `<div class="task-link-row" data-entity-type="${esc(le.entity_type)}" data-entity-id="${le.entity_id}">
-            <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[le.entity_type] || le.entity_type)}</span>
-            <span class="task-link-name">${esc(le.entity_name || "ID " + le.entity_id)}</span>
-            <button type="button" class="task-link-remove" title="Remove">&times;</button>
-        </div>`
-    ).join("");
-
-    return `<div class="task-modal-overlay" id="task-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
-        <div class="task-modal">
-            <h2 id="task-modal-title">${title}</h2>
-            <label>Title</label>
-            <input type="text" id="task-title" value="${esc(t.title)}" placeholder="Task title..." />
-            <label>Description</label>
-            <textarea id="task-desc" placeholder="Optional description...">${esc(t.description)}</textarea>
-            <label>Status</label>
-            <select id="task-status">${statusOptions}</select>
-            <label>Priority</label>
-            <select id="task-priority">
-                <option value="high" ${t.priority === "high" ? "selected" : ""}>High</option>
-                <option value="medium" ${t.priority === "medium" ? "selected" : ""}>Medium</option>
-                <option value="low" ${t.priority === "low" ? "selected" : ""}>Low</option>
-            </select>
-            <label>Assign To</label>
-            <select id="task-assign">
-                <option value="">Unassigned</option>
-                ${ownerOptions}
-            </select>
-            <label>Due Date</label>
-            <input type="date" id="task-due" value="${t.due_date || ""}" />
-            <label class="task-checkbox-label">
-                <input type="checkbox" id="task-email-owner" ${t.email_owner ? "checked" : ""} />
-                Email owner on assignment
-            </label>
-            <label>Linked Entities</label>
-            <div id="task-links-list" class="task-links-list">${existingLinks}</div>
-            <div class="task-link-add-row">
-                <select id="task-link-type">
-                    <option value="">Select type...</option>
-                    ${Object.entries(ENTITY_TYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
-                </select>
-                <select id="task-link-entity" disabled>
-                    <option value="">Select entity...</option>
-                </select>
-                <button type="button" class="btn-outline" id="task-link-add-btn" disabled>Add</button>
-            </div>
-            <div class="task-modal-actions">
-                ${isEdit ? `<button class="btn-danger" id="task-delete-btn">Delete</button>` : ""}
-                <button id="task-cancel-btn">Cancel</button>
-                <button class="btn-primary" id="task-save-btn">${isEdit ? "Save" : "Create"}</button>
-            </div>
-        </div>
-    </div>`;
-}
-
-async function _openTaskModal(task) {
-    const owners = window._tasksOwners || [];
-    const existing = document.getElementById("task-modal-overlay");
-    if (existing) existing.remove();
-    document.body.insertAdjacentHTML("beforeend", _taskModalHtml(task, owners));
-
-    const overlay = document.getElementById("task-modal-overlay");
-    const cancelBtn = document.getElementById("task-cancel-btn");
-    const saveBtn = document.getElementById("task-save-btn");
-    const deleteBtn = document.getElementById("task-delete-btn");
-    const titleInput = document.getElementById("task-title");
-
-    const close = () => { document.removeEventListener("keydown", escHandler); overlay.remove(); };
-    const escHandler = (e) => { if (e.key === "Escape") close(); };
-    document.addEventListener("keydown", escHandler);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    cancelBtn.addEventListener("click", close);
-
-    // Clear validation error on typing
-    titleInput.addEventListener("input", () => titleInput.classList.remove("input-error"));
-
-    // --- Entity linking ---
-    let linkableEntities = {};
-    try { linkableEntities = await api("/api/tasks/linkable-entities"); } catch (_) {}
-
-    const linkTypeSelect = document.getElementById("task-link-type");
-    const linkEntitySelect = document.getElementById("task-link-entity");
-    const linkAddBtn = document.getElementById("task-link-add-btn");
-    const linksList = document.getElementById("task-links-list");
-
-    linkTypeSelect.addEventListener("change", () => {
-        const etype = linkTypeSelect.value;
-        linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
-        linkEntitySelect.disabled = !etype;
-        linkAddBtn.disabled = true;
-        if (etype && linkableEntities[etype]) {
-            linkableEntities[etype].forEach(e => {
-                linkEntitySelect.insertAdjacentHTML("beforeend",
-                    `<option value="${e.id}">${esc(e.name)}</option>`);
-            });
-        }
-    });
-
-    linkEntitySelect.addEventListener("change", () => {
-        linkAddBtn.disabled = !linkEntitySelect.value;
-    });
-
-    linkAddBtn.addEventListener("click", () => {
-        const etype = linkTypeSelect.value;
-        const eid = parseInt(linkEntitySelect.value);
-        if (!etype || !eid) return;
-        // Check for duplicates
-        const existingLink = linksList.querySelector(`[data-entity-type="${etype}"][data-entity-id="${eid}"]`);
-        if (existingLink) { toast("Already linked"); return; }
-        const ename = linkEntitySelect.options[linkEntitySelect.selectedIndex].text;
-        linksList.insertAdjacentHTML("beforeend",
-            `<div class="task-link-row" data-entity-type="${esc(etype)}" data-entity-id="${eid}">
-                <span class="task-link-badge">${esc(ENTITY_TYPE_LABELS[etype] || etype)}</span>
-                <span class="task-link-name">${esc(ename)}</span>
-                <button type="button" class="task-link-remove" title="Remove">&times;</button>
-            </div>`);
-        // Reset selectors
-        linkTypeSelect.value = "";
-        linkEntitySelect.innerHTML = '<option value="">Select entity...</option>';
-        linkEntitySelect.disabled = true;
-        linkAddBtn.disabled = true;
-    });
-
-    linksList.addEventListener("click", (e) => {
-        if (e.target.classList.contains("task-link-remove")) {
-            e.target.closest(".task-link-row").remove();
-        }
-    });
-
-    // --- Save ---
-    saveBtn.addEventListener("click", async () => {
-        const title = titleInput.value.trim();
-        if (!title) { titleInput.classList.add("input-error"); titleInput.focus(); return; }
-
-        saveBtn.disabled = true;
-
-        // Collect linked entities from the DOM
-        const linked_entities = [];
-        linksList.querySelectorAll(".task-link-row").forEach(row => {
-            linked_entities.push({
-                entity_type: row.dataset.entityType,
-                entity_id: parseInt(row.dataset.entityId),
-            });
-        });
-
-        const body = {
-            title,
-            description: document.getElementById("task-desc").value.trim() || null,
-            status: document.getElementById("task-status").value,
-            priority: document.getElementById("task-priority").value,
-            assigned_to: document.getElementById("task-assign").value || null,
-            due_date: document.getElementById("task-due").value || null,
-            email_owner: document.getElementById("task-email-owner").checked,
-            linked_entities,
-        };
-
-        try {
-            if (task) {
-                await apiPatch(`/api/tasks/${task.id}`, body);
-            } else {
-                await apiPostJson("/api/tasks", body);
-            }
-            close();
-            await _refreshTaskBoard();
-        } catch (err) {
-            saveBtn.disabled = false;
-            toast("Failed to save task: " + err.message);
-        }
-    });
-
-    if (deleteBtn && task) {
-        deleteBtn.addEventListener("click", async () => {
-            if (!confirm("Delete this task?")) return;
-            deleteBtn.disabled = true;
-            try {
-                await apiDelete(`/api/tasks/${task.id}`);
-                close();
-                await _refreshTaskBoard();
-            } catch (err) {
-                deleteBtn.disabled = false;
-                toast("Failed to delete task: " + err.message);
-            }
-        });
-    }
-
-    titleInput.focus();
-}
-
-async function _refreshTaskBoard() {
-    try {
-        const tasks = await api("/api/tasks");
-        window._tasksData = tasks;
-        const filterOwner = document.getElementById("task-owner-filter")?.value || "";
-        const activeTasks = tasks.filter(t => t.status !== "done");
-        const archivedTasks = tasks.filter(t => t.status === "done");
-        const container = document.getElementById("kanban-board-container");
-        if (container) {
-            container.innerHTML = _buildKanbanBoard(activeTasks, filterOwner || null);
-        }
-        // Update archive section
-        const archiveList = document.getElementById("tasks-archive-list");
-        if (archiveList) archiveList.innerHTML = _buildArchiveList(archivedTasks);
-        const archiveBtn = document.getElementById("btn-archive-toggle");
-        if (archiveBtn) {
-            const isOpen = archiveList && archiveList.style.display !== "none";
-            archiveBtn.textContent = archivedTasks.length > 0
-                ? `${isOpen ? "Hide" : "Show"} Archive (${archivedTasks.length})`
-                : "Archive (empty)";
-        }
-    } catch (err) {
-        toast("Failed to refresh tasks: " + err.message);
-    }
-}
-
-function bindTasksPage() {
-    // New task button
-    const newBtn = document.getElementById("btn-new-task");
-    if (newBtn) newBtn.addEventListener("click", () => _openTaskModal(null));
-
-    // Export button
-    const exportBtn = document.getElementById("btn-export-tasks");
-    if (exportBtn) exportBtn.addEventListener("click", _exportTasksEmail);
-
-    // Archive toggle
-    const archiveBtn = document.getElementById("btn-archive-toggle");
-    const archiveList = document.getElementById("tasks-archive-list");
-    if (archiveBtn && archiveList) {
-        archiveBtn.addEventListener("click", () => {
-            const isHidden = archiveList.style.display === "none";
-            archiveList.style.display = isHidden ? "" : "none";
-            const archivedTasks = (window._tasksData || []).filter(t => t.status === "done");
-            archiveBtn.textContent = archivedTasks.length > 0
-                ? `${isHidden ? "Hide" : "Show"} Archive (${archivedTasks.length})`
-                : "Archive (empty)";
-        });
-    }
-
-    // Archive card clicks
-    if (archiveList) {
-        archiveList.addEventListener("click", (e) => {
-            const card = e.target.closest(".archive-task-card");
-            if (!card) return;
-            const taskId = parseInt(card.dataset.taskId);
-            const task = (window._tasksData || []).find(t => t.id === taskId);
-            if (task) _openTaskModal(task);
-        });
-    }
-
-    // Owner filter
-    const filter = document.getElementById("task-owner-filter");
-    if (filter) {
-        filter.addEventListener("change", () => {
-            const tasks = (window._tasksData || []).filter(t => t.status !== "done");
-            const filterOwner = filter.value || null;
-            const container = document.getElementById("kanban-board-container");
-            if (container) {
-                container.innerHTML = _buildKanbanBoard(tasks, filterOwner);
-            }
-        });
-    }
-
-    // Event delegation for kanban board (drag-drop, clicks, keyboard)
-    const board = document.getElementById("kanban-board-container");
-    if (!board) return;
-
-    // Card clicks + keyboard (Enter/Space)
-    board.addEventListener("click", (e) => {
-        const card = e.target.closest(".kanban-card");
-        if (!card) return;
-        const taskId = parseInt(card.dataset.taskId);
-        const task = (window._tasksData || []).find(t => t.id === taskId);
-        if (task) _openTaskModal(task);
-    });
-    board.addEventListener("keydown", (e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        const card = e.target.closest(".kanban-card");
-        if (!card) return;
-        e.preventDefault();
-        const taskId = parseInt(card.dataset.taskId);
-        const task = (window._tasksData || []).find(t => t.id === taskId);
-        if (task) _openTaskModal(task);
-    });
-
-    // Drag-and-drop (delegated)
-    board.addEventListener("dragstart", (e) => {
-        const card = e.target.closest(".kanban-card");
-        if (!card) return;
-        card.classList.add("dragging");
-        e.dataTransfer.setData("text/plain", card.dataset.taskId);
-        e.dataTransfer.effectAllowed = "move";
-    });
-    board.addEventListener("dragend", (e) => {
-        const card = e.target.closest(".kanban-card");
-        if (card) card.classList.remove("dragging");
-        board.querySelectorAll(".kanban-column.drag-over").forEach(c => c.classList.remove("drag-over"));
-    });
-    board.addEventListener("dragover", (e) => {
-        const colBody = e.target.closest(".kanban-col-body");
-        if (!colBody) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        colBody.closest(".kanban-column").classList.add("drag-over");
-    });
-    board.addEventListener("dragleave", (e) => {
-        const colBody = e.target.closest(".kanban-col-body");
-        if (!colBody) return;
-        if (!colBody.contains(e.relatedTarget)) {
-            colBody.closest(".kanban-column").classList.remove("drag-over");
-        }
-    });
-    board.addEventListener("drop", async (e) => {
-        const colBody = e.target.closest(".kanban-col-body");
-        if (!colBody) return;
-        e.preventDefault();
-        colBody.closest(".kanban-column").classList.remove("drag-over");
-        const taskId = e.dataTransfer.getData("text/plain");
-        const newStatus = colBody.dataset.status;
-
-        const cards = [...colBody.querySelectorAll(".kanban-card")];
-        let position = cards.length;
-        const rect = colBody.getBoundingClientRect();
-        const y = e.clientY - rect.top;
-        for (let i = 0; i < cards.length; i++) {
-            const cardRect = cards[i].getBoundingClientRect();
-            const cardMid = cardRect.top + cardRect.height / 2 - rect.top;
-            if (y < cardMid) { position = i; break; }
-        }
-
-        try {
-            await apiPatch(`/api/tasks/${taskId}/move`, { status: newStatus, position });
-            await _refreshTaskBoard();
-        } catch (err) {
-            toast("Failed to move task: " + err.message);
-        }
-    });
-}
-
 
 // ── Event Log Page ──
 
@@ -9421,15 +8876,11 @@ const FAQ_ITEMS = [
     },
     {
         q: "What is the Scheduled Tasks page?",
-        a: "Under Data, Scheduled Tasks shows all Windows Task Scheduler entries across scanned machines. Tasks can be linked to scripts, giving you end-to-end visibility from schedule to data refresh. Failed tasks and their schedules (daily, weekly, monthly) are highlighted."
+        a: "Under Data, Scheduled Tasks shows governed Windows refresh jobs linked to scripts. Failed actionable jobs and their schedules are highlighted. Use Show other Windows tasks only when you need to inspect unrelated Task Scheduler entries."
     },
     {
         q: "What is the Power Automate page?",
         a: "Under Data, Power Automate lets you manually register Power Automate flows that feed data into your pipeline. Flows can be linked to output sources, and their last run time is derived from the linked source's probe data."
-    },
-    {
-        q: "How does the Kanban task board work?",
-        a: "Under Management, create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Tasks can be linked to specific reports, sources, or scripts for traceability."
     },
     {
         q: "What is the Lineage view?",
@@ -10288,7 +9739,6 @@ const pages = {
     recurrences: renderRecurrences,
     export: renderExport,
     dataimport: renderDataImport,
-    tasks: renderTasks,
     eventlog: renderEventLog,
     faq: renderFaq,
     refreshschedule: renderRefreshSchedule,
@@ -10296,11 +9746,13 @@ const pages = {
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard" };
 
 let currentPage = "dashboard";
+let navigationRequestId = 0;
 
 async function navigate(page) {
+    const requestId = ++navigationRequestId;
     // Resolve aliases for old routes
     if (pageAliases[page]) page = pageAliases[page];
     if (!pages[page]) page = "dashboard";
@@ -10335,6 +9787,7 @@ async function navigate(page) {
 
     try {
         const html = await pages[page]();
+        if (requestId !== navigationRequestId || page !== currentPage) return;
         app.innerHTML = html;
 
         bindDataTables();
@@ -10429,9 +9882,9 @@ async function navigate(page) {
         if (page === "eventlog") bindEventLogPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
         if (page === "premiumviewers") bindPremiumViewersPage();
-        if (page === "tasks") bindTasksPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
+        if (requestId !== navigationRequestId || page !== currentPage) return;
         app.innerHTML = '<div class="empty-state" style="margin-top:2rem"><strong>Failed to load page</strong><br><span style="color:var(--text-dim);font-size:0.8rem">' + esc(err.message) + '</span><br><br><button onclick="navigate(\'' + page + '\')" class="btn-outline" style="font-size:0.8rem">Retry</button></div>';
     }
 }

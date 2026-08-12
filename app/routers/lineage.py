@@ -51,7 +51,7 @@ def get_lineage_diagram(report_id: int):
     with get_db() as db:
         # 1. Report info
         report = db.execute(
-            "SELECT id, name, owner, business_owner FROM reports WHERE id = ?",
+            "SELECT id, name, owner, business_owner, archived FROM reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if not report:
@@ -296,6 +296,7 @@ def get_lineage_diagram(report_id: int):
             "name": report["name"],
             "status": status,
             "owner": report["owner"],
+            "archived": bool(report["archived"]),
         },
         "pages": pages_list,
         "tables": tables,

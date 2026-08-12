@@ -1,4 +1,4 @@
-"""Email schedule API and dispatcher for task summary emails."""
+"""Email schedule API and dispatcher for owner alert summaries."""
 
 import calendar
 import html
@@ -26,8 +26,8 @@ DEFAULT_SUBJECT = "Task Board Summary"
 PERSON_DEFAULT_SUBJECT = "Scheduled Email Summary"
 _RECURRENCES = {"daily", "weekly", "monthly", "weekdays"}
 _PERSON_RECURRENCES = {"daily", "weekdays"}
-_PERSON_CONTENT_TYPES = {"tasks", "alerts"}
-_PERSON_DEFAULT_CONTENT_TYPES = ["tasks", "alerts"]
+_PERSON_CONTENT_TYPES = {"alerts"}
+_PERSON_DEFAULT_CONTENT_TYPES = ["alerts"]
 _WEEKDAYS = {
     "monday": 0,
     "tuesday": 1,
@@ -502,47 +502,17 @@ def _summary_section(title: str, summary: dict) -> tuple[str, str]:
 
 
 def _build_person_schedule_email(person: dict, content_types: list[str]) -> tuple[str, str, str]:
-    from app.routers.email import _load_alert_summaries, _load_task_summaries
+    from app.routers.email import _load_alert_summaries
 
     owner_name = person["name"]
-    selected = set(content_types)
-    html_sections: list[str] = []
-    text_sections: list[str] = []
-    subjects: list[str] = []
-
-    if "tasks" in selected:
-        task_summary = _pick_owner_summary(_load_task_summaries({owner_name}), owner_name)
-        if task_summary:
-            html_part, text_part = _summary_section("Open Tasks", task_summary)
-            html_sections.append(html_part)
-            text_sections.append(text_part)
-            subjects.append(task_summary.get("subject") or "Open Tasks")
-
-    if "alerts" in selected:
-        alert_summary = _pick_owner_summary(_load_alert_summaries({owner_name}), owner_name)
-        if alert_summary:
-            html_part, text_part = _summary_section("Alerts", alert_summary)
-            html_sections.append(html_part)
-            text_sections.append(text_part)
-            subjects.append(alert_summary.get("subject") or "Alerts")
-
-    if not html_sections:
-        raise RuntimeError("No selected email content is available for this BI profile.")
-
-    today = _now().strftime("%d %b %Y")
-    if len(subjects) == 1:
-        subject = subjects[0]
-    else:
-        subject = f"{PERSON_DEFAULT_SUBJECT} - {owner_name} - {today}"
-    html_body = (
-        '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:1120px">'
-        f'<h2 style="margin:0 0 4px;font-size:17px">{html.escape(PERSON_DEFAULT_SUBJECT)}</h2>'
-        f'<p style="margin:0 0 16px;color:#666;font-size:13px">{html.escape(owner_name)} - {html.escape(today)}</p>'
-        + "".join(html_sections)
-        + "</div>"
+    alert_summary = _pick_owner_summary(_load_alert_summaries({owner_name}), owner_name)
+    if not alert_summary:
+        raise RuntimeError("No active alerts are available for this BI profile.")
+    return (
+        alert_summary.get("subject") or f"Active alerts - {owner_name}",
+        alert_summary.get("body_html") or "",
+        alert_summary.get("body_text") or "",
     )
-    text_body = f"{PERSON_DEFAULT_SUBJECT}\n{owner_name} - {today}" + "".join(text_sections) + "\n"
-    return subject, html_body, text_body
 
 
 def _send_person_summary(schedule: dict) -> int:

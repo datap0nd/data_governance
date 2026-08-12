@@ -1,9 +1,10 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app import database
-from app.models import SourceUpdate
+from app.models import FreshnessRuleRequest, SourceUpdate
 from app.routers import sources
 
 
@@ -90,6 +91,54 @@ def test_auto_assign_owners_uses_unique_majority_and_skips_ties(source_db):
         ]
 
 
+def test_owner_suggestions_expose_evidence_and_review_states(source_db):
+    with database.get_db() as db:
+        _insert_source(db, 1, "Majority Source")
+        _insert_source(db, 2, "Tied Source")
+        _insert_source(db, 3, "No Evidence Source")
+        db.executemany(
+            "INSERT INTO reports (id, name, owner, archived) VALUES (?, ?, ?, 0)",
+            [(1, "A", "Owner X"), (2, "B", "Owner X"), (3, "C", "Owner Y"), (4, "D", "Owner Y")],
+        )
+        db.executemany(
+            "INSERT INTO report_tables (report_id, table_name, source_id) VALUES (?, ?, ?)",
+            [(1, "A", 1), (2, "B", 1), (3, "C", 1), (1, "A2", 2), (4, "D", 2)],
+        )
+
+    queue = sources.get_source_owner_suggestions()
+    by_id = {item["source_id"]: item for item in queue}
+
+    assert by_id[1]["state"] == "suggested"
+    assert by_id[1]["owner"] == "Owner X"
+    assert by_id[1]["confidence"] == pytest.approx(2 / 3, abs=0.01)
+    assert by_id[2]["state"] == "tie"
+    assert by_id[2]["owner"] is None
+    assert by_id[3]["state"] == "no_evidence"
+
+
+def test_changing_freshness_rule_recalculates_latest_probe(source_db):
+    old_data = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Delayed Source", freshness_rule_type="daily", custom_fresh_days=1)
+        db.execute(
+            """INSERT INTO source_probes (source_id, probed_at, last_data_at, status)
+               VALUES (1, CURRENT_TIMESTAMP, ?, 'outdated')""",
+            (old_data,),
+        )
+
+    result = sources.set_freshness_rule(
+        1,
+        FreshnessRuleRequest(rule_type="custom", fresh_days=30),
+        _request(),
+    )
+
+    assert result["source_status"] == "fresh"
+    with database.get_db() as db:
+        assert db.execute(
+            "SELECT status FROM source_probes WHERE source_id = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["status"] == "fresh"
+
+
 def test_auto_set_freshness_rules_uses_explicit_source_schedules_only(source_db):
     with database.get_db() as db:
         _insert_source(db, 1, "Weekly Source", refresh_schedule="Monday")
@@ -143,4 +192,3 @@ def test_freshness_schedule_parser(schedule, rule_type, days):
     rule = sources._freshness_rule_from_schedule(schedule)
     assert rule["rule_type"] == rule_type
     assert rule["refresh_days"] == days
-

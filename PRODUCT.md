@@ -3,8 +3,8 @@
 ## Product
 
 Metronome is an internal web application for BI and data teams. It combines
-data-governance monitoring, ownership, lineage, refresh status, operational
-tasks, and scheduled communication in one local service.
+data-governance monitoring, ownership, lineage, refresh status, governed
+automation, and scheduled communication in one local service.
 
 ## Primary users
 

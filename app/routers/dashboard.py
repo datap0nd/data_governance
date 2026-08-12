@@ -3,6 +3,7 @@ from app.database import get_db
 from app.models import DashboardStats, ScanRunOut
 from app.routers.actions import list_actions
 from app.routers.sources import list_sources
+from app.routers.reports import list_reports
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -14,6 +15,7 @@ def get_dashboard():
     # sees when they click through. A tiny bit of redundant work, but zero
     # drift risk.
     visible_sources = list_sources(include_archived=False)
+    visible_reports = list_reports(include_archived=False)
     visible_actions = list_actions(status=None)
 
     sources_total = len(visible_sources)
@@ -30,9 +32,7 @@ def get_dashboard():
     )
 
     with get_db() as db:
-        reports_total = db.execute(
-            "SELECT COUNT(*) AS c FROM reports WHERE archived = 0"
-        ).fetchone()["c"]
+        reports_total = len(visible_reports)
         last_scan_row = db.execute(
             "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
@@ -59,6 +59,9 @@ def get_dashboard():
         sources_outdated=sources_outdated,
         sources_unknown=sources_unknown,
         reports_total=reports_total,
+        reports_ok=sum(1 for report in visible_reports if report.status == "healthy"),
+        reports_warning=sum(1 for report in visible_reports if report.status == "unknown"),
+        reports_error=sum(1 for report in visible_reports if report.status == "degraded"),
         checks_total=checks_total,
         checks_pass=checks_pass,
         checks_warn=checks_warn,

@@ -1099,10 +1099,11 @@ def run_probe(cancel_generation: int | None = None) -> dict:
     assert_not_cancelled(generation, "Source probe")
     with get_db() as db:
         cursor = db.execute(
-            """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, status, log)
-               VALUES (?, ?, ?, ?, 0, ?, ?, 'completed', ?)""",
+            """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, no_rule, status, log)
+               VALUES (?, ?, ?, ?, 0, ?, ?, ?, 'completed', ?)""",
             (now, finished, probed, statuses.get("fresh", 0),
-             statuses.get("outdated", 0), statuses.get("unknown", 0), log_text),
+             statuses.get("outdated", 0), statuses.get("unknown", 0),
+             statuses.get("no_rule", 0), log_text),
         )
         probe_run_id = cursor.lastrowid
 

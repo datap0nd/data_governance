@@ -723,6 +723,8 @@ MIGRATIONS = [
     "ALTER TABLE checks ADD COLUMN created_at DATETIME",
     "ALTER TABLE checks ADD COLUMN updated_at DATETIME",
     "UPDATE checks SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP), updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)",
+    # Complete probe accounting. Older runs remain valid with a zero default.
+    "ALTER TABLE probe_runs ADD COLUMN no_rule INTEGER DEFAULT 0",
 ]
 
 

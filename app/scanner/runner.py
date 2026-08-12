@@ -22,6 +22,7 @@ from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_ex
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
+from app.asset_visibility import get_active_source_ids
 
 logger = logging.getLogger(__name__)
 
@@ -558,6 +559,10 @@ def run_scan(
 
             # Update scan run record
             assert_not_cancelled(generation, "Report scan")
+            active_report_count = db.execute(
+                "SELECT COUNT(*) AS count FROM reports WHERE COALESCE(archived, 0) = 0"
+            ).fetchone()["count"]
+            active_source_count = len(get_active_source_ids(db))
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
             finished = datetime.now(timezone.utc).isoformat()
             db.execute(
@@ -568,8 +573,8 @@ def run_scan(
                    WHERE id = ?""",
                 (
                     finished,
-                    len(reports),
-                    len(all_sources),
+                    active_report_count,
+                    active_source_count,
                     new_sources,
                     changed_queries,
                     broken_refs,
@@ -690,8 +695,8 @@ def run_scan(
 
         summary = {
             "scan_id": scan_id,
-            "reports_scanned": len(reports),
-            "sources_found": len(all_sources),
+            "reports_scanned": active_report_count,
+            "sources_found": active_source_count,
             "new_sources": new_sources,
             "changed_queries": changed_queries,
             "broken_refs": broken_refs,
