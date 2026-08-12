@@ -409,6 +409,7 @@ CREATE TABLE IF NOT EXISTS flow_reports (
     ready_text          TEXT,
     open_export_text    TEXT,
     download_text       TEXT NOT NULL DEFAULT 'Download CSV',
+    automation_json     TEXT NOT NULL DEFAULT '{}',
     notes               TEXT,
     enabled             INTEGER DEFAULT 1,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -843,6 +844,8 @@ MIGRATIONS = [
     "UPDATE checks SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP), updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)",
     # Complete probe accounting. Older runs remain valid with a zero default.
     "ALTER TABLE probe_runs ADD COLUMN no_rule INTEGER DEFAULT 0",
+    # Website-specific report navigation stays local with the report catalog.
+    "ALTER TABLE flow_reports ADD COLUMN automation_json TEXT NOT NULL DEFAULT '{}'",
 ]
 
 

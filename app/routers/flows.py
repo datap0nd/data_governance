@@ -183,6 +183,7 @@ class ReportWrite(BaseModel):
     ready_text: str | None = Field(default=None, max_length=500)
     open_export_text: str | None = Field(default=None, max_length=500)
     download_text: str = Field(default="Download CSV", min_length=1, max_length=500)
+    automation: dict[str, Any] = Field(default_factory=dict)
     notes: str | None = Field(default=None, max_length=4000)
     enabled: bool = True
     filters: list[FilterWrite] = Field(default_factory=list, max_length=100)
@@ -194,6 +195,13 @@ class ReportWrite(BaseModel):
         self.ready_text = (self.ready_text or "").strip() or None
         self.open_export_text = (self.open_export_text or "").strip() or None
         self.download_text = self.download_text.strip()
+        if len(_json(self.automation)) > 20000:
+            raise ValueError("Report automation configuration is too large.")
+        path = self.automation.get("category_path")
+        if path is not None:
+            if not isinstance(path, list) or len(path) < 2 or not all(isinstance(item, str) and item.strip() for item in path):
+                raise ValueError("Report menu path needs at least a category and report name.")
+            self.automation["category_path"] = [item.strip() for item in path]
         self.notes = (self.notes or "").strip() or None
         keys = [item.filter_key.casefold() for item in self.filters]
         if len(keys) != len(set(keys)):
@@ -282,6 +290,7 @@ def _report_out(db, report_id: int) -> dict:
     ).fetchall()
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
+    result["automation"] = _loads(result.pop("automation_json", None), {})
     result["filters"] = [_filter_row(item) for item in filters]
     return result
 
@@ -345,7 +354,8 @@ def _build_job(db, flow_id: int) -> dict:
         "report": {
             "id": report["id"], "name": report["name"], "url": report["report_url"],
             "ready_text": report["ready_text"], "open_export_text": report["open_export_text"],
-            "download_text": report["download_text"], "filters": report["filters"],
+            "download_text": report["download_text"], "automation": report["automation"],
+            "filters": report["filters"],
         },
         "selections": flow["selections"],
         "downloads": {
@@ -460,10 +470,11 @@ def create_report(body: ReportWrite, request: Request):
                 raise HTTPException(400, "Website not found.")
             cursor = db.execute(
                 """INSERT INTO flow_reports
-                   (site_id, name, report_url, ready_text, open_export_text, download_text, notes, enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (site_id, name, report_url, ready_text, open_export_text, download_text,
+                    automation_json, notes, enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.site_id, body.name, body.report_url, body.ready_text, body.open_export_text,
-                 body.download_text, body.notes, body.enabled, now, now),
+                 body.download_text, _json(body.automation), body.notes, body.enabled, now, now),
             )
             report_id = cursor.lastrowid
             _replace_filters(db, report_id, body.filters, now)
@@ -513,9 +524,9 @@ def update_report(report_id: int, body: ReportWrite, request: Request):
     with get_db() as db:
         cursor = db.execute(
             """UPDATE flow_reports SET site_id=?, name=?, report_url=?, ready_text=?, open_export_text=?,
-               download_text=?, notes=?, enabled=?, updated_at=? WHERE id=?""",
+               download_text=?, automation_json=?, notes=?, enabled=?, updated_at=? WHERE id=?""",
             (body.site_id, body.name, body.report_url, body.ready_text, body.open_export_text,
-             body.download_text, body.notes, body.enabled, now, report_id),
+             body.download_text, _json(body.automation), body.notes, body.enabled, now, report_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Report not found.")

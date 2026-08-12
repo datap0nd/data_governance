@@ -106,6 +106,8 @@ A failed or errored check stores a result, opens one owned dashboard action, and
 
 Tools > Flows stores website, report, filter, download, filename, folder, and schedule configuration in the local Metronome SQLite database. Repository code contains only the generic flow engine. Authentication credentials and report-specific configuration are not stored in Git.
 
+For ASAP, choose the `ASAP` website type and store the visible portal menu path, report tab, and allowed filter choices in the local catalog. The worker navigates through the signed-in portal, scopes report controls inside ASAP's `content-frame`, applies week members in `YYYYWW` form, runs the report, and selects `CSV file format` in MicroStrategy's export window. A transient report-load HTTP 500 is retried once by returning through the portal menu. Opaque MicroStrategy object IDs and prompt payloads are never required or stored.
+
 Metronome queues each run for a resident browser worker on the BI desktop. The app creates and starts the `DG_Flow_Worker` Windows task in the logged-in BI desktop user's interactive session. Manual and scheduled runs therefore use the same machine, Windows identity, browser profile, and target-folder access.
 
 The default worker is headless. If its dedicated automation profile needs an initial interactive sign-in, set `DG_FLOW_HEADED=true`, restart Metronome, complete the sign-in once, then remove the setting and restart again. The persistent profile is stored under the BI desktop Windows user's profile.

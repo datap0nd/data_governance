@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+
+
+ASAP_FRAME_SELECTOR = "iframe#content-frame"
+ASAP_PORTAL_ADAPTER = "asap_portal"
 
 
 def _api(client: httpx.Client, method: str, path: str, body: dict | None = None) -> dict:
@@ -62,7 +66,7 @@ def _render_filename(template: str, job: dict, period: str | None, index: int) -
     return name
 
 
-def _click_named(page: Page, text: str):
+def _click_named(page: Page | Frame, text: str):
     candidates = [
         page.get_by_role("button", name=text, exact=True),
         page.get_by_role("link", name=text, exact=True),
@@ -78,7 +82,7 @@ def _click_named(page: Page, text: str):
     raise RuntimeError(f"Could not find visible control: {text}")
 
 
-def _set_filter(page: Page, definition: dict, value: Any):
+def _set_filter(page: Page | Frame, definition: dict, value: Any):
     if value in (None, "", []):
         return
     label = definition["control_label"]
@@ -125,6 +129,96 @@ def _apply_configuration(page: Page, job: dict, period: str | None):
         _set_filter(page, definition, value)
 
 
+def _week_to_asap(value: str) -> str:
+    match = re.fullmatch(r"(\d{4})-W(\d{2})", value)
+    if not match:
+        raise RuntimeError(f"ASAP week must use YYYY-Www: {value}")
+    return "".join(match.groups())
+
+
+def _asap_frame(page: Page) -> Frame:
+    handle = page.locator(ASAP_FRAME_SELECTOR)
+    handle.wait_for(state="attached", timeout=120_000)
+    frame = handle.element_handle().content_frame()
+    if frame is None:
+        raise RuntimeError("ASAP report frame did not become available.")
+    return frame
+
+
+def _asap_open_report(page: Page, job: dict) -> Frame:
+    report = job["report"]
+    automation = report.get("automation") or {}
+    path = automation.get("category_path") or []
+    if len(path) < 2:
+        raise RuntimeError("ASAP reports need a category path with a menu and report name.")
+    page.goto(job["site"].get("auth_url") or report["url"], wait_until="domcontentloaded", timeout=120_000)
+    def navigate():
+        page.get_by_text(path[0], exact=True).first.click()
+        if len(path) > 2:
+            group = page.get_by_text(path[-2], exact=True)
+            if group.count() and group.first.is_visible():
+                group.first.hover()
+        page.get_by_text(path[-1], exact=True).first.click()
+
+    navigate()
+
+    expected = automation.get("report_tab") or report.get("ready_text")
+    last_error = None
+    for attempt in range(2):
+        try:
+            frame = _asap_frame(page)
+            if expected:
+                frame.get_by_text(expected, exact=True).first.wait_for(state="visible", timeout=120_000)
+            if frame.get_by_text("500", exact=True).count():
+                raise RuntimeError("ASAP returned an internal server error while loading the report.")
+            return frame
+        except (PlaywrightTimeoutError, RuntimeError) as exc:
+            last_error = exc
+            if attempt:
+                break
+            page.go_back(wait_until="domcontentloaded", timeout=120_000)
+            navigate()
+    raise RuntimeError(f"ASAP report did not load after one retry: {last_error}")
+
+
+def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
+    heading = frame.get_by_text(label, exact=True).first
+    heading.wait_for(state="visible", timeout=60_000)
+    for value in values:
+        option = heading.locator("xpath=following::*").filter(has_text=value).first
+        if not option.count():
+            raise RuntimeError(f"Could not find {label} option: {value}")
+        option.first.click(modifiers=["Control"] if len(values) > 1 else [])
+
+
+def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
+    selections = dict(job.get("selections") or {})
+    for definition in job["report"].get("filters", []):
+        key = definition["filter_key"]
+        value = period if definition["control_type"] == "week" and period else selections.get(key)
+        if value in (None, "", []):
+            continue
+        values = value if isinstance(value, list) else [value]
+        values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
+        if definition["control_type"] == "select":
+            _set_filter(frame, definition, values[0])
+        else:
+            _asap_select_list_values(frame, definition["control_label"], values)
+
+
+def _asap_download(page: Page, frame: Frame, job: dict):
+    automation = job["report"].get("automation") or {}
+    export_selector = automation.get("export_selector", "button.report-export")
+    with page.expect_popup(timeout=60_000) as popup_info:
+        frame.locator(export_selector).first.click()
+    popup = popup_info.value
+    popup.wait_for_load_state("domcontentloaded", timeout=60_000)
+    popup.get_by_label("CSV file format", exact=True).check()
+    with popup.expect_download(timeout=180_000) as pending:
+        popup.get_by_role("button", name="Export", exact=True).click()
+    return pending.value
+
+
 def _csv_metadata(path: Path) -> dict:
     file_size = path.stat().st_size
     if file_size <= 0:
@@ -147,13 +241,16 @@ def _csv_metadata(path: Path) -> dict:
 
 def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
-    page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
+    is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
+    frame = _asap_open_report(page, job) if is_asap else None
     ready_text = job["report"].get("ready_text")
-    if ready_text:
-        page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
     open_export = job["report"].get("open_export_text")
-    if open_export:
-        _click_named(page, open_export)
+    if not is_asap:
+        page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
+        if ready_text:
+            page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
+        if open_export:
+            _click_named(page, open_export)
 
     target = Path(job["downloads"]["target_folder"])
     if not target.is_dir():
@@ -163,20 +260,33 @@ def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
     artifacts = []
     for index, period in enumerate(periods, start=1):
         if index > 1:
-            page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
-            if ready_text:
-                page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
-            if open_export:
-                _click_named(page, open_export)
+            if is_asap:
+                frame = _asap_open_report(page, job)
+            else:
+                page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
+                if ready_text:
+                    page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
+                if open_export:
+                    _click_named(page, open_export)
         report_progress(
             "running",
             {"stage": "configuring", "message": f"Configuring download {index} of {len(periods)}.", "period": period},
             artifacts,
         )
-        _apply_configuration(page, job, period)
-        with page.expect_download(timeout=180_000) as pending:
-            _click_named(page, job["report"]["download_text"])
-        download = pending.value
+        if is_asap:
+            _asap_apply_configuration(frame, job, period)
+            with page.expect_response(
+                lambda response: "promptanswerm.do" in response.url,
+                timeout=180_000,
+            ):
+                _click_named(frame, "RUN")
+            frame.get_by_text("Data rows:", exact=False).first.wait_for(state="visible", timeout=180_000)
+            download = _asap_download(page, frame, job)
+        else:
+            _apply_configuration(page, job, period)
+            with page.expect_download(timeout=180_000) as pending:
+                _click_named(page, job["report"]["download_text"])
+            download = pending.value
         filename = _render_filename(job["downloads"]["filename_template"], job, period, index)
         output = _safe_output_path(target, filename)
         download.save_as(output)
@@ -196,7 +306,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         _api(client, "POST", "/api/flows/worker/register", {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export"], "headed": headed, "delete_existing": False, "overwrite_existing": False},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER], "headed": headed, "delete_existing": False, "overwrite_existing": False},
         })
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(

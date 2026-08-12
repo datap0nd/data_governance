@@ -29,6 +29,15 @@ def _site():
     )
 
 
+def _asap_site():
+    return flows.SiteWrite(
+        name="ASAP",
+        adapter="asap_portal",
+        auth_url="https://portal.example.test/portal/login/app",
+        base_url="https://portal.example.test",
+    )
+
+
 def _report(site_id):
     return flows.ReportWrite(
         site_id=site_id,
@@ -50,6 +59,37 @@ def _report(site_id):
                 filter_key="week",
                 label="Week",
                 control_label="Week",
+                control_type="week",
+            ),
+        ],
+    )
+
+
+def _asap_report(site_id):
+    return flows.ReportWrite(
+        site_id=site_id,
+        name="Installed Base MENA",
+        report_url="https://portal.example.test/portal/login/app",
+        ready_text="Export Wizard (Detail)",
+        download_text="Export CSV",
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "report_tab": "Export Wizard (Detail)",
+            "export_selector": "button.report-export",
+        },
+        filters=[
+            flows.FilterWrite(
+                filter_key="data_configuration",
+                label="Data configuration",
+                control_label="Data Configuration",
+                control_type="select",
+                options=["MENA - Global - Global", "Global - Global - MENA", "Global - Global - CIS"],
+                required=True,
+            ),
+            flows.FilterWrite(
+                filter_key="week",
+                label="Sell-out week",
+                control_label="Sell-out Week",
                 control_type="week",
             ),
         ],
@@ -122,6 +162,31 @@ def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
         "mode": "local", "host": "bi_desktop", "worker_id": "bi-desktop"
     }
     assert queued["job"]["sql_handoff"] == {"enabled": False, "status": "not_implemented"}
+
+
+def test_asap_report_navigation_metadata_stays_local_and_enters_job(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+    saved = flows.create_flow(
+        _flow(
+            site["id"],
+            report["id"],
+            selections={"data_configuration": "MENA - Global - Global"},
+        ),
+        _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+
+    assert report["automation"]["category_path"][-1] == "Installed Base (MENA)"
+    assert queued["job"]["site"]["adapter"] == "asap_portal"
+    assert queued["job"]["report"]["automation"]["report_tab"] == "Export Wizard (Detail)"
+
+
+def test_asap_week_conversion_uses_portal_member_format():
+    worker = __import__("app.flow_worker", fromlist=["_week_to_asap"])
+    assert worker._week_to_asap("2026-W03") == "202603"
+    with pytest.raises(RuntimeError, match="YYYY-Www"):
+        worker._week_to_asap("202603")
 
 
 def test_sql_handoff_cannot_be_enabled(flow_db):
