@@ -584,6 +584,62 @@ def test_asap_region_triplet_select_is_named_data_configuration():
     assert _normalize_asap_filter_label("Region", "select", options) == "Region"
 
 
+def test_hidden_select2_control_is_selected_through_owning_native_select():
+    from app.flow_worker import _select_native_options_by_text
+
+    class Options:
+        def __init__(self, labels):
+            self.labels = labels
+
+        def all_text_contents(self):
+            return self.labels
+
+    class Select:
+        def __init__(self, labels):
+            self.labels = labels
+            self.selected = None
+
+        def locator(self, selector):
+            assert selector == "option"
+            return Options(self.labels)
+
+        def select_option(self, *, label, force):
+            assert force is True
+            self.selected = label
+
+    class Selects:
+        def __init__(self, controls):
+            self.controls = controls
+
+        def count(self):
+            return len(self.controls)
+
+        def nth(self, index):
+            return self.controls[index]
+
+    class Frame:
+        def __init__(self, controls):
+            self.controls = controls
+
+        def locator(self, selector):
+            assert selector == "select"
+            return Selects(self.controls)
+
+    unrelated = Select(["MENA - Global - Global"])
+    data_configuration = Select([
+        "MENA - Global - Global",
+        "Global - Global - MENA",
+        "Global - Global - CIS",
+    ])
+    options = data_configuration.labels
+
+    assert _select_native_options_by_text(
+        Frame([unrelated, data_configuration]), [options[0]], options,
+    ) is True
+    assert unrelated.selected is None
+    assert data_configuration.selected == options[0]
+
+
 def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
     site, report = _seed_catalog()
     with database.get_db() as db:

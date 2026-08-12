@@ -167,6 +167,29 @@ def _click_named(page: Page | Frame, text: str):
     raise RuntimeError(f"Could not find visible control: {text}")
 
 
+def _select_native_options_by_text(
+    page: Page | Frame, values: list[str], expected_options: list[str] | None = None,
+) -> bool:
+    """Select an enhanced native control by its option labels.
+
+    ASAP uses Select2 for Data Configuration. Its visible widget has no
+    accessible name, while the owning ``select`` and ``option`` elements are
+    hidden. Playwright can still use ``select_option`` on that native control,
+    which also emits the change event Select2 and the report listen for.
+    """
+    expected = [str(item) for item in (expected_options or values)]
+    selects = page.locator("select")
+    for index in range(selects.count()):
+        select = selects.nth(index)
+        labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
+        if not all(item in labels for item in expected):
+            continue
+        selected = values if len(values) > 1 else values[0]
+        select.select_option(label=selected, force=True)
+        return True
+    return False
+
+
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
     if value in (None, "", []):
         return
@@ -186,6 +209,13 @@ def _set_filter(page: Page | Frame, definition: dict, value: Any):
         return
     except Exception:
         pass
+
+    if control_type in {"select", "multi_select"}:
+        try:
+            if _select_native_options_by_text(page, values, definition.get("options")):
+                return
+        except Exception:
+            pass
 
     # Enterprise report portals commonly render comboboxes and tree selectors
     # instead of native <select> elements. Keep this semantic and text based.
