@@ -2,11 +2,9 @@
 
 ## Current Objective
 
-Keep Metronome focused on actionable governance workflows. The latest change
-simplifies owner alert emails to one evidence-rich table and exposes the start
-of each degradation and the Power BI refresh failure reason wherever an owner
-investigates the alert. Preserve the newly delivered configurable Flows
-surface for website report downloads and its SQLite-owned configuration.
+Make website-report flows debuggable without weakening background automation.
+Each flow now selects a headed or headless browser from the UI, and Metronome
+routes it to the matching BI desktop worker.
 
 ## Repo State
 
@@ -14,6 +12,7 @@ surface for website report downloads and its SQLite-owned configuration.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
+- Push status: pending for the headed/headless flow change
 
 ## Decisions Made
 
@@ -22,9 +21,11 @@ surface for website report downloads and its SQLite-owned configuration.
 - Repository code contains no report-specific URL, filter value, destination,
   or credential. Users configure those values from Tools > Flows.
 - Browser work runs locally on the BI desktop through the resident
-  `DG_Flow_Worker` interactive Windows task. Manual and scheduled runs use the
-  BI desktop user's persistent browser profile. Authentication tokens are not
-  copied into Metronome or between Windows users.
+  `MXFlowsWorker` headless service or the on-demand
+  `Metronome_Flows_Headed` interactive task. Each uses a separate browser
+  profile; both use the same account-scoped DPAPI credential.
+- Headed workers claim only headed flow jobs, exit after one idle minute, and
+  never claim catalog scans. Headless workers claim headless jobs and scans.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
@@ -87,7 +88,8 @@ surface for website report downloads and its SQLite-owned configuration.
 - `app/flow_worker.py`: persistent-profile Playwright worker with semantic
   controls, CSV validation, checksums, and collision-safe filenames.
 - `app/flow_local_runner.py`, `tools/run_flow_worker.ps1`: BI-desktop task
-  launcher and resident worker identity used by manual and scheduled runs.
+  launchers, mode-specific worker identities, and headed idle shutdown.
+- `setup.ps1`: headless service identity plus the on-demand interactive task.
 - `app/static/index.html`, `app/static/app.js`, `app/static/style.css`: Flows
   navigation, catalog management, populated builder, run history, desktop and
   mobile layouts, and a mobile hidden-panel overflow fix.
@@ -145,19 +147,18 @@ surface for website report downloads and its SQLite-owned configuration.
 
 ## Commands And Checks
 
-- Full Python suite: `98 passed` after rebasing onto the latest `origin/main`.
+- Full Python suite: `122 passed`.
 - Existing Flows desktop and 390px mobile Playwright screenshots passed with
   no horizontal overflow after their responsive fix.
 - Node lineage suite: `1 passed`.
 - Python `compileall` for `app`: passed.
 - JavaScript syntax check: passed.
-- Impeccable detector: only pre-existing side-border, bounce, and layout
-  transition warnings remain; none came from the changed product surfaces.
+- Impeccable detector: four pre-existing side-border warnings remain; none is
+  in the changed Flows code.
 - `git diff --check`: passed.
 
 ## Next Step
 
-Update the installed service from `main`, sync Power BI refresh metadata, and
-validate one failed-refresh alert and Outlook draft against live Windows data.
-Then configure and validate the first real CSV download through Flows on the
-authorized BI desktop session.
+Publish the change to `main`, rerun `setup.ps1` on the BI desktop, verify the
+Browser mode dropdown, then save the existing test flow as Headed and run it
+to watch the current ASAP selector failure in the visible Edge window.

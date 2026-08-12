@@ -9300,7 +9300,7 @@ function _flowListHtml(flows, workers, catalog) {
                     <tr>
                         <td><strong>${esc(flow.name)}</strong><small>${flow.enabled ? "Enabled" : "Draft"}</small></td>
                         <td>${esc(flow.site_name)}<small>${esc(flow.report_name)}</small></td>
-                        <td>${esc(flow.download_mode === "one_per_week" ? "One CSV per week" : "One CSV")}<small>${esc(flow.target_folder)}</small></td>
+                        <td>${esc(flow.download_mode === "one_per_week" ? "One CSV per week" : "One CSV")}<small>${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"} · ${esc(flow.target_folder)}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
@@ -9365,7 +9365,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                         <div class="flow-section-head"><h2>Download behavior</h2><p>Split a range into one file per ISO week, or download one configured CSV.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Download mode</span><select id="flow-download-mode"><option value="single" ${existing?.download_mode !== "one_per_week" ? "selected" : ""}>One CSV</option><option value="one_per_week" ${existing?.download_mode === "one_per_week" ? "selected" : ""}>One CSV per week</option></select></label>
-                            <div></div>
+                            <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
                             <label class="flow-week-field"><span>Start week</span><input id="flow-start-week" type="week" value="${esc(existing?.start_week || "")}"></label>
                             <label class="flow-week-field"><span>End week</span><input id="flow-end-week" type="week" value="${esc(existing?.end_week || "")}"></label>
                             <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
@@ -9387,7 +9387,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>BI desktop browser profile</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9443,7 +9443,7 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
 }
 
 function _flowRunsHtml(runs) {
-    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}</td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
+    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); const browserMode = run.job?.execution?.browser_mode === "headed" ? "Headed browser" : "Headless browser"; return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${browserMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
 }
 
 async function renderFlows() {
@@ -9588,7 +9588,7 @@ function _flowCollectBuilder() {
         selections[control.dataset.flowFilter] = control.multiple ? [...control.selectedOptions].map(option => option.value) : control.value;
     });
     const scheduleType = $("#flow-schedule-type").value;
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: scheduleType !== "manual" && $("#flow-enabled").checked, selections, download_mode: $("#flow-download-mode").value, start_week: $("#flow-start-week").value || null, end_week: $("#flow-end-week").value || null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: false };
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: scheduleType !== "manual" && $("#flow-enabled").checked, selections, download_mode: $("#flow-download-mode").value, browser_mode: $("#flow-browser-mode").value, start_week: $("#flow-start-week").value || null, end_week: $("#flow-end-week").value || null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: false };
 }
 
 function _bindFlowWorkspace() {
@@ -9601,12 +9601,20 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-scan-site").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan`); toast("ASAP discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast("Run queued for an authenticated worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
     $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale).length ? report.filters.filter(filter => filter.enabled && !filter.stale).map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no configurable filters.</p>'; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-download-mode")?.addEventListener("change", event => { document.querySelectorAll(".flow-week-field").forEach(field => field.hidden = event.target.value !== "one_per_week"); });
     $("#flow-download-mode")?.dispatchEvent(new Event("change"));
+    $("#flow-browser-mode")?.addEventListener("change", event => {
+        const headed = event.target.value === "headed";
+        $("#flow-browser-mode-help").textContent = headed
+            ? "Opens Edge in the signed-in BI desktop. Use it to build or debug a flow."
+            : "Runs in the background. Best for routine and scheduled downloads.";
+        $("#flow-browser-summary").textContent = headed ? "Headed · visible" : "Headless · background";
+    });
+    $("#flow-browser-mode")?.dispatchEvent(new Event("change"));
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";
         const weekly = event.target.value === "weekly";

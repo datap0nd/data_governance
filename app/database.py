@@ -458,6 +458,7 @@ CREATE TABLE IF NOT EXISTS flows (
     enabled             INTEGER DEFAULT 0,
     selections_json     TEXT NOT NULL DEFAULT '{}',
     download_mode       TEXT NOT NULL DEFAULT 'single',
+    browser_mode        TEXT NOT NULL DEFAULT 'headless',
     start_week          TEXT,
     end_week            TEXT,
     target_folder       TEXT NOT NULL,
@@ -965,6 +966,7 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_flow_timings_operation ON flow_operation_timings(operation_type, phase, recorded_at)",
     "CREATE INDEX IF NOT EXISTS idx_flow_timings_run ON flow_operation_timings(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_flow_timings_scan ON flow_operation_timings(scan_id)",
+    "ALTER TABLE flows ADD COLUMN browser_mode TEXT NOT NULL DEFAULT 'headless'",
 ]
 
 

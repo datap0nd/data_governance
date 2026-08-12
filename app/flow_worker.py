@@ -242,7 +242,9 @@ def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
     """Recover an expired ASAP session using the local DPAPI credential."""
     if not _asap_login_visible(page):
         return False
-    credentials = load_asap_credentials(profile_dir)
+    # Browser profiles are isolated by mode, but both use the one account-level
+    # DPAPI credential selected by METRONOME_FLOW_PROFILE during setup.
+    credentials = load_asap_credentials()
     if not credentials:
         raise RuntimeError(
             "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
@@ -878,7 +880,8 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
     return artifacts, timings.finish(item_count=len(artifacts))
 
 
-def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool, once: bool):
+def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
+               once: bool, idle_exit_seconds: int = 0):
     with httpx.Client(base_url=server.rstrip("/"), headers={"User-Agent": "Metronome-Flow-Worker/1"}) as client:
         registration = {
             "worker_id": worker_id,
@@ -902,6 +905,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 accept_downloads=True,
             )
             page = context.pages[0] if context.pages else context.new_page()
+            idle_since = time.monotonic()
             while True:
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
@@ -909,8 +913,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 if not run and not scan:
                     if once:
                         break
+                    if idle_exit_seconds and time.monotonic() - idle_since >= idle_exit_seconds:
+                        break
                     time.sleep(10)
                     continue
+                idle_since = time.monotonic()
                 if scan:
                     scan_id = scan["id"]
                     scan_started = time.perf_counter()
@@ -1008,6 +1015,7 @@ def main():
     parser.add_argument("--authenticate-url", help="Open a one-time visible ASAP SSO bootstrap and exit.")
     parser.add_argument("--authentication-timeout-minutes", type=int, default=10)
     parser.add_argument("--once", action="store_true", help="Claim at most one run, then exit.")
+    parser.add_argument("--idle-exit-seconds", type=int, default=0, help="Exit after this many idle seconds.")
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
     if args.authenticate_url:
@@ -1017,7 +1025,10 @@ def main():
         if not acquired:
             print("Another Metronome flow worker is already running.", flush=True)
             return
-        run_worker(args.server, args.worker_id, args.name, profile_dir, args.headed, args.once)
+        run_worker(
+            args.server, args.worker_id, args.name, profile_dir, args.headed,
+            args.once, max(0, args.idle_exit_seconds),
+        )
 
 
 if __name__ == "__main__":

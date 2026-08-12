@@ -112,17 +112,19 @@ The same worker navigates through the signed-in portal, scopes report controls i
 
 Every scan and download records total duration and phase timings. Scan phases include portal navigation, report discovery, report navigation, and filter inspection. Download phases include navigation, configuration, report execution, CSV export, and file transfer. The UI estimates the next scan and download from the median of up to ten comparable successful operations; before history exists, it clearly labels a conservative fallback. SQL insertion remains disabled, but it will use the same phase-timing table when implemented.
 
-Metronome queues each run for a resident browser worker on the BI desktop. The app creates and starts the `DG_Flow_Worker` Windows task in the logged-in BI desktop user's interactive session. Manual and scheduled runs therefore use the same machine, Windows identity, browser profile, and target-folder access.
+Metronome queues each run for a browser worker on the BI desktop. Every flow has a Browser mode setting. Headless runs use the resident `MXFlowsWorker` Windows service and are appropriate for routine and scheduled downloads. Headed runs start the on-demand `Metronome_Flows_Headed` interactive task and open Edge in the signed-in BI desktop so a flow can be built or debugged visibly.
 
-ASAP credentials are enrolled once in the website dialog and stored only on the BI desktop as a Windows DPAPI-encrypted blob beside the dedicated automation browser profile. The API reports only whether a credential is configured and never returns its values. When ASAP redirects to SSO because a session expired, the worker detects the password form, fills it with Playwright DOM APIs, signs in, and resumes the scan or download. Credentials are not stored in SQLite, logs, or the repository.
+ASAP credentials are enrolled once in the website dialog and stored only on the BI desktop as a Windows DPAPI-encrypted blob beside the default automation browser profile. The API reports only whether a credential is configured and never returns its values. When ASAP redirects to SSO because a session expired, the worker detects the password form, fills it with Playwright DOM APIs, signs in, and resumes the scan or download. Credentials are not stored in SQLite, logs, or the repository.
 
-The default worker is headless. If its dedicated automation profile needs an initial interactive sign-in, set `DG_FLOW_HEADED=true`, restart Metronome, complete the sign-in once, then remove the setting and restart again. The persistent profile is stored under the BI desktop Windows user's profile.
+The two workers use separate persistent browser profiles to prevent Edge profile contention. Both read the same Windows DPAPI-protected ASAP credential stored locally for the BI desktop account. Headed runs require that account to be signed in to the desktop. No website credentials or flow configuration are committed to GitHub.
 
 For diagnostics, the same worker can still be started manually:
 
 ```powershell
 python -m app.flow_worker --server http://BI_DESKTOP:8000 --worker-id authorized-browser --name "Authorized browser" --headed
 ```
+
+The setup script installs both worker modes. Rerun it after updating Metronome so the interactive headed task is registered. Do not run headed schedules unless the BI desktop user will be signed in at the scheduled time.
 
 Do not copy browser tokens or credentials between Windows accounts. Enterprise policy may still require the local worker to remain headed.
 

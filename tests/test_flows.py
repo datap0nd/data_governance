@@ -116,6 +116,7 @@ def _flow(site_id, report_id, **overrides):
         "enabled": True,
         "selections": {"region": "Global"},
         "download_mode": "one_per_week",
+        "browser_mode": "headless",
         "start_week": "2026-W30",
         "end_week": "2026-W32",
         "target_folder": r"C:\Reports\Downloads",
@@ -173,7 +174,8 @@ def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
     assert queued["job"]["execution"] == {
-        "mode": "local", "host": "bi_desktop", "worker_id": "bi-desktop"
+        "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
+        "worker_id": "bi-desktop-headless",
     }
     assert queued["job"]["sql_handoff"] == {"enabled": False, "status": "not_implemented"}
 
@@ -287,7 +289,7 @@ def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_ent
     with database.get_db() as db:
         flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
         report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
-    monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "online"})
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "online"})
     queued = flows.queue_report_scan(report_id, _request())
     with database.get_db() as db:
         scan = db.execute("SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)).fetchone()
@@ -416,7 +418,8 @@ def test_setup_installs_headless_flow_worker_service():
     assert '$FlowServiceName = "MXFlowsWorker"' in source
     assert "install $FlowServiceName $PyExe" in source
     assert "start $FlowServiceName" in source
-    assert "--name BI-desktop" in source
+    assert "--worker-id bi-desktop-headless" in source
+    assert "--name BI-desktop-headless" in source
     assert "flow_worker_error.log" in source
     assert "$WorkerStartedAt = Get-Date" in source
     assert "$WorkerStartedAt.AddSeconds(-5)" in source
@@ -448,14 +451,24 @@ def test_setup_merges_new_nested_files_without_purging_local_files():
 def test_worker_launcher_appends_diagnostic_log():
     source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
     assert 'Start-Transcript -Path $WorkerLog -Append' in source
-    assert '"flow_worker.log"' in source
+    assert '"flow_worker_{0}.log"' in source
 
 
 def test_service_starts_headless_worker_service_instead_of_child_process():
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
     assert '["sc.exe", "start", SERVICE_NAME]' in source
-    assert '"mode": "windows_service"' in source
+    assert '["schtasks.exe", "/Run", "/TN", HEADED_TASK_NAME]' in source
     assert "subprocess.Popen" not in source
+
+
+def test_setup_registers_on_demand_interactive_headed_worker():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    assert '$HeadedFlowTaskName = "Metronome_Flows_Headed"' in source
+    assert "New-ScheduledTaskPrincipal" in source
+    assert "-LogonType Interactive" in source
+    assert "-Headed -WorkerId bi-desktop-headed" in source
+    assert "-IdleExitSeconds 60" in source
+    assert ".metronome-flow-browser-headed" in source
 
 
 def test_worker_retries_registration_and_prevents_duplicates():
@@ -473,7 +486,7 @@ def test_catalog_monitor_reports_worker_and_auto_refreshes():
 
 
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
-    monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "launched", "mode": "local"})
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "launched", "mode": mode})
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
@@ -498,13 +511,39 @@ def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
     monkeypatch.setattr(
         flows,
         "launch_local_worker",
-        lambda: launched.append("bi-desktop") or {"status": "launched", "mode": "local"},
+        lambda mode: launched.append(mode) or {"status": "launched", "mode": mode},
     )
 
     queued = flows.queue_run(saved["id"], _request())
 
-    assert launched == ["bi-desktop"]
-    assert queued["worker"] == {"status": "launched", "mode": "local"}
+    assert launched == ["headless"]
+    assert queued["worker"] == {"status": "launched", "mode": "headless"}
+
+
+def test_headed_flow_is_routed_only_to_headed_worker(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    launched = []
+    monkeypatch.setattr(
+        flows, "launch_local_worker",
+        lambda mode: launched.append(mode) or {"status": "launched", "mode": mode},
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headless", display_name="Background", capabilities={"headed": False},
+    ))
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible", capabilities={"headed": True},
+    ))
+
+    assert queued["job"]["execution"]["browser_mode"] == "headed"
+    assert queued["job"]["execution"]["worker_id"] == "bi-desktop-headed"
+    assert launched == ["headed"]
+    assert flows.claim_run("bi-desktop-headless")["run"] is None
+    assert flows.claim_run("bi-desktop-headed")["run"]["id"] == queued["id"]
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():
@@ -528,7 +567,8 @@ def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
         )
         db.execute(
             """UPDATE flow_report_filters SET filter_key='old_label', label='Old label',
-               control_label='Old label', source_kind='discovered' WHERE report_id=?""",
+               control_label='Old label', source_kind='discovered'
+               WHERE report_id=? AND filter_key='region'""",
             (report["id"],),
         )
         flows._apply_discovery(
@@ -548,7 +588,8 @@ def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
             complete=False,
         )
         rows = db.execute(
-            "SELECT filter_key, enabled, stale FROM flow_report_filters WHERE report_id=? ORDER BY filter_key",
+            """SELECT filter_key, enabled, stale FROM flow_report_filters
+               WHERE report_id=? AND filter_key IN ('new_label', 'old_label') ORDER BY filter_key""",
             (report["id"],),
         ).fetchall()
     assert [(row["filter_key"], row["enabled"], row["stale"]) for row in rows] == [

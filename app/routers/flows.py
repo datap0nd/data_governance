@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
-from app.flow_local_runner import WORKER_ID as LOCAL_WORKER_ID, launch_local_worker
+from app.flow_local_runner import (
+    HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker,
+)
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
@@ -22,6 +24,7 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_week"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
+BROWSER_MODES = {"headless", "headed"}
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
@@ -258,6 +261,7 @@ class FlowWrite(BaseModel):
     enabled: bool = False
     selections: dict[str, Any] = Field(default_factory=dict)
     download_mode: str = "single"
+    browser_mode: str = "headless"
     start_week: str | None = None
     end_week: str | None = None
     target_folder: str = Field(min_length=1, max_length=2000)
@@ -276,6 +280,8 @@ class FlowWrite(BaseModel):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
         if self.download_mode not in DOWNLOAD_MODES:
             raise ValueError("Unsupported download mode.")
+        if self.browser_mode not in BROWSER_MODES:
+            raise ValueError("Browser mode must be headed or headless.")
         if self.schedule_type not in SCHEDULE_TYPES:
             raise ValueError("Unsupported schedule type.")
         self.start_week = _week_value(self.start_week, "Start week")
@@ -433,7 +439,10 @@ def _build_job(db, flow_id: int) -> dict:
     periods = weeks if flow["download_mode"] == "one_per_week" else [None]
     return {
         "schema_version": 1,
-        "execution": {"mode": "local", "host": "bi_desktop", "worker_id": LOCAL_WORKER_ID},
+        "execution": {
+            "mode": "local", "host": "bi_desktop", "browser_mode": flow["browser_mode"],
+            "worker_id": HEADED_WORKER_ID if flow["browser_mode"] == "headed" else LOCAL_WORKER_ID,
+        },
         "flow": {"id": flow["id"], "name": flow["name"]},
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
@@ -463,6 +472,7 @@ def queue_due_flows() -> dict:
     now = _now()
     now_text = _iso(now)
     queued = []
+    modes = set()
     with get_db() as db:
         rows = db.execute(
             """SELECT * FROM flows
@@ -492,7 +502,14 @@ def queue_due_flows() -> dict:
                 (row["id"], _json(job), now_text),
             )
             queued.append(cursor.lastrowid)
-    worker = launch_local_worker() if queued else {"status": "not_needed", "mode": "local"}
+            modes.add(job["execution"]["browser_mode"])
+    workers = [launch_local_worker(mode) for mode in sorted(modes)]
+    if not workers:
+        worker = {"status": "not_needed", "mode": "local"}
+    elif len(workers) == 1:
+        worker = workers[0]
+    else:
+        worker = {"status": "starting", "workers": workers}
     return {"queued": queued, "count": len(queued), "worker": worker}
 
 
@@ -723,11 +740,11 @@ def create_flow(body: FlowWrite, request: Request):
             cursor = db.execute(
                 """INSERT INTO flows
                    (name, site_id, report_id, enabled, selections_json, download_mode, start_week, end_week,
-                    target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
+                    browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     sql_handoff_enabled, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
                 (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-                 body.download_mode, body.start_week, body.end_week, body.target_folder,
+                 body.download_mode, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, get_actor(request), now, now),
             )
@@ -746,11 +763,11 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         _validate_flow_selections(db, body)
         cursor = db.execute(
             """UPDATE flows SET name=?, site_id=?, report_id=?, enabled=?, selections_json=?,
-               download_mode=?, start_week=?, end_week=?, target_folder=?, filename_template=?,
+               download_mode=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, next_run_at=?,
                sql_handoff_enabled=0, updated_at=? WHERE id=?""",
             (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-             body.download_mode, body.start_week, body.end_week, body.target_folder,
+             body.download_mode, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), next_run, now, flow_id),
         )
@@ -781,7 +798,7 @@ def queue_run(flow_id: int, request: Request):
         )
         run_id = cursor.lastrowid
         log_event(db, "flow", flow_id, flow["name"], "run_queued", f"run_id={run_id}", get_actor(request))
-    worker = launch_local_worker()
+    worker = launch_local_worker(job["execution"]["browser_mode"])
     if worker.get("status") == "error":
         with get_db() as db:
             db.execute(
@@ -803,7 +820,7 @@ def ensure_local_worker() -> dict:
         return {"status": "busy", "mode": "local", "worker_id": LOCAL_WORKER_ID}
     if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
         return {"status": "online", "mode": "local", "worker_id": LOCAL_WORKER_ID}
-    return launch_local_worker()
+    return launch_local_worker("headless")
 
 
 def _scan_out(row) -> dict:
@@ -1087,6 +1104,8 @@ def claim_run(worker_id: str):
         worker = db.execute("SELECT * FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
         if not worker:
             raise HTTPException(404, "Register this worker before claiming work.")
+        capabilities = _loads(worker["capabilities_json"], {})
+        worker_mode = "headed" if capabilities.get("headed") else "headless"
         if worker["current_scan_id"]:
             scan = db.execute("SELECT * FROM flow_catalog_scans WHERE id=?", (worker["current_scan_id"],)).fetchone()
             if scan and scan["status"] not in RUN_TERMINAL:
@@ -1097,9 +1116,19 @@ def claim_run(worker_id: str):
             if row and row["status"] not in RUN_TERMINAL:
                 db.execute("UPDATE flow_workers SET last_seen_at=?, updated_at=? WHERE worker_id=?", (now, now, worker_id))
                 return {"run": {**dict(row), "job": _loads(row["job_json"], {})}, "scan": None}
-        row = db.execute("SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
+        queued_runs = db.execute(
+            "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
+        ).fetchall()
+        row = next((candidate for candidate in queued_runs if (
+            _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
+            == worker_mode
+        )), None)
         if not row:
-            scan = db.execute("SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
+            # Discovery remains background-only. The interactive worker exists
+            # to make a selected download visible while building or debugging.
+            scan = db.execute(
+                "SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id LIMIT 1"
+            ).fetchone() if worker_mode == "headless" else None
             if scan:
                 cursor = db.execute(
                     """UPDATE flow_catalog_scans SET status='claimed', worker_id=?, claimed_at=?, heartbeat_at=?

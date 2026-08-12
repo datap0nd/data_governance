@@ -27,6 +27,7 @@ trap {
 
 $ServiceName = "MXAnalytics"
 $FlowServiceName = "MXFlowsWorker"
+$HeadedFlowTaskName = "Metronome_Flows_Headed"
 $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
@@ -52,6 +53,7 @@ $ZipPath     = "$ProjectDir\_update.zip"
 $PyDir       = "$ProjectDir\python313"
 $PyExe       = "$PyDir\python.exe"
 $FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
+$HeadedFlowProfile = "$env:USERPROFILE\.metronome-flow-browser-headed"
 $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
 
 # --- Safety check ---
@@ -282,14 +284,15 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppRotateSeconds 86400
 & $NssmExe set $ServiceName AppRotateBytes 10485760
 
-# The Flows worker is a separate headless service. Running it under the same
-# Windows account as Metronome gives it access to the account-scoped DPAPI
-# credential and makes scans/downloads independent of the visible desktop.
+# Headless flows use a background service. Headed flows use a separate,
+# on-demand interactive task so Edge appears in the signed-in BI desktop.
+# Separate browser profiles prevent Chromium profile contention. Both workers
+# read the same account-scoped DPAPI credential stored outside source control.
 if (-not $existingFlowService) {
-    & $NssmExe install $FlowServiceName $PyExe "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop --name BI-desktop --profile-dir `"$FlowProfile`""
+    & $NssmExe install $FlowServiceName $PyExe "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop-headless --name BI-desktop-headless --profile-dir `"$FlowProfile`""
 }
 & $NssmExe set $FlowServiceName Application $PyExe
-& $NssmExe set $FlowServiceName AppParameters "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop --name BI-desktop --profile-dir `"$FlowProfile`""
+& $NssmExe set $FlowServiceName AppParameters "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop-headless --name BI-desktop-headless --profile-dir `"$FlowProfile`""
 & $NssmExe set $FlowServiceName AppDirectory $CodeDir
 & $NssmExe set $FlowServiceName DisplayName "Metronome - Flows Worker"
 & $NssmExe set $FlowServiceName Description "Headless authenticated ASAP discovery and download worker"
@@ -304,6 +307,18 @@ if (-not $existingFlowService) {
 & $NssmExe set $FlowServiceName AppRotateFiles 1
 & $NssmExe set $FlowServiceName AppRotateSeconds 86400
 & $NssmExe set $FlowServiceName AppRotateBytes 10485760
+
+$HeadedWorkerScript = "$CodeDir\tools\run_flow_worker.ps1"
+$HeadedTaskArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$HeadedWorkerScript`" -Headed -WorkerId bi-desktop-headed -WorkerName `"BI desktop - headed`" -ProfileDir `"$HeadedFlowProfile`" -IdleExitSeconds 60"
+$HeadedTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $HeadedTaskArguments
+$HeadedTaskPrincipal = New-ScheduledTaskPrincipal `
+    -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+$HeadedTaskSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
+    -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
+Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
 
 if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     Write-Host "Installing RDP console guard..." -ForegroundColor Yellow
@@ -366,7 +381,7 @@ $WorkerStartedAt = Get-Date
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
         $WorkerOnline = @($ExistingWorkers | Where-Object {
-            $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" -and
+            $_.worker_id -eq "bi-desktop-headless" -and $_.status -ne "offline" -and
             $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
         }).Count -gt 0
     } catch {}
@@ -376,7 +391,7 @@ $WorkerStartedAt = Get-Date
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
                 if (@($RegisteredWorkers | Where-Object {
-                    $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" -and
+                    $_.worker_id -eq "bi-desktop-headless" -and $_.status -ne "offline" -and
                     $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
                 }).Count -gt 0) {
                     $WorkerOnline = $true

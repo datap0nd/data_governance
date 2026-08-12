@@ -65,6 +65,7 @@ def save_asap_credentials(username: str, password: str, profile_dir: Path | None
 
 
 def load_asap_credentials(profile_dir: Path | None = None) -> dict | None:
+    """Load the credential from the requested or account-default location."""
     path = credential_path(profile_dir)
     if not path.exists():
         return None
@@ -79,6 +80,7 @@ def load_asap_credentials(profile_dir: Path | None = None) -> dict | None:
 
 
 def asap_credential_status(profile_dir: Path | None = None) -> dict:
+    """Report shared credential status without returning decrypted values."""
     path = credential_path(profile_dir)
     if not path.exists():
         return {"configured": False, "updated_at": None}
