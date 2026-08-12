@@ -4867,7 +4867,13 @@ button.btn-danger-outline:hover {
     nav .logo { margin-right: auto; }
     main { padding: 0.75rem; }
     .stat-grid { grid-template-columns: 1fr 1fr; }
-    .ai-chat-panel { width: 100%; right: 0; }
+    .ai-chat-panel {
+        width: 100%;
+        right: 0;
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+    }
+    .ai-chat-panel.open { right: 0; transform: translateX(0); }
 }
 
 @media (max-width: 480px) {

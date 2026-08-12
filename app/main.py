@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH
 from app.database import init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, custom_reports, documentation, email, email_schedules, usage, data_import, recurrences
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, overview, documentation, email, email_schedules, usage, data_import, recurrences
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
@@ -301,8 +301,26 @@ def _scheduled_overall_refresh():
             log.warning("Scheduled overall refresh stopped before scan because PBI sync result was %s", pbi_result.get("status"))
             return {"status": "pbi_sync_not_completed", "pbi_sync": pbi_result, "stop": stop_result}
         scan_result = _scheduled_scan(cancel_generation=generation, stop_existing=False)
+        usage_result = None
+        if scan_result.get("status") == "completed":
+            try:
+                from app.scanner.pbi_sync import trigger_pbi_usage_sync
+
+                usage_result = trigger_pbi_usage_sync(
+                    cancel_existing=False,
+                    cancel_generation=generation,
+                )
+            except Exception as exc:
+                usage_result = {"status": "failed", "error": str(exc)}
+                log.exception("Scheduled Power BI usage sync failed to start: %s", exc)
         log.info("Scheduled overall refresh complete")
-        return {"status": scan_result.get("status"), "pbi_sync": pbi_result, "scan": scan_result, "stop": stop_result}
+        return {
+            "status": scan_result.get("status"),
+            "pbi_sync": pbi_result,
+            "scan": scan_result,
+            "pbi_usage_sync": usage_result,
+            "stop": stop_result,
+        }
     except ScannerWorkCancelled as e:
         log.info("Scheduled overall refresh stopped: %s", e)
         return {"status": "stopped", "message": str(e), "stop": stop_result}
@@ -414,6 +432,7 @@ app.include_router(changelog.router)
 app.include_router(schedules.router)
 app.include_router(create.router)
 app.include_router(best_practices.router)
+app.include_router(data_quality.router)
 app.include_router(tasks.router)
 app.include_router(eventlog.router)
 app.include_router(people.router)
@@ -422,7 +441,6 @@ app.include_router(scheduled_tasks.router)
 app.include_router(archive.router)
 app.include_router(power_automate.router)
 app.include_router(overview.router)
-app.include_router(custom_reports.router)
 app.include_router(documentation.router)
 app.include_router(email.router)
 app.include_router(email_schedules.router)

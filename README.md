@@ -94,7 +94,13 @@ Scheduled emails are blocked by default if the latest completed Power BI refresh
 
 If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_CLIENT_ID`, and `DG_PBI_CLIENT_SECRET` to run the sync without an interactive account picker.
 
-Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the report scan, source probe, and Power BI sync together. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
+Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the Power BI refresh sync, report and lineage scan, PostgreSQL dependency and cron discovery, script scan, Windows Task Scheduler scan, source probe, configured data-quality checks, governance checks, configured usage CSV import, and Power BI usage sync. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
+
+### Data quality checks
+
+Tools > Data Quality manages read-only rules for governed sources. Row-count range and row-count-change rules use the source probe history. Null-rate, duplicate-key, and numeric value-range rules run against PostgreSQL using the existing read-only probe connection. Checks run automatically after every source probe and can also be run individually or as a group from the page.
+
+A failed or errored check stores a result, opens one owned dashboard action, and creates an alert. A later passing result resolves that action and alert automatically. Disabling a check also closes its active incident while retaining the check and result history.
 
 ### Power BI email recurrences
 

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -175,6 +175,8 @@ class ActionOut(BaseModel):
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
     notes: str | None = None
+    fingerprint: str | None = None
+    check_id: int | None = None
     impact_views_30d: int = 0
     triage_rank: int | None = None
     triage_score: int = 0
@@ -189,6 +191,44 @@ class ActionUpdate(BaseModel):
     status: str | None = None
     assigned_to: str | None = None
     notes: str | None = None
+
+
+# --- Data quality checks ---
+
+class DataQualityCheckCreate(BaseModel):
+    name: str
+    source_id: int
+    type: str
+    config: dict = Field(default_factory=dict)
+    severity: str = "critical"
+    enabled: bool = True
+
+
+class DataQualityCheckUpdate(BaseModel):
+    name: str | None = None
+    source_id: int | None = None
+    type: str | None = None
+    config: dict | None = None
+    severity: str | None = None
+    enabled: bool | None = None
+
+
+class DataQualityCheckOut(BaseModel):
+    id: int
+    name: str
+    source_id: int
+    source_name: str | None = None
+    source_type: str | None = None
+    type: str
+    config: dict = Field(default_factory=dict)
+    severity: str = "critical"
+    enabled: bool = True
+    latest_status: str | None = None
+    latest_value: float | None = None
+    latest_message: str | None = None
+    latest_ran_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 # --- Create (manual entry) ---
@@ -434,57 +474,6 @@ class ScriptTableOut(BaseModel):
     direction: str
     source_id: int | None = None
     source_name: str | None = None
-
-
-# --- Custom Reports ---
-
-class CustomReportOut(BaseModel):
-    id: int
-    name: str
-    description: str | None = None
-    frequency: str | None = None
-    owner: str | None = None
-    stakeholders: str | None = None
-    steps: str | None = None
-    data_sources: str | None = None
-    output_description: str | None = None
-    estimated_hours: float | None = None
-    status: str | None = "active"
-    last_completed: str | None = None
-    tags: str | None = None
-    archived: bool = False
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-class CustomReportCreate(BaseModel):
-    name: str
-    description: str | None = None
-    frequency: str | None = None
-    owner: str | None = None
-    stakeholders: str | None = None
-    steps: str | None = None
-    data_sources: str | None = None
-    output_description: str | None = None
-    estimated_hours: float | None = None
-    status: str = "active"
-    last_completed: str | None = None
-    tags: str | None = None
-
-
-class CustomReportUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    frequency: str | None = None
-    owner: str | None = None
-    stakeholders: str | None = None
-    steps: str | None = None
-    data_sources: str | None = None
-    output_description: str | None = None
-    estimated_hours: float | None = None
-    status: str | None = None
-    last_completed: str | None = None
-    tags: str | None = None
 
 
 # --- Documentation ---

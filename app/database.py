@@ -81,11 +81,14 @@ CREATE TABLE IF NOT EXISTS probe_runs (
 
 CREATE TABLE IF NOT EXISTS checks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT,
     source_id       INTEGER REFERENCES sources(id),
     type            TEXT NOT NULL,
     config          TEXT NOT NULL,
     severity        TEXT DEFAULT 'critical',
-    enabled         INTEGER DEFAULT 1
+    enabled         INTEGER DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS check_results (
@@ -117,6 +120,8 @@ CREATE TABLE IF NOT EXISTS actions (
     status          TEXT DEFAULT 'open',
     assigned_to     TEXT,
     notes           TEXT,
+    fingerprint     TEXT,
+    check_id        INTEGER REFERENCES checks(id),
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     resolved_at     DATETIME
@@ -707,6 +712,17 @@ MIGRATIONS = [
        WHERE owner_name IS NULL OR trim(owner_name) = ''""",
     # Recipient-facing context or action displayed above recurrence alert results
     "ALTER TABLE pbi_recurrences ADD COLUMN alert_message TEXT",
+    # Persistent scanner findings and data-quality action linkage
+    "ALTER TABLE actions ADD COLUMN fingerprint TEXT",
+    "ALTER TABLE actions ADD COLUMN check_id INTEGER REFERENCES checks(id)",
+    "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint)",
+    "CREATE INDEX IF NOT EXISTS idx_actions_check_id ON actions(check_id)",
+    # Data-quality check metadata. The original tables existed without a
+    # usable runner or management surface.
+    "ALTER TABLE checks ADD COLUMN name TEXT",
+    "ALTER TABLE checks ADD COLUMN created_at DATETIME",
+    "ALTER TABLE checks ADD COLUMN updated_at DATETIME",
+    "UPDATE checks SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP), updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)",
 ]
 
 

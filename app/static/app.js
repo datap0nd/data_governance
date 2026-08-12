@@ -256,6 +256,11 @@ function actionTypeBadge(type) {
         task_failed: "Task Failed",
         script_failed: "Script Failed",
         schedule_mismatch: "Stale vs Source",
+        data_quality: "Data Quality",
+        dependency_stale: "Upstream Newer",
+        schedule_discrepancy: "Schedule Mismatch",
+        best_practice: "Model Quality",
+        documentation_missing: "Documentation",
     };
     const colors = {
         stale_source: "badge-red",
@@ -269,6 +274,11 @@ function actionTypeBadge(type) {
         task_failed: "badge-red",
         script_failed: "badge-red",
         schedule_mismatch: "badge-yellow",
+        data_quality: "badge-red",
+        dependency_stale: "badge-yellow",
+        schedule_discrepancy: "badge-yellow",
+        best_practice: "badge-yellow",
+        documentation_missing: "badge-yellow",
     };
     return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
 }
@@ -286,6 +296,11 @@ function actionTypeLabel(type) {
         task_failed: "Scheduled task failed",
         script_failed: "Script failed",
         schedule_mismatch: "Stale vs source",
+        data_quality: "Data-quality check failed",
+        dependency_stale: "Upstream data is newer",
+        schedule_discrepancy: "Refresh schedule mismatch",
+        best_practice: "Model quality issue",
+        documentation_missing: "Documentation incomplete",
     };
     return labels[type] || String(type || "Alert").replace(/_/g, " ");
 }
@@ -4470,6 +4485,205 @@ function bindBestPracticesPage() {
 }
 
 
+// ── Data Quality page ──
+
+const _DQ_TYPE_LABELS = {
+    row_count_range: "Row count range",
+    row_count_change: "Row count change",
+    null_rate: "Null rate",
+    duplicate_key: "Duplicate key",
+    value_range: "Value range",
+};
+
+function _dqStatusBadge(status) {
+    if (status === "pass") return '<span class="badge badge-green">passed</span>';
+    if (status === "fail" || status === "error") return `<span class="badge badge-red">${esc(status)}</span>`;
+    if (status === "skipped") return '<span class="badge badge-yellow">waiting</span>';
+    return '<span class="badge badge-muted">not run</span>';
+}
+
+function _dqConfigSummary(check) {
+    const c = check.config || {};
+    if (check.type === "row_count_range") return `Min ${c.min_rows ?? "-"}, max ${c.max_rows ?? "-"}`;
+    if (check.type === "row_count_change") return `Drop ${c.max_drop_pct ?? "-"}%, increase ${c.max_increase_pct ?? "-"}%`;
+    if (check.type === "null_rate") return `${c.column}: max ${c.max_null_pct}% null`;
+    if (check.type === "duplicate_key") return `${(c.columns || []).join(", ")}: max ${c.max_duplicate_rows ?? 0} duplicate rows`;
+    if (check.type === "value_range") return `${c.column}: ${c.min_value ?? "-"} to ${c.max_value ?? "-"}`;
+    return JSON.stringify(c);
+}
+
+async function renderDataQuality() {
+    const [checks, sources, typeData] = await Promise.all([
+        api("/api/data-quality/checks"),
+        api("/api/sources"),
+        api("/api/data-quality/types"),
+    ]);
+    window._dqChecks = checks;
+    window._dqSources = sources;
+    window._dqTypes = typeData.types || [];
+
+    const counts = { pass: 0, fail: 0, error: 0, skipped: 0, pending: 0 };
+    checks.filter(c => c.enabled).forEach(c => {
+        const key = c.latest_status || "pending";
+        counts[key] = (counts[key] || 0) + 1;
+    });
+    const cols = [
+        { key: "latest_status", label: "Status", width: COL_W.sm, render: c => _dqStatusBadge(c.latest_status), sortVal: c => c.latest_status || "pending" },
+        { key: "name", label: "Check", width: COL_W.lg, render: c => `<strong>${esc(c.name)}</strong>${c.enabled ? "" : '<br><span style="color:var(--text-dim);font-size:0.7rem">disabled</span>'}` },
+        { key: "source_name", label: "Source", width: COL_W.lg },
+        { key: "type", label: "Rule", width: COL_W.md, render: c => esc(_DQ_TYPE_LABELS[c.type] || c.type) },
+        { key: "config", label: "Limits", width: COL_W.lg, render: c => `<span style="white-space:normal;color:var(--text-secondary)">${esc(_dqConfigSummary(c))}</span>`, sortVal: c => _dqConfigSummary(c) },
+        { key: "severity", label: "Severity", width: COL_W.sm, render: c => _bpSevBadge(c.severity === "critical" ? "high" : c.severity === "warning" ? "medium" : "low") },
+        { key: "latest_value", label: "Value", width: COL_W.sm, render: c => c.latest_value == null ? "-" : esc(c.latest_value) },
+        { key: "latest_ran_at", label: "Last run", width: COL_W.md, render: c => c.latest_ran_at ? `<span title="${esc(formatDate(c.latest_ran_at))}">${timeAgo(c.latest_ran_at)}</span>` : "-" },
+        { key: "latest_message", label: "Result", width: COL_W.xl, render: c => `<span style="white-space:normal;color:var(--text-secondary)">${esc(c.latest_message || "Not run yet")}</span>` },
+        { key: "_actions", label: "", width: COL_W.md, filterable: false, sortable: false, render: c => `
+            <div style="display:flex;gap:0.3rem;flex-wrap:wrap">
+                <button class="btn-sm btn-outline dq-run" data-id="${c.id}">Run</button>
+                <button class="btn-sm btn-outline dq-edit" data-id="${c.id}">Edit</button>
+                <button class="btn-sm btn-outline dq-toggle" data-id="${c.id}" data-enabled="${c.enabled ? "1" : "0"}">${c.enabled ? "Disable" : "Enable"}</button>
+            </div>` },
+    ];
+    return `
+        <div class="page-header">
+            <h1>Data Quality</h1>
+            <span class="subtitle">Scheduled read-only checks against governed sources</span>
+            <button class="btn-outline" id="btn-dq-new">+ New Check</button>
+            <button class="btn-new-task" id="btn-dq-run-all">Run all checks</button>
+        </div>
+        <div class="summary-counts" aria-label="Data-quality check summary">
+            <div class="summary-count"><span class="count-num">${checks.filter(c => c.enabled).length}</span><span>Enabled</span></div>
+            <div class="summary-count"><span class="count-num">${counts.pass}</span><span>Passed</span></div>
+            <div class="summary-count"><span class="count-num">${counts.fail + counts.error}</span><span>Need attention</span></div>
+            <div class="summary-count"><span class="count-num">${counts.skipped + counts.pending}</span><span>Waiting</span></div>
+        </div>
+        <div id="dq-form-area"></div>
+        ${checks.length ? dataTable("dt-data-quality", cols, checks) : '<div class="empty-state">No checks configured. Create a row-count or PostgreSQL column check to start monitoring data validity.</div>'}
+        <div class="section-card" style="margin-top:1rem">
+            <h2 style="margin-bottom:0.5rem">How execution works</h2>
+            <p style="color:var(--text-secondary);font-size:0.82rem">Checks run automatically after every source probe. PostgreSQL checks use the existing read-only connection. A failed check creates an owned action and alert; a later pass closes both automatically.</p>
+        </div>`;
+}
+
+function _dqConfigFields(type, config = {}) {
+    if (type === "row_count_range") return `
+        <div class="create-field"><label>Minimum rows</label><input id="dq-min-rows" type="number" min="0" value="${esc(config.min_rows ?? "")}"></div>
+        <div class="create-field"><label>Maximum rows</label><input id="dq-max-rows" type="number" min="0" value="${esc(config.max_rows ?? "")}"></div>`;
+    if (type === "row_count_change") return `
+        <div class="create-field"><label>Maximum drop %</label><input id="dq-max-drop" type="number" min="0" max="100" step="0.1" value="${esc(config.max_drop_pct ?? "")}"></div>
+        <div class="create-field"><label>Maximum increase %</label><input id="dq-max-increase" type="number" min="0" step="0.1" value="${esc(config.max_increase_pct ?? "")}"></div>`;
+    if (type === "null_rate") return `
+        <div class="create-field"><label>Column</label><input id="dq-column" value="${esc(config.column || "")}" required></div>
+        <div class="create-field"><label>Maximum null %</label><input id="dq-max-null" type="number" min="0" max="100" step="0.1" value="${esc(config.max_null_pct ?? "")}" required></div>`;
+    if (type === "duplicate_key") return `
+        <div class="create-field"><label>Key columns</label><input id="dq-columns" value="${esc((config.columns || []).join(", "))}" placeholder="order_id, line_id" required></div>
+        <div class="create-field"><label>Allowed duplicate rows</label><input id="dq-max-duplicates" type="number" min="0" value="${esc(config.max_duplicate_rows ?? 0)}"></div>`;
+    return `
+        <div class="create-field"><label>Column</label><input id="dq-column" value="${esc(config.column || "")}" required></div>
+        <div class="create-field"><label>Minimum value</label><input id="dq-min-value" type="number" step="any" value="${esc(config.min_value ?? "")}"></div>
+        <div class="create-field"><label>Maximum value</label><input id="dq-max-value" type="number" step="any" value="${esc(config.max_value ?? "")}"></div>`;
+}
+
+function _dqNumber(id) {
+    const raw = document.getElementById(id)?.value;
+    return raw == null || raw === "" ? null : Number(raw);
+}
+
+function _dqCollectConfig(type) {
+    if (type === "row_count_range") return { min_rows: _dqNumber("dq-min-rows"), max_rows: _dqNumber("dq-max-rows") };
+    if (type === "row_count_change") return { max_drop_pct: _dqNumber("dq-max-drop"), max_increase_pct: _dqNumber("dq-max-increase") };
+    if (type === "null_rate") return { column: document.getElementById("dq-column").value.trim(), max_null_pct: _dqNumber("dq-max-null") };
+    if (type === "duplicate_key") return { columns: document.getElementById("dq-columns").value.split(",").map(v => v.trim()).filter(Boolean), max_duplicate_rows: _dqNumber("dq-max-duplicates") };
+    return { column: document.getElementById("dq-column").value.trim(), min_value: _dqNumber("dq-min-value"), max_value: _dqNumber("dq-max-value") };
+}
+
+function _showDqForm(check = null) {
+    const area = document.getElementById("dq-form-area");
+    if (!area) return;
+    const sources = window._dqSources || [];
+    const types = window._dqTypes || [];
+    const selectedType = check?.type || "row_count_range";
+    area.innerHTML = `
+        <div class="create-form" style="margin-bottom:1.25rem">
+            <h2>${check ? "Edit" : "New"} data-quality check</h2>
+            <div class="create-fields">
+                <div class="create-field"><label>Name *</label><input id="dq-name" value="${esc(check?.name || "")}" required></div>
+                <div class="create-field"><label>Source *</label><select id="dq-source">${sources.map(s => `<option value="${s.id}"${s.id === check?.source_id ? " selected" : ""}>${esc(s.name)} (${esc(s.type)})</option>`).join("")}</select></div>
+                <div class="create-field"><label>Rule *</label><select id="dq-type">${types.map(t => `<option value="${t.type}"${t.type === selectedType ? " selected" : ""}>${esc(t.label)}</option>`).join("")}</select></div>
+                <div class="create-field"><label>Severity</label><select id="dq-severity"><option value="critical"${check?.severity === "critical" ? " selected" : ""}>Critical</option><option value="warning"${check?.severity === "warning" ? " selected" : ""}>Warning</option><option value="info"${check?.severity === "info" ? " selected" : ""}>Info</option></select></div>
+                <div id="dq-config-fields" style="display:contents">${_dqConfigFields(selectedType, check?.config || {})}</div>
+            </div>
+            <div style="margin-top:0.75rem;display:flex;gap:0.5rem"><button class="btn-new-task" id="dq-save">${check ? "Save changes" : "Create check"}</button><button class="btn-outline" id="dq-cancel">Cancel</button></div>
+        </div>`;
+    document.getElementById("dq-type").addEventListener("change", e => {
+        document.getElementById("dq-config-fields").innerHTML = _dqConfigFields(e.target.value, {});
+    });
+    document.getElementById("dq-cancel").addEventListener("click", () => { area.innerHTML = ""; });
+    document.getElementById("dq-save").addEventListener("click", async e => {
+        const saveButton = e.currentTarget;
+        const type = document.getElementById("dq-type").value;
+        const body = {
+            name: document.getElementById("dq-name").value.trim(),
+            source_id: Number(document.getElementById("dq-source").value),
+            type,
+            severity: document.getElementById("dq-severity").value,
+            enabled: check ? check.enabled : true,
+            config: _dqCollectConfig(type),
+        };
+        if (!body.name) { toast("Check name is required"); return; }
+        saveButton.disabled = true;
+        saveButton.textContent = check ? "Saving changes..." : "Creating check...";
+        try {
+            if (check) await apiPatch(`/api/data-quality/checks/${check.id}`, body);
+            else await apiPostJson("/api/data-quality/checks", body);
+            toast(check ? "Check updated" : "Check created");
+            await navigate("dataquality");
+        } catch (err) {
+            toast("Could not save check: " + err.message);
+            saveButton.disabled = false;
+            saveButton.textContent = check ? "Save changes" : "Create check";
+        }
+    });
+    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function bindDataQualityPage() {
+    document.getElementById("btn-dq-new")?.addEventListener("click", () => _showDqForm());
+    document.getElementById("btn-dq-run-all")?.addEventListener("click", async e => {
+        const button = e.currentTarget;
+        button.disabled = true; button.textContent = "Running...";
+        try {
+            const result = await apiPost("/api/data-quality/run");
+            toast(`${result.pass || 0} passed, ${(result.fail || 0) + (result.error || 0)} need attention`);
+            await navigate("dataquality");
+        } catch (err) { toast("Checks failed: " + err.message); }
+        finally { button.disabled = false; button.textContent = "Run all checks"; }
+    });
+    const app = document.getElementById("app");
+    if (app && window._dqTableClickHandler) app.removeEventListener("click", window._dqTableClickHandler);
+    window._dqTableClickHandler = async e => {
+        const button = e.target.closest(".dq-edit, .dq-run, .dq-toggle");
+        if (!button) return;
+        if (button.classList.contains("dq-edit")) {
+            const check = (window._dqChecks || []).find(c => c.id === Number(button.dataset.id));
+            if (check) _showDqForm(check);
+            return;
+        }
+        if (button.classList.contains("dq-run")) {
+            button.disabled = true;
+            try { await apiPost(`/api/data-quality/checks/${button.dataset.id}/run`); await navigate("dataquality"); }
+            catch (err) { toast("Check failed: " + err.message); }
+            return;
+        }
+        const enabled = button.dataset.enabled !== "1";
+        button.disabled = true;
+        try { await apiPatch(`/api/data-quality/checks/${button.dataset.id}`, { enabled }); await navigate("dataquality"); }
+        catch (err) { button.disabled = false; toast("Could not update check: " + err.message); }
+    };
+    if (app) app.addEventListener("click", window._dqTableClickHandler);
+}
+
+
 // ── Email ──
 
 const EMAIL_STATUS_LABELS = {
@@ -7075,212 +7289,6 @@ function bindPowerAutomatePage() {
     });
 
     _bindArchiveButtons(() => navigate("powerautomate"));
-}
-
-
-// ── Custom Reports ──
-
-const _CR_STATUS_BADGE = { active: "badge-green", paused: "badge-yellow", archived: "badge-muted" };
-
-async function renderCustomReports() {
-    const showArchived = _isShowingArchived("customreports");
-    const reports = await api("/api/custom-reports" + (showArchived ? "?include_archived=true" : ""));
-    const active = reports.filter(r => !r.archived);
-
-    const cols = [
-        { key: "name", label: "Name", width: COL_W.xl, render: r => `<strong>${esc(r.name)}</strong>`, sortVal: r => r.name || "" },
-        { key: "status", label: "Status", width: COL_W.sm, render: r => {
-            const cls = _CR_STATUS_BADGE[r.status] || "badge-muted";
-            return `<span class="badge ${cls}">${esc(r.status || "unknown")}</span>`;
-        }, sortVal: r => r.status || "" },
-        { key: "frequency", label: "Frequency", width: COL_W.md, render: r => r.frequency ? esc(r.frequency) : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.frequency || "" },
-        { key: "owner", label: "Owner", width: COL_W.md, render: r => r.owner ? esc(r.owner) : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.owner || "" },
-        { key: "stakeholders", label: "Stakeholders", width: COL_W.lg, render: r => r.stakeholders ? `<span style="color:var(--text-muted);font-size:0.78rem">${esc(r.stakeholders)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.stakeholders || "" },
-        { key: "estimated_hours", label: "Est. Hours", width: COL_W.sm, render: r => r.estimated_hours != null ? `<span style="color:var(--text-muted)">${r.estimated_hours}h</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.estimated_hours ?? 0 },
-        { key: "last_completed", label: "Last Completed", width: COL_W.md, render: r => r.last_completed ? `<span style="color:var(--text-muted)" title="${esc(r.last_completed)}">${timeAgo(r.last_completed)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.last_completed || "" },
-        { key: "tags", label: "Tags", width: COL_W.md, render: r => r.tags ? r.tags.split(",").map(t => `<span class="badge badge-muted" style="font-size:0.68rem;margin-right:0.2rem">${esc(t.trim())}</span>`).join("") : '<span style="color:var(--text-dim)">-</span>', sortVal: r => r.tags || "" },
-        _archiveColDef("custom_report"),
-    ];
-
-    return `
-        <div class="page-header">
-            <h1>Custom Reports</h1>
-            <span class="subtitle">${active.length} report${active.length !== 1 ? 's' : ''}</span>
-            <button class="btn-outline" id="btn-cr-new" style="margin-left:0.5rem">+ New Report</button>
-            ${_archiveToggleHtml("customreports")}
-            <button class="btn-export" onclick="exportTableCSV('dt-custom-reports','custom_reports.csv')">Export CSV</button>
-        </div>
-        <div id="cr-create-form-area"></div>
-        ${reports.length === 0
-            ? '<div class="empty-state" style="margin-top:2rem">No custom reports yet. Click <strong>+ New Report</strong> to document a recurring task.</div>'
-            : dataTable("dt-custom-reports", cols, reports, { onRowClick: showCustomReportDetail })
-        }
-    `;
-}
-
-async function showCustomReportDetail(report) {
-    const existing = $("#cr-detail");
-    if (existing) existing.remove();
-
-    const panel = document.createElement("div");
-    panel.id = "cr-detail";
-    panel.className = "source-detail-panel";
-
-    const statusCls = _CR_STATUS_BADGE[report.status] || "badge-muted";
-    const tagsHtml = report.tags
-        ? report.tags.split(",").map(t => `<span class="badge badge-muted" style="font-size:0.72rem;margin-right:0.2rem">${esc(t.trim())}</span>`).join("")
-        : '<span style="color:var(--text-dim)">-</span>';
-
-    panel.innerHTML = `
-        <div class="source-detail-header">
-            <h2>${esc(report.name)}</h2>
-            <button class="btn-outline" id="btn-cr-edit" style="margin-right:0.25rem">Edit</button>
-            <button class="btn-outline" id="btn-cr-delete" style="margin-right:0.25rem;color:var(--red)">Delete</button>
-            <button class="btn-outline" id="btn-close-cr-detail">&times; Close</button>
-        </div>
-        <div class="detail-grid">
-            <div class="detail-item"><div class="detail-label">Status</div><span class="badge ${statusCls}">${esc(report.status || "unknown")}</span></div>
-            <div class="detail-item"><div class="detail-label">Frequency</div><span style="color:var(--text)">${esc(report.frequency || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(report.owner || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Est. Hours</div><span style="color:var(--text)">${report.estimated_hours != null ? report.estimated_hours + "h" : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Completed</div><span style="color:var(--text)">${report.last_completed ? formatDate(report.last_completed) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Tags</div>${tagsHtml}</div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Stakeholders</div><span style="color:var(--text)">${esc(report.stakeholders || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Description</div><span style="color:var(--text)">${esc(report.description || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Data Sources</div><span style="color:var(--text)">${esc(report.data_sources || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Output</div><span style="color:var(--text)">${esc(report.output_description || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Steps / Documentation</div><span style="color:var(--text);white-space:pre-wrap">${esc(report.steps || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Created</div><span style="color:var(--text-dim)">${report.created_at ? formatDate(report.created_at) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Updated</div><span style="color:var(--text-dim)">${report.updated_at ? formatDate(report.updated_at) : "-"}</span></div>
-        </div>
-    `;
-
-    $("#app").appendChild(panel);
-    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    document.getElementById("btn-close-cr-detail").addEventListener("click", () => panel.remove());
-
-    document.getElementById("btn-cr-delete").addEventListener("click", async () => {
-        if (!confirm(`Delete custom report "${report.name}"?`)) return;
-        try {
-            await apiDelete(`/api/custom-reports/${report.id}`);
-            toast("Report deleted");
-            panel.remove();
-            navigate("customreports");
-        } catch (err) {
-            toast("Delete failed: " + err.message);
-        }
-    });
-
-    document.getElementById("btn-cr-edit").addEventListener("click", () => {
-        panel.remove();
-        _showCrEditForm(report);
-    });
-}
-
-async function _renderCrForm(existing) {
-    const opts = await api("/api/custom-reports/options");
-    const r = existing || {};
-    const isEdit = !!existing;
-
-    const ownerOptions = opts.people.length > 0
-        ? opts.people.map(p => `<option value="${esc(p.name)}"${r.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("")
-        : opts.owners.map(o => `<option value="${esc(o)}"${r.owner === o ? ' selected' : ''}>${esc(o)}</option>`).join("");
-
-    const statusOptions = opts.statuses.map(s => `<option value="${s}"${(r.status || 'active') === s ? ' selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join("");
-
-    const freqOptions = opts.frequencies.map(f => `<option value="${f}"${r.frequency === f ? ' selected' : ''}>${f}</option>`).join("");
-
-    return `
-        <div class="create-form" id="cr-form" style="margin-bottom:1.5rem">
-            <h3 style="margin:0 0 0.75rem">${isEdit ? "Edit" : "New"} Custom Report</h3>
-            <div class="create-fields">
-                <div class="create-field"><label>Name *</label><input id="cr-f-name" value="${esc(r.name || "")}" required></div>
-                <div class="create-field"><label>Status</label><select id="cr-f-status">${statusOptions}</select></div>
-                <div class="create-field"><label>Owner</label><select id="cr-f-owner"><option value="">-</option>${ownerOptions}</select></div>
-                <div class="create-field"><label>Frequency</label><select id="cr-f-frequency"><option value="">-</option>${freqOptions}</select></div>
-                <div class="create-field"><label>Est. Hours</label><input id="cr-f-hours" type="number" step="0.5" min="0" value="${r.estimated_hours != null ? r.estimated_hours : ""}"></div>
-                <div class="create-field"><label>Tags</label><input id="cr-f-tags" value="${esc(r.tags || "")}" placeholder="comma-separated"></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Stakeholders</label><input id="cr-f-stakeholders" value="${esc(r.stakeholders || "")}" placeholder="e.g. SETK, SEMAG, Finance team"></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Description</label><textarea id="cr-f-desc" rows="2" style="width:100%">${esc(r.description || "")}</textarea></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Data Sources</label><textarea id="cr-f-data-sources" rows="2" style="width:100%" placeholder="Where does the data come from?">${esc(r.data_sources || "")}</textarea></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Output</label><textarea id="cr-f-output" rows="2" style="width:100%" placeholder="What gets produced?">${esc(r.output_description || "")}</textarea></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Steps / Documentation</label><textarea id="cr-f-steps" rows="6" style="width:100%" placeholder="Document the process, steps, or any relevant notes...">${esc(r.steps || "")}</textarea></div>
-            </div>
-            <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
-                <button class="btn-outline" id="cr-f-save">${isEdit ? "Save Changes" : "Create Report"}</button>
-                <button class="btn-outline" id="cr-f-cancel">Cancel</button>
-            </div>
-        </div>
-    `;
-}
-
-function _collectCrFormData() {
-    const name = document.getElementById("cr-f-name").value.trim();
-    if (!name) { toast("Name is required"); return null; }
-    const hoursVal = document.getElementById("cr-f-hours").value;
-    return {
-        name,
-        status: document.getElementById("cr-f-status").value,
-        owner: document.getElementById("cr-f-owner").value || null,
-        frequency: document.getElementById("cr-f-frequency").value || null,
-        estimated_hours: hoursVal ? parseFloat(hoursVal) : null,
-        tags: document.getElementById("cr-f-tags").value.trim() || null,
-        stakeholders: document.getElementById("cr-f-stakeholders").value.trim() || null,
-        description: document.getElementById("cr-f-desc").value.trim() || null,
-        data_sources: document.getElementById("cr-f-data-sources").value.trim() || null,
-        output_description: document.getElementById("cr-f-output").value.trim() || null,
-        steps: document.getElementById("cr-f-steps").value.trim() || null,
-    };
-}
-
-async function _showCrCreateForm() {
-    const area = document.getElementById("cr-create-form-area");
-    if (!area) return;
-    area.innerHTML = await _renderCrForm(null);
-
-    document.getElementById("cr-f-cancel").addEventListener("click", () => { area.innerHTML = ""; });
-    document.getElementById("cr-f-save").addEventListener("click", async () => {
-        const data = _collectCrFormData();
-        if (!data) return;
-        try {
-            await apiPostJson("/api/custom-reports", data);
-            toast("Report created");
-            navigate("customreports");
-        } catch (err) {
-            toast("Create failed: " + err.message);
-        }
-    });
-}
-
-async function _showCrEditForm(report) {
-    const area = document.getElementById("cr-create-form-area");
-    if (!area) return;
-    area.innerHTML = await _renderCrForm(report);
-    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    document.getElementById("cr-f-cancel").addEventListener("click", () => {
-        area.innerHTML = "";
-        showCustomReportDetail(report);
-    });
-    document.getElementById("cr-f-save").addEventListener("click", async () => {
-        const data = _collectCrFormData();
-        if (!data) return;
-        try {
-            const updated = await apiPatch(`/api/custom-reports/${report.id}`, data);
-            toast("Report updated");
-            area.innerHTML = "";
-            navigate("customreports");
-        } catch (err) {
-            toast("Update failed: " + err.message);
-        }
-    });
-}
-
-function bindCustomReportsPage() {
-    const btnNew = document.getElementById("btn-cr-new");
-    if (btnNew) btnNew.addEventListener("click", () => _showCrCreateForm());
-    _bindArchiveButtons(() => navigate("customreports"));
 }
 
 
@@ -9895,10 +9903,6 @@ const FAQ_ITEMS = [
         a: "Under Data, Power Automate lets you manually register Power Automate flows that feed data into your pipeline. Flows can be linked to output sources, and their last run time is derived from the linked source's probe data."
     },
     {
-        q: "What are Custom Reports?",
-        a: "Under Management, Custom Reports lets you document recurring tasks - things like business trip reports, monthly reconciliations, or ad-hoc data requests. Each entry tracks the owner, stakeholders, frequency, estimated hours, data sources, output, and step-by-step documentation."
-    },
-    {
         q: "How does the Kanban task board work?",
         a: "Under Management, create tasks with titles, descriptions, priorities, due dates, and assignees. Drag cards between Backlog, To Do, In Progress, and Done columns. Tasks can be linked to specific reports, sources, or scripts for traceability."
     },
@@ -10754,12 +10758,12 @@ const pages = {
     scripts: renderScripts,
     scheduledtasks: renderScheduledTasks,
     powerautomate: renderPowerAutomate,
-    customreports: renderCustomReports,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
+    dataquality: renderDataQuality,
     email: renderEmail,
     recurrences: renderRecurrences,
     export: renderExport,
@@ -10894,10 +10898,10 @@ async function navigate(page) {
         if (page === "scripts") bindScriptsPage();
         if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "powerautomate") bindPowerAutomatePage();
-        if (page === "customreports") bindCustomReportsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
+        if (page === "dataquality") bindDataQualityPage();
         if (page === "email") bindEmailPage();
         if (page === "recurrences") bindRecurrencesPage();
         if (page === "export") bindExportPage();

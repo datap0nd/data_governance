@@ -37,6 +37,20 @@ def get_dashboard():
             "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         last_scan = ScanRunOut(**dict(last_scan_row)) if last_scan_row else None
+        check_rows = db.execute(
+            """SELECT c.id, cr.status
+               FROM checks c
+               LEFT JOIN check_results cr ON cr.id = (
+                   SELECT cr2.id FROM check_results cr2
+                   WHERE cr2.check_id = c.id
+                   ORDER BY cr2.ran_at DESC, cr2.id DESC LIMIT 1
+               )
+               WHERE c.enabled = 1"""
+        ).fetchall()
+        checks_total = len(check_rows)
+        checks_pass = sum(1 for row in check_rows if row["status"] == "pass")
+        checks_warn = sum(1 for row in check_rows if row["status"] in {"skipped", None})
+        checks_fail = sum(1 for row in check_rows if row["status"] in {"fail", "error"})
 
     return DashboardStats(
         sources_total=sources_total,
@@ -45,6 +59,10 @@ def get_dashboard():
         sources_outdated=sources_outdated,
         sources_unknown=sources_unknown,
         reports_total=reports_total,
+        checks_total=checks_total,
+        checks_pass=checks_pass,
+        checks_warn=checks_warn,
+        checks_fail=checks_fail,
         alerts_active=alerts_active,
         last_scan=last_scan,
     )

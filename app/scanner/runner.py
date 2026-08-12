@@ -8,6 +8,7 @@ Scan runner — orchestrates a full scan.
 5. Record the scan run
 """
 
+import hashlib
 import logging
 import re
 import shutil
@@ -20,6 +21,7 @@ from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, curr
 from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_extension
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
+from app.scanner.findings import sync_managed_actions
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +132,7 @@ def run_scan(
         new_sources = 0
         changed_queries = 0
         broken_refs = 0
+        broken_by_report: dict[int, dict] = {}
         log_lines = []
 
         # Per-report parsing summary (visible in scan log)
@@ -287,7 +290,7 @@ def run_scan(
             # Upsert sources
             for key, source_info in all_sources.items():
                 existing = db.execute(
-                    "SELECT id, source_query FROM sources WHERE name = ?",
+                    "SELECT id, source_query, owner FROM sources WHERE name = ?",
                     (source_info.display_name,),
                 ).fetchone()
 
@@ -302,6 +305,41 @@ def run_scan(
                             (new_query, source_info.connection_info, now, source_id),
                         )
                         log_lines.append(f"CHANGED: {source_info.display_name} query updated")
+                        owner = existing["owner"]
+                        if not owner:
+                            owner_row = db.execute(
+                                """SELECT r.owner FROM report_tables rt
+                                   JOIN reports r ON r.id = rt.report_id
+                                   WHERE rt.source_id = ? AND NULLIF(TRIM(r.owner), '') IS NOT NULL
+                                   ORDER BY r.id LIMIT 1""",
+                                (source_id,),
+                            ).fetchone()
+                            owner = owner_row["owner"] if owner_row else None
+                        fingerprint = (
+                            f"changed_query:{source_id}:"
+                            f"{hashlib.sha256(new_query.encode('utf-8')).hexdigest()[:16]}"
+                        )
+                        prior = db.execute(
+                            "SELECT id FROM actions WHERE fingerprint = ? AND status != 'resolved'",
+                            (fingerprint,),
+                        ).fetchone()
+                        notes = (
+                            f"Source query changed for {source_info.display_name}. "
+                            f"Previous: {old_query[:1200] or '[empty]'} | "
+                            f"Current: {new_query[:1200] or '[empty]'}"
+                        )
+                        if prior:
+                            db.execute(
+                                "UPDATE actions SET notes = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
+                                (notes, owner, now, prior["id"]),
+                            )
+                        else:
+                            db.execute(
+                                """INSERT INTO actions
+                                   (source_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
+                                   VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
+                                (source_id, owner, notes, fingerprint, now, now),
+                            )
                 else:
                     db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
@@ -372,6 +410,13 @@ def run_scan(
                             source_id = source_row["id"]
                         elif source.source_type != "unknown":
                             broken_refs += 1
+                            bucket = broken_by_report.setdefault(
+                                report_id,
+                                {"report_id": report_id, "owner": report.report_owner, "items": []},
+                            )
+                            bucket["items"].append(
+                                f"{table.table_name} -> {source.display_name}"
+                            )
                             log_lines.append(
                                 f"BROKEN: {report.name}/{table.table_name} "
                                 f"references unknown source: {source.display_name}"
@@ -478,6 +523,25 @@ def run_scan(
                             (report_id, table.table_name, col),
                         )
 
+            broken_findings = []
+            for report_id, bucket in broken_by_report.items():
+                report_owner = bucket["owner"]
+                if not report_owner:
+                    owner_row = db.execute("SELECT owner FROM reports WHERE id = ?", (report_id,)).fetchone()
+                    report_owner = owner_row["owner"] if owner_row else None
+                broken_findings.append({
+                    "fingerprint": f"broken_ref:{report_id}",
+                    "report_id": report_id,
+                    "assigned_to": report_owner,
+                    "notes": f"{len(bucket['items'])} broken report reference(s): " + "; ".join(bucket["items"][:20]),
+                })
+            broken_lifecycle = sync_managed_actions(db, "broken_ref", broken_findings, now)
+            if any(broken_lifecycle[key] for key in ("created", "resolved")):
+                log_lines.append(
+                    f"Broken-reference actions: {broken_lifecycle['created']} created, "
+                    f"{broken_lifecycle['resolved']} resolved"
+                )
+
             # Set initial "unknown" status for any source without a probe
             assert_not_cancelled(generation, "Report scan")
             sourceless = db.execute("""
@@ -514,16 +578,6 @@ def run_scan(
                 ),
             )
 
-        if run_followup_probe:
-            from app.scanner.prober import run_probe
-            try:
-                run_probe(cancel_generation=generation)
-                logger.info("Freshness probe completed after scan")
-            except ScannerWorkCancelled:
-                raise
-            except Exception as e:
-                logger.exception("Probe failed after scan: %s", e)
-
         # Scan PostgreSQL MV dependencies
         assert_not_cancelled(generation, "Report scan")
         from app.scanner.pg_deps import scan_pg_dependencies
@@ -531,6 +585,7 @@ def run_scan(
             dep_result = scan_pg_dependencies()
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
+            dep_result = {"status": "failed", "error": str(e)}
             logger.exception("PG dependency scan failed: %s", e)
 
         # Scan pg_cron for MV refresh schedules
@@ -540,6 +595,7 @@ def run_scan(
             cron_result = scan_pg_cron()
             logger.info("pg_cron scan completed: %s", cron_result.get("status"))
         except Exception as e:
+            cron_result = {"status": "failed", "error": str(e)}
             logger.exception("pg_cron scan failed: %s", e)
 
         # Scan Python scripts for table references
@@ -549,7 +605,88 @@ def run_scan(
             script_result = run_script_scan()
             logger.info("Script scan completed: %s", script_result.get("status"))
         except Exception as e:
+            script_result = {"status": "failed", "error": str(e)}
             logger.exception("Script scan failed: %s", e)
+
+        # Scan Windows Task Scheduler after scripts so task-to-script links
+        # and task failure actions are refreshed in the same overall run.
+        assert_not_cancelled(generation, "Report scan")
+        from app.scanner.task_scheduler_runner import run_task_scheduler_scan
+        try:
+            task_result = run_task_scheduler_scan()
+            logger.info("Task Scheduler scan completed: %s", task_result.get("status"))
+        except Exception as e:
+            task_result = {"status": "failed", "error": str(e)}
+            logger.exception("Task Scheduler scan failed: %s", e)
+
+        # Import configured usage CSVs as part of the scan instead of waiting
+        # for a user to open a report or action page.
+        from app.usage import sync_usage_from_csv_if_configured
+        try:
+            with get_db() as db:
+                usage_result = sync_usage_from_csv_if_configured(db)
+            logger.info("Usage sync completed: %s", usage_result.get("status"))
+        except Exception as e:
+            usage_result = {"status": "failed", "error": str(e)}
+            logger.exception("Usage sync failed: %s", e)
+
+        # Probe after dependency, cron, script, and task discovery so all
+        # freshness and data-quality decisions use the current graph.
+        probe_result = None
+        if run_followup_probe:
+            from app.scanner.prober import run_probe
+            try:
+                probe_result = run_probe(cancel_generation=generation)
+                logger.info("Freshness and data-quality checks completed after scan")
+            except ScannerWorkCancelled:
+                raise
+            except Exception as e:
+                probe_result = {"status": "failed", "error": str(e)}
+                logger.exception("Probe failed after scan: %s", e)
+
+        # Persist governance findings as owned actions with automatic closure
+        # when the next scan proves the condition has cleared.
+        governance_results = {}
+        try:
+            from app.routers.best_practices import run_best_practice_scan
+
+            governance_results["best_practices"] = run_best_practice_scan(persist=True)
+        except Exception as e:
+            governance_results["best_practices"] = {"status": "failed", "error": str(e)}
+            logger.exception("Best-practice scan failed: %s", e)
+        try:
+            from app.routers.schedules import run_schedule_discrepancy_scan
+
+            governance_results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
+        except Exception as e:
+            governance_results["schedule_discrepancies"] = {"status": "failed", "error": str(e)}
+            logger.exception("Schedule discrepancy scan failed: %s", e)
+        try:
+            from app.routers.documentation import sync_documentation_completeness_actions
+
+            governance_results["documentation"] = sync_documentation_completeness_actions()
+        except Exception as e:
+            governance_results["documentation"] = {"status": "failed", "error": str(e)}
+            logger.exception("Documentation completeness scan failed: %s", e)
+
+        auxiliary_log = [
+            f"PostgreSQL dependencies: {dep_result.get('status', 'unknown')}",
+            f"PostgreSQL schedules: {cron_result.get('status', 'unknown')}",
+            f"Scripts: {script_result.get('status', 'unknown')}",
+            f"Windows scheduled tasks: {task_result.get('status', 'unknown')}",
+            f"Configured usage import: {usage_result.get('status', 'unknown')}",
+        ]
+        if probe_result is not None:
+            auxiliary_log.append(f"Source probe: {probe_result.get('status', 'unknown')}")
+        for name, result in governance_results.items():
+            status = result.get("status", "completed") if isinstance(result, dict) else "unknown"
+            auxiliary_log.append(f"Governance {name}: {status}")
+        final_log = "\n".join([log_text, *auxiliary_log])
+        with get_db() as db:
+            db.execute(
+                "UPDATE scan_runs SET finished_at = ?, log = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), final_log, scan_id),
+            )
 
         summary = {
             "scan_id": scan_id,
@@ -558,8 +695,15 @@ def run_scan(
             "new_sources": new_sources,
             "changed_queries": changed_queries,
             "broken_refs": broken_refs,
+            "probe": probe_result,
+            "postgres_dependencies": dep_result,
+            "postgres_schedules": cron_result,
+            "scripts": script_result,
+            "task_scheduler": task_result,
+            "usage": usage_result,
+            "governance": governance_results,
             "status": "completed",
-            "log": log_text,
+            "log": final_log,
             "scanned_path": str(Path(root).resolve()),
         }
         logger.info("Scan completed: %s", summary)

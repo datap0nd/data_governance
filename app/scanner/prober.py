@@ -887,6 +887,7 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
         WHERE s_mv.archived = 0 AND s_up.archived = 0
     """).fetchall()
 
+    active_by_mv: dict[int, dict] = {}
     for dep in deps:
         mv_data = dep["mv_last_data"]
         up_data = dep["upstream_last_data"]
@@ -916,6 +917,11 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
                 f"last refreshed {mv_dt.strftime('%Y-%m-%d %H:%M')} "
                 f"({hours}h behind)"
             )
+            bucket = active_by_mv.setdefault(
+                dep["source_id"],
+                {"messages": [], "assigned_to": _source_alert_owner(db, dep["source_id"])},
+            )
+            bucket["messages"].append(msg)
 
             # Only create alert if no existing unresolved one for this MV
             existing = db.execute(
@@ -942,6 +948,47 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
                 )
 
             log_lines.append(f"DEP: {mv_name} <- {up_name} ({hours}h behind)")
+
+    from app.scanner.findings import sync_managed_actions
+
+    managed = []
+    for source_id, bucket in active_by_mv.items():
+        managed.append({
+            "fingerprint": f"dependency_stale:{source_id}",
+            "source_id": source_id,
+            "assigned_to": bucket["assigned_to"],
+            "notes": f"{len(bucket['messages'])} upstream dependenc{'y is' if len(bucket['messages']) == 1 else 'ies are'} newer. "
+                     + "; ".join(bucket["messages"][:10]),
+        })
+    lifecycle = sync_managed_actions(db, "dependency_stale", managed, now)
+
+    # The legacy dependency path created warning alerts but never closed them.
+    # Resolve only those dependency-specific alerts whose MV is now caught up.
+    active_ids = set(active_by_mv)
+    open_alerts = db.execute(
+        """SELECT id, source_id FROM alerts
+           WHERE severity = 'warning' AND resolution_status IS NULL
+             AND message LIKE 'Upstream % has data from % but MV %'"""
+    ).fetchall()
+    alerts_resolved = 0
+    for alert in open_alerts:
+        if alert["source_id"] in active_ids:
+            continue
+        result = db.execute(
+            """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
+                      acknowledged = 1, acknowledged_by = 'auto',
+                      resolution_reason = 'Materialized view caught up with upstream data'
+               WHERE id = ?""",
+            (now, alert["id"]),
+        )
+        alerts_resolved += result.rowcount or 0
+
+    if lifecycle["created"] or lifecycle["resolved"] or alerts_resolved:
+        log_lines.append(
+            f"Dependency actions: {lifecycle['created']} created, {lifecycle['resolved']} resolved; "
+            f"{alerts_resolved} alerts resolved"
+        )
+    return {**lifecycle, "alerts_resolved": alerts_resolved}
 
 
 def run_probe(cancel_generation: int | None = None) -> dict:
@@ -1051,15 +1098,40 @@ def run_probe(cancel_generation: int | None = None) -> dict:
     # Record probe run
     assert_not_cancelled(generation, "Source probe")
     with get_db() as db:
-        db.execute(
+        cursor = db.execute(
             """INSERT INTO probe_runs (started_at, finished_at, sources_probed, fresh, stale, outdated, unknown, status, log)
                VALUES (?, ?, ?, ?, 0, ?, ?, 'completed', ?)""",
             (now, finished, probed, statuses.get("fresh", 0),
              statuses.get("outdated", 0), statuses.get("unknown", 0), log_text),
         )
+        probe_run_id = cursor.lastrowid
 
         # Backfill: assign owners to alerts that don't have one yet
         _backfill_alert_owners(db)
+
+    # Run configured data-quality rules after probe row counts have committed.
+    # The quality engine uses the same read-only PostgreSQL credentials and
+    # stores its own result history without changing any governed source.
+    try:
+        from app.checks.data_quality import run_quality_checks
+
+        quality_result = run_quality_checks()
+        log_lines.append(
+            "Data quality: "
+            f"{quality_result.get('pass', 0)} passed, "
+            f"{quality_result.get('fail', 0)} failed, "
+            f"{quality_result.get('error', 0)} errors"
+        )
+    except Exception as exc:
+        logger.exception("Data-quality checks failed after source probe")
+        quality_result = {"status": "failed", "error": str(exc)}
+
+    final_log = "\n".join(log_lines) if log_lines else log_text
+    with get_db() as db:
+        db.execute(
+            "UPDATE probe_runs SET log = ? WHERE id = ?",
+            (final_log, probe_run_id),
+        )
 
     summary = {
         "probed_at": now,
@@ -1068,8 +1140,9 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         "pg_probed": pg_probed,
         "skipped": skipped,
         "statuses": statuses,
+        "data_quality": quality_result,
         "status": "completed",
-        "log": log_text,
+        "log": final_log,
     }
     logger.info("Probe completed: %s", summary)
     return summary

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Query
 from app.database import get_db
+from app.scanner.findings import sync_managed_actions
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
@@ -50,8 +51,7 @@ def list_upstream_systems(include_archived: bool = Query(False)):
     return [dict(r) for r in rows]
 
 
-@router.get("/discrepancies")
-def get_schedule_discrepancies():
+def run_schedule_discrepancy_scan(*, persist: bool = True):
     """Detect refresh schedule discrepancies in upstream -> source -> report chains.
 
     A discrepancy occurs when:
@@ -85,6 +85,8 @@ def get_schedule_discrepancies():
     for row in rows:
         upstream_day = DAY_ORDER.get(row["upstream_refresh_day"], -1)
         source_day = DAY_ORDER.get(row["source_refresh_day"], -1)
+        if upstream_day < 0 or source_day < 0:
+            continue
 
         upstream_info = _next_weekday_date(row["upstream_refresh_day"], with_iso=True)
         source_info = _next_weekday_date(row["source_refresh_day"], with_iso=True)
@@ -138,6 +140,34 @@ def get_schedule_discrepancies():
                 "issues": issues,
             })
 
+    lifecycle = None
+    if persist:
+        now = datetime.now(timezone.utc).isoformat()
+        grouped: dict[int, list[dict]] = {}
+        for discrepancy in discrepancies:
+            grouped.setdefault(discrepancy["report_id"], []).append(discrepancy)
+        with get_db() as db:
+            reports = {
+                row["id"]: row
+                for row in db.execute("SELECT id, owner FROM reports WHERE COALESCE(archived, 0) = 0").fetchall()
+            }
+            findings = []
+            for report_id, items in grouped.items():
+                report = reports.get(report_id)
+                if not report:
+                    continue
+                messages = []
+                for item in items:
+                    for issue in item["issues"]:
+                        messages.append(f"{item['upstream_name']} -> {item['source_name']}: {issue['message']}")
+                findings.append({
+                    "fingerprint": f"schedule_discrepancy:{report_id}",
+                    "report_id": report_id,
+                    "assigned_to": report["owner"],
+                    "notes": f"{len(messages)} schedule issue(s). " + "; ".join(messages[:10]),
+                })
+            lifecycle = sync_managed_actions(db, "schedule_discrepancy", findings, now)
+
     return {
         "summary": {
             "total_chains": len(rows),
@@ -146,7 +176,14 @@ def get_schedule_discrepancies():
             "warning_count": sum(1 for d in discrepancies if all(i["severity"] == "warning" for i in d["issues"])),
         },
         "discrepancies": discrepancies,
+        "actions": lifecycle,
     }
+
+
+@router.get("/discrepancies")
+def get_schedule_discrepancies():
+    """Detect and persist refresh schedule discrepancies."""
+    return run_schedule_discrepancy_scan(persist=True)
 
 
 @router.get("/alert-trend")

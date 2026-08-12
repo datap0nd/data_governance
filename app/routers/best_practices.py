@@ -1,12 +1,14 @@
 """API router for the Power BI best-practice checker."""
 
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
 from app.config import TMDL_ROOT
 from app.database import get_db
 from app.checks.best_practices import scan_all
+from app.scanner.findings import sync_managed_actions
 
 router = APIRouter(prefix="/api/best-practices", tags=["best-practices"])
 
@@ -83,9 +85,8 @@ def _db_findings() -> list[dict]:
     return findings
 
 
-@router.get("")
-def get_findings():
-    """Scan all reports and return best-practice findings."""
+def run_best_practice_scan(*, persist: bool = True) -> dict:
+    """Scan reports and optionally synchronize one owned action per report."""
     # File-based checks (TMDL/PBIX)
     tmdl_findings = scan_all(TMDL_ROOT)
 
@@ -103,7 +104,51 @@ def get_findings():
         for f in tmdl_findings
     ] + db_findings
 
+    lifecycle = None
+    if persist:
+        now = datetime.now(timezone.utc).isoformat()
+        with get_db() as db:
+            report_rows = db.execute(
+                "SELECT id, name, owner FROM reports WHERE COALESCE(archived, 0) = 0"
+            ).fetchall()
+            report_map = {row["name"].strip().casefold(): row for row in report_rows}
+            grouped: dict[int, dict] = {}
+            for finding in combined:
+                report = report_map.get((finding.get("report") or "").strip().casefold())
+                if not report:
+                    continue
+                bucket = grouped.setdefault(report["id"], {"report": report, "findings": []})
+                bucket["findings"].append(finding)
+
+            managed = []
+            for report_id, bucket in grouped.items():
+                report = bucket["report"]
+                items = sorted(
+                    bucket["findings"],
+                    key=lambda item: ({"high": 0, "medium": 1, "low": 2}.get(item.get("severity"), 3), item.get("rule") or ""),
+                )
+                details = "; ".join(
+                    f"{item['rule']} ({item.get('table') or 'report'}): {item['issue']}"
+                    for item in items[:8]
+                )
+                if len(items) > 8:
+                    details += f"; plus {len(items) - 8} more finding(s)"
+                managed.append({
+                    "fingerprint": f"best_practice:{report_id}",
+                    "report_id": report_id,
+                    "assigned_to": report["owner"],
+                    "notes": f"{len(items)} TMDL best-practice finding(s). {details}"[:4000],
+                })
+            lifecycle = sync_managed_actions(db, "best_practice", managed, now)
+
     return {
         "total": len(combined),
         "findings": combined,
+        "actions": lifecycle,
     }
+
+
+@router.get("")
+def get_findings():
+    """Scan all reports, persist current findings, and return them."""
+    return run_best_practice_scan(persist=True)

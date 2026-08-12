@@ -187,6 +187,16 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
         return "Update the report to point at an existing source, or remove the unused table."
     if action_type == "changed_query":
         return "Review the query change - confirm downstream usage is still correct."
+    if action_type == "best_practice":
+        return "Review the report findings and address the highest-severity model issue first."
+    if action_type == "schedule_discrepancy":
+        return "Move the upstream, source, or report schedule so each dependent step runs after its inputs."
+    if action_type == "documentation_missing":
+        return "Complete the report's business purpose and technical transformation documentation."
+    if action_type == "dependency_stale":
+        return "Review the materialized-view refresh job and refresh it after all upstream dependencies are healthy."
+    if action_type == "data_quality":
+        return "Inspect the latest check result and source data, then rerun the check after correction."
     return None
 
 
@@ -202,6 +212,11 @@ TRIAGE_TYPE_WEIGHT = {
     "script_failed": 620,
     "broken_ref": 540,
     "changed_query": 420,
+    "data_quality": 850,
+    "dependency_stale": 800,
+    "schedule_discrepancy": 700,
+    "best_practice": 360,
+    "documentation_missing": 260,
 }
 
 
@@ -218,6 +233,11 @@ def _issue_reason(action_type: str) -> str:
         "script_failed": "Script-linked refresh failed",
         "broken_ref": "Report points to a missing source",
         "changed_query": "Source query changed",
+        "data_quality": "Automated data-quality check failed",
+        "dependency_stale": "Materialized view is behind upstream data",
+        "schedule_discrepancy": "Refresh schedules are in the wrong order",
+        "best_practice": "Report model has governance findings",
+        "documentation_missing": "Report documentation is incomplete",
     }.get(action_type, action_type.replace("_", " "))
 
 
@@ -342,6 +362,7 @@ def list_actions(status: str | None = None):
         source_usage = get_source_usage_map(db)
 
     ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
+    FRESHNESS_ACTION_TYPES = {"stale_source", "outdated_source", "error_source"}
 
     results: list[ActionOut] = []
     for r in rows:
@@ -359,7 +380,7 @@ def list_actions(status: str | None = None):
             if r["type"] == "empty_source":
                 if latest_row_count is not None and latest_row_count > 0:
                     continue
-            elif latest is not None and latest not in ACTIONABLE_STATUSES:
+            elif r["type"] in FRESHNESS_ACTION_TYPES and latest is not None and latest not in ACTIONABLE_STATUSES:
                 continue
         # Report-tied: hide if the report is archived
         if rid is not None and sid is None and r["report_archived"]:
@@ -449,6 +470,8 @@ def list_actions(status: str | None = None):
             status=r["status"],
             assigned_to=r["assigned_to"],
             notes=r["notes"],
+            fingerprint=r["fingerprint"] if "fingerprint" in r.keys() else None,
+            check_id=r["check_id"] if "check_id" in r.keys() else None,
             impact_views_30d=impact_views_30d,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
@@ -466,14 +489,15 @@ def list_actions(status: str | None = None):
         )
     results.sort(key=sort_key)
 
-    # Dedupe: one row per asset (source or report)
-    seen: set[tuple[str, int]] = set()
+    # Dedupe only identical managed findings. Distinct problems on the same
+    # asset must remain visible (for example freshness plus data quality).
+    seen: set[tuple] = set()
     deduped: list[ActionOut] = []
     for a in results:
         if a.asset_type is None or a.asset_id is None:
             deduped.append(a)
             continue
-        key = (a.asset_type, a.asset_id)
+        key = (a.asset_type, a.asset_id, a.fingerprint or a.type)
         if key in seen:
             continue
         seen.add(key)

@@ -12,6 +12,7 @@ from app.models import (
     DocEntityLinkInfo,
 )
 from app.routers.eventlog import log_event, get_actor
+from app.scanner.findings import sync_managed_actions
 
 router = APIRouter(prefix="/api/documentation", tags=["documentation"])
 
@@ -22,6 +23,39 @@ _ENTITY_TABLES = {
     "script": ("scripts", "display_name"),
     "upstream": ("upstream_systems", "name"),
 }
+
+
+def sync_documentation_completeness_actions() -> dict:
+    """Create one owned action for each active report with incomplete docs."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT r.id, r.name, r.owner,
+                      d.id AS doc_id, d.business_purpose,
+                      d.technical_transformations, d.archived AS doc_archived
+               FROM reports r
+               LEFT JOIN documentation d ON d.report_id = r.id
+               WHERE COALESCE(r.archived, 0) = 0"""
+        ).fetchall()
+        findings = []
+        for row in rows:
+            missing = []
+            if not row["doc_id"] or row["doc_archived"]:
+                missing.append("documentation page")
+            else:
+                if not (row["business_purpose"] or "").strip():
+                    missing.append("business purpose")
+                if not (row["technical_transformations"] or "").strip():
+                    missing.append("technical transformations")
+            if not missing:
+                continue
+            findings.append({
+                "fingerprint": f"documentation_missing:{row['id']}",
+                "report_id": row["id"],
+                "assigned_to": row["owner"],
+                "notes": f"Documentation is incomplete for {row['name']}: missing " + ", ".join(missing),
+            })
+        return sync_managed_actions(db, "documentation_missing", findings, now)
 
 
 def _resolve_links(db, doc_id: int) -> list[DocEntityLinkInfo]:
