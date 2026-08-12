@@ -483,8 +483,16 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             f"ASAP top-level navigation did not render within 120 seconds "
             f"(URL: {page.url}, title: {_clean_text(page.title())})."
         )
+    root_names = list(dict.fromkeys(root["text"] for root in roots))
     paths: list[list[str]] = []
-    for root in roots:
+    for root_name in root_names:
+        # Mega-menu contents change the number and order of matching elements.
+        # Re-resolve the navigation trigger instead of retaining an nth-based
+        # Playwright locator from the initial DOM snapshot.
+        current_roots = _navigation_roots(_visible_anchor_records(page))
+        root = next((item for item in current_roots if item["text"] == root_name), None)
+        if root is None:
+            continue
         before = _visible_anchor_records(page)
         root["link"].click(timeout=15_000)
         after = before
