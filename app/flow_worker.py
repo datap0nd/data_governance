@@ -15,7 +15,7 @@ import re
 import socket
 import time
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutEr
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
+AUTH_MARKER = ".asap_authenticated"
 
 
 @contextmanager
@@ -736,6 +737,38 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             context.close()
 
 
+def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 10):
+    """Create the automation profile's SSO session in a visible Edge window."""
+    with _exclusive_worker_lock(profile_dir) as acquired:
+        if not acquired:
+            raise RuntimeError("The Flows worker is still using the automation browser profile.")
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                channel="msedge" if os.name == "nt" else None,
+                headless=False,
+                accept_downloads=True,
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(auth_url, wait_until="domcontentloaded", timeout=120_000)
+            print("Complete ASAP sign-in in the browser window if prompted.", flush=True)
+            roots = _wait_for_navigation_roots(page, timeout_minutes * 60_000)
+            if not roots:
+                current_url = page.url
+                title = _clean_text(page.title())
+                context.close()
+                raise RuntimeError(
+                    f"ASAP authentication did not complete within {timeout_minutes} minutes "
+                    f"(URL: {current_url}, title: {title})."
+                )
+            (profile_dir / AUTH_MARKER).write_text(json.dumps({
+                "authenticated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "host": re.sub(r"^https?://([^/]+).*$", r"\1", page.url),
+            }), encoding="utf-8")
+            print("ASAP automation browser authenticated.", flush=True)
+            context.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Metronome authenticated download worker")
     parser.add_argument("--server", default=os.environ.get("METRONOME_URL", "http://127.0.0.1:8000"))
@@ -743,9 +776,14 @@ def main():
     parser.add_argument("--name", default=os.environ.get("METRONOME_FLOW_WORKER_NAME", socket.gethostname()))
     parser.add_argument("--profile-dir", default=os.environ.get("METRONOME_FLOW_PROFILE", str(Path.home() / ".metronome-flow-browser")))
     parser.add_argument("--headed", action="store_true", help="Show the browser. Recommended for initial SSO setup.")
+    parser.add_argument("--authenticate-url", help="Open a one-time visible ASAP SSO bootstrap and exit.")
+    parser.add_argument("--authentication-timeout-minutes", type=int, default=10)
     parser.add_argument("--once", action="store_true", help="Claim at most one run, then exit.")
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
+    if args.authenticate_url:
+        authenticate_asap(profile_dir, args.authenticate_url, args.authentication_timeout_minutes)
+        return
     with _exclusive_worker_lock(profile_dir) as acquired:
         if not acquired:
             print("Another Metronome flow worker is already running.", flush=True)

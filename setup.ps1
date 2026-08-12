@@ -277,6 +277,33 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     }
 }
 
+# Bootstrap the dedicated automation browser profile once. The website URL is
+# read from this machine's SQLite configuration and is never stored in source.
+$FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
+if (Test-Path $DbPath) {
+    $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
+    if (Test-Path $AuthUrlScript) {
+        $FlowAuthUrl = (& $PyExe $AuthUrlScript $DbPath).Trim()
+        if ($FlowAuthUrl) {
+            Write-Host "Authenticating the Flows automation browser..." -ForegroundColor Yellow
+            Write-Host "  Complete ASAP sign-in in the Edge window if prompted." -ForegroundColor DarkGray
+            try {
+                & $PyExe "$CodeDir\app\flow_worker.py" `
+                    --profile-dir $FlowProfile `
+                    --authenticate-url $FlowAuthUrl `
+                    --authentication-timeout-minutes 10
+                if ($LASTEXITCODE -ne 0) {
+                    throw "authentication helper exited with code $LASTEXITCODE"
+                }
+                Write-Host "  Flows automation browser authenticated." -ForegroundColor Green
+            } catch {
+                Write-Host "  WARNING: ASAP automation authentication was not completed: $_" -ForegroundColor Yellow
+                Write-Host "  Discovery and downloads will wait until setup is rerun and sign-in completes." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
