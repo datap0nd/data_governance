@@ -554,3 +554,9 @@ def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
     assert [(row["filter_key"], row["enabled"], row["stale"]) for row in rows] == [
         ("new_label", 1, 0), ("old_label", 0, 1),
     ]
+
+
+def test_asap_week_detection_requires_page_discovered_iso_week_members():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert 're.fullmatch(r"20\\d{4}", value)' in source
+    assert 'add_definition("Sell-out Week", "week", week_values)' in source

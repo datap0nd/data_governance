@@ -659,7 +659,11 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     # marker may not be returned as its own text node, so anchor discovery on
     # the stable semantic label as well.
     for week_label in frame.get_by_text(re.compile(r"^sell-out week:?$", re.I)).all():
-        add_definition("Sell-out Week", "week", nearest_list_values(week_label, require_search_marker=True))
+        week_values = [
+            value for value in nearest_list_values(week_label)
+            if re.fullmatch(r"20\d{4}", value)
+        ]
+        add_definition("Sell-out Week", "week", week_values)
 
     # MicroStrategy list selectors are represented by a heading followed by a
     # member list. Detect the labels from the report's own prompt headings and
