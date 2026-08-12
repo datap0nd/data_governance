@@ -272,14 +272,13 @@ def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            handle = page.locator(ASAP_FRAME_SELECTOR).first
-            if handle.count():
-                element = handle.element_handle()
-                frame = element.content_frame() if element else None
-                if frame is not None:
-                    rows = frame.get_by_text("Data rows:", exact=False).first
-                    if rows.count() and rows.is_visible():
-                        return frame
+            # MicroStrategy may briefly retain the old iframe element and add
+            # the replacement as another frame. Inspect every current frame,
+            # newest first, instead of trusting the first matching element.
+            for frame in reversed(page.frames):
+                rows = frame.get_by_text("Data rows:", exact=False).first
+                if rows.count() and rows.is_visible():
+                    return frame
         except Exception as exc:
             # Frame replacement can race any locator operation. The next poll
             # resolves the new element instead of retaining the detached frame.
