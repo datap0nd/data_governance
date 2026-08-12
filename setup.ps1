@@ -308,9 +308,8 @@ if (-not $existingFlowService) {
 & $NssmExe set $FlowServiceName AppRotateSeconds 86400
 & $NssmExe set $FlowServiceName AppRotateBytes 10485760
 
-$HeadedWorkerScript = "$CodeDir\tools\run_flow_worker.ps1"
-$HeadedTaskArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$HeadedWorkerScript`" -Headed -WorkerId bi-desktop-headed -WorkerName `"BI desktop - headed`" -ProfileDir `"$HeadedFlowProfile`" -IdleExitSeconds 60"
-$HeadedTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $HeadedTaskArguments
+$HeadedTaskArguments = "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop-headed --name BI-desktop-headed --profile-dir `"$HeadedFlowProfile`" --headed --idle-exit-seconds 60"
+$HeadedTaskAction = New-ScheduledTaskAction -Execute $PyExe -Argument $HeadedTaskArguments
 $HeadedTaskPrincipal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `

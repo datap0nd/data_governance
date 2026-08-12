@@ -468,8 +468,9 @@ def test_setup_registers_on_demand_interactive_headed_worker():
     assert '$HeadedFlowTaskName = "Metronome_Flows_Headed"' in source
     assert "New-ScheduledTaskPrincipal" in source
     assert "-LogonType Interactive" in source
-    assert "-Headed -WorkerId bi-desktop-headed" in source
-    assert "-IdleExitSeconds 60" in source
+    assert 'New-ScheduledTaskAction -Execute $PyExe' in source
+    assert "--worker-id bi-desktop-headed" in source
+    assert "--headed --idle-exit-seconds 60" in source
     assert ".metronome-flow-browser-headed" in source
 
 

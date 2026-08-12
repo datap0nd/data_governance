@@ -29,6 +29,8 @@ routes it to the matching BI desktop worker.
 - Windows launches the headed task through the absolute System32 executable
   and root-qualified task path. Clicking Run on a queued flow retries worker
   startup without creating a duplicate run.
+- The interactive task launches the installed Python worker directly. It does
+  not add a PowerShell wrapper between Task Scheduler and Playwright.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
