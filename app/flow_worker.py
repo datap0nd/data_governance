@@ -532,6 +532,43 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
 def _asap_discover_filters(frame: Frame) -> list[dict]:
     definitions = []
     used = set()
+
+    def add_definition(label: str, control_type: str, options: list[str]):
+        label = _clean_text(label).rstrip(":")
+        options = [
+            value for value in dict.fromkeys(_clean_text(value) for value in options)
+            if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
+            and "type to search" not in value.casefold()
+        ]
+        if not label or not options:
+            return
+        key = _slug_key(label, f"filter_{len(definitions) + 1}")
+        if key in used:
+            return
+        used.add(key)
+        definitions.append({
+            "filter_key": key, "label": label, "control_label": label,
+            "control_type": control_type, "options": options, "automation": {},
+            "required": False, "position": len(definitions),
+        })
+
+    def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
+        """Read the smallest visible MicroStrategy control containing a label."""
+        ancestor = label_locator
+        for _ in range(7):
+            ancestor = ancestor.locator("xpath=parent::*")
+            if not ancestor.count():
+                break
+            lines = list(dict.fromkeys(
+                _clean_text(line) for line in ancestor.first.inner_text().splitlines() if _clean_text(line)
+            ))
+            has_marker = any(
+                "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
+                for line in lines
+            )
+            if len(lines) >= 3 and (has_marker or not require_search_marker):
+                return lines[1:500]
+        return []
     # Native controls are preferred because they expose complete option lists
     # without opening the control or changing report state.
     for index, control in enumerate(frame.locator("select:visible").all()):
@@ -546,16 +583,58 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             label = re.sub(r"\s+", " ", aria).strip()
         if not label:
             continue
-        key = _slug_key(label, f"filter_{index + 1}")
-        while key in used:
-            key = f"{key}_{index + 1}"
-        used.add(key)
         options = _unique_visible_text(control.locator("option"))
-        definitions.append({
-            "filter_key": key, "label": label, "control_label": label,
-            "control_type": "select", "options": options, "automation": {},
-            "required": False, "position": len(definitions),
-        })
+        add_definition(label, "select", options)
+
+    # New ASAP renders some selects as ARIA comboboxes. Open them only long
+    # enough to read their visible option labels, then restore the page with
+    # Escape. No selection is changed.
+    custom_selects = frame.locator(
+        "[role=combobox]:visible,button[aria-haspopup=listbox]:visible,input[aria-haspopup=listbox]:visible"
+    )
+    for control in custom_selects.all():
+        label = _clean_text(control.get_attribute("aria-label") or control.get_attribute("name"))
+        if not label:
+            lines = nearest_list_values(control)
+            label = lines[0] if lines else ""
+        try:
+            control.click(timeout=3_000)
+            frame.page.wait_for_timeout(150)
+            options = _unique_visible_text(frame.locator("[role=option]:visible,li:visible"), 500)
+        except Exception:
+            options = []
+        finally:
+            try:
+                frame.page.keyboard.press("Escape")
+            except Exception:
+                pass
+        add_definition(label, "select", options)
+
+    # Searchable member selectors expose their label and values as plain divs,
+    # without heading or option roles. Their search/count marker is the stable
+    # structural signal across reports.
+    search_markers = frame.get_by_text(re.compile(r"type to search|\(\d+\s+values?\)", re.I))
+    for marker in search_markers.all():
+        block = marker
+        for _ in range(6):
+            block = block.locator("xpath=parent::*")
+            if not block.count():
+                break
+            lines = list(dict.fromkeys(
+                _clean_text(line) for line in block.first.inner_text().splitlines() if _clean_text(line)
+            ))
+            marker_index = next((i for i, line in enumerate(lines) if
+                                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)), -1)
+            if marker_index > 0 and len(lines) > marker_index + 1:
+                label = lines[marker_index - 1]
+                control_type = "week" if "week" in label.casefold() else "multi_select"
+                add_definition(label, control_type, lines[marker_index + 1:500])
+                break
+
+    # Dimension pickers use a named member list but no ARIA roles. The adapter
+    # recognizes the UI control label, while every option remains page-driven.
+    for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
+        add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
 
     # MicroStrategy list selectors are represented by a heading followed by a
     # member list. Detect the labels from the report's own prompt headings and
@@ -574,15 +653,7 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
         if not options:
             continue
         control_type = "week" if "week" in normalized else "multi_select"
-        key = _slug_key(label, f"filter_{len(definitions) + 1}")
-        if key in used:
-            continue
-        used.add(key)
-        definitions.append({
-            "filter_key": key, "label": label, "control_label": label,
-            "control_type": control_type, "options": options, "automation": {},
-            "required": False, "position": len(definitions),
-        })
+        add_definition(label, control_type, options)
     return definitions
 
 
