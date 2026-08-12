@@ -657,18 +657,21 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     return definitions
 
 
-def _asap_activate_export_view(frame: Frame) -> tuple[Frame, str | None]:
+def _asap_activate_export_view(page: Page, frame: Frame) -> tuple[Frame, str | None]:
     """Open the report's export-oriented view using visible ASAP semantics."""
-    candidates = frame.get_by_text(re.compile(r"^Export Wizard(?:\s*\([^)]*\))?$", re.I))
     visible = []
-    for candidate in candidates.all():
-        try:
-            if candidate.is_visible():
-                label = _clean_text(candidate.inner_text())
-                if label and label.casefold() not in {item[0].casefold() for item in visible}:
-                    visible.append((label, candidate))
-        except Exception:
-            continue
+    # The current portal places this control in the outer ASAP shell, while
+    # some older reports render it inside the MicroStrategy frame.
+    for root in (page, frame):
+        candidates = root.get_by_text(re.compile(r"^Export Wizard(?:\s*\([^)]*\))?$", re.I))
+        for candidate in candidates.all():
+            try:
+                if candidate.is_visible():
+                    label = _clean_text(candidate.inner_text())
+                    if label and label.casefold() not in {item[0].casefold() for item in visible}:
+                        visible.append((label, candidate))
+            except Exception:
+                continue
     if not visible:
         return frame, None
     label, control = next(
@@ -676,8 +679,8 @@ def _asap_activate_export_view(frame: Frame) -> tuple[Frame, str | None]:
         visible[0],
     )
     control.click(timeout=15_000)
-    frame.page.wait_for_timeout(500)
-    active_frame = _asap_frame(frame.page)
+    page.wait_for_timeout(500)
+    active_frame = _asap_frame(page)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         markers = active_frame.get_by_text(
@@ -685,7 +688,7 @@ def _asap_activate_export_view(frame: Frame) -> tuple[Frame, str | None]:
         )
         if any(item.is_visible() for item in markers.all()):
             break
-        frame.page.wait_for_timeout(250)
+        page.wait_for_timeout(250)
     return active_frame, label
 
 
@@ -723,7 +726,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
         try:
             with timings.measure("report_navigation"):
                 frame = _asap_open_report(page, lightweight_job, profile_dir)
-                frame, ready_text = _asap_activate_export_view(frame)
+                frame, ready_text = _asap_activate_export_view(page, frame)
             with timings.measure("filter_inspection"):
                 filters = _asap_discover_filters(frame)
                 report_title = frame.locator("title").text_content() or path[-1]
