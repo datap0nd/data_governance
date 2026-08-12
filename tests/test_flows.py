@@ -517,3 +517,40 @@ def test_asap_region_triplet_select_is_named_data_configuration():
     ]
     assert _normalize_asap_filter_label(options[1], "select", options) == "Data Configuration"
     assert _normalize_asap_filter_label("Region", "select", options) == "Region"
+
+
+def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
+    site, report = _seed_catalog()
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_reports SET discovery_key='Mobile > Report A', source_kind='discovered' WHERE id=?",
+            (report["id"],),
+        )
+        db.execute(
+            """UPDATE flow_report_filters SET filter_key='old_label', label='Old label',
+               control_label='Old label', source_kind='discovered' WHERE report_id=?""",
+            (report["id"],),
+        )
+        flows._apply_discovery(
+            db,
+            site["id"],
+            [flows.DiscoveredReport(
+                discovery_key="Mobile > Report A",
+                name="Report A",
+                report_url="https://example.com/report-a",
+                automation={"category_path": ["Mobile", "Report A"]},
+                filters=[flows.DiscoveredFilter(
+                    filter_key="new_label", label="New label", control_label="New label",
+                    control_type="select", options=["A", "B"], position=0,
+                )],
+            )],
+            "2026-08-12T10:00:00",
+            complete=False,
+        )
+        rows = db.execute(
+            "SELECT filter_key, enabled, stale FROM flow_report_filters WHERE report_id=? ORDER BY filter_key",
+            (report["id"],),
+        ).fetchall()
+    assert [(row["filter_key"], row["enabled"], row["stale"]) for row in rows] == [
+        ("new_label", 1, 0), ("old_label", 0, 1),
+    ]

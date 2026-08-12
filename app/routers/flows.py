@@ -967,11 +967,14 @@ def _apply_discovery(
             )
             report_id = cursor.lastrowid
         report_ids.append(report_id)
-        if complete:
-            db.execute(
-                "UPDATE flow_report_filters SET stale=1, enabled=0, updated_at=? WHERE report_id=? AND source_kind='discovered'",
-                (seen_at, report_id),
-            )
+        # A targeted refresh is authoritative for the report it inspected,
+        # even though it is intentionally not authoritative for the rest of
+        # the site catalog. Mark prior discovered definitions stale before
+        # upserting the current set. Nothing is deleted.
+        db.execute(
+            "UPDATE flow_report_filters SET stale=1, enabled=0, updated_at=? WHERE report_id=? AND source_kind='discovered'",
+            (seen_at, report_id),
+        )
         for definition in item.filters:
             db.execute(
                 """INSERT INTO flow_report_filters

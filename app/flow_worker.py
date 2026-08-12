@@ -654,6 +654,13 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
 
+    # The Installed Base report exposes its week prompt as a searchable
+    # MicroStrategy member list. Depending on render timing the count/search
+    # marker may not be returned as its own text node, so anchor discovery on
+    # the stable semantic label as well.
+    for week_label in frame.get_by_text(re.compile(r"^sell-out week:?$", re.I)).all():
+        add_definition("Sell-out Week", "week", nearest_list_values(week_label, require_search_marker=True))
+
     # MicroStrategy list selectors are represented by a heading followed by a
     # member list. Detect the labels from the report's own prompt headings and
     # capture visible members without selecting them.
