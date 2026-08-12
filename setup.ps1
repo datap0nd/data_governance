@@ -150,7 +150,11 @@ $portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
 foreach ($p in $portPid) {
     if ($p -and $p -ne "0") {
         Write-Host "  Killing PID $p holding port $Port" -ForegroundColor Yellow
-        taskkill /PID $p /F 2>&1 | Out-Null
+        $KillProcess = Start-Process taskkill.exe -ArgumentList @("/PID", $p, "/F") -PassThru -WindowStyle Hidden
+        if (-not $KillProcess.WaitForExit(10000)) {
+            Stop-Process -Id $KillProcess.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "  WARNING: Timed out waiting for taskkill on PID $p. Continuing setup." -ForegroundColor Yellow
+        }
     }
 }
 $ErrorActionPreference = "Stop"
