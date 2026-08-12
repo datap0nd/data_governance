@@ -2,10 +2,8 @@
 
 ## Current Objective
 
-Keep Metronome focused on actionable governance workflows. The latest change
-implements the findings from the live-app audit, removes the manual Tasks
-surface, and makes owner, freshness, scheduler, scanner, and alert-email
-behavior more trustworthy.
+Deliver a configurable Flows surface for website report downloads while
+keeping report-specific configuration in the installed app's SQLite database.
 
 ## Repo State
 
@@ -15,6 +13,19 @@ behavior more trustworthy.
 - Public repo: no, private
 
 ## Decisions Made
+
+- Flows owns websites, report catalogs, filter definitions, flow selections,
+  schedules, queued runs, workers, artifacts, and run history in SQLite.
+- Repository code contains no report-specific URL, filter value, destination,
+  or credential. Users configure those values from Tools > Flows.
+- Browser work is claimed by an authenticated worker running under the Windows
+  user that is authorized for the target report portal. Authentication tokens
+  are not copied into Metronome or between Windows users.
+- The worker never deletes or overwrites an existing file. Filename collisions
+  receive a numbered suffix.
+- SQL handoff is displayed as a future step but is rejected by API validation
+  and is not executed in this release. Cadence was reference material only and
+  was not changed.
 
 - Scanner findings use stable fingerprints. Current findings update their open
   action, cleared findings resolve automatically, and later reappearance opens
@@ -54,6 +65,19 @@ behavior more trustworthy.
 
 ## Files Changed
 
+- `app/database.py`: flow catalog, definition, run, artifact, and worker tables.
+- `app/routers/flows.py`: validated catalog/flow APIs, scheduler queue, worker
+  claim/progress protocol, per-week job expansion, and disabled SQL handoff.
+- `app/flow_worker.py`: persistent-profile Playwright worker with semantic
+  controls, CSV validation, checksums, and collision-safe filenames.
+- `app/static/index.html`, `app/static/app.js`, `app/static/style.css`: Flows
+  navigation, catalog management, populated builder, run history, desktop and
+  mobile layouts, and a mobile hidden-panel overflow fix.
+- `app/main.py`: router and one-minute flow schedule dispatcher.
+- `tests/test_flows.py`: persistence, filter validation, scheduling, worker,
+  artifact, no-delete, no-overwrite, and SQL-disabled coverage.
+- `README.md`: authenticated worker setup and safety behavior.
+
 - `app/scanner/runner.py`, `app/scanner/prober.py`: expanded scan coverage and
   persistent actions for broken references, changed queries, stale
   dependencies, and governance checks.
@@ -92,6 +116,14 @@ behavior more trustworthy.
 
 ## Commands And Checks
 
+- Full Python suite: `91 passed`.
+- JavaScript syntax check: passed.
+- Python compile check: passed.
+- Desktop and 390px mobile Playwright screenshots: passed with no horizontal
+  overflow after the responsive fix.
+- Impeccable detector: no findings.
+- `git diff --check`: passed.
+
 - Full Python suite: `81 passed`.
 - Node lineage suite: `1 passed`.
 - Python `compileall` for `app`: passed.
@@ -102,6 +134,7 @@ behavior more trustworthy.
 
 ## Next Step
 
-Update the installed service from `main`, then validate one owner save, one
-freshness-rule change, one governed Task Scheduler failure, and one Outlook
-draft against live Windows data.
+Update the BI desktop installation from `main`, enter the first website and
+report catalog through the Flows UI, run the authenticated worker under the
+authorized Windows session, and validate a real CSV download without deletion,
+overwrite, or SQL insertion.

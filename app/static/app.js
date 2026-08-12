@@ -84,15 +84,27 @@ function apiHeaders(extra = {}) {
     return { "X-Client-Key": _getClientKey(), ...extra };
 }
 
+async function apiError(res) {
+    let detail = "";
+    try {
+        const payload = await res.json();
+        if (typeof payload.detail === "string") detail = payload.detail;
+        else if (Array.isArray(payload.detail)) {
+            detail = payload.detail.map(item => item.msg || item.message || "Invalid value").join("; ");
+        }
+    } catch (_) {}
+    return new Error(detail || `API error: ${res.status}`);
+}
+
 async function api(path) {
     const res = await fetch(path, { headers: apiHeaders() });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
 async function apiPost(path) {
     const res = await fetch(path, { method: "POST", headers: apiHeaders() });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
@@ -102,7 +114,7 @@ async function apiPatch(path, body) {
         headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
@@ -112,7 +124,7 @@ async function apiPostJson(path, body) {
         headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
@@ -122,13 +134,13 @@ async function apiPut(path, body) {
         headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
 async function apiDelete(path) {
     const res = await fetch(path, { method: "DELETE", headers: apiHeaders() });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    if (!res.ok) throw await apiError(res);
     return res.json();
 }
 
@@ -9222,6 +9234,304 @@ async function renderDataImport() {
     `;
 }
 
+
+// ── Configurable website report flows ──
+
+const _FLOW_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+function _flowStatusBadge(status) {
+    const key = String(status || "draft").toLowerCase();
+    const cls = ["succeeded"].includes(key) ? "badge-green"
+        : ["failed"].includes(key) ? "badge-red"
+        : ["queued", "claimed", "running"].includes(key) ? "badge-yellow"
+        : "badge-muted";
+    return `<span class="badge ${cls}">${esc(key.replaceAll("_", " "))}</span>`;
+}
+
+function _flowEmptyState(catalog) {
+    const hasSites = catalog.sites.some(site => site.enabled);
+    const hasReports = catalog.reports.some(report => report.enabled);
+    const action = !hasSites
+        ? '<button class="btn-primary" id="flow-add-site-empty">Add website</button>'
+        : !hasReports
+            ? '<button class="btn-primary" id="flow-add-report-empty">Add report</button>'
+            : '<button class="btn-primary" id="flow-create-empty">Create flow</button>';
+    const copy = !hasSites
+        ? "Start with the website whose authenticated browser will download reports."
+        : !hasReports
+            ? "The website is ready. Add a report URL and its available filters."
+            : "The catalog is ready. Create a flow and choose its filters, files, and schedule.";
+    return `
+        <div class="flow-empty">
+            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Add the first report" : "Build the first download flow"}</h2>
+            <p>${copy} Configuration stays in this machine's SQLite database.</p>
+            <div class="flow-empty-actions">${action}</div>
+        </div>`;
+}
+
+function _flowListHtml(flows, workers, catalog) {
+    if (!flows.length) return _flowEmptyState(catalog);
+    const online = workers.filter(worker => worker.status !== "offline").length;
+    return `
+        <div class="flow-status-strip">
+            <span><strong>${flows.length}</strong> configured flow${flows.length === 1 ? "" : "s"}</span>
+            <span><strong>${online}</strong> online worker${online === 1 ? "" : "s"}</span>
+            <span>Existing files are never deleted or overwritten</span>
+        </div>
+        <div class="flow-table-wrap">
+            <table class="flow-table">
+                <thead><tr><th>Flow</th><th>Website / report</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
+                <tbody>${flows.map(flow => `
+                    <tr>
+                        <td><strong>${esc(flow.name)}</strong><small>${flow.enabled ? "Enabled" : "Draft"}</small></td>
+                        <td>${esc(flow.site_name)}<small>${esc(flow.report_name)}</small></td>
+                        <td>${esc(flow.download_mode === "one_per_week" ? "One CSV per week" : "One CSV")}<small>${esc(flow.target_folder)}</small></td>
+                        <td>${esc(flow.schedule_type)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
+                        <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
+                        <td class="flow-row-actions">
+                            <button class="btn-sm flow-run" data-id="${flow.id}">Run</button>
+                            <button class="btn-sm flow-edit" data-id="${flow.id}">Edit</button>
+                        </td>
+                    </tr>`).join("")}</tbody>
+            </table>
+        </div>`;
+}
+
+function _flowReportOptions(catalog, siteId, selected) {
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled);
+    return reports.length
+        ? reports.map(report => `<option value="${report.id}" ${String(report.id) === String(selected) ? "selected" : ""}>${esc(report.name)}</option>`).join("")
+        : '<option value="">Add a report for this website first</option>';
+}
+
+function _flowFilterControl(definition, value) {
+    const id = `flow-filter-${definition.filter_key}`;
+    const required = definition.required ? "required" : "";
+    if (definition.control_type === "multi_select") {
+        const selected = new Set(Array.isArray(value) ? value.map(String) : []);
+        return `<select id="${id}" data-flow-filter="${esc(definition.filter_key)}" multiple ${required}>${definition.options.map(option => `<option ${selected.has(String(option)) ? "selected" : ""}>${esc(option)}</option>`).join("")}</select>`;
+    }
+    if (definition.control_type === "select") {
+        return `<select id="${id}" data-flow-filter="${esc(definition.filter_key)}" ${required}><option value="">Choose...</option>${definition.options.map(option => `<option ${String(value ?? "") === String(option) ? "selected" : ""}>${esc(option)}</option>`).join("")}</select>`;
+    }
+    if (definition.control_type === "week") {
+        return `<input id="${id}" type="week" data-flow-filter="${esc(definition.filter_key)}" value="${esc(value || "")}" ${required}>`;
+    }
+    return `<input id="${id}" type="text" data-flow-filter="${esc(definition.filter_key)}" value="${esc(value || "")}" ${required}>`;
+}
+
+function _flowBuilderHtml(catalog, existing = null) {
+    const sites = catalog.sites.filter(site => site.enabled);
+    const siteId = existing?.site_id || sites[0]?.id || "";
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled);
+    const reportId = existing?.report_id || reports[0]?.id || "";
+    const report = catalog.reports.find(item => String(item.id) === String(reportId));
+    const selections = existing?.selections || {};
+    const scheduleDays = new Set(existing?.schedule_days || []);
+    return `
+        <div class="flow-builder-shell">
+            <div class="flow-builder-main">
+                <form id="flow-builder-form" data-id="${existing?.id || ""}">
+                    <div class="flow-form-section">
+                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose the website adapter and the report whose filters define this flow.</p></div>
+                        <div class="flow-form-grid">
+                            <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
+                            <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
+                            <label class="flow-span-2"><span>Report</span><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select></label>
+                        </div>
+                    </div>
+                    <div class="flow-form-section" id="flow-report-filters">
+                        <div class="flow-section-head"><h2>Report filters</h2><p>These fields come from the selected report's local catalog definition.</p></div>
+                        <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled).length ? report.filters.filter(filter => filter.enabled).map(definition => `
+                            <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
+                    </div>
+                    <div class="flow-form-section">
+                        <div class="flow-section-head"><h2>Download behavior</h2><p>Split a range into one file per ISO week, or download one configured CSV.</p></div>
+                        <div class="flow-form-grid">
+                            <label><span>Download mode</span><select id="flow-download-mode"><option value="single" ${existing?.download_mode !== "one_per_week" ? "selected" : ""}>One CSV</option><option value="one_per_week" ${existing?.download_mode === "one_per_week" ? "selected" : ""}>One CSV per week</option></select></label>
+                            <div></div>
+                            <label class="flow-week-field"><span>Start week</span><input id="flow-start-week" type="week" value="${esc(existing?.start_week || "")}"></label>
+                            <label class="flow-week-field"><span>End week</span><input id="flow-end-week" type="week" value="${esc(existing?.end_week || "")}"></label>
+                            <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
+                            <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || "{report}_{week}.csv")}"><small>Tokens: {flow}, {report}, {week}, {year}, {week_number}, {index}, {date}. Name collisions receive a number suffix.</small></label>
+                        </div>
+                    </div>
+                    <div class="flow-form-section">
+                        <div class="flow-section-head"><h2>Schedule and handoff</h2><p>Schedule downloads here. Database insertion will be added later from the stored CSV artifact.</p></div>
+                        <div class="flow-form-grid">
+                            <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option></select></label>
+                            <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
+                            <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
+                            <label class="flow-check flow-span-2"><input id="flow-enabled" type="checkbox" ${existing?.enabled ? "checked" : ""}><span>Enable scheduled execution</span></label>
+                            <label class="flow-check flow-span-2 disabled" title="Planned for a later release"><input type="checkbox" disabled><span>Insert downloaded file into SQL after validation <strong>Coming later</strong></span></label>
+                        </div>
+                    </div>
+                    <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing ? "Save changes" : "Create flow"}</button></div>
+                </form>
+            </div>
+            <aside class="flow-summary">
+                <h2>Execution contract</h2>
+                <dl><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>Worker's browser profile</dd></div></dl>
+            </aside>
+        </div>`;
+}
+
+function _flowCatalogHtml(catalog) {
+    return `
+        <div class="flow-catalog-grid">
+            <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication and adapter entry points.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
+                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => `<button class="flow-catalog-row flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small></span><span>${site.enabled ? "Enabled" : "Disabled"}</span></button>`).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
+            </section>
+            <section><div class="flow-panel-head"><div><h2>Reports</h2><p>Report URLs, readiness markers and filter catalogs.</p></div><button class="btn-secondary" id="flow-add-report">Add report</button></div>
+                ${catalog.reports.length ? `<div class="flow-catalog-list">${catalog.reports.map(report => `<button class="flow-catalog-row flow-edit-report" data-id="${report.id}"><span><strong>${esc(report.name)}</strong><small>${report.filters.filter(filter => filter.enabled).length} configured filters</small></span><span>${esc(catalog.sites.find(site => site.id === report.site_id)?.name || "")}</span></button>`).join("")}</div>` : '<p class="flow-inline-empty">No reports configured.</p>'}
+            </section>
+        </div>`;
+}
+
+function _flowRunsHtml(runs) {
+    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Result</th></tr></thead><tbody>${runs.map(run => `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}</td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td></tr>`).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
+}
+
+async function renderFlows() {
+    const [catalog, flows, runs, workers] = await Promise.all([
+        api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
+    ]);
+    window._flowsState = { catalog, flows, runs, workers, view: "list" };
+    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled);
+    return `
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads without storing credentials in Metronome.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
+        <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
+        <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog)}</div>`;
+}
+
+function _flowShowView(view, payload = null) {
+    const state = window._flowsState;
+    state.view = view;
+    const workspace = document.getElementById("flow-workspace");
+    document.querySelectorAll(".flow-tabs button").forEach(button => {
+        const active = button.dataset.flowView === view || (view === "builder" && button.dataset.flowView === "list");
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    const selectedTab = document.querySelector('.flow-tabs button[aria-selected="true"]');
+    workspace.setAttribute("aria-labelledby", selectedTab?.id || "flow-tab-list");
+    if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog);
+    else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
+    else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
+    else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog);
+    _bindFlowWorkspace();
+}
+
+function _flowBindDialog(overlay, restoreFocus) {
+    const close = () => { overlay.remove(); restoreFocus?.focus?.(); };
+    overlay.querySelector(".flow-dialog-cancel").onclick = close;
+    overlay.addEventListener("keydown", event => {
+        if (event.key === "Escape") { event.preventDefault(); close(); return; }
+        if (event.key !== "Tab") return;
+        const focusable = [...overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+            .filter(element => !element.hidden && element.offsetParent !== null);
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    overlay.querySelector("input, select, button")?.focus();
+    return close;
+}
+
+function _flowSiteDialog(site = null) {
+    const restoreFocus = document.activeElement;
+    const overlay = document.createElement("div");
+    overlay.className = "task-modal-overlay";
+    overlay.innerHTML = `<div class="task-modal flow-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-site-title"><h2 id="flow-site-title">${site ? "Edit" : "Add"} website</h2><form id="flow-site-form"><label>Name<input id="flow-site-name" required value="${esc(site?.name || "")}"></label><label>Authentication URL<input id="flow-site-auth" type="url" value="${esc(site?.auth_url || "")}" placeholder="https://portal.example.com/login"></label><label>Base URL<input id="flow-site-base" type="url" value="${esc(site?.base_url || "")}"></label><label class="flow-check"><input id="flow-site-enabled" type="checkbox" ${site?.enabled !== false ? "checked" : ""}><span>Enabled</span></label><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save website</button></div></form></div>`;
+    document.body.appendChild(overlay);
+    const close = _flowBindDialog(overlay, restoreFocus);
+    overlay.querySelector("form").onsubmit = async event => {
+        event.preventDefault();
+        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        const error = overlay.querySelector(".flow-form-error");
+        submit.disabled = true;
+        error.textContent = "";
+        const body = { name: $("#flow-site-name").value.trim(), adapter: "web_export", auth_url: $("#flow-site-auth").value.trim() || null, base_url: $("#flow-site-base").value.trim() || null, enabled: $("#flow-site-enabled").checked };
+        try { await (site ? apiPut(`/api/flows/sites/${site.id}`, body) : apiPostJson("/api/flows/sites", body)); close(); await navigate("flows"); toast("Website saved"); }
+        catch (err) { error.textContent = "Website not saved: " + err.message; submit.disabled = false; }
+    };
+}
+
+function _flowFilterRows(filters = []) {
+    const rows = filters.length ? filters : [{ filter_key: "", label: "", control_label: "", control_type: "select", options: [], required: false }];
+    return rows.map((filter, index) => `<div class="flow-filter-definition"><input aria-label="Filter label" data-field="label" value="${esc(filter.label)}" placeholder="Filter label"><input aria-label="Filter key" data-field="filter_key" value="${esc(filter.filter_key)}" placeholder="filter_key"><input aria-label="Portal control label" data-field="control_label" value="${esc(filter.control_label)}" placeholder="Portal control label"><select aria-label="Control type" data-field="control_type"><option value="select" ${filter.control_type === "select" ? "selected" : ""}>Dropdown</option><option value="multi_select" ${filter.control_type === "multi_select" ? "selected" : ""}>Multi-select</option><option value="text" ${filter.control_type === "text" ? "selected" : ""}>Text</option><option value="week" ${filter.control_type === "week" ? "selected" : ""}>Week</option></select><input aria-label="Allowed options" data-field="options" value="${esc((filter.options || []).join("\n"))}" placeholder="Options, one per line"><label><input data-field="required" type="checkbox" ${filter.required ? "checked" : ""}> Required</label><button type="button" class="btn-sm flow-remove-filter">Remove</button><input type="hidden" data-field="position" value="${index}"></div>`).join("");
+}
+
+function _flowReportDialog(report = null) {
+    const state = window._flowsState;
+    if (!state.catalog.sites.length) { toast("Add a website before adding a report"); _flowSiteDialog(); return; }
+    const restoreFocus = document.activeElement;
+    const overlay = document.createElement("div");
+    overlay.className = "task-modal-overlay";
+    overlay.innerHTML = `<div class="task-modal flow-dialog flow-report-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-report-title"><h2 id="flow-report-title">${report ? "Edit" : "Add"} report</h2><form id="flow-report-form"><div class="flow-form-grid"><label><span>Website</span><select id="flow-report-site">${state.catalog.sites.map(site => `<option value="${site.id}" ${site.id === report?.site_id ? "selected" : ""}>${esc(site.name)}</option>`).join("")}</select></label><label><span>Report name</span><input id="flow-report-name" required value="${esc(report?.name || "")}"></label><label class="flow-span-2"><span>Report URL</span><input id="flow-report-url" type="url" required value="${esc(report?.report_url || "")}"></label><label><span>Ready text</span><input id="flow-report-ready" value="${esc(report?.ready_text || "")}" placeholder="Export Wizard"></label><label><span>Open export control</span><input id="flow-report-open" value="${esc(report?.open_export_text || "")}" placeholder="Export Wizard (Detail)"></label><label><span>Download control</span><input id="flow-report-download" required value="${esc(report?.download_text || "Download CSV")}"></label><label class="flow-check"><input id="flow-report-enabled" type="checkbox" ${report?.enabled !== false ? "checked" : ""}><span>Enabled</span></label></div><div class="flow-filter-editor-head"><div><h3>Filter catalog</h3><p>Options populate the flow builder. Use one option per line.</p></div><button type="button" class="btn-secondary" id="flow-add-filter">Add filter</button></div><div id="flow-filter-definitions">${_flowFilterRows(report?.filters?.filter(filter => filter.enabled) || [])}</div><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save report</button></div></form></div>`;
+    document.body.appendChild(overlay);
+    const close = _flowBindDialog(overlay, restoreFocus);
+    overlay.addEventListener("click", event => { if (event.target.closest(".flow-remove-filter")) event.target.closest(".flow-filter-definition").remove(); });
+    $("#flow-add-filter").onclick = () => $("#flow-filter-definitions").insertAdjacentHTML("beforeend", _flowFilterRows());
+    overlay.querySelector("form").onsubmit = async event => {
+        event.preventDefault();
+        const submit = event.currentTarget.querySelector('button[type="submit"]');
+        const error = overlay.querySelector(".flow-form-error");
+        submit.disabled = true;
+        error.textContent = "";
+        const filters = [...overlay.querySelectorAll(".flow-filter-definition")].map((row, index) => ({
+            filter_key: row.querySelector('[data-field="filter_key"]').value.trim(), label: row.querySelector('[data-field="label"]').value.trim(), control_label: row.querySelector('[data-field="control_label"]').value.trim(), control_type: row.querySelector('[data-field="control_type"]').value, options: row.querySelector('[data-field="options"]').value.split(/\r?\n|;/).map(item => item.trim()).filter(Boolean), automation: {}, required: row.querySelector('[data-field="required"]').checked, position: index, enabled: true,
+        }));
+        const body = { site_id: Number($("#flow-report-site").value), name: $("#flow-report-name").value.trim(), report_url: $("#flow-report-url").value.trim(), ready_text: $("#flow-report-ready").value.trim() || null, open_export_text: $("#flow-report-open").value.trim() || null, download_text: $("#flow-report-download").value.trim(), enabled: $("#flow-report-enabled").checked, filters };
+        try { await (report ? apiPut(`/api/flows/reports/${report.id}`, body) : apiPostJson("/api/flows/reports", body)); close(); await navigate("flows"); toast("Report saved"); }
+        catch (err) { error.textContent = "Report not saved: " + err.message; submit.disabled = false; }
+    };
+}
+
+function _flowCollectBuilder() {
+    const selections = {};
+    document.querySelectorAll("[data-flow-filter]").forEach(control => {
+        selections[control.dataset.flowFilter] = control.multiple ? [...control.selectedOptions].map(option => option.value) : control.value;
+    });
+    const scheduleType = $("#flow-schedule-type").value;
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: scheduleType !== "manual" && $("#flow-enabled").checked, selections, download_mode: $("#flow-download-mode").value, start_week: $("#flow-start-week").value || null, end_week: $("#flow-end-week").value || null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: false };
+}
+
+function _bindFlowWorkspace() {
+    const state = window._flowsState;
+    $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
+    $("#flow-add-report-empty")?.addEventListener("click", () => _flowReportDialog());
+    $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("builder"));
+    $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
+    $("#flow-add-report")?.addEventListener("click", () => _flowReportDialog());
+    document.querySelectorAll(".flow-edit-site").forEach(button => button.onclick = () => _flowSiteDialog(state.catalog.sites.find(site => site.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-edit-report").forEach(button => button.onclick = () => _flowReportDialog(state.catalog.reports.find(report => report.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast("Run queued for an authenticated worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
+    $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
+    $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
+    $("#flow-report")?.addEventListener("change", event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled).length ? report.filters.filter(filter => filter.enabled).map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'; });
+    $("#flow-download-mode")?.addEventListener("change", event => { document.querySelectorAll(".flow-week-field").forEach(field => field.hidden = event.target.value !== "one_per_week"); });
+    $("#flow-download-mode")?.dispatchEvent(new Event("change"));
+    $("#flow-schedule-type")?.addEventListener("change", event => {
+        const manual = event.target.value === "manual";
+        const weekly = event.target.value === "weekly";
+        $("#flow-schedule-time").closest("label").hidden = manual;
+        $(".flow-weekdays").hidden = !weekly;
+        $("#flow-enabled").closest("label").hidden = manual;
+    });
+    $("#flow-schedule-type")?.dispatchEvent(new Event("change"));
+    $("#flow-builder-form")?.addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); const error = form.querySelector(".flow-form-error"); button.disabled = true; error.textContent = ""; try { const body = _flowCollectBuilder(); await (form.dataset.id ? apiPut(`/api/flows/${form.dataset.id}`, body) : apiPostJson("/api/flows", body)); toast("Flow saved"); await navigate("flows"); } catch (err) { error.textContent = "Flow not saved: " + err.message; error.scrollIntoView({ behavior: "smooth", block: "nearest" }); button.disabled = false; } });
+}
+
+function bindFlowsPage() {
+    document.querySelectorAll(".flow-tabs button").forEach(button => button.onclick = () => _flowShowView(button.dataset.flowView));
+    $("#flow-create")?.addEventListener("click", () => _flowShowView("builder"));
+    _bindFlowWorkspace();
+}
+
 function bindDataImportPage() {
     const pick = document.getElementById("di-pick");
     if (!pick) return;
@@ -9739,6 +10049,7 @@ const pages = {
     recurrences: renderRecurrences,
     export: renderExport,
     dataimport: renderDataImport,
+    flows: renderFlows,
     eventlog: renderEventLog,
     faq: renderFaq,
     refreshschedule: renderRefreshSchedule,
@@ -9870,6 +10181,7 @@ async function navigate(page) {
         if (page === "scripts") bindScriptsPage();
         if (page === "scheduledtasks") bindScheduledTasksPage();
         if (page === "powerautomate") bindPowerAutomatePage();
+        if (page === "flows") bindFlowsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();
         if (page === "bestpractices") bindBestPracticesPage();
