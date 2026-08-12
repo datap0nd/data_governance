@@ -2,9 +2,9 @@
 
 ## Current Objective
 
-Complete the daily governance scan, persist actionable findings with a real
-lifecycle, activate the dormant data-quality engine, and remove the Custom
-Reports product surface.
+Keep Metronome focused on actionable governance workflows. The latest change
+removes the unusable Pipeline Overview surface while preserving Dashboard and
+Lineage as the supported summary and dependency views.
 
 ## Repo State
 
@@ -34,6 +34,8 @@ Reports product surface.
 - Custom Reports navigation, frontend code, models, API router, and router file
   were removed. The existing `custom_reports` database table remains so an app
   update does not destroy historical user data.
+- Pipeline Overview navigation, frontend graph code, dedicated CSS, FAQ copy,
+  and API router were removed. Old `#overview` bookmarks redirect to Dashboard.
 
 ## Files Changed
 
@@ -55,16 +57,19 @@ Reports product surface.
 - `README.md`: updated daily-refresh and data-quality behavior.
 - `tests/test_data_quality.py`: validation, failure/recovery, row-count change,
   and managed-finding lifecycle coverage.
+- `app/static/index.html`, `app/static/app.js`, `app/static/style.css`,
+  `app/main.py`, `app/routers/overview.py`: removed Pipeline Overview end to end.
+- `tests/test_overview_removed.py`: guards the removed route and navigation.
 
 ## Commands And Checks
 
-- Full Python suite: `67 passed`.
+- Full Python suite: `68 passed`.
 - Node lineage suite: `1 passed`.
 - Python `compileall` for `app`: passed.
 - JavaScript syntax check: passed.
 - Fresh SQLite initialization and migration smoke check: passed.
 - Full application route smoke check: Data Quality routes present and Custom
-  Reports routes absent.
+  Reports and Pipeline Overview routes absent.
 - Browser verification at 1440x1000 and 390x844: Data Quality page and form
   rendered without console errors; mobile AI panel opened and closed without
   obscuring the page while closed.
@@ -74,7 +79,5 @@ Reports product surface.
 
 ## Next Step
 
-After updating the installed service from `main`, configure initial rules under
-Tools > Data Quality. The first source probe will execute them and populate
-their result status. Existing Custom Reports rows remain in SQLite but are no
-longer exposed by the application.
+Update the installed service from `main`. Old Pipeline Overview bookmarks now
+open Dashboard; dependency exploration remains available under Lineage.
