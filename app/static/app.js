@@ -9254,16 +9254,16 @@ function _flowEmptyState(catalog) {
     const action = !hasSites
         ? '<button class="btn-primary" id="flow-add-site-empty">Add website</button>'
         : !hasReports
-            ? '<button class="btn-primary" id="flow-add-report-empty">Add report</button>'
+            ? '<button class="btn-primary" id="flow-scan-empty">Scan ASAP</button>'
             : '<button class="btn-primary" id="flow-create-empty">Create flow</button>';
     const copy = !hasSites
         ? "Start with the website whose authenticated browser will download reports."
         : !hasReports
-            ? "The website is ready. Add a report URL and its available filters."
+            ? "The website is ready. Scan ASAP to discover reports and their available filters."
             : "The catalog is ready. Create a flow and choose its filters, files, and schedule.";
     return `
         <div class="flow-empty">
-            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Add the first report" : "Build the first download flow"}</h2>
+            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Discover ASAP reports" : "Build the first download flow"}</h2>
             <p>${copy} Configuration stays in this machine's SQLite database.</p>
             <div class="flow-empty-actions">${action}</div>
         </div>`;
@@ -9298,10 +9298,10 @@ function _flowListHtml(flows, workers, catalog) {
 }
 
 function _flowReportOptions(catalog, siteId, selected) {
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled);
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.source_kind === "discovered");
     return reports.length
         ? reports.map(report => `<option value="${report.id}" ${String(report.id) === String(selected) ? "selected" : ""}>${esc(report.name)}</option>`).join("")
-        : '<option value="">Add a report for this website first</option>';
+        : '<option value="">Run discovery for this website first</option>';
 }
 
 function _flowFilterControl(definition, value) {
@@ -9323,17 +9323,18 @@ function _flowFilterControl(definition, value) {
 function _flowBuilderHtml(catalog, existing = null) {
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled);
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.source_kind === "discovered");
     const reportId = existing?.report_id || reports[0]?.id || "";
     const report = catalog.reports.find(item => String(item.id) === String(reportId));
     const selections = existing?.selections || {};
     const scheduleDays = new Set(existing?.schedule_days || []);
+    const downloadEstimate = window._flowsState?.estimates?.flow_download;
     return `
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
                 <form id="flow-builder-form" data-id="${existing?.id || ""}">
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose the website adapter and the report whose filters define this flow.</p></div>
+                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose from reports and filters discovered by the latest ASAP scan.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
@@ -9341,7 +9342,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                         </div>
                     </div>
                     <div class="flow-form-section" id="flow-report-filters">
-                        <div class="flow-section-head"><h2>Report filters</h2><p>These fields come from the selected report's local catalog definition.</p></div>
+                        <div class="flow-section-head"><h2>Report filters</h2><p>Every value below was discovered from ASAP. Rescan the catalog when the portal changes.</p></div>
                         <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled).length ? report.filters.filter(filter => filter.enabled).map(definition => `
                             <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
                     </div>
@@ -9371,33 +9372,55 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>BI desktop browser profile</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>BI desktop browser profile</dd></div></dl>
             </aside>
         </div>`;
 }
 
-function _flowCatalogHtml(catalog) {
+function _flowDuration(ms) {
+    if (!Number.isFinite(Number(ms))) return "Not available";
+    const seconds = Math.max(0, Math.round(Number(ms) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function _flowTimingSummary(timings) {
+    const phases = (timings || []).filter(item => item.phase !== "total");
+    return phases.length ? phases.map(item => `${esc(item.phase.replaceAll("_", " "))}: ${_flowDuration(item.duration_ms)}`).join(" · ") : "No phase timing yet";
+}
+
+function _flowCatalogHtml(catalog, scans, estimates) {
+    const latestBySite = new Map();
+    scans.forEach(scan => { if (!latestBySite.has(scan.site_id)) latestBySite.set(scan.site_id, scan); });
+    const scanEstimate = estimates.catalog_scan;
     return `
+        <div class="flow-discovery-summary">
+            <div><h2>ASAP discovery</h2><p>Metronome scans visible ASAP menus, reports, filters, and options. Missing entries are marked stale, never deleted.</p></div>
+            <dl><div><dt>Estimated full scan</dt><dd>${_flowDuration(scanEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd>${esc(scanEstimate?.source || "No history")}</dd></div></dl>
+        </div>
         <div class="flow-catalog-grid">
-            <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication and adapter entry points.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
-                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => `<button class="flow-catalog-row flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small></span><span>${site.enabled ? "Enabled" : "Disabled"}</span></button>`).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
+            <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication, discovery scope, and weekly scan schedule.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
+                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); const total = scan?.timings?.find(item => item.phase === "total"); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scan ? `${_flowStatusBadge(scan.status)}<small>${esc(scan.progress?.message || "")}</small><small>${total ? `Actual ${_flowDuration(total.duration_ms)} · ` : ""}${_flowTimingSummary(scan.timings)}</small>` : "Never scanned"}</span><button class="btn-sm flow-scan-site" data-id="${site.id}">Scan now</button></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
             </section>
-            <section><div class="flow-panel-head"><div><h2>Reports</h2><p>Report URLs, readiness markers and filter catalogs.</p></div><button class="btn-secondary" id="flow-add-report">Add report</button></div>
-                ${catalog.reports.length ? `<div class="flow-catalog-list">${catalog.reports.map(report => `<button class="flow-catalog-row flow-edit-report" data-id="${report.id}"><span><strong>${esc(report.name)}</strong><small>${report.filters.filter(filter => filter.enabled).length} configured filters</small></span><span>${esc(catalog.sites.find(site => site.id === report.site_id)?.name || "")}</span></button>`).join("")}</div>` : '<p class="flow-inline-empty">No reports configured.</p>'}
+            <section><div class="flow-panel-head"><div><h2>Discovered reports</h2><p>Read-only catalog from the latest successful scan.</p></div></div>
+                ${catalog.reports.length ? `<div class="flow-catalog-list">${catalog.reports.map(report => `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span></div>`).join("")}</div>` : '<p class="flow-inline-empty">No reports discovered yet.</p>'}
             </section>
         </div>`;
 }
 
 function _flowRunsHtml(runs) {
-    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Result</th></tr></thead><tbody>${runs.map(run => `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}</td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td></tr>`).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
+    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}</td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
 }
 
 async function renderFlows() {
-    const [catalog, flows, runs, workers] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
+        api("/api/flows/scans"), api("/api/flows/estimates"),
     ]);
-    window._flowsState = { catalog, flows, runs, workers, view: "list" };
-    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled);
+    window._flowsState = { catalog, flows, runs, workers, scans, estimates, view: "list" };
+    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled && !report.stale && report.source_kind === "discovered");
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads executed by the authenticated BI desktop.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
@@ -9415,7 +9438,7 @@ function _flowShowView(view, payload = null) {
     });
     const selectedTab = document.querySelector('.flow-tabs button[aria-selected="true"]');
     workspace.setAttribute("aria-labelledby", selectedTab?.id || "flow-tab-list");
-    if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog);
+    if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog, state.scans, state.estimates);
     else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
     else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog);
@@ -9444,7 +9467,7 @@ function _flowSiteDialog(site = null) {
     const restoreFocus = document.activeElement;
     const overlay = document.createElement("div");
     overlay.className = "task-modal-overlay";
-    overlay.innerHTML = `<div class="task-modal flow-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-site-title"><h2 id="flow-site-title">${site ? "Edit" : "Add"} website</h2><form id="flow-site-form"><label>Website type<select id="flow-site-adapter"><option value="asap_portal" ${site?.adapter === "asap_portal" ? "selected" : ""}>ASAP</option><option value="web_export" ${site?.adapter !== "asap_portal" ? "selected" : ""}>Other report portal</option></select></label><label>Name<input id="flow-site-name" required value="${esc(site?.name || "")}" placeholder="ASAP"></label><label>Portal URL<input id="flow-site-auth" type="url" value="${esc(site?.auth_url || "")}" placeholder="https://portal.example.com/login"></label><label>Base URL<input id="flow-site-base" type="url" value="${esc(site?.base_url || "")}"></label><label class="flow-check"><input id="flow-site-enabled" type="checkbox" ${site?.enabled !== false ? "checked" : ""}><span>Enabled</span></label><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save website</button></div></form></div>`;
+    overlay.innerHTML = `<div class="task-modal flow-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-site-title"><h2 id="flow-site-title">${site ? "Edit" : "Add"} website</h2><form id="flow-site-form"><label>Website type<select id="flow-site-adapter"><option value="asap_portal" ${site?.adapter === "asap_portal" ? "selected" : ""}>ASAP</option><option value="web_export" ${site?.adapter !== "asap_portal" ? "selected" : ""}>Other report portal</option></select></label><label>Name<input id="flow-site-name" required value="${esc(site?.name || "")}" placeholder="ASAP"></label><label>Portal URL<input id="flow-site-auth" type="url" value="${esc(site?.auth_url || "")}" placeholder="https://portal.example.com/login"></label><label>Base URL<input id="flow-site-base" type="url" value="${esc(site?.base_url || "")}"></label><div class="flow-dialog-rule"></div><h3>Automatic discovery</h3><p class="flow-dialog-help">A weekly BI-desktop scan refreshes the local report and filter catalog. It never deletes catalog entries.</p><label>Top-level menus to scan<input id="flow-site-scope" value="${esc((site?.discovery_scope || ["Mobile"]).join("; "))}" placeholder="Mobile"><small>Separate multiple visible ASAP menu labels with semicolons.</small></label><div class="flow-form-grid"><label>Weekend day<select id="flow-site-scan-day">${_FLOW_WEEKDAYS.map(day => `<option value="${day}" ${day === (site?.discovery_weekday || "saturday") ? "selected" : ""}>${day[0].toUpperCase() + day.slice(1)}</option>`).join("")}</select></label><label>Scan time<input id="flow-site-scan-time" type="time" value="${esc(site?.discovery_time || "06:00")}"></label></div><label class="flow-check"><input id="flow-site-discovery" type="checkbox" ${site?.discovery_enabled !== false ? "checked" : ""}><span>Run discovery weekly</span></label><label class="flow-check"><input id="flow-site-enabled" type="checkbox" ${site?.enabled !== false ? "checked" : ""}><span>Website enabled</span></label><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save website</button></div></form></div>`;
     document.body.appendChild(overlay);
     const close = _flowBindDialog(overlay, restoreFocus);
     overlay.querySelector("form").onsubmit = async event => {
@@ -9453,7 +9476,7 @@ function _flowSiteDialog(site = null) {
         const error = overlay.querySelector(".flow-form-error");
         submit.disabled = true;
         error.textContent = "";
-        const body = { name: $("#flow-site-name").value.trim(), adapter: $("#flow-site-adapter").value, auth_url: $("#flow-site-auth").value.trim() || null, base_url: $("#flow-site-base").value.trim() || null, enabled: $("#flow-site-enabled").checked };
+        const body = { name: $("#flow-site-name").value.trim(), adapter: $("#flow-site-adapter").value, auth_url: $("#flow-site-auth").value.trim() || null, base_url: $("#flow-site-base").value.trim() || null, discovery_enabled: $("#flow-site-discovery").checked, discovery_interval_hours: 168, discovery_scope: $("#flow-site-scope").value.split(";").map(item => item.trim()).filter(Boolean), discovery_weekday: $("#flow-site-scan-day").value, discovery_time: $("#flow-site-scan-time").value, enabled: $("#flow-site-enabled").checked };
         try { await (site ? apiPut(`/api/flows/sites/${site.id}`, body) : apiPostJson("/api/flows/sites", body)); close(); await navigate("flows"); toast("Website saved"); }
         catch (err) { error.textContent = "Website not saved: " + err.message; submit.disabled = false; }
     };
@@ -9506,17 +9529,16 @@ function _flowCollectBuilder() {
 function _bindFlowWorkspace() {
     const state = window._flowsState;
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
-    $("#flow-add-report-empty")?.addEventListener("click", () => _flowReportDialog());
+    $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("ASAP discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("builder"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
-    $("#flow-add-report")?.addEventListener("click", () => _flowReportDialog());
     document.querySelectorAll(".flow-edit-site").forEach(button => button.onclick = () => _flowSiteDialog(state.catalog.sites.find(site => site.id === Number(button.dataset.id))));
-    document.querySelectorAll(".flow-edit-report").forEach(button => button.onclick = () => _flowReportDialog(state.catalog.reports.find(report => report.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-scan-site").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan`); toast("ASAP discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
     document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast("Run queued for an authenticated worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
-    $("#flow-report")?.addEventListener("change", event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled).length ? report.filters.filter(filter => filter.enabled).map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'; });
+    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale).length ? report.filters.filter(filter => filter.enabled && !filter.stale).map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no configurable filters.</p>'; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-download-mode")?.addEventListener("change", event => { document.querySelectorAll(".flow-week-field").forEach(field => field.hidden = event.target.value !== "one_per_week"); });
     $("#flow-download-mode")?.dispatchEvent(new Event("change"));
     $("#flow-schedule-type")?.addEventListener("change", event => {

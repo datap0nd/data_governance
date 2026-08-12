@@ -396,6 +396,15 @@ CREATE TABLE IF NOT EXISTS flow_sites (
     adapter         TEXT NOT NULL DEFAULT 'web_export',
     base_url        TEXT,
     auth_url        TEXT,
+    discovery_enabled INTEGER NOT NULL DEFAULT 0,
+    discovery_interval_hours INTEGER NOT NULL DEFAULT 168,
+    discovery_scope_json TEXT NOT NULL DEFAULT '["Mobile"]',
+    discovery_weekday TEXT NOT NULL DEFAULT 'saturday',
+    discovery_time TEXT NOT NULL DEFAULT '06:00',
+    next_scan_at    DATETIME,
+    last_scan_at    DATETIME,
+    last_scan_status TEXT,
+    last_scan_error TEXT,
     enabled         INTEGER DEFAULT 1,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -411,6 +420,10 @@ CREATE TABLE IF NOT EXISTS flow_reports (
     download_text       TEXT NOT NULL DEFAULT 'Download CSV',
     automation_json     TEXT NOT NULL DEFAULT '{}',
     notes               TEXT,
+    discovery_key       TEXT,
+    source_kind         TEXT NOT NULL DEFAULT 'manual',
+    last_seen_at        DATETIME,
+    stale               INTEGER NOT NULL DEFAULT 0,
     enabled             INTEGER DEFAULT 1,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -427,6 +440,9 @@ CREATE TABLE IF NOT EXISTS flow_report_filters (
     options_json        TEXT NOT NULL DEFAULT '[]',
     automation_json     TEXT NOT NULL DEFAULT '{}',
     required            INTEGER DEFAULT 0,
+    source_kind         TEXT NOT NULL DEFAULT 'manual',
+    last_seen_at        DATETIME,
+    stale               INTEGER NOT NULL DEFAULT 0,
     position            INTEGER DEFAULT 0,
     enabled             INTEGER DEFAULT 1,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -490,24 +506,64 @@ CREATE TABLE IF NOT EXISTS flow_run_files (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS flow_operation_timings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_type  TEXT NOT NULL,
+    phase           TEXT NOT NULL,
+    run_id          INTEGER REFERENCES flow_runs(id),
+    scan_id         INTEGER REFERENCES flow_catalog_scans(id),
+    site_id         INTEGER REFERENCES flow_sites(id),
+    report_id       INTEGER REFERENCES flow_reports(id),
+    duration_ms     INTEGER NOT NULL,
+    item_count      INTEGER,
+    status          TEXT NOT NULL,
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    recorded_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS flow_workers (
     worker_id       TEXT PRIMARY KEY,
     display_name    TEXT NOT NULL,
     capabilities_json TEXT NOT NULL DEFAULT '{}',
     status          TEXT NOT NULL DEFAULT 'offline',
     current_run_id  INTEGER REFERENCES flow_runs(id),
+    current_scan_id INTEGER REFERENCES flow_catalog_scans(id),
     last_error      TEXT,
     last_seen_at    DATETIME,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS flow_catalog_scans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id         INTEGER NOT NULL REFERENCES flow_sites(id),
+    trigger_type    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    requested_by    TEXT,
+    worker_id       TEXT,
+    job_json        TEXT NOT NULL,
+    progress_json   TEXT,
+    result_json     TEXT,
+    error           TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    claimed_at      DATETIME,
+    started_at      DATETIME,
+    finished_at     DATETIME,
+    heartbeat_at    DATETIME
+);
+
 CREATE INDEX IF NOT EXISTS idx_flow_reports_site ON flow_reports(site_id, enabled);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_reports_discovery_key ON flow_reports(site_id, discovery_key) WHERE discovery_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_flow_filters_report ON flow_report_filters(report_id, position);
 CREATE INDEX IF NOT EXISTS idx_flows_schedule ON flows(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_queue ON flow_runs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_run_files_run ON flow_run_files(run_id);
+CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_queue ON flow_catalog_scans(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_site ON flow_catalog_scans(site_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_timings_operation ON flow_operation_timings(operation_type, phase, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_flow_timings_run ON flow_operation_timings(run_id);
+CREATE INDEX IF NOT EXISTS idx_flow_timings_scan ON flow_operation_timings(scan_id);
 
 CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id);
 CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date);
@@ -846,6 +902,62 @@ MIGRATIONS = [
     "ALTER TABLE probe_runs ADD COLUMN no_rule INTEGER DEFAULT 0",
     # Website-specific report navigation stays local with the report catalog.
     "ALTER TABLE flow_reports ADD COLUMN automation_json TEXT NOT NULL DEFAULT '{}'",
+    # Locally persisted ASAP catalog discovery. Scans only mark missing entries
+    # stale; they never delete reports, filters, or saved flows.
+    "ALTER TABLE flow_sites ADD COLUMN discovery_enabled INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flow_sites ADD COLUMN discovery_interval_hours INTEGER NOT NULL DEFAULT 168",
+    "ALTER TABLE flow_sites ADD COLUMN discovery_scope_json TEXT NOT NULL DEFAULT '[\"Mobile\"]'",
+    "ALTER TABLE flow_sites ADD COLUMN discovery_weekday TEXT NOT NULL DEFAULT 'saturday'",
+    "ALTER TABLE flow_sites ADD COLUMN discovery_time TEXT NOT NULL DEFAULT '06:00'",
+    "ALTER TABLE flow_sites ADD COLUMN next_scan_at DATETIME",
+    "ALTER TABLE flow_sites ADD COLUMN last_scan_at DATETIME",
+    "ALTER TABLE flow_sites ADD COLUMN last_scan_status TEXT",
+    "ALTER TABLE flow_sites ADD COLUMN last_scan_error TEXT",
+    "ALTER TABLE flow_reports ADD COLUMN discovery_key TEXT",
+    "ALTER TABLE flow_reports ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'",
+    "ALTER TABLE flow_reports ADD COLUMN last_seen_at DATETIME",
+    "ALTER TABLE flow_reports ADD COLUMN stale INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flow_report_filters ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'",
+    "ALTER TABLE flow_report_filters ADD COLUMN last_seen_at DATETIME",
+    "ALTER TABLE flow_report_filters ADD COLUMN stale INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flow_workers ADD COLUMN current_scan_id INTEGER REFERENCES flow_catalog_scans(id)",
+    """CREATE TABLE IF NOT EXISTS flow_catalog_scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL REFERENCES flow_sites(id),
+        trigger_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        requested_by TEXT,
+        worker_id TEXT,
+        job_json TEXT NOT NULL,
+        progress_json TEXT,
+        result_json TEXT,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        claimed_at DATETIME,
+        started_at DATETIME,
+        finished_at DATETIME,
+        heartbeat_at DATETIME
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_reports_discovery_key ON flow_reports(site_id, discovery_key) WHERE discovery_key IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_queue ON flow_catalog_scans(status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_site ON flow_catalog_scans(site_id, created_at)",
+    """CREATE TABLE IF NOT EXISTS flow_operation_timings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_type TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        run_id INTEGER REFERENCES flow_runs(id),
+        scan_id INTEGER REFERENCES flow_catalog_scans(id),
+        site_id INTEGER REFERENCES flow_sites(id),
+        report_id INTEGER REFERENCES flow_reports(id),
+        duration_ms INTEGER NOT NULL,
+        item_count INTEGER,
+        status TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_timings_operation ON flow_operation_timings(operation_type, phase, recorded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_timings_run ON flow_operation_timings(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_timings_scan ON flow_operation_timings(scan_id)",
 ]
 
 

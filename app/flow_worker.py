@@ -26,6 +26,41 @@ ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
 
 
+class _Timings:
+    def __init__(self):
+        self.started = time.perf_counter()
+        self.items: list[dict[str, Any]] = []
+
+    def measure(self, phase: str, *, report_id: int | None = None, item_count: int | None = None):
+        timings = self
+        class Measurement:
+            def __enter__(self):
+                self.started = time.perf_counter()
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                item = {
+                    "phase": phase,
+                    "duration_ms": round((time.perf_counter() - self.started) * 1000),
+                    "status": "failed" if exc_type else "succeeded",
+                }
+                if report_id is not None:
+                    item["report_id"] = report_id
+                if item_count is not None:
+                    item["item_count"] = item_count
+                timings.items.append(item)
+        return Measurement()
+
+    def finish(self, *, item_count: int | None = None, status: str = "succeeded") -> list[dict[str, Any]]:
+        total = {
+            "phase": "total", "duration_ms": round((time.perf_counter() - self.started) * 1000),
+            "status": status,
+        }
+        if item_count is not None:
+            total["item_count"] = item_count
+        return [*self.items, total]
+
+
 def _api(client: httpx.Client, method: str, path: str, body: dict | None = None) -> dict:
     response = client.request(method, path, json=body, timeout=60)
     response.raise_for_status()
@@ -219,6 +254,168 @@ def _asap_download(page: Page, frame: Frame, job: dict):
     return pending.value
 
 
+def _slug_key(value: str, fallback: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    if not key or not key[0].isalpha():
+        key = f"field_{key}" if key else fallback
+    return key[:100]
+
+
+def _unique_visible_text(locator, limit: int = 2000) -> list[str]:
+    values = []
+    for item in locator.all_inner_texts():
+        value = re.sub(r"\s+", " ", item).strip()
+        if value and value not in values:
+            values.append(value)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]:
+    paths = []
+    for root in scope:
+        root_link = page.get_by_text(root, exact=True).first
+        root_link.click()
+        page.wait_for_timeout(500)
+        # ASAP exposes report targets as links inside the open mega-menu. The
+        # scanner records only visible leaf links and reconstructs their visible
+        # parent group from the nearest heading/list container.
+        visible_links = page.locator("a:visible")
+        for link in visible_links.all():
+            name = re.sub(r"\s+", " ", link.inner_text()).strip()
+            if not name or name == root:
+                continue
+            href = link.get_attribute("href") or ""
+            onclick = link.get_attribute("onclick") or ""
+            if "report" not in (href + onclick).casefold():
+                continue
+            parent = link.locator("xpath=ancestor::*[self::li or self::div][1]")
+            parent_text = re.sub(r"\s+", " ", parent.inner_text()).strip() if parent.count() else ""
+            group = parent_text.removesuffix(name).strip(" -›>")
+            path = [root, group, name] if group and group != name else [root, name]
+            if path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _asap_discover_filters(frame: Frame) -> list[dict]:
+    definitions = []
+    used = set()
+    # Native controls are preferred because they expose complete option lists
+    # without opening the control or changing report state.
+    for index, control in enumerate(frame.locator("select:visible").all()):
+        control_id = control.get_attribute("id") or ""
+        label = ""
+        if control_id:
+            label_locator = frame.locator(f'label[for="{control_id}"]')
+            if label_locator.count():
+                label = re.sub(r"\s+", " ", label_locator.first.inner_text()).strip()
+        if not label:
+            aria = control.get_attribute("aria-label") or control.get_attribute("name") or ""
+            label = re.sub(r"\s+", " ", aria).strip()
+        if not label:
+            continue
+        key = _slug_key(label, f"filter_{index + 1}")
+        while key in used:
+            key = f"{key}_{index + 1}"
+        used.add(key)
+        options = _unique_visible_text(control.locator("option"))
+        definitions.append({
+            "filter_key": key, "label": label, "control_label": label,
+            "control_type": "select", "options": options, "automation": {},
+            "required": False, "position": len(definitions),
+        })
+
+    # MicroStrategy list selectors are represented by a heading followed by a
+    # member list. Detect the labels from the report's own prompt headings and
+    # capture visible members without selecting them.
+    prompt_labels = _unique_visible_text(frame.locator("h1:visible,h2:visible,h3:visible,h4:visible,[role=heading]:visible"), 300)
+    ignored = {"run", "data rows", "data columns", "export wizard", "select dimensions"}
+    for label in prompt_labels:
+        normalized = label.casefold().rstrip(":")
+        if not label or any(token in normalized for token in ignored):
+            continue
+        if any(item["label"].casefold() == normalized for item in definitions):
+            continue
+        heading = frame.get_by_text(label, exact=True).first
+        following = heading.locator("xpath=following::*[@role='option' or self::option or self::li][position() <= 500]")
+        options = _unique_visible_text(following, 500) if following.count() else []
+        if not options:
+            continue
+        control_type = "week" if "week" in normalized else "multi_select"
+        key = _slug_key(label, f"filter_{len(definitions) + 1}")
+        if key in used:
+            continue
+        used.add(key)
+        definitions.append({
+            "filter_key": key, "label": label, "control_label": label,
+            "control_type": control_type, "options": options, "automation": {},
+            "required": False, "position": len(definitions),
+        })
+    return definitions
+
+
+def discover_asap_catalog(page: Page, job: dict, report_progress) -> tuple[list[dict], list[dict], bool]:
+    timings = _Timings()
+    deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
+    site = job["site"]
+    report_progress("running", {"stage": "navigation", "message": "Opening ASAP for catalog discovery."})
+    with timings.measure("navigation"):
+        page.goto(site.get("auth_url") or site.get("base_url"), wait_until="domcontentloaded", timeout=120_000)
+    with timings.measure("report_discovery"):
+        paths = _asap_discover_menu_reports(page, job["discovery"].get("scope") or ["Mobile"])
+    reports = []
+    complete = True
+    for index, path in enumerate(paths, start=1):
+        if time.monotonic() >= deadline:
+            complete = False
+            report_progress("running", {
+                "stage": "time_budget_reached",
+                "message": "The 90-minute scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
+                "report_index": index, "report_count": len(paths),
+            })
+            break
+        report_progress("running", {
+            "stage": "filter_inspection", "message": f"Inspecting report {index} of {len(paths)}.",
+            "current_report": path[-1], "report_index": index, "report_count": len(paths),
+        })
+        lightweight_job = {
+            "site": site,
+            "report": {
+                "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
+                "ready_text": None, "automation": {"category_path": path},
+            },
+        }
+        try:
+            with timings.measure("report_navigation"):
+                frame = _asap_open_report(page, lightweight_job)
+            with timings.measure("filter_inspection"):
+                tabs = _unique_visible_text(frame.locator("[role=tab]:visible, .tab:visible"), 100)
+                ready_text = tabs[0] if tabs else None
+                filters = _asap_discover_filters(frame)
+                report_title = frame.locator("title").text_content() or path[-1]
+            discovery_key = " > ".join(path)
+            reports.append({
+                "discovery_key": discovery_key, "name": path[-1],
+                "report_url": site.get("base_url") or site.get("auth_url"),
+                "ready_text": ready_text, "download_text": "Export CSV",
+                "automation": {
+                    "category_path": path, "report_tab": ready_text,
+                    "report_title": report_title, "export_selector": "button.report-export",
+                },
+                "filters": filters,
+            })
+        except Exception as exc:
+            complete = False
+            timings.items.append({
+                "phase": "report_inspection", "duration_ms": 0, "status": "failed",
+                "metadata": {"path": path, "error": str(exc)},
+            })
+            page.goto(site.get("auth_url") or site.get("base_url"), wait_until="domcontentloaded", timeout=120_000)
+    return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
+
+
 def _csv_metadata(path: Path) -> dict:
     file_size = path.stat().st_size
     if file_size <= 0:
@@ -239,10 +436,12 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
-def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
+def execute_job(page: Page, job: dict, report_progress) -> tuple[list[dict], list[dict]]:
+    timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
-    frame = _asap_open_report(page, job) if is_asap else None
+    with timings.measure("navigation", report_id=job["report"].get("id")):
+        frame = _asap_open_report(page, job) if is_asap else None
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
     if not is_asap:
@@ -261,7 +460,8 @@ def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
     for index, period in enumerate(periods, start=1):
         if index > 1:
             if is_asap:
-                frame = _asap_open_report(page, job)
+                with timings.measure("navigation", report_id=job["report"].get("id")):
+                    frame = _asap_open_report(page, job)
             else:
                 page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
                 if ready_text:
@@ -274,14 +474,17 @@ def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
             artifacts,
         )
         if is_asap:
-            _asap_apply_configuration(frame, job, period)
-            with page.expect_response(
-                lambda response: "promptanswerm.do" in response.url,
-                timeout=180_000,
-            ):
-                _click_named(frame, "RUN")
-            frame.get_by_text("Data rows:", exact=False).first.wait_for(state="visible", timeout=180_000)
-            download = _asap_download(page, frame, job)
+            with timings.measure("configuration", report_id=job["report"].get("id")):
+                _asap_apply_configuration(frame, job, period)
+            with timings.measure("report_execution", report_id=job["report"].get("id")):
+                with page.expect_response(
+                    lambda response: "promptanswerm.do" in response.url,
+                    timeout=180_000,
+                ):
+                    _click_named(frame, "RUN")
+                frame.get_by_text("Data rows:", exact=False).first.wait_for(state="visible", timeout=180_000)
+            with timings.measure("csv_export", report_id=job["report"].get("id")):
+                download = _asap_download(page, frame, job)
         else:
             _apply_configuration(page, job, period)
             with page.expect_download(timeout=180_000) as pending:
@@ -289,8 +492,9 @@ def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
             download = pending.value
         filename = _render_filename(job["downloads"]["filename_template"], job, period, index)
         output = _safe_output_path(target, filename)
-        download.save_as(output)
-        metadata = _csv_metadata(output)
+        with timings.measure("file_transfer", report_id=job["report"].get("id")):
+            download.save_as(output)
+            metadata = _csv_metadata(output)
         artifacts.append({
             "period_key": period,
             "file_path": str(output),
@@ -298,7 +502,7 @@ def execute_job(page: Page, job: dict, report_progress) -> list[dict]:
             "status": "saved",
             **metadata,
         })
-    return artifacts
+    return artifacts, timings.finish(item_count=len(artifacts))
 
 
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool, once: bool):
@@ -319,23 +523,62 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             while True:
                 claimed = _api(client, "POST", f"/api/flows/worker/{worker_id}/claim")
                 run = claimed.get("run")
-                if not run:
+                scan = claimed.get("scan")
+                if not run and not scan:
                     if once:
                         break
                     time.sleep(10)
                     continue
-                run_id = run["id"]
+                if scan:
+                    scan_id = scan["id"]
+                    scan_started = time.perf_counter()
 
-                def progress(status: str, detail: dict, artifacts: list | None = None, error: str | None = None):
+                    def scan_progress(status: str, detail: dict, reports: list | None = None,
+                                      timings: list | None = None, error: str | None = None,
+                                      complete: bool = True):
+                        _api(client, "POST", f"/api/flows/worker/{worker_id}/scans/{scan_id}/progress", {
+                            "status": status, "progress": detail, "reports": reports or [],
+                            "timings": timings or [], "error": error, "complete": complete,
+                        })
+
+                    try:
+                        reports, timings, complete = discover_asap_catalog(page, scan["job"], scan_progress)
+                        scan_progress(
+                            "succeeded",
+                            {"stage": "complete", "message": f"Discovered {len(reports)} report(s)."},
+                            reports, timings, complete=complete,
+                        )
+                    except Exception as exc:
+                        scan_progress(
+                            "failed", {"stage": "failed", "message": str(exc)},
+                            timings=[{"phase": "total", "duration_ms": round((time.perf_counter() - scan_started) * 1000), "status": "failed"}],
+                            error=str(exc), complete=False,
+                        )
+                    if once:
+                        break
+                    continue
+                run_id = run["id"]
+                run_started = time.perf_counter()
+
+                def progress(status: str, detail: dict, artifacts: list | None = None,
+                             timings: list | None = None, error: str | None = None):
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
-                        "status": status, "progress": detail, "artifacts": artifacts or [], "error": error,
+                        "status": status, "progress": detail, "artifacts": artifacts or [],
+                        "timings": timings or [], "error": error,
                     })
 
                 try:
-                    artifacts = execute_job(page, run["job"], progress)
-                    progress("succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."}, artifacts)
+                    artifacts, timings = execute_job(page, run["job"], progress)
+                    progress(
+                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."},
+                        artifacts, timings,
+                    )
                 except Exception as exc:
-                    progress("failed", {"stage": "failed", "message": str(exc)}, error=str(exc))
+                    progress(
+                        "failed", {"stage": "failed", "message": str(exc)},
+                        timings=[{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}],
+                        error=str(exc),
+                    )
                 if once:
                     break
             context.close()

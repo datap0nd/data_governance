@@ -21,8 +21,10 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_week"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
+WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
+ASAP_PORTAL_ADAPTER = "asap_portal"
 WEEK_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>0[1-9]|[1-4]\d|5[0-3])$")
 FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|week|year|week_number|index|date)\}")
 SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
@@ -132,11 +134,30 @@ def _schedule_next(schedule_type: str, schedule_time: str | None, schedule_days:
     raise ValueError("Could not calculate the next run.")
 
 
+def _next_weekly_scan(weekday: str, time_value: str, now: datetime | None = None) -> datetime:
+    now = now or _now()
+    hour, minute = (int(part) for part in time_value.split(":"))
+    target = WEEKDAYS[weekday]
+    for offset in range(8):
+        candidate_date = now.date() + timedelta(days=offset)
+        if candidate_date.weekday() != target:
+            continue
+        candidate = datetime.combine(candidate_date, datetime.min.time()).replace(hour=hour, minute=minute)
+        if candidate > now:
+            return candidate
+    raise ValueError("Could not calculate the next discovery scan.")
+
+
 class SiteWrite(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     adapter: str = Field(default="web_export", min_length=1, max_length=100)
     base_url: str | None = Field(default=None, max_length=2000)
     auth_url: str | None = Field(default=None, max_length=2000)
+    discovery_enabled: bool = False
+    discovery_interval_hours: int = Field(default=168, ge=168, le=168)
+    discovery_scope: list[str] = Field(default_factory=lambda: ["Mobile"], min_length=1, max_length=20)
+    discovery_weekday: str = "saturday"
+    discovery_time: str = "06:00"
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -147,6 +168,14 @@ class SiteWrite(BaseModel):
             self.base_url = _validate_http_url(self.base_url, "Base URL")
         if self.auth_url:
             self.auth_url = _validate_http_url(self.auth_url, "Authentication URL")
+        self.discovery_scope = list(dict.fromkeys(item.strip() for item in self.discovery_scope if item.strip()))
+        if not self.discovery_scope:
+            raise ValueError("Choose at least one ASAP menu to scan.")
+        self.discovery_weekday = self.discovery_weekday.strip().casefold()
+        if self.discovery_weekday not in WEEKDAYS:
+            raise ValueError("Choose a valid discovery weekday.")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", self.discovery_time):
+            raise ValueError("Discovery time must use HH:MM format.")
         return self
 
 
@@ -263,6 +292,44 @@ class WorkerProgress(BaseModel):
     status: Literal["running", "succeeded", "failed", "cancelled"]
     progress: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    timings: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    error: str | None = Field(default=None, max_length=10000)
+
+
+class DiscoveredFilter(BaseModel):
+    filter_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
+    label: str = Field(min_length=1, max_length=200)
+    control_label: str = Field(min_length=1, max_length=300)
+    control_type: str
+    options: list[str] = Field(default_factory=list, max_length=2000)
+    automation: dict[str, Any] = Field(default_factory=dict)
+    required: bool = False
+    position: int = Field(default=0, ge=0, le=1000)
+
+    @field_validator("control_type")
+    @classmethod
+    def valid_control_type(cls, value: str):
+        if value not in CONTROL_TYPES:
+            raise ValueError("Unsupported discovered control type.")
+        return value
+
+
+class DiscoveredReport(BaseModel):
+    discovery_key: str = Field(min_length=1, max_length=1000)
+    name: str = Field(min_length=1, max_length=200)
+    report_url: str = Field(min_length=1, max_length=4000)
+    ready_text: str | None = Field(default=None, max_length=500)
+    download_text: str = Field(default="Export CSV", min_length=1, max_length=500)
+    automation: dict[str, Any] = Field(default_factory=dict)
+    filters: list[DiscoveredFilter] = Field(default_factory=list, max_length=200)
+
+
+class ScanProgress(BaseModel):
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+    progress: dict[str, Any] = Field(default_factory=dict)
+    reports: list[DiscoveredReport] = Field(default_factory=list, max_length=1000)
+    timings: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
+    complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
 
 
@@ -274,6 +341,9 @@ def _filter_row(row) -> dict:
         "automation": _loads(row["automation_json"], {}),
         "required": bool(row["required"]), "position": row["position"],
         "enabled": bool(row["enabled"]),
+        "source_kind": row["source_kind"] if "source_kind" in row.keys() else "manual",
+        "last_seen_at": row["last_seen_at"] if "last_seen_at" in row.keys() else None,
+        "stale": bool(row["stale"]) if "stale" in row.keys() else False,
     }
 
 
@@ -315,9 +385,13 @@ def _flow_out(db, flow_id: int) -> dict:
 
 
 def _validate_flow_selections(db, body: FlowWrite):
-    report = db.execute("SELECT site_id FROM flow_reports WHERE id = ? AND enabled = 1", (body.report_id,)).fetchone()
+    report = db.execute(
+        """SELECT site_id FROM flow_reports
+           WHERE id = ? AND enabled = 1 AND stale = 0 AND source_kind = 'discovered'""",
+        (body.report_id,),
+    ).fetchone()
     if not report or report["site_id"] != body.site_id:
-        raise HTTPException(400, "Choose a report from the selected website.")
+        raise HTTPException(400, "Choose a report discovered from the selected website.")
     rows = db.execute(
         "SELECT * FROM flow_report_filters WHERE report_id = ? AND enabled = 1 ORDER BY position, id",
         (body.report_id,),
@@ -419,8 +493,12 @@ def catalog():
         by_report.setdefault(row["report_id"], []).append(_filter_row(row))
     for site in sites:
         site["enabled"] = bool(site["enabled"])
+        site["discovery_enabled"] = bool(site.get("discovery_enabled"))
+        site["discovery_scope"] = _loads(site.pop("discovery_scope_json", None), ["Mobile"])
     for report in reports:
         report["enabled"] = bool(report["enabled"])
+        report["stale"] = bool(report.get("stale"))
+        report["automation"] = _loads(report.pop("automation_json", None), {})
         report["filters"] = by_report.get(report["id"], [])
     return {"sites": sites, "reports": reports, "control_types": sorted(CONTROL_TYPES)}
 
@@ -431,9 +509,15 @@ def create_site(body: SiteWrite, request: Request):
     try:
         with get_db() as db:
             cursor = db.execute(
-                """INSERT INTO flow_sites (name, adapter, base_url, auth_url, enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (body.name, body.adapter, body.base_url, body.auth_url, body.enabled, now, now),
+                """INSERT INTO flow_sites
+                   (name, adapter, base_url, auth_url, discovery_enabled, discovery_interval_hours,
+                    discovery_scope_json, discovery_weekday, discovery_time, next_scan_at,
+                    enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (body.name, body.adapter, body.base_url, body.auth_url, body.discovery_enabled,
+                 body.discovery_interval_hours, _json(body.discovery_scope), body.discovery_weekday,
+                 body.discovery_time, _iso(_next_weekly_scan(body.discovery_weekday, body.discovery_time))
+                 if body.discovery_enabled else None, body.enabled, now, now),
             )
             log_event(db, "flow_site", cursor.lastrowid, body.name, "created", actor=get_actor(request))
             row = db.execute("SELECT * FROM flow_sites WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -441,6 +525,8 @@ def create_site(body: SiteWrite, request: Request):
         raise HTTPException(409, "A website with that name already exists.") from exc
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
+    result["discovery_enabled"] = bool(result["discovery_enabled"])
+    result["discovery_scope"] = _loads(result.pop("discovery_scope_json", None), ["Mobile"])
     return result
 
 
@@ -448,9 +534,17 @@ def create_site(body: SiteWrite, request: Request):
 def update_site(site_id: int, body: SiteWrite, request: Request):
     with get_db() as db:
         cursor = db.execute(
-            """UPDATE flow_sites SET name=?, adapter=?, base_url=?, auth_url=?, enabled=?, updated_at=?
+            """UPDATE flow_sites SET name=?, adapter=?, base_url=?, auth_url=?, discovery_enabled=?,
+               discovery_interval_hours=?, discovery_scope_json=?,
+               discovery_weekday=?, discovery_time=?,
+               next_scan_at=CASE WHEN ? THEN ? ELSE NULL END,
+               enabled=?, updated_at=?
                WHERE id=?""",
-            (body.name, body.adapter, body.base_url, body.auth_url, body.enabled, _iso(_now()), site_id),
+            (body.name, body.adapter, body.base_url, body.auth_url, body.discovery_enabled,
+             body.discovery_interval_hours, _json(body.discovery_scope), body.discovery_weekday,
+             body.discovery_time, body.discovery_enabled,
+             _iso(_next_weekly_scan(body.discovery_weekday, body.discovery_time)),
+             body.enabled, _iso(_now()), site_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Website not found.")
@@ -458,6 +552,8 @@ def update_site(site_id: int, body: SiteWrite, request: Request):
         row = db.execute("SELECT * FROM flow_sites WHERE id = ?", (site_id,)).fetchone()
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
+    result["discovery_enabled"] = bool(result["discovery_enabled"])
+    result["discovery_scope"] = _loads(result.pop("discovery_scope_json", None), ["Mobile"])
     return result
 
 
@@ -553,12 +649,19 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
         sql += " ORDER BY r.created_at DESC, r.id DESC LIMIT ?"
         params.append(limit)
         rows = db.execute(sql, params).fetchall()
-        return [
-            {**dict(row), "job": _loads(row["job_json"], {}),
-             "progress": _loads(row["progress_json"], {}),
-             "artifacts": _loads(row["artifact_json"], [])}
-            for row in rows
-        ]
+        result = []
+        for row in rows:
+            timings = db.execute(
+                "SELECT phase, duration_ms, item_count, status FROM flow_operation_timings WHERE run_id=? ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+            result.append({
+                **dict(row), "job": _loads(row["job_json"], {}),
+                "progress": _loads(row["progress_json"], {}),
+                "artifacts": _loads(row["artifact_json"], []),
+                "timings": [dict(item) for item in timings],
+            })
+        return result
 
 
 @router.get("/workers")
@@ -659,14 +762,236 @@ def ensure_local_worker() -> dict:
     cutoff = _iso(_now() - timedelta(seconds=90))
     with get_db() as db:
         row = db.execute(
-            "SELECT status, current_run_id, last_seen_at FROM flow_workers WHERE worker_id=?",
+            "SELECT status, current_run_id, current_scan_id, last_seen_at FROM flow_workers WHERE worker_id=?",
             (LOCAL_WORKER_ID,),
         ).fetchone()
-    if row and row["current_run_id"]:
+    if row and (row["current_run_id"] or row["current_scan_id"]):
         return {"status": "busy", "mode": "local", "worker_id": LOCAL_WORKER_ID}
     if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
         return {"status": "online", "mode": "local", "worker_id": LOCAL_WORKER_ID}
     return launch_local_worker()
+
+
+def _scan_out(row) -> dict:
+    result = dict(row)
+    result["job"] = _loads(result.pop("job_json", None), {})
+    result["progress"] = _loads(result.pop("progress_json", None), {})
+    result["result"] = _loads(result.pop("result_json", None), {})
+    return result
+
+
+def _queue_scan(db, site, trigger_type: str, requested_by: str | None) -> int:
+    active = db.execute(
+        "SELECT id FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
+        (site["id"],),
+    ).fetchone()
+    if active:
+        return active["id"]
+    scope = _loads(site["discovery_scope_json"], ["Mobile"])
+    job = {
+        "schema_version": 1,
+        "job_type": "catalog_scan",
+        "site": {
+            "id": site["id"], "name": site["name"], "adapter": site["adapter"],
+            "base_url": site["base_url"], "auth_url": site["auth_url"],
+        },
+        "discovery": {"scope": scope, "delete_missing": False, "max_duration_minutes": 90},
+    }
+    cursor = db.execute(
+        """INSERT INTO flow_catalog_scans
+           (site_id, trigger_type, status, requested_by, job_json, created_at)
+           VALUES (?, ?, 'queued', ?, ?, ?)""",
+        (site["id"], trigger_type, requested_by, _json(job), _iso(_now())),
+    )
+    return cursor.lastrowid
+
+
+@router.get("/scans")
+def list_scans(site_id: int | None = None, limit: int = Query(default=50, ge=1, le=200)):
+    with get_db() as db:
+        sql = """SELECT c.*, s.name AS site_name FROM flow_catalog_scans c
+                 JOIN flow_sites s ON s.id=c.site_id"""
+        params: list[Any] = []
+        if site_id is not None:
+            sql += " WHERE c.site_id=?"
+            params.append(site_id)
+        sql += " ORDER BY c.created_at DESC, c.id DESC LIMIT ?"
+        params.append(limit)
+        result = []
+        for row in db.execute(sql, params).fetchall():
+            item = _scan_out(row)
+            timings = db.execute(
+                "SELECT phase, duration_ms, item_count, status FROM flow_operation_timings WHERE scan_id=? ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+            item["timings"] = [dict(timing) for timing in timings]
+            result.append(item)
+        return result
+
+
+@router.post("/sites/{site_id}/scan")
+def queue_catalog_scan(site_id: int, request: Request):
+    with get_db() as db:
+        site = db.execute("SELECT * FROM flow_sites WHERE id=? AND enabled=1", (site_id,)).fetchone()
+        if not site:
+            raise HTTPException(404, "Website not found.")
+        if site["adapter"] != ASAP_PORTAL_ADAPTER:
+            raise HTTPException(400, "Automatic discovery is currently available for ASAP only.")
+        scan_id = _queue_scan(db, site, "manual", get_actor(request))
+        log_event(db, "flow_site", site_id, site["name"], "scan_queued", f"scan_id={scan_id}", get_actor(request))
+    worker = launch_local_worker()
+    return {"id": scan_id, "site_id": site_id, "status": "queued", "worker": worker}
+
+
+def queue_due_catalog_scans() -> dict:
+    now = _now()
+    queued = []
+    with get_db() as db:
+        sites = db.execute(
+            """SELECT * FROM flow_sites WHERE enabled=1 AND discovery_enabled=1
+               AND adapter=? AND (next_scan_at IS NULL OR next_scan_at <= ?) ORDER BY id""",
+            (ASAP_PORTAL_ADAPTER, _iso(now)),
+        ).fetchall()
+        for site in sites:
+            scan_id = _queue_scan(db, site, "scheduled", "scheduler")
+            queued.append(scan_id)
+            db.execute(
+                "UPDATE flow_sites SET next_scan_at=?, updated_at=? WHERE id=?",
+                (_iso(_next_weekly_scan(site["discovery_weekday"], site["discovery_time"], now)),
+                 _iso(now), site["id"]),
+            )
+    worker = launch_local_worker() if queued else {"status": "not_needed", "mode": "local"}
+    return {"queued": queued, "count": len(queued), "worker": worker}
+
+
+def _apply_discovery(
+    db, site_id: int, reports: list[DiscoveredReport], seen_at: str, *, complete: bool = True,
+) -> dict:
+    keys = {item.discovery_key for item in reports}
+    if complete:
+        db.execute(
+            "UPDATE flow_reports SET stale=1, enabled=0, updated_at=? WHERE site_id=? AND source_kind='discovered'",
+            (seen_at, site_id),
+        )
+    report_ids = []
+    filter_count = 0
+    for item in reports:
+        existing = db.execute(
+            """SELECT id FROM flow_reports WHERE site_id=?
+               AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
+            (site_id, item.discovery_key, item.name.strip()),
+        ).fetchone()
+        if existing:
+            report_id = existing["id"]
+            db.execute(
+                """UPDATE flow_reports SET name=?, report_url=?, ready_text=?, download_text=?,
+                   automation_json=?, discovery_key=?, source_kind='discovered', last_seen_at=?,
+                   stale=0, enabled=1, updated_at=?
+                   WHERE id=?""",
+                (item.name.strip(), item.report_url, item.ready_text, item.download_text,
+                 _json(item.automation), item.discovery_key, seen_at, seen_at, report_id),
+            )
+        else:
+            cursor = db.execute(
+                """INSERT INTO flow_reports
+                   (site_id, name, report_url, ready_text, download_text, automation_json,
+                    discovery_key, source_kind, last_seen_at, stale, enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)""",
+                (site_id, item.name.strip(), item.report_url, item.ready_text, item.download_text,
+                 _json(item.automation), item.discovery_key, seen_at, seen_at, seen_at),
+            )
+            report_id = cursor.lastrowid
+        report_ids.append(report_id)
+        if complete:
+            db.execute(
+                "UPDATE flow_report_filters SET stale=1, enabled=0, updated_at=? WHERE report_id=? AND source_kind='discovered'",
+                (seen_at, report_id),
+            )
+        for definition in item.filters:
+            db.execute(
+                """INSERT INTO flow_report_filters
+                   (report_id, filter_key, label, control_label, control_type, options_json,
+                    automation_json, required, position, source_kind, last_seen_at, stale,
+                    enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)
+                   ON CONFLICT(report_id, filter_key) DO UPDATE SET
+                     label=excluded.label, control_label=excluded.control_label,
+                     control_type=excluded.control_type, options_json=excluded.options_json,
+                     automation_json=excluded.automation_json, required=excluded.required,
+                     position=excluded.position, source_kind='discovered',
+                     last_seen_at=excluded.last_seen_at, stale=0, enabled=1,
+                     updated_at=excluded.updated_at""",
+                (report_id, definition.filter_key, definition.label, definition.control_label,
+                 definition.control_type, _json(definition.options), _json(definition.automation),
+                 definition.required, definition.position, seen_at, seen_at, seen_at),
+            )
+            filter_count += 1
+    return {
+        "report_count": len(report_ids), "filter_count": filter_count,
+        "discovery_keys": sorted(keys), "complete": complete,
+    }
+
+
+def _store_timings(
+    db, timings: list[dict[str, Any]], *, operation_type: str, site_id: int | None = None,
+    report_id: int | None = None, run_id: int | None = None, scan_id: int | None = None,
+):
+    rows = []
+    for item in timings:
+        phase = str(item.get("phase") or "").strip()
+        duration_ms = item.get("duration_ms")
+        if not phase or not isinstance(duration_ms, int) or duration_ms < 0:
+            continue
+        rows.append((
+            operation_type, phase, run_id, scan_id, site_id, item.get("report_id") or report_id,
+            duration_ms, item.get("item_count"), str(item.get("status") or "succeeded"),
+            _json(item.get("metadata") or {}), _iso(_now()),
+        ))
+    db.executemany(
+        """INSERT INTO flow_operation_timings
+           (operation_type, phase, run_id, scan_id, site_id, report_id, duration_ms,
+            item_count, status, metadata_json, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        rows,
+    )
+
+
+@router.get("/estimates")
+def operation_estimates(site_id: int | None = None, report_id: int | None = None):
+    estimates = {}
+    with get_db() as db:
+        for operation_type, fallback_ms in (("catalog_scan", 20 * 60_000), ("flow_download", 5 * 60_000)):
+            phase_rows = db.execute(
+                """SELECT DISTINCT phase FROM flow_operation_timings
+                   WHERE operation_type=? ORDER BY phase""", (operation_type,)
+            ).fetchall()
+            phases = {}
+            for phase in ["total", *(row["phase"] for row in phase_rows if row["phase"] != "total")]:
+                sql = """SELECT duration_ms FROM flow_operation_timings
+                         WHERE operation_type=? AND phase=? AND status='succeeded'"""
+                params: list[Any] = [operation_type, phase]
+                if site_id is not None:
+                    sql += " AND site_id=?"
+                    params.append(site_id)
+                if report_id is not None and operation_type == "flow_download":
+                    sql += " AND report_id=?"
+                    params.append(report_id)
+                sql += " ORDER BY recorded_at DESC LIMIT 10"
+                values = [row["duration_ms"] for row in db.execute(sql, params).fetchall()]
+                if not values and phase != "total":
+                    continue
+                estimate = sorted(values)[len(values) // 2] if values else fallback_ms
+                phases[phase] = {"estimated_ms": estimate, "sample_count": len(values)}
+            total = phases["total"]
+            source = (
+                f"median of {total['sample_count']} recent successful operation(s)"
+                if total["sample_count"] else "conservative fallback until history exists"
+            )
+            estimates[operation_type] = {
+                "estimated_ms": total["estimated_ms"], "sample_count": total["sample_count"],
+                "source": source, "phases": phases,
+            }
+    return estimates
 
 
 @router.post("/worker/register")
@@ -693,32 +1018,97 @@ def claim_run(worker_id: str):
         worker = db.execute("SELECT * FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
         if not worker:
             raise HTTPException(404, "Register this worker before claiming work.")
+        if worker["current_scan_id"]:
+            scan = db.execute("SELECT * FROM flow_catalog_scans WHERE id=?", (worker["current_scan_id"],)).fetchone()
+            if scan and scan["status"] not in RUN_TERMINAL:
+                db.execute("UPDATE flow_workers SET last_seen_at=?, updated_at=? WHERE worker_id=?", (now, now, worker_id))
+                return {"run": None, "scan": {**dict(scan), "job": _loads(scan["job_json"], {})}}
         if worker["current_run_id"]:
             row = db.execute("SELECT * FROM flow_runs WHERE id=?", (worker["current_run_id"],)).fetchone()
             if row and row["status"] not in RUN_TERMINAL:
                 db.execute("UPDATE flow_workers SET last_seen_at=?, updated_at=? WHERE worker_id=?", (now, now, worker_id))
-                return {"run": {**dict(row), "job": _loads(row["job_json"], {})}}
+                return {"run": {**dict(row), "job": _loads(row["job_json"], {})}, "scan": None}
         row = db.execute("SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
         if not row:
+            scan = db.execute("SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
+            if scan:
+                cursor = db.execute(
+                    """UPDATE flow_catalog_scans SET status='claimed', worker_id=?, claimed_at=?, heartbeat_at=?
+                       WHERE id=? AND status='queued'""",
+                    (worker_id, now, now, scan["id"]),
+                )
+                if cursor.rowcount:
+                    db.execute(
+                        """UPDATE flow_workers SET status='scanning', current_scan_id=?, last_seen_at=?, updated_at=?
+                           WHERE worker_id=?""",
+                        (scan["id"], now, now, worker_id),
+                    )
+                    claimed_scan = db.execute("SELECT * FROM flow_catalog_scans WHERE id=?", (scan["id"],)).fetchone()
+                    return {"run": None, "scan": {**dict(claimed_scan), "job": _loads(claimed_scan["job_json"], {})}}
             db.execute(
-                "UPDATE flow_workers SET status='idle', current_run_id=NULL, last_seen_at=?, updated_at=? WHERE worker_id=?",
+                "UPDATE flow_workers SET status='idle', current_run_id=NULL, current_scan_id=NULL, last_seen_at=?, updated_at=? WHERE worker_id=?",
                 (now, now, worker_id),
             )
-            return {"run": None}
+            return {"run": None, "scan": None}
         cursor = db.execute(
             """UPDATE flow_runs SET status='claimed', worker_id=?, claimed_at=?, heartbeat_at=?
                WHERE id=? AND status='queued'""",
             (worker_id, now, now, row["id"]),
         )
         if not cursor.rowcount:
-            return {"run": None}
+            return {"run": None, "scan": None}
         db.execute(
             """UPDATE flow_workers SET status='busy', current_run_id=?, last_seen_at=?, updated_at=?
                WHERE worker_id=?""",
             (row["id"], now, now, worker_id),
         )
         claimed = db.execute("SELECT * FROM flow_runs WHERE id=?", (row["id"],)).fetchone()
-        return {"run": {**dict(claimed), "job": _loads(claimed["job_json"], {})}}
+        return {"run": {**dict(claimed), "job": _loads(claimed["job_json"], {})}, "scan": None}
+
+
+@router.post("/worker/{worker_id}/scans/{scan_id}/progress")
+def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
+    now = _iso(_now())
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM flow_catalog_scans WHERE id=? AND worker_id=?", (scan_id, worker_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Scan is not assigned to this worker.")
+        started = row["started_at"] or (now if body.status == "running" else None)
+        finished = now if body.status in RUN_TERMINAL else None
+        result = _apply_discovery(
+            db, row["site_id"], body.reports, now, complete=body.complete,
+        ) if body.status == "succeeded" else {}
+        _store_timings(
+            db, body.timings, operation_type="catalog_scan", site_id=row["site_id"], scan_id=scan_id,
+        )
+        db.execute(
+            """UPDATE flow_catalog_scans SET status=?, progress_json=?, result_json=?, error=?,
+               started_at=COALESCE(started_at, ?), finished_at=?, heartbeat_at=? WHERE id=?""",
+            (body.status, _json(body.progress), _json(result), body.error, started, finished, now, scan_id),
+        )
+        if body.status in RUN_TERMINAL:
+            site = db.execute(
+                "SELECT discovery_weekday, discovery_time FROM flow_sites WHERE id=?", (row["site_id"],)
+            ).fetchone()
+            next_scan = _iso(_next_weekly_scan(site["discovery_weekday"], site["discovery_time"]))
+            db.execute(
+                """UPDATE flow_sites SET last_scan_at=?, last_scan_status=?, last_scan_error=?,
+                   next_scan_at=?, updated_at=? WHERE id=?""",
+                (now, body.status, body.error, next_scan, now, row["site_id"]),
+            )
+            db.execute(
+                """UPDATE flow_workers SET status='idle', current_scan_id=NULL, last_error=?,
+                   last_seen_at=?, updated_at=? WHERE worker_id=?""",
+                (body.error, now, now, worker_id),
+            )
+        else:
+            db.execute(
+                "UPDATE flow_workers SET status='scanning', last_seen_at=?, updated_at=? WHERE worker_id=?",
+                (now, now, worker_id),
+            )
+    return {"scan_id": scan_id, "status": body.status, "result": result}
 
 
 @router.post("/worker/{worker_id}/runs/{run_id}/progress")
@@ -741,6 +1131,11 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         db.execute(
             "UPDATE flows SET last_run_at=?, last_status=?, last_error=?, updated_at=? WHERE id=?",
             (finished or started or now, body.status, body.error, now, row["flow_id"]),
+        )
+        job = _loads(row["job_json"], {})
+        _store_timings(
+            db, body.timings, operation_type="flow_download", run_id=run_id,
+            site_id=job.get("site", {}).get("id"), report_id=job.get("report", {}).get("id"),
         )
         if body.status in RUN_TERMINAL:
             db.execute(

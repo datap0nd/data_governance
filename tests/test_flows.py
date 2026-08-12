@@ -35,6 +35,10 @@ def _asap_site():
         adapter="asap_portal",
         auth_url="https://portal.example.test/portal/login/app",
         base_url="https://portal.example.test",
+        discovery_enabled=True,
+        discovery_scope=["Mobile"],
+        discovery_weekday="saturday",
+        discovery_time="06:00",
     )
 
 
@@ -96,6 +100,14 @@ def _asap_report(site_id):
     )
 
 
+def _mark_discovered(report_id):
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_reports SET source_kind='discovered', stale=0, discovery_key=name WHERE id=?",
+            (report_id,),
+        )
+
+
 def _flow(site_id, report_id, **overrides):
     data = {
         "name": "Weekly report download",
@@ -125,6 +137,7 @@ def _seed_catalog():
 
 def test_catalog_and_flow_configuration_persist_locally(flow_db):
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
 
     assert saved["site_name"] == "Report portal"
@@ -151,6 +164,7 @@ def test_report_filter_update_keeps_historical_definition_for_saved_runs(flow_db
 
 def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     queued = flows.queue_run(saved["id"], _request())
 
@@ -167,6 +181,7 @@ def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
 def test_asap_report_navigation_metadata_stays_local_and_enters_job(flow_db):
     site = flows.create_site(_asap_site(), _request())
     report = flows.create_report(_asap_report(site["id"]), _request())
+    _mark_discovered(report["id"])
     saved = flows.create_flow(
         _flow(
             site["id"],
@@ -197,6 +212,7 @@ def test_sql_handoff_cannot_be_enabled(flow_db):
 
 def test_unknown_and_invalid_filter_values_are_rejected(flow_db):
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     with pytest.raises(HTTPException, match="Unknown report filter"):
         flows.create_flow(
             _flow(site["id"], report["id"], selections={"region": "Global", "secret": "x"}),
@@ -209,8 +225,47 @@ def test_unknown_and_invalid_filter_values_are_rejected(flow_db):
         )
 
 
+def test_flow_rejects_manual_report_metadata(flow_db):
+    site, report = _seed_catalog()
+    with pytest.raises(HTTPException, match="discovered"):
+        flows.create_flow(_flow(site["id"], report["id"]), _request())
+
+
+def test_scan_discovery_upserts_and_marks_missing_stale_without_deleting(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.DiscoveredReport(
+        discovery_key="Mobile > Installed Base > Installed Base MENA",
+        name="Installed Base MENA",
+        report_url="https://portal.example.test",
+        ready_text="Export Wizard",
+        automation={"category_path": ["Mobile", "Installed Base", "Installed Base MENA"]},
+        filters=[flows.DiscoveredFilter(
+            filter_key="week", label="Sell-out Week", control_label="Sell-out Week",
+            control_type="week", options=["202632"], position=0,
+        )],
+    )
+    with database.get_db() as db:
+        first = flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
+        second = flows._apply_discovery(db, site["id"], [], "2026-08-19T10:00:00")
+        row = db.execute("SELECT enabled, stale FROM flow_reports").fetchone()
+    assert first["report_count"] == 1
+    assert second["report_count"] == 0
+    assert (row["enabled"], row["stale"]) == (0, 1)
+
+
+def test_scan_estimate_uses_recorded_median(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    with database.get_db() as db:
+        flows._store_timings(db, [{"phase": "total", "duration_ms": 80_000}], operation_type="catalog_scan", site_id=site["id"])
+        flows._store_timings(db, [{"phase": "total", "duration_ms": 100_000}], operation_type="catalog_scan", site_id=site["id"])
+    estimate = flows.operation_estimates(site_id=site["id"])["catalog_scan"]
+    assert estimate["estimated_ms"] == 100_000
+    assert estimate["sample_count"] == 2
+
+
 def test_worker_claim_and_completion_records_artifact(flow_db):
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     queued = flows.queue_run(saved["id"], _request())
     worker = flows.WorkerRegister(
@@ -237,13 +292,19 @@ def test_worker_claim_and_completion_records_artifact(flow_db):
                 "row_count": 5,
                 "status": "saved",
             }],
+            timings=[
+                {"phase": "navigation", "duration_ms": 1200},
+                {"phase": "total", "duration_ms": 2400, "item_count": 1},
+            ],
         ),
     )
     with database.get_db() as db:
         run = db.execute("SELECT status FROM flow_runs WHERE id=?", (queued["id"],)).fetchone()
         artifact = db.execute("SELECT * FROM flow_run_files WHERE run_id=?", (queued["id"],)).fetchone()
+        timing = db.execute("SELECT duration_ms FROM flow_operation_timings WHERE run_id=? AND phase='total'", (queued["id"],)).fetchone()
     assert run["status"] == "succeeded"
     assert artifact["filename"] == "weekly_2026-W30.csv"
+    assert timing["duration_ms"] == 2400
 
 
 def test_safe_output_path_never_overwrites(tmp_path):
@@ -271,6 +332,7 @@ def test_database_schema_has_no_flow_delete_policy(flow_db):
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "launched", "mode": "local"})
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     with database.get_db() as db:
         db.execute("UPDATE flows SET next_run_at='2020-01-01T08:00:00' WHERE id=?", (saved["id"],))
@@ -287,6 +349,7 @@ def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
 
 def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
     site, report = _seed_catalog()
+    _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     launched = []
     monkeypatch.setattr(

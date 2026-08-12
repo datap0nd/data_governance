@@ -104,9 +104,13 @@ A failed or errored check stores a result, opens one owned dashboard action, and
 
 ### Configurable report-download flows
 
-Tools > Flows stores website, report, filter, download, filename, folder, and schedule configuration in the local Metronome SQLite database. Repository code contains only the generic flow engine. Authentication credentials and report-specific configuration are not stored in Git.
+Tools > Flows stores website discovery settings, the discovered report/filter catalog, flow selections, download behavior, filenames, folders, schedules, and execution timings in the local Metronome SQLite database. Repository code contains only the generic scanner and flow engine. Authentication credentials and report-specific configuration are not stored in Git.
 
-For ASAP, choose the `ASAP` website type and store the visible portal menu path, report tab, and allowed filter choices in the local catalog. The worker navigates through the signed-in portal, scopes report controls inside ASAP's `content-frame`, applies week members in `YYYYWW` form, runs the report, and selects `CSV file format` in MicroStrategy's export window. A transient report-load HTTP 500 is retried once by returning through the portal menu. Opaque MicroStrategy object IDs and prompt payloads are never required or stored.
+For ASAP, choose the `ASAP` website type, the visible top-level menus to scan, and a weekend scan schedule. The BI desktop worker traverses those menus and discovers report paths, report tabs, filters, control types, and available options. Scans run weekly by default and upsert the local catalog. If a later complete scan cannot find an existing report or filter, Metronome marks it stale instead of deleting it. Flow creation only permits currently discovered entries.
+
+The same worker navigates through the signed-in portal, scopes report controls inside ASAP's `content-frame`, applies week members in `YYYYWW` form, runs the report, and selects `CSV file format` in MicroStrategy's export window. A transient report-load HTTP 500 is retried once by returning through the portal menu. Opaque MicroStrategy object IDs and prompt payloads are never required or stored.
+
+Every scan and download records total duration and phase timings. Scan phases include portal navigation, report discovery, report navigation, and filter inspection. Download phases include navigation, configuration, report execution, CSV export, and file transfer. The UI estimates the next scan and download from the median of up to ten comparable successful operations; before history exists, it clearly labels a conservative fallback. SQL insertion remains disabled, but it will use the same phase-timing table when implemented.
 
 Metronome queues each run for a resident browser worker on the BI desktop. The app creates and starts the `DG_Flow_Worker` Windows task in the logged-in BI desktop user's interactive session. Manual and scheduled runs therefore use the same machine, Windows identity, browser profile, and target-folder access.
 

@@ -403,6 +403,15 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
+        flows.queue_due_catalog_scans,
+        "interval",
+        minutes=15,
+        id="flow_catalog_scan_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
         flows.ensure_local_worker,
         "interval",
         minutes=1,
