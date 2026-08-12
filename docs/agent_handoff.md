@@ -2,81 +2,64 @@
 
 ## Current Objective
 
-Make recurrence emails reproduce Power BI matrix number formatting and
-expression-based visual titles without overriding semantic-model formatting
-when the visual is still set to its default.
+Fix source-owner editing and add safe bulk actions for filling missing source
+owners and freshness rules.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest formatting commit: `d2e82d9 Harden recurrence matrix formatting`
+- Feature commit: `41ecc6d Fix source ownership and automate source rules`
 - Public repo: no, private
-- Push status: formatting fix is pushed to `origin/main`
+- Delivery target: `origin/main`
 
 ## Decisions Made
 
-- Do not trust `VisualDescriptor.title` by itself. Power BI can return a generic
-  visual type such as `matrix`, `pivotTable`, `table`, or `tableEx`.
-- Render the report before resolving visual titles.
-- Read the supported authoring title property using the `titleText` selector,
-  with `text` as a compatibility fallback for newer visual definitions.
-- Accept generic words such as `Matrix` when they came from the explicit title
-  property, but reject them when they came only from the descriptor.
-- Refresh the builder title after visual discovery and preview.
-- Refresh and persist an existing recurrence's title on its next draft or send
-  run. If no usable live title is available, use `Alert results` in the email.
-- Re-read the visual descriptor after report rendering so a resolved title is
-  preferred over the pre-render generic visual type.
-- When the title property contains a supported semantic-model measure
-  expression, evaluate that measure through Execute Queries using the same
-  report, page, visual, and slicer filters as the recurrence.
-- Apply a scalar visual decimal-place setting when Power BI marks it explicit
-  or omits the optional schema. Reject values explicitly marked with the
-  default schema so `Auto` keeps the field or measure format string.
-- Collect matrix data roles independently. One unsupported or empty role must
-  not discard all field-format metadata. Fall back to the standard matrix
-  `Rows`, `Columns`, and `Values` roles when capabilities are unavailable.
-- Formatting changes only the recurrence's displayed CSV values or DAX output.
-  It does not alter the semantic model or source values.
+- Source owner controls use delegated table events because table sorting and
+  filtering rebuild the table body. Per-row handlers were lost after a redraw.
+- Clickable table rows ignore all interactive controls, so opening a select no
+  longer triggers the source detail panel and scrolls the page.
+- Bulk owner assignment changes only sources whose owner is blank.
+- The unique most common owner across distinct linked reports is selected. A
+  tie is skipped instead of being resolved arbitrarily.
+- Bulk freshness assignment changes only sources with no existing rule.
+- Freshness rules are inferred only from the source's explicit saved refresh
+  schedule, including weekday labels and supported standard cron day fields.
+- Disabled, absent, or unsupported schedules are skipped. Report refresh
+  schedules are not used because they describe downstream consumption, not the
+  source's own update cadence.
+- Fixed freshness rules now allow every selected weekday so discovered weekday
+  cron schedules can be represented accurately.
 
 ## Files Changed
 
-- `app/pbi_visual_export.py`: resolve titles from rendered visual properties for
-  discovery and export, recognize title measure expressions, evaluate dynamic
-  titles, tolerate schema-less numeric precision, and collect matrix roles
-  independently with standard-role fallback.
-- `app/pbi_visual_query.py`: apply explicit zero-decimal visual formatting to
-  value fields while retaining field formats when the visual setting is
-  default.
-- `app/routers/recurrences.py`: reject generic descriptor titles, update saved
-  recurrence titles from live export metadata, and fall back safely.
-- `app/static/app.js`: refresh the selected title after discovery and preview.
-- `tests/test_pbi_visual_query.py`: verify formatting precedence, visual-export
-  normalization, rendered descriptors, and dynamic title measure evaluation.
-- `tests/test_recurrences.py`: verify saved generic titles are replaced, missing
-  titles are omitted, and an explicit title named `Matrix` remains valid.
-- `README.md`: document title evaluation and formatting precedence.
+- `app/routers/sources.py`: owner inference, schedule parsing, and bulk owner
+  and freshness endpoints.
+- `app/static/app.js`: resilient owner saves, interactive-row click guard, and
+  Sources-page bulk actions.
+- `app/static/style.css`: compact responsive toolbar layout for source filters
+  and bulk actions.
+- `tests/test_sources.py`: persistence, owner selection, tie handling, existing
+  value preservation, and freshness inference coverage.
 
 ## Commands And Checks
 
-- Full Python `pytest -q` suite after the follow-up collector change: 57 passed.
-- Targeted recurrence and visual-query suite after the follow-up collector
-  change: 52 passed.
+- Full Python suite: `63 passed`.
+- Targeted source suite: `6 passed`.
 - Python `compileall` for `app`: passed.
 - `node --check app/static/app.js`: passed.
-- Generated Power BI browser-runtime JavaScript syntax check: passed.
 - `git diff --check`: passed.
-
-## Open Questions
-
-- The first live draft after `c114319` still showed decimals. The follow-up
-  collector fix must be deployed and validated against the affected matrix.
-- Unsupported title expressions or unavailable Build permission leave the
-  existing safe `Alert results` fallback in place.
+- Impeccable detector: only pre-existing warnings outside the changed UI.
+- Rendered Sources page at 1440 by 1000: toolbar and table controls fit without
+  overlap.
+- Browser interaction after a table redraw: owner persisted, scroll position
+  remained at zero, and no source detail panel opened.
+- Bulk run against a temporary copy of the repository database: 27 owners
+  assigned, one tied source skipped, and 28 freshness rules configured from 28
+  supported source schedules.
 
 ## Next Step
 
-Create a draft from the affected matrix recurrence and confirm that the sales
-average is displayed as a whole number and the email heading matches the
-visible dynamic Power BI title.
+After updating the installed service from `main`, open Sources and use the two
+new bulk actions. Review any skipped owner ties manually. Re-probe sources after
+setting freshness rules so the current status is recalculated.
