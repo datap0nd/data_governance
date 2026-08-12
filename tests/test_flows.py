@@ -382,14 +382,11 @@ def test_worker_launcher_appends_diagnostic_log():
     assert '"flow_worker.log"' in source
 
 
-def test_service_launches_worker_child_and_creates_log_before_start():
+def test_service_starts_interactive_worker_task_instead_of_child_process():
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
-    assert "subprocess.Popen" in source
-    assert 'log_dir / "flow_worker.log"' in source
-    assert "_worker_log_handle.write" in source
-    assert 'worker_script = code_dir / "app" / "flow_worker.py"' in source
-    assert 'sys.executable, "-u", str(worker_script)' in source
-    assert '"-m", "app.flow_worker"' not in source
+    assert '["schtasks.exe", "/Run", "/TN", TASK_NAME]' in source
+    assert '"mode": "interactive_task"' in source
+    assert "subprocess.Popen" not in source
 
 
 def test_worker_retries_registration_and_prevents_duplicates():

@@ -320,22 +320,25 @@ if (Test-Path $WorkerLauncher) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: Could not install $WorkerTaskName. ASAP scans will remain queued." -ForegroundColor Yellow
     } else {
+        & schtasks.exe /Run /TN $WorkerTaskName | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARNING: $WorkerTaskName was installed but could not be started." -ForegroundColor Yellow
+        }
         Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
     }
 
-    # The Metronome service starts the worker as its own child process. Poll
-    # here so setup reports whether that child registered successfully.
+    # Poll until the interactive task registers with the service.
     $WorkerOnline = $false
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
-        $WorkerOnline = $ExistingWorkers.Count -gt 0
+        $WorkerOnline = @($ExistingWorkers | Where-Object { $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" }).Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
         for ($attempt = 0; $attempt -lt 30; $attempt++) {
             Start-Sleep -Seconds 2
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
-                if ($RegisteredWorkers.Count -gt 0) {
+                if (@($RegisteredWorkers | Where-Object { $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" }).Count -gt 0) {
                     $WorkerOnline = $true
                     break
                 }
