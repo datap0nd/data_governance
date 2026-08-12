@@ -260,6 +260,35 @@ def _asap_frame(page: Page) -> Frame:
     return frame
 
 
+def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
+    """Return the live report frame once ASAP has rendered result rows.
+
+    Running a report replaces ``iframe#content-frame`` in the current ASAP UI.
+    A Frame captured before clicking RUN can therefore remain detached while the
+    replacement frame already shows the completed report. Re-resolve the iframe
+    during the wait and return the replacement so export uses the same live UI.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1_000)
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            handle = page.locator(ASAP_FRAME_SELECTOR).first
+            if handle.count():
+                element = handle.element_handle()
+                frame = element.content_frame() if element else None
+                if frame is not None:
+                    rows = frame.get_by_text("Data rows:", exact=False).first
+                    if rows.count() and rows.is_visible():
+                        return frame
+        except Exception as exc:
+            # Frame replacement can race any locator operation. The next poll
+            # resolves the new element instead of retaining the detached frame.
+            last_error = exc
+        page.wait_for_timeout(500)
+    detail = f" Last frame error: {last_error}" if last_error else ""
+    raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
+
+
 def _asap_login_visible(page: Page) -> bool:
     try:
         password = page.locator('input[type="password"]:visible')
@@ -898,8 +927,8 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 # three minutes. Yield briefly for the loading overlay, then use
                 # the rendered row summary as the portal's public readiness
                 # signal.
-                frame.wait_for_timeout(1_000)
-                frame.get_by_text("Data rows:", exact=False).first.wait_for(state="visible", timeout=180_000)
+                page.wait_for_timeout(1_000)
+                frame = _asap_wait_for_results(page)
             report_progress(
                 "running",
                 {"stage": "csv_export", "message": f"Exporting CSV {index} of {len(periods)}.", "period": period},
