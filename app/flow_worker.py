@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -21,6 +22,12 @@ from typing import Any
 
 import httpx
 from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+
+# Keep direct-file execution compatible with the isolated Windows embedded
+# runtime as well as the preferred ``python -m app.flow_worker`` launcher.
+_CODE_DIR = Path(__file__).resolve().parent.parent
+if str(_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CODE_DIR))
 
 try:
     from app.flow_credentials import load_asap_credentials

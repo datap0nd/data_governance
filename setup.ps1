@@ -303,10 +303,21 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             Write-Host "Authenticating the Flows automation browser..." -ForegroundColor Yellow
             Write-Host "  Complete ASAP sign-in in the Edge window if prompted." -ForegroundColor DarkGray
             try {
-                & $PyExe "$CodeDir\app\flow_worker.py" `
-                    --profile-dir $FlowProfile `
-                    --authenticate-url $FlowAuthUrl `
-                    --authentication-timeout-minutes 10
+                # Launch as a package module. The portable embedded Python
+                # runtime does not reliably add a script's parent directory
+                # to its import path when a file is executed directly.
+                $PreviousPythonPath = $env:PYTHONPATH
+                $env:PYTHONPATH = $CodeDir
+                try {
+                    Push-Location $CodeDir
+                    & $PyExe -m app.flow_worker `
+                        --profile-dir $FlowProfile `
+                        --authenticate-url $FlowAuthUrl `
+                        --authentication-timeout-minutes 10
+                } finally {
+                    Pop-Location
+                    $env:PYTHONPATH = $PreviousPythonPath
+                }
                 if ($LASTEXITCODE -ne 0) {
                     throw "authentication helper exited with code $LASTEXITCODE"
                 }
