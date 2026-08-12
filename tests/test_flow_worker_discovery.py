@@ -1,4 +1,4 @@
-from app.flow_worker import _menu_report_paths, _navigation_roots
+from app.flow_worker import _menu_report_paths, _navigation_roots, _wait_for_navigation_roots
 
 
 def _record(text, x, y, *, href="", onclick=""):
@@ -40,3 +40,14 @@ def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
         ["Mobile", "Installed Base", "Installed Base (MENA)"],
         ["Mobile", "Regional FOTA", "Regional FOTA"],
     ]
+
+
+def test_navigation_waits_for_client_rendered_controls(monkeypatch):
+    snapshots = [[], [_record("Market", 160, 90), _record("Mobile", 235, 90)]]
+    monkeypatch.setattr("app.flow_worker._visible_anchor_records", lambda _page: snapshots.pop(0))
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    assert [item["text"] for item in _wait_for_navigation_roots(Page(), 1_000)] == ["Market", "Mobile"]

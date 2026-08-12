@@ -315,7 +315,8 @@ def _clean_text(value: str | None) -> str:
 
 def _visible_anchor_records(page: Page) -> list[dict]:
     records = []
-    for link in page.locator("a:visible").all():
+    selector = "a:visible,button:visible,[role=button]:visible,[role=menuitem]:visible,[onclick]:visible"
+    for link in page.locator(selector).all():
         text = _clean_text(link.inner_text())
         box = link.bounding_box()
         if not text or not box:
@@ -328,6 +329,17 @@ def _visible_anchor_records(page: Page) -> list[dict]:
             "box": box,
         })
     return records
+
+
+def _wait_for_navigation_roots(page: Page, timeout_ms: int = 120_000) -> list[dict]:
+    """Wait for the client-rendered ASAP shell without assuming a menu label."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        roots = _navigation_roots(_visible_anchor_records(page))
+        if roots:
+            return roots
+        page.wait_for_timeout(500)
+    return []
 
 
 def _navigation_roots(records: list[dict]) -> list[dict]:
@@ -398,16 +410,24 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
     # configured label such as "Mobile", which made every navigation rename a
     # deployment incident. Scope remains in the job schema for compatibility,
     # but the scanner now inventories every top-level menu it can see.
-    initial = _visible_anchor_records(page)
-    roots = _navigation_roots(initial)
+    roots = _wait_for_navigation_roots(page)
     if not roots:
-        raise RuntimeError("ASAP top-level navigation could not be detected.")
+        raise RuntimeError(
+            f"ASAP top-level navigation did not render within 120 seconds "
+            f"(URL: {page.url}, title: {_clean_text(page.title())})."
+        )
     paths: list[list[str]] = []
     for root in roots:
         before = _visible_anchor_records(page)
         root["link"].click(timeout=15_000)
-        page.wait_for_timeout(500)
-        for path in _menu_report_paths(root, before, _visible_anchor_records(page)):
+        after = before
+        reveal_deadline = time.monotonic() + 10
+        while time.monotonic() < reveal_deadline:
+            page.wait_for_timeout(200)
+            after = _visible_anchor_records(page)
+            if _menu_report_paths(root, before, after):
+                break
+        for path in _menu_report_paths(root, before, after):
             if path not in paths:
                 paths.append(path)
         # Close the menu before measuring the next root. Clicking the active
