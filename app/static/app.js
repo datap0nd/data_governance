@@ -9371,7 +9371,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>Worker's browser profile</dd></div></dl>
+                <dl><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>Deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd>Disabled</dd></div><div><dt>Authentication</dt><dd>BI desktop browser profile</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9399,7 +9399,7 @@ async function renderFlows() {
     window._flowsState = { catalog, flows, runs, workers, view: "list" };
     const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled);
     return `
-        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads without storing credentials in Metronome.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads executed by the authenticated BI desktop.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog)}</div>`;
 }

@@ -106,13 +106,17 @@ A failed or errored check stores a result, opens one owned dashboard action, and
 
 Tools > Flows stores website, report, filter, download, filename, folder, and schedule configuration in the local Metronome SQLite database. Repository code contains only the generic flow engine. Authentication credentials and report-specific configuration are not stored in Git.
 
-Metronome queues each run for an authenticated browser worker. Run the worker under the Windows account that already has access to the configured report portal:
+Metronome queues each run for a resident browser worker on the BI desktop. The app creates and starts the `DG_Flow_Worker` Windows task in the logged-in BI desktop user's interactive session. Manual and scheduled runs therefore use the same machine, Windows identity, browser profile, and target-folder access.
+
+The default worker is headless. If its dedicated automation profile needs an initial interactive sign-in, set `DG_FLOW_HEADED=true`, restart Metronome, complete the sign-in once, then remove the setting and restart again. The persistent profile is stored under the BI desktop Windows user's profile.
+
+For diagnostics, the same worker can still be started manually:
 
 ```powershell
 python -m app.flow_worker --server http://BI_DESKTOP:8000 --worker-id authorized-browser --name "Authorized browser" --headed
 ```
 
-Use `--headed` for the initial enterprise SSO session. The persistent browser profile is stored under the worker Windows user's profile. After authentication is proven, omit `--headed` to try headless execution. Enterprise policy may still require a visible browser.
+Do not copy browser tokens or credentials between Windows accounts. Enterprise policy may still require the local worker to remain headed.
 
 The worker never deletes or overwrites existing files. Name collisions create a numbered filename. SQL handoff is visible as a future step but cannot be enabled or executed in this release.
 
