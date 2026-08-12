@@ -41,8 +41,9 @@ def launch_local_worker() -> dict:
     _worker_log_handle = log_path.open("a", encoding="utf-8", buffering=1)
     _worker_log_handle.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] Starting Metronome flow worker.\n")
 
+    worker_script = code_dir / "app" / "flow_worker.py"
     command = [
-        sys.executable, "-u", "-m", "app.flow_worker",
+        sys.executable, "-u", str(worker_script),
         "--server", "http://127.0.0.1:8000",
         "--worker-id", WORKER_ID,
         "--name", WORKER_NAME,
@@ -50,7 +51,6 @@ def launch_local_worker() -> dict:
     if headed:
         command.append("--headed")
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(code_dir)
     creationflags = 0 if headed else getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         _worker_process = subprocess.Popen(

@@ -387,7 +387,9 @@ def test_service_launches_worker_child_and_creates_log_before_start():
     assert "subprocess.Popen" in source
     assert 'log_dir / "flow_worker.log"' in source
     assert "_worker_log_handle.write" in source
-    assert '"-m", "app.flow_worker"' in source
+    assert 'worker_script = code_dir / "app" / "flow_worker.py"' in source
+    assert 'sys.executable, "-u", str(worker_script)' in source
+    assert '"-m", "app.flow_worker"' not in source
 
 
 def test_worker_retries_registration_and_prevents_duplicates():
