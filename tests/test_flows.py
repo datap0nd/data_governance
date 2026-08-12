@@ -363,9 +363,9 @@ def test_database_upgrades_legacy_asap_site_adapter(tmp_path, monkeypatch):
     assert row["adapter"] == "asap_portal"
 
 
-def test_windows_worker_launcher_sets_python_module_root():
+def test_windows_worker_launcher_uses_direct_script_for_embedded_python():
     source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
-    assert "$env:PYTHONPATH = $CodeDir" in source
+    assert '(Join-Path $CodeDir "app\\flow_worker.py")' in source
 
 
 def test_setup_installs_interactive_flow_worker():
@@ -373,7 +373,7 @@ def test_setup_installs_interactive_flow_worker():
     assert '$WorkerTaskName = "DG_Flow_Worker"' in source
     assert "/SC ONLOGON /IT /F" in source
     assert "Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden" in source
-    assert '"-m", "app.flow_worker"' in source
+    assert '$CodeDir\\app\\flow_worker.py' in source
     assert "$WorkerStartedAt = Get-Date" in source
     assert "$WorkerStartedAt.AddSeconds(-5)" in source
     assert '/api/flows/workers' in source

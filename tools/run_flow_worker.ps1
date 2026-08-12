@@ -14,9 +14,8 @@ if (-not (Test-Path $Python)) {
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Start-Transcript -Path $WorkerLog -Append | Out-Null
 Set-Location $CodeDir
-$env:PYTHONPATH = $CodeDir
 $arguments = @(
-    "-m", "app.flow_worker",
+    (Join-Path $CodeDir "app\flow_worker.py"),
     "--server", "http://127.0.0.1:8000",
     "--worker-id", "bi-desktop",
     "--name", "BI desktop"

@@ -303,21 +303,13 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             Write-Host "Authenticating the Flows automation browser..." -ForegroundColor Yellow
             Write-Host "  Complete ASAP sign-in in the Edge window if prompted." -ForegroundColor DarkGray
             try {
-                # Launch as a package module. The portable embedded Python
-                # runtime does not reliably add a script's parent directory
-                # to its import path when a file is executed directly.
-                $PreviousPythonPath = $env:PYTHONPATH
-                $env:PYTHONPATH = $CodeDir
-                try {
-                    Push-Location $CodeDir
-                    & $PyExe -m app.flow_worker `
-                        --profile-dir $FlowProfile `
-                        --authenticate-url $FlowAuthUrl `
-                        --authentication-timeout-minutes 10
-                } finally {
-                    Pop-Location
-                    $env:PYTHONPATH = $PreviousPythonPath
-                }
+                # The embedded Python runtime runs in isolated mode and can
+                # ignore PYTHONPATH for ``-m app...``. The worker script
+                # bootstraps its package root before importing app modules.
+                & $PyExe "$CodeDir\app\flow_worker.py" `
+                    --profile-dir $FlowProfile `
+                    --authenticate-url $FlowAuthUrl `
+                    --authentication-timeout-minutes 10
                 if ($LASTEXITCODE -ne 0) {
                     throw "authentication helper exited with code $LASTEXITCODE"
                 }
@@ -358,17 +350,13 @@ if (Test-Path $WorkerLauncher) {
     # ONLOGON task remains the durable restart path.
     $WorkerStartedAt = Get-Date
     try {
-        $WorkerEnv = [System.Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
-        $env:PYTHONPATH = $CodeDir
         Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden -ArgumentList @(
-            "-m", "app.flow_worker",
+            "`"$CodeDir\app\flow_worker.py`"",
             "--server", "http://127.0.0.1:$Port",
             "--worker-id", "bi-desktop",
             "--name", "BI desktop"
         )
-        $env:PYTHONPATH = $WorkerEnv
     } catch {
-        $env:PYTHONPATH = $WorkerEnv
         Write-Host "  WARNING: Flows worker could not be started: $_" -ForegroundColor Yellow
     }
 
