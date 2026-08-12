@@ -912,6 +912,14 @@ MIGRATIONS = [
     "ALTER TABLE flow_sites ADD COLUMN last_scan_at DATETIME",
     "ALTER TABLE flow_sites ADD COLUMN last_scan_status TEXT",
     "ALTER TABLE flow_sites ADD COLUMN last_scan_error TEXT",
+    # Sites created before ASAP discovery existed used the generic adapter.
+    # Upgrade only the canonical ASAP record (or its known portal host) so the
+    # discovery endpoint works without asking users to edit an internal field.
+    """UPDATE flow_sites SET adapter='asap_portal'
+       WHERE adapter='web_export'
+         AND (lower(trim(name))='asap'
+              OR lower(COALESCE(auth_url, '')) LIKE '%asap.sec.samsung.net%'
+              OR lower(COALESCE(base_url, '')) LIKE '%asap.sec.samsung.net%')""",
     "ALTER TABLE flow_reports ADD COLUMN discovery_key TEXT",
     "ALTER TABLE flow_reports ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'",
     "ALTER TABLE flow_reports ADD COLUMN last_seen_at DATETIME",

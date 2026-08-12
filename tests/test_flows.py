@@ -346,6 +346,23 @@ def test_database_migrates_existing_flow_catalog_before_discovery_index(tmp_path
     assert "idx_flow_reports_discovery_key" in indexes
 
 
+def test_database_upgrades_legacy_asap_site_adapter(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-asap.db"
+    monkeypatch.setattr(database, "DB_PATH", str(db_path))
+    database.init_db()
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sites (name, adapter, auth_url)
+               VALUES ('ASAP', 'web_export', 'https://asap.sec.samsung.net/portal/login')"""
+        )
+
+    database.init_db()
+
+    with database.get_db() as db:
+        row = db.execute("SELECT adapter FROM flow_sites WHERE name='ASAP'").fetchone()
+    assert row["adapter"] == "asap_portal"
+
+
 def test_windows_worker_launcher_sets_python_module_root():
     source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
     assert "$env:PYTHONPATH = $CodeDir" in source
