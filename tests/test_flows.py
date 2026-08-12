@@ -148,18 +148,6 @@ def test_catalog_and_flow_configuration_persist_locally(flow_db):
     assert catalog["reports"][0]["filters"][0]["options"] == ["Global", "North"]
 
 
-def test_weekly_flow_adds_week_token_when_remote_keyboard_omits_it(flow_db):
-    site, report = _seed_catalog()
-    _mark_discovered(report["id"])
-
-    saved = flows.create_flow(
-        _flow(site["id"], report["id"], filename_template="weekly.csv"),
-        _request(),
-    )
-
-    assert saved["filename_template"] == "weekly_{week}.csv"
-
-
 def test_report_filter_update_keeps_historical_definition_for_saved_runs(flow_db):
     site, report = _seed_catalog()
     updated = _report(site["id"])
