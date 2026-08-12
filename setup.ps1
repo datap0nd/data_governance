@@ -351,17 +351,24 @@ if (Test-Path $WorkerLauncher) {
         Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
     }
 
-    # Start the first instance from this already interactive setup process.
-    # Some managed Windows builds accept `schtasks /Run` for an /IT task but
-    # never create its process. Start-Process reliably keeps the worker in the
-    # signed-in desktop user's DPAPI/browser session. The task remains the
-    # durable ONLOGON launcher and the service can request later restarts.
+    # Start the first instance directly in this interactive desktop session.
+    # Managed Windows builds can accept `schtasks /Run` for an /IT task, or a
+    # hidden PowerShell child, without ever creating a durable worker process.
+    # Launching Python directly removes that fragile extra shell layer. The
+    # ONLOGON task remains the durable restart path.
     $WorkerStartedAt = Get-Date
     try {
-        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$WorkerLauncher`""
+        $WorkerEnv = [System.Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
+        $env:PYTHONPATH = $CodeDir
+        Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden -ArgumentList @(
+            "-m", "app.flow_worker",
+            "--server", "http://127.0.0.1:$Port",
+            "--worker-id", "bi-desktop",
+            "--name", "BI desktop"
         )
+        $env:PYTHONPATH = $WorkerEnv
     } catch {
+        $env:PYTHONPATH = $WorkerEnv
         Write-Host "  WARNING: Flows worker could not be started: $_" -ForegroundColor Yellow
     }
 
