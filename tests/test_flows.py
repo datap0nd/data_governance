@@ -329,6 +329,28 @@ def test_database_schema_has_no_flow_delete_policy(flow_db):
     assert "cleanup_policy" not in job_columns
 
 
+def test_database_migrates_existing_flow_catalog_before_discovery_index(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy.db"
+    import sqlite3
+    with sqlite3.connect(db_path) as db:
+        db.executescript("""
+            CREATE TABLE flow_sites (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, adapter TEXT NOT NULL DEFAULT 'web_export', base_url TEXT, auth_url TEXT, enabled INTEGER DEFAULT 1, created_at DATETIME, updated_at DATETIME);
+            CREATE TABLE flow_reports (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, name TEXT NOT NULL, report_url TEXT NOT NULL, ready_text TEXT, open_export_text TEXT, download_text TEXT, automation_json TEXT NOT NULL DEFAULT '{}', notes TEXT, enabled INTEGER DEFAULT 1, created_at DATETIME, updated_at DATETIME, UNIQUE(site_id, name));
+        """)
+    monkeypatch.setattr(database, "DB_PATH", str(db_path))
+    database.init_db()
+    with sqlite3.connect(db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(flow_reports)")}
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(flow_reports)")}
+    assert "discovery_key" in columns
+    assert "idx_flow_reports_discovery_key" in indexes
+
+
+def test_windows_worker_launcher_sets_python_module_root():
+    source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
+    assert "$env:PYTHONPATH = $CodeDir" in source
+
+
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "launched", "mode": "local"})
     site, report = _seed_catalog()

@@ -10,6 +10,7 @@ if (-not (Test-Path $Python)) {
 }
 
 Set-Location $CodeDir
+$env:PYTHONPATH = $CodeDir
 $arguments = @(
     "-m", "app.flow_worker",
     "--server", "http://127.0.0.1:8000",

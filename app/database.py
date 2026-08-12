@@ -553,7 +553,6 @@ CREATE TABLE IF NOT EXISTS flow_catalog_scans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_flow_reports_site ON flow_reports(site_id, enabled);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_reports_discovery_key ON flow_reports(site_id, discovery_key) WHERE discovery_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_flow_filters_report ON flow_report_filters(report_id, position);
 CREATE INDEX IF NOT EXISTS idx_flows_schedule ON flows(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_queue ON flow_runs(status, created_at);
