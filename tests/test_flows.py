@@ -79,7 +79,7 @@ def _asap_report(site_id):
         automation={
             "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
             "report_tab": "Export Wizard (Detail)",
-            "export_selector": "button.report-export",
+            "export_text": "Export Wizard (Detail)",
         },
         filters=[
             flows.FilterWrite(
@@ -373,6 +373,7 @@ def test_asap_execution_uses_rendered_ui_not_internal_response_url():
     assert "frame = _asap_wait_for_results(page)" in source
     assert '"stage": "report_execution"' in source
     assert '"stage": "csv_export"' in source
+    assert '"button.report-export"' not in source
 
 
 def test_database_schema_has_no_flow_delete_policy(flow_db):

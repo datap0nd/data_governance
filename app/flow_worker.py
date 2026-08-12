@@ -411,9 +411,26 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
 
 def _asap_download(page: Page, frame: Frame, job: dict):
     automation = job["report"].get("automation") or {}
-    export_selector = automation.get("export_selector", "button.report-export")
+    export_text = automation.get("export_text") or automation.get("report_tab") or "Export Wizard (Detail)"
+    export_control = None
+    for root in reversed(page.frames):
+        for locator in (
+            root.get_by_role("button", name=export_text, exact=True),
+            root.get_by_role("link", name=export_text, exact=True),
+            root.get_by_text(export_text, exact=True),
+        ):
+            try:
+                if locator.count() and locator.first.is_visible():
+                    export_control = locator.first
+                    break
+            except Exception:
+                continue
+        if export_control is not None:
+            break
+    if export_control is None:
+        raise RuntimeError(f"Could not find visible ASAP export control: {export_text}")
     with page.expect_popup(timeout=60_000) as popup_info:
-        frame.locator(export_selector).first.click()
+        export_control.click()
     popup = popup_info.value
     popup.wait_for_load_state("domcontentloaded", timeout=60_000)
     popup.get_by_label("CSV file format", exact=True).check()
@@ -839,7 +856,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                 "ready_text": ready_text, "download_text": "Export CSV",
                 "automation": {
                     "category_path": path, "report_tab": ready_text,
-                    "report_title": report_title, "export_selector": "button.report-export",
+                    "report_title": report_title, "export_text": ready_text,
                 },
                 "filters": filters,
             })

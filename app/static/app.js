@@ -9575,7 +9575,8 @@ function _flowReportDialog(report = null) {
             filter_key: row.querySelector('[data-field="filter_key"]').value.trim(), label: row.querySelector('[data-field="label"]').value.trim(), control_label: row.querySelector('[data-field="control_label"]').value.trim(), control_type: row.querySelector('[data-field="control_type"]').value, options: row.querySelector('[data-field="options"]').value.split(/\r?\n|;/).map(item => item.trim()).filter(Boolean), automation: {}, required: row.querySelector('[data-field="required"]').checked, position: index, enabled: true,
         }));
         const category_path = $("#flow-report-path").value.split(">").map(item => item.trim()).filter(Boolean);
-        const automation = category_path.length ? { category_path, report_tab: $("#flow-report-tab").value.trim() || null, export_selector: "button.report-export" } : {};
+        const export_text = $("#flow-report-tab").value.trim() || null;
+        const automation = category_path.length ? { category_path, report_tab: export_text, export_text } : {};
         const body = { site_id: Number($("#flow-report-site").value), name: $("#flow-report-name").value.trim(), report_url: $("#flow-report-url").value.trim(), ready_text: $("#flow-report-ready").value.trim() || null, open_export_text: null, download_text: $("#flow-report-download").value.trim(), automation, enabled: $("#flow-report-enabled").checked, filters };
         try { await (report ? apiPut(`/api/flows/reports/${report.id}`, body) : apiPostJson("/api/flows/reports", body)); close(); await navigate("flows"); toast("Report saved"); }
         catch (err) { error.textContent = "Report not saved: " + err.message; submit.disabled = false; }
