@@ -102,6 +102,20 @@ Tools > Data Quality manages read-only rules for governed sources. Row-count ran
 
 A failed or errored check stores a result, opens one owned dashboard action, and creates an alert. A later passing result resolves that action and alert automatically. Disabling a check also closes its active incident while retaining the check and result history.
 
+### Configurable report-download flows
+
+Tools > Flows stores website, report, filter, download, filename, folder, and schedule configuration in the local Metronome SQLite database. Repository code contains only the generic flow engine. Authentication credentials and report-specific configuration are not stored in Git.
+
+Metronome queues each run for an authenticated browser worker. Run the worker under the Windows account that already has access to the configured report portal:
+
+```powershell
+python -m app.flow_worker --server http://BI_DESKTOP:8000 --worker-id authorized-browser --name "Authorized browser" --headed
+```
+
+Use `--headed` for the initial enterprise SSO session. The persistent browser profile is stored under the worker Windows user's profile. After authentication is proven, omit `--headed` to try headless execution. Enterprise policy may still require a visible browser.
+
+The worker never deletes or overwrites existing files. Name collisions create a numbered filename. SQL handoff is visible as a future step but cannot be enabled or executed in this release.
+
 ### Power BI email recurrences
 
 Tools > Recurrences creates scheduled Outlook emails from the summarized data behind a live Power BI table or matrix visual. The builder selects a report from the configured workspace, then an exact page and visual, previews its current columns, applies optional row rules, and saves a daily, weekday, weekly, or monthly schedule. Each recurrence can include an optional alert message for definitions, key actions, warnings, ownership, or other recipient context; the email displays it in an information box above the results. Recipient emails show the report name in the report summary and the selected Power BI visual title above the result table. Visual discovery reads the rendered title property instead of treating generic descriptor values such as `matrix` or `tableEx` as titles. Supported expression-based titles are evaluated from their semantic-model measure under the recurrence's current filter context. Existing saved recurrences refresh their visual title on the next draft or send run, and an unavailable title falls back to `Alert results`. Numeric output follows each field or measure format unless Power BI reports an explicitly configured visual decimal-place override; default or `Auto` visual values do not replace field formatting. Delivery can send all eligible rows to one recipient list or split rows into separate emails by a subgroup column. A delivery with no matching rows sends nothing.

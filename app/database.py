@@ -390,6 +390,124 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS flow_sites (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    adapter         TEXT NOT NULL DEFAULT 'web_export',
+    base_url        TEXT,
+    auth_url        TEXT,
+    enabled         INTEGER DEFAULT 1,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS flow_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id             INTEGER NOT NULL REFERENCES flow_sites(id),
+    name                TEXT NOT NULL,
+    report_url          TEXT NOT NULL,
+    ready_text          TEXT,
+    open_export_text    TEXT,
+    download_text       TEXT NOT NULL DEFAULT 'Download CSV',
+    notes               TEXT,
+    enabled             INTEGER DEFAULT 1,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(site_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS flow_report_filters (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id           INTEGER NOT NULL REFERENCES flow_reports(id),
+    filter_key          TEXT NOT NULL,
+    label               TEXT NOT NULL,
+    control_label       TEXT NOT NULL,
+    control_type        TEXT NOT NULL,
+    options_json        TEXT NOT NULL DEFAULT '[]',
+    automation_json     TEXT NOT NULL DEFAULT '{}',
+    required            INTEGER DEFAULT 0,
+    position            INTEGER DEFAULT 0,
+    enabled             INTEGER DEFAULT 1,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(report_id, filter_key)
+);
+
+CREATE TABLE IF NOT EXISTS flows (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT UNIQUE NOT NULL,
+    site_id             INTEGER NOT NULL REFERENCES flow_sites(id),
+    report_id           INTEGER NOT NULL REFERENCES flow_reports(id),
+    enabled             INTEGER DEFAULT 0,
+    selections_json     TEXT NOT NULL DEFAULT '{}',
+    download_mode       TEXT NOT NULL DEFAULT 'single',
+    start_week          TEXT,
+    end_week            TEXT,
+    target_folder       TEXT NOT NULL,
+    filename_template   TEXT NOT NULL,
+    schedule_type       TEXT NOT NULL DEFAULT 'manual',
+    schedule_time       TEXT,
+    schedule_days       TEXT,
+    next_run_at         DATETIME,
+    last_run_at         DATETIME,
+    last_status         TEXT,
+    last_error          TEXT,
+    sql_handoff_enabled INTEGER NOT NULL DEFAULT 0,
+    created_by          TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS flow_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id             INTEGER NOT NULL REFERENCES flows(id),
+    trigger_type        TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'queued',
+    requested_by        TEXT,
+    worker_id           TEXT,
+    job_json            TEXT NOT NULL,
+    progress_json       TEXT,
+    artifact_json       TEXT,
+    error               TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    claimed_at          DATETIME,
+    started_at          DATETIME,
+    finished_at         DATETIME,
+    heartbeat_at        DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS flow_run_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER NOT NULL REFERENCES flow_runs(id),
+    period_key      TEXT,
+    file_path       TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    file_size       INTEGER,
+    checksum        TEXT,
+    row_count       INTEGER,
+    status          TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS flow_workers (
+    worker_id       TEXT PRIMARY KEY,
+    display_name    TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'offline',
+    current_run_id  INTEGER REFERENCES flow_runs(id),
+    last_error      TEXT,
+    last_seen_at    DATETIME,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_reports_site ON flow_reports(site_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_flow_filters_report ON flow_report_filters(report_id, position);
+CREATE INDEX IF NOT EXISTS idx_flows_schedule ON flows(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_flow_runs_queue ON flow_runs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_run_files_run ON flow_run_files(run_id);
+
 CREATE INDEX IF NOT EXISTS idx_pbi_report_views_report_id ON pbi_report_views(report_id);
 CREATE INDEX IF NOT EXISTS idx_pbi_report_views_date ON pbi_report_views(view_date);
 CREATE INDEX IF NOT EXISTS idx_pbi_report_user_views_report_id ON pbi_report_user_views(report_id);

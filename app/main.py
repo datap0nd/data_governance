@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH
 from app.database import init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, documentation, email, email_schedules, usage, data_import, recurrences
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, documentation, email, email_schedules, usage, data_import, recurrences, flows
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
@@ -393,6 +393,15 @@ def _configure_scheduler_jobs() -> dict:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        flows.queue_due_flows,
+        "interval",
+        minutes=1,
+        id="flow_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     return refresh_time
 
 
@@ -446,6 +455,7 @@ app.include_router(email_schedules.router)
 app.include_router(usage.router)
 app.include_router(data_import.router)
 app.include_router(recurrences.router)
+app.include_router(flows.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"
