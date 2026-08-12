@@ -12,7 +12,7 @@ routes it to the matching BI desktop worker.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: pending for the headed/headless flow change
+- Push status: delivered to `origin/main` in commit `8c66c58`
 
 ## Decisions Made
 
@@ -148,6 +148,10 @@ routes it to the matching BI desktop worker.
 ## Commands And Checks
 
 - Full Python suite: `122 passed`.
+- BI desktop setup: downloaded `main`, preserved the existing SQLite database,
+  restarted Metronome and the headless worker, and registered the headed task.
+- Live Flows UI: both browser choices and the execution-summary mode were
+  visible. The existing test flow was closed without saving or running.
 - Existing Flows desktop and 390px mobile Playwright screenshots passed with
   no horizontal overflow after their responsive fix.
 - Node lineage suite: `1 passed`.
@@ -159,6 +163,6 @@ routes it to the matching BI desktop worker.
 
 ## Next Step
 
-Publish the change to `main`, rerun `setup.ps1` on the BI desktop, verify the
-Browser mode dropdown, then save the existing test flow as Headed and run it
-to watch the current ASAP selector failure in the visible Edge window.
+Save the existing test flow as Headed and run it to watch the current ASAP
+selector failure in the visible Edge window. Use that observation to replace
+the hidden Select2 option click with the current visible ASAP control path.
