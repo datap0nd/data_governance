@@ -392,6 +392,14 @@ def test_setup_bounds_stale_port_process_cleanup():
     assert "Timed out waiting for taskkill" in source
 
 
+def test_setup_merges_new_nested_files_without_purging_local_files():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    command = next(line for line in source.splitlines() if "& robocopy.exe" in line)
+    assert "robocopy.exe $Inner.FullName $CodeDir /E" in command
+    assert "/MIR" not in command
+    assert "/PURGE" not in command
+
+
 def test_worker_launcher_appends_diagnostic_log():
     source = Path(__file__).parents[1].joinpath("tools", "run_flow_worker.ps1").read_text()
     assert 'Start-Transcript -Path $WorkerLog -Append' in source
