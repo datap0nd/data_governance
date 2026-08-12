@@ -26,6 +26,9 @@ routes it to the matching BI desktop worker.
   profile; both use the same account-scoped DPAPI credential.
 - Headed workers claim only headed flow jobs, exit after one idle minute, and
   never claim catalog scans. Headless workers claim headless jobs and scans.
+- Windows launches the headed task through the absolute System32 executable
+  and root-qualified task path. Clicking Run on a queued flow retries worker
+  startup without creating a duplicate run.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
@@ -147,7 +150,7 @@ routes it to the matching BI desktop worker.
 
 ## Commands And Checks
 
-- Full Python suite: `122 passed`.
+- Full Python suite: `123 passed`.
 - BI desktop setup: downloaded `main`, preserved the existing SQLite database,
   restarted Metronome and the headless worker, and registered the headed task.
 - Live Flows UI: both browser choices and the execution-summary mode were
@@ -163,6 +166,6 @@ routes it to the matching BI desktop worker.
 
 ## Next Step
 
-Save the existing test flow as Headed and run it to watch the current ASAP
-selector failure in the visible Edge window. Use that observation to replace
-the hidden Select2 option click with the current visible ASAP control path.
+Deploy the headed-task launch fix, retry queued run #2 from the Flows page, and
+watch the visible Edge window. Use that observation to replace the hidden
+Select2 option click with the current visible ASAP control path.

@@ -780,24 +780,37 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
 @router.post("/{flow_id}/run")
 def queue_run(flow_id: int, request: Request):
     now = _iso(_now())
+    resumed = False
     with get_db() as db:
         flow = db.execute("SELECT id, name FROM flows WHERE id = ?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
         active = db.execute(
-            "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
+            """SELECT id, status, job_json FROM flow_runs
+               WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1""",
             (flow_id,),
         ).fetchone()
         if active:
-            raise HTTPException(409, "This flow already has an active run.")
-        job = _build_job(db, flow_id)
-        cursor = db.execute(
-            """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
-               VALUES (?, 'manual', 'queued', ?, ?, ?)""",
-            (flow_id, get_actor(request), _json(job), now),
-        )
-        run_id = cursor.lastrowid
-        log_event(db, "flow", flow_id, flow["name"], "run_queued", f"run_id={run_id}", get_actor(request))
+            if active["status"] != "queued":
+                raise HTTPException(409, "This flow already has an active run.")
+            # A queued run may be waiting because Windows could not start its
+            # worker. Let Run retry the launcher without creating a duplicate.
+            run_id = active["id"]
+            job = _loads(active["job_json"], {})
+            resumed = True
+            log_event(
+                db, "flow", flow_id, flow["name"], "worker_restart_requested",
+                f"run_id={run_id}", get_actor(request),
+            )
+        else:
+            job = _build_job(db, flow_id)
+            cursor = db.execute(
+                """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
+                   VALUES (?, 'manual', 'queued', ?, ?, ?)""",
+                (flow_id, get_actor(request), _json(job), now),
+            )
+            run_id = cursor.lastrowid
+            log_event(db, "flow", flow_id, flow["name"], "run_queued", f"run_id={run_id}", get_actor(request))
     worker = launch_local_worker(job["execution"]["browser_mode"])
     if worker.get("status") == "error":
         with get_db() as db:
@@ -805,7 +818,10 @@ def queue_run(flow_id: int, request: Request):
                 "UPDATE flow_runs SET progress_json=? WHERE id=?",
                 (_json({"stage": "waiting_for_bi_desktop", "message": worker.get("message")}), run_id),
             )
-    return {"id": run_id, "flow_id": flow_id, "status": "queued", "job": job, "worker": worker}
+    return {
+        "id": run_id, "flow_id": flow_id, "status": "queued", "job": job,
+        "worker": worker, "resumed": resumed,
+    }
 
 
 def ensure_local_worker() -> dict:

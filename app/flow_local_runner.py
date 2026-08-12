@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 
 
 SERVICE_NAME = "MXFlowsWorker"
 HEADED_TASK_NAME = "Metronome_Flows_Headed"
+HEADED_TASK_PATH = rf"\{HEADED_TASK_NAME}"
 WORKER_ID = "bi-desktop-headless"
 HEADED_WORKER_ID = "bi-desktop-headed"
 WORKER_NAME = "BI desktop - headless"
@@ -27,7 +29,8 @@ def launch_local_worker(browser_mode: str = "headless") -> dict:
         return {"status": "error", "mode": browser_mode, "message": "Unsupported browser mode."}
     worker_id = HEADED_WORKER_ID if browser_mode == "headed" else WORKER_ID
     display_name = "BI desktop - headed" if browser_mode == "headed" else WORKER_NAME
-    command = ["schtasks.exe", "/Run", "/TN", HEADED_TASK_NAME] if browser_mode == "headed" else ["sc.exe", "start", SERVICE_NAME]
+    schtasks = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "schtasks.exe")
+    command = [schtasks, "/Run", "/TN", HEADED_TASK_PATH] if browser_mode == "headed" else ["sc.exe", "start", SERVICE_NAME]
     try:
         completed = subprocess.run(
             command,

@@ -457,7 +457,9 @@ def test_worker_launcher_appends_diagnostic_log():
 def test_service_starts_headless_worker_service_instead_of_child_process():
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
     assert '["sc.exe", "start", SERVICE_NAME]' in source
-    assert '["schtasks.exe", "/Run", "/TN", HEADED_TASK_NAME]' in source
+    assert '"System32", "schtasks.exe"' in source
+    assert '[schtasks, "/Run", "/TN", HEADED_TASK_PATH]' in source
+    assert 'HEADED_TASK_PATH = rf"\\{HEADED_TASK_NAME}"' in source
     assert "subprocess.Popen" not in source
 
 
@@ -544,6 +546,29 @@ def test_headed_flow_is_routed_only_to_headed_worker(flow_db, monkeypatch):
     assert launched == ["headed"]
     assert flows.claim_run("bi-desktop-headless")["run"] is None
     assert flows.claim_run("bi-desktop-headed")["run"]["id"] == queued["id"]
+
+
+def test_queued_run_can_retry_worker_launch_without_duplicate(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    launches = []
+    monkeypatch.setattr(
+        flows, "launch_local_worker",
+        lambda mode: launches.append(mode) or {"status": "starting", "mode": mode},
+    )
+
+    first = flows.queue_run(saved["id"], _request())
+    second = flows.queue_run(saved["id"], _request())
+
+    assert first["id"] == second["id"]
+    assert first["resumed"] is False
+    assert second["resumed"] is True
+    assert launches == ["headed", "headed"]
+    with database.get_db() as db:
+        assert db.execute("SELECT COUNT(*) FROM flow_runs").fetchone()[0] == 1
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():
