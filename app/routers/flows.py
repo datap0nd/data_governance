@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.database import get_db
+from app.flow_local_runner import WORKER_ID as LOCAL_WORKER_ID, launch_local_worker
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
@@ -335,6 +336,7 @@ def _build_job(db, flow_id: int) -> dict:
     periods = weeks if flow["download_mode"] == "one_per_week" else [None]
     return {
         "schema_version": 1,
+        "execution": {"mode": "local", "host": "bi_desktop", "worker_id": LOCAL_WORKER_ID},
         "flow": {"id": flow["id"], "name": flow["name"]},
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
@@ -392,7 +394,8 @@ def queue_due_flows() -> dict:
                 (row["id"], _json(job), now_text),
             )
             queued.append(cursor.lastrowid)
-    return {"queued": queued, "count": len(queued)}
+    worker = launch_local_worker() if queued else {"status": "not_needed", "mode": "local"}
+    return {"queued": queued, "count": len(queued), "worker": worker}
 
 
 @router.get("/catalog")
@@ -630,7 +633,29 @@ def queue_run(flow_id: int, request: Request):
         )
         run_id = cursor.lastrowid
         log_event(db, "flow", flow_id, flow["name"], "run_queued", f"run_id={run_id}", get_actor(request))
-        return {"id": run_id, "flow_id": flow_id, "status": "queued", "job": job}
+    worker = launch_local_worker()
+    if worker.get("status") == "error":
+        with get_db() as db:
+            db.execute(
+                "UPDATE flow_runs SET progress_json=? WHERE id=?",
+                (_json({"stage": "waiting_for_bi_desktop", "message": worker.get("message")}), run_id),
+            )
+    return {"id": run_id, "flow_id": flow_id, "status": "queued", "job": job, "worker": worker}
+
+
+def ensure_local_worker() -> dict:
+    """Restart the resident BI desktop worker when it is not online or busy."""
+    cutoff = _iso(_now() - timedelta(seconds=90))
+    with get_db() as db:
+        row = db.execute(
+            "SELECT status, current_run_id, last_seen_at FROM flow_workers WHERE worker_id=?",
+            (LOCAL_WORKER_ID,),
+        ).fetchone()
+    if row and row["current_run_id"]:
+        return {"status": "busy", "mode": "local", "worker_id": LOCAL_WORKER_ID}
+    if row and row["last_seen_at"] and row["last_seen_at"] >= cutoff:
+        return {"status": "online", "mode": "local", "worker_id": LOCAL_WORKER_ID}
+    return launch_local_worker()
 
 
 @router.post("/worker/register")

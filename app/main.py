@@ -402,6 +402,15 @@ def _configure_scheduler_jobs() -> dict:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        flows.ensure_local_worker,
+        "interval",
+        minutes=1,
+        id="flow_local_worker",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     return refresh_time
 
 
@@ -413,6 +422,7 @@ async def lifespan(app):
     # Daily backup plus a user-configurable overall refresh.
     refresh_time = _configure_scheduler_jobs()
     _scheduler.start()
+    flows.ensure_local_worker()
     logging.getLogger(__name__).info(
         "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, email dispatch every minute",
         refresh_time["hour"],

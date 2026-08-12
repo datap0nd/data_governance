@@ -118,6 +118,9 @@ def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["downloads"]["collision_policy"] == "number_suffix"
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
+    assert queued["job"]["execution"] == {
+        "mode": "local", "host": "bi_desktop", "worker_id": "bi-desktop"
+    }
     assert queued["job"]["sql_handoff"] == {"enabled": False, "status": "not_implemented"}
 
 
@@ -201,6 +204,7 @@ def test_database_schema_has_no_flow_delete_policy(flow_db):
 
 
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
+    monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "launched", "mode": "local"})
     site, report = _seed_catalog()
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     with database.get_db() as db:
@@ -214,3 +218,19 @@ def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     with database.get_db() as db:
         row = db.execute("SELECT next_run_at FROM flows WHERE id=?", (saved["id"],)).fetchone()
     assert row["next_run_at"] > "2020-01-01T08:00:00"
+
+
+def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    launched = []
+    monkeypatch.setattr(
+        flows,
+        "launch_local_worker",
+        lambda: launched.append("bi-desktop") or {"status": "launched", "mode": "local"},
+    )
+
+    queued = flows.queue_run(saved["id"], _request())
+
+    assert launched == ["bi-desktop"]
+    assert queued["worker"] == {"status": "launched", "mode": "local"}

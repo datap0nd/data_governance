@@ -18,9 +18,10 @@ keeping report-specific configuration in the installed app's SQLite database.
   schedules, queued runs, workers, artifacts, and run history in SQLite.
 - Repository code contains no report-specific URL, filter value, destination,
   or credential. Users configure those values from Tools > Flows.
-- Browser work is claimed by an authenticated worker running under the Windows
-  user that is authorized for the target report portal. Authentication tokens
-  are not copied into Metronome or between Windows users.
+- Browser work runs locally on the BI desktop through the resident
+  `DG_Flow_Worker` interactive Windows task. Manual and scheduled runs use the
+  BI desktop user's persistent browser profile. Authentication tokens are not
+  copied into Metronome or between Windows users.
 - The worker never deletes or overwrites an existing file. Filename collisions
   receive a numbered suffix.
 - SQL handoff is displayed as a future step but is rejected by API validation
@@ -70,6 +71,8 @@ keeping report-specific configuration in the installed app's SQLite database.
   claim/progress protocol, per-week job expansion, and disabled SQL handoff.
 - `app/flow_worker.py`: persistent-profile Playwright worker with semantic
   controls, CSV validation, checksums, and collision-safe filenames.
+- `app/flow_local_runner.py`, `tools/run_flow_worker.ps1`: BI-desktop task
+  launcher and resident worker identity used by manual and scheduled runs.
 - `app/static/index.html`, `app/static/app.js`, `app/static/style.css`: Flows
   navigation, catalog management, populated builder, run history, desktop and
   mobile layouts, and a mobile hidden-panel overflow fix.
