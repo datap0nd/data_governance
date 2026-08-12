@@ -206,6 +206,12 @@ def test_asap_week_conversion_uses_portal_member_format():
         worker._week_to_asap("202603")
 
 
+def test_asap_run_response_match_is_case_insensitive():
+    worker = __import__("app.flow_worker", fromlist=["_is_asap_run_response"])
+    response = SimpleNamespace(url="https://portal.example/MicroStrategy/servlet/promptAnswerM.do")
+    assert worker._is_asap_run_response(response) is True
+
+
 def test_sql_handoff_cannot_be_enabled(flow_db):
     site, report = _seed_catalog()
     with pytest.raises(ValueError, match="later release"):

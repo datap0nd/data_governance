@@ -356,10 +356,19 @@ def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
     heading = frame.get_by_text(label, exact=True).first
     heading.wait_for(state="visible", timeout=60_000)
     for value in values:
-        option = heading.locator("xpath=following::*").filter(has_text=value).first
-        if not option.count():
+        candidates = frame.get_by_text(value, exact=True)
+        option = next(
+            (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
+            None,
+        )
+        if option is None:
             raise RuntimeError(f"Could not find {label} option: {value}")
-        option.first.click(modifiers=["Control"] if len(values) > 1 else [])
+        option.click(modifiers=["Control"] if len(values) > 1 else [])
+
+
+def _is_asap_run_response(response) -> bool:
+    """Recognize MicroStrategy's prompt submission regardless of URL casing."""
+    return "promptanswerm.do" in response.url.casefold()
 
 
 def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
@@ -883,7 +892,7 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 _asap_apply_configuration(frame, job, period)
             with timings.measure("report_execution", report_id=job["report"].get("id")):
                 with page.expect_response(
-                    lambda response: "promptanswerm.do" in response.url,
+                    _is_asap_run_response,
                     timeout=180_000,
                 ):
                     _click_named(frame, "RUN")
