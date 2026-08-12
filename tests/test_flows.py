@@ -206,12 +206,6 @@ def test_asap_week_conversion_uses_portal_member_format():
         worker._week_to_asap("202603")
 
 
-def test_asap_run_response_match_is_case_insensitive():
-    worker = __import__("app.flow_worker", fromlist=["_is_asap_run_response"])
-    response = SimpleNamespace(url="https://portal.example/MicroStrategy/servlet/promptAnswerM.do")
-    assert worker._is_asap_run_response(response) is True
-
-
 def test_sql_handoff_cannot_be_enabled(flow_db):
     site, report = _seed_catalog()
     with pytest.raises(ValueError, match="later release"):
@@ -371,6 +365,13 @@ def test_worker_source_contains_no_delete_or_overwrite_operation():
     forbidden = [".unlink(", ".rmdir(", "shutil.rmtree", "os.remove(", "os.unlink("]
     assert all(token not in source for token in forbidden)
     assert "_safe_output_path" in source
+
+
+def test_asap_execution_uses_rendered_ui_not_internal_response_url():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert "expect_response" not in source
+    assert '"stage": "report_execution"' in source
+    assert '"stage": "csv_export"' in source
 
 
 def test_database_schema_has_no_flow_delete_policy(flow_db):

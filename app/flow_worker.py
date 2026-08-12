@@ -366,11 +366,6 @@ def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
         option.click(modifiers=["Control"] if len(values) > 1 else [])
 
 
-def _is_asap_run_response(response) -> bool:
-    """Recognize MicroStrategy's prompt submission regardless of URL casing."""
-    return "promptanswerm.do" in response.url.casefold()
-
-
 def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
     selections = dict(job.get("selections") or {})
     for definition in job["report"].get("filters", []):
@@ -890,13 +885,26 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
         if is_asap:
             with timings.measure("configuration", report_id=job["report"].get("id")):
                 _asap_apply_configuration(frame, job, period)
+            report_progress(
+                "running",
+                {"stage": "report_execution", "message": f"Running report {index} of {len(periods)}.", "period": period},
+                artifacts,
+            )
             with timings.measure("report_execution", report_id=job["report"].get("id")):
-                with page.expect_response(
-                    _is_asap_run_response,
-                    timeout=180_000,
-                ):
-                    _click_named(frame, "RUN")
+                _click_named(frame, "RUN")
+                # The current MicroStrategy UI completes report execution in
+                # its iframe without a stable prompt-answer response. Waiting
+                # for that internal URL left already-rendered reports stuck for
+                # three minutes. Yield briefly for the loading overlay, then use
+                # the rendered row summary as the portal's public readiness
+                # signal.
+                frame.wait_for_timeout(1_000)
                 frame.get_by_text("Data rows:", exact=False).first.wait_for(state="visible", timeout=180_000)
+            report_progress(
+                "running",
+                {"stage": "csv_export", "message": f"Exporting CSV {index} of {len(periods)}.", "period": period},
+                artifacts,
+            )
             with timings.measure("csv_export", report_id=job["report"].get("id")):
                 download = _asap_download(page, frame, job)
         else:
