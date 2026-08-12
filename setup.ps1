@@ -50,6 +50,7 @@ if ($GitHubToken) {
 $ZipPath     = "$ProjectDir\_update.zip"
 $PyDir       = "$ProjectDir\python313"
 $PyExe       = "$PyDir\python.exe"
+$FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
 $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
 
 # --- Safety check ---
@@ -241,6 +242,7 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "DG_SCHTASK_REMOTES=MX-Share" `
     "DG_PBI_WORKSPACE=mx executive" `
     "DG_PBI_SYNC_WINDOWS_USER=$env:USERNAME" `
+    "METRONOME_FLOW_PROFILE=$FlowProfile" `
     "DG_AI_MOCK=true"
 
 # Run service as current user (needed for network share access)
@@ -279,7 +281,6 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 
 # Bootstrap the dedicated automation browser profile once. The website URL is
 # read from this machine's SQLite configuration and is never stored in source.
-$FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
 if (Test-Path $DbPath) {
     $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
     if (Test-Path $AuthUrlScript) {
