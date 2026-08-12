@@ -280,6 +280,27 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
+# Install and start the browser worker from this logged-in desktop session.
+# Creating an /IT task from the background service is unreliable because the
+# service has no interactive session, so setup owns this step explicitly.
+$WorkerTaskName = "DG_Flow_Worker"
+$WorkerLauncher = "$CodeDir\tools\run_flow_worker.ps1"
+if (Test-Path $WorkerLauncher) {
+    Write-Host "Starting Flows browser worker..." -ForegroundColor Yellow
+    $WorkerCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$WorkerLauncher`""
+    & schtasks.exe /Create /TN $WorkerTaskName /TR $WorkerCommand /SC ONLOGON /IT /F | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: Could not install $WorkerTaskName. ASAP scans will remain queued." -ForegroundColor Yellow
+    } else {
+        & schtasks.exe /Run /TN $WorkerTaskName | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Flows worker launched in the current desktop session." -ForegroundColor Green
+        } else {
+            Write-Host "  WARNING: $WorkerTaskName was installed but did not start." -ForegroundColor Yellow
+        }
+    }
+}
+
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     Write-Host ""

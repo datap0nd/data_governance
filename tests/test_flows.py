@@ -368,6 +368,20 @@ def test_windows_worker_launcher_sets_python_module_root():
     assert "$env:PYTHONPATH = $CodeDir" in source
 
 
+def test_setup_installs_interactive_flow_worker():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    assert '$WorkerTaskName = "DG_Flow_Worker"' in source
+    assert "/SC ONLOGON /IT /F" in source
+    assert "schtasks.exe /Run /TN $WorkerTaskName" in source
+
+
+def test_catalog_monitor_reports_worker_and_auto_refreshes():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert "No BI desktop worker online" in source
+    assert "Waiting for BI desktop worker to start." in source
+    assert "_flowScheduleCatalogMonitor" in source
+
+
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     monkeypatch.setattr(flows, "launch_local_worker", lambda: {"status": "launched", "mode": "local"})
     site, report = _seed_catalog()

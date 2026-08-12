@@ -9406,18 +9406,35 @@ function _flowTimingSummary(timings) {
     return phases.length ? phases.map(item => `${esc(item.phase.replaceAll("_", " "))}: ${_flowDuration(item.duration_ms)}`).join(" · ") : "No phase timing yet";
 }
 
-function _flowCatalogHtml(catalog, scans, estimates) {
+function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
     const latestBySite = new Map();
     scans.forEach(scan => { if (!latestBySite.has(scan.site_id)) latestBySite.set(scan.site_id, scan); });
     const scanEstimate = estimates.catalog_scan;
+    const onlineWorkers = workers.filter(worker => worker.status !== "offline");
+    const activeStatuses = new Set(["queued", "claimed", "running"]);
+    const workerMessage = onlineWorkers.length
+        ? `${onlineWorkers.length} BI desktop worker${onlineWorkers.length === 1 ? "" : "s"} online`
+        : "No BI desktop worker online";
+    const scanMonitor = scan => {
+        if (!scan) return "Never scanned";
+        const total = scan.timings?.find(item => item.phase === "total");
+        const active = activeStatuses.has(scan.status);
+        const elapsedFrom = scan.started_at || scan.claimed_at || scan.created_at;
+        const elapsed = active && elapsedFrom ? `Elapsed ${_flowDuration(Date.now() - new Date(elapsedFrom))}` : "";
+        const waiting = scan.status === "queued" && !onlineWorkers.length
+            ? "Waiting for BI desktop worker to start."
+            : (scan.progress?.message || (scan.status === "queued" ? "Waiting for worker to claim this scan." : ""));
+        const timing = total ? `Actual ${_flowDuration(total.duration_ms)} · ${_flowTimingSummary(scan.timings)}` : [elapsed, _flowTimingSummary(scan.timings)].filter(Boolean).join(" · ");
+        return `${_flowStatusBadge(scan.status)}<small>${esc(waiting)}</small><small>${esc(timing || "No phase timing yet")}</small>${scan.error ? `<small class="flow-error">${esc(scan.error)}</small>` : ""}`;
+    };
     return `
         <div class="flow-discovery-summary">
             <div><h2>ASAP discovery</h2><p>Metronome scans visible ASAP menus, reports, filters, and options. Missing entries are marked stale, never deleted.</p></div>
-            <dl><div><dt>Estimated full scan</dt><dd>${_flowDuration(scanEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd>${esc(scanEstimate?.source || "No history")}</dd></div></dl>
+            <dl><div><dt>Estimated full scan</dt><dd>${_flowDuration(scanEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd>${esc(scanEstimate?.source || "No history")}</dd></div><div><dt>Worker</dt><dd>${esc(workerMessage)}</dd></div></dl>
         </div>
         <div class="flow-catalog-grid">
             <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication, discovery scope, and weekly scan schedule.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
-                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); const total = scan?.timings?.find(item => item.phase === "total"); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scan ? `${_flowStatusBadge(scan.status)}<small>${esc(scan.progress?.message || "")}</small><small>${total ? `Actual ${_flowDuration(total.duration_ms)} · ` : ""}${_flowTimingSummary(scan.timings)}</small>` : "Never scanned"}</span><button class="btn-sm flow-scan-site" data-id="${site.id}">Scan now</button></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
+                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scanMonitor(scan)}</span><button class="btn-sm flow-scan-site" data-id="${site.id}" ${scan && activeStatuses.has(scan.status) ? "disabled" : ""}>Scan now</button></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
             </section>
             <section><div class="flow-panel-head"><div><h2>Discovered reports</h2><p>Read-only catalog from the latest successful scan.</p></div></div>
                 ${catalog.reports.length ? `<div class="flow-catalog-list">${catalog.reports.map(report => `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span></div>`).join("")}</div>` : '<p class="flow-inline-empty">No reports discovered yet.</p>'}
@@ -9453,11 +9470,35 @@ function _flowShowView(view, payload = null) {
     });
     const selectedTab = document.querySelector('.flow-tabs button[aria-selected="true"]');
     workspace.setAttribute("aria-labelledby", selectedTab?.id || "flow-tab-list");
-    if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog, state.scans, state.estimates);
+    if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog, state.scans, state.estimates, state.workers);
     else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
     else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog);
     _bindFlowWorkspace();
+    _flowScheduleCatalogMonitor();
+}
+
+function _flowScheduleCatalogMonitor() {
+    clearTimeout(window._flowCatalogMonitorTimer);
+    const state = window._flowsState;
+    const active = state?.view === "catalog" && state.scans.some(scan => ["queued", "claimed", "running"].includes(scan.status));
+    if (!active) return;
+    window._flowCatalogMonitorTimer = setTimeout(async () => {
+        if (window._flowsState?.view !== "catalog") return;
+        try {
+            const [catalog, scans, workers, estimates] = await Promise.all([
+                api("/api/flows/catalog"), api("/api/flows/scans"), api("/api/flows/workers"), api("/api/flows/estimates"),
+            ]);
+            Object.assign(window._flowsState, { catalog, scans, workers, estimates });
+            const workspace = document.getElementById("flow-workspace");
+            if (!workspace || window._flowsState.view !== "catalog") return;
+            workspace.innerHTML = _flowCatalogHtml(catalog, scans, estimates, workers);
+            _bindFlowWorkspace();
+            _flowScheduleCatalogMonitor();
+        } catch (_) {
+            _flowScheduleCatalogMonitor();
+        }
+    }, 5000);
 }
 
 function _flowBindDialog(overlay, restoreFocus) {
