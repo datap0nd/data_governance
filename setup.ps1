@@ -26,6 +26,7 @@ trap {
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $ServiceName = "MXAnalytics"
+$FlowServiceName = "MXFlowsWorker"
 $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
@@ -142,6 +143,10 @@ if ($existing) {
 } else {
     Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
 }
+$existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
+if ($existingFlowService) {
+    & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
+}
 
 # Kill anything still holding the port
 $portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
@@ -257,11 +262,12 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
 
 # Run service as current user (needed for network share access)
 if ($env:DG_SVC_PASSWORD) {
-    & $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $env:DG_SVC_PASSWORD
+    $ServicePassword = $env:DG_SVC_PASSWORD
 } else {
     $cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter your Windows password so the service can access network shares"
-    & $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $cred.GetNetworkCredential().Password
+    $ServicePassword = $cred.GetNetworkCredential().Password
 }
+& $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
 
 & $NssmExe set $ServiceName AppExit Default Restart
 & $NssmExe set $ServiceName AppRestartDelay 5000
@@ -275,6 +281,29 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppRotateFiles 1
 & $NssmExe set $ServiceName AppRotateSeconds 86400
 & $NssmExe set $ServiceName AppRotateBytes 10485760
+
+# The Flows worker is a separate headless service. Running it under the same
+# Windows account as Metronome gives it access to the account-scoped DPAPI
+# credential and makes scans/downloads independent of the visible desktop.
+if (-not $existingFlowService) {
+    & $NssmExe install $FlowServiceName $PyExe "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop --name BI-desktop --profile-dir `"$FlowProfile`""
+}
+& $NssmExe set $FlowServiceName Application $PyExe
+& $NssmExe set $FlowServiceName AppParameters "`"$CodeDir\app\flow_worker.py`" --server http://127.0.0.1:$Port --worker-id bi-desktop --name BI-desktop --profile-dir `"$FlowProfile`""
+& $NssmExe set $FlowServiceName AppDirectory $CodeDir
+& $NssmExe set $FlowServiceName DisplayName "Metronome - Flows Worker"
+& $NssmExe set $FlowServiceName Description "Headless authenticated ASAP discovery and download worker"
+& $NssmExe set $FlowServiceName Start SERVICE_AUTO_START
+& $NssmExe set $FlowServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
+& $NssmExe set $FlowServiceName AppExit Default Restart
+& $NssmExe set $FlowServiceName AppRestartDelay 10000
+& $NssmExe set $FlowServiceName AppStdout "$LogDir\flow_worker.log"
+& $NssmExe set $FlowServiceName AppStderr "$LogDir\flow_worker_error.log"
+& $NssmExe set $FlowServiceName AppStdoutCreationDisposition 4
+& $NssmExe set $FlowServiceName AppStderrCreationDisposition 4
+& $NssmExe set $FlowServiceName AppRotateFiles 1
+& $NssmExe set $FlowServiceName AppRotateSeconds 86400
+& $NssmExe set $FlowServiceName AppRotateBytes 10485760
 
 if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     Write-Host "Installing RDP console guard..." -ForegroundColor Yellow
@@ -328,40 +357,11 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
-# Install and start the browser worker from this logged-in desktop session.
-# Creating an /IT task from the background service is unreliable because the
-# service has no interactive session, so setup owns this step explicitly.
-$WorkerTaskName = "DG_Flow_Worker"
-$WorkerLauncher = "$CodeDir\tools\run_flow_worker.ps1"
-if (Test-Path $WorkerLauncher) {
-    Write-Host "Starting Flows browser worker..." -ForegroundColor Yellow
-    $WorkerCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$WorkerLauncher`""
-    & schtasks.exe /Create /TN $WorkerTaskName /TR $WorkerCommand /SC ONLOGON /IT /F | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  WARNING: Could not install $WorkerTaskName. ASAP scans will remain queued." -ForegroundColor Yellow
-    } else {
-        Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
-    }
+Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
+$WorkerStartedAt = Get-Date
+& $NssmExe start $FlowServiceName
 
-    # Start the first instance directly in this interactive desktop session.
-    # Managed Windows builds can accept `schtasks /Run` for an /IT task, or a
-    # hidden PowerShell child, without ever creating a durable worker process.
-    # Launching Python directly removes that fragile extra shell layer. The
-    # ONLOGON task remains the durable restart path.
-    $WorkerStartedAt = Get-Date
-    try {
-        Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden -ArgumentList @(
-            "`"$CodeDir\app\flow_worker.py`"",
-            "--server", "http://127.0.0.1:$Port",
-            "--worker-id", "bi-desktop",
-            "--name", "BI-desktop"
-        ) -RedirectStandardOutput "$LogDir\flow_worker_stdout.log" `
-          -RedirectStandardError "$LogDir\flow_worker_error.log"
-    } catch {
-        Write-Host "  WARNING: Flows worker could not be started: $_" -ForegroundColor Yellow
-    }
-
-    # Poll until the interactive task registers with the service.
+    # Poll until the service registers with Metronome.
     $WorkerOnline = $false
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
@@ -390,7 +390,6 @@ if (Test-Path $WorkerLauncher) {
     } else {
         Write-Host "  WARNING: Flows worker did not register. Check $LogDir\flow_worker.log" -ForegroundColor Yellow
     }
-}
 
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {

@@ -368,13 +368,12 @@ def test_windows_worker_launcher_uses_direct_script_for_embedded_python():
     assert '(Join-Path $CodeDir "app\\flow_worker.py")' in source
 
 
-def test_setup_installs_interactive_flow_worker():
+def test_setup_installs_headless_flow_worker_service():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-    assert '$WorkerTaskName = "DG_Flow_Worker"' in source
-    assert "/SC ONLOGON /IT /F" in source
-    assert "Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden" in source
-    assert '$CodeDir\\app\\flow_worker.py' in source
-    assert '"--name", "BI-desktop"' in source
+    assert '$FlowServiceName = "MXFlowsWorker"' in source
+    assert "install $FlowServiceName $PyExe" in source
+    assert "start $FlowServiceName" in source
+    assert "--name BI-desktop" in source
     assert "flow_worker_error.log" in source
     assert "$WorkerStartedAt = Get-Date" in source
     assert "$WorkerStartedAt.AddSeconds(-5)" in source
@@ -409,10 +408,10 @@ def test_worker_launcher_appends_diagnostic_log():
     assert '"flow_worker.log"' in source
 
 
-def test_service_starts_interactive_worker_task_instead_of_child_process():
+def test_service_starts_headless_worker_service_instead_of_child_process():
     source = Path(__file__).parents[1].joinpath("app", "flow_local_runner.py").read_text()
-    assert '["schtasks.exe", "/Run", "/TN", TASK_NAME]' in source
-    assert '"mode": "interactive_task"' in source
+    assert '["sc.exe", "start", SERVICE_NAME]' in source
+    assert '"mode": "windows_service"' in source
     assert "subprocess.Popen" not in source
 
 
