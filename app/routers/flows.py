@@ -908,10 +908,14 @@ def _apply_discovery(
     report_ids = []
     filter_count = 0
     for item in reports:
+        category_path = item.automation.get("category_path") or []
+        catalog_name = " > ".join(
+            str(part).strip() for part in category_path if str(part).strip()
+        ) or item.name.strip()
         existing = db.execute(
             """SELECT id FROM flow_reports WHERE site_id=?
                AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
-            (site_id, item.discovery_key, item.name.strip()),
+            (site_id, item.discovery_key, catalog_name),
         ).fetchone()
         if existing:
             report_id = existing["id"]
@@ -920,7 +924,7 @@ def _apply_discovery(
                    automation_json=?, discovery_key=?, source_kind='discovered', last_seen_at=?,
                    stale=0, enabled=1, updated_at=?
                    WHERE id=?""",
-                (item.name.strip(), item.report_url, item.ready_text, item.download_text,
+                (catalog_name, item.report_url, item.ready_text, item.download_text,
                  _json(item.automation), item.discovery_key, seen_at, seen_at, report_id),
             )
         else:
@@ -929,7 +933,7 @@ def _apply_discovery(
                    (site_id, name, report_url, ready_text, download_text, automation_json,
                     discovery_key, source_kind, last_seen_at, stale, enabled, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)""",
-                (site_id, item.name.strip(), item.report_url, item.ready_text, item.download_text,
+                (site_id, catalog_name, item.report_url, item.ready_text, item.download_text,
                  _json(item.automation), item.discovery_key, seen_at, seen_at, seen_at),
             )
             report_id = cursor.lastrowid

@@ -253,6 +253,29 @@ def test_scan_discovery_upserts_and_marks_missing_stale_without_deleting(flow_db
     assert (row["enabled"], row["stale"]) == (0, 1)
 
 
+def test_scan_discovery_keeps_duplicate_leaf_names_from_different_menu_paths(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    reports = [
+        flows.DiscoveredReport(
+            discovery_key=f"Mobile > {group} > Inflow Outflow",
+            name="Inflow Outflow",
+            report_url="https://portal.example.test",
+            automation={"category_path": ["Mobile", group, "Inflow Outflow"]},
+        )
+        for group in ("Operations", "Inventory")
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(db, site["id"], reports, "2026-08-12T10:00:00")
+        names = [row["name"] for row in db.execute(
+            "SELECT name FROM flow_reports ORDER BY name"
+        ).fetchall()]
+    assert result["report_count"] == 2
+    assert names == [
+        "Mobile > Inventory > Inflow Outflow",
+        "Mobile > Operations > Inflow Outflow",
+    ]
+
+
 def test_scan_estimate_uses_recorded_median(flow_db):
     site = flows.create_site(_asap_site(), _request())
     with database.get_db() as db:
