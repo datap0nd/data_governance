@@ -287,7 +287,8 @@ class FlowWrite(BaseModel):
         if self.download_mode == "one_per_week" and not self.start_week:
             raise ValueError("One download per week needs a start and end week.")
         if self.download_mode == "one_per_week" and "{week}" not in self.filename_template:
-            raise ValueError("One download per week requires {week} in the filename template.")
+            stem, suffix = self.filename_template[:-4], self.filename_template[-4:]
+            self.filename_template = f"{stem}_{{week}}{suffix}"
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         _schedule_next(self.schedule_type, self.schedule_time, self.schedule_days)
         if self.sql_handoff_enabled:
