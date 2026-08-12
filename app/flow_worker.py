@@ -488,11 +488,23 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         before = _visible_anchor_records(page)
         root["link"].click(timeout=15_000)
         after = before
+        stable_signature: tuple[tuple[str, ...], ...] | None = None
+        stable_polls = 0
         reveal_deadline = time.monotonic() + 10
         while time.monotonic() < reveal_deadline:
             page.wait_for_timeout(200)
             after = _visible_anchor_records(page)
-            if _menu_report_paths(root, before, after):
+            revealed_paths = _menu_report_paths(root, before, after)
+            signature = tuple(tuple(path) for path in revealed_paths)
+            if signature and signature == stable_signature:
+                stable_polls += 1
+            else:
+                stable_signature = signature
+                stable_polls = 0
+            # ASAP builds large mega-menus incrementally. The first non-empty
+            # snapshot can contain only a few columns, so wait until the menu
+            # remains unchanged for roughly one second before cataloguing it.
+            if signature and stable_polls >= 5:
                 break
         for path in _menu_report_paths(root, before, after):
             if path not in paths:
