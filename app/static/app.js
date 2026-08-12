@@ -464,8 +464,8 @@ function _notifySlaBuildBody(action, reason, slaValue, slaUnit) {
         `Issue: ${issue}`,
         `Status: ${action.status || "open"}`,
         `Assigned owner: ${action.assigned_to || "Unassigned"}`,
-        `Impact: ${fmtInt(action.impact_views_30d || 0)} weighted views in the last 30 days`,
-        `Problem age: ${action.asset_days || 0} days`,
+        `Views last 30 days: ${fmtInt(action.impact_views_30d || 0)}`,
+        `Degraded since: ${formatDateOnly(action.degraded_since || action.created_at)}`,
         "",
         `Reason: ${reason}`,
         `Estimated SLA: ${slaText}`,
@@ -829,6 +829,13 @@ function formatDate(dateStr) {
     if (isNaN(d.getTime())) return dateStr;
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
          + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDateOnly(dateStr) {
+    if (!dateStr) return "-";
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function formatCompactTimestamp(dateStr) {
@@ -1468,6 +1475,7 @@ async function showReportDetail(report) {
                 ${report.powerbi_url ? `<a href="${esc(report.powerbi_url)}" target="_blank" rel="noopener" class="btn-outline" style="font-size:0.72rem;text-decoration:none" onclick="event.stopPropagation()">View in Power BI</a>` : ''}
                 <button class="btn-outline btn-lineage-nav" data-report-id="${report.id}" style="font-size:0.72rem">View Lineage</button>
             </div>
+            ${report.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(report.pbi_refresh_error)}</div>` : ''}
             <div class="rx-section rx-l1">
                 <div class="rx-toggle" data-target="ds-list">
                     <span class="rx-arrow">&#9656;</span> Data Sources <span class="rx-count">(${tables.length})</span>
@@ -1932,7 +1940,7 @@ function renderFixFirstPanel(openActions) {
                     <div class="fix-first-reasons">${reasons}</div>
                 </div>
                 <div class="fix-first-metrics">
-                    <span class="impact-pill" title="Weighted views in the last 30 days">${fmtInt(a.impact_views_30d || 0)}</span>
+                    <span class="impact-pill" title="Views in the last 30 days">${fmtInt(a.impact_views_30d || 0)}</span>
                     ${ctaHtml(a)}
                 </div>
             </div>
@@ -1944,7 +1952,7 @@ function renderFixFirstPanel(openActions) {
             <div class="fix-first-header">
                 <div>
                     <h3>Fix This First</h3>
-                    <span>Ranked by weighted impact, issue type, age, and ownership.</span>
+                    <span>Ranked by views, issue type, time degraded, and ownership.</span>
                 </div>
             </div>
             <div class="fix-first-list">${items}</div>
@@ -1982,7 +1990,7 @@ function renderDashboardAlertsSection(actions, people) {
     return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
             <h2 style="margin:0">Alerts</h2>
-            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by weighted impact, then days in problem state</span>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by views, then date degraded</span>
         </div>
         ${fixFirstHtml}
         <div class="alerts-chips">${chipsHtml}</div>
@@ -2044,9 +2052,9 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             ? `<span class="asset-type-badge asset-type-${a.asset_type}">${typeLabel}</span>`
             : '<span style="color:var(--text-dim)">-</span>';
 
-        const days = a.asset_days || 0;
+        const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
-        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || (a.detail_items && a.detail_items.length > 0);
+        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0);
         let openButton = '<button type="button" class="alerts-action-btn alerts-row-open" disabled>Open</button>';
         if (a.asset_type === "source" && a.asset_id) {
             openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-source-link" data-source-id="${a.asset_id}">Open</button>`;
@@ -2062,16 +2070,16 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
                     ${hasExpandable
-                        ? `<button type="button" class="alerts-expand-btn" data-action-id="${a.id}" aria-expanded="false" title="Show recommendation and stale sources"><span class="alerts-expand-label">Details</span><span class="alerts-expand-arrow">&#8250;</span></button>`
+                        ? `<button type="button" class="alerts-expand-btn" data-action-id="${a.id}" aria-expanded="false" title="Show error and recommendation"><span class="alerts-expand-label">Details</span><span class="alerts-expand-arrow">&#8250;</span></button>`
                         : '<span class="alerts-expand-spacer"></span>'}
                     <span class="alerts-asset-wrap">${assetCell}</span>
                 </td>
                 <td>${typeCell}</td>
                 <td style="text-align:right">
-                    <span class="impact-pill" title="Weighted views in the last 30 days. Premium viewers count 5x.">${fmtInt(impact)}</span>
+                    <span class="impact-pill" title="Views in the last 30 days">${fmtInt(impact)}</span>
                 </td>
-                <td style="text-align:right">
-                    <span class="days-pill${days >= 7 ? ' days-pill-high' : ''}">${days}d</span>
+                <td>
+                    <span class="degraded-since" title="${esc(degradedSince || "Unknown")}">${formatDateOnly(degradedSince)}</span>
                 </td>
                 <td>${actionTypeBadge(a.type)}</td>
                 <td>
@@ -2111,6 +2119,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
                 <td colspan="8" class="alerts-expand-cell">
+                    ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
                 </td>
@@ -2127,8 +2136,8 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                     <tr>
                         <th style="width:30%">Asset</th>
                         <th style="width:9%">Type</th>
-                        <th style="width:9%;text-align:right">Impact</th>
-                        <th style="width:7%;text-align:right">Days</th>
+                        <th style="width:9%;text-align:right">Views</th>
+                        <th style="width:12%">Degraded since</th>
                         <th style="width:13%">Issue</th>
                         <th style="width:11%">Owner</th>
                         <th style="width:10%">Status</th>
@@ -3535,7 +3544,7 @@ async function renderActionsContent() {
                         <div class="action-title">${shortAsset}</div>
                         <div class="action-meta">
                             ${actionTypeBadge(a.type)}
-                            <span title="Weighted views in the last 30 days">Impact ${fmtInt(a.impact_views_30d || 0)}</span>
+                            <span title="Views in the last 30 days">Views ${fmtInt(a.impact_views_30d || 0)}</span>
                             <select class="action-owner-select" data-action-id="${a.id}">
                                 <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
                                 ${owners.map(o => `<option value="${esc(o)}"${o === currentOwner ? ' selected' : ''}>${esc(o)}</option>`).join("")}
@@ -4758,21 +4767,22 @@ function _emailFixLinks(alert) {
 }
 
 function _emailAlertLine(alert) {
-    const days = alert.asset_days || 0;
-    const impact = [];
-    if ((alert.report_links || []).length) impact.push(`${alert.report_links.length} report${alert.report_links.length === 1 ? "" : "s"}`);
-    if (alert.impact_views_30d) impact.push(`${Number(alert.impact_views_30d).toLocaleString()} weighted views`);
+    const views = Number(alert.impact_views_30d || 0).toLocaleString();
+    const degradedSince = formatDateOnly(alert.degraded_since || alert.created_at);
     const nextAction = alert.recommendation || alert.triage_cta || "Open the alert and review the evidence.";
     const links = _emailFixLinks(alert).slice(0, 3).join("");
-    return `<li>
-        <div class="email-alert-title">
-            <span class="email-priority priority-${esc(alert.email_priority || "normal")}">${esc(alert.email_priority || "normal")}</span>
-            <strong>${esc(alert.issue_label || alert.type)}</strong>
-        </div>
-        <span>${esc(alert.asset_name || "Unknown asset")} - open ${days}d${impact.length ? ` - ${esc(impact.join(", "))}` : ""}</span>
-        <span class="email-next-action"><strong>Next:</strong> ${esc(nextAction)}</span>
-        ${links ? `<div class="email-fix-links">${links}</div>` : ""}
-    </li>`;
+    return `<tr>
+        <td><span class="email-artifact email-artifact-${esc(alert.artifact_kind || "data")}">${esc(alert.artifact_label || "Data")}</span></td>
+        <td>
+            <div class="email-alert-title"><strong>${esc(alert.issue_label || alert.type)}</strong></div>
+            <div>${esc(alert.asset_name || "Unknown asset")}</div>
+            ${alert.pbi_refresh_error ? `<div class="email-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(alert.pbi_refresh_error)}</div>` : ""}
+            <div class="email-next-action"><strong>Next:</strong> ${esc(nextAction)}</div>
+            ${links ? `<div class="email-fix-links">${links}</div>` : ""}
+        </td>
+        <td class="email-degraded-since">${esc(degradedSince)}</td>
+        <td class="email-views">${esc(views)}</td>
+    </tr>`;
 }
 
 async function renderEmail() {
@@ -4828,7 +4838,12 @@ async function renderEmail() {
                     <span>${s.alert_count} active alert${s.alert_count === 1 ? "" : "s"}</span>
                     ${s.include_all_alerts ? "<span>All alerts</span>" : ""}
                 </div>
-                <ul class="email-task-preview">${previewAlerts}</ul>
+                <div class="email-task-preview-wrap">
+                    <table class="email-task-preview">
+                        <thead><tr><th>Artifact</th><th>Issue and name</th><th>Degraded since</th><th>Views</th></tr></thead>
+                        <tbody>${previewAlerts}</tbody>
+                    </table>
+                </div>
                 ${s.alerts.length > 4 ? `<div class="email-more">+${s.alerts.length - 4} more</div>` : ""}
                 <div class="email-summary-actions">
                     <button class="btn-outline email-open-draft" data-owner="${esc(s.owner_name)}" ${missingEmail ? "disabled" : ""}>Open Draft</button>

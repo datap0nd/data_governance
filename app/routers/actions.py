@@ -172,7 +172,7 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
             )
         return "Refresh this report - one or more sources have fresher data."
     if action_type == "refresh_failed":
-        return "Investigate the PBI refresh error (check the notes) and trigger a manual refresh once fixed."
+        return "Fix the Power BI refresh error shown below, then trigger a manual refresh."
     if action_type == "refresh_overdue":
         return "Trigger a manual refresh or verify the schedule is enabled and the gateway is up."
     if action_type in ("stale_source", "outdated_source", "error_source"):
@@ -258,7 +258,7 @@ def _triage_cta(asset_type: str | None, assigned_to: str | None) -> str:
 def _apply_triage(action: ActionOut) -> ActionOut:
     """Attach transparent fix-first scoring to an action.
 
-    Impact is deliberately the dominant signal: one weighted usage view is
+    Usage is deliberately the dominant signal: one usage-impact point is
     worth more than issue-type and age tie-breakers combined.
     """
     if action.status in ("resolved", "expected"):
@@ -295,7 +295,7 @@ def _apply_triage(action: ActionOut) -> ActionOut:
 
     reasons: list[str] = []
     if impact:
-        reasons.append(f"{impact:,} weighted views in last 30d")
+        reasons.append(f"{impact:,} views in the last 30 days")
     else:
         reasons.append("No measured usage impact yet")
     reasons.append(_issue_reason(action.type))
@@ -310,7 +310,7 @@ def _apply_triage(action: ActionOut) -> ActionOut:
     elif action.asset_type == "source" and affected_reports:
         reasons.append(f"Affects {affected_reports} report{'s' if affected_reports != 1 else ''}")
     if days:
-        reasons.append(f"Open for {days}d")
+        reasons.append(f"Degraded since {action.degraded_since[:10]}" if action.degraded_since else f"Degraded for {days}d")
     if not action.assigned_to:
         reasons.append("Unassigned")
 
@@ -332,6 +332,7 @@ def list_actions(status: str | None = None):
         query = """
             SELECT a.*, s.name AS source_name, s.archived AS source_archived,
                    r.name AS report_name, r.archived AS report_archived,
+                   r.pbi_refresh_error,
                    st.task_name AS task_name, st.archived AS task_archived,
                    sc.display_name AS script_name, sc.archived AS script_archived,
                    sp.status AS latest_source_status,
@@ -473,6 +474,8 @@ def list_actions(status: str | None = None):
             fingerprint=r["fingerprint"] if "fingerprint" in r.keys() else None,
             check_id=r["check_id"] if "check_id" in r.keys() else None,
             impact_views_30d=impact_views_30d,
+            degraded_since=r["created_at"],
+            pbi_refresh_error=r["pbi_refresh_error"] if rid is not None else None,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             resolved_at=r["resolved_at"],

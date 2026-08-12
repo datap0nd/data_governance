@@ -25,3 +25,13 @@ def test_manual_tasks_surface_is_removed_but_scheduled_tasks_remain():
     assert '/api/email/task-summaries' not in app_js
     assert 'tasks: "dashboard"' in app_js
     assert 'data-page="scheduledtasks"' in index_html
+
+
+def test_alert_surfaces_use_degradation_dates_and_power_bi_error_details():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "Weighted views" not in app_js
+    assert "weighted impact" not in app_js
+    assert "Degraded since" in app_js
+    assert "PBI Refresh Error:" in app_js
+    assert "check the notes" not in app_js

@@ -2,8 +2,11 @@
 
 ## Current Objective
 
-Deliver a configurable Flows surface for website report downloads while
-keeping report-specific configuration in the installed app's SQLite database.
+Keep Metronome focused on actionable governance workflows. The latest change
+simplifies owner alert emails to one evidence-rich table and exposes the start
+of each degradation and the Power BI refresh failure reason wherever an owner
+investigates the alert. Preserve the newly delivered configurable Flows
+surface for website report downloads and its SQLite-owned configuration.
 
 ## Repo State
 
@@ -63,6 +66,18 @@ keeping report-specific configuration in the installed app's SQLite database.
 - Owner emails are alert-only, ranked by risk and impact, and require explicit
   recipient selection. Immediate sends show recipients and alert counts in the
   confirmation.
+- Alert emails now contain only the intro, one alert table, and the closing.
+  The duplicate top-three section and the table heading were removed.
+- `Degraded since` is the current action's creation timestamp, which represents
+  the start of the current detected degradation episode. It replaces age and
+  `Open` wording in alert surfaces.
+- Alert surfaces label the usage-prioritization metric as `Views`; the existing
+  premium-viewer multiplier remains an internal ranking rule.
+- Power BI refresh history parsing prefers the detailed refresh-attempt error,
+  stores the extracted message, and exposes it in report details, alert
+  details, the email preview, and the Outlook email as `PBI Refresh Error:`.
+- Artifact marks in Outlook email use inline, email-safe HTML for Power BI,
+  Excel, SQL, and the supported fallback artifact types.
 
 ## Files Changed
 
@@ -116,18 +131,23 @@ keeping report-specific configuration in the installed app's SQLite database.
 - `tests/test_sources.py`, `tests/test_task_scheduler_runner.py`,
   `tests/test_email_alert_summary.py`, `tests/test_overview_removed.py`: focused
   regression coverage for the new behavior.
+- `app/models.py`, `app/routers/actions.py`: degradation date and Power BI error
+  evidence on action responses, plus plain-language alert copy.
+- `app/routers/email.py`: one-table email layout with artifact marks,
+  degradation dates, views, next actions, and refresh errors.
+- `app/scanner/pbi_fetch.py`: detailed Power BI refresh-attempt error parsing
+  for both direct refresh lookup and the scheduled refresh metadata sync.
+- `app/static/app.js`, `app/static/style.css`, `app/static/index.html`: matching
+  dashboard, report-detail, and email-preview surfaces.
+- `docs/metric_contracts.md`, `tests/test_email_alert_summary.py`,
+  `tests/test_pbi_fetch.py`, `tests/test_overview_removed.py`: metric semantics
+  and regression coverage for the new alert contract.
 
 ## Commands And Checks
 
-- Full Python suite: `91 passed`.
-- JavaScript syntax check: passed.
-- Python compile check: passed.
-- Desktop and 390px mobile Playwright screenshots: passed with no horizontal
-  overflow after the responsive fix.
-- Impeccable detector: no findings.
-- `git diff --check`: passed.
-
-- Full Python suite: `81 passed`.
+- Full Python suite: `98 passed` after rebasing onto the latest `origin/main`.
+- Existing Flows desktop and 390px mobile Playwright screenshots passed with
+  no horizontal overflow after their responsive fix.
 - Node lineage suite: `1 passed`.
 - Python `compileall` for `app`: passed.
 - JavaScript syntax check: passed.
@@ -137,7 +157,7 @@ keeping report-specific configuration in the installed app's SQLite database.
 
 ## Next Step
 
-Update the BI desktop installation from `main`, enter the first website and
-report catalog through the Flows UI, run the authenticated worker under the
-authorized Windows session, and validate a real CSV download without deletion,
-overwrite, or SQL insertion.
+Update the installed service from `main`, sync Power BI refresh metadata, and
+validate one failed-refresh alert and Outlook draft against live Windows data.
+Then configure and validate the first real CSV download through Flows on the
+authorized BI desktop session.

@@ -454,55 +454,87 @@ def _build_task_summary(owner: dict, tasks: list[dict]) -> dict:
     }
 
 
+def _alert_degraded_since(value: str | None) -> str:
+    dt = _parse_dt(value)
+    return dt.strftime("%d %b %Y") if dt else "Unknown"
+
+
+def _alert_artifact(alert: dict) -> tuple[str, str]:
+    if alert.get("report_detail") or alert.get("asset_type") == "report":
+        return "Power BI", "powerbi"
+    source_type = str((alert.get("source_detail") or {}).get("type") or "").casefold()
+    if source_type in SQL_SOURCE_TYPES:
+        return "SQL", "sql"
+    if source_type in {"excel", "csv", "file", "folder"}:
+        return "Excel", "excel"
+    if source_type in {"web", "sharepoint"}:
+        return "Web", "web"
+    if alert.get("asset_type") == "script":
+        return "Python", "python"
+    if alert.get("asset_type") == "scheduled_task":
+        return "Windows", "windows"
+    return "Data", "data"
+
+
+def _artifact_mark_html(kind: str) -> str:
+    if kind == "powerbi":
+        mark = (
+            '<span style="display:inline-block;width:3px;height:8px;background:#e2aa13;margin-right:1px;vertical-align:bottom"></span>'
+            '<span style="display:inline-block;width:3px;height:13px;background:#e2aa13;margin-right:1px;vertical-align:bottom"></span>'
+            '<span style="display:inline-block;width:3px;height:18px;background:#e2aa13;vertical-align:bottom"></span>'
+        )
+        background = "#fff8d6"
+        foreground = "#6b5200"
+    elif kind == "excel":
+        mark, background, foreground = "X", "#217346", "#ffffff"
+    elif kind == "sql":
+        mark, background, foreground = "SQL", "#e7f3f6", "#176b78"
+    elif kind == "python":
+        mark, background, foreground = "PY", "#e8f0f8", "#315f86"
+    elif kind == "windows":
+        mark, background, foreground = "WIN", "#eaf3fb", "#24678f"
+    elif kind == "web":
+        mark, background, foreground = "WEB", "#edf3f1", "#35665e"
+    else:
+        mark, background, foreground = "DATA", "#eef1f0", "#59625e"
+    return (
+        f'<span style="display:inline-block;width:28px;min-width:28px;height:24px;line-height:24px;'
+        f'text-align:center;background:{background};color:{foreground};font-size:8px;font-weight:700;'
+        f'border-radius:3px;vertical-align:middle">{mark}</span>'
+    )
+
+
+def _artifact_cell_html(alert: dict) -> str:
+    label, kind = _alert_artifact(alert)
+    return (
+        '<span style="white-space:nowrap">'
+        + _artifact_mark_html(kind)
+        + f'<span style="display:inline-block;margin-left:7px;vertical-align:middle">{html.escape(label)}</span>'
+        + "</span>"
+    )
+
+
 def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
     today = datetime.now(timezone.utc).strftime("%d %b %Y")
     owner_name = owner["name"]
     subject = f"{len(alerts)} active alert{'s' if len(alerts) != 1 else ''} need attention - {owner_name} - {today}"
-
-    failure_types = {"refresh_failed", "error_source", "script_failed", "task_failed", "broken_ref"}
-
-    def priority(alert: dict) -> tuple[str, int]:
-        impact = int(alert.get("impact_views_30d") or 0)
-        reports = len(alert.get("report_links") or [])
-        age = int(alert.get("asset_days") or 0)
-        if alert.get("type") in failure_types or impact >= 100:
-            return "Urgent", 0
-        if impact > 0 or reports >= 3 or age >= 7:
-            return "High", 1
-        return "Normal", 2
-
     ranked = sorted(
         alerts,
         key=lambda alert: (
-            priority(alert)[1],
+            -(alert.get("triage_score") or 0),
             -(alert.get("impact_views_30d") or 0),
             -len(alert.get("report_links") or []),
-            -(alert.get("asset_days") or 0),
+            alert.get("degraded_since") or alert.get("created_at") or "9999",
             alert.get("asset_name") or "",
         ),
     )
     for alert in ranked:
-        alert["email_priority"] = priority(alert)[0].lower()
-    urgent_count = sum(1 for alert in ranked if priority(alert)[0] == "Urgent")
-    affected_reports = {
-        report.get("report_id")
-        for alert in ranked
-        for report in (alert.get("report_links") or [])
-        if report.get("report_id") is not None
-    }
-
-    def impact_text(alert: dict) -> str:
-        report_count = len(alert.get("report_links") or [])
-        views = int(alert.get("impact_views_30d") or 0)
-        bits = []
-        if report_count:
-            bits.append(f"{report_count} report{'s' if report_count != 1 else ''}")
-        if views:
-            bits.append(f"{views:,} weighted views in 30d")
-        return ", ".join(bits) or "No measured report impact"
+        artifact_label, artifact_kind = _alert_artifact(alert)
+        alert["artifact_label"] = artifact_label
+        alert["artifact_kind"] = artifact_kind
 
     def next_action(alert: dict) -> str:
-        return alert.get("recommendation") or alert.get("triage_cta") or "Open the alert and review the evidence."
+        return alert.get("recommendation") or alert.get("triage_cta") or "Open the asset and investigate the issue."
 
     def asset_html(alert: dict) -> str:
         if alert.get("report_detail"):
@@ -518,75 +550,63 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
             return _source_text(alert.get("source_detail"), alert.get("asset_name"))
         return alert.get("asset_name") or "Unknown asset"
 
+    def refresh_error(alert: dict) -> str | None:
+        return alert.get("pbi_refresh_error") or (alert.get("report_detail") or {}).get("pbi_refresh_error")
+
     lines = [
         f"Hi {owner_name},",
         "",
         f"{len(ranked)} active alert{'s' if len(ranked) != 1 else ''} need attention as of {today}.",
-        f"Urgent: {urgent_count} | Reports affected: {len(affected_reports)}",
+        "They are ordered by views, failure risk, affected reports, and time degraded.",
         "",
-        "WHAT TO DO FIRST",
+        "Artifact | Issue and name | Degraded since | Views",
     ]
-    for index, alert in enumerate(ranked[:3], start=1):
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-        lines.append(f"{index}. [{priority(alert)[0]}] {label}: {asset_text(alert)}")
-        lines.append(f"   Impact: {impact_text(alert)} | Open: {alert.get('asset_days') or 0}d")
-        lines.append(f"   Next action: {next_action(alert)}")
-
-    lines.extend(["", "ALL ACTIVE ALERTS"])
     for alert in ranked:
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-        lines.append(
-            f"- [{priority(alert)[0]}] {label} | {asset_text(alert)} | "
-            f"{impact_text(alert)} | Open {alert.get('asset_days') or 0}d"
-        )
-        lines.append(f"  Next action: {next_action(alert)}")
-
-    lines.extend(["", "Thanks,", "Metronome"])
+        artifact_label, _ = _alert_artifact(alert)
+        issue_label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        degraded_since = _alert_degraded_since(alert.get("degraded_since") or alert.get("created_at"))
+        views = int(alert.get("impact_views_30d") or 0)
+        lines.append(f"{artifact_label} | {issue_label}: {asset_text(alert)} | {degraded_since} | {views:,}")
+        if refresh_error(alert):
+            lines.append(f"PBI Refresh Error: {refresh_error(alert)}")
+        lines.append(f"Next action: {next_action(alert)}")
+        lines.append("")
+    lines.extend(["Thanks,", "Metronome"])
     body_text = "\n".join(lines)
 
     html_parts = [
-        "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:1.45;color:#1f2937;max-width:920px\">",
+        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;line-height:1.45;color:#1f2937;max-width:920px">',
         f"<p>Hi {html.escape(owner_name)},</p>",
-        f"<p><strong>{len(ranked)} active alert{'s' if len(ranked) != 1 else ''} need attention.</strong> This summary is ranked by failure risk, measured usage, affected reports, and age.</p>",
-        '<table role="presentation" style="width:100%;border-collapse:collapse;margin:14px 0 20px"><tr>',
-        f'<td style="padding:12px 14px;background:#f3f7f6;border:1px solid #d8e4e1"><div style="font-size:22px;font-weight:700">{len(ranked)}</div><div style="color:#5b6670">Active alerts</div></td>',
-        f'<td style="padding:12px 14px;background:#fff7ed;border:1px solid #f1ddc7"><div style="font-size:22px;font-weight:700">{urgent_count}</div><div style="color:#5b6670">Urgent</div></td>',
-        f'<td style="padding:12px 14px;background:#f3f7f6;border:1px solid #d8e4e1"><div style="font-size:22px;font-weight:700">{len(affected_reports)}</div><div style="color:#5b6670">Reports affected</div></td>',
-        "</tr></table>",
-        '<h2 style="font-size:16px;margin:0 0 10px">What to do first</h2>',
-    ]
-    for index, alert in enumerate(ranked[:3], start=1):
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
-        html_parts.append(
-            '<div style="border:1px solid #d7dce2;border-left:4px solid #18766d;padding:11px 13px;margin:0 0 8px">'
-            f'<div style="font-size:12px;color:#5b6670;margin-bottom:3px">{index}. {html.escape(priority(alert)[0])} - {html.escape(label)}</div>'
-            f'<div style="font-weight:700;margin-bottom:4px">{asset_html(alert)}</div>'
-            f'<div style="color:#5b6670">{html.escape(impact_text(alert))} - Open {int(alert.get("asset_days") or 0)}d</div>'
-            f'<div style="margin-top:6px"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
-            "</div>"
-        )
-
-    html_parts.extend([
-        f'<h2 style="font-size:16px;margin:22px 0 10px">All active alerts ({len(ranked)})</h2>',
-        '<table style="width:100%;border-collapse:collapse;font-size:12px">',
+        f"<p><strong>{len(ranked)} active alert{'s' if len(ranked) != 1 else ''} need attention.</strong> They are ordered by views, failure risk, affected reports, and time degraded.</p>",
+        '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:14px">',
         '<tr style="background:#eef3f2;text-align:left">'
-        + _th("Priority") + _th("Issue") + _th("Asset") + _th("Impact") + _th("Open") + _th("Next action") + "</tr>",
-    ])
+        + _th("Artifact") + _th("Issue and name") + _th("Degraded since") + _th("Views") + "</tr>",
+    ]
     for alert in ranked:
-        label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        issue_label = ACTION_TYPE_LABELS.get(alert["type"], alert["type"])
+        degraded_since = _alert_degraded_since(alert.get("degraded_since") or alert.get("created_at"))
+        views = int(alert.get("impact_views_30d") or 0)
+        error_html = ""
+        if refresh_error(alert):
+            error_html = (
+                '<div style="margin-top:7px;padding:7px 8px;background:#fff2f1;color:#9f2f2f;'
+                'border:1px solid #efd0ce;word-break:break-word">'
+                f'<strong>PBI Refresh Error:</strong> {html.escape(refresh_error(alert))}</div>'
+            )
+        issue_html = (
+            f'<strong>{html.escape(issue_label)}</strong><br>{asset_html(alert)}'
+            + error_html
+            + f'<div style="margin-top:7px;color:#4b5563"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
+        )
         html_parts.append(
             "<tr>"
-            + _td(f"<strong>{html.escape(priority(alert)[0])}</strong>")
-            + _td(html.escape(label))
-            + _td(f"<strong>{asset_html(alert)}</strong>")
-            + _td(html.escape(impact_text(alert)))
-            + _td(f"{int(alert.get('asset_days') or 0)}d")
-            + _td(html.escape(next_action(alert)), "color:#4b5563;min-width:210px")
+            + _td(_artifact_cell_html(alert), "min-width:105px")
+            + _td(issue_html, "min-width:300px")
+            + _td(html.escape(degraded_since), "white-space:nowrap")
+            + _td(f"{views:,}", "white-space:nowrap;text-align:right")
             + "</tr>"
         )
-    html_parts.append("</table>")
-
-    html_parts.append("<p>Thanks,<br>Metronome</p></div>")
+    html_parts.extend(["</table>", "<p>Thanks,<br>Metronome</p></div>"])
 
     return {
         "owner_name": owner_name,
@@ -597,7 +617,7 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
         "body_text": body_text,
         "body_html": "".join(html_parts),
         "mailto": f"mailto:{quote(owner.get('email') or '')}?subject={quote(subject)}&body={quote(body_text)}",
-        "alerts": alerts,
+        "alerts": ranked,
     }
 
 
@@ -657,7 +677,9 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
         reports = {
             r["id"]: dict(r)
             for r in db.execute(
-                "SELECT id, name, powerbi_url, tmdl_path, pbi_last_refresh_at FROM reports"
+                """SELECT id, name, powerbi_url, tmdl_path, pbi_last_refresh_at,
+                          pbi_refresh_status, pbi_refresh_error
+                   FROM reports"""
             ).fetchall()
         }
         sources = {

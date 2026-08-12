@@ -35,10 +35,15 @@ def test_fetch_dataset_last_refresh_uses_cached_auth_and_extracts_failure_reason
                     "status": "Failed",
                     "startTime": "2026-07-16T07:55:00Z",
                     "endTime": "2026-07-16T08:00:00Z",
-                    "serviceExceptionJson": (
-                        '{"errorCode":"ModelRefreshFailed",'
-                        '"errorDescription":"Gateway could not reach the source."}'
-                    ),
+                    "serviceExceptionJson": '{"errorCode":"ModelRefreshFailed"}',
+                    "refreshAttempts": [
+                        {
+                            "serviceExceptionJson": (
+                                '{"errorCode":"GatewayError",'
+                                '"errorDescription":"Gateway could not reach the source."}'
+                            )
+                        }
+                    ],
                 }
             ]
         }

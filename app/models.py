@@ -161,8 +161,8 @@ class ActionOut(BaseModel):
     asset_type: str | None = None  # "source", "report", ...
     asset_id: int | None = None
     asset_name: str | None = None
-    # Days the asset has been in a problem state (covers both source
-    # outdated days and report refresh-overdue days)
+    # Internal age signal used for ranking. Product surfaces show the
+    # degradation start date instead of an age counter.
     asset_days: int = 0
     # Extra troubleshooting context for specific alert types. For
     # schedule_mismatch: list of sources that refreshed after the report,
@@ -178,6 +178,8 @@ class ActionOut(BaseModel):
     fingerprint: str | None = None
     check_id: int | None = None
     impact_views_30d: int = 0
+    degraded_since: str | None = None
+    pbi_refresh_error: str | None = None
     triage_rank: int | None = None
     triage_score: int = 0
     triage_reasons: list[str] = []

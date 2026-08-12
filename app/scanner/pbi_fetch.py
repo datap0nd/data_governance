@@ -167,6 +167,21 @@ def _refresh_error_text(raw_error) -> str | None:
     return (message or str(value)).strip()[:1000] or None
 
 
+def _refresh_entry_error(entry: dict) -> str | None:
+    """Prefer the most specific Power BI refresh-attempt error available."""
+    attempts = entry.get("refreshAttempts") or []
+    for attempt in reversed(attempts):
+        detail = _refresh_error_text(attempt.get("serviceExceptionJson"))
+        if detail:
+            return detail
+    for message in entry.get("messages") or []:
+        if isinstance(message, dict):
+            detail = message.get("message")
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()[:1000]
+    return _refresh_error_text(entry.get("serviceExceptionJson"))
+
+
 def fetch_dataset_last_refresh(workspace_id: str, dataset_id: str) -> dict:
     """Return the latest semantic-model refresh attempt from Power BI Service."""
     workspace_guid = _uuid_text(workspace_id, "Workspace ID")
@@ -193,7 +208,7 @@ def fetch_dataset_last_refresh(workspace_id: str, dataset_id: str) -> dict:
         "status": entry.get("status"),
         "start_time": entry.get("startTime"),
         "end_time": entry.get("endTime"),
-        "error": _refresh_error_text(entry.get("serviceExceptionJson")),
+        "error": _refresh_entry_error(entry),
     }
 
 
@@ -256,7 +271,7 @@ def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = N
                         "start_time": entry.get("startTime"),
                         "end_time": entry.get("endTime"),
                         "status": entry.get("status"),
-                        "error": entry.get("serviceExceptionJson") or None,
+                        "error": _refresh_entry_error(entry),
                     }
             except PbiFetchError:
                 last_refresh = None
