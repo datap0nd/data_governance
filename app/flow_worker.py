@@ -410,25 +410,39 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
 
 
 def _asap_download(page: Page, frame: Frame, job: dict):
-    automation = job["report"].get("automation") or {}
-    export_text = automation.get("export_text") or automation.get("report_tab") or "Export Wizard (Detail)"
     export_control = None
+    # The current MicroStrategy report has two compact controls beside RUN.
+    # The first is Export Options and the second is subtotal. Their icon-only
+    # markup has no stable accessible label, so resolve the first visible
+    # button-like control after RUN within the same toolbar.
     for root in reversed(page.frames):
-        for locator in (
-            root.get_by_role("button", name=export_text, exact=True),
-            root.get_by_role("link", name=export_text, exact=True),
-            root.get_by_text(export_text, exact=True),
-        ):
-            try:
-                if locator.count() and locator.first.is_visible():
-                    export_control = locator.first
-                    break
-            except Exception:
+        try:
+            run = root.get_by_text("RUN", exact=True).first
+            if not run.count() or not run.is_visible():
                 continue
+            export_control = run.locator("xpath=following::*[self::button or self::a or self::input or @role='button'][1]")
+            if not export_control.count() or not export_control.first.is_visible():
+                export_control = run.locator("xpath=following::*[contains(@class,'btn') or contains(@class,'button')][1]")
+            if export_control.count() and export_control.first.is_visible():
+                export_control = export_control.first
+                break
+            # Older MicroStrategy templates render both toolbar icons as
+            # unlabelled images. Choose the first visible image after RUN and
+            # before the report canvas, which is Export Options.
+            images = run.locator("xpath=following::img")
+            export_control = next(
+                (images.nth(index) for index in range(min(images.count(), 6)) if images.nth(index).is_visible()),
+                None,
+            )
+            if export_control is not None:
+                break
+            export_control = None
+        except Exception:
+            continue
         if export_control is not None:
             break
     if export_control is None:
-        raise RuntimeError(f"Could not find visible ASAP export control: {export_text}")
+        raise RuntimeError("Could not find the ASAP Export Options control beside RUN.")
     pages_before = set(page.context.pages)
     export_control.click()
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
