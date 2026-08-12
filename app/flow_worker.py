@@ -380,6 +380,18 @@ def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def _normalize_asap_filter_label(label: str, control_type: str, options: list[str]) -> str:
+    """Repair labels omitted by custom MicroStrategy prompt controls."""
+    if (
+        control_type == "select"
+        and len(options) >= 2
+        and len([part for part in label.split(" - ") if part.strip()]) == 3
+        and all(len([part for part in value.split(" - ") if part.strip()]) == 3 for value in options)
+    ):
+        return "Data Configuration"
+    return label
+
+
 def _visible_anchor_records(page: Page) -> list[dict]:
     records = []
     selector = "a:visible,button:visible,[role=button]:visible,[role=menuitem]:visible,[onclick]:visible"
@@ -540,6 +552,12 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
             and "type to search" not in value.casefold()
         ]
+        # MicroStrategy's Data Configuration combobox has no accessible name
+        # in the current ASAP UI. Its nearest text is the selected value, so
+        # treating that value as the label makes the creator misleading and
+        # leaves execution unable to find the control. The portal documents
+        # these choices as three region positions separated by hyphens.
+        label = _normalize_asap_filter_label(label, control_type, options)
         if not label or not options:
             return
         key = _slug_key(label, f"filter_{len(definitions) + 1}")

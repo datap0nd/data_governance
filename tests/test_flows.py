@@ -505,3 +505,15 @@ def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
 
     assert launched == ["bi-desktop"]
     assert queued["worker"] == {"status": "launched", "mode": "local"}
+
+
+def test_asap_region_triplet_select_is_named_data_configuration():
+    from app.flow_worker import _normalize_asap_filter_label
+
+    options = [
+        "MENA - Global - Global",
+        "Global - Global - MENA",
+        "Global - Global - CIS",
+    ]
+    assert _normalize_asap_filter_label(options[1], "select", options) == "Data Configuration"
+    assert _normalize_asap_filter_label("Region", "select", options) == "Region"
