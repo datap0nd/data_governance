@@ -354,8 +354,9 @@ if (Test-Path $WorkerLauncher) {
             "`"$CodeDir\app\flow_worker.py`"",
             "--server", "http://127.0.0.1:$Port",
             "--worker-id", "bi-desktop",
-            "--name", "BI desktop"
-        )
+            "--name", "BI-desktop"
+        ) -RedirectStandardOutput "$LogDir\flow_worker_stdout.log" `
+          -RedirectStandardError "$LogDir\flow_worker_error.log"
     } catch {
         Write-Host "  WARNING: Flows worker could not be started: $_" -ForegroundColor Yellow
     }

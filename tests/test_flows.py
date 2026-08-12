@@ -374,6 +374,8 @@ def test_setup_installs_interactive_flow_worker():
     assert "/SC ONLOGON /IT /F" in source
     assert "Start-Process $PyExe -WorkingDirectory $CodeDir -WindowStyle Hidden" in source
     assert '$CodeDir\\app\\flow_worker.py' in source
+    assert '"--name", "BI-desktop"' in source
+    assert "flow_worker_error.log" in source
     assert "$WorkerStartedAt = Get-Date" in source
     assert "$WorkerStartedAt.AddSeconds(-5)" in source
     assert '/api/flows/workers' in source
