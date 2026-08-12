@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import time
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,42 @@ from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutEr
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
+
+
+@contextmanager
+def _exclusive_worker_lock(profile_dir: Path):
+    """Prevent the service and login task from running duplicate workers."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = profile_dir / ".worker.lock"
+    handle = lock_path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    acquired = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+    except OSError:
+        pass
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 class _Timings:
@@ -507,11 +544,20 @@ def execute_job(page: Page, job: dict, report_progress) -> tuple[list[dict], lis
 
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool, once: bool):
     with httpx.Client(base_url=server.rstrip("/"), headers={"User-Agent": "Metronome-Flow-Worker/1"}) as client:
-        _api(client, "POST", "/api/flows/worker/register", {
+        registration = {
             "worker_id": worker_id,
             "display_name": display_name,
             "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER], "headed": headed, "delete_existing": False, "overwrite_existing": False},
-        })
+        }
+        for attempt in range(60):
+            try:
+                _api(client, "POST", "/api/flows/worker/register", registration)
+                break
+            except (httpx.HTTPError, OSError) as exc:
+                if attempt == 59:
+                    raise RuntimeError(f"Could not register worker after 120 seconds: {exc}") from exc
+                time.sleep(2)
+        print(f"Worker {worker_id} registered with {server}.", flush=True)
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),
@@ -593,7 +639,12 @@ def main():
     parser.add_argument("--headed", action="store_true", help="Show the browser. Recommended for initial SSO setup.")
     parser.add_argument("--once", action="store_true", help="Claim at most one run, then exit.")
     args = parser.parse_args()
-    run_worker(args.server, args.worker_id, args.name, Path(args.profile_dir), args.headed, args.once)
+    profile_dir = Path(args.profile_dir)
+    with _exclusive_worker_lock(profile_dir) as acquired:
+        if not acquired:
+            print("Another Metronome flow worker is already running.", flush=True)
+            return
+        run_worker(args.server, args.worker_id, args.name, profile_dir, args.headed, args.once)
 
 
 if __name__ == "__main__":

@@ -295,18 +295,15 @@ if (Test-Path $WorkerLauncher) {
         Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
     }
 
-    # Launch directly from this setup process. A service cannot reliably start
-    # an /IT task in the user's existing desktop session, which left scans
-    # queued even though Task Scheduler accepted the command.
+    # The Metronome service starts the worker as its own child process. Poll
+    # here so setup reports whether that child registered successfully.
     $WorkerOnline = $false
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
         $WorkerOnline = $ExistingWorkers.Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
-        $WorkerArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$WorkerLauncher`""
-        Start-Process -FilePath "powershell.exe" -ArgumentList $WorkerArgs -WindowStyle Hidden
-        for ($attempt = 0; $attempt -lt 15; $attempt++) {
+        for ($attempt = 0; $attempt -lt 30; $attempt++) {
             Start-Sleep -Seconds 2
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
