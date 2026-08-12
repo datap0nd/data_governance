@@ -420,7 +420,8 @@ def _validate_flow_selections(db, body: FlowWrite):
         present = [str(item).strip() for item in values if item is not None and str(item).strip()]
         if row["required"] and not present:
             raise HTTPException(400, f"Choose {row['label']}.")
-        invalid = [item for item in present if options and item not in options]
+        comparable = [item.replace("-W", "") if row["control_type"] == "week" else item for item in present]
+        invalid = [present[index] for index, item in enumerate(comparable) if options and item not in options]
         if invalid:
             raise HTTPException(400, f"Invalid {row['label']} value: {invalid[0]}")
 

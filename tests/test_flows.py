@@ -560,3 +560,21 @@ def test_asap_week_detection_requires_page_discovered_iso_week_members():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert 're.fullmatch(r"20\\d{4}", value)' in source
     assert 'add_definition("Sell-out Week", "week", week_values)' in source
+
+
+def test_flow_accepts_standard_iso_week_against_asap_option(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.DiscoveredReport(
+        discovery_key="Mobile > Installed Base > Installed Base (MENA)",
+        name="Installed Base (MENA)",
+        report_url="https://portal.example.test",
+        filters=[flows.DiscoveredFilter(
+            filter_key="sell_out_week", label="Sell-out Week", control_label="Sell-out Week",
+            control_type="week", options=["202633"], position=0,
+        )],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
+        report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+        body = _flow(site["id"], report_id, selections={"sell_out_week": "2026-W33"})
+        flows._validate_flow_selections(db, body)
