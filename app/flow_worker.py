@@ -429,13 +429,50 @@ def _asap_download(page: Page, frame: Frame, job: dict):
             break
     if export_control is None:
         raise RuntimeError(f"Could not find visible ASAP export control: {export_text}")
-    with page.expect_popup(timeout=60_000) as popup_info:
-        export_control.click()
-    popup = popup_info.value
-    popup.wait_for_load_state("domcontentloaded", timeout=60_000)
-    popup.get_by_label("CSV file format", exact=True).check()
-    with popup.expect_download(timeout=180_000) as pending:
-        popup.get_by_role("button", name="Export", exact=True).click()
+    pages_before = set(page.context.pages)
+    export_control.click()
+    # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
+    # in the existing page. Search both shapes instead of requiring a popup.
+    csv_option = None
+    export_action = None
+    download_page = page
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and (csv_option is None or export_action is None):
+        current_pages = page.context.pages
+        popup = next((candidate for candidate in current_pages if candidate not in pages_before), None)
+        roots = [root for candidate in reversed(current_pages) for root in [candidate, *reversed(candidate.frames)]]
+        for root in roots:
+            for locator in (
+                root.get_by_label("CSV file format", exact=True),
+                root.get_by_text(re.compile(r"^CSV(?: file format)?$", re.I)),
+            ):
+                try:
+                    if locator.count() and locator.first.is_visible():
+                        csv_option = locator.first
+                        break
+                except Exception:
+                    continue
+            for locator in (
+                root.get_by_role("button", name="Export", exact=True),
+                root.get_by_text("Export", exact=True),
+            ):
+                try:
+                    if locator.count() and locator.first.is_visible():
+                        export_action = locator.first
+                        download_page = popup or (root if isinstance(root, Page) else root.page)
+                        break
+                except Exception:
+                    continue
+        if csv_option is None or export_action is None:
+            page.wait_for_timeout(250)
+    if csv_option is None or export_action is None:
+        raise RuntimeError("ASAP Export Wizard opened, but its CSV option or Export action was not recognized.")
+    try:
+        csv_option.check()
+    except Exception:
+        csv_option.click()
+    with download_page.expect_download(timeout=180_000) as pending:
+        export_action.click()
     return pending.value
 
 
