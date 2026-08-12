@@ -320,25 +320,41 @@ if (Test-Path $WorkerLauncher) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: Could not install $WorkerTaskName. ASAP scans will remain queued." -ForegroundColor Yellow
     } else {
-        & schtasks.exe /Run /TN $WorkerTaskName | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  WARNING: $WorkerTaskName was installed but could not be started." -ForegroundColor Yellow
-        }
         Write-Host "  Flows worker will also start automatically at the next login." -ForegroundColor DarkGray
+    }
+
+    # Start the first instance from this already interactive setup process.
+    # Some managed Windows builds accept `schtasks /Run` for an /IT task but
+    # never create its process. Start-Process reliably keeps the worker in the
+    # signed-in desktop user's DPAPI/browser session. The task remains the
+    # durable ONLOGON launcher and the service can request later restarts.
+    $WorkerStartedAt = Get-Date
+    try {
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$WorkerLauncher`""
+        )
+    } catch {
+        Write-Host "  WARNING: Flows worker could not be started: $_" -ForegroundColor Yellow
     }
 
     # Poll until the interactive task registers with the service.
     $WorkerOnline = $false
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
-        $WorkerOnline = @($ExistingWorkers | Where-Object { $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" }).Count -gt 0
+        $WorkerOnline = @($ExistingWorkers | Where-Object {
+            $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" -and
+            $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+        }).Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
         for ($attempt = 0; $attempt -lt 30; $attempt++) {
             Start-Sleep -Seconds 2
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
-                if (@($RegisteredWorkers | Where-Object { $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" }).Count -gt 0) {
+                if (@($RegisteredWorkers | Where-Object {
+                    $_.worker_id -eq "bi-desktop" -and $_.status -ne "offline" -and
+                    $_.last_seen_at -and ([datetime]$_.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+                }).Count -gt 0) {
                     $WorkerOnline = $true
                     break
                 }
