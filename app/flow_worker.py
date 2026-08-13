@@ -333,20 +333,6 @@ def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] |
                         return [wanted]
             except Exception:
                 continue
-    # Legacy MicroStrategy clips the visible text with CSS and does not expose
-    # the full value through title, value, or ARIA. Match a sufficiently long
-    # prefix only inside the left prompt rail. The catalog has already made the
-    # complete configured value unambiguous.
-    prefix = wanted[: min(len(wanted), 14)]
-    clipped = page.get_by_text(re.compile(r"^" + re.escape(prefix), re.I))
-    for index in range(clipped.count()):
-        item = clipped.nth(index)
-        try:
-            box = item.bounding_box()
-            if item.is_visible() and box and box["x"] < 160:
-                return [wanted]
-        except Exception:
-            continue
     roots = []
     if label.count() and label.is_visible():
         ancestor = label
@@ -644,60 +630,6 @@ def _asap_member_selected(option) -> bool | None:
         return None
 
 
-def _asap_visible_member(frame: Frame, value: str, label_y: float):
-    """Find one prompt-rail member, excluding duplicate report-canvas text."""
-    candidates = frame.get_by_text(value, exact=True)
-    matches = []
-    for index in range(candidates.count()):
-        candidate = candidates.nth(index)
-        try:
-            box = candidate.bounding_box()
-            if candidate.is_visible() and box and box["x"] < 160 and box["y"] > label_y:
-                matches.append((box["y"], index, candidate))
-        except Exception:
-            continue
-    return min(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
-
-
-def _asap_select_visible_list_values(
-    frame: Frame, label: str, requested: list[str], known_options: list[str],
-) -> list[str] | None:
-    """Set a MicroStrategy member list without OS-level modifier input.
-
-    A normal first click replaces the complete retained selection. Additional
-    members receive a DOM MouseEvent whose ctrlKey is local to the page event,
-    so Windows never sees Ctrl and cannot open Magnifier. The visible member
-    state is then audited before RUN.
-    """
-    heading = frame.get_by_text(re.compile(r"^" + re.escape(label) + r":?$", re.I)).first
-    if not heading.count() or not heading.is_visible():
-        return None
-    heading_box = heading.bounding_box()
-    if not heading_box:
-        return None
-    members = []
-    for value in requested:
-        member = _asap_visible_member(frame, value, heading_box["y"])
-        if member is None:
-            return None
-        members.append(member)
-    members[0].click(timeout=10_000)
-    for member in members[1:]:
-        member.dispatch_event("click", {"ctrlKey": True, "bubbles": True, "cancelable": True})
-    frame.page.wait_for_timeout(1_000)
-    actual = []
-    for value in list(dict.fromkeys([*known_options, *requested])):
-        member = _asap_visible_member(frame, value, heading_box["y"])
-        if member is not None and _asap_member_selected(member) is True:
-            actual.append(value)
-    if set(actual) != set(requested):
-        raise RuntimeError(
-            f"ASAP {label} selection mismatch. Requested: {requested}. "
-            f"Selected after visible interaction: {actual}."
-        )
-    return actual
-
-
 def _asap_apply_configuration(
     frame: Frame, job: dict, period: str | list[str] | None,
 ) -> list[dict]:
@@ -710,16 +642,9 @@ def _asap_apply_configuration(
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
-        actual = None
-        if definition["control_type"] in {"multi_select", "week"}:
-            actual = _asap_select_visible_list_values(
-                frame, definition["control_label"], values,
-                definition.get("options") or values,
-            )
-        if actual is None:
-            actual = _select_native_options_by_text(
-                frame, values, definition.get("options") or values,
-            )
+        actual = _select_native_options_by_text(
+            frame, values, definition.get("options") or values,
+        )
         if actual is None and definition["control_label"].casefold() == "data configuration":
             actual = _select_custom_option_by_text(frame, values)
         if actual is None:
@@ -739,20 +664,7 @@ def _asap_apply_configuration(
     # every configured control again before RUN is allowed.
     frame.page.wait_for_timeout(1_500)
     for item in audit:
-        actual = None
-        if item["filter"].casefold() in {"dimension", "sell-out week"}:
-            heading = frame.get_by_text(
-                re.compile(r"^" + re.escape(item["filter"]) + r":?$", re.I)
-            ).first
-            if heading.count() and heading.is_visible() and heading.bounding_box():
-                label_y = heading.bounding_box()["y"]
-                actual = [
-                    value for value in list(dict.fromkeys([*item["options"], *item["requested"]]))
-                    if (member := _asap_visible_member(frame, value, label_y)) is not None
-                    and _asap_member_selected(member) is True
-                ]
-        if actual is None:
-            actual = _read_native_options_by_text(frame, item["requested"], item["options"])
+        actual = _read_native_options_by_text(frame, item["requested"], item["options"])
         if actual is None and item["filter"].casefold() == "data configuration":
             actual = _read_select2_value(frame, item["requested"])
         item["actual"] = actual or []
