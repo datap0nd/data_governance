@@ -304,36 +304,6 @@ def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] |
     if len(requested) != 1:
         return None
     wanted = requested[0]
-    waiter = page.page if hasattr(page, "page") else page
-    # Legacy MicroStrategy widgets can paint clipped text through nested spans
-    # that Playwright's text engine does not expose as one string. Inspect the
-    # rendered prompt rail itself and its accessibility/value attributes.
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            rendered = page.locator("body *").evaluate_all(
-                r"""(nodes, wanted) => {
-                    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
-                    const prefix = wanted.slice(0, Math.min(wanted.length, 14));
-                    return nodes.some(node => {
-                        const rect = node.getBoundingClientRect();
-                        if (!rect.width || !rect.height || rect.left >= 160) return false;
-                        const values = [
-                            node.getAttribute('title'),
-                            node.getAttribute('aria-label'),
-                            node.getAttribute('value'),
-                            node.textContent,
-                        ].map(normalize);
-                        return values.some(value => value === wanted || value.startsWith(prefix));
-                    });
-                }""",
-                wanted,
-            )
-            if rendered:
-                return [wanted]
-        except Exception:
-            pass
-        waiter.wait_for_timeout(250)
     label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
     label_box = label.bounding_box() if label.count() and label.is_visible() else None
     if label_box:
