@@ -1065,10 +1065,7 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
 
         def dispatch_event(self, name, event):
             assert name == "click"
-            assert event == {
-                "ctrlKey": True, "bubbles": True, "cancelable": True,
-                "button": 0, "buttons": 1, "detail": 1,
-            }
+            assert event == {"ctrlKey": True, "bubbles": True, "cancelable": True}
             events.append(("local_ctrl", self.text))
             if self.text not in never_toggle:
                 self.state = not self.state
