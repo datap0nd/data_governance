@@ -186,3 +186,29 @@ deleting, overwriting, or inserting anything into SQL.
 Add automatic handling for the optional ASAP Notice popup, then run the same
 flow headless to verify parity with the proven headed CSV path. Do not delete
 files and do not enable SQL handoff.
+
+## Current Flows Update (2026-08-13)
+
+- Runtime commit `9492b0f` is on `origin/main`.
+- ASAP export is CSV-only. New downloads remove a detected report-title row
+  plus the following blank row while preserving the real comma-separated header.
+- Scheduled execution is controlled by the flow-list Active switch. Manual flows
+  cannot be activated, while manual Run remains available.
+- New run progress events, timings, errors, tracebacks, artifacts, saved config,
+  and SQL details are available from the full-page Expanded logs view. Historical
+  runs cannot gain missing tracebacks retroactively.
+- SQL insertion maps by normalized column name. It rejects unexpected source
+  columns, duplicate names, and missing required target columns; nullable,
+  defaulted, identity, and generated target columns may be absent. Type failures
+  roll back the transaction. Truncate-and-replace also rolls back its truncate
+  if insertion fails.
+- Full Python suite: `148 passed`. JavaScript syntax checks and
+  `git diff --check` passed. SQL insertion was not live-tested.
+- BI desktop update succeeded after the built-in proxy retry. The live UI shows
+  Active, CSV-only download, Stop, Run history, and Expanded logs.
+- During UI inspection, an already-running headed ASAP browser was inadvertently
+  closed while switching windows. That run may fail or cancel. No flow was
+  started, no file was deleted, and no SQL insertion was performed by the
+  inspection.
+- Next step: inspect that run's expanded log after it settles, then validate a
+  fresh download-only run before testing SQL.
