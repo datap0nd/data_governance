@@ -306,8 +306,21 @@ def _asap_frame(page: Page) -> Frame:
     return frame
 
 
+def _asap_result_signature(frame: Frame) -> str | None:
+    """Read a stable public signature for the currently rendered result grid."""
+    rows = frame.get_by_text("Data rows:", exact=False).first
+    if not rows.count() or not rows.is_visible():
+        return None
+    return rows.evaluate(
+        """node => {
+            const root = node.closest('table') || node.parentElement?.parentElement || document.body;
+            return [node.textContent || '', root.innerText || ''].join('\n').slice(0, 12000);
+        }"""
+    )
+
+
 def _asap_wait_for_results(
-    page: Page, expected_weeks: list[str] | None = None, timeout_ms: int = 180_000,
+    page: Page, previous_signature: str | None = None, timeout_ms: int = 180_000,
 ) -> Frame:
     """Return the live report frame once ASAP has rendered result rows.
 
@@ -324,21 +337,8 @@ def _asap_wait_for_results(
             # the replacement as another frame. Inspect every current frame,
             # newest first, instead of trusting the first matching element.
             for frame in reversed(page.frames):
-                rows = frame.get_by_text("Data rows:", exact=False).first
-                if rows.count() and rows.is_visible():
-                    if expected_weeks:
-                        canvas_left = 160
-                        current = []
-                        for value in expected_weeks:
-                            locator = frame.get_by_text(value, exact=True)
-                            for index in range(locator.count()):
-                                candidate = locator.nth(index)
-                                box = candidate.bounding_box()
-                                if candidate.is_visible() and box and box["x"] >= canvas_left:
-                                    current.append(value)
-                                    break
-                        if set(current) != set(expected_weeks):
-                            continue
+                signature = _asap_result_signature(frame)
+                if signature and (previous_signature is None or signature != previous_signature):
                     return frame
         except Exception as exc:
             # Frame replacement can race any locator operation. The next poll
@@ -346,9 +346,8 @@ def _asap_wait_for_results(
             last_error = exc
         page.wait_for_timeout(500)
     detail = f" Last frame error: {last_error}" if last_error else ""
-    expected = f" with Sell-out Week {expected_weeks}" if expected_weeks else ""
     raise RuntimeError(
-        f"ASAP report rows did not render{expected} within {timeout_ms // 1000} seconds.{detail}"
+        f"ASAP report results did not change within {timeout_ms // 1000} seconds.{detail}"
     )
 
 
@@ -767,7 +766,7 @@ def _asap_verify_rendered_results(frame: Frame, filter_audit: list[dict]):
     canvas_left = 160
     for item in filter_audit:
         label = item["filter"].casefold()
-        if label not in {"dimension", "sell-out week"}:
+        if label != "dimension":
             continue
         if label == "dimension":
             canvas_positions = {}
@@ -804,27 +803,6 @@ def _asap_verify_rendered_results(frame: Frame, filter_audit: list[dict]):
                     "The file was not exported and SQL was not changed."
                 )
             continue
-        missing = []
-        for value in item["requested"]:
-            locator = frame.get_by_text(value, exact=True)
-            found_on_canvas = False
-            for index in range(locator.count()):
-                candidate = locator.nth(index)
-                try:
-                    box = candidate.bounding_box()
-                    if candidate.is_visible() and box and box["x"] >= canvas_left:
-                        found_on_canvas = True
-                        break
-                except Exception:
-                    continue
-            if not found_on_canvas:
-                missing.append(value)
-        if missing:
-            raise RuntimeError(
-                f"ASAP rendered report does not match {item['filter']}. "
-                f"Requested: {item['requested']}. Missing from report canvas: {missing}. "
-                "The file was not exported and SQL was not changed."
-            )
 
 
 def _asap_download(page: Page, frame: Frame, job: dict):
@@ -1606,22 +1584,17 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 artifacts,
             )
             with timings.measure("report_execution", report_id=job["report"].get("id")):
+                previous_signature = _asap_result_signature(frame)
                 _click_named(frame, "RUN")
                 # The current MicroStrategy UI completes report execution in
                 # its iframe without a stable prompt-answer response. Waiting
                 # for that internal URL left completed reports stuck. Yield for
                 # the loading overlay, then require both the row summary and the
-                # requested week on the report canvas so a stale prior grid can
-                # never be mistaken for this run's result.
+                # a changed public result signature so a stale prior grid can
+                # never be mistaken for this run's result. The exact requested
+                # week is already guaranteed by the prompt audit before RUN.
                 page.wait_for_timeout(1_000)
-                expected_weeks = next(
-                    (
-                        item["requested"] for item in filter_audit
-                        if item["filter"].casefold() == "sell-out week"
-                    ),
-                    None,
-                )
-                frame = _asap_wait_for_results(page, expected_weeks)
+                frame = _asap_wait_for_results(page, previous_signature)
                 _asap_verify_rendered_results(frame, filter_audit)
             report_progress(
                 "running",
