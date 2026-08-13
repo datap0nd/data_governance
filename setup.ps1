@@ -272,40 +272,10 @@ if ($Inner) {
     # Copy-Item does not reliably merge new files into existing nested
     # directories on Windows PowerShell 5. Robocopy /E performs a true merge
     # without /MIR or /PURGE, so it never deletes installed/local files.
-    $MergeExit = 16
-    for ($MergeAttempt = 1; $MergeAttempt -le 15; $MergeAttempt++) {
-        Write-Host "  File merge attempt $MergeAttempt of 15..." -ForegroundColor DarkGray
-        # The running setup script is locked by Windows PowerShell. Merge the
-        # application now and stage setup.ps1 for replacement after this
-        # process exits.
-        & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /XF setup.ps1 /NFL /NDL /NJH /NJS /NP | Out-Null
-        $MergeExit = $LASTEXITCODE
-        if ($MergeExit -lt 8) { break }
-        if ($MergeAttempt -lt 15) { Start-Sleep -Seconds 2 }
+    & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        throw "Update file merge failed with robocopy exit code $LASTEXITCODE"
     }
-    if ($MergeExit -ge 8) {
-        Write-Host "  Final merge diagnostics:" -ForegroundColor Yellow
-        & robocopy.exe $Inner.FullName $CodeDir /E /R:0 /W:0 /XF setup.ps1 /NJH /NJS /NP
-        throw "Update file merge failed after 15 attempts with robocopy exit code $MergeExit"
-    }
-    $StagedSetup = "$CodeDir\setup.next.ps1"
-    Copy-Item "$($Inner.FullName)\setup.ps1" $StagedSetup -Force
-    $SetupProcessId = $PID
-    $SetupReplaceCommand = @"
-Wait-Process -Id $SetupProcessId -ErrorAction SilentlyContinue
-for (`$attempt = 1; `$attempt -le 15; `$attempt++) {
-    try {
-        Copy-Item '$StagedSetup' '$CodeDir\setup.ps1' -Force -ErrorAction Stop
-        Remove-Item '$StagedSetup' -Force -ErrorAction SilentlyContinue
-        break
-    } catch {
-        Start-Sleep -Seconds 2
-    }
-}
-"@
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $SetupReplaceCommand
-    )
     Remove-Item $TempExtract -Recurse -Force
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
