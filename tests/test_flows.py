@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app import database
 from app import flow_worker
+from app import main
 from app.routers import flows
 
 
@@ -688,6 +689,19 @@ def test_setup_overlays_update_without_robocopy_or_purging_local_files():
     assert "robocopy" not in source.casefold()
     assert "/MIR" not in source
     assert "/PURGE" not in source
+
+
+def test_update_endpoint_repairs_legacy_overlay_without_deleting_files(tmp_path):
+    setup = tmp_path / "setup.ps1"
+    legacy = 'if ($Inner) {\n    Copy-Item "$($Inner.FullName)\\*" $CodeDir -Recurse -Force\n}'
+    setup.write_text(legacy)
+
+    assert main._repair_legacy_setup_overlay(setup) is True
+    repaired = setup.read_text()
+    assert "Preserving installed tools\\nssm.exe" in repaired
+    assert 'Move-Item $DownloadedNssm "$TempExtract\\nssm.exe.skipped" -Force' in repaired
+    assert "Remove-Item" not in repaired
+    assert main._repair_legacy_setup_overlay(setup) is False
 
 
 def test_worker_launcher_appends_diagnostic_log():
