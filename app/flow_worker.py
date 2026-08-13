@@ -422,33 +422,6 @@ def _select_custom_option_by_text(page: Page | Frame, requested: list[str]) -> l
     label_box = label.bounding_box()
     if not label_box:
         return None
-    # Legacy MicroStrategy exposes no role or accessible value for this prompt.
-    # Resolve the hit target from the exact prompt label's own position, then
-    # dispatch the click to that DOM element. This cannot drift into the portal
-    # navigation because both coordinates are constrained to the prompt rail.
-    opened = page.locator("body").evaluate(
-        r"""(body, point) => {
-            const target = document.elementFromPoint(point.x, point.y);
-            if (!target) return false;
-            target.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-            return true;
-        }""",
-        {
-            "x": min(145, label_box["x"] + max(50, label_box["width"] / 2)),
-            "y": label_box["y"] + label_box["height"] + 12,
-        },
-    )
-    if opened:
-        waiter = page.page if hasattr(page, "page") else page
-        waiter.wait_for_timeout(500)
-        wanted = requested[0]
-        option = page.get_by_role("option", name=wanted, exact=True)
-        if not option.count() or not option.first.is_visible():
-            option = page.get_by_text(wanted, exact=True)
-        if option.count() and option.first.is_visible():
-            option.first.click(timeout=10_000)
-            waiter.wait_for_timeout(1_000)
-            return requested
     control = None
     selector = (
         "[role=combobox]:visible,.select2-choice:visible,"
@@ -810,8 +783,8 @@ def _asap_apply_configuration(
                 ]
         if actual is None:
             actual = _read_native_options_by_text(frame, item["requested"], item["options"])
-        if item["filter"].casefold() == "data configuration":
-            actual = _select_custom_option_by_text(frame, item["requested"])
+        if actual is None and item["filter"].casefold() == "data configuration":
+            actual = _read_select2_value(frame, item["requested"])
         item["actual"] = actual or []
         item["verified"] = actual is not None and set(actual) == set(item["requested"])
         item.pop("options", None)
