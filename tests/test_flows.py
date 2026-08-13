@@ -1066,12 +1066,17 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
 
         def dispatch_event(self, name, event):
             assert name in {"mousedown", "mouseup", "click"}
-            assert event["ctrlKey"] is True
             assert event["bubbles"] is True
             assert event["cancelable"] is True
-            if name == "click":
+            if name == "click" and event["ctrlKey"]:
                 events.append(("local_ctrl", self.text))
-            if name == "click" and self.text not in never_toggle:
+            if name == "click" and not event["ctrlKey"]:
+                events.append(("plain", self.text))
+                for member in collection:
+                    if member.x < 160 and member.text not in sticky_on_replace:
+                        member.state = False
+                self.state = True
+            elif name == "click" and self.text not in never_toggle:
                 self.state = not self.state
 
         def evaluate(self, _script):

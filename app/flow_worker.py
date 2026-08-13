@@ -487,7 +487,7 @@ def _asap_dimension_member(root, value: str):
                     const style = getComputedStyle(node);
                     if (style.display === 'none' || style.visibility === 'hidden') return false;
                     const rect = node.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
+                    return rect.width > 0 && rect.height > 0 && rect.left < 160;
                 }"""
             ):
                 return candidate
@@ -499,6 +499,22 @@ def _asap_dimension_member(root, value: str):
 def _asap_scroll_member(member) -> None:
     """Scroll an ASAP prompt row without Playwright's visibility precondition."""
     member.evaluate("node => node.scrollIntoView({block: 'nearest', inline: 'nearest'})")
+
+
+def _asap_local_plain_click(frame: Frame, root, value: str) -> None:
+    """Replace a prompt selection on its exact left-pane DOM member."""
+    member = _asap_dimension_member(root, value)
+    if member is None:
+        raise RuntimeError(f"Could not find ASAP prompt option: {value}")
+    _asap_scroll_member(member)
+    event = {
+        "ctrlKey": False, "bubbles": True, "cancelable": True,
+        "button": 0, "buttons": 1, "detail": 1,
+    }
+    member.dispatch_event("mousedown", event)
+    member.dispatch_event("mouseup", {**event, "buttons": 0})
+    member.dispatch_event("click", {**event, "buttons": 0})
+    frame.page.wait_for_timeout(500)
 
 
 def _asap_read_dimension_selection(
@@ -630,12 +646,7 @@ def _asap_select_week_values(
     root = _asap_member_list_root(frame, label, options)
     initial = _asap_read_dimension_selection(root, options)
 
-    first = _asap_dimension_member(root, requested[0])
-    if first is None:
-        raise RuntimeError(f"Could not find ASAP {label} option: {requested[0]}")
-    _asap_scroll_member(first)
-    first.click(timeout=10_000)
-    frame.page.wait_for_timeout(500)
+    _asap_local_plain_click(frame, root, requested[0])
     for value in requested[1:]:
         _asap_local_dimension_click(frame, root, value)
     frame.page.wait_for_timeout(750)
