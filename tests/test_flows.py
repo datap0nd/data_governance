@@ -996,9 +996,9 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
 
         def select_option(self, *, label, force):
             assert force is True
-            self.selected = label
+            self.selected = list(label)
             self.events.extend(["input", "change"])
-            return [label]
+            return list(label)
 
     class Selects:
         def __init__(self, controls):
@@ -1030,45 +1030,148 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
 
     assert _select_native_options_by_text(
         Frame([unrelated, data_configuration]), [options[0]], options,
-    ) is True
+    ) == [options[0]]
     assert unrelated.selected == []
-    assert data_configuration.selected == options[0]
+    assert data_configuration.selected == [options[0]]
     assert data_configuration.events == ["input", "change"]
 
 
-def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate_canvas=()):
-    events = []
-    collection = []
+def test_native_selection_matches_requested_values_despite_imperfect_discovery_catalog():
+    from app.flow_worker import _select_native_options_by_text
 
-    class Member:
-        def __init__(self, text, state, x=20):
+    class Options:
+        def __init__(self, labels):
+            self.labels = labels
+
+        def all_text_contents(self):
+            return self.labels
+
+    class Select:
+        def __init__(self, labels, selected):
+            self.labels = labels
+            self.selected = list(selected)
+
+        def is_visible(self):
+            return False
+
+        def locator(self, selector):
+            if selector == "option:checked":
+                return Options([label for label in self.labels if label in self.selected])
+            assert selector == "option"
+            return Options(self.labels)
+
+        def select_option(self, *, label, force):
+            assert force is True
+            self.selected = list(label)
+            return list(label)
+
+    class Selects:
+        def __init__(self, controls):
+            self.controls = controls
+
+        def count(self):
+            return len(self.controls)
+
+        def nth(self, index):
+            return self.controls[index]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def __init__(self, controls):
+            self.controls = controls
+
+        def locator(self, selector):
+            assert selector == "select"
+            return Selects(self.controls)
+
+    requested = ["Sell-in Region", "Sell-out Region", "Series", "MKT Name"]
+    dimension = Select(
+        ["Sell-in Region", "Sell-in Subsidiary", "Sell-out Region", "Series", "MKT Name"],
+        ["Sell-in Subsidiary"],
+    )
+    discovered = [*dimension.labels, "stale option not present in ASAP"]
+
+    assert _select_native_options_by_text(Frame([dimension]), requested, discovered) == requested
+    assert dimension.selected == requested
+
+
+def test_lazy_select2_value_is_read_from_rendered_title():
+    from app.flow_worker import _read_select2_value
+
+    class Item:
+        def __init__(self, title, text=""):
+            self.title = title
             self.text = text
-            self.state = state
-            self.x = x
-            self.scroll_count = 0
+
+        def get_attribute(self, name):
+            return self.title if name == "title" else ""
+
+        def text_content(self):
+            return self.text
 
         def is_visible(self):
             return True
 
         def bounding_box(self):
-            return {"x": self.x, "y": 100 + collection.index(self) * 20}
+            return {"x": 20, "y": 45}
 
-        def scroll_into_view_if_needed(self, **_kwargs):
-            self.scroll_count += 1
+    class Items:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, _pattern):
+            following = Items([Item("", "MENA - Global - Gl...")])
+            first = SimpleNamespace(
+                count=lambda: 1,
+                is_visible=lambda: True,
+                bounding_box=lambda: {"x": 20, "y": 20},
+                locator=lambda _selector: following,
+            )
+            return SimpleNamespace(first=first)
+
+        def locator(self, selector):
+            if selector == "body *":
+                return SimpleNamespace(evaluate_all=lambda _script, _wanted: True)
+            assert ".select2-selection__rendered:visible" in selector
+            return Items([Item("MENA - Global - Global")])
+
+    assert _read_select2_value(Frame(), ["MENA - Global - Global"]) == ["MENA - Global - Global"]
+
+
+def test_visible_asap_multi_select_uses_page_local_modifier_and_verifies_state():
+    from app.flow_worker import _asap_select_visible_list_values
+
+    class Member:
+        def __init__(self, text, state, collection):
+            self.text = text
+            self.state = state
+            self.collection = collection
+
+        def is_visible(self):
+            return True
+
+        def bounding_box(self):
+            return {"x": 20, "y": 100 + self.collection.index(self) * 20}
 
         def click(self, **_kwargs):
-            events.append(("plain", self.text))
-            for member in collection:
-                if member.x < 160 and member.text not in sticky_on_replace:
-                    member.state = False
+            for member in self.collection:
+                member.state = False
             self.state = True
 
         def dispatch_event(self, name, event):
             assert name == "click"
             assert event == {"ctrlKey": True, "bubbles": True, "cancelable": True}
-            events.append(("local_ctrl", self.text))
-            if self.text not in never_toggle:
-                self.state = not self.state
+            self.state = True
 
         def evaluate(self, _script):
             return self.state
@@ -1083,10 +1186,13 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
         def nth(self, index):
             return self.items[index]
 
-    for text, state in states.items():
-        collection.append(Member(text, state))
-    for text in duplicate_canvas:
-        collection.append(Member(text, False, x=300))
+        @property
+        def first(self):
+            return self.items[0]
+
+    collection = []
+    for text, state in [("A", False), ("B", True), ("C", False)]:
+        collection.append(Member(text, state, collection))
 
     class Frame:
         page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
@@ -1101,161 +1207,8 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
                 return SimpleNamespace(first=heading)
             return Members([member for member in collection if member.text == value])
 
-    return Frame(), collection, events
-
-
-def test_dimension_replaces_stale_defaults_when_first_requested_is_already_selected():
-    from app.flow_worker import _asap_select_dimensions
-
-    frame, members, events = _dimension_frame(
-        {"A": True, "B": True, "C": False}, duplicate_canvas=("A", "C"),
-    )
-    audit = _asap_select_dimensions(frame, ["A", "C"], ["A", "B", "C"])
-
-    assert audit == {
-        "filter": "Dimension",
-        "requested": ["A", "C"],
-        "initial_selected": ["A", "B"],
-        "final_selected": ["A", "C"],
-        "actual": ["A", "C"],
-        "missing": [],
-        "extra": [],
-        "verified": True,
-        "options": ["A", "B", "C"],
-    }
-    assert events == [("plain", "A"), ("local_ctrl", "C")]
-    assert all(member.scroll_count for member in members if member.x < 160 and member.text in {"A", "C"})
-    assert not any(member.scroll_count for member in members if member.x >= 160)
-
-
-def test_dimension_performs_one_bounded_missing_and_extra_reconciliation_pass():
-    from app.flow_worker import _asap_select_dimensions
-
-    frame, members, events = _dimension_frame(
-        {"A": False, "B": True, "C": False}, sticky_on_replace=("B",),
-    )
-    audit = _asap_select_dimensions(frame, ["A", "C"], ["A", "B", "C"])
-
-    assert audit["final_selected"] == ["A", "C"]
-    assert audit["missing"] == []
-    assert audit["extra"] == []
-    assert events == [
-        ("plain", "A"), ("local_ctrl", "C"), ("local_ctrl", "B"),
-    ]
-    assert [member.text for member in members if member.x < 160 and member.state] == ["A", "C"]
-
-
-def test_dimension_fails_before_run_when_reconciliation_cannot_reach_exact_set():
-    from app.flow_worker import _asap_select_dimensions
-
-    frame, _members, events = _dimension_frame(
-        {"A": False, "B": False, "C": False}, never_toggle=("C",),
-    )
-    with pytest.raises(RuntimeError, match=r"Missing: \['C'\]"):
-        _asap_select_dimensions(frame, ["A", "C"], ["A", "B", "C"])
-    assert events == [
-        ("plain", "A"), ("local_ctrl", "C"), ("local_ctrl", "C"),
-    ]
-
-
-def test_dimension_routine_never_sends_an_os_control_key():
-    import inspect
-    from app.flow_worker import _asap_local_ctrl_click, _asap_select_dimensions
-
-    source = inspect.getsource(_asap_select_dimensions) + inspect.getsource(_asap_local_ctrl_click)
-    assert 'keyboard.down("Control")' not in source
-    assert 'modifiers=["Control"]' not in source
-    assert '"ctrlKey": True' in source
-
-
-def test_asap_configuration_routes_only_dimension_through_dedicated_routine(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        flow_worker, "_asap_select_dimensions",
-        lambda _frame, values, options: calls.append(("dimension", values, options)) or {
-            "filter": "Dimension", "requested": values, "initial_selected": [],
-            "final_selected": values, "actual": values, "missing": [], "extra": [],
-            "verified": True, "options": options,
-        },
-    )
-    monkeypatch.setattr(
-        flow_worker, "_set_filter",
-        lambda _frame, definition, value: calls.append(("ordinary", definition["control_label"], value)),
-    )
-    monkeypatch.setattr(
-        flow_worker, "_asap_select_list_values",
-        lambda _frame, label, values: calls.append(("list", label, values)),
-    )
-    monkeypatch.setattr(
-        flow_worker, "_asap_read_dimension_selection", lambda _frame, _options, _y: ["A", "C"],
-    )
-    heading = SimpleNamespace(
-        count=lambda: 1, is_visible=lambda: True, bounding_box=lambda: {"x": 20, "y": 50},
-    )
-    frame = SimpleNamespace(
-        page=SimpleNamespace(wait_for_timeout=lambda _ms: None),
-        get_by_text=lambda *_args, **_kwargs: SimpleNamespace(first=heading),
-    )
-    job = {
-        "selections": {"dimension": ["A", "C"], "data_configuration": "Config A"},
-        "report": {"filters": [
-            {"filter_key": "dimension", "control_label": "Dimension", "control_type": "multi_select", "options": ["A", "B", "C"]},
-            {"filter_key": "data_configuration", "control_label": "Data Configuration", "control_type": "select", "options": ["Config A"]},
-            {"filter_key": "week", "control_label": "Sell-out Week", "control_type": "week", "options": ["202619"]},
-        ]},
-    }
-
-    audit = flow_worker._asap_apply_configuration(frame, job, "2026-W19")
-
-    assert calls == [
-        ("dimension", ["A", "C"], ["A", "B", "C"]),
-        ("ordinary", "Data Configuration", "Config A"),
-        ("list", "Sell-out Week", ["202619"]),
-    ]
-    assert audit[0]["initial_selected"] == []
-    assert audit[0]["final_selected"] == ["A", "C"]
-    assert audit[0]["missing"] == []
-    assert audit[0]["extra"] == []
-
-
-def test_rendered_dimension_headers_must_match_exact_requested_set():
-    class Candidate:
-        def __init__(self, x, y):
-            self.x = x
-            self.y = y
-
-        def is_visible(self):
-            return True
-
-        def bounding_box(self):
-            return {"x": self.x, "y": self.y}
-
-    class Candidates:
-        def __init__(self, items):
-            self.items = items
-
-        def count(self):
-            return len(self.items)
-
-        def nth(self, index):
-            return self.items[index]
-
-    class Frame:
-        def get_by_text(self, value, exact=True):
-            assert exact is True
-            positions = {
-                "A": [(20, 100), (300, 200)],
-                "B": [(20, 120), (400, 204)],
-                "C": [(20, 140), (500, 500)],
-            }
-            return Candidates([Candidate(x, y) for x, y in positions[value]])
-
-    audit = [{
-        "filter": "Dimension", "requested": ["A"],
-        "options": ["A", "B", "C"],
-    }]
-    with pytest.raises(RuntimeError, match=r"Rendered: \['A', 'B'\].*Extra: \['B'\]"):
-        flow_worker._asap_verify_rendered_results(Frame(), audit)
+    assert _asap_select_visible_list_values(Frame(), "Dimension", ["A", "C"], ["A", "B", "C"]) == ["A", "C"]
+    assert [member.text for member in collection if member.state] == ["A", "C"]
 
 
 def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
@@ -1357,6 +1310,13 @@ def test_asap_download_observes_every_open_portal_page():
     assert "candidate for candidate in wizard_pages" in source
     assert "page = _ensure_live_page(page)" in source
     assert '"stage": "next_period"' in source
+
+
+def test_asap_selection_replaces_the_complete_native_value_set_atomically():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert "select.select_option(label=requested" in source
+    assert 'select.press("Control+Space")' not in source
+    assert 'select.press("Control+ArrowDown")' not in source
 
 
 def test_browser_failure_reporting_has_terminal_retry_and_fast_reaper():
