@@ -293,88 +293,22 @@ def _read_native_options_by_text(
 
 
 def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] | None:
-    """Read an already-selected lazy custom-select value without opening it.
-
-    ASAP currently mixes Select2 generations.  Some reports expose the modern
-    ``select2-selection__rendered`` span, while others render the chosen value
-    in a labelled combobox or a legacy ``select2-chosen`` element.  Anchor the
-    lookup on the prompt label first so a matching value elsewhere in the
-    report cannot be mistaken for the configured prompt.
-    """
+    """Read an already-selected lazy Select2 value without opening the menu."""
     if len(requested) != 1:
         return None
     wanted = requested[0]
-    label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
-    roots = []
-    if label.count() and label.is_visible():
-        ancestor = label
-        for _ in range(5):
-            ancestor = ancestor.locator("xpath=parent::*")
-            if not ancestor.count():
-                break
-            roots.append(ancestor.first)
-    roots.append(page)
+    rendered = page.locator(".select2-selection__rendered:visible")
     matches = []
-    selectors = (
-        ".select2-selection__rendered:visible,.select2-chosen:visible,"
-        ".select2-choice:visible,[role=combobox]:visible,[title]:visible"
-    )
-    for root in roots:
-        rendered = root.locator(selectors)
-        for index in range(rendered.count()):
-            item = rendered.nth(index)
-            title = item.get_attribute("title") or ""
-            value = item.get_attribute("value") or ""
-            text = item.text_content() or ""
-            actual = re.sub(r"\s+", " ", title or value or text).strip()
-            if actual == wanted:
-                matches.append(actual)
-        if matches:
-            break
-    matches = list(dict.fromkeys(matches))
+    for index in range(rendered.count()):
+        item = rendered.nth(index)
+        title = item.get_attribute("title") or ""
+        text = item.text_content() or ""
+        actual = re.sub(r"\s+", " ", title or text).strip()
+        if actual == wanted:
+            matches.append(actual)
     if len(matches) > 1:
         raise RuntimeError(f"ASAP exposed ambiguous Select2 values for: {requested}.")
     return matches or None
-
-
-def _select_custom_option_by_text(page: Page | Frame, requested: list[str]) -> list[str] | None:
-    """Select and verify ASAP's labelled lazy custom select by exact text."""
-    if len(requested) != 1:
-        return None
-    current = _read_select2_value(page, requested)
-    if current:
-        return current
-    label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
-    if not label.count() or not label.is_visible():
-        return None
-    control = None
-    ancestor = label
-    selector = (
-        "[role=combobox]:visible,.select2-choice:visible,"
-        ".select2-selection:visible,button[aria-haspopup=listbox]:visible"
-    )
-    for _ in range(6):
-        ancestor = ancestor.locator("xpath=parent::*")
-        if not ancestor.count():
-            break
-        candidates = ancestor.first.locator(selector)
-        if candidates.count():
-            control = candidates.first
-            break
-    if control is None:
-        return None
-    control.click(timeout=10_000)
-    wanted = requested[0]
-    option = page.get_by_role("option", name=wanted, exact=True)
-    if not option.count() or not option.first.is_visible():
-        option = page.get_by_text(wanted, exact=True)
-    if not option.count() or not option.first.is_visible():
-        page.page.keyboard.press("Escape") if hasattr(page, "page") else page.keyboard.press("Escape")
-        return None
-    option.first.click(timeout=10_000)
-    waiter = page.page if hasattr(page, "page") else page
-    waiter.wait_for_timeout(1_000)
-    return _read_select2_value(page, requested)
 
 
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
@@ -608,7 +542,7 @@ def _asap_apply_configuration(
             frame, values, definition.get("options") or values,
         )
         if actual is None and definition["control_label"].casefold() == "data configuration":
-            actual = _select_custom_option_by_text(frame, values)
+            actual = _read_select2_value(frame, values)
         if actual is None:
             raise RuntimeError(
                 f"ASAP {definition['control_label']} does not expose a native selection control "
