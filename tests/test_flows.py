@@ -954,10 +954,13 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
             return self.labels
 
     class Select:
-        def __init__(self, labels):
+        def __init__(self, labels, visible=False):
             self.labels = labels
             self.selected = []
             self.events = []
+
+        def is_visible(self):
+            return False
 
         def locator(self, selector):
             if selector == "option:checked":
@@ -968,7 +971,6 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
         def evaluate(self, _script, requested):
             self.selected = list(requested)
             self.events.extend(["input", "change"])
-            return list(self.selected)
 
     class Selects:
         def __init__(self, controls):
@@ -1021,6 +1023,9 @@ def test_native_selection_matches_requested_values_despite_imperfect_discovery_c
             self.labels = labels
             self.selected = list(selected)
 
+        def is_visible(self):
+            return False
+
         def locator(self, selector):
             if selector == "option:checked":
                 return Options([label for label in self.labels if label in self.selected])
@@ -1029,7 +1034,6 @@ def test_native_selection_matches_requested_values_despite_imperfect_discovery_c
 
         def evaluate(self, _script, requested):
             self.selected = list(requested)
-            return list(self.selected)
 
     class Selects:
         def __init__(self, controls):

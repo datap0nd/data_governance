@@ -232,33 +232,93 @@ def _select_native_options_by_text(
             f"ASAP exposed more than one native control for requested values: {requested}."
         )
     select = candidates[0][3]
-    actual = select.evaluate(
-        r"""(node, requested) => {
-            const wanted = new Set(requested);
-            for (const option of Array.from(node.options)) {
-                const label = String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim();
-                option.selected = wanted.has(label);
-            }
-            node.dispatchEvent(new Event('input', {bubbles: true}));
-            node.dispatchEvent(new Event('change', {bubbles: true}));
-            return Array.from(node.options)
-                .filter(option => option.selected)
-                .map(option => String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim());
-        }""",
-        requested,
-    )
+    labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
+    indices = [labels.index(value) for value in requested]
+
+    if select.is_visible():
+        # ASAP's legacy report engine does not consume synthetic DOM change
+        # events when it builds the report request. Drive the actual native
+        # control with trusted keyboard input instead. For a multi-select,
+        # Home establishes one known selection, Control+Space clears/toggles
+        # the focused member, and Control+ArrowDown moves focus without the
+        # mouse or a Control-click (which opens the portal's magnifier).
+        select.focus()
+        if select.get_attribute("multiple") is not None:
+            select.press("Home")
+            wanted_indices = set(indices)
+            options = select.locator("option")
+            # Reconcile every member from the control's live starting state.
+            # This explicitly clears every stale selection before RUN and does
+            # not assume which members ASAP preselected for this report.
+            for index in range(options.count()):
+                selected = bool(options.nth(index).evaluate("option => option.selected"))
+                if selected != (index in wanted_indices):
+                    select.press("Control+Space")
+                if index < options.count() - 1:
+                    select.press("Control+ArrowDown")
+        else:
+            select.press("Home")
+            for _ in range(indices[0]):
+                select.press("ArrowDown")
+        select.press("Tab")
+    else:
+        # Select2 owns a hidden native select for Data Configuration. Notify
+        # that owner through its jQuery bridge when present; retain native
+        # input/change events for templates that do not load jQuery.
+        select.evaluate(
+            r"""(node, requested) => {
+                const wanted = new Set(requested);
+                for (const option of Array.from(node.options)) {
+                    const label = String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim();
+                    option.selected = wanted.has(label);
+                }
+                const jq = window.jQuery;
+                if (jq && jq(node).data('select2')) {
+                    jq(node).trigger('change');
+                } else {
+                    node.dispatchEvent(new Event('input', {bubbles: true}));
+                    node.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+            }""",
+            requested,
+        )
     waiter = page.page if hasattr(page, "page") else page
-    waiter.wait_for_timeout(500)
+    waiter.wait_for_timeout(1_000)
     observed = [
         re.sub(r"\s+", " ", text).strip()
         for text in select.locator("option:checked").all_text_contents()
     ]
-    if set(actual) != set(requested) or set(observed) != set(requested):
+    if set(observed) != set(requested):
         raise RuntimeError(
             f"ASAP native selection mismatch. Requested: {requested}. "
-            f"DOM result: {actual}. Selected after change: {observed}."
+            f"Selected after native interaction: {observed}."
         )
     return observed
+
+
+def _read_native_options_by_text(
+    page: Page | Frame, values: list[str], expected_options: list[str] | None = None,
+) -> list[str] | None:
+    """Read the matching native control after all prompt changes settle."""
+    requested = list(dict.fromkeys(str(item) for item in values))
+    expected = set(str(item) for item in (expected_options or requested))
+    selects = page.locator("select")
+    candidates = []
+    for index in range(selects.count()):
+        select = selects.nth(index)
+        labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
+        if not set(requested).issubset(set(labels)):
+            continue
+        candidates.append((len(set(labels) & expected), -len(labels), index, select))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True, key=lambda item: item[:3])
+    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
+        raise RuntimeError(f"ASAP exposed ambiguous native controls for: {requested}.")
+    return [
+        re.sub(r"\s+", " ", text).strip()
+        for text in candidates[0][3].locator("option:checked").all_text_contents()
+    ]
 
 
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
@@ -501,8 +561,53 @@ def _asap_apply_configuration(
             "requested": values,
             "actual": actual,
             "verified": set(actual) == set(values),
+            "options": definition.get("options") or values,
         })
+    # A later prompt can cause ASAP to rebuild an earlier control. Do not trust
+    # the per-control result alone. Wait for the report UI to settle, then audit
+    # every configured control again before RUN is allowed.
+    frame.page.wait_for_timeout(1_500)
+    for item in audit:
+        actual = _read_native_options_by_text(frame, item["requested"], item["options"])
+        item["actual"] = actual or []
+        item["verified"] = actual is not None and set(actual) == set(item["requested"])
+        item.pop("options", None)
+        if not item["verified"]:
+            raise RuntimeError(
+                f"ASAP {item['filter']} changed after configuration settled. "
+                f"Requested: {item['requested']}. Actual: {item['actual']}. The report was not run."
+            )
     return audit
+
+
+def _asap_verify_rendered_results(frame: Frame, filter_audit: list[dict]):
+    """Verify the report canvas reflects Dimension and week before export."""
+    canvas_left = 160
+    for item in filter_audit:
+        label = item["filter"].casefold()
+        if label not in {"dimension", "sell-out week"}:
+            continue
+        missing = []
+        for value in item["requested"]:
+            locator = frame.get_by_text(value, exact=True)
+            found_on_canvas = False
+            for index in range(locator.count()):
+                candidate = locator.nth(index)
+                try:
+                    box = candidate.bounding_box()
+                    if candidate.is_visible() and box and box["x"] >= canvas_left:
+                        found_on_canvas = True
+                        break
+                except Exception:
+                    continue
+            if not found_on_canvas:
+                missing.append(value)
+        if missing:
+            raise RuntimeError(
+                f"ASAP rendered report does not match {item['filter']}. "
+                f"Requested: {item['requested']}. Missing from report canvas: {missing}. "
+                "The file was not exported and SQL was not changed."
+            )
 
 
 def _asap_download(page: Page, frame: Frame, job: dict):
@@ -1283,6 +1388,7 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 # signal.
                 page.wait_for_timeout(1_000)
                 frame = _asap_wait_for_results(page)
+                _asap_verify_rendered_results(frame, filter_audit)
             report_progress(
                 "running",
                 {"stage": "file_export", "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(periods)}.", "period": period},
