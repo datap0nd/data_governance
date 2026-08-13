@@ -1,0 +1,4 @@
+# The Windows service wrapper is installed once and can remain locked while a
+# routine source update runs. Keep it in Git, but omit it from generated source
+# archives so an update never attempts to replace the live installed binary.
+tools/nssm.exe export-ignore
