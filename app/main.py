@@ -412,6 +412,16 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
+        flows.refresh_sql_catalog,
+        "cron",
+        hour=5,
+        minute=30,
+        id="flow_sql_catalog_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
         flows.ensure_local_worker,
         "interval",
         minutes=1,

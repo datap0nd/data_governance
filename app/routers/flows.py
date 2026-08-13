@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -15,15 +16,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_local_runner import (
-    HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker,
+    HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_headed_worker,
 )
+from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
-PERIOD_STRATEGIES = {"fixed", "rolling"}
+PERIOD_STRATEGIES = {"latest", "fixed", "rolling"}
+FILE_FORMATS = {"csv", "xlsx"}
+SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
@@ -31,7 +35,7 @@ RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
 ASAP_PORTAL_ADAPTER = "asap_portal"
 WEEK_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>0[1-9]|[1-4]\d|5[0-3])$")
-FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|week|year|week_number|index|date)\}")
+FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|week|start_period|end_period|year|week_number|index|date)\}")
 SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
 
 
@@ -63,13 +67,14 @@ def _validate_http_url(value: str, label: str) -> str:
     return value
 
 
-def _clean_filename_template(value: str) -> str:
+def _clean_filename_template(value: str, file_format: str) -> str:
     value = value.strip()
     if not value:
         raise ValueError("Enter a filename template.")
     sample = FILENAME_TOKEN_RE.sub("sample", value)
-    if not sample.casefold().endswith(".csv"):
-        raise ValueError("The filename template must end in .csv.")
+    expected = ".xlsx" if file_format == "xlsx" else ".csv"
+    if not sample.casefold().endswith(expected):
+        raise ValueError(f"The filename template must end in {expected}.")
     if not SAFE_NAME_RE.fullmatch(sample):
         raise ValueError("The filename template contains Windows filename characters that are not allowed.")
     return value
@@ -282,8 +287,9 @@ class FlowWrite(BaseModel):
     enabled: bool = False
     selections: dict[str, Any] = Field(default_factory=dict)
     download_mode: str = "single"
-    period_strategy: str = "fixed"
+    period_strategy: str = "latest"
     window_weeks: int | None = Field(default=None, ge=1, le=105)
+    file_format: str = "csv"
     browser_mode: str = "headless"
     start_week: str | None = None
     end_week: str | None = None
@@ -293,12 +299,19 @@ class FlowWrite(BaseModel):
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
     sql_handoff_enabled: bool = False
+    sql_mode: str | None = None
+    sql_database: str | None = None
+    sql_schema: str | None = None
+    sql_table: str | None = None
 
     @model_validator(mode="after")
     def validate_flow(self):
         self.name = self.name.strip()
         self.target_folder = self.target_folder.strip()
-        self.filename_template = _clean_filename_template(self.filename_template)
+        self.file_format = self.file_format.strip().casefold()
+        if self.file_format not in FILE_FORMATS:
+            raise ValueError("Download type must be CSV or Excel.")
+        self.filename_template = _clean_filename_template(self.filename_template, self.file_format)
         if not _is_absolute_worker_path(self.target_folder):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
         if self.download_mode not in DOWNLOAD_MODES:
@@ -324,17 +337,34 @@ class FlowWrite(BaseModel):
                 raise ValueError("Choose how many weeks each period should contain.")
             if self.download_mode == "single":
                 self.window_weeks = None
-        else:
+        elif self.period_strategy == "rolling":
             if not self.window_weeks:
                 raise ValueError("Choose how many weeks each file should contain.")
             self.download_mode = "one_per_period"
             self.end_week = None
-        if self.download_mode == "one_per_period" and "{week}" not in self.filename_template:
-            raise ValueError("One CSV per period requires {week} in the filename template.")
+        else:
+            self.end_week = None
+            if self.download_mode == "one_per_period" and not self.window_weeks:
+                raise ValueError("Choose how many weeks each download should contain.")
+            if self.download_mode == "single":
+                self.window_weeks = None
+        if self.download_mode == "one_per_period" and not any(
+            token in self.filename_template for token in ("{week}", "{start_period}", "{end_period}", "{index}")
+        ):
+            raise ValueError("Multiple downloads require a period or index token in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         _schedule_next(self.schedule_type, self.schedule_time, self.schedule_days)
         if self.sql_handoff_enabled:
-            raise ValueError("SQL handoff is reserved for a later release and cannot be enabled.")
+            self.sql_mode = (self.sql_mode or "").strip().casefold()
+            if self.sql_mode not in SQL_MODES:
+                raise ValueError("SQL write mode must be append or truncate and replace.")
+            for field_name in ("sql_database", "sql_schema", "sql_table"):
+                value = (getattr(self, field_name) or "").strip()
+                if not value:
+                    raise ValueError("Choose a discovered SQL database, schema, and table.")
+                setattr(self, field_name, value)
+        else:
+            self.sql_mode = self.sql_database = self.sql_schema = self.sql_table = None
         return self
 
 
@@ -443,6 +473,38 @@ def _flow_out(db, flow_id: int) -> dict:
     return result
 
 
+def _latest_discovered_week(report: dict, start_week: str) -> str:
+    """Return the newest week exposed by the report's latest discovery scan."""
+    available = []
+    for definition in report.get("filters", []):
+        if definition.get("control_type") != "week" or definition.get("stale"):
+            continue
+        for option in definition.get("options") or []:
+            raw = str(option).strip()
+            value = f"{raw[:4]}-W{raw[4:]}" if re.fullmatch(r"\d{6}", raw) else raw
+            if WEEK_RE.fullmatch(value):
+                available.append(value)
+    available = sorted(set(available))
+    if not available:
+        raise HTTPException(409, "The latest ASAP scan did not discover Sell-out Week options. Refresh this report first.")
+    latest = available[-1]
+    if latest < start_week:
+        raise HTTPException(409, f"Start week is after the latest discovered ASAP week ({latest}).")
+    return latest
+
+
+def _validate_sql_target(db, body: FlowWrite):
+    if not body.sql_handoff_enabled:
+        return
+    row = db.execute(
+        """SELECT 1 FROM flow_sql_catalog
+           WHERE database_name=? AND schema_name=? AND table_name=? AND stale=0""",
+        (body.sql_database, body.sql_schema, body.sql_table),
+    ).fetchone()
+    if not row:
+        raise HTTPException(400, "Choose a database, schema, and table from the latest SQL catalog scan.")
+
+
 def _validate_flow_selections(db, body: FlowWrite):
     report = db.execute(
         """SELECT site_id FROM flow_reports
@@ -475,11 +537,15 @@ def _validate_flow_selections(db, body: FlowWrite):
 def _build_job(db, flow_id: int) -> dict:
     flow = _flow_out(db, flow_id)
     report = _report_out(db, flow["report_id"])
-    weeks = (
-        _week_window(flow["start_week"], flow["window_weeks"])
-        if flow.get("period_strategy") == "rolling"
-        else _week_range(flow["start_week"], flow["end_week"])
-    )
+    if flow.get("period_strategy") == "rolling":
+        weeks = _week_window(flow["start_week"], flow["window_weeks"])
+    else:
+        end_week = (
+            _latest_discovered_week(report, flow["start_week"])
+            if flow.get("period_strategy") == "latest"
+            else flow["end_week"]
+        )
+        weeks = _week_range(flow["start_week"], end_week)
     if flow.get("period_strategy") == "rolling" or flow["download_mode"] == "single":
         periods = [weeks]
     else:
@@ -507,6 +573,7 @@ def _build_job(db, flow_id: int) -> dict:
             "period_strategy": flow.get("period_strategy") or "fixed",
             "period_unit": "week",
             "period_size": flow.get("window_weeks") or len(weeks),
+            "file_format": flow.get("file_format") or "csv",
             "period_start_week": weeks[0],
             "period_end_week": weeks[-1],
             "next_start_week": _week_window(weeks[-1], 2)[1],
@@ -516,7 +583,13 @@ def _build_job(db, flow_id: int) -> dict:
             "delete_existing": False,
             "overwrite_existing": False,
         },
-        "sql_handoff": {"enabled": False, "status": "not_implemented"},
+        "sql_handoff": {
+            "enabled": bool(flow.get("sql_handoff_enabled")),
+            "mode": flow.get("sql_mode"),
+            "database": flow.get("sql_database"),
+            "schema": flow.get("sql_schema"),
+            "table": flow.get("sql_table"),
+        },
     }
 
 
@@ -783,6 +856,76 @@ def list_workers():
     return result
 
 
+@router.get("/sql/catalog")
+def sql_catalog():
+    status = sql_configuration_status()
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT database_name, schema_name, table_name
+               FROM flow_sql_catalog WHERE stale=0
+               ORDER BY database_name, schema_name, table_name"""
+        ).fetchall()
+        state = db.execute("SELECT * FROM flow_sql_catalog_state WHERE id=1").fetchone()
+    return {
+        **status,
+        "targets": [
+            {"database": row["database_name"], "schema": row["schema_name"], "table": row["table_name"]}
+            for row in rows
+        ],
+        "scan": dict(state) if state else {"status": "never_scanned"},
+    }
+
+
+def refresh_sql_catalog() -> dict:
+    """Refresh read-only SQL target metadata using the existing write role."""
+    now = _iso(_now())
+    try:
+        result = discover_sql_catalog()
+        with get_db() as db:
+            db.execute("UPDATE flow_sql_catalog SET stale=1")
+            for item in result["targets"]:
+                db.execute(
+                    """INSERT INTO flow_sql_catalog
+                       (database_name, schema_name, table_name, last_seen_at, stale)
+                       VALUES (?, ?, ?, ?, 0)
+                       ON CONFLICT(database_name, schema_name, table_name) DO UPDATE SET
+                         last_seen_at=excluded.last_seen_at, stale=0""",
+                    (item["database"], item["schema"], item["table"], now),
+                )
+            error = "; ".join(f"{item['database']}: {item['error']}" for item in result["errors"]) or None
+            db.execute(
+                """INSERT INTO flow_sql_catalog_state
+                   (id, status, last_scan_at, duration_ms, target_count, error)
+                   VALUES (1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET status=excluded.status,
+                     last_scan_at=excluded.last_scan_at, duration_ms=excluded.duration_ms,
+                     target_count=excluded.target_count, error=excluded.error""",
+                ("partial" if result["errors"] else "succeeded", now, result["duration_ms"], len(result["targets"]), error),
+            )
+        return {**result, "status": "partial" if result["errors"] else "succeeded", "last_scan_at": now}
+    except Exception as exc:
+        logging.getLogger(__name__).exception("SQL catalog scan failed")
+        with get_db() as db:
+            db.execute(
+                """INSERT INTO flow_sql_catalog_state (id, status, last_scan_at, target_count, error)
+                   VALUES (1, 'failed', ?, 0, ?)
+                   ON CONFLICT(id) DO UPDATE SET status='failed', last_scan_at=excluded.last_scan_at,
+                     error=excluded.error""",
+                (now, str(exc)[:5000]),
+            )
+        return {"status": "failed", "last_scan_at": now, "error": str(exc)}
+
+
+@router.post("/sql/catalog/refresh")
+def refresh_sql_catalog_now(request: Request):
+    result = refresh_sql_catalog()
+    if result["status"] == "failed":
+        raise HTTPException(502, result["error"])
+    with get_db() as db:
+        log_event(db, "flow_sql_catalog", None, "SQL targets", "refreshed", f"targets={len(result['targets'])}", get_actor(request))
+    return result
+
+
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
     now = _iso(_now())
@@ -790,19 +933,21 @@ def create_flow(body: FlowWrite, request: Request):
     try:
         with get_db() as db:
             _validate_flow_selections(db, body)
+            _validate_sql_target(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
-                   (name, site_id, report_id, enabled, selections_json, download_mode, period_strategy, window_weeks, start_week, end_week,
+                   (name, site_id, report_id, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
-                    sql_handoff_enabled, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                    sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-                 body.download_mode, body.period_strategy, body.window_weeks, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+                 body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
-                 _json(body.schedule_days), next_run, get_actor(request), now, now),
+                 _json(body.schedule_days), next_run, body.sql_handoff_enabled, body.sql_mode,
+                 body.sql_database, body.sql_schema, body.sql_table, get_actor(request), now, now),
             )
             flow_id = cursor.lastrowid
-            log_event(db, "flow", flow_id, body.name, "created", "SQL handoff disabled", get_actor(request))
+            log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
             return _flow_out(db, flow_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "A flow with that name already exists.") from exc
@@ -814,15 +959,17 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
     next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days))
     with get_db() as db:
         _validate_flow_selections(db, body)
+        _validate_sql_target(db, body)
         cursor = db.execute(
             """UPDATE flows SET name=?, site_id=?, report_id=?, enabled=?, selections_json=?,
-               download_mode=?, period_strategy=?, window_weeks=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
+               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, next_run_at=?,
-               sql_handoff_enabled=0, updated_at=? WHERE id=?""",
+               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, updated_at=? WHERE id=?""",
             (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-             body.download_mode, body.period_strategy, body.window_weeks, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+             body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
-             _json(body.schedule_days), next_run, now, flow_id),
+             _json(body.schedule_days), next_run, body.sql_handoff_enabled, body.sql_mode,
+             body.sql_database, body.sql_schema, body.sql_table, now, flow_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
@@ -875,6 +1022,53 @@ def queue_run(flow_id: int, request: Request):
         "id": run_id, "flow_id": flow_id, "status": "queued", "job": job,
         "worker": worker, "resumed": resumed,
     }
+
+
+@router.post("/{flow_id}/stop")
+def stop_run(flow_id: int, request: Request):
+    """Cancel a run and immediately close its exact headed worker tree."""
+    now = _iso(_now())
+    process_id = None
+    run_id = None
+    with get_db() as db:
+        flow = db.execute("SELECT id, name FROM flows WHERE id=?", (flow_id,)).fetchone()
+        if not flow:
+            raise HTTPException(404, "Flow not found.")
+        row = db.execute(
+            """SELECT * FROM flow_runs WHERE flow_id=?
+               AND status IN ('queued','claimed','running') ORDER BY id DESC LIMIT 1""",
+            (flow_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(409, "This flow has no active run to stop.")
+        job = _loads(row["job_json"], {})
+        if job.get("execution", {}).get("browser_mode") != "headed":
+            raise HTTPException(400, "Immediate Stop is available only for headed browser runs.")
+        run_id = row["id"]
+        worker_id = row["worker_id"] or HEADED_WORKER_ID
+        worker = db.execute("SELECT capabilities_json FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
+        capabilities = _loads(worker["capabilities_json"], {}) if worker else {}
+        raw_pid = capabilities.get("process_id")
+        process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
+        message = "Stopped by user. The headed browser process was closed."
+        db.execute(
+            """UPDATE flow_runs SET status='cancelled', error=?, progress_json=?,
+               finished_at=?, heartbeat_at=? WHERE id=?""",
+            (message, _json({"stage": "cancelled", "message": message}), now, now, run_id),
+        )
+        db.execute(
+            """UPDATE flows SET last_run_at=?, last_status='cancelled', last_error=?, updated_at=?
+               WHERE id=?""",
+            (now, message, now, flow_id),
+        )
+        db.execute(
+            """UPDATE flow_workers SET status='offline', current_run_id=NULL, last_error=?, updated_at=?
+               WHERE worker_id=?""",
+            (message, now, worker_id),
+        )
+        log_event(db, "flow", flow_id, flow["name"], "run_cancelled", f"run_id={run_id}", get_actor(request))
+    stopped = stop_headed_worker(process_id)
+    return {"run_id": run_id, "status": "cancelled", "worker": stopped}
 
 
 def ensure_local_worker() -> dict:
@@ -1287,6 +1481,8 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         row = db.execute("SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id)).fetchone()
         if not row:
             raise HTTPException(404, "Run is not assigned to this worker.")
+        if row["status"] in RUN_TERMINAL:
+            return {"run_id": run_id, "status": row["status"], "ignored": True}
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
         db.execute(

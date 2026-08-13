@@ -229,7 +229,9 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
         "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
         "worker_id": "bi-desktop-headless",
     }
-    assert queued["job"]["sql_handoff"] == {"enabled": False, "status": "not_implemented"}
+    assert queued["job"]["sql_handoff"] == {
+        "enabled": False, "mode": None, "database": None, "schema": None, "table": None,
+    }
 
 
 def test_single_csv_job_passes_the_whole_week_range_to_asap(flow_db):
@@ -265,6 +267,56 @@ def test_fixed_range_is_split_into_week_periods(flow_db):
     ]
     assert queued["job"]["downloads"]["period_unit"] == "week"
     assert queued["job"]["downloads"]["period_size"] == 2
+
+
+def test_start_to_latest_uses_newest_discovered_asap_week(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_report_filters SET options_json=? WHERE report_id=? AND control_type='week'",
+            ('["202630","202631","202632","202633"]', report["id"]),
+        )
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], period_strategy="latest", end_week=None,
+            download_mode="one_per_period", window_weeks=2,
+            filename_template="{flow}_{start_period}_{end_period}.csv",
+        ),
+        _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["period_end_week"] == "2026-W33"
+    assert queued["job"]["downloads"]["periods"] == [
+        ["2026-W30", "2026-W31"], ["2026-W32", "2026-W33"],
+    ]
+
+
+def test_filename_uses_flow_start_end_and_selected_format():
+    worker = __import__("app.flow_worker", fromlist=["_render_filename"])
+    job = {
+        "flow": {"name": "Inflow Outflow"},
+        "report": {"name": "Movement"},
+        "downloads": {"periods": [["2026-W19", "2026-W27"]], "file_format": "xlsx"},
+    }
+    filename = worker._render_filename(
+        "{flow}_{start_period}_{end_period}.xlsx", job,
+        ["2026-W19", "2026-W27"], 1,
+    )
+    assert filename == "Inflow_Outflow_W19_W27.xlsx"
+
+
+def test_excel_format_is_persisted_in_download_job(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], file_format="xlsx",
+            filename_template="{flow}_{start_period}_{end_period}.xlsx",
+        ),
+        _request(),
+    )
+    assert flows.queue_run(saved["id"], _request())["job"]["downloads"]["file_format"] == "xlsx"
 
 
 def test_rolling_window_advances_only_after_success(flow_db):
@@ -341,10 +393,39 @@ def test_asap_week_conversion_uses_portal_member_format():
         worker._week_to_asap("202603")
 
 
-def test_sql_handoff_cannot_be_enabled(flow_db):
+def test_sql_handoff_requires_discovered_target(flow_db):
     site, report = _seed_catalog()
-    with pytest.raises(ValueError, match="later release"):
-        _flow(site["id"], report["id"], sql_handoff_enabled=True)
+    _mark_discovered(report["id"])
+    body = _flow(
+        site["id"], report["id"], sql_handoff_enabled=True,
+        sql_mode="append", sql_database="warehouse", sql_schema="reporting", sql_table="inflow",
+    )
+    with pytest.raises(HTTPException, match="latest SQL catalog"):
+        flows.create_flow(body, _request())
+
+
+def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'inflow', CURRENT_TIMESTAMP, 0)"""
+        )
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], sql_handoff_enabled=True,
+            sql_mode="replace", sql_database="warehouse",
+            sql_schema="reporting", sql_table="inflow",
+        ),
+        _request(),
+    )
+    job = flows.queue_run(saved["id"], _request())["job"]
+    assert job["sql_handoff"] == {
+        "enabled": True, "mode": "replace", "database": "warehouse",
+        "schema": "reporting", "table": "inflow",
+    }
 
 
 def test_unknown_and_invalid_filter_values_are_rejected(flow_db):
@@ -507,7 +588,7 @@ def test_asap_execution_uses_rendered_ui_not_internal_response_url():
     assert "expect_response" not in source
     assert "frame = _asap_wait_for_results(page)" in source
     assert '"stage": "report_execution"' in source
-    assert '"stage": "csv_export"' in source
+    assert '"stage": "file_export"' in source
     assert '"button.report-export"' not in source
 
 
@@ -714,6 +795,33 @@ def test_queued_run_can_retry_worker_launch_without_duplicate(flow_db, monkeypat
     assert launches == ["headed", "headed"]
     with database.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM flow_runs").fetchone()[0] == 1
+
+
+def test_stop_cancels_headed_run_and_targets_reported_worker_pid(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible",
+        capabilities={"headed": True, "process_id": 4321},
+    ))
+    flows.claim_run("bi-desktop-headed")
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_headed_worker",
+        lambda pid: stopped.append(pid) or {"status": "stopped", "process_id": pid},
+    )
+
+    result = flows.stop_run(saved["id"], _request())
+
+    assert result["run_id"] == queued["id"]
+    assert result["status"] == "cancelled"
+    assert stopped == [4321]
+    assert flows.list_runs(flow_id=saved["id"], limit=100)[0]["status"] == "cancelled"
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():

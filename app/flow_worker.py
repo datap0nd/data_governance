@@ -142,11 +142,16 @@ def _render_filename(template: str, job: dict, period: str | list[str] | None, i
         week_number = start_number if start_number == end_number else f"{start_number}-{end_number}"
     else:
         week = raw_week
+        start = end = raw_week
         year, week_number = (week.split("-W", 1) + [""])[:2] if week else ("", "")
+    def short_period(value: str) -> str:
+        return f"W{value.split('-W', 1)[1]}" if "-W" in value else value
     values = {
         "flow": job["flow"]["name"],
         "report": job["report"]["name"],
         "week": week,
+        "start_period": short_period(start),
+        "end_period": short_period(end),
         "year": year,
         "week_number": week_number,
         "index": str(index),
@@ -155,9 +160,10 @@ def _render_filename(template: str, job: dict, period: str | list[str] | None, i
     name = template
     for key, value in values.items():
         name = name.replace("{" + key + "}", str(value))
-    name = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "_", name).strip(" .")
-    if not name.casefold().endswith(".csv"):
-        name += ".csv"
+    name = re.sub(r"[<>:\"/\\|?*\x00-\x1f\s]+", "_", name).strip(" ._")
+    expected = ".xlsx" if job["downloads"].get("file_format") == "xlsx" else ".csv"
+    if not name.casefold().endswith(expected):
+        name += expected
     return name
 
 
@@ -464,22 +470,28 @@ def _asap_download(page: Page, frame: Frame, job: dict):
     export_control.click()
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
     # in the existing page. Search both shapes instead of requiring a popup.
-    csv_option = None
+    format_option = None
     export_action = None
     download_page = page
     deadline = time.monotonic() + 60
-    while time.monotonic() < deadline and (csv_option is None or export_action is None):
+    file_format = job.get("downloads", {}).get("file_format", "csv")
+    format_names = (
+        ("CSV file format", re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I))
+        if file_format == "csv"
+        else ("Excel file format", re.compile(r"^(?:Microsoft )?Excel(?: file format| workbook| with formatting)?$|^XLSX$", re.I))
+    )
+    while time.monotonic() < deadline and (format_option is None or export_action is None):
         current_pages = page.context.pages
         popup = next((candidate for candidate in current_pages if candidate not in pages_before), None)
         roots = [root for candidate in reversed(current_pages) for root in [candidate, *reversed(candidate.frames)]]
         for root in roots:
             for locator in (
-                root.get_by_label("CSV file format", exact=True),
-                root.get_by_text(re.compile(r"^CSV(?: file format)?$", re.I)),
+                root.get_by_label(format_names[0], exact=True),
+                root.get_by_text(format_names[1]),
             ):
                 try:
                     if locator.count() and locator.first.is_visible():
-                        csv_option = locator.first
+                        format_option = locator.first
                         break
                 except Exception:
                     continue
@@ -494,14 +506,14 @@ def _asap_download(page: Page, frame: Frame, job: dict):
                         break
                 except Exception:
                     continue
-        if csv_option is None or export_action is None:
+        if format_option is None or export_action is None:
             page.wait_for_timeout(250)
-    if csv_option is None or export_action is None:
-        raise RuntimeError("ASAP Export Wizard opened, but its CSV option or Export action was not recognized.")
+    if format_option is None or export_action is None:
+        raise RuntimeError(f"ASAP Export Wizard opened, but its {file_format.upper()} option or Export action was not recognized.")
     try:
-        csv_option.check()
+        format_option.check()
     except Exception:
-        csv_option.click()
+        format_option.click()
     with download_page.expect_download(timeout=180_000) as pending:
         export_action.click()
     return pending.value
@@ -958,6 +970,31 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
+def _file_metadata(path: Path, file_format: str) -> dict:
+    if file_format == "csv":
+        return _csv_metadata(path)
+    file_size = path.stat().st_size
+    if file_size <= 0:
+        raise RuntimeError("The downloaded Excel workbook is empty.")
+    prefix = path.read_bytes()[:4]
+    if prefix[:2] != b"PK":
+        raise RuntimeError("The download is not a valid Excel workbook.")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    row_count = None
+    try:
+        from openpyxl import load_workbook
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook.active
+        row_count = max(0, sheet.max_row - 1)
+        workbook.close()
+    except Exception:
+        pass
+    return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
+
+
 def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict]]:
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
@@ -1015,10 +1052,10 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 frame = _asap_wait_for_results(page)
             report_progress(
                 "running",
-                {"stage": "csv_export", "message": f"Exporting CSV {index} of {len(periods)}.", "period": period},
+                {"stage": "file_export", "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(periods)}.", "period": period},
                 artifacts,
             )
-            with timings.measure("csv_export", report_id=job["report"].get("id")):
+            with timings.measure("file_export", report_id=job["report"].get("id")):
                 download = _asap_download(page, frame, job)
         else:
             _apply_configuration(page, job, period)
@@ -1029,7 +1066,7 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
         output = _safe_output_path(target, filename)
         with timings.measure("file_transfer", report_id=job["report"].get("id")):
             download.save_as(output)
-            metadata = _csv_metadata(output)
+            metadata = _file_metadata(output, job["downloads"].get("file_format", "csv"))
         artifacts.append({
             "period_key": period,
             "file_path": str(output),
@@ -1046,7 +1083,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER], "headed": headed, "delete_existing": False, "overwrite_existing": False},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False},
         }
         for attempt in range(60):
             try:
@@ -1108,6 +1145,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     continue
                 run_id = run["id"]
                 run_started = time.perf_counter()
+                artifacts = []
+                timings = []
+                sql_started = None
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
                              timings: list | None = None, error: str | None = None):
@@ -1118,14 +1158,40 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
 
                 try:
                     artifacts, timings = execute_job(page, run["job"], progress, profile_dir)
+                    if run["job"].get("sql_handoff", {}).get("enabled"):
+                        from app.flow_sql import load_artifacts
+                        progress("running", {"stage": "sql_insertion", "message": "Loading downloaded files into SQL."}, artifacts, timings)
+                        sql_started = time.perf_counter()
+                        load_artifacts(artifacts, run["job"]["sql_handoff"])
+                        timings.insert(-1, {
+                            "phase": "sql_insertion",
+                            "duration_ms": round((time.perf_counter() - sql_started) * 1000),
+                            "status": "succeeded",
+                        })
+                        timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
                     progress(
-                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."},
+                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} {run['job']['downloads'].get('file_format', 'csv').upper()} file(s)."},
                         artifacts, timings,
                     )
                 except Exception as exc:
+                    if timings:
+                        if sql_started is not None and not any(
+                            item.get("phase") == "sql_insertion" for item in timings
+                        ):
+                            timings.insert(-1, {
+                                "phase": "sql_insertion",
+                                "duration_ms": round((time.perf_counter() - sql_started) * 1000),
+                                "status": "failed",
+                            })
+                        timings[-1].update({
+                            "duration_ms": round((time.perf_counter() - run_started) * 1000),
+                            "status": "failed",
+                        })
+                    else:
+                        timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
                     progress(
                         "failed", {"stage": "failed", "message": str(exc)},
-                        timings=[{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}],
+                        artifacts=artifacts, timings=timings,
                         error=str(exc),
                     )
                 if once:

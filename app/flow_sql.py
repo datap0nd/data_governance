@@ -1,0 +1,188 @@
+"""PostgreSQL catalog discovery and optional Flows artifact handoff.
+
+Credentials come from the existing dedicated DG_UPLOAD_* configuration. They
+are never returned by the API, written to SQLite, or embedded in a flow job.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from pathlib import Path
+
+from app.config import (
+    UPLOAD_PGDATABASE,
+    UPLOAD_PGHOST,
+    UPLOAD_PGPASSWORD,
+    UPLOAD_PGPORT,
+    UPLOAD_PGUSER,
+)
+
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+
+def configuration_status() -> dict:
+    missing = []
+    if not UPLOAD_PGHOST:
+        missing.append("PGHOST (or DG_UPLOAD_PGHOST)")
+    if not UPLOAD_PGDATABASE:
+        missing.append("PGDATABASE (or DG_UPLOAD_PGDATABASE)")
+    if not UPLOAD_PGUSER:
+        missing.append("DG_UPLOAD_PGUSER")
+    if not UPLOAD_PGPASSWORD:
+        missing.append("DG_UPLOAD_PGPASSWORD")
+    return {
+        "configured": not missing,
+        "missing": missing,
+        "host": UPLOAD_PGHOST,
+        "default_database": UPLOAD_PGDATABASE,
+    }
+
+
+def _engine(database: str):
+    status = configuration_status()
+    if not status["configured"]:
+        raise RuntimeError(f"SQL handoff is not configured. Missing: {', '.join(status['missing'])}")
+    if not isinstance(database, str) or not database.strip() or len(database) > 200 or "\x00" in database:
+        raise ValueError("Choose a valid database from the discovered SQL catalog.")
+    try:
+        from sqlalchemy import create_engine
+        from sqlalchemy.engine import URL
+        from sqlalchemy.pool import NullPool
+    except ImportError as exc:
+        raise RuntimeError("pandas/sqlalchemy are not installed. Re-run setup.ps1.") from exc
+    url = URL.create(
+        "postgresql+psycopg2",
+        username=UPLOAD_PGUSER,
+        password=UPLOAD_PGPASSWORD,
+        host=UPLOAD_PGHOST,
+        port=int(UPLOAD_PGPORT),
+        database=database,
+        query={"connect_timeout": "10"},
+    )
+    return create_engine(url, poolclass=NullPool, pool_pre_ping=True)
+
+
+def _quote_identifier(value: str) -> str:
+    if not IDENTIFIER_RE.fullmatch(value or ""):
+        raise ValueError(f"Invalid SQL identifier: {value!r}")
+    return '"' + value.replace('"', '""') + '"'
+
+
+def discover_catalog() -> dict:
+    """Read every database/schema/table accessible to the configured role."""
+    from sqlalchemy import text
+
+    started = time.perf_counter()
+    seed = _engine(UPLOAD_PGDATABASE)
+    try:
+        with seed.connect() as connection:
+            databases = [
+                row[0] for row in connection.execute(text(
+                    "SELECT datname FROM pg_database "
+                    "WHERE datallowconn AND NOT datistemplate ORDER BY datname"
+                ))
+            ]
+    finally:
+        seed.dispose()
+    targets = []
+    errors = []
+    for database in databases:
+        engine = None
+        try:
+            engine = _engine(database)
+            with engine.connect() as connection:
+                rows = connection.execute(text(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_type='BASE TABLE' "
+                    "AND table_schema NOT IN ('pg_catalog','information_schema') "
+                    "AND table_schema NOT LIKE 'pg_toast%' "
+                    "ORDER BY table_schema, table_name"
+                )).fetchall()
+            targets.extend({"database": database, "schema": row[0], "table": row[1]} for row in rows)
+        except Exception as exc:
+            errors.append({"database": database, "error": str(exc)[:1000]})
+        finally:
+            if engine is not None:
+                engine.dispose()
+    return {
+        "targets": targets,
+        "database_count": len(databases),
+        "duration_ms": round((time.perf_counter() - started) * 1000),
+        "errors": errors,
+    }
+
+
+def _read_artifact(path: Path):
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError("pandas is not installed. Re-run setup.ps1.") from exc
+    suffix = path.suffix.casefold()
+    if suffix == ".csv":
+        frame = None
+        for encoding in ("utf-8", "cp1252", "latin-1"):
+            try:
+                frame = pd.read_csv(path, sep=None, engine="python", encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if frame is None:
+            raise RuntimeError(f"Could not decode CSV artifact: {path.name}")
+    elif suffix in {".xlsx", ".xls"}:
+        frame = pd.read_excel(path)
+    else:
+        raise RuntimeError(f"SQL handoff does not support {suffix or 'this file type'}.")
+    if frame.empty:
+        raise RuntimeError(f"Downloaded artifact has no data rows: {path.name}")
+    seen: dict[str, int] = {}
+    columns = []
+    for index, column in enumerate(frame.columns):
+        clean = re.sub(r"\W+", "_", str(column).strip()).strip("_").casefold() or f"col_{index}"
+        seen[clean] = seen.get(clean, 0) + 1
+        columns.append(clean if seen[clean] == 1 else f"{clean}_{seen[clean]}")
+    frame.columns = columns
+    return frame
+
+
+def load_artifacts(artifacts: list[dict], target: dict) -> dict:
+    """Append artifacts, optionally truncating once, in one transaction."""
+    from sqlalchemy import text
+
+    database = str(target.get("database") or "")
+    schema = str(target.get("schema") or "")
+    table = str(target.get("table") or "")
+    mode = str(target.get("mode") or "append").casefold()
+    if mode not in {"append", "replace"}:
+        raise ValueError("SQL write mode must be append or replace.")
+    qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+    frames = [_read_artifact(Path(item["file_path"])) for item in artifacts]
+    engine = _engine(database)
+    rows_written = 0
+    try:
+        with engine.begin() as connection:
+            existing_columns = {
+                row[0] for row in connection.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema=:schema AND table_name=:table"
+                ), {"schema": schema, "table": table})
+            }
+            if not existing_columns:
+                raise RuntimeError(f"SQL target no longer exists: {database}.{schema}.{table}")
+            for frame in frames:
+                extra = sorted(set(frame.columns) - existing_columns)
+                if extra:
+                    raise RuntimeError(
+                        f"Downloaded columns do not exist in {schema}.{table}: {', '.join(extra)}"
+                    )
+            if mode == "replace":
+                connection.execute(text(f"TRUNCATE TABLE {qualified}"))
+            for frame in frames:
+                frame.to_sql(
+                    table, connection, schema=schema, if_exists="append",
+                    index=False, chunksize=5000,
+                )
+                rows_written += len(frame)
+    finally:
+        engine.dispose()
+    return {"rows_written": rows_written, "files_loaded": len(frames), "mode": mode}

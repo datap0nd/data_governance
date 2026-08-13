@@ -460,6 +460,7 @@ CREATE TABLE IF NOT EXISTS flows (
     download_mode       TEXT NOT NULL DEFAULT 'single',
     period_strategy     TEXT NOT NULL DEFAULT 'fixed',
     window_weeks        INTEGER,
+    file_format         TEXT NOT NULL DEFAULT 'csv',
     browser_mode        TEXT NOT NULL DEFAULT 'headless',
     start_week          TEXT,
     end_week            TEXT,
@@ -473,6 +474,10 @@ CREATE TABLE IF NOT EXISTS flows (
     last_status         TEXT,
     last_error          TEXT,
     sql_handoff_enabled INTEGER NOT NULL DEFAULT 0,
+    sql_mode            TEXT,
+    sql_database        TEXT,
+    sql_schema          TEXT,
+    sql_table           TEXT,
     created_by          TEXT,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -555,6 +560,25 @@ CREATE TABLE IF NOT EXISTS flow_catalog_scans (
     heartbeat_at    DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS flow_sql_catalog (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    database_name   TEXT NOT NULL,
+    schema_name     TEXT NOT NULL,
+    table_name      TEXT NOT NULL,
+    last_seen_at    DATETIME NOT NULL,
+    stale           INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(database_name, schema_name, table_name)
+);
+
+CREATE TABLE IF NOT EXISTS flow_sql_catalog_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    status          TEXT NOT NULL DEFAULT 'never_scanned',
+    last_scan_at    DATETIME,
+    duration_ms     INTEGER,
+    target_count    INTEGER NOT NULL DEFAULT 0,
+    error           TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_flow_reports_site ON flow_reports(site_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_flow_filters_report ON flow_report_filters(report_id, position);
 CREATE INDEX IF NOT EXISTS idx_flows_schedule ON flows(enabled, next_run_at);
@@ -563,6 +587,7 @@ CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_run_files_run ON flow_run_files(run_id);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_queue ON flow_catalog_scans(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_site ON flow_catalog_scans(site_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_flow_sql_catalog_names ON flow_sql_catalog(database_name, schema_name, table_name, stale);
 CREATE INDEX IF NOT EXISTS idx_flow_timings_operation ON flow_operation_timings(operation_type, phase, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_flow_timings_run ON flow_operation_timings(run_id);
 CREATE INDEX IF NOT EXISTS idx_flow_timings_scan ON flow_operation_timings(scan_id);
@@ -976,6 +1001,29 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN browser_mode TEXT NOT NULL DEFAULT 'headless'",
     "ALTER TABLE flows ADD COLUMN period_strategy TEXT NOT NULL DEFAULT 'fixed'",
     "ALTER TABLE flows ADD COLUMN window_weeks INTEGER",
+    "ALTER TABLE flows ADD COLUMN file_format TEXT NOT NULL DEFAULT 'csv'",
+    "ALTER TABLE flows ADD COLUMN sql_mode TEXT",
+    "ALTER TABLE flows ADD COLUMN sql_database TEXT",
+    "ALTER TABLE flows ADD COLUMN sql_schema TEXT",
+    "ALTER TABLE flows ADD COLUMN sql_table TEXT",
+    """CREATE TABLE IF NOT EXISTS flow_sql_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        database_name TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        last_seen_at DATETIME NOT NULL,
+        stale INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(database_name, schema_name, table_name)
+    )""",
+    """CREATE TABLE IF NOT EXISTS flow_sql_catalog_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        status TEXT NOT NULL DEFAULT 'never_scanned',
+        last_scan_at DATETIME,
+        duration_ms INTEGER,
+        target_count INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_sql_catalog_names ON flow_sql_catalog(database_name, schema_name, table_name, stale)",
 ]
 
 

@@ -51,3 +51,30 @@ def launch_local_worker(browser_mode: str = "headless") -> dict:
         "status": "starting", "mode": browser_mode, "worker_id": worker_id,
         "display_name": display_name,
     }
+
+
+def stop_headed_worker(process_id: int | None) -> dict:
+    """Terminate only the exact interactive worker process tree for a run."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "message": "Headed worker termination is Windows-only."}
+    try:
+        if not isinstance(process_id, int) or process_id <= 0:
+            schtasks = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "schtasks.exe")
+            completed = subprocess.run(
+                [schtasks, "/End", "/TN", HEADED_TASK_PATH],
+                capture_output=True, text=True, timeout=15,
+            )
+            detail = (completed.stdout or completed.stderr or "").strip()
+            if completed.returncode != 0:
+                return {"status": "error", "message": detail or "Windows could not end the headed worker task."}
+            return {"status": "stopped", "process_id": None, "message": detail}
+        completed = subprocess.run(
+            ["taskkill.exe", "/PID", str(process_id), "/T", "/F"],
+            capture_output=True, text=True, timeout=15,
+        )
+        detail = (completed.stdout or completed.stderr or "").strip()
+        if completed.returncode != 0:
+            return {"status": "error", "message": detail or "Windows could not stop the headed worker."}
+        return {"status": "stopped", "process_id": process_id, "message": detail}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
