@@ -320,3 +320,7 @@ files and do not enable SQL handoff.
   session reported high network latency during the wait. Do not change the
   proven scraper path while diagnosing this. Inspect the target database for
   an external table lock or blocked transaction, then rerun SQL only.
+- PostgreSQL transactions now set a 30-second local lock timeout so a blocked
+  target table produces an actionable database error instead of hanging the
+  flow. Commit `8aa9afb` is deployed on the BI desktop; the updater completed
+  after transient corporate-proxy HTTP 502 retries and restored the service.
