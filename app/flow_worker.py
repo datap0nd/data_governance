@@ -480,6 +480,44 @@ def _asap_select_list_values(
                 result[value] = state
         return result
 
+    if label.casefold().rstrip(":") == "dimension":
+        # Dimension is the one ASAP prompt that opens with a retained member.
+        # Its list rows toggle with a normal left click. Clear every visibly
+        # selected member first, then select the Metronome values the same way.
+        # Do not use Ctrl or manipulate the hidden native owner for this prompt.
+        initial_states = selected_states()
+        if not initial_states:
+            raise RuntimeError(
+                "ASAP Dimension did not expose a verifiable selected state. "
+                "The report was not run with an unverified filter."
+            )
+        for value, selected in initial_states.items():
+            if selected:
+                visible_option(value).click()
+                frame.page.wait_for_timeout(250)
+
+        cleared_states = selected_states()
+        retained = [value for value, selected in cleared_states.items() if selected]
+        if retained:
+            raise RuntimeError(
+                f"ASAP Dimension could not be cleared with plain clicks. Still selected: {retained}."
+            )
+
+        for value in requested:
+            visible_option(value).click()
+            frame.page.wait_for_timeout(250)
+
+        final_states = selected_states()
+        actual = [value for value, selected in final_states.items() if selected]
+        missing = [value for value in requested if final_states.get(value) is not True]
+        extras = [value for value in actual if value not in requested]
+        if missing or extras:
+            raise RuntimeError(
+                f"ASAP Dimension selection did not match the flow. "
+                f"Requested: {requested}. Selected: {actual}."
+            )
+        return
+
     # Establish a single-selection baseline, then add the rest. Individual
     # modifier clicks avoid leaving Control held while MicroStrategy rerenders.
     visible_option(requested[0]).click()
@@ -526,6 +564,11 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
+        if definition["control_label"].casefold().rstrip(":") == "dimension":
+            _asap_select_list_values(
+                frame, definition["control_label"], values, definition.get("options") or values,
+            )
+            continue
         if definition["control_type"] == "select":
             _set_filter(frame, definition, values[0])
         else:

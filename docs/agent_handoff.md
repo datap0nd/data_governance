@@ -261,3 +261,20 @@ files and do not enable SQL handoff.
   1.5 seconds, capturing remotely rendered options that arrive after the old
   150 ms snapshot. Both setup script variants stop an active headed task before
   replacing code so a post-update run cannot retain the old Python runtime.
+
+## ASAP Rollback And Dimension Reset (2026-08-14)
+
+- The tracked tree was restored to `05ea061`, the last evidence-backed good
+  state before native-control filter manipulation began. Its live handoff
+  recorded two successful headed CSV runs.
+- Dimension now bypasses hidden/native controls. The worker reads visible
+  selection state, plain-clicks every retained selected member off, then
+  plain-clicks the exact Metronome-requested members on and verifies equality.
+  The Dimension path never uses Ctrl-click.
+- Week selection and the proven multi-download sequence were left unchanged.
+  Each download waits for `save_as`, closes its export popup, then reopens and
+  configures the report for the next period.
+- Full Python suite: `161 passed` on Python 3.11.
+- Next step: update the authorized BI desktop from `main`, verify Dimension
+  selection once, then test two sequential downloads and SQL insertion into
+  the configured test target.

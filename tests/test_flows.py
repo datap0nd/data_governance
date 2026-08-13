@@ -74,9 +74,9 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
     assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
 
 
-def test_asap_single_list_value_replaces_existing_selection(monkeypatch):
+def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members_on(monkeypatch):
     events = []
-    selected = {"Biz Sub": True, "Sold To": False}
+    selected = {"Biz Sub": True, "Sold To": False, "Customer": True}
 
     class Locator:
         first = None
@@ -99,9 +99,7 @@ def test_asap_single_list_value_replaces_existing_selection(monkeypatch):
 
         def click(self, modifiers=None):
             events.append(("click", self.value, tuple(modifiers or [])))
-            for key in selected:
-                selected[key] = False
-            selected[self.value] = True
+            selected[self.value] = not selected[self.value]
 
     class Frame:
         page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
@@ -110,10 +108,41 @@ def test_asap_single_list_value_replaces_existing_selection(monkeypatch):
             return Locator(value)
 
     monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
-    flow_worker._asap_select_list_values(Frame(), "Dimension", ["Sold To"], list(selected))
+    flow_worker._asap_select_list_values(
+        Frame(), "Dimension", ["Sold To", "Customer"], list(selected),
+    )
 
-    assert events == [("click", "Sold To", ())]
-    assert selected == {"Biz Sub": False, "Sold To": True}
+    assert events == [
+        ("click", "Biz Sub", ()),
+        ("click", "Customer", ()),
+        ("click", "Sold To", ()),
+        ("click", "Customer", ()),
+    ]
+    assert selected == {"Biz Sub": False, "Sold To": True, "Customer": True}
+
+
+def test_asap_dimension_bypasses_native_selection(monkeypatch):
+    calls = []
+    definition = {
+        "filter_key": "dimension",
+        "control_label": "Dimension",
+        "control_type": "multi_select",
+        "options": ["Biz Sub", "Sold To"],
+    }
+    job = {"selections": {"dimension": ["Sold To"]}, "report": {"filters": [definition]}}
+
+    monkeypatch.setattr(
+        flow_worker, "_select_native_options_by_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native control used")),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_select_list_values",
+        lambda _frame, label, values, options: calls.append((label, values, options)),
+    )
+
+    flow_worker._asap_apply_configuration(object(), job, None)
+
+    assert calls == [("Dimension", ["Sold To"], ["Biz Sub", "Sold To"])]
 
 
 def _site():
