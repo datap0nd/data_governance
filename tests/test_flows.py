@@ -1007,3 +1007,5 @@ def test_setup_restarts_existing_flow_worker_after_update():
     assert "& $InstalledNssm stop $FlowServiceName" in source
     assert source.index("& $InstalledNssm stop $FlowServiceName") < source.index("Expand-Archive -Path $ZipPath")
     assert "& $NssmExe start $FlowServiceName" in source
+    assert "File merge attempt $MergeAttempt of 15" in source
+    assert "Update file merge failed after 15 attempts" in source
