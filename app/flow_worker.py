@@ -451,11 +451,11 @@ def _asap_member_selected(option) -> bool | None:
         return None
 
 
-def _asap_dimension_root(frame: Frame, requested: list[str]):
-    """Return the smallest DOM container holding the Dimension member list."""
-    heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
+def _asap_member_list_root(frame: Frame, label: str, requested: list[str]):
+    """Return the smallest DOM container holding one prompt's member list."""
+    heading = frame.get_by_text(re.compile(rf"^{re.escape(label)}:?$", re.I)).first
     if not heading.count() or not heading.is_visible():
-        raise RuntimeError("Could not find the ASAP Dimension list.")
+        raise RuntimeError(f"Could not find the ASAP {label} list.")
     root = heading
     for _ in range(8):
         parents = root.locator("xpath=parent::*")
@@ -464,7 +464,12 @@ def _asap_dimension_root(frame: Frame, requested: list[str]):
         root = parents.first
         if all(root.get_by_text(value, exact=True).count() for value in requested):
             return root
-    raise RuntimeError("Could not scope the ASAP Dimension member list.")
+    raise RuntimeError(f"Could not scope the ASAP {label} member list.")
+
+
+def _asap_dimension_root(frame: Frame, requested: list[str]):
+    """Return the scoped Dimension member list."""
+    return _asap_member_list_root(frame, "Dimension", requested)
 
 
 def _asap_dimension_member(root, value: str):
@@ -597,6 +602,60 @@ def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
         frame.page.keyboard.up("Control")
 
 
+def _asap_select_week_values(
+    frame: Frame, label: str, requested: list[str], known_options: list[str],
+) -> dict:
+    """Replace, reconcile, and audit the exact ASAP week selection."""
+    options = list(dict.fromkeys([*known_options, *requested]))
+    requested = list(dict.fromkeys(requested))
+    # A single requested week can be nested in its own row. Require the root to
+    # contain every discovered week so retained selections elsewhere in the
+    # list cannot escape the exact-set audit.
+    root = _asap_member_list_root(frame, label, options)
+    initial = _asap_read_dimension_selection(root, options)
+
+    first = _asap_dimension_member(root, requested[0])
+    if first is None:
+        raise RuntimeError(f"Could not find ASAP {label} option: {requested[0]}")
+    first.scroll_into_view_if_needed(timeout=10_000)
+    first.click(timeout=10_000)
+    frame.page.wait_for_timeout(500)
+    for value in requested[1:]:
+        _asap_local_dimension_click(frame, root, value)
+    frame.page.wait_for_timeout(750)
+
+    final = _asap_read_dimension_selection(root, options)
+    missing = [value for value in requested if value not in final]
+    extra = [value for value in final if value not in requested]
+    if missing or extra:
+        for value in extra:
+            _asap_local_dimension_click(frame, root, value)
+        for value in missing:
+            _asap_local_dimension_click(frame, root, value)
+        frame.page.wait_for_timeout(750)
+        final = _asap_read_dimension_selection(root, options)
+        missing = [value for value in requested if value not in final]
+        extra = [value for value in final if value not in requested]
+
+    if missing or extra:
+        raise RuntimeError(
+            f"ASAP {label} selection mismatch. Requested: {requested}. "
+            f"Initial selected: {initial}. Final selected: {final}. "
+            f"Missing: {missing}. Extra: {extra}. The report was not run."
+        )
+    return {
+        "filter": label,
+        "requested": requested,
+        "initial_selected": initial,
+        "final_selected": final,
+        "actual": final,
+        "missing": missing,
+        "extra": extra,
+        "verified": True,
+        "options": options,
+    }
+
+
 def _asap_apply_configuration(
     frame: Frame, job: dict, period: str | list[str] | None,
 ) -> list[dict]:
@@ -613,6 +672,11 @@ def _asap_apply_configuration(
             audit.append(_asap_select_dimensions(
                 frame, values, definition.get("options") or values,
             ))
+        elif definition["control_type"] == "week":
+            audit.append(_asap_select_week_values(
+                frame, definition["control_label"], values,
+                definition.get("options") or values,
+            ))
         elif definition["control_type"] == "select":
             _set_filter(frame, definition, values[0])
             audit.append({
@@ -626,13 +690,17 @@ def _asap_apply_configuration(
                 "actual": values, "verified": True,
             })
 
-    # Recheck only Dimension after the page settles. Other filters retain their
-    # previously working behavior and are intentionally outside this fix.
+    # Recheck the two audited member lists after all prompts settle. RUN is
+    # blocked unless each list still equals its requested set exactly.
     frame.page.wait_for_timeout(1_500)
     for item in audit:
-        if item["filter"].casefold() != "dimension":
+        if item["filter"].casefold() not in {"dimension", "sell-out week"}:
             continue
-        root = _asap_dimension_root(frame, item["requested"])
+        root = (
+            _asap_dimension_root(frame, item["requested"])
+            if item["filter"].casefold() == "dimension"
+            else _asap_member_list_root(frame, item["filter"], item["options"])
+        )
         final = _asap_read_dimension_selection(root, item["options"])
         item["final_selected"] = final
         item["actual"] = final
@@ -641,7 +709,7 @@ def _asap_apply_configuration(
         item["verified"] = not item["missing"] and not item["extra"]
         if not item["verified"]:
             raise RuntimeError(
-                f"ASAP Dimension changed after configuration settled. "
+                f"ASAP {item['filter']} changed after configuration settled. "
                 f"Requested: {item['requested']}. Initial selected: {item['initial_selected']}. "
                 f"Final selected: {final}. "
                 f"Missing: {item['missing']}. Extra: {item['extra']}. The report was not run."

@@ -1184,7 +1184,40 @@ def test_dimension_routine_never_sends_an_os_control_key():
     assert '"ctrlKey": True' in source
 
 
-def test_asap_configuration_routes_only_dimension_through_dedicated_routine(monkeypatch):
+def test_week_selection_replaces_stale_members_and_audits_exact_set():
+    from app.flow_worker import _asap_select_week_values
+
+    frame, members, events = _dimension_frame(
+        {"202627": False, "202632": True, "202633": False},
+    )
+    audit = _asap_select_week_values(
+        frame, "Sell-out Week", ["202627"], ["202627", "202632", "202633"],
+    )
+
+    assert audit["initial_selected"] == ["202632"]
+    assert audit["final_selected"] == ["202627"]
+    assert audit["missing"] == []
+    assert audit["extra"] == []
+    assert audit["verified"] is True
+    assert events == [("plain", "202627")]
+    assert [member.text for member in members if member.x < 160 and member.state] == ["202627"]
+
+
+def test_week_selection_fails_before_run_when_exact_set_cannot_be_reached():
+    from app.flow_worker import _asap_select_week_values
+
+    frame, _members, events = _dimension_frame(
+        {"202627": False, "202632": True},
+        sticky_on_replace=("202632",), never_toggle=("202632",),
+    )
+    with pytest.raises(RuntimeError, match=r"Extra: \['202632'\]. The report was not run"):
+        _asap_select_week_values(
+            frame, "Sell-out Week", ["202627"], ["202627", "202632"],
+        )
+    assert events == [("plain", "202627"), ("local_ctrl", "202632")]
+
+
+def test_asap_configuration_routes_dimension_and_week_through_audited_routines(monkeypatch):
     calls = []
     monkeypatch.setattr(
         flow_worker, "_asap_select_dimensions",
@@ -1203,9 +1236,19 @@ def test_asap_configuration_routes_only_dimension_through_dedicated_routine(monk
         lambda _frame, label, values: calls.append(("list", label, values)),
     )
     monkeypatch.setattr(
-        flow_worker, "_asap_read_dimension_selection", lambda _root, _options: ["A", "C"],
+        flow_worker, "_asap_select_week_values",
+        lambda _frame, label, values, options: calls.append(("week", label, values, options)) or {
+            "filter": label, "requested": values, "initial_selected": [],
+            "final_selected": values, "actual": values, "missing": [], "extra": [],
+            "verified": True, "options": options,
+        },
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_read_dimension_selection",
+        lambda _root, options: [value for value in options if value in {"A", "C", "202619"}],
     )
     monkeypatch.setattr(flow_worker, "_asap_dimension_root", lambda _frame, _requested: object())
+    monkeypatch.setattr(flow_worker, "_asap_member_list_root", lambda _frame, _label, _requested: object())
     frame = SimpleNamespace(
         page=SimpleNamespace(wait_for_timeout=lambda _ms: None),
     )
@@ -1223,7 +1266,7 @@ def test_asap_configuration_routes_only_dimension_through_dedicated_routine(monk
     assert calls == [
         ("dimension", ["A", "C"], ["A", "B", "C"]),
         ("ordinary", "Data Configuration", "Config A"),
-        ("list", "Sell-out Week", ["202619"]),
+        ("week", "Sell-out Week", ["202619"], ["202619"]),
     ]
     assert audit[0]["initial_selected"] == []
     assert audit[0]["final_selected"] == ["A", "C"]
