@@ -307,32 +307,22 @@ def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] |
     label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
     label_box = label.bounding_box() if label.count() and label.is_visible() else None
     if label_box:
-        nearby = label.locator("xpath=following::*[position() <= 12]")
-        for index in range(nearby.count()):
-            item = nearby.nth(index)
+        exact = page.get_by_text(wanted, exact=True)
+        nearby = []
+        for index in range(exact.count()):
+            item = exact.nth(index)
             try:
                 box = item.bounding_box()
-                if not (
+                if (
                     item.is_visible() and box
                     and abs(box["x"] - label_box["x"]) <= 180
                     and label_box["y"] <= box["y"] <= label_box["y"] + 90
                 ):
-                    continue
-                candidates = [
-                    item.get_attribute("title") or "",
-                    item.get_attribute("aria-label") or "",
-                    item.get_attribute("value") or "",
-                    item.text_content() or "",
-                ]
-                for candidate in candidates:
-                    actual = re.sub(r"\s+", " ", candidate).strip()
-                    if actual == wanted:
-                        return [wanted]
-                    prefix = re.sub(r"(?:\.{3}|…)$", "", actual).rstrip()
-                    if len(prefix) >= 12 and actual != prefix and wanted.startswith(prefix):
-                        return [wanted]
+                    nearby.append(wanted)
             except Exception:
                 continue
+        if nearby:
+            return [wanted]
     roots = []
     if label.count() and label.is_visible():
         ancestor = label

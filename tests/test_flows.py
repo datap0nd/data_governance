@@ -1110,12 +1110,6 @@ def test_lazy_select2_value_is_read_from_rendered_title():
         def text_content(self):
             return self.text
 
-        def is_visible(self):
-            return True
-
-        def bounding_box(self):
-            return {"x": 20, "y": 45}
-
     class Items:
         def __init__(self, items):
             self.items = items
@@ -1128,14 +1122,7 @@ def test_lazy_select2_value_is_read_from_rendered_title():
 
     class Frame:
         def get_by_text(self, _pattern):
-            following = Items([Item("", "MENA - Global - Gl...")])
-            first = SimpleNamespace(
-                count=lambda: 1,
-                is_visible=lambda: True,
-                bounding_box=lambda: {"x": 20, "y": 20},
-                locator=lambda _selector: following,
-            )
-            return SimpleNamespace(first=first)
+            return SimpleNamespace(first=SimpleNamespace(count=lambda: 0, is_visible=lambda: False))
 
         def locator(self, selector):
             assert ".select2-selection__rendered:visible" in selector
