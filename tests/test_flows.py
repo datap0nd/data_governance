@@ -1219,7 +1219,7 @@ def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder()
     assert 'candidate.remove_listener("download", capture_download)' in source
     assert "download_page.expect_download" not in source
     assert "staged_file, export_pages = _asap_download" in source
-    assert "export_page.close(run_before_unload=False)" in source
+    assert "export_page.close(run_before_unload=True)" in source
     assert "candidate for candidate in wizard_pages" in source
     assert "downloads_path=str(download_staging_dir)" in source
     assert "downloads[0].path()" not in source

@@ -292,6 +292,11 @@ files and do not enable SQL handoff.
   configured destination.
 - Full Python suite after the staging-folder change: `163 passed`; Python
   compilation succeeded.
+- Live run #65 proved the staging and final copy: Edge wrote a new 57,667,776
+  byte local file and the worker copied an equal-size numbered CSV to the final
+  share. The run then blocked only while Playwright waited for the already
+  disappeared export page to acknowledge `close()`. Popup cleanup now uses the
+  non-waiting close mode so the next period can begin.
 - Next step: update the authorized BI desktop from `main`, run one download,
   then two sequential downloads, then enable the existing test SQL handoff and
   verify its inserted row/file counts.

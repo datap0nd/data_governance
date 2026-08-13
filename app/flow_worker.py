@@ -1441,7 +1441,13 @@ def execute_job(
             for export_page in export_pages:
                 try:
                     if not export_page.is_closed():
-                        export_page.close(run_before_unload=False)
+                        # The ASAP wizard visibly closes itself after export,
+                        # but Edge can leave its Playwright page object in a
+                        # half-closed state. A waiting close blocks forever
+                        # after the CSV has already reached the final share.
+                        # Running beforeunload makes close fire-and-forget so
+                        # the next period can start immediately.
+                        export_page.close(run_before_unload=True)
                 except Exception:
                     # The wizard may close itself after emitting the download.
                     # Treat that as already cleaned up.
