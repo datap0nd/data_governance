@@ -321,6 +321,25 @@ def _read_native_options_by_text(
     ]
 
 
+def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] | None:
+    """Read an already-selected lazy Select2 value without opening the menu."""
+    if len(requested) != 1:
+        return None
+    wanted = requested[0]
+    rendered = page.locator(".select2-selection__rendered:visible")
+    matches = []
+    for index in range(rendered.count()):
+        item = rendered.nth(index)
+        title = item.get_attribute("title") or ""
+        text = item.text_content() or ""
+        actual = re.sub(r"\s+", " ", title or text).strip()
+        if actual == wanted:
+            matches.append(actual)
+    if len(matches) > 1:
+        raise RuntimeError(f"ASAP exposed ambiguous Select2 values for: {requested}.")
+    return matches or None
+
+
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
     if value in (None, "", []):
         return
@@ -551,6 +570,8 @@ def _asap_apply_configuration(
         actual = _select_native_options_by_text(
             frame, values, definition.get("options") or values,
         )
+        if actual is None and definition["control_label"].casefold() == "data configuration":
+            actual = _read_select2_value(frame, values)
         if actual is None:
             raise RuntimeError(
                 f"ASAP {definition['control_label']} does not expose a native selection control "
@@ -569,6 +590,8 @@ def _asap_apply_configuration(
     frame.page.wait_for_timeout(1_500)
     for item in audit:
         actual = _read_native_options_by_text(frame, item["requested"], item["options"])
+        if actual is None and item["filter"].casefold() == "data configuration":
+            actual = _read_select2_value(frame, item["requested"])
         item["actual"] = actual or []
         item["verified"] = actual is not None and set(actual) == set(item["requested"])
         item.pop("options", None)
