@@ -1144,6 +1144,69 @@ def test_lazy_select2_value_is_read_from_rendered_title():
     assert _read_select2_value(Frame(), ["MENA - Global - Global"]) == ["MENA - Global - Global"]
 
 
+def test_visible_asap_multi_select_uses_page_local_modifier_and_verifies_state():
+    from app.flow_worker import _asap_select_visible_list_values
+
+    class Member:
+        def __init__(self, text, state, collection):
+            self.text = text
+            self.state = state
+            self.collection = collection
+
+        def is_visible(self):
+            return True
+
+        def bounding_box(self):
+            return {"x": 20, "y": 100 + self.collection.index(self) * 20}
+
+        def click(self, **_kwargs):
+            for member in self.collection:
+                member.state = False
+            self.state = True
+
+        def dispatch_event(self, name, event):
+            assert name == "click"
+            assert event == {"ctrlKey": True, "bubbles": True, "cancelable": True}
+            self.state = True
+
+        def evaluate(self, _script):
+            return self.state
+
+    class Members:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
+
+        @property
+        def first(self):
+            return self.items[0]
+
+    collection = []
+    for text, state in [("A", False), ("B", True), ("C", False)]:
+        collection.append(Member(text, state, collection))
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=False):
+            if hasattr(value, "pattern"):
+                heading = SimpleNamespace(
+                    count=lambda: 1,
+                    is_visible=lambda: True,
+                    bounding_box=lambda: {"x": 20, "y": 50},
+                )
+                return SimpleNamespace(first=heading)
+            return Members([member for member in collection if member.text == value])
+
+    assert _asap_select_visible_list_values(Frame(), "Dimension", ["A", "C"], ["A", "B", "C"]) == ["A", "C"]
+    assert [member.text for member in collection if member.state] == ["A", "C"]
+
+
 def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
     site, report = _seed_catalog()
     with database.get_db() as db:
