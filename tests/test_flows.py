@@ -1004,5 +1004,6 @@ def test_asap_download_observes_every_open_portal_page():
 def test_setup_restarts_existing_flow_worker_after_update():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
     assert "Stop-ScheduledTask -TaskName $HeadedFlowTaskName" in source
-    assert "& $NssmExe stop $FlowServiceName" in source
+    assert "& $InstalledNssm stop $FlowServiceName" in source
+    assert source.index("& $InstalledNssm stop $FlowServiceName") < source.index("Expand-Archive -Path $ZipPath")
     assert "& $NssmExe start $FlowServiceName" in source

@@ -122,6 +122,14 @@ if (Test-Path $DbPath) {
     Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
 }
 
+# Release code and browser-profile file handles before replacing the checkout.
+# Missing services/tasks are normal on a first install, so all stops are best-effort.
+$InstalledNssm = "$CodeDir\tools\nssm.exe"
+if (Test-Path $InstalledNssm) {
+    & $InstalledNssm stop $FlowServiceName | Out-Null
+}
+Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+
 # --- Portable Python 3.13 ---
 if (-not (Test-Path $PyExe)) {
     Write-Host "[1/5] Downloading portable Python 3.13..." -ForegroundColor Yellow
@@ -362,9 +370,6 @@ $HeadedTaskPrincipal = New-ScheduledTaskPrincipal `
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
-# A task that survived a previous headed run would otherwise keep the old
-# Python process and cause /Run to be ignored after an update.
-Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
     -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
@@ -423,10 +428,8 @@ Start-Sleep -Seconds 3
 
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
-# Setup replaces the worker code in place. Stop then start explicitly so an
-# existing process cannot keep the previous checkout or race service status.
-& $NssmExe stop $FlowServiceName
-Start-Sleep -Seconds 2
+# The old worker was stopped before extraction so it could not retain the
+# previous checkout or lock files during the merge.
 & $NssmExe start $FlowServiceName
 
     # Poll until the service registers with Metronome.
