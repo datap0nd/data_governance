@@ -257,3 +257,7 @@ files and do not enable SQL handoff.
 - Data Configuration discovery now reads every native select, including the
   hidden owner used by Select2, and merges duplicate prompt discoveries. This
   prevents a partial visible popup snapshot from omitting an unrendered option.
+- The scanner also polls opened Select2 results until they remain stable for
+  1.5 seconds, capturing remotely rendered options that arrive after the old
+  150 ms snapshot. Both setup script variants stop an active headed task before
+  replacing code so a post-update run cannot retain the old Python runtime.

@@ -799,6 +799,15 @@ def test_setup_registers_on_demand_interactive_headed_worker():
     assert ".metronome-flow-browser-headed" in source
 
 
+def test_setup_stops_headed_worker_before_replacing_runtime_code():
+    root = Path(__file__).parents[1]
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
+        source = root.joinpath(filename).read_text()
+        stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
+        assert stop in source
+        assert source.index(stop) < source.index("Expand-Archive -Path $ZipPath")
+
+
 def test_worker_retries_registration_and_prevents_duplicates():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert "for attempt in range(60)" in source
@@ -1019,6 +1028,9 @@ def test_asap_filter_discovery_reads_hidden_native_selects():
     assert 'frame.locator("select").all()' in source
     assert 'frame.locator("select:visible").all()' not in source
     assert 'control.locator("option").all_text_contents()' in source
+    assert "wait_for_popup_options()" in source
+    assert "time.monotonic() - stable_since >= 1.5" in source
+    assert ".select2-results__option:visible" in source
 
 
 def test_hidden_select2_control_is_selected_through_owning_native_select():

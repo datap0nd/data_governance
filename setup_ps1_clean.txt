@@ -101,6 +101,11 @@ if (Test-Path $DbPath) {
     Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
 }
 
+# Stop both Flow runtimes before replacing their Python source. The service
+# stop below handles headless discovery; the scheduled-task stop is required
+# because a headed worker can otherwise keep running the pre-update code.
+Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+
 # --- Portable Python 3.13 ---
 if (-not (Test-Path $PyExe)) {
     Write-Host "[1/5] Downloading portable Python 3.13..." -ForegroundColor Yellow

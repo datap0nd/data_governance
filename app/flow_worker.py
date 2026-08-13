@@ -805,6 +805,26 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             if len(lines) >= 3 and (has_marker or not require_search_marker):
                 return lines[1:500]
         return []
+
+    def wait_for_popup_options(timeout_ms: int = 5_000) -> list[str]:
+        """Collect asynchronously rendered Select2 results until they settle."""
+        selector = (
+            "[role=option]:visible,li:visible,"
+            ".select2-results__option:visible,[class*=select2-result]:visible"
+        )
+        collected = []
+        deadline = time.monotonic() + timeout_ms / 1000
+        stable_since = None
+        while time.monotonic() < deadline:
+            current = _unique_visible_text(frame.locator(selector), 500)
+            merged = list(dict.fromkeys([*collected, *current]))
+            if merged != collected:
+                collected = merged
+                stable_since = time.monotonic()
+            elif collected and stable_since is not None and time.monotonic() - stable_since >= 1.5:
+                break
+            frame.page.wait_for_timeout(250)
+        return collected
     # Native controls are preferred because they expose complete option lists
     # without opening the control or changing report state. Select2 deliberately
     # hides its owning select, so restricting this scan to :visible drops values
@@ -835,9 +855,9 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             continue
         add_definition(label, "select", options)
 
-    # New ASAP renders some selects as ARIA comboboxes. Open them only long
-    # enough to read their visible option labels, then restore the page with
-    # Escape. No selection is changed.
+    # New ASAP renders some selects as asynchronous Select2 comboboxes. Open
+    # them long enough for the remote results to settle, then restore the page
+    # with Escape. A fixed 150 ms snapshot missed late-arriving values.
     custom_selects = frame.locator(
         "[role=combobox]:visible,button[aria-haspopup=listbox]:visible,input[aria-haspopup=listbox]:visible"
     )
@@ -848,8 +868,7 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             label = lines[0] if lines else ""
         try:
             control.click(timeout=3_000)
-            frame.page.wait_for_timeout(150)
-            options = _unique_visible_text(frame.locator("[role=option]:visible,li:visible"), 500)
+            options = wait_for_popup_options()
         except Exception:
             options = []
         finally:
