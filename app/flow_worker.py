@@ -306,7 +306,9 @@ def _asap_frame(page: Page) -> Frame:
     return frame
 
 
-def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
+def _asap_wait_for_results(
+    page: Page, expected_weeks: list[str] | None = None, timeout_ms: int = 180_000,
+) -> Frame:
     """Return the live report frame once ASAP has rendered result rows.
 
     Running a report replaces ``iframe#content-frame`` in the current ASAP UI.
@@ -324,6 +326,19 @@ def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
             for frame in reversed(page.frames):
                 rows = frame.get_by_text("Data rows:", exact=False).first
                 if rows.count() and rows.is_visible():
+                    if expected_weeks:
+                        canvas_left = 160
+                        current = []
+                        for value in expected_weeks:
+                            locator = frame.get_by_text(value, exact=True)
+                            for index in range(locator.count()):
+                                candidate = locator.nth(index)
+                                box = candidate.bounding_box()
+                                if candidate.is_visible() and box and box["x"] >= canvas_left:
+                                    current.append(value)
+                                    break
+                        if set(current) != set(expected_weeks):
+                            continue
                     return frame
         except Exception as exc:
             # Frame replacement can race any locator operation. The next poll
@@ -331,7 +346,10 @@ def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
             last_error = exc
         page.wait_for_timeout(500)
     detail = f" Last frame error: {last_error}" if last_error else ""
-    raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
+    expected = f" with Sell-out Week {expected_weeks}" if expected_weeks else ""
+    raise RuntimeError(
+        f"ASAP report rows did not render{expected} within {timeout_ms // 1000} seconds.{detail}"
+    )
 
 
 def _asap_login_visible(page: Page) -> bool:
@@ -1591,12 +1609,19 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 _click_named(frame, "RUN")
                 # The current MicroStrategy UI completes report execution in
                 # its iframe without a stable prompt-answer response. Waiting
-                # for that internal URL left already-rendered reports stuck for
-                # three minutes. Yield briefly for the loading overlay, then use
-                # the rendered row summary as the portal's public readiness
-                # signal.
+                # for that internal URL left completed reports stuck. Yield for
+                # the loading overlay, then require both the row summary and the
+                # requested week on the report canvas so a stale prior grid can
+                # never be mistaken for this run's result.
                 page.wait_for_timeout(1_000)
-                frame = _asap_wait_for_results(page)
+                expected_weeks = next(
+                    (
+                        item["requested"] for item in filter_audit
+                        if item["filter"].casefold() == "sell-out week"
+                    ),
+                    None,
+                )
+                frame = _asap_wait_for_results(page, expected_weeks)
                 _asap_verify_rendered_results(frame, filter_audit)
             report_progress(
                 "running",
