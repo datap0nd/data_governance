@@ -475,21 +475,30 @@ def _asap_dimension_root(frame: Frame, requested: list[str]):
 def _asap_dimension_member(root, value: str):
     """Find the rendered exact member inside a scoped ASAP prompt list."""
     candidates = root.get_by_text(value, exact=True)
-    connected = []
     for index in range(candidates.count()):
         candidate = candidates.nth(index)
         try:
-            if not candidate.evaluate("node => node.isConnected"):
-                continue
-            connected.append(candidate)
-            # Off-screen list rows remain Playwright-visible, while duplicate
-            # values in hidden prompt templates do not. Always prefer the
-            # rendered row so scroll and state reads target the real member.
-            if candidate.is_visible():
+            # Do not use Playwright visibility here. ASAP clips valid rows in
+            # an internal scroll container, which can make an off-screen member
+            # fail is_visible() even though it is the rendered prompt row.
+            if candidate.evaluate(
+                """node => {
+                    if (!node.isConnected) return false;
+                    const style = getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden') return false;
+                    const rect = node.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                }"""
+            ):
                 return candidate
         except Exception:
             continue
-    return connected[0] if len(connected) == 1 else None
+    return None
+
+
+def _asap_scroll_member(member) -> None:
+    """Scroll an ASAP prompt row without Playwright's visibility precondition."""
+    member.evaluate("node => node.scrollIntoView({block: 'nearest', inline: 'nearest'})")
 
 
 def _asap_read_dimension_selection(
@@ -513,7 +522,7 @@ def _asap_local_dimension_click(frame: Frame, root, value: str) -> None:
     member = _asap_dimension_member(root, value)
     if member is None:
         raise RuntimeError(f"Could not find ASAP Dimension option: {value}")
-    member.scroll_into_view_if_needed(timeout=10_000)
+    _asap_scroll_member(member)
     event = {
         "ctrlKey": True, "bubbles": True, "cancelable": True,
         "button": 0, "buttons": 1, "detail": 1,
@@ -541,7 +550,7 @@ def _asap_select_dimensions(
     first = _asap_dimension_member(root, interaction_order[0])
     if first is None:
         raise RuntimeError(f"Could not find ASAP Dimension option: {interaction_order[0]}")
-    first.scroll_into_view_if_needed(timeout=10_000)
+    _asap_scroll_member(first)
     first.click(timeout=10_000)
     frame.page.wait_for_timeout(500)
     for value in interaction_order[1:]:
@@ -624,7 +633,7 @@ def _asap_select_week_values(
     first = _asap_dimension_member(root, requested[0])
     if first is None:
         raise RuntimeError(f"Could not find ASAP {label} option: {requested[0]}")
-    first.scroll_into_view_if_needed(timeout=10_000)
+    _asap_scroll_member(first)
     first.click(timeout=10_000)
     frame.page.wait_for_timeout(500)
     for value in requested[1:]:
