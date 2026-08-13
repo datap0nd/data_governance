@@ -122,14 +122,6 @@ if (Test-Path $DbPath) {
     Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
 }
 
-# Release code and browser-profile file handles before replacing the checkout.
-# Missing services/tasks are normal on a first install, so all stops are best-effort.
-$InstalledNssm = "$CodeDir\tools\nssm.exe"
-if (Test-Path $InstalledNssm) {
-    & $InstalledNssm stop $FlowServiceName | Out-Null
-}
-Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
-
 # --- Portable Python 3.13 ---
 if (-not (Test-Path $PyExe)) {
     Write-Host "[1/5] Downloading portable Python 3.13..." -ForegroundColor Yellow
@@ -201,6 +193,9 @@ if ($existing) {
     Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
 }
 $existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
+if ($existingFlowService) {
+    & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
+}
 
 # Kill anything still holding the port
 $portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
@@ -272,18 +267,9 @@ if ($Inner) {
     # Copy-Item does not reliably merge new files into existing nested
     # directories on Windows PowerShell 5. Robocopy /E performs a true merge
     # without /MIR or /PURGE, so it never deletes installed/local files.
-    $MergeExit = 16
-    for ($MergeAttempt = 1; $MergeAttempt -le 15; $MergeAttempt++) {
-        Write-Host "  File merge attempt $MergeAttempt of 15..." -ForegroundColor DarkGray
-        & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-        $MergeExit = $LASTEXITCODE
-        if ($MergeExit -lt 8) { break }
-        if ($MergeAttempt -lt 15) { Start-Sleep -Seconds 2 }
-    }
-    if ($MergeExit -ge 8) {
-        Write-Host "  Final merge diagnostics:" -ForegroundColor Yellow
-        & robocopy.exe $Inner.FullName $CodeDir /E /R:0 /W:0 /NJH /NJS /NP
-        throw "Update file merge failed after 15 attempts with robocopy exit code $MergeExit"
+    & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        throw "Update file merge failed with robocopy exit code $LASTEXITCODE"
     }
     Remove-Item $TempExtract -Recurse -Force
 }
@@ -434,8 +420,6 @@ Start-Sleep -Seconds 3
 
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
-# The old worker was stopped before extraction so it could not retain the
-# previous checkout or lock files during the merge.
 & $NssmExe start $FlowServiceName
 
     # Poll until the service registers with Metronome.
