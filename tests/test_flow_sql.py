@@ -112,7 +112,9 @@ def test_sql_preflight_reports_missing_and_unexpected_columns(tmp_path, monkeypa
             return [("a", "NO", None, "NO", "NEVER"), ("required_b", "NO", None, "NO", "NEVER")]
 
     class Connection:
-        def execute(self, *_args, **_kwargs):
+        def execute(self, statement, *_args, **_kwargs):
+            if str(statement).startswith("SET LOCAL lock_timeout"):
+                return None
             return Result()
 
     class Begin:

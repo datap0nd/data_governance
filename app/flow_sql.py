@@ -192,6 +192,10 @@ def load_artifacts(artifacts: list[dict], target: dict) -> dict:
     rows_written = 0
     try:
         with engine.begin() as connection:
+            # Do not let truncate-and-replace sit forever behind an unrelated
+            # session holding the target table. Surface the database blocker
+            # while the worker and its diagnostic heartbeat are still alive.
+            connection.execute(text("SET LOCAL lock_timeout = '30s'"))
             column_rows = connection.execute(text(
                 "SELECT column_name, is_nullable, column_default, is_identity, is_generated "
                 "FROM information_schema.columns "
