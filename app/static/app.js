@@ -9670,8 +9670,10 @@ function _bindFlowWorkspace() {
     });
     const updateSqlFields = () => {
         const enabled = $("#flow-sql-enabled")?.checked || false;
-        $("#flow-sql-fields").hidden = !enabled;
-        $("#flow-sql-summary").textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Truncate and replace" : "Append") : "Disabled";
+        const fields = $("#flow-sql-fields");
+        const summary = $("#flow-sql-summary");
+        if (fields) fields.hidden = !enabled;
+        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Truncate and replace" : "Append") : "Disabled";
     };
     const repopulateSql = () => {
         const targets = state.sqlCatalog.targets || [];
@@ -9687,7 +9689,7 @@ function _bindFlowWorkspace() {
     $("#flow-sql-database")?.addEventListener("change", repopulateSql);
     $("#flow-sql-schema")?.addEventListener("change", () => { const database = $("#flow-sql-database").value; const schema = $("#flow-sql-schema").value; $("#flow-sql-table").innerHTML = (state.sqlCatalog.targets || []).filter(item => item.database === database && item.schema === schema).map(item => `<option>${esc(item.table)}</option>`).join(""); });
     $("#flow-sql-refresh")?.addEventListener("click", async event => { event.currentTarget.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); toast("SQL targets refreshed"); await navigate("flows"); } catch (err) { toast("SQL targets not refreshed: " + err.message); event.currentTarget.disabled = false; } });
-    updateSqlFields();
+    if ($("#flow-sql-fields")) updateSqlFields();
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";
         const weekly = event.target.value === "weekly";

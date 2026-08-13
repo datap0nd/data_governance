@@ -713,6 +713,12 @@ def test_catalog_monitor_reports_worker_and_auto_refreshes():
     assert "_flowScheduleCatalogMonitor" in source
 
 
+def test_flow_list_does_not_require_builder_only_sql_controls():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'if (fields) fields.hidden = !enabled;' in source
+    assert 'if ($("#flow-sql-fields")) updateSqlFields();' in source
+
+
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "launched", "mode": mode})
     site, report = _seed_catalog()

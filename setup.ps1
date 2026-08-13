@@ -25,6 +25,53 @@ trap {
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+function Invoke-WebRequestWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile,
+        [hashtable]$Headers = @{},
+        [int]$MaxAttempts = 15,
+        [int]$DelaySeconds = 5
+    )
+    $lastMessage = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Write-Host "  Download attempt $attempt of $MaxAttempts..." -ForegroundColor DarkGray
+            Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers $Headers
+            return
+        } catch {
+            $lastMessage = $_.Exception.Message
+            Write-Host "  Attempt $attempt failed: $lastMessage" -ForegroundColor Yellow
+            if ($attempt -lt $MaxAttempts) {
+                Write-Host "  Corporate proxy may be transient. Retrying in $DelaySeconds seconds..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $DelaySeconds
+            }
+        }
+    }
+    throw "Download failed after $MaxAttempts attempts. Last error: $lastMessage"
+}
+
+function Invoke-PipWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$PipExe,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [int]$MaxAttempts = 15,
+        [int]$DelaySeconds = 5
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Host "  Dependency download attempt $attempt of $MaxAttempts..." -ForegroundColor DarkGray
+        & $PipExe @Arguments
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        if ($attempt -lt $MaxAttempts) {
+            Write-Host "  Dependency download failed (exit $LASTEXITCODE). Retrying in $DelaySeconds seconds..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+    throw "Dependency installation failed after $MaxAttempts attempts."
+}
+
 $ServiceName = "MXAnalytics"
 $FlowServiceName = "MXFlowsWorker"
 $HeadedFlowTaskName = "Metronome_Flows_Headed"
@@ -170,10 +217,10 @@ $ErrorActionPreference = "Stop"
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
 try {
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing -Headers $ZipHeaders
+    Invoke-WebRequestWithRetry -Uri $ZipUrl -OutFile $ZipPath -Headers $ZipHeaders
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
 } catch {
-    Write-Host "  Direct download failed: $_" -ForegroundColor Yellow
+    Write-Host "  Direct download failed after 15 attempts: $_" -ForegroundColor Yellow
     if ($GitHubToken) {
         Write-Host "  Check that DG_GITHUB_TOKEN has read access to this private repo." -ForegroundColor Red
         Write-Host "  Required GitHub permission: Contents = Read." -ForegroundColor Red
@@ -240,7 +287,7 @@ $PipExe = "$PyDir\Scripts\pip.exe"
 # Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
 & $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
 # Install remaining deps from public PyPI (portable Python has clean config)
-& $PipExe install -r requirements.txt -q
+Invoke-PipWithRetry -PipExe $PipExe -Arguments @("install", "-r", "requirements.txt", "-q")
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
