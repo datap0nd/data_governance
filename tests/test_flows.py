@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,15 +23,9 @@ def _request(actor="Analyst"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
 
 
-def test_asap_multi_select_replaces_existing_selection_then_adds_remaining_values():
+def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeypatch):
     events = []
-
-    class Keyboard:
-        def down(self, key):
-            events.append(("down", key))
-
-        def up(self, key):
-            events.append(("up", key))
+    selected = {"Extra": True, "202619": True, "202620": False, "202621": False}
 
     class Locator:
         first = None
@@ -51,35 +46,37 @@ def test_asap_multi_select_replaces_existing_selection_then_adds_remaining_value
         def is_visible(self):
             return True
 
-        def click(self):
-            events.append(("click", self.value))
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            if modifiers:
+                selected[self.value] = not selected[self.value]
+            else:
+                for key in selected:
+                    selected[key] = False
+                selected[self.value] = True
 
     class Frame:
-        page = SimpleNamespace(keyboard=Keyboard())
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
 
-    flow_worker._asap_select_list_values(Frame(), "Sell-out Week", ["202619", "202620", "202621"])
+    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
+    flow_worker._asap_select_list_values(
+        Frame(), "Sell-out Week", ["202619", "202620", "202621"], list(selected),
+    )
 
     assert events == [
-        ("click", "202619"),
-        ("down", "Control"),
-        ("click", "202620"),
-        ("click", "202621"),
-        ("up", "Control"),
+        ("click", "202619", ()),
+        ("click", "202620", ("Control",)),
+        ("click", "202621", ("Control",)),
     ]
+    assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
 
 
-def test_asap_single_list_value_replaces_existing_selection_without_control():
+def test_asap_single_list_value_replaces_existing_selection(monkeypatch):
     events = []
-
-    class Keyboard:
-        def down(self, key):
-            events.append(("down", key))
-
-        def up(self, key):
-            events.append(("up", key))
+    selected = {"Biz Sub": True, "Sold To": False}
 
     class Locator:
         first = None
@@ -100,18 +97,23 @@ def test_asap_single_list_value_replaces_existing_selection_without_control():
         def is_visible(self):
             return True
 
-        def click(self):
-            events.append(("click", self.value))
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            for key in selected:
+                selected[key] = False
+            selected[self.value] = True
 
     class Frame:
-        page = SimpleNamespace(keyboard=Keyboard())
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
 
-    flow_worker._asap_select_list_values(Frame(), "Dimension", ["Sold To"])
+    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
+    flow_worker._asap_select_list_values(Frame(), "Dimension", ["Sold To"], list(selected))
 
-    assert events == [("click", "Sold To")]
+    assert events == [("click", "Sold To", ())]
+    assert selected == {"Biz Sub": False, "Sold To": True}
 
 
 def _site():
@@ -990,6 +992,7 @@ def test_asap_region_triplet_select_is_named_data_configuration():
         "Global - Global - CIS",
     ]
     assert _normalize_asap_filter_label(options[1], "select", options) == "Data Configuration"
+    assert _normalize_asap_filter_label(options[1], "select", [options[1]]) == "Data Configuration"
     assert _normalize_asap_filter_label("Region", "select", options) == "Region"
 
 
@@ -1049,6 +1052,9 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
             self.selected = None
 
         def locator(self, selector):
+            if selector == "option:checked":
+                selected = self.selected if isinstance(self.selected, list) else [self.selected]
+                return Options([item for item in self.labels if item in selected])
             assert selector == "option"
             return Options(self.labels)
 
@@ -1185,3 +1191,55 @@ def test_asap_download_observes_every_open_portal_page():
     assert "download_page.expect_download" not in source
     assert "download, export_pages = _asap_download" in source
     assert "export_page.close(run_before_unload=False)" in source
+    assert "candidate for candidate in wizard_pages" in source
+
+
+def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible",
+        capabilities={"headed": True, "process_id": 4321},
+    ))
+    flows.claim_run("bi-desktop-headed")
+    old = "2026-08-13T10:00:00"
+    monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:05:00"))
+    with database.get_db() as db:
+        db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id=?", (old, "bi-desktop-headed"))
+        db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (old, queued["id"]))
+
+    result = flows.fail_stale_runs(timeout_seconds=120)
+
+    assert result == {"failed_run_ids": [queued["id"]], "count": 1}
+    run = flows.get_run(queued["id"])
+    assert run["status"] == "failed"
+    assert "stopped responding" in run["error"]
+    assert any(event["stage"] == "worker_lost" for event in run["events"])
+    assert flows.list_flows()[0]["last_status"] == "failed"
+    worker = next(item for item in flows.list_workers() if item["worker_id"] == "bi-desktop-headed")
+    assert worker["current_run_id"] is None
+
+
+def test_run_heartbeat_prevents_active_worker_from_being_reaped(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible",
+        capabilities={"headed": True, "process_id": 4321},
+    ))
+    flows.claim_run("bi-desktop-headed")
+    monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:05:00"))
+    flows.heartbeat_run("bi-desktop-headed", queued["id"])
+
+    assert flows.fail_stale_runs(timeout_seconds=120)["count"] == 0
+    assert flows.get_run(queued["id"])["status"] == "claimed"

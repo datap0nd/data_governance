@@ -403,6 +403,15 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
+        flows.fail_stale_runs,
+        "interval",
+        seconds=30,
+        id="flow_stale_run_reaper",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
         flows.queue_due_catalog_scans,
         "interval",
         minutes=15,

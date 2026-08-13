@@ -15,6 +15,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from contextlib import contextmanager
@@ -220,6 +221,14 @@ def _select_native_options_by_text(
             continue
         selected = values if len(values) > 1 else values[0]
         select.select_option(label=selected, force=True)
+        actual = [
+            re.sub(r"\s+", " ", text).strip()
+            for text in select.locator("option:checked").all_text_contents()
+        ]
+        if set(actual) != set(values):
+            raise RuntimeError(
+                f"ASAP native selection mismatch. Requested: {values}. Selected: {actual}."
+            )
         return True
     return False
 
@@ -414,7 +423,34 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
     raise RuntimeError(f"ASAP report did not load after one retry: {last_error}")
 
 
-def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
+def _asap_member_selected(option) -> bool | None:
+    """Read selection state from MicroStrategy's ARIA, class, or row styling."""
+    try:
+        return option.evaluate(
+            r"""node => {
+                for (let current = node, depth = 0; current && depth < 5; current = current.parentElement, depth++) {
+                    const aria = current.getAttribute('aria-selected') ?? current.getAttribute('aria-checked');
+                    if (aria === 'true') return true;
+                    if (aria === 'false') return false;
+                    const classes = String(current.className || '');
+                    if (/(^|[-_ ])(?:selected|checked)(?:$|[-_ ])/i.test(classes) || /itemSelected/i.test(classes)) return true;
+                    const style = getComputedStyle(current);
+                    const match = style.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                    if (match) {
+                        const [r, g, b] = match.slice(1).map(Number);
+                        if (b > r + 35 && b > g + 15 && b > 120) return true;
+                    }
+                }
+                return null;
+            }"""
+        )
+    except Exception:
+        return None
+
+
+def _asap_select_list_values(
+    frame: Frame, label: str, values: list[str], available_values: list[str] | None = None,
+):
     heading = frame.get_by_text(label, exact=True).first
     heading.wait_for(state="visible", timeout=60_000)
     if not values:
@@ -430,20 +466,55 @@ def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
             raise RuntimeError(f"Could not find {label} option: {value}")
         return option
 
-    # A plain click replaces any selection that ASAP retained from the prior
-    # run. Only the additional requested values are additive Ctrl-clicks.
-    # Ctrl-clicking every value toggles preselected members off and leaves
-    # unrelated preselected members on, producing the inverse of the request.
-    visible_option(values[0]).click()
-    if len(values) == 1:
-        return
+    requested = list(dict.fromkeys(values))
+    available = list(dict.fromkeys([*(available_values or []), *requested]))
 
-    frame.page.keyboard.down("Control")
-    try:
-        for value in values[1:]:
-            visible_option(value).click()
-    finally:
-        frame.page.keyboard.up("Control")
+    def selected_states() -> dict[str, bool]:
+        result = {}
+        for value in available:
+            try:
+                state = _asap_member_selected(visible_option(value))
+            except RuntimeError:
+                continue
+            if state is not None:
+                result[value] = state
+        return result
+
+    # Establish a single-selection baseline, then add the rest. Individual
+    # modifier clicks avoid leaving Control held while MicroStrategy rerenders.
+    visible_option(requested[0]).click()
+    frame.page.wait_for_timeout(250)
+    for value in requested[1:]:
+        visible_option(value).click(modifiers=["Control"])
+        frame.page.wait_for_timeout(200)
+
+    # MicroStrategy can retain selections or drop rapid clicks. Reconcile the
+    # rendered state and verify exact equality before allowing RUN.
+    for _attempt in range(3):
+        states = selected_states()
+        if states:
+            extras = [value for value, selected in states.items() if selected and value not in requested]
+            missing = [value for value in requested if states.get(value) is False]
+            if not extras and not missing and all(states.get(value) is True for value in requested):
+                return
+            for value in [*extras, *missing]:
+                visible_option(value).click(modifiers=["Control"])
+                frame.page.wait_for_timeout(250)
+            continue
+        break
+    final_states = selected_states()
+    if final_states:
+        actual = [value for value, selected in final_states.items() if selected]
+        if set(actual) != set(requested):
+            raise RuntimeError(
+                f"ASAP {label} selection did not match the flow. "
+                f"Requested: {requested}. Selected: {actual}."
+            )
+        return
+    raise RuntimeError(
+        f"ASAP {label} did not expose a verifiable selected state. "
+        "The report was not run with an unverified filter."
+    )
 
 
 def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] | None):
@@ -458,7 +529,11 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
         if definition["control_type"] == "select":
             _set_filter(frame, definition, values[0])
         else:
-            _asap_select_list_values(frame, definition["control_label"], values)
+            if _select_native_options_by_text(frame, values, definition.get("options") or values):
+                continue
+            _asap_select_list_values(
+                frame, definition["control_label"], values, definition.get("options") or values,
+            )
 
 
 def _asap_download(page: Page, frame: Frame, job: dict):
@@ -501,7 +576,7 @@ def _asap_download(page: Page, frame: Frame, job: dict):
     # in the existing page. Search both shapes instead of requiring a popup.
     format_option = None
     export_action = None
-    download_page = page
+    wizard_pages = set()
     deadline = time.monotonic() + 60
     file_format = "csv"
     format_names = (
@@ -519,6 +594,7 @@ def _asap_download(page: Page, frame: Frame, job: dict):
                 try:
                     if locator.count() and locator.first.is_visible():
                         format_option = locator.first
+                        wizard_pages.add(root if isinstance(root, Page) else root.page)
                         break
                 except Exception:
                     continue
@@ -529,7 +605,7 @@ def _asap_download(page: Page, frame: Frame, job: dict):
                 try:
                     if locator.count() and locator.first.is_visible():
                         export_action = locator.first
-                        download_page = popup or (root if isinstance(root, Page) else root.page)
+                        wizard_pages.add(root if isinstance(root, Page) else root.page)
                         break
                 except Exception:
                     continue
@@ -561,7 +637,7 @@ def _asap_download(page: Page, frame: Frame, job: dict):
         if not downloads:
             raise RuntimeError("ASAP export started, but Edge did not expose the completed download within 3 minutes.")
         export_pages = [
-            candidate for candidate in page.context.pages
+            candidate for candidate in wizard_pages
             if candidate not in pages_before and candidate is not page
         ]
         return downloads[0], export_pages
@@ -596,7 +672,7 @@ def _normalize_asap_filter_label(label: str, control_type: str, options: list[st
     """Repair labels omitted by custom MicroStrategy prompt controls."""
     if (
         control_type == "select"
-        and len(options) >= 2
+        and len(options) >= 1
         and len([part for part in label.split(" - ") if part.strip()]) == 3
         and all(len([part for part in value.split(" - ") if part.strip()]) == 3 for value in options)
     ):
@@ -1351,6 +1427,25 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         "timings": timings or [], "error": error, "traceback": traceback_text,
                     })
 
+                heartbeat_stop = threading.Event()
+
+                def heartbeat_loop():
+                    with httpx.Client(
+                        base_url=server.rstrip("/"),
+                        headers={"User-Agent": "Metronome-Flow-Worker/1"},
+                    ) as heartbeat_client:
+                        while not heartbeat_stop.wait(30):
+                            try:
+                                _api(
+                                    heartbeat_client, "POST",
+                                    f"/api/flows/worker/{worker_id}/runs/{run_id}/heartbeat",
+                                )
+                            except Exception:
+                                pass
+
+                heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+                heartbeat_thread.start()
+
                 try:
                     artifacts, timings = execute_job(page, run["job"], progress, profile_dir)
                     sql_artifacts = artifacts
@@ -1448,6 +1543,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         artifacts=artifacts, timings=timings,
                         error=str(exc), traceback_text=traceback.format_exc(),
                     )
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join(timeout=2)
                 if once:
                     break
             context.close()

@@ -50,6 +50,49 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
 
 
+def fail_stale_runs(timeout_seconds: int = 120) -> dict:
+    """Fail work whose assigned browser stopped heartbeating."""
+    now = _now()
+    now_text = _iso(now)
+    cutoff = _iso(now - timedelta(seconds=timeout_seconds))
+    failed = []
+    message = "The assigned browser worker stopped responding before the run finished."
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT r.id, r.flow_id, r.worker_id
+               FROM flow_runs r
+               LEFT JOIN flow_workers w ON w.worker_id=r.worker_id
+               WHERE r.status IN ('claimed','running')
+                 AND COALESCE(w.last_seen_at, r.heartbeat_at, r.claimed_at) < ?""",
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            db.execute(
+                """UPDATE flow_runs SET status='failed', error=?, finished_at=?, heartbeat_at=?
+                   WHERE id=? AND status IN ('claimed','running')""",
+                (message, now_text, now_text, row["id"]),
+            )
+            db.execute(
+                """INSERT INTO flow_run_events
+                   (run_id, status, stage, message, details_json, error, traceback, created_at)
+                   VALUES (?, 'failed', 'worker_lost', ?, '{}', ?, NULL, ?)""",
+                (row["id"], message, message, now_text),
+            )
+            db.execute(
+                """UPDATE flows SET last_run_at=?, last_status='failed', last_error=?, updated_at=?
+                   WHERE id=?""",
+                (now_text, message, now_text, row["flow_id"]),
+            )
+            if row["worker_id"]:
+                db.execute(
+                    """UPDATE flow_workers SET status='offline', current_run_id=NULL,
+                       last_error=?, updated_at=? WHERE worker_id=?""",
+                    (message, now_text, row["worker_id"]),
+                )
+            failed.append(row["id"])
+    return {"failed_run_ids": failed, "count": len(failed)}
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -1668,6 +1711,25 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 (now, now, worker_id),
             )
     return {"run_id": run_id, "status": body.status}
+
+
+@router.post("/worker/{worker_id}/runs/{run_id}/heartbeat")
+def heartbeat_run(worker_id: str, run_id: int):
+    now = _iso(_now())
+    with get_db() as db:
+        row = db.execute(
+            "SELECT status FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Run is not assigned to this worker.")
+        if row["status"] in RUN_TERMINAL:
+            return {"run_id": run_id, "status": row["status"], "terminal": True}
+        db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (now, run_id))
+        db.execute(
+            "UPDATE flow_workers SET last_seen_at=?, updated_at=? WHERE worker_id=?",
+            (now, now, worker_id),
+        )
+    return {"run_id": run_id, "status": row["status"], "terminal": False}
 
 
 @router.get("/{flow_id}")
