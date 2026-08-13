@@ -248,13 +248,9 @@ Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
 # GitHub ZIP has a top-level folder (data_governance-main/) - copy its contents into $CodeDir
 $Inner = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
 if ($Inner) {
-    # Copy-Item does not reliably merge new files into existing nested
-    # directories on Windows PowerShell 5. Robocopy /E performs a true merge
-    # without /MIR or /PURGE, so it never deletes installed/local files.
-    & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        throw "Update file merge failed with robocopy exit code $LASTEXITCODE"
-    }
+    # Restore the original updater behavior. Copy-Item overlays the downloaded
+    # source tree and never mirrors, purges, or removes installed/local files.
+    Copy-Item "$($Inner.FullName)\*" $CodeDir -Recurse -Force
     Remove-Item $TempExtract -Recurse -Force
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
