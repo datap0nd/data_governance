@@ -780,6 +780,16 @@ def _asap_apply_configuration(
         if actual is None and definition["control_label"].casefold() == "data configuration":
             actual = _select_custom_option_by_text(frame, values)
         if actual is None:
+            if definition["control_label"].casefold() == "data configuration":
+                audit.append({
+                    "filter": definition["control_label"],
+                    "requested": values,
+                    "actual": [],
+                    "verified": False,
+                    "verification": "canvas_control_not_dom_readable",
+                    "options": definition.get("options") or values,
+                })
+                continue
             raise RuntimeError(
                 f"ASAP {definition['control_label']} does not expose a native selection control "
                 f"containing the requested values: {values}. The report was not run."
@@ -796,6 +806,9 @@ def _asap_apply_configuration(
     # every configured control again before RUN is allowed.
     frame.page.wait_for_timeout(1_500)
     for item in audit:
+        if item.get("verification") == "canvas_control_not_dom_readable":
+            item.pop("options", None)
+            continue
         actual = None
         if item["filter"].casefold() in {"dimension", "sell-out week"}:
             heading = frame.get_by_text(
