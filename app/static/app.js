@@ -9336,6 +9336,20 @@ function _flowFilterControl(definition, value) {
     return `<input id="${id}" type="text" data-flow-filter="${esc(definition.filter_key)}" value="${esc(value || "")}" ${required}>`;
 }
 
+function _flowDiscoveredWeeks(report, selected) {
+    const definition = (report?.filters || []).find(filter => filter.control_type === "week" && filter.enabled && !filter.stale);
+    const weeks = [...new Set((definition?.options || []).map(option => {
+        const raw = String(option).trim();
+        return /^\d{6}$/.test(raw) ? `${raw.slice(0, 4)}-W${raw.slice(4)}` : raw;
+    }).filter(value => /^\d{4}-W\d{2}$/.test(value)))].sort();
+    if (selected && !weeks.includes(selected)) weeks.push(selected);
+    weeks.sort();
+    return weeks.map(value => {
+        const [year, week] = value.split("-W");
+        return `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>Week ${Number(week)}, ${esc(year)}</option>`;
+    }).join("");
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
@@ -9380,8 +9394,8 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
                             <label><span>Download type</span><select id="flow-file-format"><option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV</option><option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel (.xlsx)</option></select></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
-                            <label class="flow-week-field"><span>Sell-out Week - start</span><input id="flow-start-week" type="week" required value="${esc(existing?.start_week || "")}"></label>
-                            <label class="flow-week-field"><span>Sell-out Week - end</span><input id="flow-end-week" type="week" required value="${esc(existing?.end_week || "")}"></label>
+                            <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
+                            <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
                             <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
                             <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || `{flow}_{start_period}_{end_period}.${fileFormat}`)}"><small>Default: flow name plus start and end period. Tokens: {flow}, {report}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
@@ -9631,7 +9645,7 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/${button.dataset.id}/stop`); toast("Headed run stopped and browser closed"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
-    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
+    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";
         $("#flow-browser-mode-help").textContent = headed

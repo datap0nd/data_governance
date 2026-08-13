@@ -719,6 +719,13 @@ def test_flow_list_does_not_require_builder_only_sql_controls():
     assert 'if ($("#flow-sql-fields")) updateSqlFields();' in source
 
 
+def test_flow_builder_uses_discovered_week_dropdowns():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert "function _flowDiscoveredWeeks" in source
+    assert '<select id="flow-start-week" required>' in source
+    assert '<select id="flow-end-week" required>' in source
+
+
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
     monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "launched", "mode": mode})
     site, report = _seed_catalog()
