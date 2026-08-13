@@ -1065,10 +1065,7 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
 
         def dispatch_event(self, name, event):
             assert name == "click"
-            assert event == {
-                "ctrlKey": True, "bubbles": True, "cancelable": True,
-                "button": 0, "buttons": 1, "detail": 1,
-            }
+            assert event == {"ctrlKey": True, "bubbles": True, "cancelable": True}
             events.append(("local_ctrl", self.text))
             if self.text not in never_toggle:
                 self.state = not self.state
@@ -1163,9 +1160,9 @@ def test_dimension_fails_before_run_when_reconciliation_cannot_reach_exact_set()
 
 def test_dimension_routine_never_sends_an_os_control_key():
     import inspect
-    from app.flow_worker import _asap_local_ctrl_click, _asap_select_dimensions
+    from app.flow_worker import _asap_set_dimension_member, _asap_select_dimensions
 
-    source = inspect.getsource(_asap_select_dimensions) + inspect.getsource(_asap_local_ctrl_click)
+    source = inspect.getsource(_asap_select_dimensions) + inspect.getsource(_asap_set_dimension_member)
     assert 'keyboard.down("Control")' not in source
     assert 'modifiers=["Control"]' not in source
     assert '"ctrlKey": True' in source
