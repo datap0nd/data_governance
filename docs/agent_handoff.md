@@ -187,6 +187,23 @@ Add automatic handling for the optional ASAP Notice popup, then run the same
 flow headless to verify parity with the proven headed CSV path. Do not delete
 files and do not enable SQL handoff.
 
+## Windows Updater Recovery (2026-08-13)
+
+- `setup.ps1` no longer invokes robocopy. Updates use the original recursive
+  `Copy-Item` overlay with no mirror or purge behavior.
+- The update archive is downloaded successfully before Metronome, its Flow
+  worker, or the headed scheduled task is stopped. A proxy failure therefore
+  leaves a running installation untouched.
+- Each of the ten corporate-proxy download attempts has a 60-second timeout.
+- Commit `a000b2a` is verified on `origin/main`; the full suite passes with
+  `161 passed`.
+- The earlier updater process had already removed the BI desktop service before
+  failing. Metronome was restored from the preserved code and SQLite database
+  by launching uvicorn directly on port 8000. The UI is reachable and reports
+  one online worker. A later successful setup run must restore Windows service
+  registration using the corrected updater.
+- No user files, flow results, or database records were deleted.
+
 ## Current Flows Update (2026-08-13)
 
 - Runtime commit `9492b0f` is on `origin/main`.
