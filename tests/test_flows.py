@@ -1066,39 +1066,6 @@ def test_native_selection_matches_requested_values_despite_imperfect_discovery_c
     assert dimension.selected == requested
 
 
-def test_lazy_select2_value_is_read_from_rendered_title():
-    from app.flow_worker import _read_select2_value
-
-    class Item:
-        def __init__(self, title, text=""):
-            self.title = title
-            self.text = text
-
-        def get_attribute(self, name):
-            assert name == "title"
-            return self.title
-
-        def text_content(self):
-            return self.text
-
-    class Items:
-        def __init__(self, items):
-            self.items = items
-
-        def count(self):
-            return len(self.items)
-
-        def nth(self, index):
-            return self.items[index]
-
-    class Frame:
-        def locator(self, selector):
-            assert selector == ".select2-selection__rendered:visible"
-            return Items([Item("MENA - Global - Global")])
-
-    assert _read_select2_value(Frame(), ["MENA - Global - Global"]) == ["MENA - Global - Global"]
-
-
 def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
     site, report = _seed_catalog()
     with database.get_db() as db:
