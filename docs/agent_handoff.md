@@ -302,6 +302,11 @@ files and do not enable SQL handoff.
   `Exporting CSV 2 of 2`. Edge's detached popup object can block even on
   `is_closed()`, so post-download popup API calls were removed entirely. ASAP
   already closes the visible wizard itself.
+- Live run #67 completed the full browser and file path in 1m10s, then remained
+  inside SQL insertion until the stale-run watchdog failed it. The 57 MB CSV
+  was being inserted with pandas `to_sql` in 5,000-row batches. SQL handoff now
+  streams the validated normalized frame through PostgreSQL's native `COPY`
+  protocol in the same truncate-and-replace transaction.
 - Next step: update the authorized BI desktop from `main`, run one download,
   then two sequential downloads, then enable the existing test SQL handoff and
   verify its inserted row/file counts.

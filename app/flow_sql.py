@@ -7,6 +7,7 @@ are never returned by the API, written to SQLite, or embedded in a flow job.
 from __future__ import annotations
 
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -148,6 +149,29 @@ def _read_artifact(path: Path):
     return frame
 
 
+def _copy_frame(connection, frame, qualified: str) -> None:
+    """Stream a validated frame through PostgreSQL COPY in the open transaction."""
+    columns = ", ".join(_quote_identifier(str(column)) for column in frame.columns)
+    statement = (
+        f"COPY {qualified} ({columns}) FROM STDIN "
+        "WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')"
+    )
+    # The report is tens of megabytes. Spool locally instead of generating
+    # thousands of individual INSERT statements or holding another full CSV
+    # copy in memory. SQLAlchemy's transaction still owns commit/rollback.
+    with tempfile.SpooledTemporaryFile(
+        max_size=8 * 1024 * 1024, mode="w+", encoding="utf-8", newline="",
+    ) as stream:
+        frame.to_csv(stream, index=False, lineterminator="\n")
+        stream.seek(0)
+        raw_connection = connection.connection
+        cursor = raw_connection.cursor()
+        try:
+            cursor.copy_expert(statement, stream)
+        finally:
+            cursor.close()
+
+
 def load_artifacts(artifacts: list[dict], target: dict) -> dict:
     """Append artifacts, optionally truncating once, in one transaction."""
     from sqlalchemy import text
@@ -195,10 +219,7 @@ def load_artifacts(artifacts: list[dict], target: dict) -> dict:
             if mode == "replace":
                 connection.execute(text(f"TRUNCATE TABLE {qualified}"))
             for frame in frames:
-                frame.to_sql(
-                    table, connection, schema=schema, if_exists="append",
-                    index=False, chunksize=5000,
-                )
+                _copy_frame(connection, frame, qualified)
                 rows_written += len(frame)
     finally:
         engine.dispose()

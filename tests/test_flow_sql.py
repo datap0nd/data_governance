@@ -112,3 +112,28 @@ def test_sql_preflight_reports_missing_and_unexpected_columns(tmp_path, monkeypa
             [{"file_path": str(path)}],
             {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
         )
+
+
+def test_sql_copy_streams_csv_through_postgres_copy():
+    copied = {}
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied["statement"] = statement
+            copied["content"] = stream.read()
+
+        def close(self):
+            copied["closed"] = True
+
+    raw = SimpleNamespace(cursor=lambda: Cursor())
+    connection = SimpleNamespace(connection=raw)
+    frame = pd.DataFrame({"sell_out_week": [202627], "active": [116]})
+
+    flow_sql._copy_frame(connection, frame, '"bi_reporting"."this_is_test"')
+
+    assert copied["statement"] == (
+        'COPY "bi_reporting"."this_is_test" ("sell_out_week", "active") '
+        "FROM STDIN WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')"
+    )
+    assert copied["content"] == "sell_out_week,active\n202627,116\n"
+    assert copied["closed"] is True
