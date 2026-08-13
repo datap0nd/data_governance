@@ -22,7 +22,7 @@ from app.routers.eventlog import get_actor, log_event
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
-DOWNLOAD_MODES = {"single", "one_per_week"}
+DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
 PERIOD_STRATEGIES = {"fixed", "rolling"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
@@ -126,6 +126,10 @@ def _week_window(start: str, count: int) -> list[str]:
         result.append(f"{year:04d}-W{week:02d}")
         current += timedelta(days=7)
     return result
+
+
+def _periods(values: list[str], size: int) -> list[list[str]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def _schedule_next(schedule_type: str, schedule_time: str | None, schedule_days: list[str]) -> datetime | None:
@@ -299,6 +303,9 @@ class FlowWrite(BaseModel):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
         if self.download_mode not in DOWNLOAD_MODES:
             raise ValueError("Unsupported download mode.")
+        if self.download_mode == "one_per_week":
+            self.download_mode = "one_per_period"
+            self.window_weeks = self.window_weeks or 1
         if self.period_strategy not in PERIOD_STRATEGIES:
             raise ValueError("Unsupported period strategy.")
         if self.browser_mode not in BROWSER_MODES:
@@ -313,15 +320,17 @@ class FlowWrite(BaseModel):
             if not self.end_week:
                 raise ValueError("Choose a Sell-out Week end.")
             _week_range(self.start_week, self.end_week)
-            self.window_weeks = None
+            if self.download_mode == "one_per_period" and not self.window_weeks:
+                raise ValueError("Choose how many weeks each period should contain.")
+            if self.download_mode == "single":
+                self.window_weeks = None
         else:
             if not self.window_weeks:
                 raise ValueError("Choose how many weeks each file should contain.")
-            if self.download_mode != "single":
-                raise ValueError("Rolling windows produce one combined CSV per window.")
+            self.download_mode = "one_per_period"
             self.end_week = None
-        if self.download_mode == "one_per_week" and "{week}" not in self.filename_template:
-            raise ValueError("One download per week requires {week} in the filename template.")
+        if self.download_mode == "one_per_period" and "{week}" not in self.filename_template:
+            raise ValueError("One CSV per period requires {week} in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         _schedule_next(self.schedule_type, self.schedule_time, self.schedule_days)
         if self.sql_handoff_enabled:
@@ -428,6 +437,9 @@ def _flow_out(db, flow_id: int) -> dict:
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
+    if result["download_mode"] == "one_per_week":
+        result["download_mode"] = "one_per_period"
+        result["window_weeks"] = result["window_weeks"] or 1
     return result
 
 
@@ -468,7 +480,10 @@ def _build_job(db, flow_id: int) -> dict:
         if flow.get("period_strategy") == "rolling"
         else _week_range(flow["start_week"], flow["end_week"])
     )
-    periods = weeks if flow["download_mode"] == "one_per_week" else [weeks]
+    if flow.get("period_strategy") == "rolling" or flow["download_mode"] == "single":
+        periods = [weeks]
+    else:
+        periods = _periods(weeks, flow.get("window_weeks") or 1)
     return {
         "schema_version": 1,
         "execution": {
@@ -490,6 +505,8 @@ def _build_job(db, flow_id: int) -> dict:
         "downloads": {
             "mode": flow["download_mode"], "periods": periods,
             "period_strategy": flow.get("period_strategy") or "fixed",
+            "period_unit": "week",
+            "period_size": flow.get("window_weeks") or len(weeks),
             "period_start_week": weeks[0],
             "period_end_week": weeks[-1],
             "next_start_week": _week_window(weeks[-1], 2)[1],

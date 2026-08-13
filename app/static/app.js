@@ -9300,7 +9300,7 @@ function _flowListHtml(flows, workers, catalog) {
                     <tr>
                         <td><strong>${esc(flow.name)}</strong><small>${flow.enabled ? "Enabled" : "Draft"}</small></td>
                         <td>${esc(flow.site_name)}<small>${esc(flow.report_name)}</small></td>
-                        <td>${esc(flow.download_mode === "one_per_week" ? "One CSV per week" : "One CSV")}<small>${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"} · ${esc(flow.target_folder)}</small></td>
+                        <td>${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One CSV per ${flow.window_weeks || 1}-week period` : "One CSV")}<small>${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"} · ${esc(flow.target_folder)}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
@@ -9368,11 +9368,11 @@ function _flowBuilderHtml(catalog, existing = null) {
                         <div class="flow-section-head"><h2>Download behavior</h2><p>Use a fixed range, or let each successful run advance to the next X-week window.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Period strategy</span><select id="flow-period-strategy"><option value="fixed" ${existing?.period_strategy !== "rolling" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${existing?.period_strategy === "rolling" ? "selected" : ""}>Rolling X-week windows</option></select></label>
-                            <label><span>Download mode</span><select id="flow-download-mode"><option value="single" ${existing?.download_mode !== "one_per_week" ? "selected" : ""}>One CSV</option><option value="one_per_week" ${existing?.download_mode === "one_per_week" ? "selected" : ""}>One CSV per week</option></select></label>
+                            <label><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One CSV</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One CSV per period</option></select></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><input id="flow-start-week" type="week" required value="${esc(existing?.start_week || "")}"></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><input id="flow-end-week" type="week" required value="${esc(existing?.end_week || "")}"></label>
-                            <label id="flow-window-weeks-field"><span>Weeks per file</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>The start advances only after a successful download.</small></label>
+                            <label id="flow-window-weeks-field"><span>Weeks per period</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Period unit: Week, discovered from this report.</small></label>
                             <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
                             <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || "{report}_{week}.csv")}"><small>Tokens: {flow}, {report}, {week}, {year}, {week_number}, {index}, {date}. Name collisions receive a number suffix.</small></label>
                         </div>
@@ -9595,7 +9595,8 @@ function _flowCollectBuilder() {
     });
     const scheduleType = $("#flow-schedule-type").value;
     const periodStrategy = $("#flow-period-strategy").value;
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: scheduleType !== "manual" && $("#flow-enabled").checked, selections, download_mode: $("#flow-download-mode").value, period_strategy: periodStrategy, window_weeks: periodStrategy === "rolling" ? Number($("#flow-window-weeks").value) : null, browser_mode: $("#flow-browser-mode").value, start_week: $("#flow-start-week").value || null, end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: false };
+    const downloadMode = $("#flow-download-mode").value;
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: scheduleType !== "manual" && $("#flow-enabled").checked, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy === "rolling" || downloadMode === "one_per_period" ? Number($("#flow-window-weeks").value) : null, browser_mode: $("#flow-browser-mode").value, start_week: $("#flow-start-week").value || null, end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: false };
 }
 
 function _bindFlowWorkspace() {
@@ -9627,12 +9628,20 @@ function _bindFlowWorkspace() {
         $("#flow-window-weeks-field").hidden = !rolling;
         $("#flow-window-weeks").required = rolling;
         if (rolling) {
-            $("#flow-download-mode").value = "single";
+            $("#flow-download-mode").value = "one_per_period";
             $("#flow-download-mode").disabled = true;
         } else {
             $("#flow-download-mode").disabled = false;
         }
     });
+    const updatePeriodFields = () => {
+        const rolling = $("#flow-period-strategy").value === "rolling";
+        const perPeriod = $("#flow-download-mode").value === "one_per_period";
+        $("#flow-window-weeks-field").hidden = !(rolling || perPeriod);
+        $("#flow-window-weeks").required = rolling || perPeriod;
+    };
+    $("#flow-download-mode")?.addEventListener("change", updatePeriodFields);
+    $("#flow-period-strategy")?.addEventListener("change", updatePeriodFields);
     $("#flow-period-strategy")?.dispatchEvent(new Event("change"));
     $("#flow-schedule-type")?.addEventListener("change", event => {
         const manual = event.target.value === "manual";

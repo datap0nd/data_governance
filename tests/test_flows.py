@@ -165,9 +165,9 @@ def _flow(site_id, report_id, **overrides):
         "report_id": report_id,
         "enabled": True,
         "selections": {"region": "Global"},
-        "download_mode": "one_per_week",
+        "download_mode": "one_per_period",
         "period_strategy": "fixed",
-        "window_weeks": None,
+        "window_weeks": 1,
         "browser_mode": "headless",
         "start_week": "2026-W30",
         "end_week": "2026-W32",
@@ -215,13 +215,13 @@ def test_report_filter_update_keeps_historical_definition_for_saved_runs(flow_db
     assert [(row["filter_key"], row["enabled"]) for row in rows] == [("region", 1), ("week", 0)]
 
 
-def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
+def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
     saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
     queued = flows.queue_run(saved["id"], _request())
 
-    assert queued["job"]["downloads"]["periods"] == ["2026-W30", "2026-W31", "2026-W32"]
+    assert queued["job"]["downloads"]["periods"] == [["2026-W30"], ["2026-W31"], ["2026-W32"]]
     assert queued["job"]["downloads"]["collision_policy"] == "number_suffix"
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
@@ -247,6 +247,24 @@ def test_single_csv_job_passes_the_whole_week_range_to_asap(flow_db):
     assert queued["job"]["downloads"]["periods"] == [["2026-W30", "2026-W31", "2026-W32"]]
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
+
+
+def test_fixed_range_is_split_into_week_periods(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], download_mode="one_per_period",
+            window_weeks=2, filename_template="period_{week}.csv",
+        ),
+        _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["periods"] == [
+        ["2026-W30", "2026-W31"], ["2026-W32"],
+    ]
+    assert queued["job"]["downloads"]["period_unit"] == "week"
+    assert queued["job"]["downloads"]["period_size"] == 2
 
 
 def test_rolling_window_advances_only_after_success(flow_db):
