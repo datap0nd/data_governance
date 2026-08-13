@@ -11,7 +11,7 @@ deleting, overwriting, or inserting anything into SQL.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: delivered to `origin/main` through commit `7bd2719`
+- Push status: delivered to `origin/main` through commit `4f4dc39`
 
 ## Decisions Made
 
@@ -195,19 +195,13 @@ files and do not enable SQL handoff.
   worker, or the headed scheduled task is stopped. A proxy failure therefore
   leaves a running installation untouched.
 - Each of the ten corporate-proxy download attempts has a 60-second timeout.
-- The runtime service wrapper is now tracked as `tools/nssm.dist.exe`, while
-  Windows installs and runs it as `tools/nssm.exe`. Routine source overlays can
-  therefore never try to replace the live, locked executable. New machines copy
-  the distribution binary into place once; existing machines reuse their
-  installed binary.
-- The Update App endpoint also repairs the exact legacy Copy-Item overlay before
-  launching setup, so partially updated installations recover automatically.
-- Commits through `7bd2719` are verified on `origin/main`; the full suite passes
-  with `162 passed`.
-- The corrected updater passed the previous locked-NSSM failure point, installed
-  both Windows services, registered the headed task, authenticated the ASAP
-  browser profile, and returned Metronome to `localhost:8000`. The live Flows UI
-  reports one online worker.
+- Commit `a000b2a` is verified on `origin/main`; the full suite passes with
+  `161 passed`.
+- The earlier updater process had already removed the BI desktop service before
+  failing. Metronome was restored from the preserved code and SQLite database
+  by launching uvicorn directly on port 8000. The UI is reachable and reports
+  one online worker. A later successful setup run must restore Windows service
+  registration using the corrected updater.
 - No user files, flow results, or database records were deleted.
 
 ## Current Flows Update (2026-08-13)
