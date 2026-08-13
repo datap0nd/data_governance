@@ -50,7 +50,7 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
 
 
-def fail_stale_runs(timeout_seconds: int = 45) -> dict:
+def fail_stale_runs(timeout_seconds: int = 120) -> dict:
     """Fail work whose assigned browser stopped heartbeating."""
     now = _now()
     now_text = _iso(now)

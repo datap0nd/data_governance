@@ -426,7 +426,7 @@ def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(
         flows.fail_stale_runs,
         "interval",
-        seconds=15,
+        seconds=30,
         id="flow_stale_run_reaper",
         replace_existing=True,
         max_instances=1,

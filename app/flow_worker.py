@@ -232,15 +232,55 @@ def _select_native_options_by_text(
             f"ASAP exposed more than one native control for requested values: {requested}."
         )
     select = candidates[0][3]
-    # Replace the complete value set through Playwright's native-select API.
-    # This interacts with the actual page control and emits the browser input
-    # and change sequence as one atomic operation. It does not walk focus,
-    # simulate Ctrl-clicks, or depend on the portal's magnifier-prone mouse UI.
-    # Passing every requested label also clears every stale selection first.
-    selected_values = select.select_option(label=requested, force=not select.is_visible())
-    if len(selected_values) != len(requested):
-        raise RuntimeError(
-            f"ASAP native control accepted {len(selected_values)} of {len(requested)} requested values."
+    labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
+    indices = [labels.index(value) for value in requested]
+
+    if select.is_visible():
+        # ASAP's legacy report engine does not consume synthetic DOM change
+        # events when it builds the report request. Drive the actual native
+        # control with trusted keyboard input instead. For a multi-select,
+        # Home establishes one known selection, Control+Space clears/toggles
+        # the focused member, and Control+ArrowDown moves focus without the
+        # mouse or a Control-click (which opens the portal's magnifier).
+        select.focus()
+        if select.get_attribute("multiple") is not None:
+            select.press("Home")
+            wanted_indices = set(indices)
+            options = select.locator("option")
+            # Reconcile every member from the control's live starting state.
+            # This explicitly clears every stale selection before RUN and does
+            # not assume which members ASAP preselected for this report.
+            for index in range(options.count()):
+                selected = bool(options.nth(index).evaluate("option => option.selected"))
+                if selected != (index in wanted_indices):
+                    select.press("Control+Space")
+                if index < options.count() - 1:
+                    select.press("Control+ArrowDown")
+        else:
+            select.press("Home")
+            for _ in range(indices[0]):
+                select.press("ArrowDown")
+        select.press("Tab")
+    else:
+        # Select2 owns a hidden native select for Data Configuration. Notify
+        # that owner through its jQuery bridge when present; retain native
+        # input/change events for templates that do not load jQuery.
+        select.evaluate(
+            r"""(node, requested) => {
+                const wanted = new Set(requested);
+                for (const option of Array.from(node.options)) {
+                    const label = String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim();
+                    option.selected = wanted.has(label);
+                }
+                const jq = window.jQuery;
+                if (jq && jq(node).data('select2')) {
+                    jq(node).trigger('change');
+                } else {
+                    node.dispatchEvent(new Event('input', {bubbles: true}));
+                    node.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+            }""",
+            requested,
         )
     waiter = page.page if hasattr(page, "page") else page
     waiter.wait_for_timeout(1_000)
@@ -254,17 +294,6 @@ def _select_native_options_by_text(
             f"Selected after native interaction: {observed}."
         )
     return observed
-
-
-def _ensure_live_page(page: Page) -> Page:
-    """Return a usable portal page after an export popup has been closed."""
-    if not page.is_closed():
-        return page
-    context = page.context
-    for candidate in context.pages:
-        if not candidate.is_closed():
-            return candidate
-    return context.new_page()
 
 
 def _read_native_options_by_text(
@@ -1340,16 +1369,6 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
     artifacts = []
     for index, period in enumerate(periods, start=1):
         if index > 1:
-            page = _ensure_live_page(page)
-            report_progress(
-                "running",
-                {
-                    "stage": "next_period",
-                    "message": f"Opening download {index} of {len(periods)} after the prior file completed.",
-                    "period": period,
-                },
-                artifacts,
-            )
             if is_asap:
                 with timings.measure("navigation", report_id=job["report"].get("id")):
                     frame = _asap_open_report(page, job, profile_dir)
@@ -1523,7 +1542,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         base_url=server.rstrip("/"),
                         headers={"User-Agent": "Metronome-Flow-Worker/1"},
                     ) as heartbeat_client:
-                        while not heartbeat_stop.wait(10):
+                        while not heartbeat_stop.wait(30):
                             try:
                                 _api(
                                     heartbeat_client, "POST",
@@ -1627,40 +1646,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         })
                     else:
                         timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
-                    failure_body = {
-                        "status": "failed",
-                        "progress": {"stage": "failed", "message": str(exc)},
-                        "artifacts": artifacts,
-                        "timings": timings,
-                        "error": str(exc),
-                        "traceback": traceback.format_exc(),
-                    }
-                    # A browser crash can coincide with a transient local API
-                    # error. Use a fresh client and keep retrying the terminal
-                    # record so the UI cannot remain Running after the headed
-                    # window disappears.
-                    terminal_error = None
-                    for attempt in range(12):
-                        try:
-                            with httpx.Client(
-                                base_url=server.rstrip("/"),
-                                headers={"User-Agent": "Metronome-Flow-Worker/1"},
-                            ) as terminal_client:
-                                _api(
-                                    terminal_client, "POST",
-                                    f"/api/flows/worker/{worker_id}/runs/{run_id}/progress",
-                                    failure_body,
-                                )
-                            terminal_error = None
-                            break
-                        except Exception as report_exc:
-                            terminal_error = report_exc
-                            time.sleep(5)
-                    if terminal_error is not None:
-                        print(
-                            f"Could not persist terminal failure for run {run_id}: {terminal_error}",
-                            file=sys.stderr, flush=True,
-                        )
+                    progress(
+                        "failed", {"stage": "failed", "message": str(exc)},
+                        artifacts=artifacts, timings=timings,
+                        error=str(exc), traceback_text=traceback.format_exc(),
+                    )
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)

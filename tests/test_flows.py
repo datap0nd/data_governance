@@ -994,11 +994,9 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
             assert selector == "option"
             return Options(self.labels)
 
-        def select_option(self, *, label, force):
-            assert force is True
-            self.selected = list(label)
+        def evaluate(self, _script, requested):
+            self.selected = list(requested)
             self.events.extend(["input", "change"])
-            return list(label)
 
     class Selects:
         def __init__(self, controls):
@@ -1060,10 +1058,8 @@ def test_native_selection_matches_requested_values_despite_imperfect_discovery_c
             assert selector == "option"
             return Options(self.labels)
 
-        def select_option(self, *, label, force):
-            assert force is True
-            self.selected = list(label)
-            return list(label)
+        def evaluate(self, _script, requested):
+            self.selected = list(requested)
 
     class Selects:
         def __init__(self, controls):
@@ -1226,25 +1222,6 @@ def test_asap_download_observes_every_open_portal_page():
     assert "download, export_pages = _asap_download" in source
     assert "export_page.close(run_before_unload=False)" in source
     assert "candidate for candidate in wizard_pages" in source
-    assert "page = _ensure_live_page(page)" in source
-    assert '"stage": "next_period"' in source
-
-
-def test_asap_selection_replaces_the_complete_native_value_set_atomically():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "select.select_option(label=requested" in source
-    assert 'select.press("Control+Space")' not in source
-    assert 'select.press("Control+ArrowDown")' not in source
-
-
-def test_browser_failure_reporting_has_terminal_retry_and_fast_reaper():
-    worker = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    main = Path(__file__).parents[1].joinpath("app", "main.py").read_text()
-    assert "while not heartbeat_stop.wait(10)" in worker
-    assert "for attempt in range(12)" in worker
-    assert '"status": "failed"' in worker
-    assert 'seconds=15' in main
-    assert flows.fail_stale_runs.__defaults__ == (45,)
 
 
 def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
