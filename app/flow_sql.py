@@ -122,9 +122,13 @@ def _read_artifact(path: Path):
     suffix = path.suffix.casefold()
     if suffix == ".csv":
         frame = None
-        for encoding in ("utf-8", "cp1252", "latin-1"):
+        # Flow artifacts have already passed through _normalize_csv, which
+        # writes a standard comma-delimited file. Avoid pandas' Python parser
+        # and delimiter inference here: on wide ASAP exports that redundant
+        # pass can take many minutes before PostgreSQL COPY even starts.
+        for encoding in ("utf-8-sig", "cp1252", "latin-1"):
             try:
-                frame = pd.read_csv(path, sep=None, engine="python", encoding=encoding)
+                frame = pd.read_csv(path, sep=",", engine="c", encoding=encoding)
                 break
             except UnicodeDecodeError:
                 continue

@@ -86,6 +86,23 @@ def test_csv_reader_rejects_duplicate_normalized_columns(tmp_path):
         flow_sql._read_artifact(path)
 
 
+def test_csv_reader_uses_normalized_comma_format(tmp_path, monkeypatch):
+    path = tmp_path / "normalized.csv"
+    path.write_text("Sell-out Week,Active\n202630,116\n", encoding="utf-8-sig")
+    original = pd.read_csv
+    calls = []
+
+    def tracked_read_csv(*args, **kwargs):
+        calls.append(kwargs.copy())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", tracked_read_csv)
+    frame = flow_sql._read_artifact(path)
+
+    assert list(frame.columns) == ["sell_out_week", "active"]
+    assert calls == [{"sep": ",", "engine": "c", "encoding": "utf-8-sig"}]
+
+
 def test_sql_preflight_reports_missing_and_unexpected_columns(tmp_path, monkeypatch):
     path = tmp_path / "wrong.csv"
     pd.DataFrame({"a": [1], "extra": [2]}).to_csv(path, index=False)
