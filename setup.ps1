@@ -272,9 +272,18 @@ if ($Inner) {
     # Copy-Item does not reliably merge new files into existing nested
     # directories on Windows PowerShell 5. Robocopy /E performs a true merge
     # without /MIR or /PURGE, so it never deletes installed/local files.
-    & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        throw "Update file merge failed with robocopy exit code $LASTEXITCODE"
+    $MergeExit = 16
+    for ($MergeAttempt = 1; $MergeAttempt -le 15; $MergeAttempt++) {
+        Write-Host "  File merge attempt $MergeAttempt of 15..." -ForegroundColor DarkGray
+        & robocopy.exe $Inner.FullName $CodeDir /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        $MergeExit = $LASTEXITCODE
+        if ($MergeExit -lt 8) { break }
+        if ($MergeAttempt -lt 15) { Start-Sleep -Seconds 2 }
+    }
+    if ($MergeExit -ge 8) {
+        Write-Host "  Final merge diagnostics:" -ForegroundColor Yellow
+        & robocopy.exe $Inner.FullName $CodeDir /E /R:0 /W:0 /NJH /NJS /NP
+        throw "Update file merge failed after 15 attempts with robocopy exit code $MergeExit"
     }
     Remove-Item $TempExtract -Recurse -Force
 }
