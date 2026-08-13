@@ -486,12 +486,18 @@ def _asap_read_dimension_selection(
     return selected
 
 
-def _asap_local_ctrl_click(member) -> None:
+def _asap_local_ctrl_click(frame: Frame, member) -> None:
     """Toggle one page element without sending Control to Windows."""
     member.scroll_into_view_if_needed(timeout=10_000)
     member.dispatch_event(
-        "click", {"ctrlKey": True, "bubbles": True, "cancelable": True},
+        "click", {
+            "ctrlKey": True, "bubbles": True, "cancelable": True,
+            "button": 0, "buttons": 1, "detail": 1,
+        },
     )
+    # MicroStrategy rebuilds the visible member row after each toggle. Wait for
+    # that update before resolving and dispatching to the next exact member.
+    frame.page.wait_for_timeout(250)
 
 
 def _asap_select_dimensions(
@@ -506,19 +512,19 @@ def _asap_select_dimensions(
         raise RuntimeError("Could not locate the ASAP Dimension list.")
     options = list(dict.fromkeys([*known_options, *requested]))
     initial = _asap_read_dimension_selection(frame, options, heading_box["y"])
-    members = []
-    for value in requested:
+    # ASAP's plain click replaces the complete retained selection. Additional
+    # members are toggled with a page-local Ctrl flag, never an OS keypress.
+    first = _asap_visible_member(frame, requested[0], heading_box["y"])
+    if first is None:
+        raise RuntimeError(f"Could not find ASAP Dimension option: {requested[0]}")
+    first.scroll_into_view_if_needed(timeout=10_000)
+    first.click(timeout=10_000)
+    frame.page.wait_for_timeout(250)
+    for value in requested[1:]:
         member = _asap_visible_member(frame, value, heading_box["y"])
         if member is None:
             raise RuntimeError(f"Could not find ASAP Dimension option: {value}")
-        member.scroll_into_view_if_needed(timeout=10_000)
-        members.append(member)
-
-    # ASAP's plain click replaces the complete retained selection. Additional
-    # members are toggled with a page-local Ctrl flag, never an OS keypress.
-    members[0].click(timeout=10_000)
-    for member in members[1:]:
-        _asap_local_ctrl_click(member)
+        _asap_local_ctrl_click(frame, member)
     frame.page.wait_for_timeout(1_000)
     final = _asap_read_dimension_selection(frame, options, heading_box["y"])
     missing = [value for value in requested if value not in final]
@@ -530,12 +536,12 @@ def _asap_select_dimensions(
             member = _asap_visible_member(frame, value, heading_box["y"])
             if member is None:
                 raise RuntimeError(f"Could not reconcile extra ASAP Dimension: {value}")
-            _asap_local_ctrl_click(member)
+            _asap_local_ctrl_click(frame, member)
         for value in missing:
             member = _asap_visible_member(frame, value, heading_box["y"])
             if member is None:
                 raise RuntimeError(f"Could not reconcile missing ASAP Dimension: {value}")
-            _asap_local_ctrl_click(member)
+            _asap_local_ctrl_click(frame, member)
         frame.page.wait_for_timeout(1_000)
         final = _asap_read_dimension_selection(frame, options, heading_box["y"])
         missing = [value for value in requested if value not in final]
