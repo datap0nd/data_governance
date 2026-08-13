@@ -112,9 +112,25 @@ class _Timings:
 
 
 def _api(client: httpx.Client, method: str, path: str, body: dict | None = None) -> dict:
-    response = client.request(method, path, json=body, timeout=60)
-    response.raise_for_status()
-    return response.json()
+    # Progress calls are part of the execution record, so a short-lived SQLite
+    # write collision or local service restart must not kill the browser run.
+    # Terminal updates are idempotent on the server and are therefore safe to
+    # retry when the local API returns a transient 5xx response.
+    last_error: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            response = client.request(method, path, json=body, timeout=60)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            last_error = exc
+            retryable = isinstance(exc, httpx.TransportError) or (
+                exc.response is not None and exc.response.status_code >= 500
+            )
+            if not retryable or attempt == 5:
+                raise
+            time.sleep(attempt)
+    raise RuntimeError("Local API request failed after retries.") from last_error
 
 
 def _safe_output_path(folder: Path, filename: str) -> Path:

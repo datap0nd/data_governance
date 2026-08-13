@@ -966,3 +966,29 @@ def test_flow_accepts_standard_iso_week_against_asap_option(flow_db):
         report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
         body = _flow(site["id"], report_id, selections={"sell_out_week": "2026-W33"})
         flows._validate_flow_selections(db, body)
+
+
+def test_worker_api_retries_transient_server_errors(monkeypatch):
+    attempts = []
+
+    class Response:
+        status_code = 500
+
+        def raise_for_status(self):
+            if len(attempts) < 3:
+                request = __import__("httpx").Request("POST", "http://127.0.0.1/progress")
+                raise __import__("httpx").HTTPStatusError(
+                    "transient", request=request, response=self,
+                )
+
+        def json(self):
+            return {"status": "running"}
+
+    class Client:
+        def request(self, *_args, **_kwargs):
+            attempts.append(1)
+            return Response()
+
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+    assert flow_worker._api(Client(), "POST", "/progress") == {"status": "running"}
+    assert len(attempts) == 3
