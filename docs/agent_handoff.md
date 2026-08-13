@@ -285,6 +285,13 @@ files and do not enable SQL handoff.
   Playwright saves directly to the configured UNC share. Downloads now wait on
   Edge's completed local file, normalize locally, and copy the final CSV to an
   exclusive-create destination. Existing files still cannot be overwritten.
-- Next step: update the authorized BI desktop from `main`, verify Dimension
-  selection once, then test two sequential downloads and SQL insertion into
-  the configured test target.
+- A third live run showed that `download.path()` also blocks indefinitely after
+  Edge visibly completes the file. The worker now launches Edge with a known
+  local download staging folder, detects a new stable file there without any
+  Playwright download-path call, normalizes it locally, and copies it to the
+  configured destination.
+- Full Python suite after the staging-folder change: `163 passed`; Python
+  compilation succeeded.
+- Next step: update the authorized BI desktop from `main`, run one download,
+  then two sequential downloads, then enable the existing test SQL handoff and
+  verify its inserted row/file counts.

@@ -1213,14 +1213,16 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     assert len(attempts) == 3
 
 
-def test_asap_download_observes_every_open_portal_page():
+def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert 'candidate.on("download", capture_download)' in source
     assert 'candidate.remove_listener("download", capture_download)' in source
     assert "download_page.expect_download" not in source
-    assert "download, export_pages = _asap_download" in source
+    assert "staged_file, export_pages = _asap_download" in source
     assert "export_page.close(run_before_unload=False)" in source
     assert "candidate for candidate in wizard_pages" in source
+    assert "downloads_path=str(download_staging_dir)" in source
+    assert "downloads[0].path()" not in source
 
 
 def test_completed_download_is_normalized_locally_then_copied_without_overwrite(tmp_path):
@@ -1230,18 +1232,25 @@ def test_completed_download_is_normalized_locally_then_copied_without_overwrite(
     )
     output = tmp_path / "saved.csv"
 
-    class Download:
-        def path(self):
-            return browser_file
-
-    metadata = flow_worker._store_completed_download(Download(), output)
+    metadata = flow_worker._store_completed_download(browser_file, output)
 
     assert output.read_text(encoding="utf-8-sig") == "Week,Value\n202627,10\n"
     assert metadata["source_delimiter"] == ";"
     assert metadata["preamble_rows_removed"] == 2
     assert metadata["file_size"] == output.stat().st_size
     with pytest.raises(FileExistsError):
-        flow_worker._store_completed_download(Download(), output)
+        flow_worker._store_completed_download(browser_file, output)
+
+
+def test_staged_download_waits_for_a_new_stable_file(tmp_path, monkeypatch):
+    old_file = tmp_path / "old-download"
+    old_file.write_text("old", encoding="utf-8")
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    new_file = tmp_path / "new-download"
+    new_file.write_text("Week,Value\n202627,10\n", encoding="utf-8")
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    assert flow_worker._wait_for_staged_download(tmp_path, before, timeout_seconds=1) == new_file
 
 
 def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):

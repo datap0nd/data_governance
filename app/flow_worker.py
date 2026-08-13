@@ -580,7 +580,45 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
 
 
-def _asap_download(page: Page, frame: Frame, job: dict):
+def _download_staging_snapshot(staging_dir: Path) -> set[Path]:
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    return {candidate.resolve() for candidate in staging_dir.iterdir() if candidate.is_file()}
+
+
+def _wait_for_staged_download(
+    staging_dir: Path, files_before: set[Path], timeout_seconds: int = 30,
+) -> Path:
+    """Return the new browser-local file without calling Playwright download APIs."""
+    deadline = time.monotonic() + timeout_seconds
+    last_candidate = None
+    last_size = None
+    stable_checks = 0
+    while time.monotonic() < deadline:
+        candidates = [
+            candidate for candidate in staging_dir.iterdir()
+            if candidate.is_file()
+            and candidate.resolve() not in files_before
+            and not candidate.name.casefold().endswith((".crdownload", ".tmp"))
+        ]
+        if candidates:
+            candidate = max(candidates, key=lambda item: item.stat().st_mtime_ns)
+            size = candidate.stat().st_size
+            if candidate == last_candidate and size > 0 and size == last_size:
+                stable_checks += 1
+                if stable_checks >= 3:
+                    return candidate
+            else:
+                last_candidate = candidate
+                last_size = size
+                stable_checks = 0
+        time.sleep(0.5)
+    raise RuntimeError(
+        "Edge reported a completed ASAP download, but no finished file appeared "
+        f"in the local staging folder within {timeout_seconds} seconds: {staging_dir}"
+    )
+
+
+def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
     # The current MicroStrategy report has two compact controls beside RUN.
     # The first is Export Options and the second is subtotal. Their icon-only
@@ -665,6 +703,7 @@ def _asap_download(page: Page, frame: Frame, job: dict):
     # resulting download to another ASAP page. Listening only on the guessed
     # popup can therefore leave a visibly completed browser download waiting
     # until timeout. Subscribe to every current portal page before clicking.
+    files_before = _download_staging_snapshot(staging_dir)
     downloads = []
     observed_pages = list(page.context.pages)
 
@@ -680,11 +719,12 @@ def _asap_download(page: Page, frame: Frame, job: dict):
             page.wait_for_timeout(100)
         if not downloads:
             raise RuntimeError("ASAP export started, but Edge did not expose the completed download within 3 minutes.")
+        staged_file = _wait_for_staged_download(staging_dir, files_before)
         export_pages = [
             candidate for candidate in wizard_pages
             if candidate not in pages_before and candidate is not page
         ]
-        return downloads[0], export_pages
+        return staged_file, export_pages
     finally:
         for candidate in observed_pages:
             candidate.remove_listener("download", capture_download)
@@ -1293,18 +1333,15 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
-def _store_completed_download(download, output: Path) -> dict:
+def _store_completed_download(local_path: Path, output: Path) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
-    Passing a UNC path directly to Playwright's ``download.save_as`` can make
-    the headed worker disappear inside the driver call. Wait for the local
-    browser download instead, do CPU work locally, and open the final path in
-    exclusive-create mode so an existing file can never be overwritten.
+    Passing a UNC path to Playwright's ``download.save_as`` and asking for
+    ``download.path`` can both hang after Edge visibly finishes. Monitor a
+    known local download folder instead, then copy the complete file to the
+    final target in exclusive-create mode so nothing can be overwritten.
     """
-    browser_path = download.path()
-    if not browser_path:
-        raise RuntimeError("Edge completed the download but did not expose its local file path.")
-    local_path = Path(browser_path)
+    local_path = Path(local_path)
     normalization = _normalize_csv(local_path)
     metadata = {**_csv_metadata(local_path), **normalization}
     with local_path.open("rb") as source, output.open("xb") as destination:
@@ -1314,7 +1351,10 @@ def _store_completed_download(download, output: Path) -> dict:
     return metadata
 
 
-def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict]]:
+def execute_job(
+    page: Page, job: dict, report_progress, profile_dir: Path,
+    download_staging_dir: Path | None = None,
+) -> tuple[list[dict], list[dict]]:
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
@@ -1375,7 +1415,9 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
-                download, export_pages = _asap_download(page, frame, job)
+                staged_file, export_pages = _asap_download(
+                    page, frame, job, download_staging_dir or profile_dir / "downloads",
+                )
         else:
             _apply_configuration(page, job, period)
             with page.expect_download(timeout=180_000) as pending:
@@ -1389,7 +1431,12 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 # Keep the export popup alive until the browser-local download
                 # finishes. Normalize locally, then copy the finished CSV to
                 # the configured target before the next period is configured.
-                metadata = _store_completed_download(download, output)
+                if is_asap:
+                    metadata = _store_completed_download(staged_file, output)
+                else:
+                    download.save_as(output)
+                    normalization = _normalize_csv(output)
+                    metadata = {**_csv_metadata(output), **normalization}
         finally:
             for export_page in export_pages:
                 try:
@@ -1427,11 +1474,14 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 time.sleep(2)
         print(f"Worker {worker_id} registered with {server}.", flush=True)
         with sync_playwright() as playwright:
+            download_staging_dir = profile_dir / "downloads"
+            download_staging_dir.mkdir(parents=True, exist_ok=True)
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),
                 channel="msedge" if os.name == "nt" else None,
                 headless=not headed,
                 accept_downloads=True,
+                downloads_path=str(download_staging_dir),
             )
             page = context.pages[0] if context.pages else context.new_page()
             idle_since = time.monotonic()
@@ -1510,7 +1560,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 heartbeat_thread.start()
 
                 try:
-                    artifacts, timings = execute_job(page, run["job"], progress, profile_dir)
+                    artifacts, timings = execute_job(
+                        page, run["job"], progress, profile_dir, download_staging_dir,
+                    )
                     sql_artifacts = artifacts
                     if run["job"].get("transformation", {}).get("enabled"):
                         progress(
