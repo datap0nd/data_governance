@@ -243,15 +243,6 @@ Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
 # GitHub ZIP has a top-level folder (data_governance-main/) - copy its contents into $CodeDir
 $Inner = Get-ChildItem $TempExtract -Directory | Select-Object -First 1
 if ($Inner) {
-    # NSSM is the service wrapper used by this setup process. Windows can keep
-    # the installed executable locked briefly even after both services stop,
-    # so a routine source update must not try to overwrite it. The existing
-    # installed copy is reused when the services are registered below.
-    $DownloadedNssm = Join-Path $Inner.FullName "tools\nssm.exe"
-    if ((Test-Path $NssmExe) -and (Test-Path $DownloadedNssm)) {
-        Move-Item $DownloadedNssm "$TempExtract\nssm.exe.skipped" -Force
-        Write-Host "  Preserving installed tools\nssm.exe (in use by Windows)." -ForegroundColor DarkGray
-    }
     # Restore the original updater behavior. Copy-Item overlays the downloaded
     # source tree and never mirrors, purges, or removes installed/local files.
     Copy-Item "$($Inner.FullName)\*" $CodeDir -Recurse -Force
