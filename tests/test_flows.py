@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import database
+from app import flow_worker
 from app.routers import flows
 
 
@@ -19,6 +20,55 @@ def flow_db(tmp_path, monkeypatch):
 
 def _request(actor="Analyst"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
+
+
+def test_asap_multi_select_holds_control_once_and_always_releases():
+    events = []
+
+    class Keyboard:
+        def down(self, key):
+            events.append(("down", key))
+
+        def up(self, key):
+            events.append(("up", key))
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self):
+            events.append(("click", self.value))
+
+    class Frame:
+        page = SimpleNamespace(keyboard=Keyboard())
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    flow_worker._asap_select_list_values(Frame(), "Sell-out Week", ["202619", "202620", "202621"])
+
+    assert events == [
+        ("down", "Control"),
+        ("click", "202619"),
+        ("click", "202620"),
+        ("click", "202621"),
+        ("up", "Control"),
+    ]
 
 
 def _site():

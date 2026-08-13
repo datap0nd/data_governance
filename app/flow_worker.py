@@ -393,15 +393,22 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
 def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
     heading = frame.get_by_text(label, exact=True).first
     heading.wait_for(state="visible", timeout=60_000)
-    for value in values:
-        candidates = frame.get_by_text(value, exact=True)
-        option = next(
-            (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
-            None,
-        )
-        if option is None:
-            raise RuntimeError(f"Could not find {label} option: {value}")
-        option.click(modifiers=["Control"] if len(values) > 1 else [])
+    multi_select = len(values) > 1
+    if multi_select:
+        frame.page.keyboard.down("Control")
+    try:
+        for value in values:
+            candidates = frame.get_by_text(value, exact=True)
+            option = next(
+                (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
+                None,
+            )
+            if option is None:
+                raise RuntimeError(f"Could not find {label} option: {value}")
+            option.click()
+    finally:
+        if multi_select:
+            frame.page.keyboard.up("Control")
 
 
 def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] | None):
