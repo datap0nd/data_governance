@@ -212,3 +212,32 @@ files and do not enable SQL handoff.
   inspection.
 - Next step: inspect that run's expanded log after it settles, then validate a
   fresh download-only run before testing SQL.
+
+## Transformation Stage Update (2026-08-13)
+
+- Runtime commit `47fd881` adds an optional transformation stage between ASAP
+  download and SQL insertion.
+- The builder's Browse control uses the Windows file picker for `.py`, `.ps1`,
+  or `.exe` scripts. The selected file is copied into the local, gitignored
+  `flow_scripts` folder; proprietary scripts do not enter the repository.
+- The worker invokes the script once per downloaded CSV. Python and executable
+  scripts receive `--input` and `--output`; PowerShell receives `-InputPath`
+  and `-OutputPath`. The same locations are exposed through
+  `METRONOME_FLOW_INPUT`, `METRONOME_FLOW_OUTPUT`, and
+  `METRONOME_FLOW_RESULTS_DIR`.
+- Results are collision-safe CSV files in `<target folder>/script_results`.
+  Original downloads remain untouched. A missing, empty, invalid, timed-out,
+  or non-zero script result fails the run before SQL.
+- When enabled, SQL receives only transformed files. Expanded logs retain the
+  transformation timing, result paths, stdout, stderr, errors, and traceback.
+- ASAP CSV normalization now detects comma, semicolon, tab, or pipe delimiters
+  and UTF-8, UTF-16, or Windows encodings before writing a standard UTF-8 comma
+  CSV. This fixes run #31's post-download delimiter failure.
+- Full suite: `154 passed`; Python compileall, JavaScript syntax checks, and
+  `git diff --check` passed. Detector warnings were pre-existing and outside
+  the new Flows controls.
+- BI desktop update completed and the live editor shows the Transformation
+  section. Script execution and SQL insertion were not tested.
+- Next step: adapt the first real transformation script to the documented
+  contract, select it in the flow, and test download plus transformation with
+  SQL disabled.
