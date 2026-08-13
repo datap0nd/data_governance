@@ -204,61 +204,33 @@ def _click_named(page: Page | Frame, text: str):
 
 def _select_native_options_by_text(
     page: Page | Frame, values: list[str], expected_options: list[str] | None = None,
-) -> list[str] | None:
-    """Set and verify a native control's exact selection without mouse input.
+) -> bool:
+    """Select an enhanced native control by its option labels.
 
     ASAP uses Select2 for Data Configuration. Its visible widget has no
-    accessible name, while the owning ``select`` is hidden. Dimension and week
-    prompts may render the same native control visibly. Identify the owner from
-    this run's requested values, not from an all-or-nothing copy of the scanned
-    catalog, because the catalog can contain a stale or decorated member.
+    accessible name, while the owning ``select`` and ``option`` elements are
+    hidden. Playwright can still use ``select_option`` on that native control,
+    which also emits the change event Select2 and the report listen for.
     """
-    requested = list(dict.fromkeys(str(item) for item in values))
-    expected = set(str(item) for item in (expected_options or requested))
+    expected = [str(item) for item in (expected_options or values)]
     selects = page.locator("select")
-    candidates = []
     for index in range(selects.count()):
         select = selects.nth(index)
         labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
-        if not set(requested).issubset(set(labels)):
+        if not all(item in labels for item in expected):
             continue
-        overlap = len(set(labels) & expected)
-        candidates.append((overlap, -len(labels), index, select))
-    if not candidates:
-        return None
-    candidates.sort(reverse=True, key=lambda item: item[:3])
-    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
-        raise RuntimeError(
-            f"ASAP exposed more than one native control for requested values: {requested}."
-        )
-    select = candidates[0][3]
-    actual = select.evaluate(
-        r"""(node, requested) => {
-            const wanted = new Set(requested);
-            for (const option of Array.from(node.options)) {
-                const label = String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim();
-                option.selected = wanted.has(label);
-            }
-            node.dispatchEvent(new Event('input', {bubbles: true}));
-            node.dispatchEvent(new Event('change', {bubbles: true}));
-            return Array.from(node.options)
-                .filter(option => option.selected)
-                .map(option => String(option.textContent || option.label || '').replace(/\s+/g, ' ').trim());
-        }""",
-        requested,
-    )
-    waiter = page.page if hasattr(page, "page") else page
-    waiter.wait_for_timeout(500)
-    observed = [
-        re.sub(r"\s+", " ", text).strip()
-        for text in select.locator("option:checked").all_text_contents()
-    ]
-    if set(actual) != set(requested) or set(observed) != set(requested):
-        raise RuntimeError(
-            f"ASAP native selection mismatch. Requested: {requested}. "
-            f"DOM result: {actual}. Selected after change: {observed}."
-        )
-    return observed
+        selected = values if len(values) > 1 else values[0]
+        select.select_option(label=selected, force=True)
+        actual = [
+            re.sub(r"\s+", " ", text).strip()
+            for text in select.locator("option:checked").all_text_contents()
+        ]
+        if set(actual) != set(values):
+            raise RuntimeError(
+                f"ASAP native selection mismatch. Requested: {values}. Selected: {actual}."
+            )
+        return True
+    return False
 
 
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
@@ -476,11 +448,77 @@ def _asap_member_selected(option) -> bool | None:
         return None
 
 
-def _asap_apply_configuration(
-    frame: Frame, job: dict, period: str | list[str] | None,
-) -> list[dict]:
+def _asap_select_list_values(
+    frame: Frame, label: str, values: list[str], available_values: list[str] | None = None,
+):
+    heading = frame.get_by_text(label, exact=True).first
+    heading.wait_for(state="visible", timeout=60_000)
+    if not values:
+        return
+
+    def visible_option(value: str):
+        candidates = frame.get_by_text(value, exact=True)
+        option = next(
+            (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
+            None,
+        )
+        if option is None:
+            raise RuntimeError(f"Could not find {label} option: {value}")
+        return option
+
+    requested = list(dict.fromkeys(values))
+    available = list(dict.fromkeys([*(available_values or []), *requested]))
+
+    def selected_states() -> dict[str, bool]:
+        result = {}
+        for value in available:
+            try:
+                state = _asap_member_selected(visible_option(value))
+            except RuntimeError:
+                continue
+            if state is not None:
+                result[value] = state
+        return result
+
+    # Establish a single-selection baseline, then add the rest. Individual
+    # modifier clicks avoid leaving Control held while MicroStrategy rerenders.
+    visible_option(requested[0]).click()
+    frame.page.wait_for_timeout(250)
+    for value in requested[1:]:
+        visible_option(value).click(modifiers=["Control"])
+        frame.page.wait_for_timeout(200)
+
+    # MicroStrategy can retain selections or drop rapid clicks. Reconcile the
+    # rendered state and verify exact equality before allowing RUN.
+    for _attempt in range(3):
+        states = selected_states()
+        if states:
+            extras = [value for value, selected in states.items() if selected and value not in requested]
+            missing = [value for value in requested if states.get(value) is False]
+            if not extras and not missing and all(states.get(value) is True for value in requested):
+                return
+            for value in [*extras, *missing]:
+                visible_option(value).click(modifiers=["Control"])
+                frame.page.wait_for_timeout(250)
+            continue
+        break
+    final_states = selected_states()
+    if final_states:
+        actual = [value for value, selected in final_states.items() if selected]
+        if set(actual) != set(requested):
+            raise RuntimeError(
+                f"ASAP {label} selection did not match the flow. "
+                f"Requested: {requested}. Selected: {actual}."
+            )
+        return
+    raise RuntimeError(
+        f"ASAP {label} did not expose a verifiable selected state. "
+        "The report was not run with an unverified filter."
+    )
+
+
+def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] | None):
     selections = dict(job.get("selections") or {})
-    audit = []
     for definition in job["report"].get("filters", []):
         key = definition["filter_key"]
         value = period if definition["control_type"] == "week" and period else selections.get(key)
@@ -488,21 +526,14 @@ def _asap_apply_configuration(
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
-        actual = _select_native_options_by_text(
-            frame, values, definition.get("options") or values,
-        )
-        if actual is None:
-            raise RuntimeError(
-                f"ASAP {definition['control_label']} does not expose a native selection control "
-                f"containing the requested values: {values}. The report was not run."
+        if definition["control_type"] == "select":
+            _set_filter(frame, definition, values[0])
+        else:
+            if _select_native_options_by_text(frame, values, definition.get("options") or values):
+                continue
+            _asap_select_list_values(
+                frame, definition["control_label"], values, definition.get("options") or values,
             )
-        audit.append({
-            "filter": definition["control_label"],
-            "requested": values,
-            "actual": actual,
-            "verified": set(actual) == set(values),
-        })
-    return audit
 
 
 def _asap_download(page: Page, frame: Frame, job: dict):
@@ -1257,17 +1288,7 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
         )
         if is_asap:
             with timings.measure("configuration", report_id=job["report"].get("id")):
-                filter_audit = _asap_apply_configuration(frame, job, period)
-            report_progress(
-                "running",
-                {
-                    "stage": "configuration_verified",
-                    "message": f"Verified every filter for download {index} of {len(periods)}.",
-                    "period": period,
-                    "filter_audit": filter_audit,
-                },
-                artifacts,
-            )
+                _asap_apply_configuration(frame, job, period)
             report_progress(
                 "running",
                 {"stage": "report_execution", "message": f"Running report {index} of {len(periods)}.", "period": period},
