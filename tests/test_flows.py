@@ -166,6 +166,8 @@ def _flow(site_id, report_id, **overrides):
         "enabled": True,
         "selections": {"region": "Global"},
         "download_mode": "one_per_week",
+        "period_strategy": "fixed",
+        "window_weeks": None,
         "browser_mode": "headless",
         "start_week": "2026-W30",
         "end_week": "2026-W32",
@@ -245,6 +247,41 @@ def test_single_csv_job_passes_the_whole_week_range_to_asap(flow_db):
     assert queued["job"]["downloads"]["periods"] == [["2026-W30", "2026-W31", "2026-W32"]]
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
+
+
+def test_rolling_window_advances_only_after_success(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], download_mode="single",
+            period_strategy="rolling", window_weeks=3, end_week=None,
+            filename_template="window_{week}.csv",
+        ),
+        _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["periods"] == [["2026-W30", "2026-W31", "2026-W32"]]
+    assert queued["job"]["downloads"]["next_start_week"] == "2026-W33"
+
+    worker = flows.WorkerRegister(
+        worker_id="rolling-worker", display_name="Rolling worker", capabilities={}
+    )
+    flows.register_worker(worker)
+    claimed = flows.claim_run(worker.worker_id)
+    flows.update_run(
+        worker.worker_id, claimed["run"]["id"],
+        flows.WorkerProgress(status="failed", error="test failure"),
+    )
+    assert flows.get_flow(saved["id"])["start_week"] == "2026-W30"
+
+    retry = flows.queue_run(saved["id"], _request())
+    claimed = flows.claim_run(worker.worker_id)
+    flows.update_run(
+        worker.worker_id, claimed["run"]["id"],
+        flows.WorkerProgress(status="succeeded"),
+    )
+    assert flows.get_flow(saved["id"])["start_week"] == "2026-W33"
 
 
 def test_week_prompt_can_be_supplied_by_range_instead_of_selection(flow_db):

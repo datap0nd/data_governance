@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_week"}
+PERIOD_STRATEGIES = {"fixed", "rolling"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
@@ -105,6 +106,22 @@ def _week_range(start: str, end: str) -> list[str]:
         raise ValueError("A flow can cover at most 105 weeks.")
     result = []
     while current <= final:
+        year, week, _ = current.isocalendar()
+        result.append(f"{year:04d}-W{week:02d}")
+        current += timedelta(days=7)
+    return result
+
+
+def _week_window(start: str, count: int) -> list[str]:
+    start_match = WEEK_RE.fullmatch(start)
+    if not start_match:
+        raise ValueError("Start week must use YYYY-Www format.")
+    try:
+        current = datetime.fromisocalendar(int(start_match["year"]), int(start_match["week"]), 1)
+    except ValueError as exc:
+        raise ValueError("The selected start week does not exist in that year.") from exc
+    result = []
+    for _ in range(count):
         year, week, _ = current.isocalendar()
         result.append(f"{year:04d}-W{week:02d}")
         current += timedelta(days=7)
@@ -261,6 +278,8 @@ class FlowWrite(BaseModel):
     enabled: bool = False
     selections: dict[str, Any] = Field(default_factory=dict)
     download_mode: str = "single"
+    period_strategy: str = "fixed"
+    window_weeks: int | None = Field(default=None, ge=1, le=105)
     browser_mode: str = "headless"
     start_week: str | None = None
     end_week: str | None = None
@@ -280,18 +299,27 @@ class FlowWrite(BaseModel):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
         if self.download_mode not in DOWNLOAD_MODES:
             raise ValueError("Unsupported download mode.")
+        if self.period_strategy not in PERIOD_STRATEGIES:
+            raise ValueError("Unsupported period strategy.")
         if self.browser_mode not in BROWSER_MODES:
             raise ValueError("Browser mode must be headed or headless.")
         if self.schedule_type not in SCHEDULE_TYPES:
             raise ValueError("Unsupported schedule type.")
         self.start_week = _week_value(self.start_week, "Start week")
         self.end_week = _week_value(self.end_week, "End week")
-        if bool(self.start_week) != bool(self.end_week):
-            raise ValueError("Choose both start and end week.")
-        if self.start_week and self.end_week:
-            _week_range(self.start_week, self.end_week)
         if not self.start_week:
-            raise ValueError("Choose a Sell-out Week start and end.")
+            raise ValueError("Choose a Sell-out Week start.")
+        if self.period_strategy == "fixed":
+            if not self.end_week:
+                raise ValueError("Choose a Sell-out Week end.")
+            _week_range(self.start_week, self.end_week)
+            self.window_weeks = None
+        else:
+            if not self.window_weeks:
+                raise ValueError("Choose how many weeks each file should contain.")
+            if self.download_mode != "single":
+                raise ValueError("Rolling windows produce one combined CSV per window.")
+            self.end_week = None
         if self.download_mode == "one_per_week" and "{week}" not in self.filename_template:
             raise ValueError("One download per week requires {week} in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
@@ -435,7 +463,11 @@ def _validate_flow_selections(db, body: FlowWrite):
 def _build_job(db, flow_id: int) -> dict:
     flow = _flow_out(db, flow_id)
     report = _report_out(db, flow["report_id"])
-    weeks = _week_range(flow["start_week"], flow["end_week"]) if flow["start_week"] else []
+    weeks = (
+        _week_window(flow["start_week"], flow["window_weeks"])
+        if flow.get("period_strategy") == "rolling"
+        else _week_range(flow["start_week"], flow["end_week"])
+    )
     periods = weeks if flow["download_mode"] == "one_per_week" else [weeks]
     return {
         "schema_version": 1,
@@ -457,6 +489,10 @@ def _build_job(db, flow_id: int) -> dict:
         "selections": flow["selections"],
         "downloads": {
             "mode": flow["download_mode"], "periods": periods,
+            "period_strategy": flow.get("period_strategy") or "fixed",
+            "period_start_week": weeks[0],
+            "period_end_week": weeks[-1],
+            "next_start_week": _week_window(weeks[-1], 2)[1],
             "target_folder": flow["target_folder"],
             "filename_template": flow["filename_template"],
             "collision_policy": "number_suffix",
@@ -739,12 +775,12 @@ def create_flow(body: FlowWrite, request: Request):
             _validate_flow_selections(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
-                   (name, site_id, report_id, enabled, selections_json, download_mode, start_week, end_week,
+                   (name, site_id, report_id, enabled, selections_json, download_mode, period_strategy, window_weeks, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     sql_handoff_enabled, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
                 (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-                 body.download_mode, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+                 body.download_mode, body.period_strategy, body.window_weeks, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, get_actor(request), now, now),
             )
@@ -763,11 +799,11 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         _validate_flow_selections(db, body)
         cursor = db.execute(
             """UPDATE flows SET name=?, site_id=?, report_id=?, enabled=?, selections_json=?,
-               download_mode=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
+               download_mode=?, period_strategy=?, window_weeks=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, next_run_at=?,
                sql_handoff_enabled=0, updated_at=? WHERE id=?""",
             (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
-             body.download_mode, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+             body.download_mode, body.period_strategy, body.window_weeks, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), next_run, now, flow_id),
         )
@@ -1252,6 +1288,13 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             site_id=job.get("site", {}).get("id"), report_id=job.get("report", {}).get("id"),
         )
         if body.status in RUN_TERMINAL:
+            downloads = job.get("downloads", {})
+            if body.status == "succeeded" and downloads.get("period_strategy") == "rolling":
+                db.execute(
+                    """UPDATE flows SET start_week=?, updated_at=?
+                       WHERE id=? AND start_week=?""",
+                    (downloads.get("next_start_week"), now, row["flow_id"], downloads.get("period_start_week")),
+                )
             db.execute(
                 """UPDATE flow_workers SET status='idle', current_run_id=NULL, last_error=?,
                    last_seen_at=?, updated_at=? WHERE worker_id=?""",
