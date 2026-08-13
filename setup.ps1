@@ -420,7 +420,14 @@ Start-Sleep -Seconds 3
 
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
-& $NssmExe start $FlowServiceName
+# Setup replaces the worker code in place. Restart the service so an existing
+# process cannot keep running the previous checkout after an update.
+$ExistingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
+if ($ExistingFlowService -and $ExistingFlowService.Status -eq "Running") {
+    & $NssmExe restart $FlowServiceName
+} else {
+    & $NssmExe start $FlowServiceName
+}
 
     # Poll until the service registers with Metronome.
     $WorkerOnline = $false

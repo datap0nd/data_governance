@@ -999,3 +999,9 @@ def test_asap_download_observes_every_open_portal_page():
     assert 'candidate.on("download", capture_download)' in source
     assert 'candidate.remove_listener("download", capture_download)' in source
     assert "download_page.expect_download" not in source
+
+
+def test_setup_restarts_existing_flow_worker_after_update():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    assert "Get-Service -Name $FlowServiceName" in source
+    assert "& $NssmExe restart $FlowServiceName" in source
