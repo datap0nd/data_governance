@@ -7,12 +7,14 @@ import logging
 import re
 import sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.config import DB_PATH
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_local_runner import (
@@ -30,6 +32,7 @@ FILE_FORMATS = {"csv"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
+TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
@@ -298,6 +301,8 @@ class FlowWrite(BaseModel):
     schedule_type: str = "manual"
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
+    transform_enabled: bool = False
+    transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
     sql_mode: str | None = None
     sql_database: str | None = None
@@ -354,6 +359,16 @@ class FlowWrite(BaseModel):
             raise ValueError("Multiple downloads require a period or index token in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         _schedule_next(self.schedule_type, self.schedule_time, self.schedule_days)
+        if self.transform_enabled:
+            self.transform_script_path = (self.transform_script_path or "").strip()
+            if not self.transform_script_path:
+                raise ValueError("Choose a transformation script.")
+            if not _is_absolute_worker_path(self.transform_script_path):
+                raise ValueError("Transformation script must use an absolute path visible to the BI desktop worker.")
+            if Path(self.transform_script_path).suffix.casefold() not in TRANSFORM_SCRIPT_SUFFIXES:
+                raise ValueError("Transformation script must be a .py, .ps1, or .exe file.")
+        else:
+            self.transform_script_path = None
         if self.sql_handoff_enabled:
             self.sql_mode = (self.sql_mode or "").strip().casefold()
             if self.sql_mode not in SQL_MODES:
@@ -470,6 +485,7 @@ def _flow_out(db, flow_id: int) -> dict:
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
+    result["transform_enabled"] = bool(result.get("transform_enabled"))
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     if result["download_mode"] == "one_per_week":
@@ -587,6 +603,13 @@ def _build_job(db, flow_id: int) -> dict:
             "collision_policy": "number_suffix",
             "delete_existing": False,
             "overwrite_existing": False,
+        },
+        "transformation": {
+            "enabled": bool(flow.get("transform_enabled")),
+            "script_path": flow.get("transform_script_path"),
+            "output_subfolder": "script_results",
+            "input_argument": "--input",
+            "output_argument": "--output",
         },
         "sql_handoff": {
             "enabled": bool(flow.get("sql_handoff_enabled")),
@@ -985,12 +1008,13 @@ def create_flow(body: FlowWrite, request: Request):
                 """INSERT INTO flows
                    (name, site_id, report_id, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
-                    sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
-                 _json(body.schedule_days), next_run, body.sql_handoff_enabled, body.sql_mode,
+                 _json(body.schedule_days), next_run, body.transform_enabled, body.transform_script_path,
+                 body.sql_handoff_enabled, body.sql_mode,
                  body.sql_database, body.sql_schema, body.sql_table, get_actor(request), now, now),
             )
             flow_id = cursor.lastrowid
@@ -998,6 +1022,38 @@ def create_flow(body: FlowWrite, request: Request):
             return _flow_out(db, flow_id)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, "A flow with that name already exists.") from exc
+
+
+@router.post("/transform-script")
+async def add_transform_script(request: Request, file: UploadFile = File(...)):
+    """Store a user-selected script locally without committing it to the repository."""
+    filename = Path(file.filename or "").name
+    suffix = Path(filename).suffix.casefold()
+    if not filename or suffix not in TRANSFORM_SCRIPT_SUFFIXES:
+        raise HTTPException(400, "Choose a .py, .ps1, or .exe transformation script.")
+    content = await file.read(10 * 1024 * 1024 + 1)
+    if not content:
+        raise HTTPException(400, "The selected transformation script is empty.")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Transformation scripts must be 10 MB or smaller.")
+    folder = Path(DB_PATH).resolve().parent / "flow_scripts"
+    folder.mkdir(parents=True, exist_ok=True)
+    candidate = folder / filename
+    if candidate.exists():
+        stem = candidate.stem
+        for index in range(2, 10000):
+            candidate = folder / f"{stem} ({index}){suffix}"
+            if not candidate.exists():
+                break
+        else:
+            raise HTTPException(409, "Could not reserve a unique script filename.")
+    candidate.write_bytes(content)
+    with get_db() as db:
+        log_event(
+            db, "flow_transform_script", None, candidate.name,
+            "added", f"size={len(content)}", get_actor(request),
+        )
+    return {"script_path": str(candidate), "filename": candidate.name, "file_size": len(content)}
 
 
 @router.put("/{flow_id}")
@@ -1011,11 +1067,13 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             """UPDATE flows SET name=?, site_id=?, report_id=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, next_run_at=?,
+               transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, updated_at=? WHERE id=?""",
             (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
-             _json(body.schedule_days), next_run, body.sql_handoff_enabled, body.sql_mode,
+             _json(body.schedule_days), next_run, body.transform_enabled, body.transform_script_path,
+             body.sql_handoff_enabled, body.sql_mode,
              body.sql_database, body.sql_schema, body.sql_table, now, flow_id),
         )
         if not cursor.rowcount:

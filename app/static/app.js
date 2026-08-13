@@ -128,6 +128,12 @@ async function apiPostJson(path, body) {
     return res.json();
 }
 
+async function apiPostForm(path, body) {
+    const res = await fetch(path, { method: "POST", headers: apiHeaders(), body });
+    if (!res.ok) throw await apiError(res);
+    return res.json();
+}
+
 async function apiPut(path, body) {
     const res = await fetch(path, {
         method: "PUT",
@@ -9402,7 +9408,16 @@ function _flowBuilderHtml(catalog, existing = null) {
                         </div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>Save the schedule here, then activate or pause the flow from the Flows list. SQL handoff is optional.</p></div>
+                        <div class="flow-section-head"><h2>Transformation</h2><p>Optionally run one local script against every downloaded file before SQL insertion.</p></div>
+                        <div class="flow-form-grid">
+                            <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform downloaded files before SQL insertion</span></label>
+                            <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
+                                <label class="flow-span-2"><span>Transformation script</span><div class="flow-file-control"><input id="flow-transform-script" readonly required value="${esc(existing?.transform_script_path || "")}" placeholder="Choose a .py, .ps1, or .exe script"><button type="button" class="btn-secondary" id="flow-transform-browse">Browse...</button><input id="flow-transform-file" type="file" accept=".py,.ps1,.exe" hidden></div><small>Python/EXE scripts receive --input and --output; PowerShell receives -InputPath and -OutputPath. The script must create one CSV in script_results per download. Those outputs become the SQL input.</small></label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flow-form-section">
+                        <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>Save the schedule here, then activate or pause the flow from the Flows list. SQL handoff uses transformed files when transformation is enabled.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option></select></label>
                             <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
@@ -9422,7 +9437,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Truncate and replace" : "Append") : "Disabled"}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Truncate and replace" : "Append") : "Disabled"}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9626,10 +9641,11 @@ function _flowCollectBuilder() {
     const scheduleType = $("#flow-schedule-type").value;
     const periodStrategy = $("#flow-period-strategy").value;
     const downloadMode = $("#flow-download-mode").value;
+    const transformEnabled = $("#flow-transform-enabled")?.checked || false;
     const sqlEnabled = $("#flow-sql-enabled")?.checked || false;
     const existing = window._flowsState?.flows?.find(flow => flow.id === Number($("#flow-builder-form")?.dataset.id));
     const flowEnabled = scheduleType === "manual" ? false : (existing?.enabled || false);
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy === "rolling" || downloadMode === "one_per_period" ? Number($("#flow-window-weeks").value) : null, file_format: "csv", browser_mode: $("#flow-browser-mode").value, start_week: $("#flow-start-week").value || null, end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim().replace(/\.xlsx$/i, ".csv"), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null };
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy === "rolling" || downloadMode === "one_per_period" ? Number($("#flow-window-weeks").value) : null, file_format: "csv", browser_mode: $("#flow-browser-mode").value, start_week: $("#flow-start-week").value || null, end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim().replace(/\.xlsx$/i, ".csv"), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null };
 }
 
 function _bindFlowWorkspace() {
@@ -9679,6 +9695,38 @@ function _bindFlowWorkspace() {
     $("#flow-download-mode")?.addEventListener("change", updatePeriodFields);
     $("#flow-period-strategy")?.addEventListener("change", updatePeriodFields);
     $("#flow-period-strategy")?.dispatchEvent(new Event("change"));
+    const updateTransformFields = () => {
+        const enabled = $("#flow-transform-enabled")?.checked || false;
+        const fields = $("#flow-transform-fields");
+        const input = $("#flow-transform-script");
+        if (fields) fields.hidden = !enabled;
+        if (input) input.required = enabled;
+        if ($("#flow-transform-summary")) $("#flow-transform-summary").textContent = enabled ? "Enabled · script_results" : "Disabled";
+    };
+    $("#flow-transform-enabled")?.addEventListener("change", updateTransformFields);
+    $("#flow-transform-browse")?.addEventListener("click", () => $("#flow-transform-file")?.click());
+    $("#flow-transform-file")?.addEventListener("change", async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        const button = $("#flow-transform-browse");
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = "Adding...";
+        try {
+            const body = new FormData();
+            body.append("file", file, file.name);
+            const saved = await apiPostForm("/api/flows/transform-script", body);
+            $("#flow-transform-script").value = saved.script_path;
+            toast(`Transformation script added: ${saved.filename}`);
+        } catch (err) {
+            toast("Script not added: " + err.message);
+        } finally {
+            event.target.value = "";
+            button.disabled = false;
+            button.textContent = original;
+        }
+    });
+    updateTransformFields();
     const updateSqlFields = () => {
         const enabled = $("#flow-sql-enabled")?.checked || false;
         const fields = $("#flow-sql-fields");

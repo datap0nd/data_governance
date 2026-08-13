@@ -540,6 +540,9 @@ h2 {
 }
 .flow-form-grid select[multiple] { min-height: 110px; }
 .flow-form-grid small { color: var(--text-muted); font-size: 0.7rem; font-weight: 400; }
+.flow-file-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-sm); }
+.flow-file-control input { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.flow-file-control button { white-space: nowrap; }
 .flow-form-grid [hidden], .flow-form-section [hidden] { display: none !important; }
 .flow-span-2 { grid-column: 1 / -1; }
 .flow-inline-empty { color: var(--text-muted); font-size: 0.8rem; grid-column: 1 / -1; padding: var(--space-md) 0; }

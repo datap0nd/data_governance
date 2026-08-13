@@ -473,6 +473,8 @@ CREATE TABLE IF NOT EXISTS flows (
     last_run_at         DATETIME,
     last_status         TEXT,
     last_error          TEXT,
+    transform_enabled   INTEGER NOT NULL DEFAULT 0,
+    transform_script_path TEXT,
     sql_handoff_enabled INTEGER NOT NULL DEFAULT 0,
     sql_mode            TEXT,
     sql_database        TEXT,
@@ -1019,6 +1021,8 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_database TEXT",
     "ALTER TABLE flows ADD COLUMN sql_schema TEXT",
     "ALTER TABLE flows ADD COLUMN sql_table TEXT",
+    "ALTER TABLE flows ADD COLUMN transform_enabled INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE flows ADD COLUMN transform_script_path TEXT",
     """CREATE TABLE IF NOT EXISTS flow_run_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id INTEGER NOT NULL REFERENCES flow_runs(id),

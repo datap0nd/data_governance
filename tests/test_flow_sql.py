@@ -22,6 +22,63 @@ def test_asap_csv_normalization_removes_title_and_blank_row(tmp_path):
     assert flow_worker._csv_metadata(path)["row_count"] == 1
 
 
+def test_asap_csv_normalization_detects_semicolon_delimiter(tmp_path):
+    path = tmp_path / "download.csv"
+    path.write_text(
+        'Report title\n\n"Sell-in Region";"Active"\n"MIDDLE EAST";"116"\n',
+        encoding="cp1252",
+    )
+    result = flow_worker._normalize_csv(path)
+    assert result["source_delimiter"] == ";"
+    assert result["columns"] == ["Sell-in Region", "Active"]
+    assert path.read_text(encoding="utf-8-sig").splitlines() == [
+        "Sell-in Region,Active", "MIDDLE EAST,116",
+    ]
+
+
+def test_transformations_run_once_per_file_and_use_script_results(tmp_path):
+    source = tmp_path / "input.csv"
+    source.write_text("name,value\na,1\n", encoding="utf-8")
+    script = tmp_path / "transform.py"
+    script.write_text(
+        "from argparse import ArgumentParser\nfrom pathlib import Path\n"
+        "parser = ArgumentParser()\nparser.add_argument('--input', required=True)\n"
+        "parser.add_argument('--output', required=True)\nargs = parser.parse_args()\n"
+        "Path(args.output).write_text(Path(args.input).read_text(), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    output = flow_worker._run_transformations(
+        [{"file_path": str(source), "filename": source.name, "period_key": ["2026-W01"], "status": "saved"}],
+        {"enabled": True, "script_path": str(script)},
+    )
+    assert len(output) == 1
+    assert Path(output[0]["file_path"]).parent.name == "script_results"
+    assert output[0]["status"] == "transformed"
+    assert output[0]["row_count"] == 1
+
+
+def test_transformation_requires_reserved_output_file(tmp_path):
+    source = tmp_path / "input.csv"
+    source.write_text("name,value\na,1\n", encoding="utf-8")
+    script = tmp_path / "transform.py"
+    script.write_text("print('done')\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="did not create"):
+        flow_worker._run_transformations(
+            [{"file_path": str(source), "filename": source.name, "status": "saved"}],
+            {"enabled": True, "script_path": str(script)},
+        )
+
+
+def test_powershell_transformation_uses_named_path_parameters(tmp_path):
+    command = flow_worker._script_command(
+        tmp_path / "transform.ps1", tmp_path / "input.csv", tmp_path / "output.csv",
+    )
+    assert command[-4:] == [
+        "-InputPath", str(tmp_path / "input.csv"),
+        "-OutputPath", str(tmp_path / "output.csv"),
+    ]
+
+
 def test_csv_reader_rejects_duplicate_normalized_columns(tmp_path):
     path = tmp_path / "duplicate.csv"
     path.write_text("Sell-out Week,Sell out Week\n202630,202631\n", encoding="utf-8")

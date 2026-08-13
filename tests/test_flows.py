@@ -197,6 +197,7 @@ def test_catalog_and_flow_configuration_persist_locally(flow_db):
     assert saved["report_name"] == "Weekly movement"
     assert saved["selections"] == {"region": "Global"}
     assert saved["sql_handoff_enabled"] is False
+    assert saved["transform_enabled"] is False
     catalog = flows.catalog()
     assert catalog["reports"][0]["filters"][0]["options"] == ["Global", "North"]
 
@@ -223,6 +224,10 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
 
     assert queued["job"]["downloads"]["periods"] == [["2026-W30"], ["2026-W31"], ["2026-W32"]]
     assert queued["job"]["downloads"]["collision_policy"] == "number_suffix"
+    assert queued["job"]["transformation"] == {
+        "enabled": False, "script_path": None, "output_subfolder": "script_results",
+        "input_argument": "--input", "output_argument": "--output",
+    }
     assert queued["job"]["downloads"]["delete_existing"] is False
     assert queued["job"]["downloads"]["overwrite_existing"] is False
     assert queued["job"]["execution"] == {
@@ -232,6 +237,27 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["sql_handoff"] == {
         "enabled": False, "mode": None, "database": None, "schema": None, "table": None,
     }
+
+
+def test_transformation_configuration_is_persisted_in_job(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(
+        site["id"], report["id"], transform_enabled=True,
+        transform_script_path=r"C:\Scripts\clean_report.py",
+    ), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    assert saved["transform_enabled"] is True
+    assert queued["job"]["transformation"]["script_path"] == r"C:\Scripts\clean_report.py"
+
+
+def test_transformation_requires_supported_absolute_script_path(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with pytest.raises(ValueError, match="absolute path"):
+        _flow(site["id"], report["id"], transform_enabled=True, transform_script_path="clean.py")
+    with pytest.raises(ValueError, match=".py, .ps1, or .exe"):
+        _flow(site["id"], report["id"], transform_enabled=True, transform_script_path=r"C:\Scripts\clean.bat")
 
 
 def test_single_csv_job_passes_the_whole_week_range_to_asap(flow_db):
@@ -765,6 +791,9 @@ def test_flow_ui_uses_list_activation_csv_only_and_expanded_logs():
     assert 'id="flow-file-format"' not in source
     assert "Expanded logs" in source
     assert "/flow-runs/${run.id}" in source
+    assert 'id="flow-transform-enabled"' in source
+    assert 'id="flow-transform-browse"' in source
+    assert "script_results" in source
 
 
 def test_run_progress_events_and_traceback_are_persisted(flow_db):

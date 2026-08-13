@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 import traceback
@@ -989,25 +990,42 @@ def _normalize_csv(path: Path) -> dict:
     """Remove ASAP's title/blank preamble while preserving a standard CSV."""
     decoded = None
     encoding_used = None
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+    raw = path.read_bytes()
+    encodings = ["utf-8-sig"]
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw[:512]:
+        encodings.extend(["utf-16", "utf-16-le", "utf-16-be"])
+    encodings.extend(["cp1252", "latin-1"])
+    for encoding in encodings:
         try:
-            decoded = path.read_text(encoding=encoding)
+            decoded = raw.decode(encoding)
             encoding_used = encoding
             break
         except UnicodeDecodeError:
             continue
     if decoded is None:
         raise RuntimeError(f"Could not decode downloaded CSV: {path.name}")
-    rows = list(csv.reader(decoded.splitlines()))
+    lines = decoded.splitlines()
+    sample = "\n".join(lines[:20])
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        delimiter = dialect.delimiter
+    except csv.Error:
+        delimiter = max((",", ";", "\t", "|"), key=lambda item: sample.count(item))
+    rows = list(csv.reader(lines, delimiter=delimiter))
     if not rows:
         raise RuntimeError("The downloaded CSV is empty.")
     header_index = 0
     if len(rows) >= 3 and len(rows[0]) == 1 and not any(str(value).strip() for value in rows[1]):
         header_index = 2
+    elif len(rows[0]) < 2:
+        header_index = next(
+            (index for index, row in enumerate(rows[:20]) if len(row) >= 2 and sum(bool(str(value).strip()) for value in row) >= 2),
+            0,
+        )
     header = [str(value).strip() for value in rows[header_index]]
     if len(header) < 2:
         raise RuntimeError(
-            "Downloaded CSV did not contain a usable comma-delimited header after the ASAP preamble."
+            "Downloaded CSV did not contain a usable delimited header after the ASAP preamble."
         )
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -1015,8 +1033,71 @@ def _normalize_csv(path: Path) -> dict:
     return {
         "preamble_rows_removed": header_index,
         "source_encoding": encoding_used,
+        "source_delimiter": "tab" if delimiter == "\t" else delimiter,
         "columns": header,
     }
+
+
+def _script_command(script_path: Path, input_path: Path, output_path: Path) -> list[str]:
+    suffix = script_path.suffix.casefold()
+    if suffix == ".py":
+        return [sys.executable, str(script_path), "--input", str(input_path), "--output", str(output_path)]
+    elif suffix == ".ps1":
+        return [
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(script_path), "-InputPath", str(input_path), "-OutputPath", str(output_path),
+        ]
+    elif suffix == ".exe":
+        return [str(script_path), "--input", str(input_path), "--output", str(output_path)]
+    else:
+        raise RuntimeError("Transformation script must be a .py, .ps1, or .exe file.")
+
+
+def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
+    """Run one configured script once per download and return SQL-ready outputs."""
+    if not config.get("enabled"):
+        return artifacts
+    script_path = Path(str(config.get("script_path") or ""))
+    if not script_path.is_file():
+        raise RuntimeError(f"Transformation script does not exist: {script_path}")
+    results_folder = Path(artifacts[0]["file_path"]).parent / "script_results"
+    results_folder.mkdir(parents=True, exist_ok=True)
+    transformed = []
+    for index, artifact in enumerate(artifacts, start=1):
+        input_path = Path(artifact["file_path"])
+        output_path = _safe_output_path(results_folder, input_path.name)
+        environment = os.environ.copy()
+        environment.update({
+            "METRONOME_FLOW_INPUT": str(input_path),
+            "METRONOME_FLOW_OUTPUT": str(output_path),
+            "METRONOME_FLOW_RESULTS_DIR": str(results_folder),
+        })
+        completed = subprocess.run(
+            _script_command(script_path, input_path, output_path),
+            cwd=str(script_path.parent), env=environment, capture_output=True,
+            text=True, timeout=60 * 60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if completed.returncode != 0:
+            detail = stderr or stdout or f"exit code {completed.returncode}"
+            raise RuntimeError(f"Transformation failed for {input_path.name}: {detail[-4000:]}")
+        if not output_path.is_file() or output_path.stat().st_size <= 0:
+            raise RuntimeError(
+                f"Transformation script completed for {input_path.name} but did not create {output_path}. "
+                "The script must write --output (METRONOME_FLOW_OUTPUT)."
+            )
+        normalization = _normalize_csv(output_path)
+        metadata = {**_csv_metadata(output_path), **normalization}
+        transformed.append({
+            **artifact,
+            "file_path": str(output_path), "filename": output_path.name,
+            "status": "transformed", "source_file_path": str(input_path),
+            "script_path": str(script_path), "script_index": index,
+            "script_stdout": stdout[-4000:], "script_stderr": stderr[-4000:],
+            **metadata,
+        })
+    return transformed
 
 
 def _csv_metadata(path: Path) -> dict:
@@ -1192,6 +1273,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 run_started = time.perf_counter()
                 artifacts = []
                 timings = []
+                transformation_started = None
                 sql_started = None
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
@@ -1204,11 +1286,46 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
 
                 try:
                     artifacts, timings = execute_job(page, run["job"], progress, profile_dir)
+                    sql_artifacts = artifacts
+                    if run["job"].get("transformation", {}).get("enabled"):
+                        progress(
+                            "running",
+                            {"stage": "transformation", "message": f"Transforming {len(artifacts)} downloaded file(s)."},
+                            artifacts, timings,
+                        )
+                        transformation_started = time.perf_counter()
+                        sql_artifacts = _run_transformations(artifacts, run["job"]["transformation"])
+                        timings.insert(max(0, len(timings) - 1), {
+                            "phase": "transformation",
+                            "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
+                            "status": "succeeded", "item_count": len(sql_artifacts),
+                        })
+                        timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
+                        artifacts = [*artifacts, *sql_artifacts]
+                        progress(
+                            "running",
+                            {
+                                "stage": "transformation_complete",
+                                "message": f"Created {len(sql_artifacts)} transformed file(s) in script_results.",
+                                "results": [
+                                    {
+                                        "source": item.get("source_file_path"),
+                                        "output": item.get("file_path"),
+                                        "rows": item.get("row_count"),
+                                        "stdout": item.get("script_stdout"),
+                                        "stderr": item.get("script_stderr"),
+                                    }
+                                    for item in sql_artifacts
+                                ],
+                            },
+                            artifacts, timings,
+                        )
                     if run["job"].get("sql_handoff", {}).get("enabled"):
                         from app.flow_sql import load_artifacts
-                        progress("running", {"stage": "sql_insertion", "message": "Loading downloaded files into SQL."}, artifacts, timings)
+                        source_label = "transformed" if run["job"].get("transformation", {}).get("enabled") else "downloaded"
+                        progress("running", {"stage": "sql_insertion", "message": f"Loading {source_label} files into SQL."}, artifacts, timings)
                         sql_started = time.perf_counter()
-                        sql_result = load_artifacts(artifacts, run["job"]["sql_handoff"])
+                        sql_result = load_artifacts(sql_artifacts, run["job"]["sql_handoff"])
                         timings.insert(max(0, len(timings) - 1), {
                             "phase": "sql_insertion",
                             "duration_ms": round((time.perf_counter() - sql_started) * 1000),
@@ -1225,11 +1342,26 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             artifacts, timings,
                         )
                     progress(
-                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."},
+                        "succeeded", {
+                            "stage": "complete",
+                            "message": (
+                                f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
+                                if run["job"].get("transformation", {}).get("enabled")
+                                else f"Saved {len(artifacts)} CSV file(s)."
+                            ),
+                        },
                         artifacts, timings,
                     )
                 except Exception as exc:
                     if timings:
+                        if transformation_started is not None and not any(
+                            item.get("phase") == "transformation" for item in timings
+                        ):
+                            timings.insert(-1, {
+                                "phase": "transformation",
+                                "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
+                                "status": "failed",
+                            })
                         if sql_started is not None and not any(
                             item.get("phase") == "sql_insertion" for item in timings
                         ):
