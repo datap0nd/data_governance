@@ -596,8 +596,7 @@ def test_worker_source_contains_no_delete_or_overwrite_operation():
 def test_asap_execution_uses_rendered_ui_not_internal_response_url():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert "expect_response" not in source
-    assert "previous_signature = _asap_result_signature(frame)" in source
-    assert "frame = _asap_wait_for_results(page, previous_signature)" in source
+    assert "frame = _asap_wait_for_results(page, expected_weeks)" in source
     assert '"stage": "report_execution"' in source
     assert '"stage": "file_export"' in source
     assert '"button.report-export"' not in source
