@@ -30,7 +30,7 @@ function Invoke-WebRequestWithRetry {
         [Parameter(Mandatory = $true)][string]$Uri,
         [Parameter(Mandatory = $true)][string]$OutFile,
         [hashtable]$Headers = @{},
-        [int]$MaxAttempts = 15,
+        [int]$MaxAttempts = 10,
         [int]$DelaySeconds = 5
     )
     $lastMessage = $null
@@ -49,27 +49,6 @@ function Invoke-WebRequestWithRetry {
         }
     }
     throw "Download failed after $MaxAttempts attempts. Last error: $lastMessage"
-}
-
-function Invoke-PipWithRetry {
-    param(
-        [Parameter(Mandatory = $true)][string]$PipExe,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [int]$MaxAttempts = 15,
-        [int]$DelaySeconds = 5
-    )
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        Write-Host "  Dependency download attempt $attempt of $MaxAttempts..." -ForegroundColor DarkGray
-        & $PipExe @Arguments
-        if ($LASTEXITCODE -eq 0) {
-            return
-        }
-        if ($attempt -lt $MaxAttempts) {
-            Write-Host "  Dependency download failed (exit $LASTEXITCODE). Retrying in $DelaySeconds seconds..." -ForegroundColor Yellow
-            Start-Sleep -Seconds $DelaySeconds
-        }
-    }
-    throw "Dependency installation failed after $MaxAttempts attempts."
 }
 
 $ServiceName = "MXAnalytics"
@@ -220,7 +199,7 @@ try {
     Invoke-WebRequestWithRetry -Uri $ZipUrl -OutFile $ZipPath -Headers $ZipHeaders
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
 } catch {
-    Write-Host "  Direct download failed after 15 attempts: $_" -ForegroundColor Yellow
+    Write-Host "  Direct download failed after 10 attempts: $_" -ForegroundColor Yellow
     if ($GitHubToken) {
         Write-Host "  Check that DG_GITHUB_TOKEN has read access to this private repo." -ForegroundColor Red
         Write-Host "  Required GitHub permission: Contents = Read." -ForegroundColor Red
@@ -287,7 +266,7 @@ $PipExe = "$PyDir\Scripts\pip.exe"
 # Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
 & $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
 # Install remaining deps from public PyPI (portable Python has clean config)
-Invoke-PipWithRetry -PipExe $PipExe -Arguments @("install", "-r", "requirements.txt", "-q")
+& $PipExe install -r requirements.txt -q
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
