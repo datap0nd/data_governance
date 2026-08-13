@@ -82,18 +82,6 @@ $FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
 $HeadedFlowProfile = "$env:USERPROFILE\.metronome-flow-browser-headed"
 $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
 
-# The tracked distribution binary has a different name so routine source
-# overlays never try to replace a live, Windows-locked nssm.exe. Install it
-# only when this is a new machine and no service wrapper exists yet.
-$NssmExe = "$CodeDir\tools\nssm.exe"
-$NssmDistribution = "$CodeDir\tools\nssm.dist.exe"
-if (-not (Test-Path $NssmExe)) {
-    if (-not (Test-Path $NssmDistribution)) {
-        throw "NSSM service wrapper distribution is missing: $NssmDistribution"
-    }
-    Copy-Item $NssmDistribution $NssmExe -Force
-}
-
 # --- Safety check ---
 if (-not (Test-Path "$CodeDir\app\main.py")) {
     Write-Host "ERROR: Run this from inside the data_governance-main folder." -ForegroundColor Red
@@ -216,6 +204,7 @@ try {
 # disk. Proxy/download failures above therefore leave Metronome untouched.
 Write-Host "[3/5] Stopping services..." -ForegroundColor Yellow
 Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+$NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
