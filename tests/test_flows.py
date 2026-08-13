@@ -23,99 +23,6 @@ def _request(actor="Analyst"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
 
 
-def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeypatch):
-    events = []
-    selected = {"Extra": True, "202619": True, "202620": False, "202621": False}
-
-    class Locator:
-        first = None
-
-        def __init__(self, value):
-            self.value = value
-            self.first = self
-
-        def wait_for(self, **_kwargs):
-            return None
-
-        def count(self):
-            return 1
-
-        def nth(self, _index):
-            return self
-
-        def is_visible(self):
-            return True
-
-        def click(self, modifiers=None):
-            events.append(("click", self.value, tuple(modifiers or [])))
-            if modifiers:
-                selected[self.value] = not selected[self.value]
-            else:
-                for key in selected:
-                    selected[key] = False
-                selected[self.value] = True
-
-    class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
-
-        def get_by_text(self, value, exact=True):
-            return Locator(value)
-
-    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
-    flow_worker._asap_select_list_values(
-        Frame(), "Sell-out Week", ["202619", "202620", "202621"], list(selected),
-    )
-
-    assert events == [
-        ("click", "202619", ()),
-        ("click", "202620", ("Control",)),
-        ("click", "202621", ("Control",)),
-    ]
-    assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
-
-
-def test_asap_single_list_value_replaces_existing_selection(monkeypatch):
-    events = []
-    selected = {"Biz Sub": True, "Sold To": False}
-
-    class Locator:
-        first = None
-
-        def __init__(self, value):
-            self.value = value
-            self.first = self
-
-        def wait_for(self, **_kwargs):
-            return None
-
-        def count(self):
-            return 1
-
-        def nth(self, _index):
-            return self
-
-        def is_visible(self):
-            return True
-
-        def click(self, modifiers=None):
-            events.append(("click", self.value, tuple(modifiers or [])))
-            for key in selected:
-                selected[key] = False
-            selected[self.value] = True
-
-    class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
-
-        def get_by_text(self, value, exact=True):
-            return Locator(value)
-
-    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
-    flow_worker._asap_select_list_values(Frame(), "Dimension", ["Sold To"], list(selected))
-
-    assert events == [("click", "Sold To", ())]
-    assert selected == {"Biz Sub": False, "Sold To": True}
-
-
 def _site():
     return flows.SiteWrite(
         name="Report portal",
@@ -1049,18 +956,19 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
     class Select:
         def __init__(self, labels):
             self.labels = labels
-            self.selected = None
+            self.selected = []
+            self.events = []
 
         def locator(self, selector):
             if selector == "option:checked":
-                selected = self.selected if isinstance(self.selected, list) else [self.selected]
-                return Options([item for item in self.labels if item in selected])
+                return Options([item for item in self.labels if item in self.selected])
             assert selector == "option"
             return Options(self.labels)
 
-        def select_option(self, *, label, force):
-            assert force is True
-            self.selected = label
+        def evaluate(self, _script, requested):
+            self.selected = list(requested)
+            self.events.extend(["input", "change"])
+            return list(self.selected)
 
     class Selects:
         def __init__(self, controls):
@@ -1073,6 +981,8 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
             return self.controls[index]
 
     class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
         def __init__(self, controls):
             self.controls = controls
 
@@ -1090,9 +1000,66 @@ def test_hidden_select2_control_is_selected_through_owning_native_select():
 
     assert _select_native_options_by_text(
         Frame([unrelated, data_configuration]), [options[0]], options,
-    ) is True
-    assert unrelated.selected is None
-    assert data_configuration.selected == options[0]
+    ) == [options[0]]
+    assert unrelated.selected == []
+    assert data_configuration.selected == [options[0]]
+    assert data_configuration.events == ["input", "change"]
+
+
+def test_native_selection_matches_requested_values_despite_imperfect_discovery_catalog():
+    from app.flow_worker import _select_native_options_by_text
+
+    class Options:
+        def __init__(self, labels):
+            self.labels = labels
+
+        def all_text_contents(self):
+            return self.labels
+
+    class Select:
+        def __init__(self, labels, selected):
+            self.labels = labels
+            self.selected = list(selected)
+
+        def locator(self, selector):
+            if selector == "option:checked":
+                return Options([label for label in self.labels if label in self.selected])
+            assert selector == "option"
+            return Options(self.labels)
+
+        def evaluate(self, _script, requested):
+            self.selected = list(requested)
+            return list(self.selected)
+
+    class Selects:
+        def __init__(self, controls):
+            self.controls = controls
+
+        def count(self):
+            return len(self.controls)
+
+        def nth(self, index):
+            return self.controls[index]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def __init__(self, controls):
+            self.controls = controls
+
+        def locator(self, selector):
+            assert selector == "select"
+            return Selects(self.controls)
+
+    requested = ["Sell-in Region", "Sell-out Region", "Series", "MKT Name"]
+    dimension = Select(
+        ["Sell-in Region", "Sell-in Subsidiary", "Sell-out Region", "Series", "MKT Name"],
+        ["Sell-in Subsidiary"],
+    )
+    discovered = [*dimension.labels, "stale option not present in ASAP"]
+
+    assert _select_native_options_by_text(Frame([dimension]), requested, discovered) == requested
+    assert dimension.selected == requested
 
 
 def test_targeted_refresh_stales_replaced_filter_definitions(flow_db):
