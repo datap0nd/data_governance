@@ -204,56 +204,25 @@ def _click_named(page: Page | Frame, text: str):
 
 def _select_native_options_by_text(
     page: Page | Frame, values: list[str], expected_options: list[str] | None = None,
-) -> list[str] | None:
-    """Set and verify a native control's exact selection without mouse input.
+) -> bool:
+    """Select an enhanced native control by its option labels.
 
     ASAP uses Select2 for Data Configuration. Its visible widget has no
-    accessible name, while the owning ``select`` is hidden. Dimension and week
-    prompts may render the same native control visibly. Identify the owner from
-    this run's requested values, not from an all-or-nothing copy of the scanned
-    catalog, because the catalog can contain a stale or decorated member.
+    accessible name, while the owning ``select`` and ``option`` elements are
+    hidden. Playwright can still use ``select_option`` on that native control,
+    which also emits the change event Select2 and the report listen for.
     """
-    requested = list(dict.fromkeys(str(item) for item in values))
-    expected = set(str(item) for item in (expected_options or requested))
+    expected = [str(item) for item in (expected_options or values)]
     selects = page.locator("select")
-    candidates = []
     for index in range(selects.count()):
         select = selects.nth(index)
         labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
-        if not set(requested).issubset(set(labels)):
+        if not all(item in labels for item in expected):
             continue
-        overlap = len(set(labels) & expected)
-        candidates.append((overlap, -len(labels), index, select))
-    if not candidates:
-        return None
-    candidates.sort(reverse=True, key=lambda item: item[:3])
-    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
-        raise RuntimeError(
-            f"ASAP exposed more than one native control for requested values: {requested}."
-        )
-    select = candidates[0][3]
-    # Replace the complete value set through Playwright's native-select API.
-    # This interacts with the actual page control and emits the browser input
-    # and change sequence as one atomic operation. It does not walk focus,
-    # simulate Ctrl-clicks, or depend on the portal's magnifier-prone mouse UI.
-    # Passing every requested label also clears every stale selection first.
-    selected_values = select.select_option(label=requested, force=not select.is_visible())
-    if len(selected_values) != len(requested):
-        raise RuntimeError(
-            f"ASAP native control accepted {len(selected_values)} of {len(requested)} requested values."
-        )
-    waiter = page.page if hasattr(page, "page") else page
-    waiter.wait_for_timeout(1_000)
-    observed = [
-        re.sub(r"\s+", " ", text).strip()
-        for text in select.locator("option:checked").all_text_contents()
-    ]
-    if set(observed) != set(requested):
-        raise RuntimeError(
-            f"ASAP native selection mismatch. Requested: {requested}. "
-            f"Selected after native interaction: {observed}."
-        )
-    return observed
+        selected = values if len(values) > 1 else values[0]
+        select.select_option(label=selected, force=True)
+        return True
+    return False
 
 
 def _ensure_live_page(page: Page) -> Page:
@@ -265,225 +234,6 @@ def _ensure_live_page(page: Page) -> Page:
         if not candidate.is_closed():
             return candidate
     return context.new_page()
-
-
-def _read_native_options_by_text(
-    page: Page | Frame, values: list[str], expected_options: list[str] | None = None,
-) -> list[str] | None:
-    """Read the matching native control after all prompt changes settle."""
-    requested = list(dict.fromkeys(str(item) for item in values))
-    expected = set(str(item) for item in (expected_options or requested))
-    selects = page.locator("select")
-    candidates = []
-    for index in range(selects.count()):
-        select = selects.nth(index)
-        labels = [re.sub(r"\s+", " ", text).strip() for text in select.locator("option").all_text_contents()]
-        if not set(requested).issubset(set(labels)):
-            continue
-        candidates.append((len(set(labels) & expected), -len(labels), index, select))
-    if not candidates:
-        return None
-    candidates.sort(reverse=True, key=lambda item: item[:3])
-    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
-        raise RuntimeError(f"ASAP exposed ambiguous native controls for: {requested}.")
-    return [
-        re.sub(r"\s+", " ", text).strip()
-        for text in candidates[0][3].locator("option:checked").all_text_contents()
-    ]
-
-
-def _read_select2_value(page: Page | Frame, requested: list[str]) -> list[str] | None:
-    """Read an already-selected lazy custom-select value without opening it.
-
-    ASAP currently mixes Select2 generations.  Some reports expose the modern
-    ``select2-selection__rendered`` span, while others render the chosen value
-    in a labelled combobox or a legacy ``select2-chosen`` element.  Anchor the
-    lookup on the prompt label first so a matching value elsewhere in the
-    report cannot be mistaken for the configured prompt.
-    """
-    if len(requested) != 1:
-        return None
-    wanted = requested[0]
-    waiter = page.page if hasattr(page, "page") else page
-    # Legacy MicroStrategy widgets can paint clipped text through nested spans
-    # that Playwright's text engine does not expose as one string. Inspect the
-    # rendered prompt rail itself and its accessibility/value attributes.
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            rendered = page.locator("body *").evaluate_all(
-                r"""(nodes, wanted) => {
-                    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
-                    const prefix = wanted.slice(0, Math.min(wanted.length, 14));
-                    return nodes.some(node => {
-                        const rect = node.getBoundingClientRect();
-                        if (!rect.width || !rect.height || rect.left >= 160) return false;
-                        const values = [
-                            node.getAttribute('title'),
-                            node.getAttribute('aria-label'),
-                            node.getAttribute('value'),
-                            node.textContent,
-                        ].map(normalize);
-                        return values.some(value => value === wanted || value.startsWith(prefix));
-                    });
-                }""",
-                wanted,
-            )
-            if rendered:
-                return [wanted]
-        except Exception:
-            pass
-        waiter.wait_for_timeout(250)
-    label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
-    label_box = label.bounding_box() if label.count() and label.is_visible() else None
-    if label_box:
-        nearby = label.locator("xpath=following::*[position() <= 12]")
-        for index in range(nearby.count()):
-            item = nearby.nth(index)
-            try:
-                box = item.bounding_box()
-                if not (
-                    item.is_visible() and box
-                    and abs(box["x"] - label_box["x"]) <= 180
-                    and label_box["y"] <= box["y"] <= label_box["y"] + 90
-                ):
-                    continue
-                candidates = [
-                    item.get_attribute("title") or "",
-                    item.get_attribute("aria-label") or "",
-                    item.get_attribute("value") or "",
-                    item.text_content() or "",
-                ]
-                for candidate in candidates:
-                    actual = re.sub(r"\s+", " ", candidate).strip()
-                    if actual == wanted:
-                        return [wanted]
-                    prefix = re.sub(r"(?:\.{3}|…)$", "", actual).rstrip()
-                    if len(prefix) >= 12 and actual != prefix and wanted.startswith(prefix):
-                        return [wanted]
-            except Exception:
-                continue
-    # Legacy MicroStrategy clips the visible text with CSS and does not expose
-    # the full value through title, value, or ARIA. Match a sufficiently long
-    # prefix only inside the left prompt rail. The catalog has already made the
-    # complete configured value unambiguous.
-    prefix = wanted[: min(len(wanted), 14)]
-    clipped = page.get_by_text(re.compile(r"^" + re.escape(prefix), re.I))
-    for index in range(clipped.count()):
-        item = clipped.nth(index)
-        try:
-            box = item.bounding_box()
-            if item.is_visible() and box and box["x"] < 160:
-                return [wanted]
-        except Exception:
-            continue
-    roots = []
-    if label.count() and label.is_visible():
-        ancestor = label
-        for _ in range(5):
-            ancestor = ancestor.locator("xpath=parent::*")
-            if not ancestor.count():
-                break
-            roots.append(ancestor.first)
-    roots.append(page)
-    matches = []
-    selectors = (
-        ".select2-selection__rendered:visible,.select2-chosen:visible,"
-        ".select2-choice:visible,[role=combobox]:visible,[title]:visible"
-    )
-    for root in roots:
-        rendered = root.locator(selectors)
-        for index in range(rendered.count()):
-            item = rendered.nth(index)
-            title = item.get_attribute("title") or ""
-            value = item.get_attribute("value") or ""
-            text = item.text_content() or ""
-            actual = re.sub(r"\s+", " ", title or value or text).strip()
-            if actual == wanted:
-                matches.append(actual)
-        if matches:
-            break
-    matches = list(dict.fromkeys(matches))
-    if len(matches) > 1:
-        raise RuntimeError(f"ASAP exposed ambiguous Select2 values for: {requested}.")
-    return matches or None
-
-
-def _select_custom_option_by_text(page: Page | Frame, requested: list[str]) -> list[str] | None:
-    """Select and verify ASAP's labelled lazy custom select by exact text."""
-    if len(requested) != 1:
-        return None
-    current = _read_select2_value(page, requested)
-    if current:
-        return current
-    label = page.get_by_text(re.compile(r"^Data Configuration:?$", re.I)).first
-    if not label.count() or not label.is_visible():
-        return None
-    label_box = label.bounding_box()
-    if not label_box:
-        return None
-    # Legacy MicroStrategy exposes no role or accessible value for this prompt.
-    # Resolve the hit target from the exact prompt label's own position, then
-    # dispatch the click to that DOM element. This cannot drift into the portal
-    # navigation because both coordinates are constrained to the prompt rail.
-    opened = page.locator("body").evaluate(
-        r"""(body, point) => {
-            const target = document.elementFromPoint(point.x, point.y);
-            if (!target) return false;
-            target.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-            return true;
-        }""",
-        {
-            "x": min(145, label_box["x"] + max(50, label_box["width"] / 2)),
-            "y": label_box["y"] + label_box["height"] + 12,
-        },
-    )
-    if opened:
-        waiter = page.page if hasattr(page, "page") else page
-        waiter.wait_for_timeout(500)
-        wanted = requested[0]
-        option = page.get_by_role("option", name=wanted, exact=True)
-        if not option.count() or not option.first.is_visible():
-            option = page.get_by_text(wanted, exact=True)
-        if option.count() and option.first.is_visible():
-            option.first.click(timeout=10_000)
-            waiter.wait_for_timeout(1_000)
-            return requested
-    control = None
-    selector = (
-        "[role=combobox]:visible,.select2-choice:visible,"
-        ".select2-selection:visible,button[aria-haspopup=listbox]:visible,"
-        "input:visible"
-    )
-    candidates = page.locator(selector)
-    scored = []
-    for index in range(candidates.count()):
-        candidate = candidates.nth(index)
-        try:
-            box = candidate.bounding_box()
-            if (
-                box and abs(box["x"] - label_box["x"]) <= 180
-                and label_box["y"] <= box["y"] <= label_box["y"] + 90
-            ):
-                scored.append((abs(box["y"] - label_box["y"]), index, candidate))
-        except Exception:
-            continue
-    if scored:
-        control = min(scored, key=lambda item: (item[0], item[1]))[2]
-    if control is None:
-        return None
-    control.click(timeout=10_000)
-    wanted = requested[0]
-    option = page.get_by_role("option", name=wanted, exact=True)
-    if not option.count() or not option.first.is_visible():
-        option = page.get_by_text(wanted, exact=True)
-    if not option.count() or not option.first.is_visible():
-        page.page.keyboard.press("Escape") if hasattr(page, "page") else page.keyboard.press("Escape")
-        return None
-    option.first.click(timeout=10_000)
-    waiter = page.page if hasattr(page, "page") else page
-    waiter.wait_for_timeout(1_000)
-    return _read_select2_value(page, requested)
 
 
 def _set_filter(page: Page | Frame, definition: dict, value: Any):
@@ -694,7 +444,7 @@ def _asap_member_selected(option) -> bool | None:
                         if (b > r + 35 && b > g + 15 && b > 120) return true;
                     }
                 }
-                return null;
+                return node.isConnected ? false : null;
             }"""
         )
     except Exception:
@@ -702,12 +452,16 @@ def _asap_member_selected(option) -> bool | None:
 
 
 def _asap_visible_member(frame: Frame, value: str, label_y: float):
-    """Find one prompt-rail member, excluding duplicate report-canvas text."""
+    """Find one Dimension-rail member, excluding duplicate report text."""
     candidates = frame.get_by_text(value, exact=True)
     matches = []
     for index in range(candidates.count()):
         candidate = candidates.nth(index)
         try:
+            box = candidate.bounding_box()
+            if not box or box["x"] >= 160:
+                continue
+            candidate.scroll_into_view_if_needed(timeout=10_000)
             box = candidate.bounding_box()
             if candidate.is_visible() and box and box["x"] < 160 and box["y"] > label_y:
                 matches.append((box["y"], index, candidate))
@@ -716,43 +470,122 @@ def _asap_visible_member(frame: Frame, value: str, label_y: float):
     return min(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
 
 
-def _asap_select_visible_list_values(
-    frame: Frame, label: str, requested: list[str], known_options: list[str],
-) -> list[str] | None:
-    """Set a MicroStrategy member list without OS-level modifier input.
+def _asap_read_dimension_selection(
+    frame: Frame, known_options: list[str], label_y: float,
+) -> list[str]:
+    selected = []
+    for value in list(dict.fromkeys(known_options)):
+        member = _asap_visible_member(frame, value, label_y)
+        if member is None:
+            continue
+        state = _asap_member_selected(member)
+        if state is None:
+            raise RuntimeError(f"ASAP Dimension state is unreadable for: {value}.")
+        if state:
+            selected.append(value)
+    return selected
 
-    A normal first click replaces the complete retained selection. Additional
-    members receive a DOM MouseEvent whose ctrlKey is local to the page event,
-    so Windows never sees Ctrl and cannot open Magnifier. The visible member
-    state is then audited before RUN.
-    """
-    heading = frame.get_by_text(re.compile(r"^" + re.escape(label) + r":?$", re.I)).first
+
+def _asap_local_ctrl_click(member) -> None:
+    """Toggle one page element without sending Control to Windows."""
+    member.scroll_into_view_if_needed(timeout=10_000)
+    member.dispatch_event(
+        "click", {"ctrlKey": True, "bubbles": True, "cancelable": True},
+    )
+
+
+def _asap_select_dimensions(
+    frame: Frame, requested: list[str], known_options: list[str],
+) -> dict:
+    """Replace, reconcile, and audit the exact ASAP Dimension selection."""
+    heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
     if not heading.count() or not heading.is_visible():
-        return None
+        raise RuntimeError("Could not find the ASAP Dimension list.")
     heading_box = heading.bounding_box()
     if not heading_box:
-        return None
+        raise RuntimeError("Could not locate the ASAP Dimension list.")
+    options = list(dict.fromkeys([*known_options, *requested]))
+    initial = _asap_read_dimension_selection(frame, options, heading_box["y"])
     members = []
     for value in requested:
         member = _asap_visible_member(frame, value, heading_box["y"])
         if member is None:
-            return None
+            raise RuntimeError(f"Could not find ASAP Dimension option: {value}")
+        member.scroll_into_view_if_needed(timeout=10_000)
         members.append(member)
+
+    # ASAP's plain click replaces the complete retained selection. Additional
+    # members are toggled with a page-local Ctrl flag, never an OS keypress.
     members[0].click(timeout=10_000)
     for member in members[1:]:
-        member.dispatch_event("click", {"ctrlKey": True, "bubbles": True, "cancelable": True})
+        _asap_local_ctrl_click(member)
     frame.page.wait_for_timeout(1_000)
-    actual = []
-    for value in list(dict.fromkeys([*known_options, *requested])):
-        member = _asap_visible_member(frame, value, heading_box["y"])
-        if member is not None and _asap_member_selected(member) is True:
-            actual.append(value)
-    if set(actual) != set(requested):
+    final = _asap_read_dimension_selection(frame, options, heading_box["y"])
+    missing = [value for value in requested if value not in final]
+    extra = [value for value in final if value not in requested]
+
+    # One bounded reconciliation pass handles a retained or missed toggle.
+    if missing or extra:
+        for value in extra:
+            member = _asap_visible_member(frame, value, heading_box["y"])
+            if member is None:
+                raise RuntimeError(f"Could not reconcile extra ASAP Dimension: {value}")
+            _asap_local_ctrl_click(member)
+        for value in missing:
+            member = _asap_visible_member(frame, value, heading_box["y"])
+            if member is None:
+                raise RuntimeError(f"Could not reconcile missing ASAP Dimension: {value}")
+            _asap_local_ctrl_click(member)
+        frame.page.wait_for_timeout(1_000)
+        final = _asap_read_dimension_selection(frame, options, heading_box["y"])
+        missing = [value for value in requested if value not in final]
+        extra = [value for value in final if value not in requested]
+
+    if missing or extra:
         raise RuntimeError(
-            f"ASAP {label} selection mismatch. Requested: {requested}. "
-            f"Selected after visible interaction: {actual}."
+            f"ASAP Dimension selection mismatch. Requested: {requested}. "
+            f"Initial selected: {initial}. Final selected: {final}. "
+            f"Missing: {missing}. Extra: {extra}."
         )
-    return actual
+    return {
+        "filter": "Dimension",
+        "requested": requested,
+        "initial_selected": initial,
+        "final_selected": final,
+        "actual": final,
+        "missing": missing,
+        "extra": extra,
+        "verified": True,
+        "options": options,
+    }
+
+
+def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
+    """Preserve the existing ASAP member-list behavior outside Dimension."""
+    heading = frame.get_by_text(label, exact=True).first
+    heading.wait_for(state="visible", timeout=60_000)
+    if not values:
+        return
+
+    def visible_option(value: str):
+        candidates = frame.get_by_text(value, exact=True)
+        option = next(
+            (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
+            None,
+        )
+        if option is None:
+            raise RuntimeError(f"Could not find {label} option: {value}")
+        return option
+
+    visible_option(values[0]).click()
+    if len(values) == 1:
+        return
+    frame.page.keyboard.down("Control")
+    try:
+        for value in values[1:]:
+            visible_option(value).click()
+    finally:
+        frame.page.keyboard.up("Control")
 
 
 def _asap_apply_configuration(
@@ -767,71 +600,45 @@ def _asap_apply_configuration(
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
-        actual = None
-        if definition["control_type"] in {"multi_select", "week"}:
-            actual = _asap_select_visible_list_values(
-                frame, definition["control_label"], values,
-                definition.get("options") or values,
-            )
-        if actual is None:
-            actual = _select_native_options_by_text(
+        if definition["control_label"].casefold() == "dimension":
+            audit.append(_asap_select_dimensions(
                 frame, values, definition.get("options") or values,
-            )
-        if actual is None and definition["control_label"].casefold() == "data configuration":
-            actual = _select_custom_option_by_text(frame, values)
-        if actual is None:
-            if definition["control_label"].casefold() == "data configuration":
-                audit.append({
-                    "filter": definition["control_label"],
-                    "requested": values,
-                    "actual": [],
-                    "verified": False,
-                    "verification": "canvas_control_not_dom_readable",
-                    "options": definition.get("options") or values,
-                })
-                continue
-            raise RuntimeError(
-                f"ASAP {definition['control_label']} does not expose a native selection control "
-                f"containing the requested values: {values}. The report was not run."
-            )
-        audit.append({
-            "filter": definition["control_label"],
-            "requested": values,
-            "actual": actual,
-            "verified": set(actual) == set(values),
-            "options": definition.get("options") or values,
-        })
-    # A later prompt can cause ASAP to rebuild an earlier control. Do not trust
-    # the per-control result alone. Wait for the report UI to settle, then audit
-    # every configured control again before RUN is allowed.
+            ))
+        elif definition["control_type"] == "select":
+            _set_filter(frame, definition, values[0])
+            audit.append({
+                "filter": definition["control_label"], "requested": values,
+                "actual": values, "verified": True,
+            })
+        else:
+            _asap_select_list_values(frame, definition["control_label"], values)
+            audit.append({
+                "filter": definition["control_label"], "requested": values,
+                "actual": values, "verified": True,
+            })
+
+    # Recheck only Dimension after the page settles. Other filters retain their
+    # previously working behavior and are intentionally outside this fix.
     frame.page.wait_for_timeout(1_500)
     for item in audit:
-        if item.get("verification") == "canvas_control_not_dom_readable":
-            item.pop("options", None)
+        if item["filter"].casefold() != "dimension":
             continue
-        actual = None
-        if item["filter"].casefold() in {"dimension", "sell-out week"}:
-            heading = frame.get_by_text(
-                re.compile(r"^" + re.escape(item["filter"]) + r":?$", re.I)
-            ).first
-            if heading.count() and heading.is_visible() and heading.bounding_box():
-                label_y = heading.bounding_box()["y"]
-                actual = [
-                    value for value in list(dict.fromkeys([*item["options"], *item["requested"]]))
-                    if (member := _asap_visible_member(frame, value, label_y)) is not None
-                    and _asap_member_selected(member) is True
-                ]
-        if actual is None:
-            actual = _read_native_options_by_text(frame, item["requested"], item["options"])
-        if item["filter"].casefold() == "data configuration":
-            actual = _select_custom_option_by_text(frame, item["requested"])
-        item["actual"] = actual or []
-        item["verified"] = actual is not None and set(actual) == set(item["requested"])
-        item.pop("options", None)
+        heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
+        box = heading.bounding_box() if heading.count() and heading.is_visible() else None
+        if not box:
+            raise RuntimeError("ASAP Dimension list disappeared before RUN.")
+        final = _asap_read_dimension_selection(frame, item["options"], box["y"])
+        item["final_selected"] = final
+        item["actual"] = final
+        item["missing"] = [value for value in item["requested"] if value not in final]
+        item["extra"] = [value for value in final if value not in item["requested"]]
+        item["verified"] = not item["missing"] and not item["extra"]
         if not item["verified"]:
             raise RuntimeError(
-                f"ASAP {item['filter']} changed after configuration settled. "
-                f"Requested: {item['requested']}. Actual: {item['actual']}. The report was not run."
+                f"ASAP Dimension changed after configuration settled. "
+                f"Requested: {item['requested']}. Initial selected: {item['initial_selected']}. "
+                f"Final selected: {final}. "
+                f"Missing: {item['missing']}. Extra: {item['extra']}. The report was not run."
             )
     return audit
 
@@ -842,6 +649,41 @@ def _asap_verify_rendered_results(frame: Frame, filter_audit: list[dict]):
     for item in filter_audit:
         label = item["filter"].casefold()
         if label not in {"dimension", "sell-out week"}:
+            continue
+        if label == "dimension":
+            canvas_positions = {}
+            for value in item.get("options", item["requested"]):
+                locator = frame.get_by_text(value, exact=True)
+                positions = []
+                for index in range(locator.count()):
+                    candidate = locator.nth(index)
+                    try:
+                        box = candidate.bounding_box()
+                        if candidate.is_visible() and box and box["x"] >= canvas_left:
+                            positions.append(box["y"])
+                    except Exception:
+                        continue
+                if positions:
+                    canvas_positions[value] = positions
+            requested_positions = [
+                position
+                for value in item["requested"]
+                for position in canvas_positions.get(value, [])
+            ]
+            header_y = min(requested_positions) if requested_positions else None
+            rendered = [
+                value for value, positions in canvas_positions.items()
+                if header_y is not None and any(abs(position - header_y) <= 16 for position in positions)
+            ]
+            missing = [value for value in item["requested"] if value not in rendered]
+            extra = [value for value in rendered if value not in item["requested"]]
+            if missing or extra:
+                raise RuntimeError(
+                    f"ASAP rendered Dimension headers do not match the request. "
+                    f"Requested: {item['requested']}. Rendered: {rendered}. "
+                    f"Missing: {missing}. Extra: {extra}. "
+                    "The file was not exported and SQL was not changed."
+                )
             continue
         missing = []
         for value in item["requested"]:
