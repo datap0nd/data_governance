@@ -417,22 +417,33 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
 def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
     heading = frame.get_by_text(label, exact=True).first
     heading.wait_for(state="visible", timeout=60_000)
-    multi_select = len(values) > 1
-    if multi_select:
-        frame.page.keyboard.down("Control")
+    if not values:
+        return
+
+    def visible_option(value: str):
+        candidates = frame.get_by_text(value, exact=True)
+        option = next(
+            (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
+            None,
+        )
+        if option is None:
+            raise RuntimeError(f"Could not find {label} option: {value}")
+        return option
+
+    # A plain click replaces any selection that ASAP retained from the prior
+    # run. Only the additional requested values are additive Ctrl-clicks.
+    # Ctrl-clicking every value toggles preselected members off and leaves
+    # unrelated preselected members on, producing the inverse of the request.
+    visible_option(values[0]).click()
+    if len(values) == 1:
+        return
+
+    frame.page.keyboard.down("Control")
     try:
-        for value in values:
-            candidates = frame.get_by_text(value, exact=True)
-            option = next(
-                (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
-                None,
-            )
-            if option is None:
-                raise RuntimeError(f"Could not find {label} option: {value}")
-            option.click()
+        for value in values[1:]:
+            visible_option(value).click()
     finally:
-        if multi_select:
-            frame.page.keyboard.up("Control")
+        frame.page.keyboard.up("Control")
 
 
 def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] | None):
@@ -549,7 +560,11 @@ def _asap_download(page: Page, frame: Frame, job: dict):
             page.wait_for_timeout(100)
         if not downloads:
             raise RuntimeError("ASAP export started, but Edge did not expose the completed download within 3 minutes.")
-        return downloads[0]
+        export_pages = [
+            candidate for candidate in page.context.pages
+            if candidate not in pages_before and candidate is not page
+        ]
+        return downloads[0], export_pages
     finally:
         for candidate in observed_pages:
             candidate.remove_listener("download", capture_download)
@@ -1181,18 +1196,32 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
-                download = _asap_download(page, frame, job)
+                download, export_pages = _asap_download(page, frame, job)
         else:
             _apply_configuration(page, job, period)
             with page.expect_download(timeout=180_000) as pending:
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
+            export_pages = []
         filename = _render_filename(job["downloads"]["filename_template"], job, period, index)
         output = _safe_output_path(target, filename)
-        with timings.measure("file_transfer", report_id=job["report"].get("id")):
-            download.save_as(output)
-            normalization = _normalize_csv(output)
-            metadata = {**_csv_metadata(output), **normalization}
+        try:
+            with timings.measure("file_transfer", report_id=job["report"].get("id")):
+                # save_as waits for the browser download to finish. Keep the
+                # export popup alive until that point, then close it before the
+                # next period is configured.
+                download.save_as(output)
+                normalization = _normalize_csv(output)
+                metadata = {**_csv_metadata(output), **normalization}
+        finally:
+            for export_page in export_pages:
+                try:
+                    if not export_page.is_closed():
+                        export_page.close(run_before_unload=False)
+                except Exception:
+                    # The wizard may close itself after emitting the download.
+                    # Treat that as already cleaned up.
+                    pass
         artifacts.append({
             "period_key": period,
             "file_path": str(output),

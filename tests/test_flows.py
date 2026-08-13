@@ -22,7 +22,7 @@ def _request(actor="Analyst"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
 
 
-def test_asap_multi_select_holds_control_once_and_always_releases():
+def test_asap_multi_select_replaces_existing_selection_then_adds_remaining_values():
     events = []
 
     class Keyboard:
@@ -63,12 +63,55 @@ def test_asap_multi_select_holds_control_once_and_always_releases():
     flow_worker._asap_select_list_values(Frame(), "Sell-out Week", ["202619", "202620", "202621"])
 
     assert events == [
-        ("down", "Control"),
         ("click", "202619"),
+        ("down", "Control"),
         ("click", "202620"),
         ("click", "202621"),
         ("up", "Control"),
     ]
+
+
+def test_asap_single_list_value_replaces_existing_selection_without_control():
+    events = []
+
+    class Keyboard:
+        def down(self, key):
+            events.append(("down", key))
+
+        def up(self, key):
+            events.append(("up", key))
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self):
+            events.append(("click", self.value))
+
+    class Frame:
+        page = SimpleNamespace(keyboard=Keyboard())
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    flow_worker._asap_select_list_values(Frame(), "Dimension", ["Sold To"])
+
+    assert events == [("click", "Sold To")]
 
 
 def _site():
@@ -1091,3 +1134,5 @@ def test_asap_download_observes_every_open_portal_page():
     assert 'candidate.on("download", capture_download)' in source
     assert 'candidate.remove_listener("download", capture_download)' in source
     assert "download_page.expect_download" not in source
+    assert "download, export_pages = _asap_download" in source
+    assert "export_page.close(run_before_unload=False)" in source
