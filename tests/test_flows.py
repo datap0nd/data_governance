@@ -1223,6 +1223,27 @@ def test_asap_download_observes_every_open_portal_page():
     assert "candidate for candidate in wizard_pages" in source
 
 
+def test_completed_download_is_normalized_locally_then_copied_without_overwrite(tmp_path):
+    browser_file = tmp_path / "browser-download"
+    browser_file.write_text(
+        'Installed Base report\n\n"Week";"Value"\n"202627";"10"\n', encoding="utf-8",
+    )
+    output = tmp_path / "saved.csv"
+
+    class Download:
+        def path(self):
+            return browser_file
+
+    metadata = flow_worker._store_completed_download(Download(), output)
+
+    assert output.read_text(encoding="utf-8-sig") == "Week,Value\n202627,10\n"
+    assert metadata["source_delimiter"] == ";"
+    assert metadata["preamble_rows_removed"] == 2
+    assert metadata["file_size"] == output.stat().st_size
+    with pytest.raises(FileExistsError):
+        flow_worker._store_completed_download(Download(), output)
+
+
 def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])

@@ -281,6 +281,10 @@ files and do not enable SQL handoff.
   while Playwright was still in its blocking save step. The production grace
   period is now ten minutes; explicit shorter timeouts remain available to
   tests and diagnostics.
+- A second live run confirmed the headed worker disappears specifically while
+  Playwright saves directly to the configured UNC share. Downloads now wait on
+  Edge's completed local file, normalize locally, and copy the final CSV to an
+  exclusive-create destination. Existing files still cannot be overwritten.
 - Next step: update the authorized BI desktop from `main`, verify Dimension
   selection once, then test two sequential downloads and SQL insertion into
   the configured test target.

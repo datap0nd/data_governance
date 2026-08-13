@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -1292,6 +1293,27 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
+def _store_completed_download(download, output: Path) -> dict:
+    """Normalize the browser-local file, then copy it to the final target.
+
+    Passing a UNC path directly to Playwright's ``download.save_as`` can make
+    the headed worker disappear inside the driver call. Wait for the local
+    browser download instead, do CPU work locally, and open the final path in
+    exclusive-create mode so an existing file can never be overwritten.
+    """
+    browser_path = download.path()
+    if not browser_path:
+        raise RuntimeError("Edge completed the download but did not expose its local file path.")
+    local_path = Path(browser_path)
+    normalization = _normalize_csv(local_path)
+    metadata = {**_csv_metadata(local_path), **normalization}
+    with local_path.open("rb") as source, output.open("xb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
+    if output.stat().st_size != metadata["file_size"]:
+        raise RuntimeError(f"Downloaded CSV was not copied completely to {output}.")
+    return metadata
+
+
 def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict]]:
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
@@ -1364,12 +1386,10 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
         output = _safe_output_path(target, filename)
         try:
             with timings.measure("file_transfer", report_id=job["report"].get("id")):
-                # save_as waits for the browser download to finish. Keep the
-                # export popup alive until that point, then close it before the
-                # next period is configured.
-                download.save_as(output)
-                normalization = _normalize_csv(output)
-                metadata = {**_csv_metadata(output), **normalization}
+                # Keep the export popup alive until the browser-local download
+                # finishes. Normalize locally, then copy the finished CSV to
+                # the configured target before the next period is configured.
+                metadata = _store_completed_download(download, output)
         finally:
             for export_page in export_pages:
                 try:
