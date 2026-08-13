@@ -473,16 +473,23 @@ def _asap_dimension_root(frame: Frame, requested: list[str]):
 
 
 def _asap_dimension_member(root, value: str):
-    """Find an exact member only inside the scoped Dimension list."""
+    """Find the rendered exact member inside a scoped ASAP prompt list."""
     candidates = root.get_by_text(value, exact=True)
+    connected = []
     for index in range(candidates.count()):
         candidate = candidates.nth(index)
         try:
-            if candidate.evaluate("node => node.isConnected"):
+            if not candidate.evaluate("node => node.isConnected"):
+                continue
+            connected.append(candidate)
+            # Off-screen list rows remain Playwright-visible, while duplicate
+            # values in hidden prompt templates do not. Always prefer the
+            # rendered row so scroll and state reads target the real member.
+            if candidate.is_visible():
                 return candidate
         except Exception:
             continue
-    return None
+    return connected[0] if len(connected) == 1 else None
 
 
 def _asap_read_dimension_selection(
