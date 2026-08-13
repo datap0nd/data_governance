@@ -201,9 +201,6 @@ if ($existing) {
     Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
 }
 $existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
-if ($existingFlowService) {
-    & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
-}
 
 # Kill anything still holding the port
 $portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
