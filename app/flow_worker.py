@@ -451,31 +451,41 @@ def _asap_member_selected(option) -> bool | None:
         return None
 
 
-def _asap_visible_member(frame: Frame, value: str, label_y: float):
-    """Find one Dimension-rail member, excluding duplicate report text."""
-    candidates = frame.get_by_text(value, exact=True)
-    matches = []
+def _asap_dimension_root(frame: Frame, requested: list[str]):
+    """Return the smallest DOM container holding the Dimension member list."""
+    heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
+    if not heading.count() or not heading.is_visible():
+        raise RuntimeError("Could not find the ASAP Dimension list.")
+    root = heading
+    for _ in range(8):
+        parents = root.locator("xpath=parent::*")
+        if not parents.count():
+            break
+        root = parents.first
+        if all(root.get_by_text(value, exact=True).count() for value in requested):
+            return root
+    raise RuntimeError("Could not scope the ASAP Dimension member list.")
+
+
+def _asap_dimension_member(root, value: str):
+    """Find an exact member only inside the scoped Dimension list."""
+    candidates = root.get_by_text(value, exact=True)
     for index in range(candidates.count()):
         candidate = candidates.nth(index)
         try:
-            box = candidate.bounding_box()
-            if not box or box["x"] >= 160:
-                continue
-            candidate.scroll_into_view_if_needed(timeout=10_000)
-            box = candidate.bounding_box()
-            if candidate.is_visible() and box and box["x"] < 160 and box["y"] > label_y:
-                matches.append((box["y"], index, candidate))
+            if candidate.evaluate("node => node.isConnected"):
+                return candidate
         except Exception:
             continue
-    return min(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
+    return None
 
 
 def _asap_read_dimension_selection(
-    frame: Frame, known_options: list[str], label_y: float,
+    root, known_options: list[str],
 ) -> list[str]:
     selected = []
     for value in list(dict.fromkeys(known_options)):
-        member = _asap_visible_member(frame, value, label_y)
+        member = _asap_dimension_member(root, value)
         if member is None:
             continue
         state = _asap_member_selected(member)
@@ -486,18 +496,11 @@ def _asap_read_dimension_selection(
     return selected
 
 
-def _asap_set_dimension_member(
-    frame: Frame, value: str, label_y: float, selected: bool,
-) -> bool:
-    """Set one Dimension member with a page-local event and await its state."""
-    member = _asap_visible_member(frame, value, label_y)
+def _asap_local_dimension_click(frame: Frame, root, value: str) -> None:
+    """Toggle one scoped Dimension member without sending Control to Windows."""
+    member = _asap_dimension_member(root, value)
     if member is None:
         raise RuntimeError(f"Could not find ASAP Dimension option: {value}")
-    current = _asap_member_selected(member)
-    if current is None:
-        raise RuntimeError(f"ASAP Dimension state is unreadable for: {value}.")
-    if current is selected:
-        return True
     member.scroll_into_view_if_needed(timeout=10_000)
     event = {
         "ctrlKey": True, "bubbles": True, "cancelable": True,
@@ -509,54 +512,41 @@ def _asap_set_dimension_member(
     member.dispatch_event("mousedown", event)
     member.dispatch_event("mouseup", {**event, "buttons": 0})
     member.dispatch_event("click", {**event, "buttons": 0})
-    # MicroStrategy rebuilds the row asynchronously. Do not dispatch the next
-    # event until the exact target reports its intended state.
-    for _ in range(10):
-        frame.page.wait_for_timeout(100)
-        current_member = _asap_visible_member(frame, value, label_y)
-        if current_member is None:
-            continue
-        current = _asap_member_selected(current_member)
-        if current is selected:
-            return True
-    return False
+    frame.page.wait_for_timeout(250)
 
 
 def _asap_select_dimensions(
     frame: Frame, requested: list[str], known_options: list[str],
 ) -> dict:
     """Replace, reconcile, and audit the exact ASAP Dimension selection."""
-    heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
-    if not heading.count() or not heading.is_visible():
-        raise RuntimeError("Could not find the ASAP Dimension list.")
-    heading_box = heading.bounding_box()
-    if not heading_box:
-        raise RuntimeError("Could not locate the ASAP Dimension list.")
     options = list(dict.fromkeys([*known_options, *requested]))
-    initial = _asap_read_dimension_selection(frame, options, heading_box["y"])
+    requested = list(dict.fromkeys(requested))
+    interaction_order = [value for value in options if value in requested]
+    root = _asap_dimension_root(frame, requested)
+    initial = _asap_read_dimension_selection(root, options)
     # ASAP's plain click replaces the complete retained selection. Additional
     # members are toggled with a page-local Ctrl flag, never an OS keypress.
-    first = _asap_visible_member(frame, requested[0], heading_box["y"])
+    first = _asap_dimension_member(root, interaction_order[0])
     if first is None:
-        raise RuntimeError(f"Could not find ASAP Dimension option: {requested[0]}")
+        raise RuntimeError(f"Could not find ASAP Dimension option: {interaction_order[0]}")
     first.scroll_into_view_if_needed(timeout=10_000)
     first.click(timeout=10_000)
+    frame.page.wait_for_timeout(500)
+    for value in interaction_order[1:]:
+        _asap_local_dimension_click(frame, root, value)
     frame.page.wait_for_timeout(1_000)
-    for value in requested[1:]:
-        _asap_set_dimension_member(frame, value, heading_box["y"], True)
-    frame.page.wait_for_timeout(1_000)
-    final = _asap_read_dimension_selection(frame, options, heading_box["y"])
+    final = _asap_read_dimension_selection(root, options)
     missing = [value for value in requested if value not in final]
     extra = [value for value in final if value not in requested]
 
     # One bounded reconciliation pass handles a retained or missed toggle.
     if missing or extra:
         for value in extra:
-            _asap_set_dimension_member(frame, value, heading_box["y"], False)
+            _asap_local_dimension_click(frame, root, value)
         for value in missing:
-            _asap_set_dimension_member(frame, value, heading_box["y"], True)
+            _asap_local_dimension_click(frame, root, value)
         frame.page.wait_for_timeout(1_000)
-        final = _asap_read_dimension_selection(frame, options, heading_box["y"])
+        final = _asap_read_dimension_selection(root, options)
         missing = [value for value in requested if value not in final]
         extra = [value for value in final if value not in requested]
 
@@ -642,11 +632,8 @@ def _asap_apply_configuration(
     for item in audit:
         if item["filter"].casefold() != "dimension":
             continue
-        heading = frame.get_by_text(re.compile(r"^Dimension:?$", re.I)).first
-        box = heading.bounding_box() if heading.count() and heading.is_visible() else None
-        if not box:
-            raise RuntimeError("ASAP Dimension list disappeared before RUN.")
-        final = _asap_read_dimension_selection(frame, item["options"], box["y"])
+        root = _asap_dimension_root(frame, item["requested"])
+        final = _asap_read_dimension_selection(root, item["options"])
         item["final_selected"] = final
         item["actual"] = final
         item["missing"] = [value for value in item["requested"] if value not in final]
