@@ -499,19 +499,12 @@ def _asap_set_dimension_member(
     if current is selected:
         return True
     member.scroll_into_view_if_needed(timeout=10_000)
-    event = {
-        "ctrlKey": True, "bubbles": True, "cancelable": True,
-        "button": 0, "buttons": 1, "detail": 1,
-    }
-    # The legacy ASAP list listens across the mouse gesture. A lone synthetic
-    # click is intermittently ignored, while this complete sequence remains
-    # entirely page-local and never sends Control to Windows.
-    member.dispatch_event("mousedown", event)
-    member.dispatch_event("mouseup", {**event, "buttons": 0})
-    member.dispatch_event("click", {**event, "buttons": 0})
+    member.dispatch_event(
+        "click", {"ctrlKey": True, "bubbles": True, "cancelable": True},
+    )
     # MicroStrategy rebuilds the row asynchronously. Do not dispatch the next
     # event until the exact target reports its intended state.
-    for _ in range(10):
+    for _ in range(20):
         frame.page.wait_for_timeout(100)
         current_member = _asap_visible_member(frame, value, label_y)
         if current_member is None:
