@@ -604,6 +604,35 @@ def _normalize_asap_filter_label(label: str, control_type: str, options: list[st
     return label
 
 
+def _merge_asap_filter_definition(
+    definitions: list[dict], label: str, control_type: str, options: list[str],
+) -> None:
+    """Add a discovered prompt or merge a second, more complete rendering."""
+    label = _clean_text(label).rstrip(":")
+    raw_options = list(dict.fromkeys(_clean_text(value) for value in options if _clean_text(value)))
+    # Identify unnamed custom controls before discarding text duplicated by the
+    # displayed selected value. Otherwise a two-option popup becomes a
+    # one-option list and can no longer be recognized as Data Configuration.
+    label = _normalize_asap_filter_label(label, control_type, raw_options)
+    options = [
+        value for value in raw_options
+        if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
+        and "type to search" not in value.casefold()
+    ]
+    if not label or not options:
+        return
+    key = _slug_key(label, f"filter_{len(definitions) + 1}")
+    existing = next((item for item in definitions if item["filter_key"] == key), None)
+    if existing is not None:
+        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))
+        return
+    definitions.append({
+        "filter_key": key, "label": label, "control_label": label,
+        "control_type": control_type, "options": options, "automation": {},
+        "required": False, "position": len(definitions),
+    })
+
+
 def _visible_anchor_records(page: Page) -> list[dict]:
     records = []
     selector = "a:visible,button:visible,[role=button]:visible,[role=menuitem]:visible,[onclick]:visible"
@@ -755,32 +784,9 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
 
 def _asap_discover_filters(frame: Frame) -> list[dict]:
     definitions = []
-    used = set()
 
     def add_definition(label: str, control_type: str, options: list[str]):
-        label = _clean_text(label).rstrip(":")
-        options = [
-            value for value in dict.fromkeys(_clean_text(value) for value in options)
-            if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
-            and "type to search" not in value.casefold()
-        ]
-        # MicroStrategy's Data Configuration combobox has no accessible name
-        # in the current ASAP UI. Its nearest text is the selected value, so
-        # treating that value as the label makes the creator misleading and
-        # leaves execution unable to find the control. The portal documents
-        # these choices as three region positions separated by hyphens.
-        label = _normalize_asap_filter_label(label, control_type, options)
-        if not label or not options:
-            return
-        key = _slug_key(label, f"filter_{len(definitions) + 1}")
-        if key in used:
-            return
-        used.add(key)
-        definitions.append({
-            "filter_key": key, "label": label, "control_label": label,
-            "control_type": control_type, "options": options, "automation": {},
-            "required": False, "position": len(definitions),
-        })
+        _merge_asap_filter_definition(definitions, label, control_type, options)
 
     def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
         """Read the smallest visible MicroStrategy control containing a label."""
@@ -800,8 +806,14 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
                 return lines[1:500]
         return []
     # Native controls are preferred because they expose complete option lists
-    # without opening the control or changing report state.
-    for index, control in enumerate(frame.locator("select:visible").all()):
+    # without opening the control or changing report state. Select2 deliberately
+    # hides its owning select, so restricting this scan to :visible drops values
+    # that were not rendered in the popup snapshot.
+    for control in frame.locator("select").all():
+        options = list(dict.fromkeys(
+            _clean_text(value) for value in control.locator("option").all_text_contents()
+            if _clean_text(value)
+        ))
         control_id = control.get_attribute("id") or ""
         label = ""
         if control_id:
@@ -811,9 +823,16 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
         if not label:
             aria = control.get_attribute("aria-label") or control.get_attribute("name") or ""
             label = re.sub(r"\s+", " ", aria).strip()
+        # ASAP's Select2 Data Configuration owner has no accessible name. Its
+        # three-part region choices identify the prompt without hardcoding any
+        # actual region value into the repository.
+        if not label and len(options) >= 2 and all(
+            len([part for part in value.split(" - ") if part.strip()]) == 3
+            for value in options
+        ):
+            label = options[0]
         if not label:
             continue
-        options = _unique_visible_text(control.locator("option"))
         add_definition(label, "select", options)
 
     # New ASAP renders some selects as ARIA comboboxes. Open them only long

@@ -984,6 +984,43 @@ def test_asap_region_triplet_select_is_named_data_configuration():
     assert _normalize_asap_filter_label("Region", "select", options) == "Region"
 
 
+def test_asap_duplicate_filter_discovery_merges_partial_and_complete_options():
+    from app.flow_worker import _merge_asap_filter_definition
+
+    definitions = []
+    _merge_asap_filter_definition(
+        definitions,
+        "MENA - Global - Global",
+        "select",
+        ["MENA - Global - Global", "Global - Global - CIS"],
+    )
+    _merge_asap_filter_definition(
+        definitions,
+        "Global - Global - MENA",
+        "select",
+        [
+            "MENA - Global - Global",
+            "Global - Global - MENA",
+            "Global - Global - CIS",
+        ],
+    )
+
+    assert len(definitions) == 1
+    assert definitions[0]["label"] == "Data Configuration"
+    assert definitions[0]["options"] == [
+        "MENA - Global - Global",
+        "Global - Global - CIS",
+        "Global - Global - MENA",
+    ]
+
+
+def test_asap_filter_discovery_reads_hidden_native_selects():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert 'frame.locator("select").all()' in source
+    assert 'frame.locator("select:visible").all()' not in source
+    assert 'control.locator("option").all_text_contents()' in source
+
+
 def test_hidden_select2_control_is_selected_through_owning_native_select():
     from app.flow_worker import _select_native_options_by_text
 

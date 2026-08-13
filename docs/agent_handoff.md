@@ -254,3 +254,6 @@ files and do not enable SQL handoff.
 - Next step: update the BI desktop and run a headed flow with several Dimension
   values and at least two downloads. Verify both the exact ASAP selection and
   that each export popup closes before the following report period begins.
+- Data Configuration discovery now reads every native select, including the
+  hidden owner used by Select2, and merges duplicate prompt discoveries. This
+  prevents a partial visible popup snapshot from omitting an unrendered option.
