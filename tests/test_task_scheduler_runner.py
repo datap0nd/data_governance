@@ -82,3 +82,17 @@ def test_scheduled_tasks_default_to_governed_rows(task_db):
         "Governed",
         "Other Windows Task",
     }
+
+
+def test_database_restart_preserves_scheduled_task_action_foreign_key(task_db):
+    with database.get_db() as db:
+        _insert_task(db, 1, "Referenced task")
+        db.execute(
+            "INSERT INTO actions (type, scheduled_task_id) VALUES ('task_failed', 1)"
+        )
+
+    database.init_db()
+
+    with database.get_db() as db:
+        assert db.execute("SELECT task_name FROM scheduled_tasks WHERE id=1").fetchone()[0] == "Referenced task"
+        assert db.execute("SELECT scheduled_task_id FROM actions").fetchone()[0] == 1

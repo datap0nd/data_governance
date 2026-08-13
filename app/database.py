@@ -574,6 +574,44 @@ CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_t
 """
 
 
+SCHEDULED_TASK_REBUILD_MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS scheduled_tasks_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_name       TEXT NOT NULL,
+        task_path       TEXT NOT NULL,
+        status          TEXT,
+        last_run_time   DATETIME,
+        last_result     TEXT,
+        next_run_time   DATETIME,
+        author          TEXT,
+        run_as_user     TEXT,
+        action_command  TEXT,
+        action_args     TEXT,
+        schedule_type   TEXT,
+        enabled         INTEGER DEFAULT 1,
+        script_id       INTEGER REFERENCES scripts(id),
+        hostname        TEXT,
+        machine_alias   TEXT,
+        archived        INTEGER DEFAULT 0,
+        last_scanned    DATETIME,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(task_name, hostname)
+    )""",
+    """INSERT OR IGNORE INTO scheduled_tasks_new
+        (id, task_name, task_path, status, last_run_time, last_result, next_run_time,
+         author, run_as_user, action_command, action_args, schedule_type, enabled,
+         script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at)
+        SELECT id, task_name, task_path, status, last_run_time, last_result, next_run_time,
+               author, run_as_user, action_command, action_args, schedule_type, enabled,
+               script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at
+        FROM scheduled_tasks""",
+    "DROP TABLE scheduled_tasks",
+    "ALTER TABLE scheduled_tasks_new RENAME TO scheduled_tasks",
+    "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
+]
+
+
 MIGRATIONS = [
     "ALTER TABLE reports ADD COLUMN business_owner TEXT",
     "ALTER TABLE reports ADD COLUMN powerbi_url TEXT",
@@ -640,40 +678,7 @@ MIGRATIONS = [
     "ALTER TABLE scheduled_tasks ADD COLUMN hostname TEXT",
     "ALTER TABLE scheduled_tasks ADD COLUMN machine_alias TEXT",
     # Rebuild scheduled_tasks to replace UNIQUE(task_name) with UNIQUE(task_name, hostname)
-    """CREATE TABLE IF NOT EXISTS scheduled_tasks_new (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_name       TEXT NOT NULL,
-        task_path       TEXT NOT NULL,
-        status          TEXT,
-        last_run_time   DATETIME,
-        last_result     TEXT,
-        next_run_time   DATETIME,
-        author          TEXT,
-        run_as_user     TEXT,
-        action_command  TEXT,
-        action_args     TEXT,
-        schedule_type   TEXT,
-        enabled         INTEGER DEFAULT 1,
-        script_id       INTEGER REFERENCES scripts(id),
-        hostname        TEXT,
-        machine_alias   TEXT,
-        archived        INTEGER DEFAULT 0,
-        last_scanned    DATETIME,
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(task_name, hostname)
-    )""",
-    """INSERT OR IGNORE INTO scheduled_tasks_new
-        (id, task_name, task_path, status, last_run_time, last_result, next_run_time,
-         author, run_as_user, action_command, action_args, schedule_type, enabled,
-         script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at)
-        SELECT id, task_name, task_path, status, last_run_time, last_result, next_run_time,
-               author, run_as_user, action_command, action_args, schedule_type, enabled,
-               script_id, hostname, machine_alias, archived, last_scanned, created_at, updated_at
-        FROM scheduled_tasks""",
-    "DROP TABLE scheduled_tasks",
-    "ALTER TABLE scheduled_tasks_new RENAME TO scheduled_tasks",
-    "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
+    *SCHEDULED_TASK_REBUILD_MIGRATIONS,
     # Machine tracking for scripts
     "ALTER TABLE scripts ADD COLUMN hostname TEXT",
     "ALTER TABLE scripts ADD COLUMN machine_alias TEXT",
@@ -970,6 +975,25 @@ MIGRATIONS = [
 ]
 
 
+def _scheduled_tasks_has_host_unique_key(conn):
+    """Return whether the one-time scheduled_tasks rebuild already ran."""
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'"
+    ).fetchone()
+    if not table:
+        return False
+    for index in conn.execute("PRAGMA index_list(scheduled_tasks)").fetchall():
+        if not index[2]:
+            continue
+        columns = [
+            row[2]
+            for row in conn.execute(f"PRAGMA index_info('{index[1]}')").fetchall()
+        ]
+        if columns == ["task_name", "hostname"]:
+            return True
+    return False
+
+
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
@@ -977,7 +1001,10 @@ def init_db():
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    scheduled_tasks_rebuild_complete = _scheduled_tasks_has_host_unique_key(conn)
     for migration in MIGRATIONS:
+        if scheduled_tasks_rebuild_complete and migration in SCHEDULED_TASK_REBUILD_MIGRATIONS:
+            continue
         try:
             conn.execute(migration)
         except sqlite3.OperationalError as e:
