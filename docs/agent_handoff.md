@@ -324,3 +324,8 @@ files and do not enable SQL handoff.
   target table produces an actionable database error instead of hanging the
   flow. Commit `8aa9afb` is deployed on the BI desktop; the updater completed
   after transient corporate-proxy HTTP 502 retries and restored the service.
+- Safeguarded live run #70 again completed the browser and file phases in
+  1m12s, then remained at SQL insertion for more than six minutes without a
+  lock-timeout error. This rules out a PostgreSQL table-lock wait. The remaining
+  blocker is the database connection/COPY path or its network route. Run #70
+  was stopped cleanly; the flow is idle and ready for a database-only diagnosis.
