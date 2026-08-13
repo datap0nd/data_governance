@@ -674,6 +674,14 @@ def test_setup_bounds_stale_port_process_cleanup():
     assert "Timed out waiting for taskkill" in source
 
 
+def test_setup_downloads_before_stopping_services_and_bounds_each_attempt():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+    download = source.index("Invoke-WebRequestWithRetry -Uri $ZipUrl")
+    stop = source.index("Stop-ScheduledTask -TaskName $HeadedFlowTaskName")
+    assert download < stop
+    assert "-TimeoutSec 60" in source
+
+
 def test_setup_overlays_update_without_robocopy_or_purging_local_files():
     source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
     assert 'Copy-Item "$($Inner.FullName)\\*" $CodeDir -Recurse -Force' in source
