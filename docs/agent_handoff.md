@@ -307,6 +307,16 @@ files and do not enable SQL handoff.
   was being inserted with pandas `to_sql` in 5,000-row batches. SQL handoff now
   streams the validated normalized frame through PostgreSQL's native `COPY`
   protocol in the same truncate-and-replace transaction.
-- Next step: update the authorized BI desktop from `main`, run one download,
-  then two sequential downloads, then enable the existing test SQL handoff and
-  verify its inserted row/file counts.
+- Live run #69 on the deployed final scraper build again completed navigation,
+  exact Dimension configuration, report execution, local export, normalization,
+  and final-share transfer in 1m13s. The saved Week 27 CSV contains 41,872 rows.
+- The SQL loader no longer asks pandas to infer the delimiter with its slow
+  Python parser. Flow artifacts are already normalized, so it now reads the
+  guaranteed UTF-8 comma format with pandas' C parser before PostgreSQL COPY.
+  Full suite: `165 passed`; Python compilation and `git diff --check` passed.
+- SQL remains unverified end to end. Run #69 stayed at `Loading downloaded files
+  into SQL` for more than nine minutes against
+  `postgres.bi_reporting.this_is_test` and was stopped cleanly. The Citrix
+  session reported high network latency during the wait. Do not change the
+  proven scraper path while diagnosing this. Inspect the target database for
+  an external table lock or blocked transaction, then rerun SQL only.
