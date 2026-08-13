@@ -362,6 +362,9 @@ $HeadedTaskPrincipal = New-ScheduledTaskPrincipal `
 $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Days 3) -MultipleInstances IgnoreNew
+# A task that survived a previous headed run would otherwise keep the old
+# Python process and cause /Run to be ignored after an update.
+Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
     -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
@@ -420,14 +423,11 @@ Start-Sleep -Seconds 3
 
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
-# Setup replaces the worker code in place. Restart the service so an existing
-# process cannot keep running the previous checkout after an update.
-$ExistingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
-if ($ExistingFlowService -and $ExistingFlowService.Status -eq "Running") {
-    & $NssmExe restart $FlowServiceName
-} else {
-    & $NssmExe start $FlowServiceName
-}
+# Setup replaces the worker code in place. Stop then start explicitly so an
+# existing process cannot keep the previous checkout or race service status.
+& $NssmExe stop $FlowServiceName
+Start-Sleep -Seconds 2
+& $NssmExe start $FlowServiceName
 
     # Poll until the service registers with Metronome.
     $WorkerOnline = $false
