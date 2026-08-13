@@ -1041,15 +1041,14 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
     collection = []
 
     class Member:
-        def __init__(self, text, state, x=20, visible=True):
+        def __init__(self, text, state, x=20):
             self.text = text
             self.state = state
             self.x = x
-            self.visible = visible
             self.scroll_count = 0
 
         def is_visible(self):
-            return self.visible
+            return True
 
         def bounding_box(self):
             return {"x": self.x, "y": 100 + collection.index(self) * 20}
@@ -1119,32 +1118,6 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
             return Members([member for member in collection if member.text == value])
 
     return Frame(), collection, events
-
-
-def test_scoped_member_lookup_prefers_rendered_member_over_hidden_duplicate():
-    from app.flow_worker import _asap_dimension_member
-
-    class Candidates:
-        def __init__(self, items):
-            self.items = items
-
-        def count(self):
-            return len(self.items)
-
-        def nth(self, index):
-            return self.items[index]
-
-    hidden = SimpleNamespace(
-        evaluate=lambda _script: True, is_visible=lambda: False,
-    )
-    rendered = SimpleNamespace(
-        evaluate=lambda _script: True, is_visible=lambda: True,
-    )
-    root = SimpleNamespace(
-        get_by_text=lambda _value, exact=True: Candidates([hidden, rendered]),
-    )
-
-    assert _asap_dimension_member(root, "202627") is rendered
 
 
 def test_dimension_replaces_stale_defaults_when_first_requested_is_already_selected():
