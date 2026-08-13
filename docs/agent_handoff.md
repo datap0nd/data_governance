@@ -241,3 +241,16 @@ files and do not enable SQL handoff.
 - Next step: adapt the first real transformation script to the documented
   contract, select it in the flow, and test download plus transformation with
   SQL disabled.
+
+## ASAP Multi-Period Reliability Update (2026-08-13)
+
+- Runtime commit `112a56e` resets each ASAP list selection with a normal first
+  click, then Ctrl-clicks only the remaining requested members. This prevents
+  retained portal selections from being toggled off or leaking into a run.
+- ASAP export popups are tracked per download, kept open until `save_as`
+  confirms file completion, and then closed before the next period starts.
+  Self-closing wizard windows are tolerated.
+- Full Python suite: `155 passed`; `git diff --check` passed.
+- Next step: update the BI desktop and run a headed flow with several Dimension
+  values and at least two downloads. Verify both the exact ASAP selection and
+  that each export popup closes before the following report period begins.
