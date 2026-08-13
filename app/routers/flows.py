@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
 PERIOD_STRATEGIES = {"latest", "fixed", "rolling"}
-FILE_FORMATS = {"csv", "xlsx"}
+FILE_FORMATS = {"csv"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
@@ -72,7 +72,7 @@ def _clean_filename_template(value: str, file_format: str) -> str:
     if not value:
         raise ValueError("Enter a filename template.")
     sample = FILENAME_TOKEN_RE.sub("sample", value)
-    expected = ".xlsx" if file_format == "xlsx" else ".csv"
+    expected = ".csv"
     if not sample.casefold().endswith(expected):
         raise ValueError(f"The filename template must end in {expected}.")
     if not SAFE_NAME_RE.fullmatch(sample):
@@ -310,7 +310,7 @@ class FlowWrite(BaseModel):
         self.target_folder = self.target_folder.strip()
         self.file_format = self.file_format.strip().casefold()
         if self.file_format not in FILE_FORMATS:
-            raise ValueError("Download type must be CSV or Excel.")
+            raise ValueError("Download type must be CSV.")
         self.filename_template = _clean_filename_template(self.filename_template, self.file_format)
         if not _is_absolute_worker_path(self.target_folder):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
@@ -380,6 +380,11 @@ class WorkerProgress(BaseModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     timings: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
     error: str | None = Field(default=None, max_length=10000)
+    traceback: str | None = Field(default=None, max_length=100000)
+
+
+class FlowEnabledWrite(BaseModel):
+    enabled: bool
 
 
 class DiscoveredFilter(BaseModel):
@@ -841,6 +846,48 @@ def list_runs(flow_id: int | None = None, limit: int = Query(default=100, ge=1, 
         return result
 
 
+@router.get("/runs/{run_id}")
+def get_run(run_id: int):
+    with get_db() as db:
+        row = db.execute(
+            """SELECT r.*, f.name AS flow_name FROM flow_runs r
+               JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+            (run_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Run not found.")
+        timings = db.execute(
+            """SELECT phase, duration_ms, item_count, status, metadata_json, recorded_at
+               FROM flow_operation_timings WHERE run_id=? ORDER BY id""",
+            (run_id,),
+        ).fetchall()
+        events = db.execute(
+            """SELECT id, status, stage, message, details_json, error, traceback, created_at
+               FROM flow_run_events WHERE run_id=? ORDER BY id""",
+            (run_id,),
+        ).fetchall()
+        files = db.execute(
+            """SELECT period_key, file_path, filename, file_size, checksum, row_count, status, created_at
+               FROM flow_run_files WHERE run_id=? ORDER BY id""",
+            (run_id,),
+        ).fetchall()
+        return {
+            **dict(row),
+            "job": _loads(row["job_json"], {}),
+            "progress": _loads(row["progress_json"], {}),
+            "artifacts": _loads(row["artifact_json"], []),
+            "timings": [
+                {**dict(item), "metadata": _loads(item["metadata_json"], {})}
+                for item in timings
+            ],
+            "events": [
+                {**dict(item), "details": _loads(item["details_json"], {})}
+                for item in events
+            ],
+            "files": [dict(item) for item in files],
+        }
+
+
 @router.get("/workers")
 def list_workers():
     cutoff = _iso(_now() - timedelta(seconds=90))
@@ -929,7 +976,7 @@ def refresh_sql_catalog_now(request: Request):
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
     now = _iso(_now())
-    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days))
+    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days)) if body.enabled else None
     try:
         with get_db() as db:
             _validate_flow_selections(db, body)
@@ -956,7 +1003,7 @@ def create_flow(body: FlowWrite, request: Request):
 @router.put("/{flow_id}")
 def update_flow(flow_id: int, body: FlowWrite, request: Request):
     now = _iso(_now())
-    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days))
+    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days)) if body.enabled else None
     with get_db() as db:
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
@@ -974,6 +1021,30 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
+        return _flow_out(db, flow_id)
+
+
+@router.patch("/{flow_id}/enabled")
+def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
+    now = _iso(_now())
+    with get_db() as db:
+        flow = db.execute("SELECT * FROM flows WHERE id=?", (flow_id,)).fetchone()
+        if not flow:
+            raise HTTPException(404, "Flow not found.")
+        if body.enabled and flow["schedule_type"] == "manual":
+            raise HTTPException(400, "Choose a daily or weekly schedule before activating this flow.")
+        next_run = (
+            _iso(_schedule_next(flow["schedule_type"], flow["schedule_time"], _loads(flow["schedule_days"], [])))
+            if body.enabled else None
+        )
+        db.execute(
+            "UPDATE flows SET enabled=?, next_run_at=?, updated_at=? WHERE id=?",
+            (body.enabled, next_run, now, flow_id),
+        )
+        log_event(
+            db, "flow", flow_id, flow["name"],
+            "activated" if body.enabled else "deactivated", actor=get_actor(request),
+        )
         return _flow_out(db, flow_id)
 
 
@@ -1490,6 +1561,15 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                started_at=COALESCE(started_at, ?), finished_at=?, heartbeat_at=? WHERE id=?""",
             (body.status, _json(body.progress), _json(body.artifacts), body.error,
              started, finished, now, run_id),
+        )
+        db.execute(
+            """INSERT INTO flow_run_events
+               (run_id, status, stage, message, details_json, error, traceback, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id, body.status, body.progress.get("stage"), body.progress.get("message"),
+                _json(body.progress), body.error, body.traceback, now,
+            ),
         )
         db.execute(
             "UPDATE flows SET last_run_at=?, last_status=?, last_error=?, updated_at=? WHERE id=?",

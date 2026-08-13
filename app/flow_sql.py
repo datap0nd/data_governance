@@ -129,10 +129,8 @@ def _read_artifact(path: Path):
                 continue
         if frame is None:
             raise RuntimeError(f"Could not decode CSV artifact: {path.name}")
-    elif suffix in {".xlsx", ".xls"}:
-        frame = pd.read_excel(path)
     else:
-        raise RuntimeError(f"SQL handoff does not support {suffix or 'this file type'}.")
+        raise RuntimeError("SQL handoff currently supports CSV files only.")
     if frame.empty:
         raise RuntimeError(f"Downloaded artifact has no data rows: {path.name}")
     seen: dict[str, int] = {}
@@ -140,7 +138,12 @@ def _read_artifact(path: Path):
     for index, column in enumerate(frame.columns):
         clean = re.sub(r"\W+", "_", str(column).strip()).strip("_").casefold() or f"col_{index}"
         seen[clean] = seen.get(clean, 0) + 1
-        columns.append(clean if seen[clean] == 1 else f"{clean}_{seen[clean]}")
+        columns.append(clean)
+    duplicates = sorted(name for name, count in seen.items() if count > 1)
+    if duplicates:
+        raise RuntimeError(
+            f"Downloaded CSV has duplicate column name(s) after normalization: {', '.join(duplicates)}"
+        )
     frame.columns = columns
     return frame
 
@@ -161,19 +164,33 @@ def load_artifacts(artifacts: list[dict], target: dict) -> dict:
     rows_written = 0
     try:
         with engine.begin() as connection:
-            existing_columns = {
-                row[0] for row in connection.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema=:schema AND table_name=:table"
-                ), {"schema": schema, "table": table})
-            }
+            column_rows = connection.execute(text(
+                "SELECT column_name, is_nullable, column_default, is_identity, is_generated "
+                "FROM information_schema.columns "
+                "WHERE table_schema=:schema AND table_name=:table ORDER BY ordinal_position"
+            ), {"schema": schema, "table": table}).fetchall()
+            existing_columns = [row[0] for row in column_rows]
             if not existing_columns:
                 raise RuntimeError(f"SQL target no longer exists: {database}.{schema}.{table}")
             for frame in frames:
-                extra = sorted(set(frame.columns) - existing_columns)
-                if extra:
+                received = set(frame.columns)
+                expected = set(existing_columns)
+                required = {
+                    row[0] for row in column_rows
+                    if row[1] == "NO" and row[2] is None and row[3] == "NO" and row[4] == "NEVER"
+                }
+                extra = sorted(received - expected)
+                missing = sorted(required - received)
+                if extra or missing:
+                    differences = []
+                    if missing:
+                        differences.append(f"missing: {', '.join(missing)}")
+                    if extra:
+                        differences.append(f"unexpected: {', '.join(extra)}")
                     raise RuntimeError(
-                        f"Downloaded columns do not exist in {schema}.{table}: {', '.join(extra)}"
+                        f"CSV columns do not match {database}.{schema}.{table} "
+                        f"({len(frame.columns)} CSV column(s), {len(existing_columns)} target column(s); "
+                        f"{'; '.join(differences)}). No SQL changes were committed."
                     )
             if mode == "replace":
                 connection.execute(text(f"TRUNCATE TABLE {qualified}"))

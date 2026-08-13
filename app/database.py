@@ -514,6 +514,18 @@ CREATE TABLE IF NOT EXISTS flow_run_files (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS flow_run_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER NOT NULL REFERENCES flow_runs(id),
+    status          TEXT NOT NULL,
+    stage           TEXT,
+    message         TEXT,
+    details_json    TEXT NOT NULL DEFAULT '{}',
+    error           TEXT,
+    traceback       TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS flow_operation_timings (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     operation_type  TEXT NOT NULL,
@@ -585,6 +597,7 @@ CREATE INDEX IF NOT EXISTS idx_flows_schedule ON flows(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_queue ON flow_runs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_run_files_run ON flow_run_files(run_id);
+CREATE INDEX IF NOT EXISTS idx_flow_run_events_run ON flow_run_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_queue ON flow_catalog_scans(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_site ON flow_catalog_scans(site_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_sql_catalog_names ON flow_sql_catalog(database_name, schema_name, table_name, stale);
@@ -1006,6 +1019,19 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_database TEXT",
     "ALTER TABLE flows ADD COLUMN sql_schema TEXT",
     "ALTER TABLE flows ADD COLUMN sql_table TEXT",
+    """CREATE TABLE IF NOT EXISTS flow_run_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES flow_runs(id),
+        status TEXT NOT NULL,
+        stage TEXT,
+        message TEXT,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        traceback TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_run_events_run ON flow_run_events(run_id, id)",
+    "UPDATE flows SET file_format='csv', filename_template=replace(filename_template, '.xlsx', '.csv') WHERE file_format='xlsx' OR lower(filename_template) LIKE '%.xlsx'",
     """CREATE TABLE IF NOT EXISTS flow_sql_catalog (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         database_name TEXT NOT NULL,

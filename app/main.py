@@ -787,6 +787,15 @@ def serve_panel():
     return _serve_index()
 
 
+@app.get("/flow-runs/{run_id}")
+def serve_flow_run_log(run_id: int):
+    """Serve the dedicated full-page diagnostic view for one flow run."""
+    return HTMLResponse(
+        content=(static_dir / "flow_run_log.html").read_text(),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 @app.get("/{path:path}")
 def spa_catch_all(path: str):
     """Catch-all route for SPA - serve index.html for non-API, non-static paths."""

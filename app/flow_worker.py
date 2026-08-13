@@ -15,6 +15,7 @@ import re
 import socket
 import sys
 import time
+import traceback
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -177,7 +178,7 @@ def _render_filename(template: str, job: dict, period: str | list[str] | None, i
     for key, value in values.items():
         name = name.replace("{" + key + "}", str(value))
     name = re.sub(r"[<>:\"/\\|?*\x00-\x1f\s]+", "_", name).strip(" ._")
-    expected = ".xlsx" if job["downloads"].get("file_format") == "xlsx" else ".csv"
+    expected = ".csv"
     if not name.casefold().endswith(expected):
         name += expected
     return name
@@ -490,11 +491,9 @@ def _asap_download(page: Page, frame: Frame, job: dict):
     export_action = None
     download_page = page
     deadline = time.monotonic() + 60
-    file_format = job.get("downloads", {}).get("file_format", "csv")
+    file_format = "csv"
     format_names = (
-        ("CSV file format", re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I))
-        if file_format == "csv"
-        else ("Excel file format", re.compile(r"^(?:Microsoft )?Excel(?: file format| workbook| with formatting)?$|^XLSX$", re.I))
+        "CSV file format", re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I)
     )
     while time.monotonic() < deadline and (format_option is None or export_action is None):
         current_pages = page.context.pages
@@ -986,6 +985,40 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
 
 
+def _normalize_csv(path: Path) -> dict:
+    """Remove ASAP's title/blank preamble while preserving a standard CSV."""
+    decoded = None
+    encoding_used = None
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            decoded = path.read_text(encoding=encoding)
+            encoding_used = encoding
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        raise RuntimeError(f"Could not decode downloaded CSV: {path.name}")
+    rows = list(csv.reader(decoded.splitlines()))
+    if not rows:
+        raise RuntimeError("The downloaded CSV is empty.")
+    header_index = 0
+    if len(rows) >= 3 and len(rows[0]) == 1 and not any(str(value).strip() for value in rows[1]):
+        header_index = 2
+    header = [str(value).strip() for value in rows[header_index]]
+    if len(header) < 2:
+        raise RuntimeError(
+            "Downloaded CSV did not contain a usable comma-delimited header after the ASAP preamble."
+        )
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerows(rows[header_index:])
+    return {
+        "preamble_rows_removed": header_index,
+        "source_encoding": encoding_used,
+        "columns": header,
+    }
+
+
 def _csv_metadata(path: Path) -> dict:
     file_size = path.stat().st_size
     if file_size <= 0:
@@ -1002,31 +1035,6 @@ def _csv_metadata(path: Path) -> dict:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             row_count = max(0, sum(1 for _ in csv.reader(handle)) - 1)
     except (UnicodeDecodeError, csv.Error):
-        pass
-    return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
-
-
-def _file_metadata(path: Path, file_format: str) -> dict:
-    if file_format == "csv":
-        return _csv_metadata(path)
-    file_size = path.stat().st_size
-    if file_size <= 0:
-        raise RuntimeError("The downloaded Excel workbook is empty.")
-    prefix = path.read_bytes()[:4]
-    if prefix[:2] != b"PK":
-        raise RuntimeError("The download is not a valid Excel workbook.")
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    row_count = None
-    try:
-        from openpyxl import load_workbook
-        workbook = load_workbook(path, read_only=True, data_only=True)
-        sheet = workbook.active
-        row_count = max(0, sheet.max_row - 1)
-        workbook.close()
-    except Exception:
         pass
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
@@ -1102,7 +1110,8 @@ def execute_job(page: Page, job: dict, report_progress, profile_dir: Path) -> tu
         output = _safe_output_path(target, filename)
         with timings.measure("file_transfer", report_id=job["report"].get("id")):
             download.save_as(output)
-            metadata = _file_metadata(output, job["downloads"].get("file_format", "csv"))
+            normalization = _normalize_csv(output)
+            metadata = {**_csv_metadata(output), **normalization}
         artifacts.append({
             "period_key": period,
             "file_path": str(output),
@@ -1186,10 +1195,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 sql_started = None
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
-                             timings: list | None = None, error: str | None = None):
+                             timings: list | None = None, error: str | None = None,
+                             traceback_text: str | None = None):
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
                         "status": status, "progress": detail, "artifacts": artifacts or [],
-                        "timings": timings or [], "error": error,
+                        "timings": timings or [], "error": error, "traceback": traceback_text,
                     })
 
                 try:
@@ -1198,15 +1208,24 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         from app.flow_sql import load_artifacts
                         progress("running", {"stage": "sql_insertion", "message": "Loading downloaded files into SQL."}, artifacts, timings)
                         sql_started = time.perf_counter()
-                        load_artifacts(artifacts, run["job"]["sql_handoff"])
-                        timings.insert(-1, {
+                        sql_result = load_artifacts(artifacts, run["job"]["sql_handoff"])
+                        timings.insert(max(0, len(timings) - 1), {
                             "phase": "sql_insertion",
                             "duration_ms": round((time.perf_counter() - sql_started) * 1000),
                             "status": "succeeded",
                         })
                         timings[-1]["duration_ms"] = round((time.perf_counter() - run_started) * 1000)
+                        progress(
+                            "running",
+                            {
+                                "stage": "sql_insertion_complete",
+                                "message": f"Inserted {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} file(s).",
+                                **sql_result,
+                            },
+                            artifacts, timings,
+                        )
                     progress(
-                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} {run['job']['downloads'].get('file_format', 'csv').upper()} file(s)."},
+                        "succeeded", {"stage": "complete", "message": f"Saved {len(artifacts)} CSV file(s)."},
                         artifacts, timings,
                     )
                 except Exception as exc:
@@ -1228,7 +1247,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     progress(
                         "failed", {"stage": "failed", "message": str(exc)},
                         artifacts=artifacts, timings=timings,
-                        error=str(exc),
+                        error=str(exc), traceback_text=traceback.format_exc(),
                     )
                 if once:
                     break

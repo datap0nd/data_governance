@@ -297,26 +297,23 @@ def test_filename_uses_flow_start_end_and_selected_format():
     job = {
         "flow": {"name": "Inflow Outflow"},
         "report": {"name": "Movement"},
-        "downloads": {"periods": [["2026-W19", "2026-W27"]], "file_format": "xlsx"},
+        "downloads": {"periods": [["2026-W19", "2026-W27"]], "file_format": "csv"},
     }
     filename = worker._render_filename(
-        "{flow}_{start_period}_{end_period}.xlsx", job,
+        "{flow}_{start_period}_{end_period}.csv", job,
         ["2026-W19", "2026-W27"], 1,
     )
-    assert filename == "Inflow_Outflow_W19_W27.xlsx"
+    assert filename == "Inflow_Outflow_W19_W27.csv"
 
 
-def test_excel_format_is_persisted_in_download_job(flow_db):
-    site, report = _seed_catalog()
-    _mark_discovered(report["id"])
-    saved = flows.create_flow(
-        _flow(
-            site["id"], report["id"], file_format="xlsx",
-            filename_template="{flow}_{start_period}_{end_period}.xlsx",
-        ),
-        _request(),
-    )
-    assert flows.queue_run(saved["id"], _request())["job"]["downloads"]["file_format"] == "xlsx"
+def test_excel_format_is_rejected():
+    with pytest.raises(ValueError, match="must be CSV"):
+        flows.FlowWrite(
+            name="Excel is not supported", site_id=1, report_id=1, enabled=False,
+            selections={}, download_mode="single", period_strategy="fixed",
+            file_format="xlsx", start_week="2026-W30", end_week="2026-W31",
+            target_folder=r"C:\Reports", filename_template="report.xlsx",
+        )
 
 
 def test_rolling_window_advances_only_after_success(flow_db):
@@ -426,6 +423,40 @@ def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
         "enabled": True, "mode": "replace", "database": "warehouse",
         "schema": "reporting", "table": "inflow",
     }
+
+
+def test_flow_activation_is_separate_from_editor(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"], enabled=False), _request())
+    active = flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=True), _request())
+    assert active["enabled"] is True
+    assert active["next_run_at"] is not None
+    paused = flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=False), _request())
+    assert paused["enabled"] is False
+    assert paused["next_run_at"] is None
+
+
+def test_inactive_scheduled_flow_has_no_next_run(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"], enabled=False), _request())
+    assert saved["schedule_type"] == "weekly"
+    assert saved["next_run_at"] is None
+
+
+def test_manual_flow_cannot_be_activated(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], enabled=False, schedule_type="manual",
+            schedule_time=None, schedule_days=[],
+        ),
+        _request(),
+    )
+    with pytest.raises(HTTPException, match="daily or weekly"):
+        flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=True), _request())
 
 
 def test_unknown_and_invalid_filter_values_are_rejected(flow_db):
@@ -724,6 +755,38 @@ def test_flow_builder_uses_discovered_week_dropdowns():
     assert "function _flowDiscoveredWeeks" in source
     assert '<select id="flow-start-week" required>' in source
     assert '<select id="flow-end-week" required>' in source
+
+
+def test_flow_ui_uses_list_activation_csv_only_and_expanded_logs():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert "flow-enabled-switch" in source
+    assert "Enable scheduled execution" not in source
+    assert 'file_format: "csv"' in source
+    assert 'id="flow-file-format"' not in source
+    assert "Expanded logs" in source
+    assert "/flow-runs/${run.id}" in source
+
+
+def test_run_progress_events_and_traceback_are_persisted(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_runs SET worker_id='test-worker', status='claimed' WHERE id=?",
+            (queued["id"],),
+        )
+    flows.update_run(
+        "test-worker", queued["id"],
+        flows.WorkerProgress(
+            status="failed", progress={"stage": "sql_insertion", "message": "Insert failed"},
+            error="wrong columns", traceback="Traceback: example",
+        ),
+    )
+    detail = flows.get_run(queued["id"])
+    assert detail["events"][0]["stage"] == "sql_insertion"
+    assert detail["events"][0]["traceback"] == "Traceback: example"
 
 
 def test_due_scheduler_queues_once_and_advances_next_run(flow_db, monkeypatch):
