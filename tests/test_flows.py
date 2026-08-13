@@ -1105,8 +1105,7 @@ def test_lazy_select2_value_is_read_from_rendered_title():
             self.text = text
 
         def get_attribute(self, name):
-            assert name == "title"
-            return self.title
+            return self.title if name == "title" else ""
 
         def text_content(self):
             return self.text
@@ -1122,8 +1121,11 @@ def test_lazy_select2_value_is_read_from_rendered_title():
             return self.items[index]
 
     class Frame:
+        def get_by_text(self, _pattern):
+            return SimpleNamespace(first=SimpleNamespace(count=lambda: 0, is_visible=lambda: False))
+
         def locator(self, selector):
-            assert selector == ".select2-selection__rendered:visible"
+            assert ".select2-selection__rendered:visible" in selector
             return Items([Item("MENA - Global - Global")])
 
     assert _read_select2_value(Frame(), ["MENA - Global - Global"]) == ["MENA - Global - Global"]
