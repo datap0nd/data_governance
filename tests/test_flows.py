@@ -689,6 +689,10 @@ def test_setup_overlays_update_without_robocopy_or_purging_local_files():
     assert "robocopy" not in source.casefold()
     assert "/MIR" not in source
     assert "/PURGE" not in source
+    assert not Path(__file__).parents[1].joinpath("tools", "nssm.exe").exists()
+    assert Path(__file__).parents[1].joinpath("tools", "nssm.dist.exe").exists()
+    assert '$NssmDistribution = "$CodeDir\\tools\\nssm.dist.exe"' in source
+    assert 'Copy-Item $NssmDistribution $NssmExe -Force' in source
 
 
 def test_update_endpoint_repairs_legacy_overlay_without_deleting_files(tmp_path):
