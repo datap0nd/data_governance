@@ -31,27 +31,6 @@ _identity_cache: dict[tuple[str, str | None], str | None] = {}
 _hostname_cache: dict[str, str | None] = {}
 
 
-def _repair_legacy_setup_overlay(setup_path: Path) -> bool:
-    """Upgrade the exact legacy updater overlay before launching setup.
-
-    A partially updated Windows installation can still have the old Copy-Item
-    line that attempts to replace tools\\nssm.exe while Windows has it locked.
-    Patch only that known instruction. No installed file is deleted.
-    """
-    source = setup_path.read_text(encoding="utf-8-sig")
-    legacy = '    Copy-Item "$($Inner.FullName)\\*" $CodeDir -Recurse -Force'
-    if legacy not in source or "Preserving installed tools\\nssm.exe" in source:
-        return False
-    repaired = """    $DownloadedNssm = Join-Path $Inner.FullName "tools\\nssm.exe"
-    if ((Test-Path $NssmExe) -and (Test-Path $DownloadedNssm)) {
-        Move-Item $DownloadedNssm "$TempExtract\\nssm.exe.skipped" -Force
-        Write-Host "  Preserving installed tools\\nssm.exe (in use by Windows)." -ForegroundColor DarkGray
-    }
-""" + legacy
-    setup_path.write_text(source.replace(legacy, repaired, 1), encoding="utf-8")
-    return True
-
-
 def _ensure_identity_schema(conn: sqlite3.Connection):
     """Create or repair the lightweight user identity tables."""
     conn.execute(
@@ -794,10 +773,6 @@ def trigger_update(request: Request):
     setup_path = Path(__file__).parent.parent / "setup.ps1"
     if not setup_path.exists():
         raise HTTPException(status_code=404, detail="setup.ps1 not found")
-    try:
-        _repair_legacy_setup_overlay(setup_path)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to repair legacy updater: {exc}")
     # Launch via schtasks so it runs in the logged-in user's interactive session
     # (the NSSM service runs in session 0 which is non-interactive)
     task_name = "DG_Update"
