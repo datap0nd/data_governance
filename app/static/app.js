@@ -9341,7 +9341,10 @@ function _flowBuilderHtml(catalog, existing = null) {
     const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.source_kind === "discovered");
     const reportId = existing?.report_id || reports[0]?.id || "";
     const report = catalog.reports.find(item => String(item.id) === String(reportId));
-    const selections = existing?.selections || {};
+    const selections = { ...(existing?.selections || {}) };
+    for (const definition of (report?.filters || [])) {
+        if (definition.control_type === "week") delete selections[definition.filter_key];
+    }
     const scheduleDays = new Set(existing?.schedule_days || []);
     const downloadEstimate = window._flowsState?.estimates?.flow_download;
     return `
@@ -9358,16 +9361,16 @@ function _flowBuilderHtml(catalog, existing = null) {
                     </div>
                     <div class="flow-form-section" id="flow-report-filters">
                         <div class="flow-section-head"><h2>Report filters</h2><p>Every value below was discovered from ASAP. Rescan the catalog when the portal changes.</p></div>
-                        <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled).length ? report.filters.filter(filter => filter.enabled).map(definition => `
+                        <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && filter.control_type !== "week").map(definition => `
                             <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Download behavior</h2><p>Split a range into one file per ISO week, or download one configured CSV.</p></div>
+                        <div class="flow-section-head"><h2>Download behavior</h2><p>Choose a Sell-out Week range. Export it as one combined CSV or as one CSV per ISO week.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Download mode</span><select id="flow-download-mode"><option value="single" ${existing?.download_mode !== "one_per_week" ? "selected" : ""}>One CSV</option><option value="one_per_week" ${existing?.download_mode === "one_per_week" ? "selected" : ""}>One CSV per week</option></select></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
-                            <label class="flow-week-field"><span>Start week</span><input id="flow-start-week" type="week" value="${esc(existing?.start_week || "")}"></label>
-                            <label class="flow-week-field"><span>End week</span><input id="flow-end-week" type="week" value="${esc(existing?.end_week || "")}"></label>
+                            <label class="flow-week-field"><span>Sell-out Week - start</span><input id="flow-start-week" type="week" required value="${esc(existing?.start_week || "")}"></label>
+                            <label class="flow-week-field"><span>Sell-out Week - end</span><input id="flow-end-week" type="week" required value="${esc(existing?.end_week || "")}"></label>
                             <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
                             <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || "{report}_{week}.csv")}"><small>Tokens: {flow}, {report}, {week}, {year}, {week_number}, {index}, {date}. Name collisions receive a number suffix.</small></label>
                         </div>
@@ -9605,9 +9608,7 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
-    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale).length ? report.filters.filter(filter => filter.enabled && !filter.stale).map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no configurable filters.</p>'; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
-    $("#flow-download-mode")?.addEventListener("change", event => { document.querySelectorAll(".flow-week-field").forEach(field => field.hidden = event.target.value !== "one_per_week"); });
-    $("#flow-download-mode")?.dispatchEvent(new Event("change"));
+    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";
         $("#flow-browser-mode-help").textContent = headed

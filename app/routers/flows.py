@@ -290,8 +290,8 @@ class FlowWrite(BaseModel):
             raise ValueError("Choose both start and end week.")
         if self.start_week and self.end_week:
             _week_range(self.start_week, self.end_week)
-        if self.download_mode == "one_per_week" and not self.start_week:
-            raise ValueError("One download per week needs a start and end week.")
+        if not self.start_week:
+            raise ValueError("Choose a Sell-out Week start and end.")
         if self.download_mode == "one_per_week" and "{week}" not in self.filename_template:
             raise ValueError("One download per week requires {week} in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
@@ -424,7 +424,7 @@ def _validate_flow_selections(db, body: FlowWrite):
         options = _loads(row["options_json"], [])
         values = value if isinstance(value, list) else [value]
         present = [str(item).strip() for item in values if item is not None and str(item).strip()]
-        if row["required"] and not present:
+        if row["required"] and not present and not (row["control_type"] == "week" and body.start_week):
             raise HTTPException(400, f"Choose {row['label']}.")
         comparable = [item.replace("-W", "") if row["control_type"] == "week" else item for item in present]
         invalid = [present[index] for index, item in enumerate(comparable) if options and item not in options]
@@ -436,7 +436,7 @@ def _build_job(db, flow_id: int) -> dict:
     flow = _flow_out(db, flow_id)
     report = _report_out(db, flow["report_id"])
     weeks = _week_range(flow["start_week"], flow["end_week"]) if flow["start_week"] else []
-    periods = weeks if flow["download_mode"] == "one_per_week" else [None]
+    periods = weeks if flow["download_mode"] == "one_per_week" else [weeks]
     return {
         "schema_version": 1,
         "execution": {

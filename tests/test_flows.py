@@ -180,6 +180,36 @@ def test_one_per_week_job_is_expanded_without_delete_or_overwrite(flow_db):
     assert queued["job"]["sql_handoff"] == {"enabled": False, "status": "not_implemented"}
 
 
+def test_single_csv_job_passes_the_whole_week_range_to_asap(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], download_mode="single",
+            selections={"region": "Global"}, filename_template="range_{week}.csv",
+        ),
+        _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+
+    assert queued["job"]["downloads"]["periods"] == [["2026-W30", "2026-W31", "2026-W32"]]
+    assert queued["job"]["downloads"]["delete_existing"] is False
+    assert queued["job"]["downloads"]["overwrite_existing"] is False
+
+
+def test_week_prompt_can_be_supplied_by_range_instead_of_selection(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+    _mark_discovered(report["id"])
+
+    body = _flow(
+        site["id"], report["id"], download_mode="single",
+        selections={"data_configuration": "MENA - Global - Global"},
+    )
+    with database.get_db() as db:
+        flows._validate_flow_selections(db, body)
+
+
 def test_asap_report_navigation_metadata_stays_local_and_enters_job(flow_db):
     site = flows.create_site(_asap_site(), _request())
     report = flows.create_report(_asap_report(site["id"]), _request())

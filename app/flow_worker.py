@@ -130,9 +130,19 @@ def _safe_output_path(folder: Path, filename: str) -> Path:
     raise RuntimeError("Could not find an unused filename after 9,999 attempts.")
 
 
-def _render_filename(template: str, job: dict, period: str | None, index: int) -> str:
-    week = period or job["downloads"].get("periods", [None])[0] or ""
-    year, week_number = (week.split("-W", 1) + [""])[:2] if week else ("", "")
+def _render_filename(template: str, job: dict, period: str | list[str] | None, index: int) -> str:
+    raw_week = period or job["downloads"].get("periods", [None])[0] or ""
+    if isinstance(raw_week, list):
+        start = raw_week[0] if raw_week else ""
+        end = raw_week[-1] if raw_week else ""
+        week = start if start == end else f"{start}_{end}"
+        year = start.split("-W", 1)[0] if start else ""
+        start_number = start.split("-W", 1)[1] if "-W" in start else ""
+        end_number = end.split("-W", 1)[1] if "-W" in end else ""
+        week_number = start_number if start_number == end_number else f"{start_number}-{end_number}"
+    else:
+        week = raw_week
+        year, week_number = (week.split("-W", 1) + [""])[:2] if week else ("", "")
     values = {
         "flow": job["flow"]["name"],
         "report": job["report"]["name"],
@@ -236,7 +246,7 @@ def _set_filter(page: Page | Frame, definition: dict, value: Any):
             trigger.click()
 
 
-def _apply_configuration(page: Page, job: dict, period: str | None):
+def _apply_configuration(page: Page, job: dict, period: str | list[str] | None):
     selections = dict(job.get("selections") or {})
     for definition in job["report"].get("filters", []):
         key = definition["filter_key"]
@@ -394,7 +404,7 @@ def _asap_select_list_values(frame: Frame, label: str, values: list[str]):
         option.click(modifiers=["Control"] if len(values) > 1 else [])
 
 
-def _asap_apply_configuration(frame: Frame, job: dict, period: str | None):
+def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] | None):
     selections = dict(job.get("selections") or {})
     for definition in job["report"].get("filters", []):
         key = definition["filter_key"]
