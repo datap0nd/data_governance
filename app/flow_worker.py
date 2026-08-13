@@ -1426,32 +1426,17 @@ def execute_job(
             export_pages = []
         filename = _render_filename(job["downloads"]["filename_template"], job, period, index)
         output = _safe_output_path(target, filename)
-        try:
-            with timings.measure("file_transfer", report_id=job["report"].get("id")):
-                # Keep the export popup alive until the browser-local download
-                # finishes. Normalize locally, then copy the finished CSV to
-                # the configured target before the next period is configured.
-                if is_asap:
-                    metadata = _store_completed_download(staged_file, output)
-                else:
-                    download.save_as(output)
-                    normalization = _normalize_csv(output)
-                    metadata = {**_csv_metadata(output), **normalization}
-        finally:
-            for export_page in export_pages:
-                try:
-                    if not export_page.is_closed():
-                        # The ASAP wizard visibly closes itself after export,
-                        # but Edge can leave its Playwright page object in a
-                        # half-closed state. A waiting close blocks forever
-                        # after the CSV has already reached the final share.
-                        # Running beforeunload makes close fire-and-forget so
-                        # the next period can start immediately.
-                        export_page.close(run_before_unload=True)
-                except Exception:
-                    # The wizard may close itself after emitting the download.
-                    # Treat that as already cleaned up.
-                    pass
+        with timings.measure("file_transfer", report_id=job["report"].get("id")):
+            # ASAP closes its own export wizard after emitting the download.
+            # Do not query or close that vanished page object: Edge can leave
+            # it half-detached and any later Playwright call can block forever.
+            # The next period reopens the report in the surviving main page.
+            if is_asap:
+                metadata = _store_completed_download(staged_file, output)
+            else:
+                download.save_as(output)
+                normalization = _normalize_csv(output)
+                metadata = {**_csv_metadata(output), **normalization}
         artifacts.append({
             "period_key": period,
             "file_path": str(output),

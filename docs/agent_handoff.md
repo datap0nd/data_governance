@@ -297,6 +297,11 @@ files and do not enable SQL handoff.
   share. The run then blocked only while Playwright waited for the already
   disappeared export page to acknowledge `close()`. Popup cleanup now uses the
   non-waiting close mode so the next period can begin.
+- Live run #66 created both requested final-share files, Week 27 and Week 28,
+  each 57,667,776 bytes. It also proved the report reopened and progressed to
+  `Exporting CSV 2 of 2`. Edge's detached popup object can block even on
+  `is_closed()`, so post-download popup API calls were removed entirely. ASAP
+  already closes the visible wizard itself.
 - Next step: update the authorized BI desktop from `main`, run one download,
   then two sequential downloads, then enable the existing test SQL handoff and
   verify its inserted row/file counts.
