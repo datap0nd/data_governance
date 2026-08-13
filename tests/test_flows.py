@@ -1075,14 +1075,7 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
                 self.state = not self.state
 
         def evaluate(self, _script):
-            if _script == "node => node.isConnected":
-                return True
-            if "scrollIntoView" in _script:
-                self.scroll_count += 1
-                return None
-            if "getBoundingClientRect" in _script:
-                return self.visible
-            return self.state
+            return True if _script == "node => node.isConnected" else self.state
 
         def locator(self, selector):
             assert selector == "xpath=parent::*"
@@ -1142,10 +1135,10 @@ def test_scoped_member_lookup_prefers_rendered_member_over_hidden_duplicate():
             return self.items[index]
 
     hidden = SimpleNamespace(
-        evaluate=lambda script: False if "getBoundingClientRect" in script else True,
+        evaluate=lambda _script: True, is_visible=lambda: False,
     )
     rendered = SimpleNamespace(
-        evaluate=lambda _script: True,
+        evaluate=lambda _script: True, is_visible=lambda: True,
     )
     root = SimpleNamespace(
         get_by_text=lambda _value, exact=True: Candidates([hidden, rendered]),
