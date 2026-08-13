@@ -1074,11 +1074,7 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
                 self.state = not self.state
 
         def evaluate(self, _script):
-            return True if _script == "node => node.isConnected" else self.state
-
-        def locator(self, selector):
-            assert selector == "xpath=parent::*"
-            return Parents([])
+            return self.state
 
     class Members:
         def __init__(self, items):
@@ -1090,15 +1086,6 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
         def nth(self, index):
             return self.items[index]
 
-    class Parents(Members):
-        @property
-        def first(self):
-            return self.items[0]
-
-    class Root:
-        def get_by_text(self, value, exact=False):
-            return Members([member for member in collection if member.text == value and member.x < 160])
-
     for text, state in states.items():
         collection.append(Member(text, state))
     for text in duplicate_canvas:
@@ -1109,10 +1096,10 @@ def _dimension_frame(states, *, sticky_on_replace=(), never_toggle=(), duplicate
 
         def get_by_text(self, value, exact=False):
             if hasattr(value, "pattern"):
-                root = Root()
                 heading = SimpleNamespace(
-                    count=lambda: 1, is_visible=lambda: True,
-                    locator=lambda _selector: Parents([root]),
+                    count=lambda: 1,
+                    is_visible=lambda: True,
+                    bounding_box=lambda: {"x": 20, "y": 50},
                 )
                 return SimpleNamespace(first=heading)
             return Members([member for member in collection if member.text == value])
@@ -1176,9 +1163,9 @@ def test_dimension_fails_before_run_when_reconciliation_cannot_reach_exact_set()
 
 def test_dimension_routine_never_sends_an_os_control_key():
     import inspect
-    from app.flow_worker import _asap_local_dimension_click, _asap_select_dimensions
+    from app.flow_worker import _asap_set_dimension_member, _asap_select_dimensions
 
-    source = inspect.getsource(_asap_select_dimensions) + inspect.getsource(_asap_local_dimension_click)
+    source = inspect.getsource(_asap_select_dimensions) + inspect.getsource(_asap_set_dimension_member)
     assert 'keyboard.down("Control")' not in source
     assert 'modifiers=["Control"]' not in source
     assert '"ctrlKey": True' in source
@@ -1203,11 +1190,14 @@ def test_asap_configuration_routes_only_dimension_through_dedicated_routine(monk
         lambda _frame, label, values: calls.append(("list", label, values)),
     )
     monkeypatch.setattr(
-        flow_worker, "_asap_read_dimension_selection", lambda _root, _options: ["A", "C"],
+        flow_worker, "_asap_read_dimension_selection", lambda _frame, _options, _y: ["A", "C"],
     )
-    monkeypatch.setattr(flow_worker, "_asap_dimension_root", lambda _frame, _requested: object())
+    heading = SimpleNamespace(
+        count=lambda: 1, is_visible=lambda: True, bounding_box=lambda: {"x": 20, "y": 50},
+    )
     frame = SimpleNamespace(
         page=SimpleNamespace(wait_for_timeout=lambda _ms: None),
+        get_by_text=lambda *_args, **_kwargs: SimpleNamespace(first=heading),
     )
     job = {
         "selections": {"dimension": ["A", "C"], "data_configuration": "Config A"},
