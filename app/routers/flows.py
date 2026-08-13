@@ -33,6 +33,7 @@ SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly"}
 BROWSER_MODES = {"headless", "headed"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
+RUN_STALE_TIMEOUT_SECONDS = 600
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
@@ -50,7 +51,7 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
 
 
-def fail_stale_runs(timeout_seconds: int = 120) -> dict:
+def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
     """Fail work whose assigned browser stopped heartbeating."""
     now = _now()
     now_text = _iso(now)

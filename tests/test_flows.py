@@ -1242,6 +1242,10 @@ def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
         db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id=?", (old, "bi-desktop-headed"))
         db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (old, queued["id"]))
 
+    # A large report can legitimately spend several minutes in Playwright's
+    # blocking download/save call, where its Python heartbeat thread can be
+    # starved. The production grace period must not reap that active transfer.
+    assert flows.fail_stale_runs()["count"] == 0
     result = flows.fail_stale_runs(timeout_seconds=120)
 
     assert result == {"failed_run_ids": [queued["id"]], "count": 1}

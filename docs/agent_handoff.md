@@ -275,6 +275,12 @@ files and do not enable SQL handoff.
   Each download waits for `save_as`, closes its export popup, then reopens and
   configures the report for the next period.
 - Full Python suite: `161 passed` on Python 3.11.
+- The first live rollback run reached the exact report, applied Dimension with
+  plain clicks, ran the report, completed the visible browser download, and
+  closed the export popup. The two-minute stale-run reaper then failed the run
+  while Playwright was still in its blocking save step. The production grace
+  period is now ten minutes; explicit shorter timeouts remain available to
+  tests and diagnostics.
 - Next step: update the authorized BI desktop from `main`, verify Dimension
   selection once, then test two sequential downloads and SQL insertion into
   the configured test target.
