@@ -1127,6 +1127,8 @@ def test_lazy_select2_value_is_read_from_rendered_title():
             return self.items[index]
 
     class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
         def get_by_text(self, _pattern):
             following = Items([Item("", "MENA - Global - Gl...")])
             first = SimpleNamespace(
@@ -1138,6 +1140,8 @@ def test_lazy_select2_value_is_read_from_rendered_title():
             return SimpleNamespace(first=first)
 
         def locator(self, selector):
+            if selector == "body *":
+                return SimpleNamespace(evaluate_all=lambda _script, _wanted: True)
             assert ".select2-selection__rendered:visible" in selector
             return Items([Item("MENA - Global - Global")])
 
