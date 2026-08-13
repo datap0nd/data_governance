@@ -530,9 +530,29 @@ def _asap_download(page: Page, frame: Frame, job: dict):
         format_option.check()
     except Exception:
         format_option.click()
-    with download_page.expect_download(timeout=180_000) as pending:
+    # The export wizard may render in one popup while Edge attributes the
+    # resulting download to another ASAP page. Listening only on the guessed
+    # popup can therefore leave a visibly completed browser download waiting
+    # until timeout. Subscribe to every current portal page before clicking.
+    downloads = []
+    observed_pages = list(page.context.pages)
+
+    def capture_download(download):
+        downloads.append(download)
+
+    for candidate in observed_pages:
+        candidate.on("download", capture_download)
+    try:
         export_action.click()
-    return pending.value
+        deadline = time.monotonic() + 180
+        while not downloads and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        if not downloads:
+            raise RuntimeError("ASAP export started, but Edge did not expose the completed download within 3 minutes.")
+        return downloads[0]
+    finally:
+        for candidate in observed_pages:
+            candidate.remove_listener("download", capture_download)
 
 
 def _slug_key(value: str, fallback: str) -> str:

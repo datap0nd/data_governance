@@ -992,3 +992,10 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
     assert flow_worker._api(Client(), "POST", "/progress") == {"status": "running"}
     assert len(attempts) == 3
+
+
+def test_asap_download_observes_every_open_portal_page():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert 'candidate.on("download", capture_download)' in source
+    assert 'candidate.remove_listener("download", capture_download)' in source
+    assert "download_page.expect_download" not in source
