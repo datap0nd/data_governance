@@ -699,6 +699,56 @@ def test_worker_claim_and_completion_records_artifact(flow_db):
     assert timing["duration_ms"] == 2400
 
 
+def test_worker_restart_fails_active_sql_run_without_replaying_it(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    monkeypatch.setattr(
+        flows, "launch_local_worker",
+        lambda mode="headless": {"status": "launched", "mode": mode},
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    with database.get_db() as db:
+        job = json.loads(db.execute(
+            "SELECT job_json FROM flow_runs WHERE id=?", (queued["id"],)
+        ).fetchone()["job_json"])
+        job["sql_handoff"] = {
+            "enabled": True, "mode": "replace", "database": "postgres",
+            "schema": "reporting", "table": "target",
+        }
+        db.execute(
+            "UPDATE flow_runs SET job_json=? WHERE id=?",
+            (json.dumps(job), queued["id"]),
+        )
+
+    worker_id = "restart-safe-worker"
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=worker_id, display_name="SQL worker",
+        capabilities={"headed": False, "process_id": 101},
+    ))
+    assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
+    flows.update_run(
+        worker_id, queued["id"],
+        flows.WorkerProgress(
+            status="running",
+            progress={"stage": "sql_copy", "message": "COPY started"},
+        ),
+    )
+
+    registered = flows.register_worker(flows.WorkerRegister(
+        worker_id=worker_id, display_name="SQL worker",
+        capabilities={"headed": False, "process_id": 202},
+    ))
+
+    assert registered["interrupted_run_id"] == queued["id"]
+    detail = flows.get_run(queued["id"])
+    assert detail["status"] == "failed"
+    assert detail["events"][-1]["stage"] == "worker_restarted"
+    assert detail["events"][-1]["details"]["automatic_replay"] is False
+    assert "inspect the target before retrying" in detail["error"]
+    assert flows.claim_run(worker_id)["run"] is None
+
+
 def test_safe_output_path_never_overwrites(tmp_path):
     existing = tmp_path / "report.csv"
     existing.write_text("original")
@@ -837,6 +887,16 @@ def test_setup_stops_headed_worker_before_replacing_runtime_code():
         stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
         assert stop in source
         assert source.index(stop) < source.index("Expand-Archive -Path $ZipPath")
+
+
+def test_setup_waits_for_headless_worker_to_stop_before_replacing_code():
+    root = Path(__file__).parents[1]
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
+        source = root.joinpath(filename).read_text()
+        wait = "$existingFlowService.WaitForStatus("
+        assert wait in source
+        assert "Flows worker did not stop within 30 seconds" in source
+        assert source.index(wait) < source.index("Expand-Archive -Path $ZipPath")
 
 
 def test_worker_retries_registration_and_prevents_duplicates():

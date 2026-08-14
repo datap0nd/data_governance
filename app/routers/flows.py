@@ -417,7 +417,7 @@ class FlowWrite(BaseModel):
         if self.sql_handoff_enabled:
             self.sql_mode = (self.sql_mode or "").strip().casefold()
             if self.sql_mode not in SQL_MODES:
-                raise ValueError("SQL write mode must be append or truncate and replace.")
+                raise ValueError("SQL write mode must be append or recreate and replace.")
             for field_name in ("sql_database", "sql_schema", "sql_table"):
                 value = (getattr(self, field_name) or "").strip()
                 if not value:
@@ -1609,7 +1609,69 @@ def operation_estimates(site_id: int | None = None, report_id: int | None = None
 @router.post("/worker/register")
 def register_worker(body: WorkerRegister):
     now = _iso(_now())
+    interrupted_run_id = None
     with get_db() as db:
+        existing_worker = db.execute(
+            "SELECT * FROM flow_workers WHERE worker_id=?", (body.worker_id,)
+        ).fetchone()
+        previous_capabilities = _loads(
+            existing_worker["capabilities_json"], {}
+        ) if existing_worker else {}
+        previous_pid = previous_capabilities.get("process_id")
+        replacement_pid = body.capabilities.get("process_id")
+        process_restarted = (
+            existing_worker is not None
+            and existing_worker["current_run_id"] is not None
+            and previous_pid is not None
+            and replacement_pid is not None
+            and str(previous_pid) != str(replacement_pid)
+        )
+        if process_restarted:
+            run = db.execute(
+                "SELECT * FROM flow_runs WHERE id=?",
+                (existing_worker["current_run_id"],),
+            ).fetchone()
+            if run and run["status"] not in RUN_TERMINAL:
+                interrupted_run_id = run["id"]
+                job = _loads(run["job_json"], {})
+                sql_enabled = bool(job.get("sql_handoff", {}).get("enabled"))
+                message = (
+                    "The SQL worker restarted before it could confirm the prior run's terminal "
+                    "outcome. Metronome did not replay the SQL mutation automatically; inspect "
+                    "the target before retrying."
+                    if sql_enabled else
+                    "The browser worker restarted before the prior run finished. Metronome did "
+                    "not replay the run automatically."
+                )
+                details = {
+                    "stage": "worker_restarted",
+                    "message": message,
+                    "previous_process_id": previous_pid,
+                    "replacement_process_id": replacement_pid,
+                    "automatic_replay": False,
+                    "sql_outcome": "unknown" if sql_enabled else None,
+                }
+                db.execute(
+                    """UPDATE flow_runs SET status='failed', progress_json=?, error=?,
+                       finished_at=?, heartbeat_at=? WHERE id=?""",
+                    (_json(details), message, now, now, run["id"]),
+                )
+                db.execute(
+                    """INSERT INTO flow_run_events
+                       (run_id, status, stage, message, details_json, error, traceback, created_at)
+                       VALUES (?, 'failed', 'worker_restarted', ?, ?, ?, NULL, ?)""",
+                    (run["id"], message, _json(details), message, now),
+                )
+                db.execute(
+                    """UPDATE flows SET last_run_at=?, last_status='failed', last_error=?, updated_at=?
+                       WHERE id=?""",
+                    (now, message, now, run["flow_id"]),
+                )
+            db.execute(
+                """UPDATE flow_workers SET status='offline', current_run_id=NULL,
+                   current_scan_id=NULL, updated_at=? WHERE worker_id=?""",
+                (now, body.worker_id),
+            )
         db.execute(
             """INSERT INTO flow_workers
                (worker_id, display_name, capabilities_json, status, last_seen_at, created_at, updated_at)
@@ -1620,7 +1682,11 @@ def register_worker(body: WorkerRegister):
                  last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at""",
             (body.worker_id, body.display_name, _json(body.capabilities), now, now, now),
         )
-    return {"worker_id": body.worker_id, "status": "idle"}
+    return {
+        "worker_id": body.worker_id,
+        "status": "idle",
+        "interrupted_run_id": interrupted_run_id,
+    }
 
 
 @router.post("/worker/{worker_id}/claim")

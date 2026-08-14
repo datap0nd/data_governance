@@ -32,7 +32,7 @@ function render(run) {
     if (retryButton) retryButton.onclick = async () => {
         const target = `${sql.database}.${sql.schema}.${sql.table}`;
         const consequence = sql.mode === "replace"
-            ? `This will truncate and replace ${target} in one transaction using the saved CSV from run #${run.id}.`
+            ? `This will drop and recreate ${target} from the saved CSV columns as PostgreSQL TEXT, then replace all rows in one transaction using run #${run.id}. Existing indexes, constraints, triggers, and table grants will be removed.`
             : `This will append to ${target} using the saved CSV from run #${run.id}. If a previous append committed, this can duplicate rows.`;
         if (!window.confirm(`${consequence}\n\nASAP will not open and no file will be downloaded. Continue?`)) return;
         retryButton.disabled = true;

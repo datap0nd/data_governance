@@ -234,7 +234,7 @@ def _emit(progress: SqlProgress | None, stage: str, message: str, started: float
 def load_artifacts(
     artifacts: list[dict], target: dict, progress: SqlProgress | None = None,
 ) -> dict:
-    """Append artifacts, optionally truncating once, in one observable transaction."""
+    """Append to an existing schema or atomically replace the table from CSV."""
     from sqlalchemy import text
 
     started = time.perf_counter()
@@ -303,43 +303,79 @@ def load_artifacts(
         existing_columns = [row[0] for row in column_rows]
         if not existing_columns:
             raise RuntimeError(f"SQL target no longer exists: {target_name}")
-        for artifact in inspected:
-            received = set(artifact["columns"])
-            expected = set(existing_columns)
-            required = {
-                row[0] for row in column_rows
-                if row[1] == "NO" and row[2] is None and row[3] == "NO" and row[4] == "NEVER"
-            }
-            extra = sorted(received - expected)
-            missing = sorted(required - received)
-            if extra or missing:
-                differences = []
-                if missing:
-                    differences.append(f"missing: {', '.join(missing)}")
-                if extra:
-                    differences.append(f"unexpected: {', '.join(extra)}")
-                raise RuntimeError(
-                    f"CSV columns do not match {target_name} "
-                    f"({len(artifact['columns'])} CSV column(s), {len(existing_columns)} target column(s); "
-                    f"{'; '.join(differences)})"
-                )
-        _emit(
-            progress, "sql_target_validation", f"CSV columns match {target_name}.",
-            started, status="completed", target=target_name,
-            csv_columns=len(inspected[0]["columns"]), target_columns=len(existing_columns),
-        )
+        if mode == "append":
+            for artifact in inspected:
+                received = set(artifact["columns"])
+                expected = set(existing_columns)
+                required = {
+                    row[0] for row in column_rows
+                    if row[1] == "NO" and row[2] is None and row[3] == "NO" and row[4] == "NEVER"
+                }
+                extra = sorted(received - expected)
+                missing = sorted(required - received)
+                if extra or missing:
+                    differences = []
+                    if missing:
+                        differences.append(f"missing: {', '.join(missing)}")
+                    if extra:
+                        differences.append(f"unexpected: {', '.join(extra)}")
+                    raise RuntimeError(
+                        f"CSV columns do not match {target_name} "
+                        f"({len(artifact['columns'])} CSV column(s), {len(existing_columns)} target column(s); "
+                        f"{'; '.join(differences)})"
+                    )
+            _emit(
+                progress, "sql_target_validation", f"CSV columns match {target_name} for append.",
+                started, status="completed", target=target_name,
+                csv_columns=len(inspected[0]["columns"]), target_columns=len(existing_columns),
+                mode=mode,
+            )
+        else:
+            replacement_columns = inspected[0]["columns"]
+            replacement_set = set(replacement_columns)
+            for artifact in inspected[1:]:
+                received = set(artifact["columns"])
+                if received != replacement_set:
+                    missing = sorted(replacement_set - received)
+                    extra = sorted(received - replacement_set)
+                    differences = []
+                    if missing:
+                        differences.append(f"missing: {', '.join(missing)}")
+                    if extra:
+                        differences.append(f"unexpected: {', '.join(extra)}")
+                    raise RuntimeError(
+                        "Replace requires every CSV artifact to use the same columns "
+                        f"({artifact['filename']}: {'; '.join(differences)})"
+                    )
+            _emit(
+                progress, "sql_target_validation",
+                f"Target {target_name} exists; replace will rebuild it with "
+                f"{len(replacement_columns)} CSV column(s) as TEXT.",
+                started, status="completed", target=target_name,
+                csv_columns=len(replacement_columns), target_columns=len(existing_columns),
+                mode=mode, schema_action="drop_recreate", column_type="TEXT",
+            )
 
         if mode == "replace":
-            stage = "truncate"
+            stage = "replace"
             _emit(
-                progress, "sql_truncate", f"Truncating {target_name} inside the transaction.",
+                progress, "sql_replace",
+                f"Dropping and recreating {target_name} inside the transaction with "
+                f"{len(replacement_columns)} TEXT column(s).",
                 started, status="started", target=target_name,
-                timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS,
+                timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS, schema_action="drop_recreate",
             )
-            connection.execute(text(f"TRUNCATE TABLE {qualified}"))
+            column_definitions = ", ".join(
+                f"{_quote_identifier(column)} TEXT" for column in replacement_columns
+            )
+            connection.execute(text(f"DROP TABLE {qualified}"))
+            connection.execute(text(f"CREATE TABLE {qualified} ({column_definitions})"))
             _emit(
-                progress, "sql_truncate", f"Truncated {target_name}; change remains uncommitted.",
+                progress, "sql_replace",
+                f"Recreated {target_name} with {len(replacement_columns)} TEXT column(s); "
+                "the replacement remains uncommitted.",
                 started, status="completed", target=target_name,
+                columns=len(replacement_columns), schema_action="drop_recreate",
             )
 
         for index, artifact in enumerate(inspected, start=1):
@@ -406,5 +442,7 @@ def load_artifacts(
         "files_loaded": len(inspected),
         "mode": mode,
         "target": target_name,
+        "schema_replaced": mode == "replace",
+        "column_type": "TEXT" if mode == "replace" else None,
         "duration_ms": round((time.perf_counter() - started) * 1000),
     }

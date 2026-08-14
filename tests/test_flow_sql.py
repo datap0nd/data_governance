@@ -124,7 +124,7 @@ def test_sql_preflight_reports_missing_and_unexpected_columns(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match="missing: required_b; unexpected: extra"):
         flow_sql.load_artifacts(
             [{"file_path": str(path)}],
-            {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
+            {"database": "db", "schema": "reporting", "table": "target", "mode": "append"},
         )
 
 
@@ -208,13 +208,122 @@ def test_sql_load_reports_each_phase_and_commits(tmp_path, monkeypatch):
     assert "rollback" not in executed
     assert "SET LOCAL lock_timeout = '30s'" in executed
     assert "SET LOCAL statement_timeout = '120s'" in executed
-    assert any(item.startswith("TRUNCATE TABLE") for item in executed)
+    assert any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
+    assert any(
+        item.startswith(
+            'CREATE TABLE "reporting"."target" '
+            '("sell_out_week" TEXT, "active" TEXT)'
+        )
+        for item in executed
+    )
     assert copied[0][1] == "Sell-out Week,Active\n202627,116\n"
     assert [event["stage"] for event in events] == [
         "sql_artifact_validation", "sql_artifact_validation", "sql_connecting", "sql_connected",
-        "sql_target_validation", "sql_target_validation", "sql_truncate", "sql_truncate",
+        "sql_target_validation", "sql_target_validation", "sql_replace", "sql_replace",
         "sql_copy", "sql_copy", "sql_commit", "sql_commit",
     ]
+    assert result["schema_replaced"] is True
+    assert result["column_type"] == "TEXT"
+
+
+def test_sql_replace_accepts_csv_columns_that_differ_from_existing_table(tmp_path, monkeypatch):
+    path = tmp_path / "replacement.csv"
+    path.write_text("New Column,Another\nvalue,2\n", encoding="utf-8")
+    executed = []
+    transaction = SimpleNamespace(commit=lambda: executed.append("commit"), rollback=lambda: None)
+
+    class Result:
+        def fetchall(self):
+            return [("old_column", "YES", None, "NO", "NEVER")]
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            executed.append(statement)
+            stream.read()
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            executed.append(str(statement))
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    result = flow_sql.load_artifacts(
+        [{"file_path": str(path)}],
+        {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
+    )
+
+    assert result["rows_written"] == 1
+    assert any('CREATE TABLE "reporting"."target" ("new_column" TEXT, "another" TEXT)' in item for item in executed)
+    assert executed[-1] == "commit"
+
+
+def test_sql_replace_copy_failure_restores_prior_table(tmp_path, monkeypatch):
+    path = tmp_path / "replacement.csv"
+    path.write_text("new_column\nvalue\n", encoding="utf-8")
+    executed = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"),
+        rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return [("old_column", "YES", None, "NO", "NEVER")]
+
+    class Cursor:
+        def copy_expert(self, _statement, _stream):
+            raise RuntimeError("simulated COPY failure")
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            executed.append(str(statement))
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+    events = []
+
+    with pytest.raises(flow_sql.SqlHandoffError, match="PostgreSQL confirmed rollback"):
+        flow_sql.load_artifacts(
+            [{"file_path": str(path)}],
+            {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
+            progress=events.append,
+        )
+
+    assert any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
+    assert any(item.startswith('CREATE TABLE "reporting"."target"') for item in executed)
+    assert "rollback" in executed
+    assert "commit" not in executed
+    assert events[-1]["stage"] == "sql_failed"
+    assert events[-1]["outcome"] == "PostgreSQL confirmed rollback. No SQL changes were committed."
 
 
 def test_sql_copy_error_is_clean_and_rollback_is_logged(tmp_path, monkeypatch):

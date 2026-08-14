@@ -1676,11 +1676,43 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         })
                     else:
                         timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
-                    progress(
-                        "failed", {"stage": "failed", "message": str(exc)},
-                        artifacts=artifacts, timings=timings,
-                        error=str(exc), traceback_text=traceback.format_exc(),
-                    )
+                    failure_message = str(exc)
+                    failure_detail = {"stage": "failed", "message": failure_message}
+                    failure_traceback = traceback.format_exc()
+                    try:
+                        progress(
+                            "failed", failure_detail,
+                            artifacts=artifacts, timings=timings,
+                            error=failure_message, traceback_text=failure_traceback,
+                        )
+                    except Exception as report_exc:
+                        # A rich terminal payload must never leave the run in
+                        # ``running`` if one optional diagnostic field is
+                        # rejected or a response is lost. A minimal idempotent
+                        # terminal update gives the server a second, smaller
+                        # chance to close the run. If the first request already
+                        # committed, the endpoint returns the terminal state.
+                        fallback_message = (
+                            f"{failure_message} Terminal diagnostic reporting initially failed: "
+                            f"{type(report_exc).__name__}: {report_exc}"
+                        )[:10000]
+                        print(fallback_message, file=sys.stderr, flush=True)
+                        _api(
+                            client, "POST",
+                            f"/api/flows/worker/{worker_id}/runs/{run_id}/progress",
+                            {
+                                "status": "failed",
+                                "progress": {
+                                    "stage": "failed",
+                                    "message": fallback_message,
+                                    "terminal_report_fallback": True,
+                                },
+                                "artifacts": [],
+                                "timings": [],
+                                "error": fallback_message,
+                                "traceback": None,
+                            },
+                        )
                 finally:
                     heartbeat_stop.set()
                     heartbeat_thread.join(timeout=2)

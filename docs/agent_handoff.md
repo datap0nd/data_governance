@@ -2,8 +2,10 @@
 
 ## Current Objective
 
-Complete a live headed Inflow/Outflow ASAP download from Metronome without
-deleting, overwriting, or inserting anything into SQL.
+Deliver and live-verify observable SQL handoff behavior for Flows. Append must
+enforce the existing target schema. Replace must atomically rebuild the exact
+selected table from CSV columns and expose every SQL failure cleanly in the run
+log.
 
 ## Repo State
 
@@ -11,7 +13,9 @@ deleting, overwriting, or inserting anything into SQL.
 - Branch: `main`
 - Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: delivered to `origin/main` through commit `4f4dc39`
+- Latest verified remote commit: `a103e54`
+- Push status: atomic schema-replacement changes are tested locally and pending
+  publication and live deployment.
 
 ## Decisions Made
 
@@ -352,5 +356,30 @@ files and do not enable SQL handoff.
   build.
 - Next step: deploy the new `main` to the BI desktop, open run #70's Expanded
   logs, use `Retry SQL only`, and observe the exact terminal phase or clean
-  PostgreSQL error. This action can truncate/append the configured target and
+  PostgreSQL error. This action can recreate/append the configured target and
   requires explicit Citrix approval immediately before clicking it.
+
+## Atomic Schema-Replacing SQL Handoff (2026-08-14)
+
+- Live run #71 proved the new diagnostic path through artifact validation,
+  PostgreSQL connection, and target inspection. It cleanly identified that the
+  17-column Week 27 CSV did not match the six-column random test table before
+  any truncate or commit.
+- Product semantics were then clarified: append must retain strict schema
+  validation, while replace must accept a different CSV schema. PostgreSQL
+  `TRUNCATE` cannot change a schema, so replace now drops and recreates the
+  selected table inside the same transaction, creates one `TEXT` column per
+  normalized CSV column, streams the file with `COPY`, and commits only after
+  the full load succeeds. Any failure restores the prior table on rollback.
+- The replace confirmation and flow editor explicitly warn that a successful
+  schema replacement removes the old table's indexes, constraints, triggers,
+  and table grants.
+- Worker registration now compares process IDs. A restarted worker fails any
+  nonterminal SQL run and refuses to replay the mutation automatically. The
+  worker also falls back to a minimal terminal failure payload if rich
+  diagnostic reporting fails.
+- Full suite: `173 passed`. Python compilation, JavaScript syntax checks, and
+  `git diff --check` passed.
+- Next step: commit and push to `main`, deploy the new build, allow the
+  replacement of `postgres.bi_reporting.this_is_test`, and verify run #72
+  reaches target recreation, COPY of 41,872 rows, and commit.

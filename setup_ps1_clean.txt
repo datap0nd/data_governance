@@ -179,6 +179,15 @@ if ($existing) {
 $existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
 if ($existingFlowService) {
     & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
+    try {
+        $existingFlowService.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30)
+        )
+        Write-Host "  Flows worker stopped." -ForegroundColor Green
+    } catch {
+        throw "Flows worker did not stop within 30 seconds. Update aborted before replacing code."
+    }
 }
 
 # Kill anything still holding the port
