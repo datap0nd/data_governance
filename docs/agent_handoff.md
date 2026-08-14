@@ -2,14 +2,15 @@
 
 ## Current Objective
 
-Live-verify hover-safe, state-confirmed week selection on the nine-download ASAP
-flow, then verify Stop behavior with two queued flows.
+Live-verify hover-safe week selection and safely quoted PostgreSQL handoff targets
+on the nine-download ASAP flow, then verify Stop with two queued flows.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Runtime commit: `c6da87f Reject hovered ASAP week selections`
+- Latest runtime commit: `2fcad3a Support quoted SQL handoff targets`
+- Week-selection runtime commit: `c6da87f Reject hovered ASAP week selections`
 - Push status: runtime commit verified on `origin/main`
 - Public repo: no, private
 - Stable baseline: tag `asap-ui-automation-stable-2026-08-14` at `d2b61f1`
@@ -30,6 +31,9 @@ flow, then verify Stop behavior with two queued flows.
   set must remain stable across three reads before RUN is allowed.
 - Dimension clearing reconciles across four rounds and uses the same hover-safe
   click confirmation.
+- SQL handoff schema and table names come from the discovered PostgreSQL catalog.
+  They may contain spaces or punctuation and are now safely double-quoted, with
+  embedded double quotes escaped. Empty and NUL-containing names remain invalid.
 - Every queued, claimed, or running flow renders Stop. Cancelling a queued run
   does not terminate another flow's worker; assigned runs target their exact
   headed or headless worker process.
@@ -40,6 +44,10 @@ flow, then verify Stop behavior with two queued flows.
   pointer away after every click, and ignore blue styling while hovered.
 - `tests/test_flows.py`: reproduce a dropped final week click whose hover looks
   selected, require a retry, and assert exact click button/count/delay options.
+- `app/flow_sql.py`: safely quote exact PostgreSQL catalog identifiers instead
+  of rejecting valid discovered names containing spaces.
+- `tests/test_flow_sql.py`: cover spaced identifiers, embedded quotes, injection
+  shaped text, invalid values, and the full mocked replace/COPY transaction path.
 
 ## Commands And Checks
 
@@ -47,13 +55,17 @@ flow, then verify Stop behavior with two queued flows.
   27 and 28 were selected but the final clicked week 29 was omitted.
 - Root cause: the pointer remained over the final row, and the verifier could
   mistake ASAP's blue hover background for a successful selection.
-- Full Python suite: `192 passed`.
+- Live target evidence before `2fcad3a`: run 86 passed the scraper/download stage
+  but failed before SQL connection because a discovered table name contained
+  spaces and the application rejected it as an invalid bare identifier.
+- Full Python suite: `198 passed`.
+- Targeted SQL suite: `20 passed`.
 - Selection stress simulation: `20,000` randomized week cases passed with
   retained selections, zero through two dropped clicks, delayed rendered state,
   and hover false positives.
 - `node --check app/static/app.js`: passed.
 - `node tests/test_lineage_layers.mjs`: passed.
-- `python3.11 -m py_compile app/flow_worker.py`: passed.
+- `python3.11 -m py_compile app/flow_worker.py app/flow_sql.py`: passed.
 - `git diff --check`: passed.
 - Control-modifier source audit: passed with no scraper Control clicks.
 - Citrix remained read-only. Nothing was updated, run, downloaded, edited,
@@ -61,10 +73,10 @@ flow, then verify Stop behavior with two queued flows.
 
 ## Open Questions
 
-- Commit `c6da87f` has not yet been installed or live-tested inside ASAP.
+- Commit `2fcad3a` has not yet been installed or live-tested against PostgreSQL.
 - The repaired Stop behavior has not yet been live-tested with two queued flows.
 
 ## Next Step
 
-With explicit approval, click Update App in Metronome, rerun the nine-download
-flow, and confirm the final configuration retains all requested weeks before RUN.
+With explicit approval, click Update App in Metronome and rerun the flow. Confirm
+all requested weeks remain selected and the SQL handoff commits successfully.
