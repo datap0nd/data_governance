@@ -9,7 +9,8 @@ then verify Stop behavior with two queued flows.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest verified remote before this change: `c6f1e99`
+- Runtime commit: `5c14d6d Confirm every ASAP selection click`
+- Push status: runtime commit verified on `origin/main`
 - Public repo: no, private
 - Stable baseline: tag `asap-ui-automation-stable-2026-08-14` at `d2b61f1`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`; never stage them
