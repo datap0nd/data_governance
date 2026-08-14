@@ -484,6 +484,6 @@ files and do not enable SQL handoff.
   No filter name or member value has a one-off selector rule.
 - Full suite: `180 passed`; targeted repeated-label and live-extra regression
   tests, Python compilation, JavaScript syntax checks, and `git diff --check`
-  pass. Final Git delivery still needs to be recorded after this handoff update.
+  pass. Runtime commit `fbb0bcc` is present on `origin/main`.
 - Next step: deploy the updated build and rerun the same headed case. Confirm
   the visible Dimension members exactly match the configured set before RUN.
