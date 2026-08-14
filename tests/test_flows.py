@@ -145,6 +145,33 @@ def test_asap_dimension_bypasses_native_selection(monkeypatch):
     assert calls == [("Dimension", ["Sold To"], ["Biz Sub", "Sold To"])]
 
 
+def test_asap_week_bypasses_native_selection_and_uses_visible_exact_value(monkeypatch):
+    calls = []
+    definition = {
+        "filter_key": "sell_out_week",
+        "control_label": "Sell-out Week",
+        "control_type": "week",
+        "options": ["202632", "202627"],
+    }
+    job = {
+        "selections": {},
+        "report": {"filters": [definition]},
+    }
+
+    monkeypatch.setattr(
+        flow_worker, "_select_native_options_by_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native control used")),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_select_list_values",
+        lambda _frame, label, values, options: calls.append((label, values, options)),
+    )
+
+    flow_worker._asap_apply_configuration(object(), job, "2026-W27")
+
+    assert calls == [("Sell-out Week", ["202627"], ["202632", "202627"])]
+
+
 def _site():
     return flows.SiteWrite(
         name="Report portal",

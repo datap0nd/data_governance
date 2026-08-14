@@ -383,3 +383,18 @@ files and do not enable SQL handoff.
 - Next step: commit and push to `main`, deploy the new build, allow the
   replacement of `postgres.bi_reporting.this_is_test`, and verify run #72
   reaches target recreation, COPY of 41,872 rows, and commit.
+
+## Live Run 72 Week Finding (2026-08-14)
+
+- Build `a55546d` deployed successfully and preserved the SQLite database.
+  Worker restart protection closed run #71 as failed and explicitly refused to
+  replay its SQL mutation.
+- Run #72's saved job and progress events requested `2026-W27`, but the visible
+  ASAP Week prompt retained `202632`. The run later failed before SQL because no
+  completed file appeared in the headed staging folder. It wrote no SQL data.
+- Week now bypasses the hidden native-select shortcut and uses the visible
+  MicroStrategy list with exact selected-state reconciliation before RUN, just
+  as the live evidence requires.
+- Next step: publish and deploy the Week fix, then use run #70's already
+  verified Week 27 artifact for SQL-only replace testing so browser state cannot
+  contaminate the SQL result.

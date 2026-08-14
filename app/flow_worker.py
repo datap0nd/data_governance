@@ -565,7 +565,11 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
-        if definition["control_label"].casefold().rstrip(":") == "dimension":
+        visible_list_only = (
+            definition["control_label"].casefold().rstrip(":") == "dimension"
+            or definition["control_type"] == "week"
+        )
+        if visible_list_only:
             _asap_select_list_values(
                 frame, definition["control_label"], values, definition.get("options") or values,
             )
