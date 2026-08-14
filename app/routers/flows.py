@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -953,6 +954,95 @@ def get_run(run_id: int):
             ],
             "files": [dict(item) for item in files],
         }
+
+
+@router.post("/runs/{run_id}/retry-sql")
+def retry_run_sql(run_id: int, request: Request):
+    """Queue SQL only from a terminal run's saved SQL-ready CSV artifacts."""
+    now = _iso(_now())
+    with get_db() as db:
+        source = db.execute(
+            """SELECT r.*, f.name AS flow_name FROM flow_runs r
+               JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+            (run_id,),
+        ).fetchone()
+        if not source:
+            raise HTTPException(404, "Source flow run not found.")
+        if source["status"] not in RUN_TERMINAL:
+            raise HTTPException(409, "Wait for the source run to finish before retrying SQL.")
+        source_job = _loads(source["job_json"], {})
+        sql_target = source_job.get("sql_handoff", {})
+        if not sql_target.get("enabled"):
+            raise HTTPException(400, "The source run did not have SQL handoff enabled.")
+        source_artifacts = _loads(source["artifact_json"], [])
+        transformed = bool(source_job.get("transformation", {}).get("enabled"))
+        if transformed:
+            candidates = [item for item in source_artifacts if item.get("status") == "transformed"]
+        else:
+            candidates = [item for item in source_artifacts if item.get("status") != "transformed"]
+        artifacts = [
+            {
+                key: item.get(key)
+                for key in ("file_path", "filename", "period_key", "file_size", "checksum", "row_count", "status")
+                if item.get(key) is not None
+            }
+            for item in candidates if item.get("file_path") and item.get("filename")
+        ]
+        if not artifacts:
+            raise HTTPException(409, "The source run has no saved SQL-ready CSV artifacts.")
+        missing = [item["filename"] for item in artifacts if not Path(item["file_path"]).is_file()]
+        if missing:
+            raise HTTPException(
+                409,
+                f"Saved SQL artifact is no longer available on the BI desktop: {', '.join(missing[:10])}",
+            )
+        active = db.execute(
+            """SELECT id FROM flow_runs WHERE flow_id=?
+               AND status IN ('queued','claimed','running') LIMIT 1""",
+            (source["flow_id"],),
+        ).fetchone()
+        if active:
+            raise HTTPException(409, "This flow already has an active run.")
+
+        job = copy.deepcopy(source_job)
+        job["job_type"] = "sql_retry"
+        job["execution"] = {
+            "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
+            "worker_id": LOCAL_WORKER_ID,
+        }
+        job["transformation"] = {
+            "enabled": False,
+            "source_run_id": run_id,
+            "source_was_transformed": transformed,
+        }
+        job["sql_retry"] = {"source_run_id": run_id, "artifacts": artifacts}
+        cursor = db.execute(
+            """INSERT INTO flow_runs
+               (flow_id, trigger_type, status, requested_by, job_json, created_at)
+               VALUES (?, 'sql_retry', 'queued', ?, ?, ?)""",
+            (source["flow_id"], get_actor(request), _json(job), now),
+        )
+        new_run_id = cursor.lastrowid
+        log_event(
+            db, "flow", source["flow_id"], source["flow_name"], "sql_retry_queued",
+            f"source_run_id={run_id}; run_id={new_run_id}; files={len(artifacts)}",
+            get_actor(request),
+        )
+    worker = launch_local_worker("headless")
+    if worker.get("status") == "error":
+        with get_db() as db:
+            db.execute(
+                "UPDATE flow_runs SET progress_json=? WHERE id=?",
+                (_json({"stage": "waiting_for_bi_desktop", "message": worker.get("message")}), new_run_id),
+            )
+    return {
+        "id": new_run_id,
+        "flow_id": source["flow_id"],
+        "status": "queued",
+        "job": job,
+        "worker": worker,
+        "source_run_id": run_id,
+    }
 
 
 @router.get("/workers")

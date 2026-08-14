@@ -329,3 +329,28 @@ files and do not enable SQL handoff.
   lock-timeout error. This rules out a PostgreSQL table-lock wait. The remaining
   blocker is the database connection/COPY path or its network route. Run #70
   was stopped cleanly; the flow is idle and ready for a database-only diagnosis.
+
+## Observable SQL Handoff Update (2026-08-14)
+
+- SQL insertion no longer loads the normalized CSV into pandas or serializes it
+  into a second temporary CSV. It validates the header and streams the saved
+  UTF-8 CSV directly through PostgreSQL `COPY`.
+- Expanded logs now record artifact validation, connection, target validation,
+  truncate, each COPY, commit, and failure as separate events with elapsed time.
+- Database errors report the failed stage, PostgreSQL SQLSTATE when available,
+  primary database message, and whether commit or rollback was confirmed.
+- Connection attempts are bounded at 10 seconds, table locks at 30 seconds, and
+  SQL statements at 120 seconds. TCP keepalives detect dead network paths.
+- A terminal run with a saved SQL-ready artifact now offers `Retry SQL only`.
+  It queues a headless SQL job from the prior artifact, does not open ASAP, and
+  does not download the report again. The UI confirms the exact target and
+  warns that append retries can duplicate already-committed rows.
+- The run log refreshes every two seconds while work is active, so the last
+  completed SQL phase is visible without manual reloads.
+- Full Python suite: `169 passed`. Python compilation, JavaScript syntax checks,
+  and `git diff --check` passed. No live SQL write has been performed with this
+  build.
+- Next step: deploy the new `main` to the BI desktop, open run #70's Expanded
+  logs, use `Retry SQL only`, and observe the exact terminal phase or clean
+  PostgreSQL error. This action can truncate/append the configured target and
+  requires explicit Citrix approval immediately before clicking it.

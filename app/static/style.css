@@ -473,6 +473,7 @@ h2 {
 .flow-log-header a { color: var(--accent); font-size: 0.78rem; font-weight: 600; }
 .flow-log-header h1 { font-size: clamp(1.45rem, 3vw, 2rem); margin: var(--space-sm) 0 var(--space-xs); overflow-wrap: anywhere; }
 .flow-log-header p { color: var(--text-muted); }
+.flow-log-header-actions { align-items: flex-end; display: flex; flex-direction: column; gap: var(--space-sm); }
 .flow-log-status { border: 1px solid var(--border-light); border-radius: 999px; font-size: 0.72rem; font-weight: 700; padding: 0.3rem 0.6rem; text-transform: uppercase; }
 .flow-log-status.failed, .flow-log-status.cancelled { color: var(--red); }
 .flow-log-status.succeeded { color: var(--green); }
@@ -610,6 +611,7 @@ h2 {
     .flow-empty-actions { flex-direction: column; }
     .flow-filter-definition { grid-template-columns: 1fr; }
     .flow-log-header { flex-direction: column; }
+    .flow-log-header-actions { align-items: flex-start; }
     .flow-log-summary dl { grid-template-columns: 1fr; }
 }
 

@@ -1551,11 +1551,33 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 heartbeat_thread.start()
 
                 try:
-                    artifacts, timings = execute_job(
-                        page, run["job"], progress, profile_dir, download_staging_dir,
-                    )
-                    sql_artifacts = artifacts
-                    if run["job"].get("transformation", {}).get("enabled"):
+                    sql_only = run["job"].get("job_type") == "sql_retry"
+                    if sql_only:
+                        if not run["job"].get("sql_handoff", {}).get("enabled"):
+                            raise RuntimeError("SQL-only retry has no enabled SQL target.")
+                        sql_artifacts = run["job"].get("sql_retry", {}).get("artifacts") or []
+                        if not sql_artifacts:
+                            raise RuntimeError("SQL-only retry has no saved CSV artifacts.")
+                        artifacts = sql_artifacts
+                        timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
+                        progress(
+                            "running",
+                            {
+                                "stage": "sql_retry",
+                                "message": (
+                                    f"Reusing {len(sql_artifacts)} saved CSV file(s) from run "
+                                    f"#{run['job'].get('sql_retry', {}).get('source_run_id')}. "
+                                    "ASAP will not be opened or downloaded again."
+                                ),
+                            },
+                            artifacts, timings,
+                        )
+                    else:
+                        artifacts, timings = execute_job(
+                            page, run["job"], progress, profile_dir, download_staging_dir,
+                        )
+                        sql_artifacts = artifacts
+                    if not sql_only and run["job"].get("transformation", {}).get("enabled"):
                         progress(
                             "running",
                             {"stage": "transformation", "message": f"Transforming {len(artifacts)} downloaded file(s)."},
@@ -1591,9 +1613,17 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     if run["job"].get("sql_handoff", {}).get("enabled"):
                         from app.flow_sql import load_artifacts
                         source_label = "transformed" if run["job"].get("transformation", {}).get("enabled") else "downloaded"
+                        if sql_only:
+                            source_label = "saved"
                         progress("running", {"stage": "sql_insertion", "message": f"Loading {source_label} files into SQL."}, artifacts, timings)
                         sql_started = time.perf_counter()
-                        sql_result = load_artifacts(sql_artifacts, run["job"]["sql_handoff"])
+
+                        def sql_progress(detail: dict):
+                            progress("running", detail, artifacts, timings)
+
+                        sql_result = load_artifacts(
+                            sql_artifacts, run["job"]["sql_handoff"], progress=sql_progress,
+                        )
                         timings.insert(max(0, len(timings) - 1), {
                             "phase": "sql_insertion",
                             "duration_ms": round((time.perf_counter() - sql_started) * 1000),
@@ -1613,7 +1643,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         "succeeded", {
                             "stage": "complete",
                             "message": (
-                                f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
+                                f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
+                                if sql_only
+                                else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
                                 if run["job"].get("transformation", {}).get("enabled")
                                 else f"Saved {len(artifacts)} CSV file(s)."
                             ),

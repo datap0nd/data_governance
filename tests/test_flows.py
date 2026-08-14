@@ -868,6 +868,7 @@ def test_flow_builder_uses_discovered_week_dropdowns():
 
 def test_flow_ui_uses_list_activation_csv_only_and_expanded_logs():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
     assert "flow-enabled-switch" in source
     assert "Enable scheduled execution" not in source
     assert 'file_format: "csv"' in source
@@ -877,6 +878,10 @@ def test_flow_ui_uses_list_activation_csv_only_and_expanded_logs():
     assert 'id="flow-transform-enabled"' in source
     assert 'id="flow-transform-browse"' in source
     assert "script_results" in source
+    assert "Retry SQL only" in log_source
+    assert "/retry-sql" in log_source
+    assert "ASAP will not open" in log_source
+    assert "setTimeout(loadRun, 2000)" in log_source
 
 
 def test_run_progress_events_and_traceback_are_persisted(flow_db):
@@ -934,6 +939,69 @@ def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
 
     assert launched == ["headless"]
     assert queued["worker"] == {"status": "launched", "mode": "headless"}
+
+
+def test_terminal_run_can_retry_sql_without_browser_or_download(flow_db, tmp_path, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode})
+    queued = flows.queue_run(saved["id"], _request())
+    artifact = tmp_path / "saved.csv"
+    artifact.write_text("value\n1\n", encoding="utf-8")
+    source_job = queued["job"]
+    source_job["sql_handoff"] = {
+        "enabled": True, "mode": "replace", "database": "db",
+        "schema": "reporting", "table": "target",
+    }
+    source_artifacts = [{
+        "file_path": str(artifact), "filename": artifact.name, "row_count": 1,
+        "file_size": artifact.stat().st_size, "status": "saved",
+    }]
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flow_runs SET status='failed', job_json=?, artifact_json=?,
+               error='copy failed', finished_at='2026-08-14T10:00:00' WHERE id=?""",
+            (json.dumps(source_job), json.dumps(source_artifacts), queued["id"]),
+        )
+
+    retried = flows.retry_run_sql(queued["id"], _request())
+
+    assert retried["source_run_id"] == queued["id"]
+    assert retried["worker"] == {"status": "launched", "mode": "headless"}
+    assert retried["job"]["job_type"] == "sql_retry"
+    assert retried["job"]["execution"]["browser_mode"] == "headless"
+    assert retried["job"]["sql_retry"]["artifacts"] == source_artifacts
+    assert retried["job"]["transformation"]["enabled"] is False
+    with database.get_db() as db:
+        row = db.execute("SELECT trigger_type, status FROM flow_runs WHERE id=?", (retried["id"],)).fetchone()
+    assert dict(row) == {"trigger_type": "sql_retry", "status": "queued"}
+
+
+def test_sql_retry_rejects_missing_saved_artifact(flow_db, tmp_path, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode})
+    queued = flows.queue_run(saved["id"], _request())
+    source_job = queued["job"]
+    source_job["sql_handoff"] = {
+        "enabled": True, "mode": "append", "database": "db",
+        "schema": "reporting", "table": "target",
+    }
+    missing = tmp_path / "missing.csv"
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_runs SET status='failed', job_json=?, artifact_json=?, finished_at=? WHERE id=?",
+            (
+                json.dumps(source_job),
+                json.dumps([{"file_path": str(missing), "filename": missing.name, "status": "saved"}]),
+                "2026-08-14T10:00:00", queued["id"],
+            ),
+        )
+
+    with pytest.raises(HTTPException, match="no longer available"):
+        flows.retry_run_sql(queued["id"], _request())
 
 
 def test_headed_flow_is_routed_only_to_headed_worker(flow_db, monkeypatch):
