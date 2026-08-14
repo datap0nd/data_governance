@@ -20,7 +20,6 @@ from app.config import (
     UPLOAD_PGUSER,
 )
 
-IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 SQL_CONNECT_TIMEOUT_SECONDS = 10
 SQL_LOCK_TIMEOUT_SECONDS = 30
 SQL_STATEMENT_TIMEOUT_SECONDS = 120
@@ -91,7 +90,14 @@ def _engine(database: str):
 
 
 def _quote_identifier(value: str) -> str:
-    if not IDENTIFIER_RE.fullmatch(value or ""):
+    """Safely quote an exact PostgreSQL catalog identifier.
+
+    Discovered schema and table names can legitimately contain spaces or other
+    punctuation. PostgreSQL keeps those names safe inside double quotes, with
+    any embedded double quote represented twice. NUL is the one character a
+    PostgreSQL identifier cannot contain.
+    """
+    if not isinstance(value, str) or not value or "\x00" in value:
         raise ValueError(f"Invalid SQL identifier: {value!r}")
     return '"' + value.replace('"', '""') + '"'
 

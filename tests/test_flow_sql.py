@@ -7,6 +7,25 @@ import pytest
 from app import flow_sql, flow_worker
 
 
+@pytest.mark.parametrize(
+    ("identifier", "quoted"),
+    [
+        ("reporting", '"reporting"'),
+        ("Import First and Second Activation", '"Import First and Second Activation"'),
+        ('Team "Current" Imports', '"Team ""Current"" Imports"'),
+        ('name"; DROP TABLE users; --', '"name""; DROP TABLE users; --"'),
+    ],
+)
+def test_sql_identifier_quoting_supports_discovered_postgres_names(identifier, quoted):
+    assert flow_sql._quote_identifier(identifier) == quoted
+
+
+@pytest.mark.parametrize("identifier", ["", "invalid\x00identifier", None])
+def test_sql_identifier_quoting_rejects_values_postgres_cannot_identify(identifier):
+    with pytest.raises(ValueError, match="Invalid SQL identifier"):
+        flow_sql._quote_identifier(identifier)
+
+
 def test_asap_csv_normalization_removes_title_and_blank_row(tmp_path):
     path = tmp_path / "download.csv"
     path.write_text(
@@ -198,20 +217,26 @@ def test_sql_load_reports_each_phase_and_commits(tmp_path, monkeypatch):
 
     result = flow_sql.load_artifacts(
         [{"file_path": str(path), "row_count": 1}],
-        {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
+        {
+            "database": "db", "schema": "Reporting Area",
+            "table": "Import First and Second Activation", "mode": "replace",
+        },
         progress=events.append,
     )
 
     assert result["rows_written"] == 1
-    assert result["target"] == "db.reporting.target"
+    assert result["target"] == "db.Reporting Area.Import First and Second Activation"
     assert executed.count("commit") == 1
     assert "rollback" not in executed
     assert "SET LOCAL lock_timeout = '30s'" in executed
     assert "SET LOCAL statement_timeout = '120s'" in executed
-    assert any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
+    assert any(
+        item.startswith('DROP TABLE "Reporting Area"."Import First and Second Activation"')
+        for item in executed
+    )
     assert any(
         item.startswith(
-            'CREATE TABLE "reporting"."target" '
+            'CREATE TABLE "Reporting Area"."Import First and Second Activation" '
             '("sell_out_week" TEXT, "active" TEXT)'
         )
         for item in executed
