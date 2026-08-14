@@ -452,7 +452,7 @@ class DiscoveredFilter(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     control_label: str = Field(min_length=1, max_length=300)
     control_type: str
-    options: list[str] = Field(default_factory=list, max_length=2000)
+    options: list[str] = Field(default_factory=list, max_length=200000)
     automation: dict[str, Any] = Field(default_factory=dict)
     required: bool = False
     position: int = Field(default=0, ge=0, le=1000)
@@ -478,7 +478,7 @@ class DiscoveredReport(BaseModel):
 class ScanProgress(BaseModel):
     status: Literal["running", "succeeded", "failed", "cancelled"]
     progress: dict[str, Any] = Field(default_factory=dict)
-    reports: list[DiscoveredReport] = Field(default_factory=list, max_length=1000)
+    reports: list[DiscoveredReport] = Field(default_factory=list, max_length=10000)
     timings: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
     complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
@@ -500,7 +500,7 @@ def _filter_row(row) -> dict:
 
 def _report_out(db, report_id: int) -> dict:
     row = db.execute(
-        """SELECT r.*, s.name AS site_name, s.adapter, s.auth_url
+        """SELECT r.*, s.name AS site_name, s.adapter, s.auth_url, s.base_url
            FROM flow_reports r JOIN flow_sites s ON s.id = r.site_id WHERE r.id = ?""",
         (report_id,),
     ).fetchone()
@@ -626,6 +626,7 @@ def _build_job(db, flow_id: int) -> dict:
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
             "adapter": report["adapter"], "auth_url": report["auth_url"],
+            "base_url": report["base_url"],
         },
         "report": {
             "id": report["id"], "name": report["name"], "url": report["report_url"],
@@ -1364,6 +1365,16 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
     ).fetchone()
     if active:
         return active["id"]
+    report_automation = _loads(report["automation_json"], {}) if report else {}
+    if report and (
+        report_automation.get("provider") != "microstrategy_rest"
+        or not report_automation.get("project_id")
+        or not report_automation.get("object_id")
+    ):
+        raise HTTPException(
+            409,
+            "This report predates MicroStrategy API discovery. Run a full website catalog refresh first.",
+        )
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -1373,9 +1384,10 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         },
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
-            "report_paths": [
-                _loads(report["automation_json"], {}).get("category_path", [])
-            ] if report else [],
+            "report_refs": [{
+                "project_id": report_automation.get("project_id"),
+                "object_id": report_automation.get("object_id"),
+            }] if report else [],
         },
     }
     cursor = db.execute(

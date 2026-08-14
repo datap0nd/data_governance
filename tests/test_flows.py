@@ -807,13 +807,18 @@ def test_scan_discovery_keeps_duplicate_leaf_names_from_different_menu_paths(flo
     ]
 
 
-def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_entries(flow_db, monkeypatch):
+def test_targeted_report_scan_queues_one_api_object_without_deleting_other_catalog_entries(flow_db, monkeypatch):
     site = flows.create_site(_asap_site(), _request())
     report = flows.DiscoveredReport(
         discovery_key="Mobile > Installed Base > Installed Base (MENA)",
         name="Installed Base (MENA)",
         report_url="https://portal.example.test",
-        automation={"category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"]},
+        automation={
+            "provider": "microstrategy_rest",
+            "project_id": "PROJECT_ID",
+            "object_id": "REPORT_ID",
+            "category_path": ["Project", "Shared Reports", "Installed Base (MENA)"],
+        },
     )
     with database.get_db() as db:
         flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
@@ -823,7 +828,9 @@ def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_ent
     with database.get_db() as db:
         scan = db.execute("SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)).fetchone()
     job = json.loads(scan["job_json"])
-    assert job["discovery"]["report_paths"] == [["Mobile", "Installed Base", "Installed Base (MENA)"]]
+    assert job["discovery"]["report_refs"] == [{
+        "project_id": "PROJECT_ID", "object_id": "REPORT_ID",
+    }]
     assert job["discovery"]["delete_missing"] is False
 
 
@@ -990,13 +997,16 @@ def test_worker_source_contains_no_delete_or_overwrite_operation():
     assert "_safe_output_path" in source
 
 
-def test_asap_execution_uses_rendered_ui_not_internal_response_url():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "expect_response" not in source
-    assert "frame = _asap_wait_for_results(page)" in source
+def test_asap_execution_uses_microstrategy_data_api_not_rendered_controls():
+    import inspect
+    from app.flow_worker import execute_job
+
+    source = inspect.getsource(execute_job)
+    assert "api.download_csv(job, period, staged_file)" in source
+    assert "_asap_wait_for_results" not in source
+    assert "_asap_apply_configuration" not in source
+    assert "_asap_download" not in source
     assert '"stage": "report_execution"' in source
-    assert '"stage": "file_export"' in source
-    assert '"button.report-export"' not in source
 
 
 def test_database_schema_has_no_flow_delete_policy(flow_db):
@@ -1605,16 +1615,15 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     assert len(attempts) == 3
 
 
-def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
-    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert 'candidate.on("download", capture_download)' in source
-    assert 'candidate.remove_listener("download", capture_download)' in source
-    assert "download_page.expect_download" not in source
-    assert "staged_file, export_pages = _asap_download" in source
-    assert "export_page.close(" not in source
-    assert "candidate for candidate in wizard_pages" in source
-    assert "downloads_path=str(download_staging_dir)" in source
-    assert "downloads[0].path()" not in source
+def test_asap_api_download_uses_local_staging_and_existing_safe_file_transfer():
+    import inspect
+    from app.flow_worker import execute_job
+
+    source = inspect.getsource(execute_job)
+    assert "staging_folder = download_staging_dir or profile_dir / \"downloads\"" in source
+    assert "api.download_csv(job, period, staged_file)" in source
+    assert "_store_completed_download(staged_file, output)" in source
+    assert "_asap_download" not in source
 
 
 def test_completed_download_is_normalized_locally_then_copied_without_overwrite(tmp_path):

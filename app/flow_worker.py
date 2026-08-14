@@ -34,8 +34,10 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
+    from app.asap_api import MicroStrategyAPI, library_base_url
     from app.flow_credentials import load_asap_credentials
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
+    from asap_api import MicroStrategyAPI, library_base_url
     from flow_credentials import load_asap_credentials
 
 
@@ -338,6 +340,52 @@ def _asap_login_visible(page: Page) -> bool:
         return password.count() > 0 and password.first.is_visible()
     except Exception:
         return False
+
+
+def _asap_submit_login(page: Page):
+    """Submit the configured credential without relying on portal navigation."""
+    credentials = load_asap_credentials()
+    if not credentials:
+        raise RuntimeError(
+            "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
+        )
+    visible_inputs = page.locator('input:visible')
+    username = page.locator('input[type="text"]:visible, input:not([type]):visible').first
+    password = page.locator('input[type="password"]:visible').first
+    if not username.count() and visible_inputs.count() >= 2:
+        username = visible_inputs.nth(0)
+    if not username.count() or not password.count():
+        raise RuntimeError("ASAP sign-in was shown, but its credential fields were not recognized.")
+    username.fill(credentials["username"])
+    password.fill(credentials["password"])
+    submit = page.get_by_role("button", name=re.compile(r"^login$", re.I)).first
+    if not submit.count():
+        submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
+    if not submit.count():
+        raise RuntimeError("ASAP sign-in form was found, but its Login action was not recognized.")
+    submit.click()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if not _asap_login_visible(page):
+            return
+        page.wait_for_timeout(500)
+    raise RuntimeError("ASAP automatic sign-in did not complete within 120 seconds.")
+
+
+def _asap_api_session(page: Page, site: dict, profile_dir: Path) -> MicroStrategyAPI:
+    """Create a short-lived REST client from the authenticated browser session."""
+    del profile_dir  # Credentials remain account-scoped DPAPI data, not profile files.
+    portal_url = site.get("auth_url") or site.get("base_url")
+    if not portal_url:
+        raise RuntimeError("ASAP needs a portal URL before API discovery can run.")
+    page.goto(portal_url, wait_until="domcontentloaded", timeout=120_000)
+    if _asap_login_visible(page):
+        _asap_submit_login(page)
+    library_url = library_base_url(site)
+    page.goto(f"{library_url}/app/", wait_until="domcontentloaded", timeout=120_000)
+    if _asap_login_visible(page):
+        _asap_submit_login(page)
+    return MicroStrategyAPI.from_browser(page, site)
 
 
 def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
@@ -1365,64 +1413,28 @@ def _asap_activate_export_view(page: Page, frame: Frame) -> tuple[Frame, str | N
 
 def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict], bool]:
     timings = _Timings()
-    deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
     site = job["site"]
-    report_progress("running", {"stage": "navigation", "message": "Opening ASAP for catalog discovery."})
-    with timings.measure("navigation"):
-        _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
-    target_paths = [path for path in job["discovery"].get("report_paths", []) if len(path) >= 2]
-    with timings.measure("report_discovery"):
-        paths = target_paths or _asap_discover_menu_reports(
-            page, job["discovery"].get("scope") or ["Mobile"]
+    report_progress("running", {
+        "stage": "api_authentication",
+        "message": "Creating a MicroStrategy API token from the authenticated browser session.",
+    })
+    with timings.measure("api_authentication"):
+        api = _asap_api_session(page, site, profile_dir)
+    report_refs = {
+        (str(item.get("project_id")), str(item.get("object_id")))
+        for item in job["discovery"].get("report_refs", [])
+        if item.get("project_id") and item.get("object_id")
+    }
+    report_progress("running", {
+        "stage": "object_discovery",
+        "message": "Reading accessible projects and report folders from MicroStrategy REST.",
+    })
+    with timings.measure("object_discovery"):
+        reports = api.discover_catalog(
+            report_progress=report_progress,
+            selected_refs=report_refs or None,
         )
-    reports = []
-    complete = not target_paths
-    for index, path in enumerate(paths, start=1):
-        if time.monotonic() >= deadline:
-            complete = False
-            report_progress("running", {
-                "stage": "time_budget_reached",
-                "message": "The 90-minute scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
-                "report_index": index, "report_count": len(paths),
-            })
-            break
-        report_progress("running", {
-            "stage": "filter_inspection", "message": f"Inspecting report {index} of {len(paths)}.",
-            "current_report": path[-1], "report_index": index, "report_count": len(paths),
-        })
-        lightweight_job = {
-            "site": site,
-            "report": {
-                "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
-                "ready_text": None, "automation": {"category_path": path},
-            },
-        }
-        try:
-            with timings.measure("report_navigation"):
-                frame = _asap_open_report(page, lightweight_job, profile_dir)
-                frame, ready_text = _asap_activate_export_view(page, frame)
-            with timings.measure("filter_inspection"):
-                filters = _asap_discover_filters(frame)
-                report_title = frame.locator("title").text_content() or path[-1]
-            discovery_key = " > ".join(path)
-            reports.append({
-                "discovery_key": discovery_key, "name": path[-1],
-                "report_url": site.get("base_url") or site.get("auth_url"),
-                "ready_text": ready_text, "download_text": "Export CSV",
-                "automation": {
-                    "category_path": path, "report_tab": ready_text,
-                    "report_title": report_title, "export_text": ready_text,
-                },
-                "filters": filters,
-            })
-        except Exception as exc:
-            complete = False
-            timings.items.append({
-                "phase": "report_inspection", "duration_ms": 0, "status": "failed",
-                "metadata": {"path": path, "error": str(exc)},
-            })
-            _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
-    return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
+    return reports, timings.finish(item_count=len(reports)), not bool(report_refs)
 
 
 def _normalize_csv(path: Path) -> dict:
@@ -1582,10 +1594,17 @@ def execute_job(
     download_staging_dir: Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     timings = _Timings()
-    report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
-    with timings.measure("navigation", report_id=job["report"].get("id")):
-        frame = _asap_open_report(page, job, profile_dir) if is_asap else None
+    api = None
+    if is_asap:
+        report_progress("running", {
+            "stage": "api_authentication",
+            "message": "Creating a MicroStrategy API token from the authenticated browser session.",
+        })
+        with timings.measure("api_authentication", report_id=job["report"].get("id")):
+            api = _asap_api_session(page, job["site"], profile_dir)
+    else:
+        report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
     if not is_asap:
@@ -1602,48 +1621,35 @@ def execute_job(
     periods = job["downloads"].get("periods") or [None]
     artifacts = []
     for index, period in enumerate(periods, start=1):
-        if index > 1:
-            if is_asap:
-                with timings.measure("navigation", report_id=job["report"].get("id")):
-                    frame = _asap_open_report(page, job, profile_dir)
-            else:
-                page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
-                if ready_text:
-                    page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
-                if open_export:
-                    _click_named(page, open_export)
+        if index > 1 and not is_asap:
+            page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
+            if ready_text:
+                page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
+            if open_export:
+                _click_named(page, open_export)
         report_progress(
             "running",
             {"stage": "configuring", "message": f"Configuring download {index} of {len(periods)}.", "period": period},
             artifacts,
         )
         if is_asap:
-            with timings.measure("configuration", report_id=job["report"].get("id")):
-                _asap_apply_configuration(frame, job, period)
             report_progress(
                 "running",
-                {"stage": "report_execution", "message": f"Running report {index} of {len(periods)}.", "period": period},
+                {
+                    "stage": "report_execution",
+                    "message": f"Executing MicroStrategy API report {index} of {len(periods)}.",
+                    "period": period,
+                },
                 artifacts,
             )
             with timings.measure("report_execution", report_id=job["report"].get("id")):
-                _click_named(frame, "RUN")
-                # The current MicroStrategy UI completes report execution in
-                # its iframe without a stable prompt-answer response. Waiting
-                # for that internal URL left already-rendered reports stuck for
-                # three minutes. Yield briefly for the loading overlay, then use
-                # the rendered row summary as the portal's public readiness
-                # signal.
-                page.wait_for_timeout(1_000)
-                frame = _asap_wait_for_results(page)
-            report_progress(
-                "running",
-                {"stage": "file_export", "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(periods)}.", "period": period},
-                artifacts,
-            )
-            with timings.measure("file_export", report_id=job["report"].get("id")):
-                staged_file, export_pages = _asap_download(
-                    page, frame, job, download_staging_dir or profile_dir / "downloads",
+                staging_folder = download_staging_dir or profile_dir / "downloads"
+                staged_file = _safe_output_path(
+                    staging_folder,
+                    f"microstrategy-{job['report'].get('id')}-{index}.csv",
                 )
+                api.download_csv(job, period, staged_file)
+            export_pages = []
         else:
             _apply_configuration(page, job, period)
             with page.expect_download(timeout=180_000) as pending:
