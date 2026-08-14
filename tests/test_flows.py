@@ -117,6 +117,57 @@ def test_asap_week_does_not_toggle_off_an_already_selected_requested_default(mon
     assert selected == {"202631": False, "202632": True}
 
 
+def test_asap_list_scope_prefers_nearest_owner_when_labels_repeat():
+    class Collection:
+        def __init__(self, nodes):
+            self.nodes = nodes
+            self.first = nodes[0] if nodes else None
+
+        def count(self):
+            return len(self.nodes)
+
+        def nth(self, index):
+            return self.nodes[index]
+
+    class Node:
+        def __init__(self, name, texts=(), parent=None, area=100):
+            self.name = name
+            self.texts = set(texts)
+            self.parent = parent
+            self.area = area
+
+        def is_visible(self):
+            return True
+
+        def locator(self, selector):
+            assert selector == "xpath=parent::*"
+            return Collection([self.parent] if self.parent else [])
+
+        def get_by_text(self, value, exact=True):
+            return Collection([Node(value)] if value in self.texts else [])
+
+        def bounding_box(self):
+            return {"width": self.area, "height": 1}
+
+    root = Node("root", texts={"Choice"}, area=1000)
+    unrelated = Node("unrelated", parent=root, area=100)
+    prompt = Node("prompt", texts={"Choice"}, parent=root, area=80)
+    repeated_member = Node("repeated member", parent=unrelated)
+    actual_label = Node("actual label", parent=prompt)
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Collection([])
+
+        def get_by_text(self, value, exact=True):
+            assert value == "Repeated Label"
+            return Collection([repeated_member, actual_label])
+
+    assert flow_worker._asap_list_scope(Frame(), "Repeated Label", ["Choice"]) is prompt
+
+
 def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members_on(monkeypatch):
     events = []
     selected = {"Biz Sub": True, "Sold To": False, "Customer": True}
@@ -162,6 +213,67 @@ def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members
         ("click", "Customer", ()),
     ]
     assert selected == {"Biz Sub": False, "Sold To": True, "Customer": True}
+
+
+def test_asap_dimension_scopes_duplicate_sell_out_week_member(monkeypatch):
+    events = []
+    selected = {"MKT Name": True, "Item": True, "Sell-out Week": True}
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            selected[self.value] = not selected[self.value]
+
+    class DimensionScope:
+        def get_by_text(self, value, exact=True):
+            assert value in selected
+            return Locator(value)
+
+        def inner_text(self):
+            return "Dimension\nMKT Name\nItem\nSell-out Week"
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=True):
+            # A page-wide lookup for this value would resolve the separate Week
+            # prompt heading first. The Dimension path must never use it.
+            if value != "Dimension":
+                raise AssertionError(f"page-wide member lookup used for {value}")
+            return Locator(value)
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_list_scope", lambda _frame, _label, _requested: DimensionScope(),
+    )
+    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Dimension", ["MKT Name", "Item"], ["MKT Name", "Item"],
+    )
+
+    assert events == [
+        ("click", "MKT Name", ()),
+        ("click", "Item", ()),
+        ("click", "Sell-out Week", ()),
+        ("click", "MKT Name", ()),
+        ("click", "Item", ()),
+    ]
+    assert selected == {"MKT Name": True, "Item": True, "Sell-out Week": False}
 
 
 def test_asap_dimension_bypasses_native_selection(monkeypatch):

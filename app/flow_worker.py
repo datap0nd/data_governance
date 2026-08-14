@@ -449,16 +449,120 @@ def _asap_member_selected(option) -> bool | None:
         return None
 
 
+def _asap_list_scope(frame: Frame, label: str, requested: list[str]):
+    """Resolve the semantic or smallest structural owner of a prompt list."""
+    # Prefer the WAI-ARIA listbox contract when the portal exposes it. This is
+    # both stricter and more resilient than page-wide text matching.
+    try:
+        listboxes = frame.get_by_role("listbox", name=label, exact=True)
+        for index in range(listboxes.count()):
+            listbox = listboxes.nth(index)
+            if not listbox.is_visible():
+                continue
+            if all(any(
+                listbox.get_by_text(value, exact=True).nth(option_index).is_visible()
+                for option_index in range(listbox.get_by_text(value, exact=True).count())
+            ) for value in requested):
+                return listbox
+    except Exception:
+        pass
+
+    # Legacy MicroStrategy controls do not always expose listbox semantics.
+    # In that case, narrow from every matching label to the nearest ancestor
+    # containing every requested member, then use only descendants of it.
+    labels = frame.get_by_text(label, exact=True)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        matches = []
+        for index in range(labels.count()):
+            heading = labels.nth(index)
+            try:
+                if not heading.is_visible():
+                    continue
+                # Lightweight test doubles and older adapters do not expose
+                # locator traversal. Their frame is already the list scope.
+                if not callable(getattr(heading, "locator", None)):
+                    return frame
+                ancestor = heading
+                for depth in range(1, 9):
+                    parents = ancestor.locator("xpath=parent::*")
+                    if not parents.count():
+                        break
+                    ancestor = parents.first
+                    contains_requested = True
+                    for value in requested:
+                        candidates = ancestor.get_by_text(value, exact=True)
+                        if not any(
+                            candidates.nth(option_index).is_visible()
+                            for option_index in range(candidates.count())
+                        ):
+                            contains_requested = False
+                            break
+                    if not contains_requested:
+                        continue
+                    box = ancestor.bounding_box()
+                    area = box["width"] * box["height"] if box else float("inf")
+                    matches.append((depth, area, ancestor))
+                    break
+            except Exception:
+                continue
+        if matches:
+            return min(matches, key=lambda match: (match[0], match[1]))[2]
+        frame.page.wait_for_timeout(250)
+    raise RuntimeError(
+        f"Could not isolate the ASAP {label} prompt containing: {requested}. "
+        "The report was not run with an ambiguous filter."
+    )
+
+
+def _asap_live_list_values(scope, label: str) -> list[str]:
+    """Read list members rendered inside an isolated ASAP prompt."""
+    values = []
+    try:
+        options = scope.locator("[role='option'], option, [aria-selected], [aria-checked]")
+        for index in range(options.count()):
+            option = options.nth(index)
+            if not option.is_visible():
+                continue
+            value = _clean_text(option.inner_text() or option.get_attribute("value"))
+            if value and value not in values:
+                values.append(value)
+    except Exception:
+        pass
+    if values:
+        return values
+
+    # Visual-only legacy lists have no option role. The already-isolated
+    # container is the boundary, so its distinct rendered lines are the safest
+    # generic fallback. Selection-state inspection later discards non-options.
+    try:
+        lines = list(dict.fromkeys(
+            _clean_text(line) for line in scope.inner_text().splitlines() if _clean_text(line)
+        ))
+    except Exception:
+        return []
+    for value in lines:
+        if value.casefold().rstrip(":") == label.casefold().rstrip(":"):
+            continue
+        if re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I):
+            continue
+        if "type to search" in value.casefold():
+            continue
+        values.append(value)
+    return values
+
+
 def _asap_select_list_values(
     frame: Frame, label: str, values: list[str], available_values: list[str] | None = None,
 ):
-    heading = frame.get_by_text(label, exact=True).first
-    heading.wait_for(state="visible", timeout=60_000)
     if not values:
         return
 
+    requested = list(dict.fromkeys(values))
+    scope = _asap_list_scope(frame, label, requested)
+
     def visible_option(value: str):
-        candidates = frame.get_by_text(value, exact=True)
+        candidates = scope.get_by_text(value, exact=True)
         option = next(
             (candidates.nth(index) for index in range(candidates.count()) if candidates.nth(index).is_visible()),
             None,
@@ -467,8 +571,9 @@ def _asap_select_list_values(
             raise RuntimeError(f"Could not find {label} option: {value}")
         return option
 
-    requested = list(dict.fromkeys(values))
-    available = list(dict.fromkeys([*(available_values or []), *requested]))
+    available = list(dict.fromkeys([
+        *(available_values or []), *_asap_live_list_values(scope, label), *requested,
+    ]))
 
     def selected_states() -> dict[str, bool]:
         result = {}
@@ -480,6 +585,17 @@ def _asap_select_list_values(
             if state is not None:
                 result[value] = state
         return result
+
+    def stable_exact_selection(samples: int = 3) -> tuple[bool, dict[str, bool]]:
+        states = {}
+        for sample in range(samples):
+            states = selected_states()
+            actual = {value for value, selected in states.items() if selected}
+            if actual != set(requested) or any(states.get(value) is not True for value in requested):
+                return False, states
+            if sample + 1 < samples:
+                frame.page.wait_for_timeout(150)
+        return True, states
 
     if label.casefold().rstrip(":") == "dimension":
         # Dimension is the one ASAP prompt that opens with a retained member.
@@ -508,11 +624,11 @@ def _asap_select_list_values(
             visible_option(value).click()
             frame.page.wait_for_timeout(250)
 
-        final_states = selected_states()
+        exact, final_states = stable_exact_selection()
         actual = [value for value, selected in final_states.items() if selected]
         missing = [value for value in requested if final_states.get(value) is not True]
         extras = [value for value in actual if value not in requested]
-        if missing or extras:
+        if not exact or missing or extras:
             raise RuntimeError(
                 f"ASAP Dimension selection did not match the flow. "
                 f"Requested: {requested}. Selected: {actual}."
@@ -529,7 +645,13 @@ def _asap_select_list_values(
         value for value, selected in initial_states.items() if selected
     }
     if initially_selected == set(requested):
-        return
+        exact, _states = stable_exact_selection()
+        if exact:
+            return
+        initial_states = selected_states()
+        initially_selected = {
+            value for value, selected in initial_states.items() if selected
+        }
     if requested[0] not in initially_selected:
         visible_option(requested[0]).click()
         frame.page.wait_for_timeout(250)
@@ -545,21 +667,21 @@ def _asap_select_list_values(
     # MicroStrategy can retain selections or drop rapid clicks. Reconcile the
     # rendered state and verify exact equality before allowing RUN.
     for _attempt in range(3):
-        states = selected_states()
+        exact, states = stable_exact_selection()
         if states:
             extras = [value for value, selected in states.items() if selected and value not in requested]
             missing = [value for value in requested if states.get(value) is False]
-            if not extras and not missing and all(states.get(value) is True for value in requested):
+            if exact:
                 return
             for value in [*extras, *missing]:
                 visible_option(value).click(modifiers=["Control"])
                 frame.page.wait_for_timeout(250)
             continue
         break
-    final_states = selected_states()
+    exact, final_states = stable_exact_selection()
     if final_states:
         actual = [value for value, selected in final_states.items() if selected]
-        if set(actual) != set(requested):
+        if not exact:
             raise RuntimeError(
                 f"ASAP {label} selection did not match the flow. "
                 f"Requested: {requested}. Selected: {actual}."

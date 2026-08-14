@@ -467,3 +467,23 @@ files and do not enable SQL handoff.
   `git diff --check` passed.
 - Next step: deploy and repeat Week 27 through Week 32. The sixth Week 32 file
   should complete without toggling off the retained default.
+
+## Prompt-Scoped Selection Verification (2026-08-14)
+
+- A live screenshot exposed a repeated-text ambiguity: a prompt label can also
+  be the exact text of a selectable member elsewhere on the same report. The
+  worker previously searched the whole frame and accepted the first visible
+  exact-text match, so state inspection could target the wrong DOM element.
+- List automation now resolves the owning control generically. It prefers a
+  named WAI-ARIA `listbox`; for legacy MicroStrategy markup, it chooses the
+  nearest ancestor containing every requested member. All option reads and
+  clicks are then restricted to that owner.
+- The worker audits semantic live options when available and otherwise audits
+  the distinct rendered rows inside the isolated owner. Final exact equality
+  must remain true for three consecutive state polls before the flow proceeds.
+  No filter name or member value has a one-off selector rule.
+- Full suite: `180 passed`; targeted repeated-label and live-extra regression
+  tests, Python compilation, JavaScript syntax checks, and `git diff --check`
+  pass. Final Git delivery still needs to be recorded after this handoff update.
+- Next step: deploy the updated build and rerun the same headed case. Confirm
+  the visible Dimension members exactly match the configured set before RUN.
