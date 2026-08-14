@@ -2,75 +2,74 @@
 
 ## Current Objective
 
-Deliver and live-verify a PostgreSQL managed snapshot flow that creates its
-target on the first run and refreshes it safely on later full-history runs.
+Deploy and live-verify one bundled ASAP flow that downloads the Global/Region
+and Selected Countries Excel exports, then atomically creates or refreshes one
+`ASAP_TI` PostgreSQL table with both sources.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit: `3ba9c78 Implement managed SQL snapshots`
-- Latest commit before this handoff update: `3ba9c78 Implement managed SQL snapshots`
+- Runtime commit: `6f4a175 Add atomic multi-export ASAP flows`
+- Stable rollback tag: `asap-ti-pre-multiexport-stable-2026-08-15` at `2560be8`
 - Public repo: no, private
-- Push status: runtime commit verified pushed to `origin/main`
-- Preserve untracked `governance.db-shm` and `governance.db-wal`; never stage them
+- Push status: runtime commit verified on `origin/main`
+- Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
 
-- Internal SQL mode `replace` now means managed snapshot refresh for backward
-  compatibility with saved flows. It no longer drops the target table.
-- A missing target is created from a transaction-scoped staging table whose
-  normalized CSV columns are nullable PostgreSQL `TEXT`.
-- An existing target keeps its object identity, grants, indexes, constraints,
-  triggers, and older nullable columns. New CSV columns are added as nullable
-  `TEXT`; prior rows are truncated and the staged full snapshot is inserted.
-- Staging, schema evolution, row replacement, and commit share one transaction.
-  Any COPY, constraint, or promotion failure rolls everything back.
-- Required existing columns absent from the CSV fail before the target changes.
-- Append still requires an existing table and maps normalized CSV headers to
-  exact target column names.
-- Managed snapshot may use a new table name inside a schema from the latest SQL
-  catalog scan. The SQL account needs schema `USAGE` and `CREATE`; refreshing an
-  existing table also requires ownership.
+- One logical flow owns both export views. Every selected export must download
+  and validate before the one downstream SQL transaction begins.
+- Export views are catalogued explicitly and selected in the flow builder.
+- Reports without a week prompt use `period_strategy=none` and do not click RUN.
+- Excel originals are preserved and normalized to SQL-ready UTF-8 CSV files.
+- Every normalized file receives `Metronome Export View` source lineage.
+- Managed snapshot mode unions differing source columns by normalized name,
+  creates a missing table, or refreshes an existing table without replacing its
+  object. Missing source-specific fields are null.
+- Monthly scheduling supports day of month. Invalid dates are skipped.
+- The old startup migration that forced XLSX flows back to CSV was removed.
 
 ## Files Changed
 
-- `app/flow_sql.py`: implement transactional managed snapshot creation,
-  refresh, schema evolution, rollback, and 63-byte identifier validation.
-- `app/routers/flows.py`: allow a new managed table name in a discovered schema.
-- `app/static/app.js`: expose managed snapshot behavior and editable table name.
-- `app/static/index.html`: invalidate the main JavaScript cache.
-- `app/static/flow_run_log.js`: correct SQL-only retry consequences.
-- `app/static/flow_run_log.html`: invalidate the run-log JavaScript cache.
-- `README.md`: document current SQL handoff behavior and remove a stale limit.
-- `tests/test_flow_sql.py`: cover create, refresh, schema evolution, and rollback.
-- `tests/test_flows.py`: cover API validation and both UI surfaces.
+- `app/database.py`: persist export-view selection and monthly schedule day.
+- `app/routers/flows.py`: validate bundle views, no-period reports, XLSX, and monthly schedules.
+- `app/flow_worker.py`: scan and execute multiple views, raw-table export fallback, Excel normalization, and source lineage.
+- `app/flow_sql.py`: union different bundle schemas in one managed snapshot.
+- `app/static/app.js`: bundle, XLSX, no-period, monthly, and SQL builder controls.
+- `app/static/index.html`: main JavaScript cache bump.
+- `README.md`: document the bundled execution contract.
+- `tests/test_flows.py`, `tests/test_flow_sql.py`, `tests/test_flow_worker_discovery.py`: regression coverage.
 
 ## Commands And Checks
 
-- Full Python suite: `207 passed in 2.79s`.
-- Real temporary PostgreSQL 16 integration: passed create-on-first-run, refresh,
-  stable table OID, nullable schema evolution, constraint/index preservation,
-  rollback after a forced unique violation, staging cleanup, and exact-column
-  append compatibility.
+- Full Python suite: `213 passed in 2.63s`.
 - `node --check app/static/app.js`: passed.
 - `node --check app/static/flow_run_log.js`: passed.
-- `node tests/test_lineage_layers.mjs`: passed.
-- `python3.11 -m py_compile app/flow_sql.py app/flow_worker.py app/routers/flows.py`: passed.
+- Python compilation for changed runtime modules: passed.
 - `git diff --check`: passed.
-- Citrix and the live PostgreSQL target were not mutated or tested in this task.
+- Real temporary PostgreSQL integration: passed first-run create and second-run
+  refresh using two files with different columns and column order. Verified
+  stable table OID, no duplicate accumulation, expected per-source counts,
+  schema evolution, and source-specific nulls.
+- Live Metronome deployment and ASAP download: not yet run.
 
 ## Open Questions
 
-- The managed snapshot implementation has not been installed or exercised
-  through the live Metronome-to-PostgreSQL path.
-- The configured SQL role still needs persistent `USAGE` and `CREATE` on the
-  selected schema before a first-run target can be created there.
-- Prior week-selection and two-queued-flow Stop changes still require their
-  separate live acceptance checks.
+- Citrix is connected, but the nested work desktop is currently shown in a
+  windowed RDP session with Outlook active. Computer Use has keyboard access but
+  no coordinate targeting for the RDP window, so Edge cannot be selected safely.
+- The actual Excel attachment/header shape still needs live inspection through
+  the deployed worker. The implementation fails closed if no usable table header
+  is found.
+- Do not grant or change PostgreSQL schema permissions without a fresh exact
+  approval naming the schema and privilege. First attempt the already approved
+  flow with the current SQL role.
 
 ## Next Step
 
-After exact approval, grant the configured SQL role `USAGE` and `CREATE` on the
-chosen schema, install the exact delivered main commit, configure a new managed
-target name, and run one full snapshot twice to verify create then refresh.
+Have the user click the Edge icon inside the nested work desktop and leave
+Metronome visible. Then update Metronome from `main`, run a targeted catalog
+refresh for `ASAP -> TechInsights Smartphone M/S`, create the two-view monthly
+XLSX managed-snapshot flow targeting `ASAP_TI`, and run it twice while verifying
+the table and source counts in PostgreSQL.
