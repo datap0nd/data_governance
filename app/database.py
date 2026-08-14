@@ -455,6 +455,7 @@ CREATE TABLE IF NOT EXISTS flows (
     name                TEXT UNIQUE NOT NULL,
     site_id             INTEGER NOT NULL REFERENCES flow_sites(id),
     report_id           INTEGER NOT NULL REFERENCES flow_reports(id),
+    export_views_json   TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
     selections_json     TEXT NOT NULL DEFAULT '{}',
     download_mode       TEXT NOT NULL DEFAULT 'single',
@@ -469,6 +470,7 @@ CREATE TABLE IF NOT EXISTS flows (
     schedule_type       TEXT NOT NULL DEFAULT 'manual',
     schedule_time       TEXT,
     schedule_days       TEXT,
+    schedule_day        INTEGER,
     next_run_at         DATETIME,
     last_run_at         DATETIME,
     last_status         TEXT,
@@ -1023,6 +1025,8 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_table TEXT",
     "ALTER TABLE flows ADD COLUMN transform_enabled INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE flows ADD COLUMN transform_script_path TEXT",
+    "ALTER TABLE flows ADD COLUMN export_views_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE flows ADD COLUMN schedule_day INTEGER",
     """CREATE TABLE IF NOT EXISTS flow_run_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id INTEGER NOT NULL REFERENCES flow_runs(id),
@@ -1035,7 +1039,6 @@ MIGRATIONS = [
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_events_run ON flow_run_events(run_id, id)",
-    "UPDATE flows SET file_format='csv', filename_template=replace(filename_template, '.xlsx', '.csv') WHERE file_format='xlsx' OR lower(filename_template) LIKE '%.xlsx'",
     """CREATE TABLE IF NOT EXISTS flow_sql_catalog (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         database_name TEXT NOT NULL,

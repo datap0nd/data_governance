@@ -55,6 +55,93 @@ def test_asap_csv_normalization_detects_semicolon_delimiter(tmp_path):
     ]
 
 
+def test_excel_download_is_preserved_and_normalized_with_export_lineage(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Tutorial title"])
+    sheet.append([])
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+
+    output = tmp_path / "bundle_global.xlsx"
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", export_view="Export Wizard (Global/Region)",
+    )
+
+    normalized = Path(metadata["file_path"])
+    assert output.is_file()
+    assert metadata["original_file_path"] == str(output)
+    assert metadata["export_view"] == "Export Wizard (Global/Region)"
+    assert metadata["row_count"] == 1
+    assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
+        "Market,Units,Metronome Export View",
+        "Global,12,Export Wizard (Global/Region)",
+    ]
+
+
+def test_managed_snapshot_unions_different_bundle_columns_by_name(tmp_path, monkeypatch):
+    global_path = tmp_path / "global.csv"
+    country_path = tmp_path / "countries.csv"
+    global_path.write_text("region,units,metronome_export_view\nGlobal,10,Global\n", encoding="utf-8")
+    country_path.write_text("country,vendor,metronome_export_view\nAE,Vendor A,Countries\n", encoding="utf-8")
+    executed = []
+    copied = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"), rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return []
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied.append((statement, stream.read()))
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            rendered = str(statement)
+            executed.append(rendered)
+            return None if rendered.startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+    result = flow_sql.load_artifacts(
+        [{"file_path": str(global_path)}, {"file_path": str(country_path)}],
+        {"database": "db", "schema": "reporting", "table": "asap_ti", "mode": "replace"},
+    )
+
+    create = next(item for item in executed if item.startswith('CREATE TABLE "reporting"'))
+    assert all(f'"{column}" TEXT' in create for column in (
+        "region", "units", "metronome_export_view", "country", "vendor",
+    ))
+    assert 'COPY "reporting"."_metronome_stage_' in copied[0][0]
+    assert '("region", "units", "metronome_export_view")' in copied[0][0]
+    assert '("country", "vendor", "metronome_export_view")' in copied[1][0]
+    assert result["files_loaded"] == 2
+    assert result["rows_written"] == 2
+    assert result["target_created"] is True
+    assert executed[-1] == "commit"
+
+
 def test_transformations_run_once_per_file_and_use_script_results(tmp_path):
     source = tmp_path / "input.csv"
     source.write_text("name,value\na,1\n", encoding="utf-8")

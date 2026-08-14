@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from app import flow_worker
 from app.flow_worker import _asap_goto, _menu_report_paths, _navigation_roots, _wait_for_navigation_roots
 
 
@@ -72,3 +75,57 @@ def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_p
 
     assert _asap_goto(Page(), "https://portal.example/login", tmp_path) is True
     assert calls == ["https://portal.example/login", tmp_path]
+
+
+def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
+    activated = []
+    staged = []
+
+    monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
+    monkeypatch.setattr(
+        flow_worker, "_asap_activate_export_view",
+        lambda _page, frame, label: (activated.append(label) or frame, label),
+    )
+    monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
+    monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
+
+    def fake_download(_page, _frame, _job, staging_dir):
+        path = Path(staging_dir) / f"source-{len(staged) + 1}.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("value,units\nitem,1\n", encoding="utf-8")
+        staged.append(path)
+        return path, []
+
+    monkeypatch.setattr(flow_worker, "_asap_download", fake_download)
+    progress = []
+    job = {
+        "flow": {"id": 1, "name": "ASAP TI"},
+        "site": {"adapter": "asap_portal"},
+        "report": {
+            "id": 1, "name": "TechInsights Smartphone M/S", "filters": [],
+            "automation": {"export_views": [
+                {"label": "Export Wizard (Global/Region)", "filter_keys": []},
+                {"label": "Export Wizard (Selected Countries)", "filter_keys": []},
+            ]},
+            "export_views": [
+                "Export Wizard (Global/Region)", "Export Wizard (Selected Countries)",
+            ],
+        },
+        "selections": {},
+        "downloads": {
+            "periods": [None], "target_folder": str(tmp_path), "file_format": "csv",
+            "filename_template": "{flow}_{export}.csv",
+        },
+    }
+
+    artifacts, _timings = flow_worker.execute_job(
+        object(), job, lambda *args: progress.append(args), tmp_path,
+        tmp_path / "staging",
+    )
+
+    assert activated == job["report"]["export_views"]
+    assert len(artifacts) == 2
+    assert [item["export_view"] for item in artifacts] == activated
+    assert [item["bundle_index"] for item in artifacts] == [1, 2]
+    for artifact, label in zip(artifacts, activated):
+        assert label in Path(artifact["file_path"]).read_text(encoding="utf-8-sig")

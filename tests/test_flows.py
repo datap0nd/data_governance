@@ -830,6 +830,61 @@ def test_start_to_latest_uses_newest_discovered_asap_week(flow_db):
     ]
 
 
+def test_no_period_bundle_queues_every_discovered_export_view(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        automation = {
+            "category_path": ["Mobile", "Smartphone"],
+            "export_views": [
+                {"label": "Export Wizard (Global/Region)", "filter_keys": []},
+                {"label": "Export Wizard (Selected Countries)", "filter_keys": []},
+            ],
+        }
+        db.execute(
+            "UPDATE flow_reports SET automation_json=? WHERE id=?",
+            (json.dumps(automation), report["id"]),
+        )
+        db.execute("DELETE FROM flow_report_filters WHERE report_id=?", (report["id"],))
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], selections={}, export_views=[],
+            period_strategy="none", start_week=None, end_week=None,
+            download_mode="single", window_weeks=None, file_format="xlsx",
+            filename_template="{flow}_{export}.xlsx", schedule_type="monthly",
+            schedule_days=[], schedule_day=1,
+        ),
+        _request(),
+    )
+    assert saved["export_views"] == [
+        "Export Wizard (Global/Region)", "Export Wizard (Selected Countries)",
+    ]
+    assert saved["schedule_day"] == 1
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["periods"] == [None]
+    assert queued["job"]["downloads"]["file_format"] == "xlsx"
+    assert queued["job"]["report"]["export_views"] == saved["export_views"]
+    database.init_db()
+    reloaded = next(item for item in flows.list_flows() if item["id"] == saved["id"])
+    assert reloaded["file_format"] == "xlsx"
+    assert reloaded["filename_template"] == "{flow}_{export}.xlsx"
+
+
+def test_multiple_export_views_require_unique_filename_token():
+    with pytest.raises(ValueError, match="export or index token"):
+        flows.FlowWrite(
+            name="Bundle", site_id=1, report_id=1,
+            export_views=["Global", "Countries"], selections={},
+            period_strategy="none", download_mode="single", file_format="xlsx",
+            target_folder=r"C:\Reports", filename_template="bundle.xlsx",
+        )
+
+
+def test_monthly_schedule_skips_months_without_selected_day(monkeypatch):
+    monkeypatch.setattr(flows, "_now", lambda: datetime(2026, 2, 1, 9, 0))
+    assert flows._schedule_next("monthly", "08:00", [], 31) == datetime(2026, 3, 31, 8, 0)
+
+
 def test_filename_uses_flow_start_end_and_selected_format():
     worker = __import__("app.flow_worker", fromlist=["_render_filename"])
     job = {
@@ -844,14 +899,15 @@ def test_filename_uses_flow_start_end_and_selected_format():
     assert filename == "Inflow_Outflow_W19_W27.csv"
 
 
-def test_excel_format_is_rejected():
-    with pytest.raises(ValueError, match="must be CSV"):
-        flows.FlowWrite(
-            name="Excel is not supported", site_id=1, report_id=1, enabled=False,
-            selections={}, download_mode="single", period_strategy="fixed",
-            file_format="xlsx", start_week="2026-W30", end_week="2026-W31",
-            target_folder=r"C:\Reports", filename_template="report.xlsx",
-        )
+def test_excel_format_is_supported_and_keeps_xlsx_extension():
+    body = flows.FlowWrite(
+        name="Excel bundle", site_id=1, report_id=1, enabled=False,
+        selections={}, download_mode="single", period_strategy="fixed",
+        file_format="xlsx", start_week="2026-W30", end_week="2026-W31",
+        target_folder=r"C:\Reports", filename_template="report.xlsx",
+    )
+    assert body.file_format == "xlsx"
+    assert body.filename_template == "report.xlsx"
 
 
 def test_rolling_window_advances_only_after_success(flow_db):
@@ -1019,7 +1075,7 @@ def test_manual_flow_cannot_be_activated(flow_db):
         ),
         _request(),
     )
-    with pytest.raises(HTTPException, match="daily or weekly"):
+    with pytest.raises(HTTPException, match="daily, weekly, or monthly"):
         flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=True), _request())
 
 
@@ -1451,13 +1507,15 @@ def test_flow_builder_uses_discovered_week_dropdowns():
     assert '<select id="flow-end-week" required>' in source
 
 
-def test_flow_ui_uses_list_activation_csv_only_and_expanded_logs():
+def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
     log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
     assert "flow-enabled-switch" in source
     assert "Enable scheduled execution" not in source
-    assert 'file_format: "csv"' in source
-    assert 'id="flow-file-format"' not in source
+    assert 'file_format: $("#flow-file-format").value' in source
+    assert 'id="flow-file-format"' in source
+    assert 'data-flow-export-view' in source
+    assert 'id="flow-schedule-day"' in source
     assert "Expanded logs" in source
     assert "/flow-runs/${run.id}" in source
     assert 'id="flow-transform-enabled"' in source
@@ -1740,7 +1798,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=52' in index
+    assert '/static/app.js?v=53' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():

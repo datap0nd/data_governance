@@ -150,7 +150,10 @@ def _safe_output_path(folder: Path, filename: str) -> Path:
     raise RuntimeError("Could not find an unused filename after 9,999 attempts.")
 
 
-def _render_filename(template: str, job: dict, period: str | list[str] | None, index: int) -> str:
+def _render_filename(
+    template: str, job: dict, period: str | list[str] | None, index: int,
+    export_view: str | None = None,
+) -> str:
     raw_week = period or job["downloads"].get("periods", [None])[0] or ""
     if isinstance(raw_week, list):
         start = raw_week[0] if raw_week else ""
@@ -169,6 +172,7 @@ def _render_filename(template: str, job: dict, period: str | list[str] | None, i
     values = {
         "flow": job["flow"]["name"],
         "report": job["report"]["name"],
+        "export": re.sub(r"[^A-Za-z0-9]+", "_", export_view or "export").strip("_").casefold(),
         "week": week,
         "start_period": short_period(start),
         "end_period": short_period(end),
@@ -181,7 +185,7 @@ def _render_filename(template: str, job: dict, period: str | list[str] | None, i
     for key, value in values.items():
         name = name.replace("{" + key + "}", str(value))
     name = re.sub(r"[<>:\"/\\|?*\x00-\x1f\s]+", "_", name).strip(" ._")
-    expected = ".csv"
+    expected = f".{job['downloads'].get('file_format') or 'csv'}"
     if not name.casefold().endswith(expected):
         name += expected
     return name
@@ -411,7 +415,25 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
         try:
             frame = _asap_frame(page)
             if expected:
-                frame.get_by_text(expected, exact=True).first.wait_for(state="visible", timeout=120_000)
+                # Export-view links can live in the outer ASAP shell or in a
+                # nested MicroStrategy frame. Waiting in only content-frame
+                # made the same report appear missing depending on portal
+                # rendering timing.
+                deadline = time.monotonic() + 120
+                found_expected = False
+                while time.monotonic() < deadline and not found_expected:
+                    for root in list(dict.fromkeys([page.main_frame, frame, *page.frames])):
+                        try:
+                            matches = root.get_by_text(expected, exact=True)
+                            if any(item.is_visible() for item in matches.all()):
+                                found_expected = True
+                                break
+                        except Exception:
+                            continue
+                    if not found_expected:
+                        page.wait_for_timeout(250)
+                if not found_expected:
+                    raise RuntimeError(f"ASAP report did not show its expected view: {expected}")
             if frame.get_by_text("500", exact=True).count():
                 raise RuntimeError("ASAP returned an internal server error while loading the report.")
             return frame
@@ -833,6 +855,7 @@ def _wait_for_staged_download(
 
 def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
+    opens_export_menu = False
     # The current MicroStrategy report has two compact controls beside RUN.
     # The first is Export Options and the second is subtotal. Their icon-only
     # markup has no stable accessible label, so resolve the first visible
@@ -864,18 +887,86 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         if export_control is not None:
             break
     if export_control is None:
-        raise RuntimeError("Could not find the ASAP Export Options control beside RUN.")
+        # Some raw-data views have no prompt RUN toolbar. Their export action
+        # appears only after the rendered table is hovered and its information
+        # icon is opened, matching ASAP's own download tutorial.
+        for root in reversed(page.frames):
+            try:
+                canvas = root.locator(
+                    "table:visible,[role=grid]:visible,[class*='grid']:visible,"
+                    "[class*='table']:visible,[class*='report']:visible"
+                ).first
+                if canvas.count() and canvas.is_visible():
+                    canvas.hover()
+                candidates = [
+                    root.get_by_role(
+                        "button", name=re.compile(r"^(?:information|info|more info)$", re.I),
+                    ),
+                    root.locator(
+                        "[title*='information' i]:visible,[title='Info' i]:visible,"
+                        "[aria-label*='information' i]:visible,[aria-label='Info' i]:visible,"
+                        "img[alt*='information' i]:visible,img[alt='Info' i]:visible"
+                    ),
+                ]
+                export_control = next(
+                    (
+                        locator.first for locator in candidates
+                        if locator.count() and locator.first.is_visible()
+                    ),
+                    None,
+                )
+                if export_control is not None:
+                    opens_export_menu = True
+                    break
+            except Exception:
+                continue
+    if export_control is None:
+        raise RuntimeError(
+            "Could not find either the ASAP Export Options control beside RUN "
+            "or the raw-table information control."
+        )
     pages_before = set(page.context.pages)
     export_control.click()
+    if opens_export_menu:
+        menu_export = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and menu_export is None:
+            for root in [page.main_frame, *reversed(page.frames)]:
+                for locator in (
+                    root.get_by_role("menuitem", name="Export", exact=True),
+                    root.get_by_role("button", name="Export", exact=True),
+                    root.get_by_text("Export", exact=True),
+                ):
+                    try:
+                        if locator.count() and locator.first.is_visible():
+                            menu_export = locator.first
+                            break
+                    except Exception:
+                        continue
+                if menu_export is not None:
+                    break
+            if menu_export is None:
+                page.wait_for_timeout(200)
+        if menu_export is None:
+            raise RuntimeError("ASAP raw-table information menu opened, but its Export action was not visible.")
+        menu_export.click()
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
     # in the existing page. Search both shapes instead of requiring a popup.
     format_option = None
     export_action = None
     wizard_pages = set()
     deadline = time.monotonic() + 60
-    file_format = "csv"
+    file_format = str(job.get("downloads", {}).get("file_format") or "csv").casefold()
     format_names = (
-        "CSV file format", re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I)
+        (
+            "Excel file format",
+            re.compile(r"^(?:Microsoft )?Excel(?: workbook| file format)?(?: \(.*\.xlsx.*\))?$", re.I),
+        )
+        if file_format == "xlsx" else
+        (
+            "CSV file format",
+            re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I),
+        )
     )
     while time.monotonic() < deadline and (format_option is None or export_action is None):
         current_pages = page.context.pages
@@ -1340,8 +1431,8 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     return definitions
 
 
-def _asap_activate_export_view(page: Page, frame: Frame) -> tuple[Frame, str | None]:
-    """Open the report's export-oriented view using visible ASAP semantics."""
+def _asap_export_view_candidates(page: Page, frame: Frame) -> list[tuple[str, Any]]:
+    """Return every visible export view without changing the report."""
     visible = []
     # The current portal places this control in the outer ASAP shell, while
     # some older reports render it inside a nested MicroStrategy frame. The
@@ -1361,12 +1452,32 @@ def _asap_activate_export_view(page: Page, frame: Frame) -> tuple[Frame, str | N
                     continue
         if not visible:
             page.wait_for_timeout(250)
+    return visible
+
+
+def _asap_activate_export_view(
+    page: Page, frame: Frame, requested_label: str | None = None,
+) -> tuple[Frame, str | None]:
+    """Open one exact export-oriented view using visible ASAP semantics."""
+    visible = _asap_export_view_candidates(page, frame)
     if not visible:
+        if requested_label:
+            raise RuntimeError(f"ASAP export view is no longer visible: {requested_label}")
         return frame, None
-    label, control = next(
-        (item for item in visible if "detail" in item[0].casefold()),
-        visible[0],
-    )
+    if requested_label:
+        selected = next(
+            (item for item in visible if item[0].casefold() == requested_label.casefold()), None,
+        )
+        if selected is None:
+            available = ", ".join(item[0] for item in visible)
+            raise RuntimeError(
+                f"ASAP export view is no longer visible: {requested_label}. Available: {available}"
+            )
+        label, control = selected
+    else:
+        label, control = next(
+            (item for item in visible if "detail" in item[0].casefold()), visible[0],
+        )
     control.click(timeout=15_000)
     page.wait_for_timeout(500)
     active_frame = _asap_frame(page)
@@ -1418,10 +1529,43 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
         try:
             with timings.measure("report_navigation"):
                 frame = _asap_open_report(page, lightweight_job, profile_dir)
-                frame, ready_text = _asap_activate_export_view(page, frame)
+                export_view_labels = [
+                    label for label, _control in _asap_export_view_candidates(page, frame)
+                ]
+            filters = []
+            export_views = []
+            ready_text = export_view_labels[0] if export_view_labels else None
+            report_title = path[-1]
             with timings.measure("filter_inspection"):
-                filters = _asap_discover_filters(frame)
-                report_title = frame.locator("title").text_content() or path[-1]
+                labels_to_scan = export_view_labels or [None]
+                for view_index, export_view_label in enumerate(labels_to_scan):
+                    if view_index:
+                        frame = _asap_open_report(page, lightweight_job, profile_dir)
+                    active_frame, selected_label = _asap_activate_export_view(
+                        page, frame, export_view_label,
+                    )
+                    discovered = _asap_discover_filters(active_frame)
+                    view_filter_keys = []
+                    for definition in discovered:
+                        view_filter_keys.append(definition["filter_key"])
+                        existing = next(
+                            (item for item in filters if item["filter_key"] == definition["filter_key"]),
+                            None,
+                        )
+                        if existing is None:
+                            filters.append(definition)
+                        else:
+                            existing["options"] = list(dict.fromkeys([
+                                *existing.get("options", []), *definition.get("options", []),
+                            ]))
+                    if selected_label:
+                        export_views.append({
+                            "label": selected_label, "filter_keys": view_filter_keys,
+                        })
+                    if view_index == 0:
+                        report_title = active_frame.locator("title").text_content() or path[-1]
+            for position, definition in enumerate(filters):
+                definition["position"] = position
             discovery_key = " > ".join(path)
             reports.append({
                 "discovery_key": discovery_key, "name": path[-1],
@@ -1430,6 +1574,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                 "automation": {
                     "category_path": path, "report_tab": ready_text,
                     "report_title": report_title, "export_text": ready_text,
+                    "export_views": export_views,
                 },
                 "filters": filters,
             })
@@ -1493,6 +1638,113 @@ def _normalize_csv(path: Path) -> dict:
         "source_delimiter": "tab" if delimiter == "\t" else delimiter,
         "columns": header,
     }
+
+
+def _excel_cell_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return "" if value is None else value
+
+
+def _normalize_xlsx(source: Path, output: Path) -> dict:
+    """Convert populated workbook sheets into one normalized UTF-8 CSV."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("Excel normalization requires openpyxl. Re-run setup.ps1.") from exc
+    try:
+        workbook = load_workbook(source, read_only=True, data_only=True)
+    except Exception as exc:
+        raise RuntimeError(f"Downloaded Excel workbook could not be opened: {source.name}") from exc
+    common_header: list[str] | None = None
+    common_normalized: list[str] | None = None
+    output_rows: list[list[Any]] = []
+    source_sheets = []
+    preamble_rows_removed = 0
+    try:
+        for worksheet in workbook.worksheets:
+            rows = []
+            for raw_row in worksheet.iter_rows(values_only=True):
+                values = [_excel_cell_value(value) for value in raw_row]
+                while values and str(values[-1]).strip() == "":
+                    values.pop()
+                if values:
+                    rows.append(values)
+            if not rows:
+                continue
+            header_index = next(
+                (
+                    index for index, row in enumerate(rows[:50])
+                    if sum(bool(str(value).strip()) for value in row) >= 2
+                ),
+                None,
+            )
+            if header_index is None:
+                continue
+            header = [str(value).strip() for value in rows[header_index]]
+            if len(header) < 2:
+                continue
+            normalized = [
+                re.sub(r"\W+", "_", value).strip("_").casefold() or f"col_{index}"
+                for index, value in enumerate(header)
+            ]
+            if common_header is None:
+                common_header = header
+                common_normalized = normalized
+            elif normalized != common_normalized:
+                raise RuntimeError(
+                    "Downloaded Excel workbook has populated sheets with different columns: "
+                    f"{', '.join(source_sheets)} and {worksheet.title}."
+                )
+            width = len(common_header)
+            for row in rows[header_index + 1:]:
+                values = list(row[:width]) + [""] * max(0, width - len(row))
+                if any(str(value).strip() for value in values):
+                    output_rows.append(values)
+            source_sheets.append(worksheet.title)
+            preamble_rows_removed += header_index
+    finally:
+        workbook.close()
+    if common_header is None or not output_rows:
+        raise RuntimeError("Downloaded Excel workbook did not contain a usable table with data rows.")
+    with output.open("x", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(common_header)
+        writer.writerows(output_rows)
+    return {
+        "preamble_rows_removed": preamble_rows_removed,
+        "source_encoding": "xlsx",
+        "source_delimiter": None,
+        "source_sheets": source_sheets,
+        "columns": common_header,
+    }
+
+
+def _add_export_view_column(path: Path, export_view: str | None) -> dict:
+    """Add durable source lineage to every artifact in a multi-export bundle."""
+    if not export_view:
+        return {}
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    if not rows:
+        raise RuntimeError(f"Normalized artifact is empty: {path.name}")
+    lineage_name = "Metronome Export View"
+    normalized = {
+        re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
+        for value in rows[0]
+    }
+    if "metronome_export_view" in normalized:
+        raise RuntimeError(
+            f"Downloaded artifact already contains the reserved column {lineage_name}."
+        )
+    temporary = path.with_name(f".{path.name}.lineage.tmp")
+    with temporary.open("x", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow([*rows[0], lineage_name])
+        for row in rows[1:]:
+            writer.writerow([*row, export_view])
+    temporary.replace(path)
+    return {"lineage_column": lineage_name, "export_view": export_view}
 
 
 def _script_command(script_path: Path, input_path: Path, output_path: Path) -> list[str]:
@@ -1577,7 +1829,10 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
-def _store_completed_download(local_path: Path, output: Path) -> dict:
+def _store_completed_download(
+    local_path: Path, output: Path, *, file_format: str = "csv",
+    export_view: str | None = None,
+) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
     Passing a UNC path to Playwright's ``download.save_as`` and asking for
@@ -1586,13 +1841,73 @@ def _store_completed_download(local_path: Path, output: Path) -> dict:
     final target in exclusive-create mode so nothing can be overwritten.
     """
     local_path = Path(local_path)
+    file_format = str(file_format or "csv").casefold()
+    if file_format == "xlsx":
+        original_size = local_path.stat().st_size
+        if original_size <= 0:
+            raise RuntimeError("The downloaded Excel workbook is empty.")
+        with local_path.open("rb") as source, output.open("xb") as destination:
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
+        if output.stat().st_size != original_size:
+            raise RuntimeError(f"Downloaded Excel workbook was not copied completely to {output}.")
+        normalized_output = _safe_output_path(
+            output.parent, f"{output.stem}_normalized.csv",
+        )
+        normalization = _normalize_xlsx(output, normalized_output)
+        lineage = _add_export_view_column(normalized_output, export_view)
+        metadata = {**_csv_metadata(normalized_output), **normalization, **lineage}
+        return {
+            **metadata,
+            "file_path": str(normalized_output),
+            "filename": normalized_output.name,
+            "original_file_path": str(output),
+            "original_filename": output.name,
+            "original_file_size": original_size,
+        }
+    if file_format != "csv":
+        raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
     normalization = _normalize_csv(local_path)
-    metadata = {**_csv_metadata(local_path), **normalization}
+    lineage = _add_export_view_column(local_path, export_view)
+    metadata = {**_csv_metadata(local_path), **normalization, **lineage}
     with local_path.open("rb") as source, output.open("xb") as destination:
         shutil.copyfileobj(source, destination, length=1024 * 1024)
     if output.stat().st_size != metadata["file_size"]:
         raise RuntimeError(f"Downloaded CSV was not copied completely to {output}.")
-    return metadata
+    return {**metadata, "file_path": str(output), "filename": output.name}
+
+
+def _asap_filters_for_export_view(job: dict, export_view: str | None) -> list[dict]:
+    """Limit configuration to controls catalogued for the selected export view."""
+    definitions = list(job.get("report", {}).get("filters") or [])
+    if not export_view:
+        return definitions
+    catalog_views = (job.get("report", {}).get("automation") or {}).get("export_views") or []
+    catalog_view = next(
+        (
+            item for item in catalog_views
+            if isinstance(item, dict)
+            and str(item.get("label") or "").casefold() == export_view.casefold()
+        ),
+        None,
+    )
+    if catalog_view is None or "filter_keys" not in catalog_view:
+        return definitions
+    allowed = set(catalog_view.get("filter_keys") or [])
+    return [item for item in definitions if item.get("filter_key") in allowed]
+
+
+def _has_named_control(page: Page | Frame, text: str) -> bool:
+    for locator in (
+        page.get_by_role("button", name=text, exact=True),
+        page.get_by_role("link", name=text, exact=True),
+        page.get_by_text(text, exact=True),
+    ):
+        try:
+            if locator.count() and locator.first.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def execute_job(
@@ -1602,60 +1917,82 @@ def execute_job(
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
-    with timings.measure("navigation", report_id=job["report"].get("id")):
-        frame = _asap_open_report(page, job, profile_dir) if is_asap else None
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
-    if not is_asap:
-        page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
-        if ready_text:
-            page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
-        if open_export:
-            _click_named(page, open_export)
 
     target = Path(job["downloads"]["target_folder"])
     if not target.is_dir():
         raise RuntimeError(f"Target folder does not exist: {target}")
 
     periods = job["downloads"].get("periods") or [None]
+    export_views = job.get("report", {}).get("export_views") or [None]
+    tasks = [
+        {"period": period, "export_view": export_view}
+        for export_view in export_views for period in periods
+    ]
     artifacts = []
-    for index, period in enumerate(periods, start=1):
-        if index > 1:
+    for index, task in enumerate(tasks, start=1):
+        period = task["period"]
+        export_view = task["export_view"]
+        with timings.measure("navigation", report_id=job["report"].get("id")):
             if is_asap:
-                with timings.measure("navigation", report_id=job["report"].get("id")):
-                    frame = _asap_open_report(page, job, profile_dir)
+                frame = _asap_open_report(page, job, profile_dir)
+                frame, selected_view = _asap_activate_export_view(page, frame, export_view)
+                if export_view and selected_view != export_view:
+                    raise RuntimeError(
+                        f"ASAP activated the wrong export view. Requested: {export_view}. "
+                        f"Activated: {selected_view}."
+                    )
             else:
                 page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
+                frame = None
                 if ready_text:
-                    page.get_by_text(ready_text, exact=False).first.wait_for(state="visible", timeout=120_000)
+                    page.get_by_text(ready_text, exact=False).first.wait_for(
+                        state="visible", timeout=120_000,
+                    )
                 if open_export:
                     _click_named(page, open_export)
         report_progress(
             "running",
-            {"stage": "configuring", "message": f"Configuring download {index} of {len(periods)}.", "period": period},
+            {
+                "stage": "configuring",
+                "message": f"Configuring export {index} of {len(tasks)}: {export_view or job['report']['name']}.",
+                "period": period, "export_view": export_view,
+                "item_index": index, "item_count": len(tasks),
+            },
             artifacts,
         )
         if is_asap:
+            view_job = {
+                **job,
+                "report": {
+                    **job["report"],
+                    "filters": _asap_filters_for_export_view(job, export_view),
+                },
+            }
             with timings.measure("configuration", report_id=job["report"].get("id")):
-                _asap_apply_configuration(frame, job, period)
+                _asap_apply_configuration(frame, view_job, period)
+            if _has_named_control(frame, "RUN"):
+                report_progress(
+                    "running",
+                    {
+                        "stage": "report_execution",
+                        "message": f"Running export {index} of {len(tasks)}: {export_view or job['report']['name']}.",
+                        "period": period, "export_view": export_view,
+                    },
+                    artifacts,
+                )
+                with timings.measure("report_execution", report_id=job["report"].get("id")):
+                    _click_named(frame, "RUN")
+                    page.wait_for_timeout(1_000)
+                    frame = _asap_wait_for_results(page)
             report_progress(
                 "running",
-                {"stage": "report_execution", "message": f"Running report {index} of {len(periods)}.", "period": period},
-                artifacts,
-            )
-            with timings.measure("report_execution", report_id=job["report"].get("id")):
-                _click_named(frame, "RUN")
-                # The current MicroStrategy UI completes report execution in
-                # its iframe without a stable prompt-answer response. Waiting
-                # for that internal URL left already-rendered reports stuck for
-                # three minutes. Yield briefly for the loading overlay, then use
-                # the rendered row summary as the portal's public readiness
-                # signal.
-                page.wait_for_timeout(1_000)
-                frame = _asap_wait_for_results(page)
-            report_progress(
-                "running",
-                {"stage": "file_export", "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(periods)}.", "period": period},
+                {
+                    "stage": "file_export",
+                    "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(tasks)}: {export_view or job['report']['name']}.",
+                    "period": period, "export_view": export_view,
+                },
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
@@ -1668,7 +2005,9 @@ def execute_job(
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
             export_pages = []
-        filename = _render_filename(job["downloads"]["filename_template"], job, period, index)
+        filename = _render_filename(
+            job["downloads"]["filename_template"], job, period, index, export_view,
+        )
         output = _safe_output_path(target, filename)
         with timings.measure("file_transfer", report_id=job["report"].get("id")):
             # ASAP closes its own export wizard after emitting the download.
@@ -1676,15 +2015,24 @@ def execute_job(
             # it half-detached and any later Playwright call can block forever.
             # The next period reopens the report in the surviving main page.
             if is_asap:
-                metadata = _store_completed_download(staged_file, output)
+                metadata = _store_completed_download(
+                    staged_file, output,
+                    file_format=job["downloads"].get("file_format") or "csv",
+                    export_view=export_view,
+                )
             else:
                 download.save_as(output)
                 normalization = _normalize_csv(output)
-                metadata = {**_csv_metadata(output), **normalization}
+                lineage = _add_export_view_column(output, export_view)
+                metadata = {
+                    **_csv_metadata(output), **normalization, **lineage,
+                    "file_path": str(output), "filename": output.name,
+                }
         artifacts.append({
             "period_key": period,
-            "file_path": str(output),
-            "filename": output.name,
+            "export_view": export_view,
+            "bundle_index": index,
+            "bundle_count": len(tasks),
             "status": "saved",
             **metadata,
         })
@@ -1766,6 +2114,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 timings = []
                 transformation_started = None
                 sql_started = None
+                sql_result = None
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
                              timings: list | None = None, error: str | None = None,
@@ -1889,9 +2238,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             "message": (
                                 f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
                                 if sql_only
+                                else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
+                                if sql_result is not None
                                 else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
                                 if run["job"].get("transformation", {}).get("enabled")
-                                else f"Saved {len(artifacts)} CSV file(s)."
+                                else f"Saved {len(artifacts)} {str(run['job'].get('downloads', {}).get('file_format') or 'csv').upper()} export(s)."
                             ),
                         },
                         artifacts, timings,

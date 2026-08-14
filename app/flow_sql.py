@@ -374,22 +374,13 @@ def load_artifacts(
                 mode=mode,
             )
         else:
-            replacement_columns = inspected[0]["columns"]
-            replacement_set = set(replacement_columns)
-            for artifact in inspected[1:]:
-                received = set(artifact["columns"])
-                if received != replacement_set:
-                    missing = sorted(replacement_set - received)
-                    extra = sorted(received - replacement_set)
-                    differences = []
-                    if missing:
-                        differences.append(f"missing: {', '.join(missing)}")
-                    if extra:
-                        differences.append(f"unexpected: {', '.join(extra)}")
-                    raise RuntimeError(
-                        "Replace requires every CSV artifact to use the same columns "
-                        f"({artifact['filename']}: {'; '.join(differences)})"
-                    )
+            replacement_columns = []
+            replacement_seen: set[str] = set()
+            for artifact in inspected:
+                for column in artifact["columns"]:
+                    if column not in replacement_seen:
+                        replacement_seen.add(column)
+                        replacement_columns.append(column)
             target_columns = (
                 _target_columns_by_normalized_name(existing_columns)
                 if existing_columns else {}
@@ -423,7 +414,7 @@ def load_artifacts(
                 started, status="completed", target=target_name,
                 csv_columns=len(replacement_columns), target_columns=len(existing_columns),
                 mode=mode, schema_action=schema_action, columns_added=len(columns_added),
-                column_type="TEXT",
+                column_type="TEXT", files=len(inspected), schema_union=True,
             )
 
         if mode == "replace":

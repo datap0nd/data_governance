@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import copy
 import json
 import logging
@@ -28,10 +29,10 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
-PERIOD_STRATEGIES = {"latest", "fixed", "rolling"}
-FILE_FORMATS = {"csv"}
+PERIOD_STRATEGIES = {"none", "latest", "fixed", "rolling"}
+FILE_FORMATS = {"csv", "xlsx"}
 SQL_MODES = {"append", "replace"}
-SCHEDULE_TYPES = {"manual", "daily", "weekly"}
+SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
 BROWSER_MODES = {"headless", "headed"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
 RUN_STALE_TIMEOUT_SECONDS = 600
@@ -40,7 +41,7 @@ RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
 ASAP_PORTAL_ADAPTER = "asap_portal"
 WEEK_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>0[1-9]|[1-4]\d|5[0-3])$")
-FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|week|start_period|end_period|year|week_number|index|date)\}")
+FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|export|week|start_period|end_period|year|week_number|index|date)\}")
 SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
 
 
@@ -120,7 +121,7 @@ def _clean_filename_template(value: str, file_format: str) -> str:
     if not value:
         raise ValueError("Enter a filename template.")
     sample = FILENAME_TOKEN_RE.sub("sample", value)
-    expected = ".csv"
+    expected = f".{file_format}"
     if not sample.casefold().endswith(expected):
         raise ValueError(f"The filename template must end in {expected}.")
     if not SAFE_NAME_RE.fullmatch(sample):
@@ -185,7 +186,10 @@ def _periods(values: list[str], size: int) -> list[list[str]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
 
 
-def _schedule_next(schedule_type: str, schedule_time: str | None, schedule_days: list[str]) -> datetime | None:
+def _schedule_next(
+    schedule_type: str, schedule_time: str | None, schedule_days: list[str],
+    schedule_day: int | None = None,
+) -> datetime | None:
     if schedule_type == "manual":
         return None
     if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time or ""):
@@ -195,6 +199,20 @@ def _schedule_next(schedule_type: str, schedule_time: str | None, schedule_days:
     if schedule_type == "daily":
         candidate = now.replace(hour=hour, minute=minute, second=0)
         return candidate if candidate > now else candidate + timedelta(days=1)
+    if schedule_type == "monthly":
+        if not isinstance(schedule_day, int) or not 1 <= schedule_day <= 31:
+            raise ValueError("Monthly flows need a day of month from 1 to 31.")
+        year, month = now.year, now.month
+        for _ in range(24):
+            if schedule_day <= calendar.monthrange(year, month)[1]:
+                candidate = datetime(year, month, schedule_day, hour, minute)
+                if candidate > now:
+                    return candidate
+            month += 1
+            if month == 13:
+                month = 1
+                year += 1
+        raise ValueError("Could not calculate the next monthly run.")
     day_numbers = {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
         "friday": 4, "saturday": 5, "sunday": 6,
@@ -332,6 +350,7 @@ class FlowWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     site_id: int
     report_id: int
+    export_views: list[str] = Field(default_factory=list, max_length=20)
     enabled: bool = False
     selections: dict[str, Any] = Field(default_factory=dict)
     download_mode: str = "single"
@@ -346,6 +365,7 @@ class FlowWrite(BaseModel):
     schedule_type: str = "manual"
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
+    schedule_day: int | None = Field(default=None, ge=1, le=31)
     transform_enabled: bool = False
     transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
@@ -358,9 +378,12 @@ class FlowWrite(BaseModel):
     def validate_flow(self):
         self.name = self.name.strip()
         self.target_folder = self.target_folder.strip()
+        self.export_views = list(dict.fromkeys(
+            str(value).strip() for value in self.export_views if str(value).strip()
+        ))
         self.file_format = self.file_format.strip().casefold()
         if self.file_format not in FILE_FORMATS:
-            raise ValueError("Download type must be CSV.")
+            raise ValueError("Download type must be CSV or Excel XLSX.")
         self.filename_template = _clean_filename_template(self.filename_template, self.file_format)
         if not _is_absolute_worker_path(self.target_folder):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
@@ -377,9 +400,14 @@ class FlowWrite(BaseModel):
             raise ValueError("Unsupported schedule type.")
         self.start_week = _week_value(self.start_week, "Start week")
         self.end_week = _week_value(self.end_week, "End week")
-        if not self.start_week:
+        if self.period_strategy == "none":
+            self.start_week = None
+            self.end_week = None
+            self.window_weeks = None
+            self.download_mode = "single"
+        elif not self.start_week:
             raise ValueError("Choose a Sell-out Week start.")
-        if self.period_strategy == "fixed":
+        elif self.period_strategy == "fixed":
             if not self.end_week:
                 raise ValueError("Choose a Sell-out Week end.")
             _week_range(self.start_week, self.end_week)
@@ -402,8 +430,16 @@ class FlowWrite(BaseModel):
             token in self.filename_template for token in ("{week}", "{start_period}", "{end_period}", "{index}")
         ):
             raise ValueError("Multiple downloads require a period or index token in the filename template.")
+        if len(self.export_views) > 1 and not any(
+            token in self.filename_template for token in ("{export}", "{index}")
+        ):
+            raise ValueError("Multiple export views require an export or index token in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
-        _schedule_next(self.schedule_type, self.schedule_time, self.schedule_days)
+        if self.schedule_type != "monthly":
+            self.schedule_day = None
+        _schedule_next(
+            self.schedule_type, self.schedule_time, self.schedule_days, self.schedule_day,
+        )
         if self.transform_enabled:
             self.transform_script_path = (self.transform_script_path or "").strip()
             if not self.transform_script_path:
@@ -532,6 +568,7 @@ def _flow_out(db, flow_id: int) -> dict:
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
     result["transform_enabled"] = bool(result.get("transform_enabled"))
     result["selections"] = _loads(result.pop("selections_json"), {})
+    result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     if result["download_mode"] == "one_per_week":
         result["download_mode"] = "one_per_period"
@@ -582,7 +619,7 @@ def _validate_sql_target(db, body: FlowWrite):
 
 def _validate_flow_selections(db, body: FlowWrite):
     report = db.execute(
-        """SELECT site_id FROM flow_reports
+        """SELECT site_id, automation_json FROM flow_reports
            WHERE id = ? AND enabled = 1 AND stale = 0 AND source_kind = 'discovered'""",
         (body.report_id,),
     ).fetchone()
@@ -592,7 +629,30 @@ def _validate_flow_selections(db, body: FlowWrite):
         "SELECT * FROM flow_report_filters WHERE report_id = ? AND enabled = 1 ORDER BY position, id",
         (body.report_id,),
     ).fetchall()
+    automation = _loads(report["automation_json"], {})
+    available_views = [
+        str(item.get("label") if isinstance(item, dict) else item).strip()
+        for item in automation.get("export_views", [])
+        if str(item.get("label") if isinstance(item, dict) else item).strip()
+    ]
+    fallback_view = str(automation.get("report_tab") or "").strip()
+    if not available_views and fallback_view:
+        available_views = [fallback_view]
+    # Older catalog rows predate explicit export-view discovery. Keep those
+    # flows runnable with their legacy report behavior. Once a scan has found
+    # named views, an omitted selection means all discovered views so API
+    # clients cannot silently reduce a bundle to only the first export.
+    if not body.export_views and available_views:
+        body.export_views = available_views
+    invalid_views = [view for view in body.export_views if view not in available_views]
+    if available_views and invalid_views:
+        raise HTTPException(400, f"Export view was not found in the latest scan: {invalid_views[0]}")
     definitions = {row["filter_key"]: row for row in rows}
+    has_week_filter = any(row["control_type"] == "week" for row in rows)
+    if has_week_filter and body.period_strategy == "none":
+        raise HTTPException(400, "Choose a Sell-out Week period for this report.")
+    if not has_week_filter and body.period_strategy != "none":
+        raise HTTPException(400, "This report has no Sell-out Week prompt. Use no period selection.")
     unknown = sorted(set(body.selections) - set(definitions))
     if unknown:
         raise HTTPException(400, f"Unknown report filter: {unknown[0]}")
@@ -612,7 +672,9 @@ def _validate_flow_selections(db, body: FlowWrite):
 def _build_job(db, flow_id: int) -> dict:
     flow = _flow_out(db, flow_id)
     report = _report_out(db, flow["report_id"])
-    if flow.get("period_strategy") == "rolling":
+    if flow.get("period_strategy") == "none":
+        weeks = []
+    elif flow.get("period_strategy") == "rolling":
         weeks = _week_window(flow["start_week"], flow["window_weeks"])
     else:
         end_week = (
@@ -621,7 +683,9 @@ def _build_job(db, flow_id: int) -> dict:
             else flow["end_week"]
         )
         weeks = _week_range(flow["start_week"], end_week)
-    if flow.get("period_strategy") == "rolling" or flow["download_mode"] == "single":
+    if not weeks:
+        periods = [None]
+    elif flow.get("period_strategy") == "rolling" or flow["download_mode"] == "single":
         periods = [weeks]
     else:
         periods = _periods(weeks, flow.get("window_weeks") or 1)
@@ -640,7 +704,7 @@ def _build_job(db, flow_id: int) -> dict:
             "id": report["id"], "name": report["name"], "url": report["report_url"],
             "ready_text": report["ready_text"], "open_export_text": report["open_export_text"],
             "download_text": report["download_text"], "automation": report["automation"],
-            "filters": report["filters"],
+            "filters": report["filters"], "export_views": flow.get("export_views") or [],
         },
         "selections": flow["selections"],
         "downloads": {
@@ -649,9 +713,9 @@ def _build_job(db, flow_id: int) -> dict:
             "period_unit": "week",
             "period_size": flow.get("window_weeks") or len(weeks),
             "file_format": flow.get("file_format") or "csv",
-            "period_start_week": weeks[0],
-            "period_end_week": weeks[-1],
-            "next_start_week": _week_window(weeks[-1], 2)[1],
+            "period_start_week": weeks[0] if weeks else None,
+            "period_end_week": weeks[-1] if weeks else None,
+            "next_start_week": _week_window(weeks[-1], 2)[1] if weeks else None,
             "target_folder": flow["target_folder"],
             "filename_template": flow["filename_template"],
             "collision_policy": "number_suffix",
@@ -695,7 +759,9 @@ def queue_due_flows() -> dict:
                 (row["id"],),
             ).fetchone()
             days = _loads(row["schedule_days"], [])
-            next_run = _schedule_next(row["schedule_type"], row["schedule_time"], days)
+            next_run = _schedule_next(
+                row["schedule_type"], row["schedule_time"], days, row["schedule_day"],
+            )
             db.execute(
                 "UPDATE flows SET next_run_at=?, updated_at=? WHERE id=?",
                 (_iso(next_run), now_text, row["id"]),
@@ -1142,21 +1208,25 @@ def refresh_sql_catalog_now(request: Request):
 @router.post("")
 def create_flow(body: FlowWrite, request: Request):
     now = _iso(_now())
-    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days)) if body.enabled else None
+    next_run = _iso(_schedule_next(
+        body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+    )) if body.enabled else None
     try:
         with get_db() as db:
             _validate_flow_selections(db, body)
             _validate_sql_target(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
-                   (name, site_id, report_id, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
+                   (name, site_id, report_id, export_views_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
+                    schedule_day,
                     transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
-                 _json(body.schedule_days), next_run, body.transform_enabled, body.transform_script_path,
+                 _json(body.schedule_days), next_run, body.schedule_day,
+                 body.transform_enabled, body.transform_script_path,
                  body.sql_handoff_enabled, body.sql_mode,
                  body.sql_database, body.sql_schema, body.sql_table, get_actor(request), now, now),
             )
@@ -1202,20 +1272,23 @@ async def add_transform_script(request: Request, file: UploadFile = File(...)):
 @router.put("/{flow_id}")
 def update_flow(flow_id: int, body: FlowWrite, request: Request):
     now = _iso(_now())
-    next_run = _iso(_schedule_next(body.schedule_type, body.schedule_time, body.schedule_days)) if body.enabled else None
+    next_run = _iso(_schedule_next(
+        body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+    )) if body.enabled else None
     with get_db() as db:
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         cursor = db.execute(
-            """UPDATE flows SET name=?, site_id=?, report_id=?, enabled=?, selections_json=?,
+            """UPDATE flows SET name=?, site_id=?, report_id=?, export_views_json=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
-               schedule_type=?, schedule_time=?, schedule_days=?, next_run_at=?,
+               schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, updated_at=? WHERE id=?""",
-            (body.name, body.site_id, body.report_id, body.enabled, _json(body.selections),
+            (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
-             _json(body.schedule_days), next_run, body.transform_enabled, body.transform_script_path,
+             _json(body.schedule_days), body.schedule_day, next_run,
+             body.transform_enabled, body.transform_script_path,
              body.sql_handoff_enabled, body.sql_mode,
              body.sql_database, body.sql_schema, body.sql_table, now, flow_id),
         )
@@ -1233,9 +1306,12 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
         if not flow:
             raise HTTPException(404, "Flow not found.")
         if body.enabled and flow["schedule_type"] == "manual":
-            raise HTTPException(400, "Choose a daily or weekly schedule before activating this flow.")
+            raise HTTPException(400, "Choose a daily, weekly, or monthly schedule before activating this flow.")
         next_run = (
-            _iso(_schedule_next(flow["schedule_type"], flow["schedule_time"], _loads(flow["schedule_days"], [])))
+            _iso(_schedule_next(
+                flow["schedule_type"], flow["schedule_time"],
+                _loads(flow["schedule_days"], []), flow["schedule_day"],
+            ))
             if body.enabled else None
         )
         db.execute(
