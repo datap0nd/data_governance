@@ -63,11 +63,64 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
     )
 
     assert events == [
+        ("click", "Extra", ()),
         ("click", "202620", ()),
         ("click", "202621", ()),
-        ("click", "Extra", ()),
     ]
     assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
+
+
+def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_state(monkeypatch):
+    events = []
+    selected = {"202629": True, "202630": True, "202631": True, "202632": False}
+    dropped = {"202632": 1}
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            if dropped.get(self.value, 0):
+                dropped[self.value] -= 1
+                return
+            selected[self.value] = not selected[self.value]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_member_selected",
+        lambda option: True if selected[option.value] else None,
+    )
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Sell-out Week", list(selected), list(selected),
+    )
+
+    assert events == [
+        ("click", "202632", ()),
+        ("click", "202632", ()),
+    ]
+    assert all(selected.values())
 
 
 def test_asap_week_does_not_toggle_off_an_already_selected_requested_default(monkeypatch):

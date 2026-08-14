@@ -597,6 +597,48 @@ def _asap_select_list_values(
                 frame.page.wait_for_timeout(150)
         return True, states
 
+    def member_state(value: str) -> bool | None:
+        try:
+            return _asap_member_selected(visible_option(value))
+        except RuntimeError:
+            return None
+
+    def set_member_state(value: str, selected: bool, attempts: int = 3) -> bool:
+        """Click one member until the rendered portal state confirms the result."""
+        for _attempt in range(attempts):
+            state = member_state(value)
+            if (selected and state is True) or (not selected and state is not True):
+                return True
+            visible_option(value).click()
+            for _sample in range(10):
+                frame.page.wait_for_timeout(150)
+                state = member_state(value)
+                if (selected and state is True) or (not selected and state is not True):
+                    return True
+        return False
+
+    def reconcile_requested_selection(rounds: int = 4) -> tuple[bool, dict[str, bool]]:
+        """Make the rendered selection exactly match requested using plain clicks."""
+        states = {}
+        for _round in range(rounds):
+            exact, states = stable_exact_selection()
+            if exact:
+                return True, states
+            extras = [
+                value for value, selected in states.items()
+                if selected and value not in requested
+            ]
+            # MicroStrategy commonly represents an unselected row as neither
+            # true nor false. Missing therefore means anything not confirmed
+            # true, including an absent or unknown state.
+            missing = [value for value in requested if states.get(value) is not True]
+            for value in extras:
+                set_member_state(value, False)
+            for value in missing:
+                set_member_state(value, True)
+            frame.page.wait_for_timeout(300)
+        return stable_exact_selection()
+
     if label.casefold().rstrip(":") == "dimension":
         # Dimension is the one ASAP prompt that opens with a retained member.
         # Its list rows toggle with a normal left click. Clear every visibly
@@ -610,8 +652,7 @@ def _asap_select_list_values(
             )
         for value, selected in initial_states.items():
             if selected:
-                visible_option(value).click()
-                frame.page.wait_for_timeout(250)
+                set_member_state(value, False)
 
         cleared_states = selected_states()
         retained = [value for value, selected in cleared_states.items() if selected]
@@ -620,11 +661,7 @@ def _asap_select_list_values(
                 f"ASAP Dimension could not be cleared with plain clicks. Still selected: {retained}."
             )
 
-        for value in requested:
-            visible_option(value).click()
-            frame.page.wait_for_timeout(250)
-
-        exact, final_states = stable_exact_selection()
+        exact, final_states = reconcile_requested_selection()
         actual = [value for value, selected in final_states.items() if selected]
         missing = [value for value in requested if final_states.get(value) is not True]
         extras = [value for value in actual if value not in requested]
@@ -635,49 +672,11 @@ def _asap_select_list_values(
             )
         return
 
-    # Preserve an already-correct retained selection. Clicking the portal's
-    # selected default week toggles it off, which leaves no selected state to
-    # verify. The rendered member list toggles each value with a normal left
-    # click, including when several weeks are selected.
-    initial_states = selected_states()
-    initially_selected = {
-        value for value, selected in initial_states.items() if selected
-    }
-    if initially_selected == set(requested):
-        exact, _states = stable_exact_selection()
-        if exact:
-            return
-        initial_states = selected_states()
-        initially_selected = {
-            value for value, selected in initial_states.items() if selected
-        }
-    if requested[0] not in initially_selected:
-        visible_option(requested[0]).click()
-        frame.page.wait_for_timeout(250)
-        selected_after_baseline = {requested[0]}
-    else:
-        selected_after_baseline = set(initially_selected)
-    for value in requested[1:]:
-        if value not in selected_after_baseline:
-            visible_option(value).click()
-            frame.page.wait_for_timeout(200)
-            selected_after_baseline.add(value)
-
-    # MicroStrategy can retain selections or drop rapid clicks. Reconcile the
-    # rendered state and verify exact equality before allowing RUN.
-    for _attempt in range(3):
-        exact, states = stable_exact_selection()
-        if states:
-            extras = [value for value, selected in states.items() if selected and value not in requested]
-            missing = [value for value in requested if states.get(value) is False]
-            if exact:
-                return
-            for value in [*extras, *missing]:
-                visible_option(value).click()
-                frame.page.wait_for_timeout(250)
-            continue
-        break
-    exact, final_states = stable_exact_selection()
+    # The rendered list toggles each value with a normal left click. Do not
+    # assume a click landed: MicroStrategy can drop a rapid final click and it
+    # reports an unselected row as an unknown state rather than explicit false.
+    # Confirm each change and retry it before the final exact-set check.
+    exact, final_states = reconcile_requested_selection()
     if final_states:
         actual = [value for value, selected in final_states.items() if selected]
         if not exact:

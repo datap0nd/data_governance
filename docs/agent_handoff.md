@@ -2,66 +2,61 @@
 
 ## Current Objective
 
-Live-verify the restored ASAP UI scraper and the repaired Stop action on the BI
-desktop after explicit approval to update the installed app.
+Live-verify state-confirmed plain-click selection on the nine-download ASAP flow,
+then verify Stop behavior with two queued flows.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Runtime commit: `cba6e34 Restore stable ASAP scraper and flow stop controls`
+- Latest verified remote before this change: `c6f1e99`
 - Public repo: no, private
-- Push status: runtime commit verified on `origin/main`
 - Stable baseline: tag `asap-ui-automation-stable-2026-08-14` at `d2b61f1`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`; never stage them
 
 ## Decisions Made
 
-- The unverified MicroStrategy REST rewrite was reverted. Runtime behavior is
-  again the UI scraper from the stable `d2b61f1` baseline.
-- Every scraper option selection uses a normal left click. No Playwright click
-  in `app/flow_worker.py` uses a Control modifier.
-- Every queued, claimed, or running flow renders Stop, regardless of headed or
-  headless browser mode.
-- Stopping a queued run cancels only that run. It does not terminate a worker
-  currently executing a different flow.
-- Stopping an assigned run terminates the exact registered worker process tree
-  and leaves the run terminally cancelled. Late progress cannot resurrect it.
-- The JavaScript cache key is `app.js?v=51` so the repaired Stop UI loads after
-  an app update.
+- The unverified MicroStrategy REST rewrite remains reverted. Runtime behavior
+  uses the UI scraper restored from the stable baseline.
+- All scraper member selections use normal left clicks without Control.
+- A click is no longer considered successful until MicroStrategy exposes the
+  requested rendered state. Each member is retried up to three times.
+- An unselected MicroStrategy member can expose neither true nor false. Any
+  requested value not confirmed true is missing and must be selected.
+- Exact selection must remain stable across three reads before RUN is allowed.
+- Every queued, claimed, or running flow renders Stop. Cancelling a queued run
+  does not terminate another flow's worker; assigned runs target their exact
+  headed or headless worker process.
 
 ## Files Changed
 
-- `app/flow_worker.py`: removed all Control-modified scraper clicks.
-- `app/flow_local_runner.py`: stop the exact headed or headless worker process.
-- `app/routers/flows.py`: cancel queued work safely and stop assigned work for
-  either browser mode.
-- `app/static/app.js`, `app/static/index.html`: show Stop for every active run,
-  use the server result message, and advance the asset cache key.
-- `tests/test_flows.py`: regressions for plain clicks, two queued flows, headed
-  and headless stops, exact PID targeting, and Stop rendering.
-- `app/asap_api.py`, `tests/test_asap_api.py`: removed with the REST rollback.
+- `app/flow_worker.py`: replace optimistic fixed-delay list clicks with
+  state-confirmed plain-click reconciliation for week and Dimension prompts.
+- `tests/test_flows.py`: reproduce an unknown unselected final week whose first
+  click is dropped, then require a successful retry with no modifier.
 
 ## Commands And Checks
 
-- Full Python suite: `187 passed`.
+- Live target evidence: run `#83` completed eight of nine downloads, then the
+  ninth configuration requested weeks `202629` through `202632` but retained
+  only `202629`, `202630`, and `202631`.
+- Root cause: the restored retry loop treated only explicit false as missing;
+  the portal reported the unselected final member as unknown, so no retry ran.
+- Full Python suite: `188 passed`.
 - `node --check app/static/app.js`: passed.
 - `node tests/test_lineage_layers.mjs`: passed.
-- Python compile checks for the changed runtime modules: passed.
+- `python3 -m py_compile app/flow_worker.py`: passed.
 - `git diff --check`: passed.
-- Remote verification: `origin/main` resolved to runtime commit `cba6e34`.
-- Not run: live BI-desktop update and UI/API execution. Citrix rules require
-  fresh exact approval immediately before the persistent Update App action.
+- Citrix inspection was read-only. Nothing was edited, saved, refreshed,
+  applied, published, exported, sent, or deleted in the remote session.
 
 ## Open Questions
 
-- Live target evidence is still required for two flows queued together: both
-  rows must show Stop, cancelling the queued second flow must leave the first
-  running, and stopping the active flow must close its assigned browser.
-- Live week and Dimension selection must confirm plain left clicks select the
-  exact requested values before RUN.
+- The new click-retry behavior is not yet live-tested on the installed app.
+- The repaired Stop behavior is not yet live-tested with two queued flows.
 
 ## Next Step
 
-After explicit approval, update the installed BI-desktop app from `main`, then
-run the two-flow Stop scenario and one plain-click selection flow end to end.
+After the change reaches `origin/main` and explicit approval is given, click
+Update App in Metronome, rerun the nine-download flow, and confirm all four
+weeks remain selected on download 9 before RUN.
