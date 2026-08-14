@@ -1568,6 +1568,15 @@ def _store_timings(
     )
 
 
+def _period_key_text(value: Any) -> str | None:
+    """Convert an artifact period into the TEXT form stored in SQLite."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
 @router.get("/estimates")
 def operation_estimates(site_id: int | None = None, report_id: int | None = None):
     estimates = {}
@@ -1856,7 +1865,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                    (run_id, period_key, file_path, filename, file_size, checksum, row_count, status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
-                    (run_id, item.get("period_key"), str(item.get("file_path") or ""),
+                    (run_id, _period_key_text(item.get("period_key")), str(item.get("file_path") or ""),
                      str(item.get("filename") or ""), item.get("file_size"), item.get("checksum"),
                      item.get("row_count"), str(item.get("status") or "saved"), now)
                     for item in body.artifacts if item.get("file_path") and item.get("filename")

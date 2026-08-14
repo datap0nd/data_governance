@@ -398,3 +398,20 @@ files and do not enable SQL handoff.
 - Next step: publish and deploy the Week fix, then use run #70's already
   verified Week 27 artifact for SQL-only replace testing so browser state cannot
   contaminate the SQL result.
+
+## Live SQL Commit And Terminal Reporting Finding (2026-08-14)
+
+- Build version `20260814-105314` ran SQL-only retry #73 from run #70's verified
+  Week 27 artifact. PostgreSQL recreated the 17-column target as `TEXT`, copied
+  and committed 41,872 rows, and Metronome recorded `SQL Insertion Complete`.
+- The subsequent terminal-success request returned HTTP 500, so the worker's
+  minimal fallback marked the run failed even though PostgreSQL had committed.
+  Do not retry run #73: it would replace an already successful target.
+- Root cause: SQL retry artifacts retain `period_key` as a JSON list such as
+  `["2026-W27"]`, while terminal file-history storage bound that list directly
+  into SQLite's `TEXT` column. Terminal storage now normalizes list periods to a
+  display string before insertion. A regression test exercises the exact
+  SQL-retry artifact shape and requires a succeeded terminal run.
+- Next step: publish and deploy the terminal-reporting fix. Future SQL runs must
+  finish as succeeded after `SQL Insertion Complete`; no additional write is
+  required against the already populated test target.

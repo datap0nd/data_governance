@@ -726,6 +726,50 @@ def test_worker_claim_and_completion_records_artifact(flow_db):
     assert timing["duration_ms"] == 2400
 
 
+def test_terminal_sql_retry_serializes_list_period_key_instead_of_returning_500(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    worker_id = "sql-retry-worker"
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=worker_id,
+        display_name="SQL retry worker",
+        capabilities={"headed": False},
+    ))
+    assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
+
+    result = flows.update_run(
+        worker_id,
+        queued["id"],
+        flows.WorkerProgress(
+            status="succeeded",
+            progress={"stage": "complete", "message": "Committed 41,872 rows."},
+            artifacts=[{
+                "period_key": ["2026-W27"],
+                "file_path": r"C:\Reports\Downloads\week_27.csv",
+                "filename": "week_27.csv",
+                "file_size": 57_667_776,
+                "checksum": "abc",
+                "row_count": 41_872,
+                "status": "saved",
+            }],
+            timings=[{"phase": "sql_insertion", "duration_ms": 4400, "status": "succeeded"}],
+        ),
+    )
+
+    assert result["status"] == "succeeded"
+    with database.get_db() as db:
+        run = db.execute("SELECT status FROM flow_runs WHERE id=?", (queued["id"],)).fetchone()
+        file = db.execute(
+            "SELECT period_key, row_count FROM flow_run_files WHERE run_id=?",
+            (queued["id"],),
+        ).fetchone()
+    assert run["status"] == "succeeded"
+    assert file["period_key"] == "2026-W27"
+    assert file["row_count"] == 41_872
+
+
 def test_worker_restart_fails_active_sql_run_without_replaying_it(flow_db, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
