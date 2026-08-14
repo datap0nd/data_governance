@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import database
+from app import flow_local_runner
 from app import flow_worker
 from app.routers import flows
 
@@ -48,12 +49,7 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
 
         def click(self, modifiers=None):
             events.append(("click", self.value, tuple(modifiers or [])))
-            if modifiers:
-                selected[self.value] = not selected[self.value]
-            else:
-                for key in selected:
-                    selected[key] = False
-                selected[self.value] = True
+            selected[self.value] = not selected[self.value]
 
     class Frame:
         page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
@@ -67,9 +63,9 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
     )
 
     assert events == [
-        ("click", "202620", ("Control",)),
-        ("click", "202621", ("Control",)),
-        ("click", "Extra", ("Control",)),
+        ("click", "202620", ()),
+        ("click", "202621", ()),
+        ("click", "Extra", ()),
     ]
     assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
 
@@ -807,18 +803,13 @@ def test_scan_discovery_keeps_duplicate_leaf_names_from_different_menu_paths(flo
     ]
 
 
-def test_targeted_report_scan_queues_one_api_object_without_deleting_other_catalog_entries(flow_db, monkeypatch):
+def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_entries(flow_db, monkeypatch):
     site = flows.create_site(_asap_site(), _request())
     report = flows.DiscoveredReport(
         discovery_key="Mobile > Installed Base > Installed Base (MENA)",
         name="Installed Base (MENA)",
         report_url="https://portal.example.test",
-        automation={
-            "provider": "microstrategy_rest",
-            "project_id": "PROJECT_ID",
-            "object_id": "REPORT_ID",
-            "category_path": ["Project", "Shared Reports", "Installed Base (MENA)"],
-        },
+        automation={"category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"]},
     )
     with database.get_db() as db:
         flows._apply_discovery(db, site["id"], [report], "2026-08-12T10:00:00")
@@ -828,9 +819,7 @@ def test_targeted_report_scan_queues_one_api_object_without_deleting_other_catal
     with database.get_db() as db:
         scan = db.execute("SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)).fetchone()
     job = json.loads(scan["job_json"])
-    assert job["discovery"]["report_refs"] == [{
-        "project_id": "PROJECT_ID", "object_id": "REPORT_ID",
-    }]
+    assert job["discovery"]["report_paths"] == [["Mobile", "Installed Base", "Installed Base (MENA)"]]
     assert job["discovery"]["delete_missing"] is False
 
 
@@ -997,16 +986,13 @@ def test_worker_source_contains_no_delete_or_overwrite_operation():
     assert "_safe_output_path" in source
 
 
-def test_asap_execution_uses_microstrategy_data_api_not_rendered_controls():
-    import inspect
-    from app.flow_worker import execute_job
-
-    source = inspect.getsource(execute_job)
-    assert "api.download_csv(job, period, staged_file)" in source
-    assert "_asap_wait_for_results" not in source
-    assert "_asap_apply_configuration" not in source
-    assert "_asap_download" not in source
+def test_asap_execution_uses_rendered_ui_not_internal_response_url():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert "expect_response" not in source
+    assert "frame = _asap_wait_for_results(page)" in source
     assert '"stage": "report_execution"' in source
+    assert '"stage": "file_export"' in source
+    assert '"button.report-export"' not in source
 
 
 def test_database_schema_has_no_flow_delete_policy(flow_db):
@@ -1103,6 +1089,23 @@ def test_service_starts_headless_worker_service_instead_of_child_process():
     assert '[schtasks, "/Run", "/TN", HEADED_TASK_PATH]' in source
     assert 'HEADED_TASK_PATH = rf"\\{HEADED_TASK_NAME}"' in source
     assert "subprocess.Popen" not in source
+
+
+@pytest.mark.parametrize("browser_mode", ["headless", "headed"])
+def test_stop_worker_targets_exact_registered_process(browser_mode, monkeypatch):
+    calls = []
+    monkeypatch.setattr(flow_local_runner.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        flow_local_runner.subprocess, "run",
+        lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(
+            returncode=0, stdout="stopped", stderr="",
+        ),
+    )
+
+    result = flow_local_runner.stop_local_worker(browser_mode, 4321)
+
+    assert result == {"status": "stopped", "process_id": 4321, "message": "stopped"}
+    assert calls[0][0] == ["taskkill.exe", "/PID", "4321", "/T", "/F"]
 
 
 def test_setup_registers_on_demand_interactive_headed_worker():
@@ -1349,7 +1352,7 @@ def test_queued_run_can_retry_worker_launch_without_duplicate(flow_db, monkeypat
         assert db.execute("SELECT COUNT(*) FROM flow_runs").fetchone()[0] == 1
 
 
-def test_stop_cancels_headed_run_and_targets_reported_worker_pid(flow_db, monkeypatch):
+def test_stop_cancels_assigned_run_and_targets_reported_worker_pid(flow_db, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
     saved = flows.create_flow(
@@ -1364,16 +1367,94 @@ def test_stop_cancels_headed_run_and_targets_reported_worker_pid(flow_db, monkey
     flows.claim_run("bi-desktop-headed")
     stopped = []
     monkeypatch.setattr(
-        flows, "stop_headed_worker",
-        lambda pid: stopped.append(pid) or {"status": "stopped", "process_id": pid},
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
     )
 
     result = flows.stop_run(saved["id"], _request())
 
     assert result["run_id"] == queued["id"]
     assert result["status"] == "cancelled"
-    assert stopped == [4321]
+    assert stopped == [("headed", 4321)]
     assert flows.list_runs(flow_id=saved["id"], limit=100)[0]["status"] == "cancelled"
+
+
+def test_stop_cancels_queued_run_without_stopping_another_flows_worker(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    first_flow = flows.create_flow(
+        _flow(site["id"], report["id"], name="First", browser_mode="headed"), _request()
+    )
+    second_flow = flows.create_flow(
+        _flow(site["id"], report["id"], name="Second", browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    first_run = flows.queue_run(first_flow["id"], _request())
+    second_run = flows.queue_run(second_flow["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible",
+        capabilities={"headed": True, "process_id": 4321},
+    ))
+    assert flows.claim_run("bi-desktop-headed")["run"]["id"] == first_run["id"]
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped"},
+    )
+
+    result = flows.stop_run(second_flow["id"], _request())
+
+    assert result["run_id"] == second_run["id"]
+    assert result["worker"]["status"] == "not_needed"
+    assert stopped == []
+    assert flows.get_run(first_run["id"])["status"] == "claimed"
+    assert flows.get_run(second_run["id"])["status"] == "cancelled"
+    with database.get_db() as db:
+        worker = db.execute(
+            "SELECT status, current_run_id FROM flow_workers WHERE worker_id='bi-desktop-headed'"
+        ).fetchone()
+    assert dict(worker) == {"status": "busy", "current_run_id": first_run["id"]}
+
+
+def test_stop_cancels_assigned_headless_run(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headless"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headless", display_name="Background",
+        capabilities={"headed": False, "process_id": 9876},
+    ))
+    flows.claim_run("bi-desktop-headless")
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
+    )
+
+    result = flows.stop_run(saved["id"], _request())
+
+    assert result["run_id"] == queued["id"]
+    assert result["status"] == "cancelled"
+    assert stopped == [("headless", 9876)]
+
+
+def test_asap_scraper_never_uses_control_modified_clicks():
+    source = Path(flow_worker.__file__).read_text()
+    assert 'modifiers=["Control"]' not in source
+    assert 'keyboard.down("Control")' not in source
+    assert 'keyboard.press("Control' not in source
+
+
+def test_every_active_flow_renders_a_stop_button():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
+    assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
+    index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
+    assert '/static/app.js?v=51' in index
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():
@@ -1615,15 +1696,16 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     assert len(attempts) == 3
 
 
-def test_asap_api_download_uses_local_staging_and_existing_safe_file_transfer():
-    import inspect
-    from app.flow_worker import execute_job
-
-    source = inspect.getsource(execute_job)
-    assert "staging_folder = download_staging_dir or profile_dir / \"downloads\"" in source
-    assert "api.download_csv(job, period, staged_file)" in source
-    assert "_store_completed_download(staged_file, output)" in source
-    assert "_asap_download" not in source
+def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert 'candidate.on("download", capture_download)' in source
+    assert 'candidate.remove_listener("download", capture_download)' in source
+    assert "download_page.expect_download" not in source
+    assert "staged_file, export_pages = _asap_download" in source
+    assert "export_page.close(" not in source
+    assert "candidate for candidate in wizard_pages" in source
+    assert "downloads_path=str(download_staging_dir)" in source
+    assert "downloads[0].path()" not in source
 
 
 def test_completed_download_is_normalized_locally_then_copied_without_overwrite(tmp_path):

@@ -19,7 +19,7 @@ from app.config import DB_PATH
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_local_runner import (
-    HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_headed_worker,
+    HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
 )
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
@@ -452,7 +452,7 @@ class DiscoveredFilter(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     control_label: str = Field(min_length=1, max_length=300)
     control_type: str
-    options: list[str] = Field(default_factory=list, max_length=200000)
+    options: list[str] = Field(default_factory=list, max_length=2000)
     automation: dict[str, Any] = Field(default_factory=dict)
     required: bool = False
     position: int = Field(default=0, ge=0, le=1000)
@@ -478,7 +478,7 @@ class DiscoveredReport(BaseModel):
 class ScanProgress(BaseModel):
     status: Literal["running", "succeeded", "failed", "cancelled"]
     progress: dict[str, Any] = Field(default_factory=dict)
-    reports: list[DiscoveredReport] = Field(default_factory=list, max_length=10000)
+    reports: list[DiscoveredReport] = Field(default_factory=list, max_length=1000)
     timings: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
     complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
@@ -500,7 +500,7 @@ def _filter_row(row) -> dict:
 
 def _report_out(db, report_id: int) -> dict:
     row = db.execute(
-        """SELECT r.*, s.name AS site_name, s.adapter, s.auth_url, s.base_url
+        """SELECT r.*, s.name AS site_name, s.adapter, s.auth_url
            FROM flow_reports r JOIN flow_sites s ON s.id = r.site_id WHERE r.id = ?""",
         (report_id,),
     ).fetchone()
@@ -626,7 +626,6 @@ def _build_job(db, flow_id: int) -> dict:
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
             "adapter": report["adapter"], "auth_url": report["auth_url"],
-            "base_url": report["base_url"],
         },
         "report": {
             "id": report["id"], "name": report["name"], "url": report["report_url"],
@@ -1290,10 +1289,13 @@ def queue_run(flow_id: int, request: Request):
 
 @router.post("/{flow_id}/stop")
 def stop_run(flow_id: int, request: Request):
-    """Cancel a run and immediately close its exact headed worker tree."""
+    """Cancel a queued run or close the exact worker assigned to an active run."""
     now = _iso(_now())
     process_id = None
     run_id = None
+    browser_mode = "headless"
+    stop_assigned_worker = False
+    message = ""
     with get_db() as db:
         flow = db.execute("SELECT id, name FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
@@ -1306,15 +1308,21 @@ def stop_run(flow_id: int, request: Request):
         if not row:
             raise HTTPException(409, "This flow has no active run to stop.")
         job = _loads(row["job_json"], {})
-        if job.get("execution", {}).get("browser_mode") != "headed":
-            raise HTTPException(400, "Immediate Stop is available only for headed browser runs.")
+        browser_mode = job.get("execution", {}).get("browser_mode", "headless")
         run_id = row["id"]
-        worker_id = row["worker_id"] or HEADED_WORKER_ID
-        worker = db.execute("SELECT capabilities_json FROM flow_workers WHERE worker_id=?", (worker_id,)).fetchone()
-        capabilities = _loads(worker["capabilities_json"], {}) if worker else {}
-        raw_pid = capabilities.get("process_id")
-        process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
-        message = "Stopped by user. The headed browser process was closed."
+        worker_id = row["worker_id"]
+        stop_assigned_worker = row["status"] in {"claimed", "running"} and bool(worker_id)
+        if stop_assigned_worker:
+            worker = db.execute(
+                "SELECT capabilities_json FROM flow_workers WHERE worker_id=? AND current_run_id=?",
+                (worker_id, run_id),
+            ).fetchone()
+            capabilities = _loads(worker["capabilities_json"], {}) if worker else {}
+            raw_pid = capabilities.get("process_id")
+            process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
+            message = "Stop requested by user for the assigned browser worker."
+        else:
+            message = "Cancelled by user before a worker started this run."
         db.execute(
             """UPDATE flow_runs SET status='cancelled', error=?, progress_json=?,
                finished_at=?, heartbeat_at=? WHERE id=?""",
@@ -1325,14 +1333,25 @@ def stop_run(flow_id: int, request: Request):
                WHERE id=?""",
             (now, message, now, flow_id),
         )
-        db.execute(
-            """UPDATE flow_workers SET status='offline', current_run_id=NULL, last_error=?, updated_at=?
-               WHERE worker_id=?""",
-            (message, now, worker_id),
-        )
+        if stop_assigned_worker:
+            db.execute(
+                """UPDATE flow_workers SET status='offline', current_run_id=NULL, last_error=?, updated_at=?
+                   WHERE worker_id=? AND current_run_id=?""",
+                (message, now, worker_id, run_id),
+            )
         log_event(db, "flow", flow_id, flow["name"], "run_cancelled", f"run_id={run_id}", get_actor(request))
-    stopped = stop_headed_worker(process_id)
-    return {"run_id": run_id, "status": "cancelled", "worker": stopped}
+    stopped = (
+        stop_local_worker(browser_mode, process_id)
+        if stop_assigned_worker
+        else {"status": "not_needed", "message": "The run had not been assigned to a worker."}
+    )
+    if stop_assigned_worker:
+        message = (
+            "Run stopped and its assigned browser worker was closed."
+            if stopped.get("status") == "stopped"
+            else f"Run cancelled, but Windows could not confirm that the browser worker closed: {stopped.get('message') or stopped.get('status')}."
+        )
+    return {"run_id": run_id, "status": "cancelled", "message": message, "worker": stopped}
 
 
 def ensure_local_worker() -> dict:
@@ -1365,16 +1384,6 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
     ).fetchone()
     if active:
         return active["id"]
-    report_automation = _loads(report["automation_json"], {}) if report else {}
-    if report and (
-        report_automation.get("provider") != "microstrategy_rest"
-        or not report_automation.get("project_id")
-        or not report_automation.get("object_id")
-    ):
-        raise HTTPException(
-            409,
-            "This report predates MicroStrategy API discovery. Run a full website catalog refresh first.",
-        )
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -1384,10 +1393,9 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         },
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
-            "report_refs": [{
-                "project_id": report_automation.get("project_id"),
-                "object_id": report_automation.get("object_id"),
-            }] if report else [],
+            "report_paths": [
+                _loads(report["automation_json"], {}).get("category_path", [])
+            ] if report else [],
         },
     }
     cursor = db.execute(

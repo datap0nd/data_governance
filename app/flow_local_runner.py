@@ -53,12 +53,23 @@ def launch_local_worker(browser_mode: str = "headless") -> dict:
     }
 
 
-def stop_headed_worker(process_id: int | None) -> dict:
-    """Terminate only the exact interactive worker process tree for a run."""
+def stop_local_worker(browser_mode: str, process_id: int | None) -> dict:
+    """Terminate the exact worker assigned to a running flow."""
     if platform.system() != "Windows":
-        return {"status": "skipped", "message": "Headed worker termination is Windows-only."}
+        return {"status": "skipped", "message": "Flow worker termination is Windows-only."}
+    if browser_mode not in {"headless", "headed"}:
+        return {"status": "error", "message": f"Unsupported browser mode: {browser_mode}."}
     try:
-        if not isinstance(process_id, int) or process_id <= 0:
+        if isinstance(process_id, int) and process_id > 0:
+            completed = subprocess.run(
+                ["taskkill.exe", "/PID", str(process_id), "/T", "/F"],
+                capture_output=True, text=True, timeout=15,
+            )
+            detail = (completed.stdout or completed.stderr or "").strip()
+            if completed.returncode != 0:
+                return {"status": "error", "message": detail or "Windows could not stop the flow worker."}
+            return {"status": "stopped", "process_id": process_id, "message": detail}
+        if browser_mode == "headed":
             schtasks = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "schtasks.exe")
             completed = subprocess.run(
                 [schtasks, "/End", "/TN", HEADED_TASK_PATH],
@@ -69,12 +80,12 @@ def stop_headed_worker(process_id: int | None) -> dict:
                 return {"status": "error", "message": detail or "Windows could not end the headed worker task."}
             return {"status": "stopped", "process_id": None, "message": detail}
         completed = subprocess.run(
-            ["taskkill.exe", "/PID", str(process_id), "/T", "/F"],
+            ["sc.exe", "stop", SERVICE_NAME],
             capture_output=True, text=True, timeout=15,
         )
         detail = (completed.stdout or completed.stderr or "").strip()
         if completed.returncode != 0:
-            return {"status": "error", "message": detail or "Windows could not stop the headed worker."}
-        return {"status": "stopped", "process_id": process_id, "message": detail}
+            return {"status": "error", "message": detail or "Windows could not stop the headless worker service."}
+        return {"status": "stopped", "process_id": None, "message": detail}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}

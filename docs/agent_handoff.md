@@ -2,89 +2,504 @@
 
 ## Current Objective
 
-Live-verify the new browser-authenticated MicroStrategy REST path for ASAP on
-the BI desktop. The code migration is delivered; the BI desktop has not yet
-been updated to this build.
+Deliver and live-verify observable SQL handoff behavior for Flows. Append must
+enforce the existing target schema. Replace must atomically rebuild the exact
+selected table from CSV columns and expose every SQL failure cleanly in the run
+log.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit: `eb9d61d Replace ASAP UI automation with MicroStrategy REST`
+- Delivery target: `origin/main`
 - Public repo: no, private
-- Push status: `origin/main` is verified at `eb9d61d`
-- Stable rollback tag: `asap-ui-automation-stable-2026-08-14`, peeled to
-  `d2b61f10c84a750761ff3e5a1eb239f32d4024db`
-- Untracked local files: `governance.db-shm` and `governance.db-wal`; preserve
-  them and never stage them
+- Latest verified remote commit: `a103e54`
+- Push status: atomic schema-replacement changes are tested locally and pending
+  publication and live deployment.
 
 ## Decisions Made
 
-- ASAP browser automation now stops after browser SSO. The worker exchanges the
-  browser session for a short-lived token through
-  `GET /MicroStrategyLibrary/api/auth/token` and keeps the token in memory only.
-- Weekly discovery traverses accessible projects and Shared Reports folders by
-  stable MicroStrategy object IDs, creates report instances, reads prompt
-  definitions, and pages prompt members in batches of 200 until exhausted.
-- Catalog records persist project IDs, report IDs, prompt keys, prompt types,
-  and option IDs in existing JSON fields. Existing SQLite tables remain
-  migration-compatible; missing entries are marked stale, never deleted.
-- A prompted report cannot be one vendor HTTP request. One Metronome download
-  operation explicitly wraps instance creation, prompt answers, nested-prompt
-  checks, paged Data API v2 retrieval, and instance cleanup.
-- Normal Data API grids are converted to CSV from their definitions and raw
-  values. Cross-tabs, column attributes, unsupported prompt types, missing IDs,
-  incomplete paging, and result-shape changes fail closed.
-- Full scans are atomic from the governance catalog's perspective. An API error
-  fails the scan and does not apply partial discoveries or stale prior rows.
-- SQL transformation and insertion code was not changed.
-- The prior geometry and rendered-control helpers remain in `flow_worker.py`
-  but have no ASAP discovery or execution callers. The stable tag preserves the
-  former runtime if rollback is needed.
+- Flows owns websites, report catalogs, filter definitions, flow selections,
+  schedules, queued runs, workers, artifacts, and run history in SQLite.
+- Repository code contains no report-specific URL, filter value, destination,
+  or credential. Users configure those values from Tools > Flows.
+- Browser work runs locally on the BI desktop through the resident
+  `MXFlowsWorker` headless service or the on-demand
+  `Metronome_Flows_Headed` interactive task. Each uses a separate browser
+  profile; both use the same account-scoped DPAPI credential.
+- Headed workers claim only headed flow jobs, exit after one idle minute, and
+  never claim catalog scans. Headless workers claim headless jobs and scans.
+- Windows launches the headed task through the absolute System32 executable
+  and root-qualified task path. Clicking Run on a queued flow retries worker
+  startup without creating a duplicate run.
+- The interactive task launches the installed Python worker directly. It does
+  not add a PowerShell wrapper between Task Scheduler and Playwright.
+- ASAP Select2 controls are matched by their complete discovered option set and
+  selected through the owning native select. This avoids clicking hidden option
+  elements and disambiguates controls sharing one value.
+- ASAP week members are selected using an exact visible match. Report
+  completion is detected from the rendered row summary across replacement
+  MicroStrategy frames, rather than an unstable internal response URL.
+- CSV export uses the first icon-only toolbar control beside RUN, which opens
+  MicroStrategy Export Options. The worker selects `CSV file format`, activates
+  `Export`, and supports both popup and in-page wizard shapes.
+- The worker never deletes or overwrites an existing file. Filename collisions
+  receive a numbered suffix.
+- SQL handoff is displayed as a future step but is rejected by API validation
+  and is not executed in this release. Cadence was reference material only and
+  was not changed.
+
+- Scanner findings use stable fingerprints. Current findings update their open
+  action, cleared findings resolve automatically, and later reappearance opens
+  a new action while preserving history.
+- The daily overall refresh now covers report discovery, PostgreSQL dependency
+  and cron discovery, scripts, Windows scheduled tasks, source probes,
+  data-quality checks, best-practice findings, schedule discrepancies,
+  documentation completeness, configured usage CSV data, Power BI refresh
+  metadata, and Power BI usage sync.
+- Query changes are event findings, so each distinct query version remains open
+  for review rather than auto-closing merely because a later scan sees the same
+  query.
+- Data-quality checks are read-only. Probe-based rules use stored row counts;
+  PostgreSQL column rules use the existing read-only probe connection.
+- A failed data-quality check creates one owned action and alert. Passing later
+  resolves both. Disabling a check resolves its active incident but keeps its
+  definition and result history.
+- Custom Reports navigation, frontend code, models, API router, and router file
+  were removed. The existing `custom_reports` database table remains so an app
+  update does not destroy historical user data.
+- Pipeline Overview navigation, frontend graph code, dedicated CSS, FAQ copy,
+  and API router were removed. Old `#overview` bookmarks redirect to Dashboard.
+- The manual Tasks page and task-email UI were removed. Old `#tasks` bookmarks
+  redirect to Dashboard. Legacy task APIs and tables remain in place so old
+  saved data is not destroyed.
+- Sources with no owner now have an evidence review queue. Auto-assignment uses
+  the unique majority owner across active linked reports and skips ties.
+- Freshness rules are auto-filled only from explicit source schedules. Rule
+  changes immediately re-evaluate the latest stored probe, and thresholds over
+  90 days are flagged for review.
+- Scheduled Tasks defaults to governed jobs linked to scripts. Unlinked,
+  disabled, and never-run Windows tasks do not create incidents. Known Task
+  Scheduler result codes have user-facing states.
+- Owner emails are alert-only, ranked by risk and impact, and require explicit
+  recipient selection. Immediate sends show recipients and alert counts in the
+  confirmation.
+- Alert emails now contain only the intro, one alert table, and the closing.
+  The duplicate top-three section and the table heading were removed.
+- `Degraded since` is the current action's creation timestamp, which represents
+  the start of the current detected degradation episode. It replaces age and
+  `Open` wording in alert surfaces.
+- Alert surfaces label the usage-prioritization metric as `Views`; the existing
+  premium-viewer multiplier remains an internal ranking rule.
+- Power BI refresh history parsing prefers the detailed refresh-attempt error,
+  stores the extracted message, and exposes it in report details, alert
+  details, the email preview, and the Outlook email as `PBI Refresh Error:`.
+- Artifact marks in Outlook email use inline, email-safe HTML for Power BI,
+  Excel, SQL, and the supported fallback artifact types.
 
 ## Files Changed
 
-- `app/asap_api.py`: browser-session token exchange, ID-based discovery, prompt
-  pagination, prompt answering, result paging, and lossless normal-grid CSV.
-- `app/flow_worker.py`: route ASAP scans and downloads through the REST adapter;
-  browser use is limited to SSO and token creation.
-- `app/routers/flows.py`: include site base URL in jobs, target report scans by
-  project/report ID, reject legacy targeted scans, and accept large API catalogs.
-- `app/static/app.js`: explain the MicroStrategy API catalog and SSO/token model.
-- `README.md`: document the API workflow, required multi-call vendor contract,
-  paging, and fail-closed limits.
-- `tests/test_asap_api.py`, `tests/test_flows.py`: API token, pagination, ID
-  mapping, result flattening, staging, and migration regressions.
+- `app/database.py`: flow catalog, definition, run, artifact, and worker tables.
+- `app/routers/flows.py`: validated catalog/flow APIs, scheduler queue, worker
+  claim/progress protocol, per-week job expansion, and disabled SQL handoff.
+- `app/flow_worker.py`: persistent-profile Playwright worker with semantic
+  controls, replacement-frame readiness, current ASAP Export Options handling,
+  CSV validation, checksums, and collision-safe filenames.
+- `app/flow_local_runner.py`, `tools/run_flow_worker.ps1`: BI-desktop task
+  launchers, mode-specific worker identities, and headed idle shutdown.
+- `setup.ps1`: headless service identity plus the on-demand interactive task.
+- `app/static/index.html`, `app/static/app.js`, `app/static/style.css`: Flows
+  navigation, catalog management, populated builder, run history, desktop and
+  mobile layouts, and a mobile hidden-panel overflow fix.
+- `app/main.py`: router and one-minute flow schedule dispatcher.
+- `tests/test_flows.py`: persistence, filter validation, scheduling, worker,
+  artifact, no-delete, no-overwrite, and SQL-disabled coverage.
+- `README.md`: authenticated worker setup and safety behavior.
+
+- `app/scanner/runner.py`, `app/scanner/prober.py`: expanded scan coverage and
+  persistent actions for broken references, changed queries, stale
+  dependencies, and governance checks.
+- `app/scanner/findings.py`: shared fingerprinted action lifecycle.
+- `app/checks/data_quality.py`, `app/routers/data_quality.py`: validation,
+  execution, result history, action and alert lifecycle, and management API.
+- `app/routers/best_practices.py`, `app/routers/schedules.py`,
+  `app/routers/documentation.py`: persist actionable report findings.
+- `app/routers/actions.py`, `app/routers/dashboard.py`: expose distinct managed
+  actions and live data-quality totals.
+- `app/static/app.js`, `app/static/style.css`, `app/static/index.html`: Data
+  Quality management page, removal of Custom Reports, and a mobile AI-panel
+  off-screen positioning fix found during the visual verification pass.
+- `app/database.py`, `app/models.py`, `app/main.py`: schema migrations, API
+  models, router registration, and scheduled Power BI usage sync.
+- `README.md`: updated daily-refresh and data-quality behavior.
+- `tests/test_data_quality.py`: validation, failure/recovery, row-count change,
+  and managed-finding lifecycle coverage.
+- `app/static/index.html`, `app/static/app.js`, `app/static/style.css`,
+  `app/main.py`, `app/routers/overview.py`: removed Pipeline Overview end to end.
+- `tests/test_overview_removed.py`: guards the removed route and navigation.
+- `app/routers/sources.py`, `app/scanner/task_scheduler_runner.py`,
+  `app/routers/scheduled_tasks.py`: owner evidence, immediate freshness status,
+  governed job filtering, and false-positive suppression.
+- `app/routers/email.py`, `app/routers/email_schedules.py`: ranked alert email
+  format and alert-only profile schedules.
+- `app/routers/dashboard.py`, `app/routers/reports.py`,
+  `app/routers/schedules.py`, `app/scanner/runner.py`: consistent live counts,
+  explicit unknown status, and complete probe history accounting.
+- `app/static/app.js`, `app/static/style.css`, `app/static/index.html`: removed
+  Tasks UI, fixed asynchronous navigation races, added owner review, clarified
+  report governance, reduced script/task noise, and improved email safeguards.
+- `tests/test_sources.py`, `tests/test_task_scheduler_runner.py`,
+  `tests/test_email_alert_summary.py`, `tests/test_overview_removed.py`: focused
+  regression coverage for the new behavior.
+- `app/models.py`, `app/routers/actions.py`: degradation date and Power BI error
+  evidence on action responses, plus plain-language alert copy.
+- `app/routers/email.py`: one-table email layout with artifact marks,
+  degradation dates, views, next actions, and refresh errors.
+- `app/scanner/pbi_fetch.py`: detailed Power BI refresh-attempt error parsing
+  for both direct refresh lookup and the scheduled refresh metadata sync.
+- `app/static/app.js`, `app/static/style.css`, `app/static/index.html`: matching
+  dashboard, report-detail, and email-preview surfaces.
+- `docs/metric_contracts.md`, `tests/test_email_alert_summary.py`,
+  `tests/test_pbi_fetch.py`, `tests/test_overview_removed.py`: metric semantics
+  and regression coverage for the new alert contract.
 
 ## Commands And Checks
 
-- `PYTHONPATH=. uv run --python 3.11 --with-requirements requirements.txt --with pytest python -m pytest -q`: `190 passed`.
-- `node --check app/static/app.js`: passed.
-- `python3 -m py_compile app/asap_api.py app/flow_worker.py app/routers/flows.py`: passed.
+- Full Python suite: `125 passed`.
+- BI desktop setup: downloaded `main`, preserved the existing SQLite database,
+  restarted Metronome and the headless worker, and registered the headed task.
+- Live headed runs #12 and #13 succeeded end to end on the BI desktop. Run #13
+  completed in 53 seconds: navigation 14s, configuration 30s, report execution
+  4s, and CSV export 5s.
+- Run #13 saved `Mobile - Installed Base - Installed Base (MENA) (2).csv` under
+  `C:\Users\meto.mx\Documents\Downloads_Flows`, 346,052 bytes, with a stored
+  checksum. The numbered suffix confirms the existing CSV was not overwritten.
+- Run #12 also saved one CSV and completed in 1m 6s. No files were deleted and
+  SQL handoff remained disabled.
+- Existing Flows desktop and 390px mobile Playwright screenshots passed with
+  no horizontal overflow after their responsive fix.
+- Node lineage suite: `1 passed`.
+- Python `compileall` for `app`: passed.
+- JavaScript syntax check: passed.
+- Impeccable detector: four pre-existing side-border warnings remain; none is
+  in the changed Flows code.
 - `git diff --check`: passed.
-- Citrix read-only network inspection: live ASAP returned HTTP 200 structured
-  requests including `menuInfo.do`, `objects`, `getNewReport`, and related
-  catalog fetches. This proved that the old geometry crawler was unnecessary.
-- Official Library REST compatibility has not yet been proven live. Citrix text
-  injection failed while attempting a direct `/MicroStrategyLibrary/api/status`
-  navigation, so no result was inferred.
-
-## Open Questions
-
-- Does the deployed ASAP Library expose `GET /api/auth/token`, projects, folders,
-  report instances, prompts, prompt elements, and Data API v2 to this SSO user?
-- Are the production ASAP exports normal report grids? Cross-tab exports fail
-  deliberately until a lossless expansion contract is added.
-- Nested prompts are handled during execution, but a weekly catalog cannot
-  pre-enumerate every conditional option combination without an exponential
-  traversal. The current catalog stores the options the documented instance
-  exposes and fails if a runtime prompt is absent from the latest catalog.
 
 ## Next Step
 
-Obtain explicit approval to click `Update App` in Citrix because it persistently
-changes the BI desktop. Then update to `eb9d61d`, open Flows > Catalog, run one
-full API catalog refresh, and inspect the terminal scan status. If it succeeds,
-create a download-only test flow and validate report rows before enabling any
-SQL handoff. If Library REST is unavailable, keep the scan failed and capture
-the exact HTTP status instead of restoring UI guessing.
+Add automatic handling for the optional ASAP Notice popup, then run the same
+flow headless to verify parity with the proven headed CSV path. Do not delete
+files and do not enable SQL handoff.
+
+## Current Flows Update (2026-08-13)
+
+- Runtime commit `9492b0f` is on `origin/main`.
+- ASAP export is CSV-only. New downloads remove a detected report-title row
+  plus the following blank row while preserving the real comma-separated header.
+- Scheduled execution is controlled by the flow-list Active switch. Manual flows
+  cannot be activated, while manual Run remains available.
+- New run progress events, timings, errors, tracebacks, artifacts, saved config,
+  and SQL details are available from the full-page Expanded logs view. Historical
+  runs cannot gain missing tracebacks retroactively.
+- SQL insertion maps by normalized column name. It rejects unexpected source
+  columns, duplicate names, and missing required target columns; nullable,
+  defaulted, identity, and generated target columns may be absent. Type failures
+  roll back the transaction. Truncate-and-replace also rolls back its truncate
+  if insertion fails.
+- Full Python suite: `148 passed`. JavaScript syntax checks and
+  `git diff --check` passed. SQL insertion was not live-tested.
+- BI desktop update succeeded after the built-in proxy retry. The live UI shows
+  Active, CSV-only download, Stop, Run history, and Expanded logs.
+- During UI inspection, an already-running headed ASAP browser was inadvertently
+  closed while switching windows. That run may fail or cancel. No flow was
+  started, no file was deleted, and no SQL insertion was performed by the
+  inspection.
+- Next step: inspect that run's expanded log after it settles, then validate a
+  fresh download-only run before testing SQL.
+
+## Transformation Stage Update (2026-08-13)
+
+- Runtime commit `47fd881` adds an optional transformation stage between ASAP
+  download and SQL insertion.
+- The builder's Browse control uses the Windows file picker for `.py`, `.ps1`,
+  or `.exe` scripts. The selected file is copied into the local, gitignored
+  `flow_scripts` folder; proprietary scripts do not enter the repository.
+- The worker invokes the script once per downloaded CSV. Python and executable
+  scripts receive `--input` and `--output`; PowerShell receives `-InputPath`
+  and `-OutputPath`. The same locations are exposed through
+  `METRONOME_FLOW_INPUT`, `METRONOME_FLOW_OUTPUT`, and
+  `METRONOME_FLOW_RESULTS_DIR`.
+- Results are collision-safe CSV files in `<target folder>/script_results`.
+  Original downloads remain untouched. A missing, empty, invalid, timed-out,
+  or non-zero script result fails the run before SQL.
+- When enabled, SQL receives only transformed files. Expanded logs retain the
+  transformation timing, result paths, stdout, stderr, errors, and traceback.
+- ASAP CSV normalization now detects comma, semicolon, tab, or pipe delimiters
+  and UTF-8, UTF-16, or Windows encodings before writing a standard UTF-8 comma
+  CSV. This fixes run #31's post-download delimiter failure.
+- Full suite: `154 passed`; Python compileall, JavaScript syntax checks, and
+  `git diff --check` passed. Detector warnings were pre-existing and outside
+  the new Flows controls.
+- BI desktop update completed and the live editor shows the Transformation
+  section. Script execution and SQL insertion were not tested.
+- Next step: adapt the first real transformation script to the documented
+  contract, select it in the flow, and test download plus transformation with
+  SQL disabled.
+
+## ASAP Multi-Period Reliability Update (2026-08-13)
+
+- Runtime commit `112a56e` resets each ASAP list selection with a normal first
+  click, then Ctrl-clicks only the remaining requested members. This prevents
+  retained portal selections from being toggled off or leaking into a run.
+- ASAP export popups are tracked per download, kept open until `save_as`
+  confirms file completion, and then closed before the next period starts.
+  Self-closing wizard windows are tolerated.
+- Full Python suite: `155 passed`; `git diff --check` passed.
+- Next step: update the BI desktop and run a headed flow with several Dimension
+  values and at least two downloads. Verify both the exact ASAP selection and
+  that each export popup closes before the following report period begins.
+- Data Configuration discovery now reads every native select, including the
+  hidden owner used by Select2, and merges duplicate prompt discoveries. This
+  prevents a partial visible popup snapshot from omitting an unrendered option.
+- The scanner also polls opened Select2 results until they remain stable for
+  1.5 seconds, capturing remotely rendered options that arrive after the old
+  150 ms snapshot. Both setup script variants stop an active headed task before
+  replacing code so a post-update run cannot retain the old Python runtime.
+
+## ASAP Rollback And Dimension Reset (2026-08-14)
+
+- The tracked tree was restored to `05ea061`, the last evidence-backed good
+  state before native-control filter manipulation began. Its live handoff
+  recorded two successful headed CSV runs.
+- Dimension now bypasses hidden/native controls. The worker reads visible
+  selection state, plain-clicks every retained selected member off, then
+  plain-clicks the exact Metronome-requested members on and verifies equality.
+  The Dimension path never uses Ctrl-click.
+- Week selection and the proven multi-download sequence were left unchanged.
+  Each download waits for `save_as`, closes its export popup, then reopens and
+  configures the report for the next period.
+- Full Python suite: `161 passed` on Python 3.11.
+- The first live rollback run reached the exact report, applied Dimension with
+  plain clicks, ran the report, completed the visible browser download, and
+  closed the export popup. The two-minute stale-run reaper then failed the run
+  while Playwright was still in its blocking save step. The production grace
+  period is now ten minutes; explicit shorter timeouts remain available to
+  tests and diagnostics.
+- A second live run confirmed the headed worker disappears specifically while
+  Playwright saves directly to the configured UNC share. Downloads now wait on
+  Edge's completed local file, normalize locally, and copy the final CSV to an
+  exclusive-create destination. Existing files still cannot be overwritten.
+- A third live run showed that `download.path()` also blocks indefinitely after
+  Edge visibly completes the file. The worker now launches Edge with a known
+  local download staging folder, detects a new stable file there without any
+  Playwright download-path call, normalizes it locally, and copies it to the
+  configured destination.
+- Full Python suite after the staging-folder change: `163 passed`; Python
+  compilation succeeded.
+- Live run #65 proved the staging and final copy: Edge wrote a new 57,667,776
+  byte local file and the worker copied an equal-size numbered CSV to the final
+  share. The run then blocked only while Playwright waited for the already
+  disappeared export page to acknowledge `close()`. Popup cleanup now uses the
+  non-waiting close mode so the next period can begin.
+- Live run #66 created both requested final-share files, Week 27 and Week 28,
+  each 57,667,776 bytes. It also proved the report reopened and progressed to
+  `Exporting CSV 2 of 2`. Edge's detached popup object can block even on
+  `is_closed()`, so post-download popup API calls were removed entirely. ASAP
+  already closes the visible wizard itself.
+- Live run #67 completed the full browser and file path in 1m10s, then remained
+  inside SQL insertion until the stale-run watchdog failed it. The 57 MB CSV
+  was being inserted with pandas `to_sql` in 5,000-row batches. SQL handoff now
+  streams the validated normalized frame through PostgreSQL's native `COPY`
+  protocol in the same truncate-and-replace transaction.
+- Live run #69 on the deployed final scraper build again completed navigation,
+  exact Dimension configuration, report execution, local export, normalization,
+  and final-share transfer in 1m13s. The saved Week 27 CSV contains 41,872 rows.
+- The SQL loader no longer asks pandas to infer the delimiter with its slow
+  Python parser. Flow artifacts are already normalized, so it now reads the
+  guaranteed UTF-8 comma format with pandas' C parser before PostgreSQL COPY.
+  Full suite: `165 passed`; Python compilation and `git diff --check` passed.
+- SQL remains unverified end to end. Run #69 stayed at `Loading downloaded files
+  into SQL` for more than nine minutes against
+  `postgres.bi_reporting.this_is_test` and was stopped cleanly. The Citrix
+  session reported high network latency during the wait. Do not change the
+  proven scraper path while diagnosing this. Inspect the target database for
+  an external table lock or blocked transaction, then rerun SQL only.
+- PostgreSQL transactions now set a 30-second local lock timeout so a blocked
+  target table produces an actionable database error instead of hanging the
+  flow. Commit `8aa9afb` is deployed on the BI desktop; the updater completed
+  after transient corporate-proxy HTTP 502 retries and restored the service.
+- Safeguarded live run #70 again completed the browser and file phases in
+  1m12s, then remained at SQL insertion for more than six minutes without a
+  lock-timeout error. This rules out a PostgreSQL table-lock wait. The remaining
+  blocker is the database connection/COPY path or its network route. Run #70
+  was stopped cleanly; the flow is idle and ready for a database-only diagnosis.
+
+## Observable SQL Handoff Update (2026-08-14)
+
+- SQL insertion no longer loads the normalized CSV into pandas or serializes it
+  into a second temporary CSV. It validates the header and streams the saved
+  UTF-8 CSV directly through PostgreSQL `COPY`.
+- Expanded logs now record artifact validation, connection, target validation,
+  truncate, each COPY, commit, and failure as separate events with elapsed time.
+- Database errors report the failed stage, PostgreSQL SQLSTATE when available,
+  primary database message, and whether commit or rollback was confirmed.
+- Connection attempts are bounded at 10 seconds, table locks at 30 seconds, and
+  SQL statements at 120 seconds. TCP keepalives detect dead network paths.
+- A terminal run with a saved SQL-ready artifact now offers `Retry SQL only`.
+  It queues a headless SQL job from the prior artifact, does not open ASAP, and
+  does not download the report again. The UI confirms the exact target and
+  warns that append retries can duplicate already-committed rows.
+- The run log refreshes every two seconds while work is active, so the last
+  completed SQL phase is visible without manual reloads.
+- Full Python suite: `169 passed`. Python compilation, JavaScript syntax checks,
+  and `git diff --check` passed. No live SQL write has been performed with this
+  build.
+- Next step: deploy the new `main` to the BI desktop, open run #70's Expanded
+  logs, use `Retry SQL only`, and observe the exact terminal phase or clean
+  PostgreSQL error. This action can recreate/append the configured target and
+  requires explicit Citrix approval immediately before clicking it.
+
+## Atomic Schema-Replacing SQL Handoff (2026-08-14)
+
+- Live run #71 proved the new diagnostic path through artifact validation,
+  PostgreSQL connection, and target inspection. It cleanly identified that the
+  17-column Week 27 CSV did not match the six-column random test table before
+  any truncate or commit.
+- Product semantics were then clarified: append must retain strict schema
+  validation, while replace must accept a different CSV schema. PostgreSQL
+  `TRUNCATE` cannot change a schema, so replace now drops and recreates the
+  selected table inside the same transaction, creates one `TEXT` column per
+  normalized CSV column, streams the file with `COPY`, and commits only after
+  the full load succeeds. Any failure restores the prior table on rollback.
+- The replace confirmation and flow editor explicitly warn that a successful
+  schema replacement removes the old table's indexes, constraints, triggers,
+  and table grants.
+- Worker registration now compares process IDs. A restarted worker fails any
+  nonterminal SQL run and refuses to replay the mutation automatically. The
+  worker also falls back to a minimal terminal failure payload if rich
+  diagnostic reporting fails.
+- Full suite: `173 passed`. Python compilation, JavaScript syntax checks, and
+  `git diff --check` passed.
+- Next step: commit and push to `main`, deploy the new build, allow the
+  replacement of `postgres.bi_reporting.this_is_test`, and verify run #72
+  reaches target recreation, COPY of 41,872 rows, and commit.
+
+## Live Run 72 Week Finding (2026-08-14)
+
+- Build `a55546d` deployed successfully and preserved the SQLite database.
+  Worker restart protection closed run #71 as failed and explicitly refused to
+  replay its SQL mutation.
+- Run #72's saved job and progress events requested `2026-W27`, but the visible
+  ASAP Week prompt retained `202632`. The run later failed before SQL because no
+  completed file appeared in the headed staging folder. It wrote no SQL data.
+- Week now bypasses the hidden native-select shortcut and uses the visible
+  MicroStrategy list with exact selected-state reconciliation before RUN, just
+  as the live evidence requires.
+- Next step: publish and deploy the Week fix, then use run #70's already
+  verified Week 27 artifact for SQL-only replace testing so browser state cannot
+  contaminate the SQL result.
+
+## Live SQL Commit And Terminal Reporting Finding (2026-08-14)
+
+- Build version `20260814-105314` ran SQL-only retry #73 from run #70's verified
+  Week 27 artifact. PostgreSQL recreated the 17-column target as `TEXT`, copied
+  and committed 41,872 rows, and Metronome recorded `SQL Insertion Complete`.
+- The subsequent terminal-success request returned HTTP 500, so the worker's
+  minimal fallback marked the run failed even though PostgreSQL had committed.
+  Do not retry run #73: it would replace an already successful target.
+- Root cause: SQL retry artifacts retain `period_key` as a JSON list such as
+  `["2026-W27"]`, while terminal file-history storage bound that list directly
+  into SQLite's `TEXT` column. Terminal storage now normalizes list periods to a
+  display string before insertion. A regression test exercises the exact
+  SQL-retry artifact shape and requires a succeeded terminal run.
+- Next step: publish and deploy the terminal-reporting fix. Future SQL runs must
+  finish as succeeded after `SQL Insertion Complete`; no additional write is
+  required against the already populated test target.
+
+## Final SQL Verification (2026-08-14)
+
+- Terminal-reporting fix commit `570a82b` is on `origin/main` and deployed as
+  live build version `20260814-110227`. One headless worker is online.
+- Read-only validation confirmed 41,872 rows in the replaced test target. This
+  matches both run #70's verified Week 27 CSV and run #73's PostgreSQL commit
+  event. No second SQL retry was performed.
+- Replace is now proven end to end: it accepts a different source schema,
+  recreates the selected table with normalized `TEXT` columns, streams through
+  PostgreSQL `COPY`, commits atomically, and reports every SQL phase. Append
+  continues to enforce the existing target schema.
+- The final automated suite contains `175 passed`; Python compilation,
+  JavaScript syntax checks, and `git diff --check` also passed.
+- Next step: use a fresh disposable table for any future destructive replace
+  test. Run #73 itself remains historically failed because its success was
+  committed before the terminal-reporting fix; do not retry it.
+
+## Reused Staging Filename Fix (2026-08-14)
+
+- A later full headed run selected the correct Week, completed ASAP export, and
+  then falsely reported that no finished local file appeared within 30 seconds.
+- The staging directory persists by design because Flows never deletes files.
+  ASAP can reuse the same download filename, and Edge can overwrite that local
+  staging path. The old detector ignored every path present before export even
+  when its modification time and contents changed.
+- Staging detection now fingerprints existing paths, accepts a new or modified
+  stable file, observes temporary download growth, and distinguishes no-start,
+  stalled-transfer, and absolute-timeout failures. It allows ten minutes total,
+  fails after 60 seconds with no file activity, or after 90 seconds with no
+  transfer progress. No staging or final file is deleted.
+- Next step: deploy the fix and run one headed Week 27 flow. It should reuse or
+  create the staging filename, save the final artifact, execute SQL, and finish
+  succeeded without the former false staging error.
+
+## First Full Success And Week 32 Default Fix (2026-08-14)
+
+- After deploying the reused-staging fix, a complete headed flow succeeded end
+  to end for the first time: exact Week selection, ASAP export, final file,
+  atomic SQL replacement, and terminal success.
+- A subsequent Week 27 through Week 32 test saved five files, then safely
+  refused to run the Week 32 report because no selected state remained. Week 32
+  is ASAP's retained default; clicking an already selected requested default
+  toggled it off.
+- Visible list reconciliation now inspects retained selections before clicking.
+  An already exact selection is accepted without a click. For ranges, requested
+  retained values are preserved, missing values are added, extras are removed,
+  and exact equality is still required before RUN.
+- Full suite: `178 passed`; Python compilation, JavaScript syntax checks, and
+  `git diff --check` passed.
+- Next step: deploy and repeat Week 27 through Week 32. The sixth Week 32 file
+  should complete without toggling off the retained default.
+
+## Prompt-Scoped Selection Verification (2026-08-14)
+
+- A live screenshot exposed a repeated-text ambiguity: a prompt label can also
+  be the exact text of a selectable member elsewhere on the same report. The
+  worker previously searched the whole frame and accepted the first visible
+  exact-text match, so state inspection could target the wrong DOM element.
+- List automation now resolves the owning control generically. It prefers a
+  named WAI-ARIA `listbox`; for legacy MicroStrategy markup, it chooses the
+  nearest ancestor containing every requested member. All option reads and
+  clicks are then restricted to that owner.
+- The worker audits semantic live options when available and otherwise audits
+  the distinct rendered rows inside the isolated owner. Final exact equality
+  must remain true for three consecutive state polls before the flow proceeds.
+  No filter name or member value has a one-off selector rule.
+- Full suite: `180 passed`; targeted repeated-label and live-extra regression
+  tests, Python compilation, JavaScript syntax checks, and `git diff --check`
+  pass. Runtime commit `fbb0bcc` is present on `origin/main`.
+- Next step: deploy the updated build and rerun the same headed case. Confirm
+  the visible Dimension members exactly match the configured set before RUN.
+
+## Select2 Catalog Ownership Fix (2026-08-14)
+
+- Catalog discovery rendered an invalid filter whose label was a currently
+  selected value and whose first option was several choices concatenated. The
+  Select2 popup collector was scanning the whole frame and its broad class
+  selector matched the results container as though it were an option.
+- Asynchronous option discovery now follows the active combobox's
+  `aria-controls` or `aria-owns` relationship. Legacy controls fall back to a
+  bounded visible listbox or Select2 dropdown. Only leaf role, native option,
+  or Select2 option nodes are catalogued; generic visible list items and result
+  containers are excluded.
+- Full suite: `181 passed`. Targeted ownership, filter normalization, and
+  duplicate-merge discovery regressions pass.
+- Next step: deploy and rescan the affected report. Discovery will mark the old
+  malformed definition stale and expose only the correctly merged filter.
