@@ -425,7 +425,7 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
 
 
 def _asap_member_selected(option) -> bool | None:
-    """Read selection state from MicroStrategy's ARIA, class, or row styling."""
+    """Read selection state from ASAP's ARIA, class, or non-hovered row styling."""
     try:
         return option.evaluate(
             r"""node => {
@@ -435,11 +435,15 @@ def _asap_member_selected(option) -> bool | None:
                     if (aria === 'false') return false;
                     const classes = String(current.className || '');
                     if (/(^|[-_ ])(?:selected|checked)(?:$|[-_ ])/i.test(classes) || /itemSelected/i.test(classes)) return true;
-                    const style = getComputedStyle(current);
-                    const match = style.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-                    if (match) {
-                        const [r, g, b] = match.slice(1).map(Number);
-                        if (b > r + 35 && b > g + 15 && b > 120) return true;
+                    // ASAP uses a blue background for both selection and hover.
+                    // Styling is only evidence after the pointer has left the row.
+                    if (!current.matches(':hover')) {
+                        const style = getComputedStyle(current);
+                        const match = style.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                        if (match) {
+                            const [r, g, b] = match.slice(1).map(Number);
+                            if (b > r + 35 && b > g + 15 && b > 120) return true;
+                        }
                     }
                 }
                 return null;
@@ -561,6 +565,11 @@ def _asap_select_list_values(
     requested = list(dict.fromkeys(values))
     scope = _asap_list_scope(frame, label, requested)
 
+    def park_pointer():
+        """Remove hover styling before reading a row's rendered state."""
+        frame.page.mouse.move(2, 2)
+        frame.page.wait_for_timeout(100)
+
     def visible_option(value: str):
         candidates = scope.get_by_text(value, exact=True)
         option = next(
@@ -574,6 +583,10 @@ def _asap_select_list_values(
     available = list(dict.fromkeys([
         *(available_values or []), *_asap_live_list_values(scope, label), *requested,
     ]))
+
+    # A previous interaction may have left the pointer over a blue hover row.
+    # Never use that transient styling as the initial selected-state snapshot.
+    park_pointer()
 
     def selected_states() -> dict[str, bool]:
         result = {}
@@ -609,7 +622,10 @@ def _asap_select_list_values(
             state = member_state(value)
             if (selected and state is True) or (not selected and state is not True):
                 return True
-            visible_option(value).click()
+            # Playwright's delay is the time between mouse-down and mouse-up.
+            # Keep this a single ordinary left click, with no keyboard modifier.
+            visible_option(value).click(button="left", click_count=1, delay=100)
+            park_pointer()
             for _sample in range(10):
                 frame.page.wait_for_timeout(150)
                 state = member_state(value)

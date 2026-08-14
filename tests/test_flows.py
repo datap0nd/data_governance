@@ -24,6 +24,33 @@ def _request(actor="Analyst"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
 
 
+def _asap_test_page(mouse=None):
+    return SimpleNamespace(
+        mouse=mouse or SimpleNamespace(move=lambda *_args, **_kwargs: None),
+        wait_for_timeout=lambda _ms: None,
+    )
+
+
+def _assert_asap_plain_click(modifiers, kwargs):
+    assert modifiers is None
+    assert kwargs == {"button": "left", "click_count": 1, "delay": 100}
+
+
+def test_asap_member_selected_never_uses_blue_styling_while_row_is_hovered():
+    evaluated = []
+
+    class Option:
+        def evaluate(self, script):
+            evaluated.append(script)
+            return None
+
+    assert flow_worker._asap_member_selected(Option()) is None
+    assert "if (!current.matches(':hover'))" in evaluated[0]
+    assert evaluated[0].index("if (!current.matches(':hover'))") < evaluated[0].index(
+        "getComputedStyle(current)"
+    )
+
+
 def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeypatch):
     events = []
     selected = {"Extra": True, "202619": True, "202620": False, "202621": False}
@@ -47,12 +74,13 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             selected[self.value] = not selected[self.value]
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -94,7 +122,8 @@ def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_sta
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             if dropped.get(self.value, 0):
                 dropped[self.value] -= 1
@@ -102,7 +131,7 @@ def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_sta
             selected[self.value] = not selected[self.value]
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -119,6 +148,71 @@ def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_sta
     assert events == [
         ("click", "202632", ()),
         ("click", "202632", ()),
+    ]
+    assert all(selected.values())
+
+
+def test_asap_week_retries_dropped_final_click_after_clearing_hover_false_positive(monkeypatch):
+    events = []
+    selected = {"202627": True, "202628": True, "202629": False}
+    dropped = {"202629": 1}
+    hovered = {"value": None}
+
+    class Mouse:
+        def move(self, _x, _y):
+            hovered["value"] = None
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
+            events.append(("click", self.value, tuple(modifiers or [])))
+            hovered["value"] = self.value
+            if dropped.get(self.value, 0):
+                dropped[self.value] -= 1
+                return
+            selected[self.value] = not selected[self.value]
+
+    class Frame:
+        page = _asap_test_page(Mouse())
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    # This models ASAP's blue hover looking identical to a blue selected row.
+    # The first click is dropped but would be falsely accepted unless the
+    # scraper moves the pointer away before checking the rendered state.
+    monkeypatch.setattr(
+        flow_worker, "_asap_member_selected",
+        lambda option: True
+        if selected[option.value] or hovered["value"] == option.value
+        else None,
+    )
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Sell-out Week", list(selected), list(selected),
+    )
+
+    assert events == [
+        ("click", "202629", ()),
+        ("click", "202629", ()),
     ]
     assert all(selected.values())
 
@@ -147,13 +241,14 @@ def test_asap_week_waits_for_delayed_selection_confirmation_without_toggling_aga
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             selected[self.value] = not selected[self.value]
             delayed_reads[self.value] = 5
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -197,12 +292,13 @@ def test_asap_week_does_not_toggle_off_an_already_selected_requested_default(mon
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             selected[self.value] = not selected[self.value]
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -256,7 +352,7 @@ def test_asap_list_scope_prefers_nearest_owner_when_labels_repeat():
     actual_label = Node("actual label", parent=prompt)
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_role(self, *_args, **_kwargs):
             return Collection([])
@@ -291,12 +387,13 @@ def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             selected[self.value] = not selected[self.value]
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -339,7 +436,8 @@ def test_asap_dimension_retries_dropped_clear_clicks_across_reconciliation_round
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             if dropped.get(self.value, 0):
                 dropped[self.value] -= 1
@@ -347,7 +445,7 @@ def test_asap_dimension_retries_dropped_clear_clicks_across_reconciliation_round
             selected[self.value] = not selected[self.value]
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             return Locator(value)
@@ -392,7 +490,8 @@ def test_asap_dimension_scopes_duplicate_sell_out_week_member(monkeypatch):
         def is_visible(self):
             return True
 
-        def click(self, modifiers=None):
+        def click(self, modifiers=None, **kwargs):
+            _assert_asap_plain_click(modifiers, kwargs)
             events.append(("click", self.value, tuple(modifiers or [])))
             selected[self.value] = not selected[self.value]
 
@@ -405,7 +504,7 @@ def test_asap_dimension_scopes_duplicate_sell_out_week_member(monkeypatch):
             return "Dimension\nMKT Name\nItem\nSell-out Week"
 
     class Frame:
-        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+        page = _asap_test_page()
 
         def get_by_text(self, value, exact=True):
             # A page-wide lookup for this value would resolve the separate Week
