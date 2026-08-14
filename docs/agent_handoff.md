@@ -415,3 +415,20 @@ files and do not enable SQL handoff.
 - Next step: publish and deploy the terminal-reporting fix. Future SQL runs must
   finish as succeeded after `SQL Insertion Complete`; no additional write is
   required against the already populated test target.
+
+## Final SQL Verification (2026-08-14)
+
+- Terminal-reporting fix commit `570a82b` is on `origin/main` and deployed as
+  live build version `20260814-110227`. One headless worker is online.
+- Read-only validation confirmed 41,872 rows in the replaced test target. This
+  matches both run #70's verified Week 27 CSV and run #73's PostgreSQL commit
+  event. No second SQL retry was performed.
+- Replace is now proven end to end: it accepts a different source schema,
+  recreates the selected table with normalized `TEXT` columns, streams through
+  PostgreSQL `COPY`, commits atomically, and reports every SQL phase. Append
+  continues to enforce the existing target schema.
+- The final automated suite contains `175 passed`; Python compilation,
+  JavaScript syntax checks, and `git diff --check` also passed.
+- Next step: use a fresh disposable table for any future destructive replace
+  test. Run #73 itself remains historically failed because its success was
+  committed before the terminal-reporting fix; do not retry it.
