@@ -123,6 +123,57 @@ def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_sta
     assert all(selected.values())
 
 
+def test_asap_week_waits_for_delayed_selection_confirmation_without_toggling_again(monkeypatch):
+    events = []
+    selected = {"202632": False}
+    delayed_reads = {"202632": 0}
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            selected[self.value] = not selected[self.value]
+            delayed_reads[self.value] = 5
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    def rendered_state(option):
+        if delayed_reads[option.value]:
+            delayed_reads[option.value] -= 1
+            return None
+        return True if selected[option.value] else None
+
+    monkeypatch.setattr(flow_worker, "_asap_member_selected", rendered_state)
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Sell-out Week", ["202632"], ["202632"],
+    )
+
+    assert events == [("click", "202632", ())]
+    assert selected == {"202632": True}
+
+
 def test_asap_week_does_not_toggle_off_an_already_selected_requested_default(monkeypatch):
     events = []
     selected = {"202631": False, "202632": True}
@@ -262,6 +313,63 @@ def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members
         ("click", "Customer", ()),
     ]
     assert selected == {"Biz Sub": False, "Sold To": True, "Customer": True}
+
+
+def test_asap_dimension_retries_dropped_clear_clicks_across_reconciliation_rounds(monkeypatch):
+    events = []
+    selected = {"Biz Sub": True, "Sold To": False}
+    dropped = {"Biz Sub": 4}
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            if dropped.get(self.value, 0):
+                dropped[self.value] -= 1
+                return
+            selected[self.value] = not selected[self.value]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_member_selected",
+        lambda option: True if selected[option.value] else None,
+    )
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Dimension", ["Sold To"], list(selected),
+    )
+
+    assert events == [
+        ("click", "Biz Sub", ()),
+        ("click", "Biz Sub", ()),
+        ("click", "Biz Sub", ()),
+        ("click", "Biz Sub", ()),
+        ("click", "Biz Sub", ()),
+        ("click", "Sold To", ()),
+    ]
+    assert selected == {"Biz Sub": False, "Sold To": True}
 
 
 def test_asap_dimension_scopes_duplicate_sell_out_week_member(monkeypatch):

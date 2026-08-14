@@ -9,8 +9,8 @@ then verify Stop behavior with two queued flows.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Runtime commit: `5c14d6d Confirm every ASAP selection click`
-- Push status: runtime commit verified on `origin/main`
+- Previous runtime commit: `5c14d6d Confirm every ASAP selection click`
+- Hardened retry audit changes are pending publication with this handoff
 - Public repo: no, private
 - Stable baseline: tag `asap-ui-automation-stable-2026-08-14` at `d2b61f1`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`; never stage them
@@ -25,6 +25,9 @@ then verify Stop behavior with two queued flows.
 - An unselected MicroStrategy member can expose neither true nor false. Any
   requested value not confirmed true is missing and must be selected.
 - Exact selection must remain stable across three reads before RUN is allowed.
+- Dimension clearing also reconciles across four rounds instead of ignoring a
+  failed three-click attempt. Delayed rendered confirmation is awaited before
+  another click can toggle the member back off.
 - Every queued, claimed, or running flow renders Stop. Cancelling a queued run
   does not terminate another flow's worker; assigned runs target their exact
   headed or headless worker process.
@@ -43,7 +46,10 @@ then verify Stop behavior with two queued flows.
   only `202629`, `202630`, and `202631`.
 - Root cause: the restored retry loop treated only explicit false as missing;
   the portal reported the unselected final member as unknown, so no retry ran.
-- Full Python suite: `188 passed`.
+- Full Python suite: `190 passed`.
+- Selection stress simulation: `20,000` cases passed across week and Dimension
+  prompts, true/false and unknown states, arbitrary retained selections, and
+  zero through five dropped clicks per member.
 - `node --check app/static/app.js`: passed.
 - `node tests/test_lineage_layers.mjs`: passed.
 - `python3 -m py_compile app/flow_worker.py`: passed.

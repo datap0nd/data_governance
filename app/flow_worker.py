@@ -650,11 +650,15 @@ def _asap_select_list_values(
                 "ASAP Dimension did not expose a verifiable selected state. "
                 "The report was not run with an unverified filter."
             )
-        for value, selected in initial_states.items():
-            if selected:
+        cleared_states = initial_states
+        for _round in range(4):
+            retained = [value for value, selected in cleared_states.items() if selected]
+            if not retained:
+                break
+            for value in retained:
                 set_member_state(value, False)
-
-        cleared_states = selected_states()
+            frame.page.wait_for_timeout(300)
+            cleared_states = selected_states()
         retained = [value for value, selected in cleared_states.items() if selected]
         if retained:
             raise RuntimeError(
