@@ -146,11 +146,15 @@ def discover_catalog() -> dict:
     }
 
 
+def _normalized_column_name(column: object, index: int) -> str:
+    return re.sub(r"\W+", "_", str(column).strip()).strip("_").casefold() or f"col_{index}"
+
+
 def _normalized_columns(header: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     columns = []
     for index, column in enumerate(header):
-        clean = re.sub(r"\W+", "_", str(column).strip()).strip("_").casefold() or f"col_{index}"
+        clean = _normalized_column_name(column, index)
         seen[clean] = seen.get(clean, 0) + 1
         columns.append(clean)
     duplicates = sorted(name for name, count in seen.items() if count > 1)
@@ -159,6 +163,23 @@ def _normalized_columns(header: list[str]) -> list[str]:
             f"Downloaded CSV has duplicate column name(s) after normalization: {', '.join(duplicates)}"
         )
     return columns
+
+
+def _target_columns_by_normalized_name(columns: list[str]) -> dict[str, str]:
+    """Map normalized CSV names back to exact PostgreSQL target names."""
+    mapped: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for index, column in enumerate(columns):
+        normalized = _normalized_column_name(column, index)
+        if normalized in mapped and mapped[normalized] != column:
+            ambiguous.add(normalized)
+        mapped[normalized] = column
+    if ambiguous:
+        raise RuntimeError(
+            "SQL target has ambiguous column name(s) after normalization: "
+            + ", ".join(sorted(ambiguous))
+        )
+    return mapped
 
 
 def _read_artifact(path: Path, known_row_count: int | None = None) -> dict:
@@ -198,7 +219,8 @@ def _read_artifact(path: Path, known_row_count: int | None = None) -> dict:
 
 def _copy_artifact(connection, artifact: dict, qualified: str) -> None:
     """Stream one normalized CSV directly through PostgreSQL COPY."""
-    columns = ", ".join(_quote_identifier(str(column)) for column in artifact["columns"])
+    target_columns = artifact.get("copy_columns") or artifact["columns"]
+    columns = ", ".join(_quote_identifier(str(column)) for column in target_columns)
     statement = (
         f"COPY {qualified} ({columns}) FROM STDIN "
         "WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')"
@@ -310,15 +332,19 @@ def load_artifacts(
         if not existing_columns:
             raise RuntimeError(f"SQL target no longer exists: {target_name}")
         if mode == "append":
+            target_columns = _target_columns_by_normalized_name(existing_columns)
             for artifact in inspected:
-                received = set(artifact["columns"])
-                expected = set(existing_columns)
+                mapped_columns = [
+                    target_columns[column]
+                    for column in artifact["columns"]
+                    if column in target_columns
+                ]
                 required = {
                     row[0] for row in column_rows
                     if row[1] == "NO" and row[2] is None and row[3] == "NO" and row[4] == "NEVER"
                 }
-                extra = sorted(received - expected)
-                missing = sorted(required - received)
+                extra = sorted(column for column in artifact["columns"] if column not in target_columns)
+                missing = sorted(required - set(mapped_columns))
                 if extra or missing:
                     differences = []
                     if missing:
@@ -330,6 +356,7 @@ def load_artifacts(
                         f"({len(artifact['columns'])} CSV column(s), {len(existing_columns)} target column(s); "
                         f"{'; '.join(differences)})"
                     )
+                artifact["copy_columns"] = mapped_columns
             _emit(
                 progress, "sql_target_validation", f"CSV columns match {target_name} for append.",
                 started, status="completed", target=target_name,

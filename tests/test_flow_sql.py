@@ -174,6 +174,92 @@ def test_sql_copy_streams_csv_through_postgres_copy(tmp_path):
     assert copied["closed"] is True
 
 
+def test_sql_append_maps_normalized_csv_headers_to_exact_target_columns(tmp_path, monkeypatch):
+    path = tmp_path / "normalized.csv"
+    path.write_text("Active,Biz Sub\n116,Mobile\n", encoding="utf-8")
+    executed = []
+    copied = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"),
+        rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return [
+                ("Active", "NO", None, "NO", "NEVER"),
+                ("Biz Sub", "NO", None, "NO", "NEVER"),
+                ("Optional Legacy", "YES", None, "NO", "NEVER"),
+            ]
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied.append((statement, stream.read()))
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            executed.append(str(statement))
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    result = flow_sql.load_artifacts(
+        [{"file_path": str(path)}],
+        {
+            "database": "db", "schema": "Reporting Area",
+            "table": "Import First and Second Activation", "mode": "append",
+        },
+    )
+
+    assert result["rows_written"] == 1
+    assert copied == [(
+        'COPY "Reporting Area"."Import First and Second Activation" '
+        '("Active", "Biz Sub") FROM STDIN '
+        "WITH (FORMAT CSV, HEADER TRUE, ENCODING 'UTF8')",
+        "Active,Biz Sub\n116,Mobile\n",
+    )]
+    assert executed[-1] == "commit"
+    assert "rollback" not in executed
+
+
+def test_sql_append_rejects_ambiguous_target_columns_after_normalization():
+    with pytest.raises(RuntimeError, match="ambiguous column name.*sell_out_week"):
+        flow_sql._target_columns_by_normalized_name(["Sell-out Week", "sell_out_week"])
+
+
+def test_sql_append_maps_the_live_thirteen_column_shape_to_display_headers():
+    csv_columns = [
+        "active", "biz_sub", "item", "mkt_name", "sell_in_account",
+        "sell_in_customer", "sell_in_region", "sell_in_subsidiary",
+        "sell_out_country", "sell_out_month", "sell_out_region",
+        "sell_out_subsidiary", "series",
+    ]
+    target_columns = [
+        "Active", "Biz Sub", "Item", "MKT Name", "Sell-in Account",
+        "Sell-in Customer", "Sell-in Region", "Sell-in Subsidiary",
+        "Sell-out Country", "Sell-out Month", "Sell-out Region",
+        "Sell-out Subsidiary", "Series",
+    ]
+
+    mapping = flow_sql._target_columns_by_normalized_name(target_columns)
+
+    assert [mapping[column] for column in csv_columns] == target_columns
+
+
 def test_sql_load_reports_each_phase_and_commits(tmp_path, monkeypatch):
     path = tmp_path / "normalized.csv"
     path.write_text("Sell-out Week,Active\n202627,116\n", encoding="utf-8-sig")
