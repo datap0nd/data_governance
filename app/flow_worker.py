@@ -519,13 +519,28 @@ def _asap_select_list_values(
             )
         return
 
-    # Establish a single-selection baseline, then add the rest. Individual
-    # modifier clicks avoid leaving Control held while MicroStrategy rerenders.
-    visible_option(requested[0]).click()
-    frame.page.wait_for_timeout(250)
+    # Preserve an already-correct retained selection. Clicking the portal's
+    # selected default week toggles it off, which leaves no selected state to
+    # verify. If the first requested member is not selected, a normal click
+    # establishes the single-selection baseline; otherwise keep it and
+    # reconcile missing and extra members with individual modifier clicks.
+    initial_states = selected_states()
+    initially_selected = {
+        value for value, selected in initial_states.items() if selected
+    }
+    if initially_selected == set(requested):
+        return
+    if requested[0] not in initially_selected:
+        visible_option(requested[0]).click()
+        frame.page.wait_for_timeout(250)
+        selected_after_baseline = {requested[0]}
+    else:
+        selected_after_baseline = set(initially_selected)
     for value in requested[1:]:
-        visible_option(value).click(modifiers=["Control"])
-        frame.page.wait_for_timeout(200)
+        if value not in selected_after_baseline:
+            visible_option(value).click(modifiers=["Control"])
+            frame.page.wait_for_timeout(200)
+            selected_after_baseline.add(value)
 
     # MicroStrategy can retain selections or drop rapid clicks. Reconcile the
     # rendered state and verify exact equality before allowing RUN.

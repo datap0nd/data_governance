@@ -449,3 +449,21 @@ files and do not enable SQL handoff.
 - Next step: deploy the fix and run one headed Week 27 flow. It should reuse or
   create the staging filename, save the final artifact, execute SQL, and finish
   succeeded without the former false staging error.
+
+## First Full Success And Week 32 Default Fix (2026-08-14)
+
+- After deploying the reused-staging fix, a complete headed flow succeeded end
+  to end for the first time: exact Week selection, ASAP export, final file,
+  atomic SQL replacement, and terminal success.
+- A subsequent Week 27 through Week 32 test saved five files, then safely
+  refused to run the Week 32 report because no selected state remained. Week 32
+  is ASAP's retained default; clicking an already selected requested default
+  toggled it off.
+- Visible list reconciliation now inspects retained selections before clicking.
+  An already exact selection is accepted without a click. For ranges, requested
+  retained values are preserved, missing values are added, extras are removed,
+  and exact equality is still required before RUN.
+- Full suite: `178 passed`; Python compilation, JavaScript syntax checks, and
+  `git diff --check` passed.
+- Next step: deploy and repeat Week 27 through Week 32. The sixth Week 32 file
+  should complete without toggling off the retained default.

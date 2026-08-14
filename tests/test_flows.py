@@ -67,11 +67,54 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
     )
 
     assert events == [
-        ("click", "202619", ()),
         ("click", "202620", ("Control",)),
         ("click", "202621", ("Control",)),
+        ("click", "Extra", ("Control",)),
     ]
     assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
+
+
+def test_asap_week_does_not_toggle_off_an_already_selected_requested_default(monkeypatch):
+    events = []
+    selected = {"202631": False, "202632": True}
+
+    class Locator:
+        first = None
+
+        def __init__(self, value):
+            self.value = value
+            self.first = self
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self, modifiers=None):
+            events.append(("click", self.value, tuple(modifiers or [])))
+            selected[self.value] = not selected[self.value]
+
+    class Frame:
+        page = SimpleNamespace(wait_for_timeout=lambda _ms: None)
+
+        def get_by_text(self, value, exact=True):
+            return Locator(value)
+
+    monkeypatch.setattr(flow_worker, "_asap_member_selected", lambda option: selected[option.value])
+
+    flow_worker._asap_select_list_values(
+        Frame(), "Sell-out Week", ["202632"], list(selected),
+    )
+
+    assert events == []
+    assert selected == {"202631": False, "202632": True}
 
 
 def test_asap_dimension_plain_clicks_selected_members_off_then_requested_members_on(monkeypatch):
