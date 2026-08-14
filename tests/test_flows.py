@@ -1452,6 +1452,34 @@ def test_staged_download_waits_for_a_new_stable_file(tmp_path, monkeypatch):
     assert flow_worker._wait_for_staged_download(tmp_path, before, timeout_seconds=1) == new_file
 
 
+def test_staged_download_accepts_an_existing_path_overwritten_by_edge(tmp_path, monkeypatch):
+    reused_file = tmp_path / "Installed Base.csv"
+    reused_file.write_text("old content", encoding="utf-8")
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    old_mtime = reused_file.stat().st_mtime_ns
+    reused_file.write_text("Week,Value\n202627,10\n", encoding="utf-8")
+    reused_file.touch()
+    assert reused_file.stat().st_mtime_ns != old_mtime or reused_file.stat().st_size != before[reused_file.resolve()][1]
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    assert flow_worker._wait_for_staged_download(
+        tmp_path, before, timeout_seconds=1,
+    ) == reused_file
+
+
+def test_download_wait_error_does_not_claim_the_download_completed(tmp_path, monkeypatch):
+    ticks = iter([0.0, 0.0, 1.1, 1.1])
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="no new or updated file appeared") as error:
+        flow_worker._wait_for_staged_download(
+            tmp_path, {}, timeout_seconds=5, start_timeout_seconds=1,
+        )
+
+    assert "completed" not in str(error.value).casefold()
+
+
 def test_stale_browser_run_is_failed_and_worker_released(flow_db, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])

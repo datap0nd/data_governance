@@ -432,3 +432,20 @@ files and do not enable SQL handoff.
 - Next step: use a fresh disposable table for any future destructive replace
   test. Run #73 itself remains historically failed because its success was
   committed before the terminal-reporting fix; do not retry it.
+
+## Reused Staging Filename Fix (2026-08-14)
+
+- A later full headed run selected the correct Week, completed ASAP export, and
+  then falsely reported that no finished local file appeared within 30 seconds.
+- The staging directory persists by design because Flows never deletes files.
+  ASAP can reuse the same download filename, and Edge can overwrite that local
+  staging path. The old detector ignored every path present before export even
+  when its modification time and contents changed.
+- Staging detection now fingerprints existing paths, accepts a new or modified
+  stable file, observes temporary download growth, and distinguishes no-start,
+  stalled-transfer, and absolute-timeout failures. It allows ten minutes total,
+  fails after 60 seconds with no file activity, or after 90 seconds with no
+  transfer progress. No staging or final file is deleted.
+- Next step: deploy the fix and run one headed Week 27 flow. It should reuse or
+  create the staging filename, save the final artifact, execute SQL, and finish
+  succeeded without the former false staging error.

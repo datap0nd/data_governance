@@ -584,41 +584,95 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
 
 
-def _download_staging_snapshot(staging_dir: Path) -> set[Path]:
+DOWNLOAD_START_TIMEOUT_SECONDS = 60
+DOWNLOAD_STALL_TIMEOUT_SECONDS = 90
+DOWNLOAD_MAX_TIMEOUT_SECONDS = 10 * 60
+
+
+def _download_file_state(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _download_staging_snapshot(staging_dir: Path) -> dict[Path, tuple[int, int]]:
     staging_dir.mkdir(parents=True, exist_ok=True)
-    return {candidate.resolve() for candidate in staging_dir.iterdir() if candidate.is_file()}
+    snapshot = {}
+    for candidate in staging_dir.iterdir():
+        try:
+            if candidate.is_file():
+                snapshot[candidate.resolve()] = _download_file_state(candidate)
+        except OSError:
+            continue
+    return snapshot
 
 
 def _wait_for_staged_download(
-    staging_dir: Path, files_before: set[Path], timeout_seconds: int = 30,
+    staging_dir: Path,
+    files_before: dict[Path, tuple[int, int]],
+    timeout_seconds: int = DOWNLOAD_MAX_TIMEOUT_SECONDS,
+    start_timeout_seconds: int = DOWNLOAD_START_TIMEOUT_SECONDS,
+    stall_timeout_seconds: int = DOWNLOAD_STALL_TIMEOUT_SECONDS,
 ) -> Path:
-    """Return the new browser-local file without calling Playwright download APIs."""
-    deadline = time.monotonic() + timeout_seconds
+    """Return a new or overwritten stable local file without Playwright path calls."""
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    last_activity = started
+    observed: dict[Path, tuple[int, int]] = {}
     last_candidate = None
-    last_size = None
+    last_candidate_state = None
     stable_checks = 0
     while time.monotonic() < deadline:
-        candidates = [
-            candidate for candidate in staging_dir.iterdir()
-            if candidate.is_file()
-            and candidate.resolve() not in files_before
-            and not candidate.name.casefold().endswith((".crdownload", ".tmp"))
-        ]
+        candidates = []
+        for candidate in staging_dir.iterdir():
+            try:
+                if not candidate.is_file():
+                    continue
+                resolved = candidate.resolve()
+                state = _download_file_state(candidate)
+            except OSError:
+                continue
+            if files_before.get(resolved) == state:
+                continue
+            if observed.get(resolved) != state:
+                observed[resolved] = state
+                last_activity = time.monotonic()
+            if not candidate.name.casefold().endswith((".crdownload", ".tmp")):
+                candidates.append((candidate, state))
         if candidates:
-            candidate = max(candidates, key=lambda item: item.stat().st_mtime_ns)
-            size = candidate.stat().st_size
-            if candidate == last_candidate and size > 0 and size == last_size:
+            candidate, state = max(candidates, key=lambda item: item[1][0])
+            if candidate == last_candidate and state[1] > 0 and state == last_candidate_state:
                 stable_checks += 1
                 if stable_checks >= 3:
                     return candidate
             else:
                 last_candidate = candidate
-                last_size = size
+                last_candidate_state = state
                 stable_checks = 0
+        else:
+            last_candidate = None
+            last_candidate_state = None
+            stable_checks = 0
+        now = time.monotonic()
+        if not observed and now - started >= start_timeout_seconds:
+            raise RuntimeError(
+                "ASAP started an Edge download, but no new or updated file appeared "
+                f"in the local staging folder within {start_timeout_seconds} seconds: {staging_dir}"
+            )
+        if observed and now - last_activity >= stall_timeout_seconds:
+            observed_summary = ", ".join(
+                f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
+            )
+            raise RuntimeError(
+                f"The Edge download stopped changing for {stall_timeout_seconds} seconds in "
+                f"the local staging folder: {staging_dir}. Observed: {observed_summary}"
+            )
         time.sleep(0.5)
+    observed_summary = ", ".join(
+        f"{path.name} ({state[1]} bytes)" for path, state in observed.items()
+    ) or "none"
     raise RuntimeError(
-        "Edge reported a completed ASAP download, but no finished file appeared "
-        f"in the local staging folder within {timeout_seconds} seconds: {staging_dir}"
+        f"The Edge download did not produce a stable finished file within {timeout_seconds} "
+        f"seconds in the local staging folder: {staging_dir}. Observed: {observed_summary}"
     )
 
 
