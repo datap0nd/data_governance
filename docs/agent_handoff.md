@@ -2,14 +2,15 @@
 
 ## Current Objective
 
-Live-verify hover-safe week selection and safely quoted PostgreSQL handoff targets
-on the nine-download ASAP flow, then verify Stop with two queued flows.
+Live-verify hover-safe week selection and normalized append-column mapping on the
+nine-download ASAP flow, then verify Stop with two queued flows.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit: `2fcad3a Support quoted SQL handoff targets`
+- Latest runtime commit: `c0a6b8a Map SQL append columns safely`
+- Quoted-target runtime commit: `2fcad3a Support quoted SQL handoff targets`
 - Week-selection runtime commit: `c6da87f Reject hovered ASAP week selections`
 - Push status: runtime commit verified on `origin/main`
 - Public repo: no, private
@@ -34,6 +35,11 @@ on the nine-download ASAP flow, then verify Stop with two queued flows.
 - SQL handoff schema and table names come from the discovered PostgreSQL catalog.
   They may contain spaces or punctuation and are now safely double-quoted, with
   embedded double quotes escaped. Empty and NUL-containing names remain invalid.
+- Append maps normalized CSV headers back to exact target column names before
+  COPY. Mixed case, spaces, and hyphens no longer make every incoming column
+  appear unexpected. Ambiguous normalized target names are rejected.
+- Replace still deliberately uses DROP and CREATE. PostgreSQL requires the
+  configured role to own the table; application code must not bypass that rule.
 - Every queued, claimed, or running flow renders Stop. Cancelling a queued run
   does not terminate another flow's worker; assigned runs target their exact
   headed or headless worker process.
@@ -44,10 +50,11 @@ on the nine-download ASAP flow, then verify Stop with two queued flows.
   pointer away after every click, and ignore blue styling while hovered.
 - `tests/test_flows.py`: reproduce a dropped final week click whose hover looks
   selected, require a retry, and assert exact click button/count/delay options.
-- `app/flow_sql.py`: safely quote exact PostgreSQL catalog identifiers instead
-  of rejecting valid discovered names containing spaces.
+- `app/flow_sql.py`: safely quote exact PostgreSQL catalog identifiers and map
+  normalized append headers back to exact target column names before COPY.
 - `tests/test_flow_sql.py`: cover spaced identifiers, embedded quotes, injection
-  shaped text, invalid values, and the full mocked replace/COPY transaction path.
+  shaped text, the live 13-column append shape, exact COPY target names,
+  ambiguous mappings, and the full mocked transaction paths.
 
 ## Commands And Checks
 
@@ -58,8 +65,14 @@ on the nine-download ASAP flow, then verify Stop with two queued flows.
 - Live target evidence before `2fcad3a`: run 86 passed the scraper/download stage
   but failed before SQL connection because a discovered table name contained
   spaces and the application rejected it as an invalid bare identifier.
-- Full Python suite: `199 passed`.
-- Targeted SQL suite: `20 passed`.
+- Live target evidence before `c0a6b8a`: append connected but compared normalized
+  CSV headers literally to mixed-case/spaced target columns, reporting all 13 as
+  unexpected. Replace reached DROP but PostgreSQL SQLSTATE 42501 rejected it
+  because the configured role does not own the table. Both transactions rolled
+  back with no committed SQL changes. A later alternate target exposed no
+  columns and was correctly reported as no longer existing.
+- Full Python suite: `202 passed`.
+- Targeted SQL suite: `23 passed`.
 - Selection stress simulation: `20,000` randomized week cases passed with
   retained selections, zero through two dropped clicks, delayed rendered state,
   and hover false positives.
@@ -73,10 +86,14 @@ on the nine-download ASAP flow, then verify Stop with two queued flows.
 
 ## Open Questions
 
-- Commit `2fcad3a` has not yet been installed or live-tested against PostgreSQL.
+- Commit `c0a6b8a` has not yet been installed or live-tested against PostgreSQL.
+- Replace cannot succeed on the existing table until its PostgreSQL ownership is
+  transferred to the configured role or an owner-controlled replacement process
+  is provided.
 - The repaired Stop behavior has not yet been live-tested with two queued flows.
 
 ## Next Step
 
-With explicit approval, click Update App in Metronome and rerun the flow. Confirm
-all requested weeks remain selected and the SQL handoff commits successfully.
+With explicit approval, click Update App in Metronome and rerun append against
+the existing target table. Confirm exact column mapping, COPY, and commit. Do not
+use replace as an ownership workaround.
