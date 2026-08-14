@@ -58,7 +58,7 @@ on the nine-download ASAP flow, then verify Stop with two queued flows.
 - Live target evidence before `2fcad3a`: run 86 passed the scraper/download stage
   but failed before SQL connection because a discovered table name contained
   spaces and the application rejected it as an invalid bare identifier.
-- Full Python suite: `198 passed`.
+- Full Python suite: `199 passed`.
 - Targeted SQL suite: `20 passed`.
 - Selection stress simulation: `20,000` randomized week cases passed with
   retained selections, zero through two dropped clicks, delayed rendered state,
