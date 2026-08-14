@@ -1414,9 +1414,47 @@ def test_asap_filter_discovery_reads_hidden_native_selects():
     assert 'frame.locator("select").all()' in source
     assert 'frame.locator("select:visible").all()' not in source
     assert 'control.locator("option").all_text_contents()' in source
-    assert "wait_for_popup_options()" in source
+    assert "wait_for_popup_options(control)" in source
     assert "time.monotonic() - stable_since >= 1.5" in source
     assert ".select2-results__option:visible" in source
+    assert "li:visible" not in source
+    assert "[class*=select2-result]:visible" not in source
+    assert 'control.get_attribute("aria-controls")' in source
+
+
+def test_asap_popup_discovery_prefers_combobox_owned_listbox():
+    class Collection:
+        def __init__(self, items):
+            self.items = items
+
+        def count(self):
+            return len(self.items)
+
+        def nth(self, index):
+            return self.items[index]
+
+    class Popup:
+        def is_visible(self):
+            return True
+
+    popup = Popup()
+
+    class Control:
+        def get_attribute(self, name):
+            return "popup-results" if name == "aria-controls" else None
+
+    class Frame:
+        def __init__(self):
+            self.selectors = []
+
+        def locator(self, selector):
+            self.selectors.append(selector)
+            assert selector == '[id="popup-results"]'
+            return Collection([popup])
+
+    frame = Frame()
+    assert flow_worker._asap_owned_popup_roots(frame, Control()) == [popup]
+    assert frame.selectors == ['[id="popup-results"]']
 
 
 def test_hidden_select2_control_is_selected_through_owning_native_select():

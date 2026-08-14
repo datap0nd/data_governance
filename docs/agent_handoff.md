@@ -487,3 +487,19 @@ files and do not enable SQL handoff.
   pass. Runtime commit `fbb0bcc` is present on `origin/main`.
 - Next step: deploy the updated build and rerun the same headed case. Confirm
   the visible Dimension members exactly match the configured set before RUN.
+
+## Select2 Catalog Ownership Fix (2026-08-14)
+
+- Catalog discovery rendered an invalid filter whose label was a currently
+  selected value and whose first option was several choices concatenated. The
+  Select2 popup collector was scanning the whole frame and its broad class
+  selector matched the results container as though it were an option.
+- Asynchronous option discovery now follows the active combobox's
+  `aria-controls` or `aria-owns` relationship. Legacy controls fall back to a
+  bounded visible listbox or Select2 dropdown. Only leaf role, native option,
+  or Select2 option nodes are catalogued; generic visible list items and result
+  containers are excluded.
+- Full suite: `181 passed`. Targeted ownership, filter normalization, and
+  duplicate-merge discovery regressions pass.
+- Next step: deploy and rescan the affected report. Discovery will mark the old
+  malformed definition stale and expose only the correctly merged filter.

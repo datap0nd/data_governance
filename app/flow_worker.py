@@ -1137,6 +1137,33 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
     return paths
 
 
+def _asap_owned_popup_roots(frame: Frame, control) -> list:
+    """Resolve only popups owned by the active combobox when possible."""
+    roots = []
+    owner_ids = _clean_text(
+        control.get_attribute("aria-controls") or control.get_attribute("aria-owns")
+    ).split()
+    for owner_id in owner_ids:
+        owned = frame.locator(f"[id={json.dumps(owner_id)}]")
+        for index in range(owned.count()):
+            candidate = owned.nth(index)
+            if candidate.is_visible():
+                roots.append(candidate)
+    if roots:
+        return roots
+
+    # Legacy Select2 can omit ownership attributes. Its open dropdown is still
+    # a bounded listbox/dropdown, so use that container rather than scanning
+    # every list item in the report frame.
+    candidates = frame.locator(
+        "[role=listbox]:visible,.select2-dropdown:visible,.select2-results:visible"
+    )
+    return [
+        candidates.nth(index) for index in range(candidates.count())
+        if candidates.nth(index).is_visible()
+    ]
+
+
 def _asap_discover_filters(frame: Frame) -> list[dict]:
     definitions = []
 
@@ -1161,17 +1188,21 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
                 return lines[1:500]
         return []
 
-    def wait_for_popup_options(timeout_ms: int = 5_000) -> list[str]:
-        """Collect asynchronously rendered Select2 results until they settle."""
+    def wait_for_popup_options(control, timeout_ms: int = 5_000) -> list[str]:
+        """Collect leaf options from the active asynchronous popup."""
         selector = (
-            "[role=option]:visible,li:visible,"
-            ".select2-results__option:visible,[class*=select2-result]:visible"
+            "[role=option]:visible,option:visible,"
+            "li.select2-results__option:visible,li.select2-result:visible"
         )
         collected = []
         deadline = time.monotonic() + timeout_ms / 1000
         stable_since = None
         while time.monotonic() < deadline:
-            current = _unique_visible_text(frame.locator(selector), 500)
+            current = []
+            for root in _asap_owned_popup_roots(frame, control):
+                current = list(dict.fromkeys([
+                    *current, *_unique_visible_text(root.locator(selector), 500),
+                ]))
             merged = list(dict.fromkeys([*collected, *current]))
             if merged != collected:
                 collected = merged
@@ -1223,7 +1254,7 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             label = lines[0] if lines else ""
         try:
             control.click(timeout=3_000)
-            options = wait_for_popup_options()
+            options = wait_for_popup_options(control)
         except Exception:
             options = []
         finally:
