@@ -963,6 +963,32 @@ def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
     }
 
 
+def test_sql_managed_snapshot_allows_new_table_name_in_discovered_schema(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'existing_target', CURRENT_TIMESTAMP, 0)"""
+        )
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], sql_handoff_enabled=True,
+            sql_mode="replace", sql_database="warehouse",
+            sql_schema="reporting", sql_table="new managed target",
+        ),
+        _request(),
+    )
+
+    assert saved["sql_table"] == "new managed target"
+    assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
+        "enabled": True, "mode": "replace", "database": "warehouse",
+        "schema": "reporting", "table": "new managed target",
+    }
+
+
 def test_flow_activation_is_separate_from_editor(flow_db):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
@@ -1714,7 +1740,21 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=51' in index
+    assert '/static/app.js?v=52' in index
+
+
+def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert "Managed snapshot refresh" in source
+    assert 'id="flow-sql-table" list="flow-sql-table-options"' in source
+    assert "Snapshot refresh creates a missing table" in source
+    assert "Recreate and replace" not in source
+
+    log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
+    assert "This will refresh the managed snapshot" in log_source
+    assert "drop and recreate" not in log_source
+    log_html = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.html").read_text()
+    assert '/static/flow_run_log.js?v=2' in log_html
 
 
 def test_asap_region_triplet_select_is_named_data_configuration():

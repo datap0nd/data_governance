@@ -9424,10 +9424,10 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
                             <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert downloaded file into SQL after download</span></label>
                             <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
-                                <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Recreate and replace</option></select><small>Replace rebuilds the table from CSV columns as TEXT, then inserts all files in one transaction. Existing indexes, constraints, triggers, and table grants are removed.</small></label>
+                                <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Managed snapshot refresh</option></select><small>Snapshot refresh creates a missing table, or preserves an existing table while replacing all rows. New CSV columns are added as nullable TEXT; older target columns remain. The SQL account needs USAGE and CREATE on the schema, and ownership of an existing target.</small></label>
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
-                                <label><span>Table</span><select id="flow-sql-table">${sqlTables.map(value => `<option ${value === existing?.sql_table ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
+                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append requires an existing table. Managed snapshot may create this name in the selected schema.</small></label>
                             </div>
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
                         </div>
@@ -9437,7 +9437,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Recreate and replace" : "Append") : "Disabled"}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Managed snapshot" : "Append") : "Disabled"}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9732,7 +9732,7 @@ function _bindFlowWorkspace() {
         const fields = $("#flow-sql-fields");
         const summary = $("#flow-sql-summary");
         if (fields) fields.hidden = !enabled;
-        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Recreate and replace" : "Append") : "Disabled";
+        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Managed snapshot" : "Append") : "Disabled";
     };
     const repopulateSql = () => {
         const targets = state.sqlCatalog.targets || [];
@@ -9741,12 +9741,14 @@ function _bindFlowWorkspace() {
         const priorSchema = $("#flow-sql-schema").value;
         $("#flow-sql-schema").innerHTML = schemas.map(value => `<option ${value === priorSchema ? "selected" : ""}>${esc(value)}</option>`).join("");
         const schema = $("#flow-sql-schema").value;
-        $("#flow-sql-table").innerHTML = targets.filter(item => item.database === database && item.schema === schema).map(item => `<option>${esc(item.table)}</option>`).join("");
+        const tables = targets.filter(item => item.database === database && item.schema === schema).map(item => item.table);
+        $("#flow-sql-table-options").innerHTML = tables.map(item => `<option value="${esc(item)}"></option>`).join("");
+        if ($("#flow-sql-mode").value === "append" && !tables.includes($("#flow-sql-table").value)) $("#flow-sql-table").value = tables[0] || "";
     };
     $("#flow-sql-enabled")?.addEventListener("change", updateSqlFields);
-    $("#flow-sql-mode")?.addEventListener("change", updateSqlFields);
+    $("#flow-sql-mode")?.addEventListener("change", () => { updateSqlFields(); repopulateSql(); });
     $("#flow-sql-database")?.addEventListener("change", repopulateSql);
-    $("#flow-sql-schema")?.addEventListener("change", () => { const database = $("#flow-sql-database").value; const schema = $("#flow-sql-schema").value; $("#flow-sql-table").innerHTML = (state.sqlCatalog.targets || []).filter(item => item.database === database && item.schema === schema).map(item => `<option>${esc(item.table)}</option>`).join(""); });
+    $("#flow-sql-schema")?.addEventListener("change", repopulateSql);
     $("#flow-sql-refresh")?.addEventListener("click", async event => { event.currentTarget.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); toast("SQL targets refreshed"); await navigate("flows"); } catch (err) { toast("SQL targets not refreshed: " + err.message); event.currentTarget.disabled = false; } });
     if ($("#flow-sql-fields")) updateSqlFields();
     $("#flow-schedule-type")?.addEventListener("change", event => {

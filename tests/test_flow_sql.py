@@ -20,7 +20,7 @@ def test_sql_identifier_quoting_supports_discovered_postgres_names(identifier, q
     assert flow_sql._quote_identifier(identifier) == quoted
 
 
-@pytest.mark.parametrize("identifier", ["", "invalid\x00identifier", None])
+@pytest.mark.parametrize("identifier", ["", "invalid\x00identifier", "x" * 64, None])
 def test_sql_identifier_quoting_rejects_values_postgres_cannot_identify(identifier):
     with pytest.raises(ValueError, match="Invalid SQL identifier"):
         flow_sql._quote_identifier(identifier)
@@ -260,7 +260,7 @@ def test_sql_append_maps_the_live_thirteen_column_shape_to_display_headers():
     assert [mapping[column] for column in csv_columns] == target_columns
 
 
-def test_sql_load_reports_each_phase_and_commits(tmp_path, monkeypatch):
+def test_sql_managed_snapshot_preserves_existing_table_and_commits(tmp_path, monkeypatch):
     path = tmp_path / "normalized.csv"
     path.write_text("Sell-out Week,Active\n202627,116\n", encoding="utf-8-sig")
     executed = []
@@ -316,28 +316,39 @@ def test_sql_load_reports_each_phase_and_commits(tmp_path, monkeypatch):
     assert "rollback" not in executed
     assert "SET LOCAL lock_timeout = '30s'" in executed
     assert "SET LOCAL statement_timeout = '120s'" in executed
-    assert any(
+    staging_create = next(
+        item for item in executed
+        if item.startswith('CREATE TABLE "Reporting Area"."_metronome_stage_')
+    )
+    staging_qualified = staging_create.removeprefix("CREATE TABLE ").split(" (", 1)[0]
+    assert not any(
         item.startswith('DROP TABLE "Reporting Area"."Import First and Second Activation"')
         for item in executed
     )
+    assert 'TRUNCATE TABLE "Reporting Area"."Import First and Second Activation"' in executed
     assert any(
         item.startswith(
-            'CREATE TABLE "Reporting Area"."Import First and Second Activation" '
-            '("sell_out_week" TEXT, "active" TEXT)'
+            'INSERT INTO "Reporting Area"."Import First and Second Activation" '
+            '("sell_out_week", "active") SELECT "sell_out_week", "active" FROM '
         )
         for item in executed
     )
+    assert f"DROP TABLE {staging_qualified}" in executed
+    assert copied[0][0].startswith(f"COPY {staging_qualified} ")
     assert copied[0][1] == "Sell-out Week,Active\n202627,116\n"
     assert [event["stage"] for event in events] == [
         "sql_artifact_validation", "sql_artifact_validation", "sql_connecting", "sql_connected",
-        "sql_target_validation", "sql_target_validation", "sql_replace", "sql_replace",
-        "sql_copy", "sql_copy", "sql_commit", "sql_commit",
+        "sql_target_validation", "sql_target_validation", "sql_staging", "sql_staging",
+        "sql_copy", "sql_copy", "sql_replace", "sql_replace", "sql_commit", "sql_commit",
     ]
-    assert result["schema_replaced"] is True
+    assert result["schema_replaced"] is False
+    assert result["snapshot_refreshed"] is True
+    assert result["target_created"] is False
+    assert result["columns_added"] == []
     assert result["column_type"] == "TEXT"
 
 
-def test_sql_replace_accepts_csv_columns_that_differ_from_existing_table(tmp_path, monkeypatch):
+def test_sql_managed_snapshot_adds_new_columns_without_dropping_existing_table(tmp_path, monkeypatch):
     path = tmp_path / "replacement.csv"
     path.write_text("New Column,Another\nvalue,2\n", encoding="utf-8")
     executed = []
@@ -379,11 +390,23 @@ def test_sql_replace_accepts_csv_columns_that_differ_from_existing_table(tmp_pat
     )
 
     assert result["rows_written"] == 1
-    assert any('CREATE TABLE "reporting"."target" ("new_column" TEXT, "another" TEXT)' in item for item in executed)
+    assert 'ALTER TABLE "reporting"."target" ADD COLUMN "new_column" TEXT' in executed
+    assert 'ALTER TABLE "reporting"."target" ADD COLUMN "another" TEXT' in executed
+    assert 'TRUNCATE TABLE "reporting"."target"' in executed
+    assert not any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
+    assert any(
+        item.startswith(
+            'INSERT INTO "reporting"."target" ("new_column", "another") '
+            'SELECT "new_column", "another" FROM "reporting"."_metronome_stage_'
+        )
+        for item in executed
+    )
+    assert result["columns_added"] == ["new_column", "another"]
+    assert result["target_created"] is False
     assert executed[-1] == "commit"
 
 
-def test_sql_replace_copy_failure_restores_prior_table(tmp_path, monkeypatch):
+def test_sql_managed_snapshot_copy_failure_leaves_existing_target_untouched(tmp_path, monkeypatch):
     path = tmp_path / "replacement.csv"
     path.write_text("new_column\nvalue\n", encoding="utf-8")
     executed = []
@@ -429,12 +452,124 @@ def test_sql_replace_copy_failure_restores_prior_table(tmp_path, monkeypatch):
             progress=events.append,
         )
 
-    assert any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
-    assert any(item.startswith('CREATE TABLE "reporting"."target"') for item in executed)
+    assert any(item.startswith('CREATE TABLE "reporting"."_metronome_stage_') for item in executed)
+    assert not any(item.startswith('TRUNCATE TABLE "reporting"."target"') for item in executed)
+    assert not any(item.startswith('ALTER TABLE "reporting"."target"') for item in executed)
+    assert not any(item.startswith('DROP TABLE "reporting"."target"') for item in executed)
     assert "rollback" in executed
     assert "commit" not in executed
     assert events[-1]["stage"] == "sql_failed"
     assert events[-1]["outcome"] == "PostgreSQL confirmed rollback. No SQL changes were committed."
+
+
+def test_sql_managed_snapshot_creates_missing_target_from_staging(tmp_path, monkeypatch):
+    path = tmp_path / "first_snapshot.csv"
+    path.write_text("New Column,Another\nvalue,2\n", encoding="utf-8")
+    executed = []
+    copied = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"),
+        rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return []
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied.append((statement, stream.read()))
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            executed.append(str(statement))
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    result = flow_sql.load_artifacts(
+        [{"file_path": str(path)}],
+        {"database": "db", "schema": "reporting", "table": "new target", "mode": "replace"},
+    )
+
+    staging_create = next(
+        item for item in executed
+        if item.startswith('CREATE TABLE "reporting"."_metronome_stage_')
+    )
+    staging_qualified = staging_create.removeprefix("CREATE TABLE ").split(" (", 1)[0]
+    assert copied[0][0].startswith(f"COPY {staging_qualified} ")
+    assert f'ALTER TABLE {staging_qualified} RENAME TO "new target"' in executed
+    assert not any(item.startswith('TRUNCATE TABLE "reporting"."new target"') for item in executed)
+    assert result["target_created"] is True
+    assert result["snapshot_refreshed"] is True
+    assert result["columns_added"] == ["new_column", "another"]
+    assert executed[-1] == "commit"
+
+
+def test_sql_managed_snapshot_final_insert_failure_rolls_back_target_refresh(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.csv"
+    path.write_text("value\nnew\n", encoding="utf-8")
+    executed = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"),
+        rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return [("value", "YES", None, "NO", "NEVER")]
+
+    class Cursor:
+        def copy_expert(self, _statement, stream):
+            stream.read()
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            rendered = str(statement)
+            executed.append(rendered)
+            if rendered.startswith('INSERT INTO "reporting"."target"'):
+                raise RuntimeError("simulated final promotion failure")
+            return None if rendered.startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    with pytest.raises(flow_sql.SqlHandoffError, match="PostgreSQL confirmed rollback"):
+        flow_sql.load_artifacts(
+            [{"file_path": str(path)}],
+            {"database": "db", "schema": "reporting", "table": "target", "mode": "replace"},
+        )
+
+    assert 'TRUNCATE TABLE "reporting"."target"' in executed
+    assert "rollback" in executed
+    assert "commit" not in executed
 
 
 def test_sql_copy_error_is_clean_and_rollback_is_logged(tmp_path, monkeypatch):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -97,7 +98,12 @@ def _quote_identifier(value: str) -> str:
     any embedded double quote represented twice. NUL is the one character a
     PostgreSQL identifier cannot contain.
     """
-    if not isinstance(value, str) or not value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\x00" in value
+        or len(value.encode("utf-8")) > 63
+    ):
         raise ValueError(f"Invalid SQL identifier: {value!r}")
     return '"' + value.replace('"', '""') + '"'
 
@@ -262,7 +268,7 @@ def _emit(progress: SqlProgress | None, stage: str, message: str, started: float
 def load_artifacts(
     artifacts: list[dict], target: dict, progress: SqlProgress | None = None,
 ) -> dict:
-    """Append to an existing schema or atomically replace the table from CSV."""
+    """Append to a target or atomically create/refresh a managed snapshot."""
     from sqlalchemy import text
 
     started = time.perf_counter()
@@ -299,6 +305,10 @@ def load_artifacts(
     commit_started = False
     rollback_status = "The SQL transaction never started. No SQL changes were committed."
     rows_written = 0
+    schema_action = "append" if mode == "append" else "managed_snapshot"
+    target_created = False
+    columns_added: list[str] = []
+    copy_destination = qualified
     try:
         stage = "connection"
         _emit(
@@ -329,9 +339,9 @@ def load_artifacts(
             "WHERE table_schema=:schema AND table_name=:table ORDER BY ordinal_position"
         ), {"schema": schema, "table": table}).fetchall()
         existing_columns = [row[0] for row in column_rows]
-        if not existing_columns:
-            raise RuntimeError(f"SQL target no longer exists: {target_name}")
         if mode == "append":
+            if not existing_columns:
+                raise RuntimeError(f"SQL target no longer exists: {target_name}")
             target_columns = _target_columns_by_normalized_name(existing_columns)
             for artifact in inspected:
                 mapped_columns = [
@@ -380,35 +390,63 @@ def load_artifacts(
                         "Replace requires every CSV artifact to use the same columns "
                         f"({artifact['filename']}: {'; '.join(differences)})"
                     )
+            target_columns = (
+                _target_columns_by_normalized_name(existing_columns)
+                if existing_columns else {}
+            )
+            destination_columns = [
+                target_columns.get(column, column) for column in replacement_columns
+            ]
+            columns_added = [
+                column for column in replacement_columns if column not in target_columns
+            ]
+            required = {
+                row[0] for row in column_rows
+                if row[1] == "NO" and row[2] is None and row[3] == "NO" and row[4] == "NEVER"
+            }
+            missing = sorted(required - set(destination_columns))
+            if missing:
+                raise RuntimeError(
+                    f"Managed snapshot cannot preserve required target column(s) absent from CSV: "
+                    f"{', '.join(missing)}"
+                )
+            schema_action = "refresh" if existing_columns else "create"
             _emit(
                 progress, "sql_target_validation",
-                f"Target {target_name} exists; replace will rebuild it with "
-                f"{len(replacement_columns)} CSV column(s) as TEXT.",
+                (
+                    f"Target {target_name} exists; managed snapshot will preserve it, "
+                    f"add {len(columns_added)} column(s), and replace all rows."
+                    if existing_columns else
+                    f"Target {target_name} does not exist; managed snapshot will create it "
+                    f"with {len(replacement_columns)} TEXT column(s)."
+                ),
                 started, status="completed", target=target_name,
                 csv_columns=len(replacement_columns), target_columns=len(existing_columns),
-                mode=mode, schema_action="drop_recreate", column_type="TEXT",
+                mode=mode, schema_action=schema_action, columns_added=len(columns_added),
+                column_type="TEXT",
             )
 
         if mode == "replace":
-            stage = "replace"
+            stage = "staging"
+            staging_table = f"_metronome_stage_{uuid.uuid4().hex[:16]}"
+            staging_qualified = f"{_quote_identifier(schema)}.{_quote_identifier(staging_table)}"
             _emit(
-                progress, "sql_replace",
-                f"Dropping and recreating {target_name} inside the transaction with "
+                progress, "sql_staging",
+                f"Creating a staging table for {target_name} with "
                 f"{len(replacement_columns)} TEXT column(s).",
                 started, status="started", target=target_name,
-                timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS, schema_action="drop_recreate",
+                schema_action=schema_action,
             )
             column_definitions = ", ".join(
                 f"{_quote_identifier(column)} TEXT" for column in replacement_columns
             )
-            connection.execute(text(f"DROP TABLE {qualified}"))
-            connection.execute(text(f"CREATE TABLE {qualified} ({column_definitions})"))
+            connection.execute(text(f"CREATE TABLE {staging_qualified} ({column_definitions})"))
+            copy_destination = staging_qualified
             _emit(
-                progress, "sql_replace",
-                f"Recreated {target_name} with {len(replacement_columns)} TEXT column(s); "
-                "the replacement remains uncommitted.",
+                progress, "sql_staging",
+                f"Created the uncommitted staging table for {target_name}.",
                 started, status="completed", target=target_name,
-                columns=len(replacement_columns), schema_action="drop_recreate",
+                columns=len(replacement_columns), schema_action=schema_action,
             )
 
         for index, artifact in enumerate(inspected, start=1):
@@ -419,12 +457,59 @@ def load_artifacts(
                 file_index=index, files=len(inspected), rows=artifact["row_count"],
                 bytes=artifact["file_size"], timeout_seconds=SQL_STATEMENT_TIMEOUT_SECONDS,
             )
-            _copy_artifact(connection, artifact, qualified)
+            _copy_artifact(connection, artifact, copy_destination)
             rows_written += artifact["row_count"]
             _emit(
                 progress, "sql_copy", f"COPY {index} of {len(inspected)} completed: {artifact['filename']}.",
                 started, status="completed", target=target_name, file=artifact["filename"],
                 file_index=index, files=len(inspected), rows=artifact["row_count"],
+            )
+
+        if mode == "replace":
+            stage = "replace"
+            _emit(
+                progress, "sql_replace",
+                (
+                    f"Promoting the staged snapshot to new target {target_name}."
+                    if not existing_columns else
+                    f"Refreshing {target_name} from the staged snapshot while preserving its object."
+                ),
+                started, status="started", target=target_name,
+                timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS, schema_action=schema_action,
+                rows=rows_written, columns_added=len(columns_added),
+            )
+            if not existing_columns:
+                connection.execute(text(
+                    f"ALTER TABLE {staging_qualified} RENAME TO {_quote_identifier(table)}"
+                ))
+                target_created = True
+            else:
+                for column in columns_added:
+                    connection.execute(text(
+                        f"ALTER TABLE {qualified} ADD COLUMN {_quote_identifier(column)} TEXT"
+                    ))
+                destination_sql = ", ".join(
+                    _quote_identifier(column) for column in destination_columns
+                )
+                staging_sql = ", ".join(
+                    _quote_identifier(column) for column in replacement_columns
+                )
+                connection.execute(text(f"TRUNCATE TABLE {qualified}"))
+                connection.execute(text(
+                    f"INSERT INTO {qualified} ({destination_sql}) "
+                    f"SELECT {staging_sql} FROM {staging_qualified}"
+                ))
+                connection.execute(text(f"DROP TABLE {staging_qualified}"))
+            _emit(
+                progress, "sql_replace",
+                (
+                    f"Created {target_name} from the staged snapshot."
+                    if target_created else
+                    f"Refreshed {target_name}; existing object, grants, indexes, and constraints remain."
+                ),
+                started, status="completed", target=target_name,
+                schema_action=schema_action, rows=rows_written,
+                columns_added=len(columns_added),
             )
 
         stage = "commit"
@@ -475,7 +560,10 @@ def load_artifacts(
         "files_loaded": len(inspected),
         "mode": mode,
         "target": target_name,
-        "schema_replaced": mode == "replace",
+        "schema_replaced": False,
+        "snapshot_refreshed": mode == "replace",
+        "target_created": target_created,
+        "columns_added": columns_added,
         "column_type": "TEXT" if mode == "replace" else None,
         "duration_ms": round((time.perf_counter() - started) * 1000),
     }

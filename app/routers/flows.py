@@ -350,9 +350,9 @@ class FlowWrite(BaseModel):
     transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
     sql_mode: str | None = None
-    sql_database: str | None = None
-    sql_schema: str | None = None
-    sql_table: str | None = None
+    sql_database: str | None = Field(default=None, max_length=63)
+    sql_schema: str | None = Field(default=None, max_length=63)
+    sql_table: str | None = Field(default=None, max_length=63)
 
     @model_validator(mode="after")
     def validate_flow(self):
@@ -417,7 +417,7 @@ class FlowWrite(BaseModel):
         if self.sql_handoff_enabled:
             self.sql_mode = (self.sql_mode or "").strip().casefold()
             if self.sql_mode not in SQL_MODES:
-                raise ValueError("SQL write mode must be append or recreate and replace.")
+                raise ValueError("SQL write mode must be append or managed snapshot refresh.")
             for field_name in ("sql_database", "sql_schema", "sql_table"):
                 value = (getattr(self, field_name) or "").strip()
                 if not value:
@@ -561,6 +561,15 @@ def _latest_discovered_week(report: dict, start_week: str) -> str:
 
 def _validate_sql_target(db, body: FlowWrite):
     if not body.sql_handoff_enabled:
+        return
+    if body.sql_mode == "replace":
+        row = db.execute(
+            """SELECT 1 FROM flow_sql_catalog
+               WHERE database_name=? AND schema_name=? AND stale=0 LIMIT 1""",
+            (body.sql_database, body.sql_schema),
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Choose a database and schema from the latest SQL catalog scan.")
         return
     row = db.execute(
         """SELECT 1 FROM flow_sql_catalog
