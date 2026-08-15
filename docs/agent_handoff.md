@@ -10,10 +10,10 @@ Countries Excel exports, then atomically creates or refreshes
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit: `a211a0c Confirm ASAP raw Excel exports`
+- Latest commit before this handoff update: `5410807 Update ASAP bundled flow handoff`
 - Stable rollback tag: `asap-ti-pre-multiexport-stable-2026-08-15` at `2560be8`
 - Public repo: no, private
-- Push status: `a211a0c` verified on `origin/main`
+- Push status: `5410807` verified on `origin/main`; publish this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -27,7 +27,12 @@ Countries Excel exports, then atomically creates or refreshes
 - Managed snapshot mode creates a missing target or refreshes an existing target
   in place, unions differing source columns, and rolls back the entire SQL stage
   on failure.
-- Do not change PostgreSQL schema privileges without fresh action-time approval.
+- The configured Metronome connection label is `dg_upload_pguser`, but its
+  PostgreSQL role is `metomx`.
+- With user approval, `metomx` now has `USAGE` and `CREATE` on schema
+  `meto_db.bi_reporting`. Read-back returned true for both privileges.
+- The production flow remains active in headless mode on its monthly day-1
+  08:00 schedule.
 
 ## Files Changed
 
@@ -42,26 +47,30 @@ Countries Excel exports, then atomically creates or refreshes
 
 - `PYTHONPATH=. .../pytest -q`: 226 passed in 3.76s.
 - `git diff --check`: passed before both scoped commits.
-- Remote `main`: `a211a0c32b404b3777f82821ff24c61b5a5488fd` verified.
-- Citrix build `#20260815-150320`: deployed from that commit.
-- Live run 105: both XLSX downloads completed and normalized.
-- Global/Region artifact: 105,050 rows, 934,452-byte original workbook.
-- Selected Countries artifact: 926,160 rows, 8,906,633-byte original workbook.
-- SQL staging failed closed with SQLSTATE `42501`, permission denied for schema
-  `bi_reporting`; PostgreSQL confirmed rollback and no SQL changes were committed.
+- Remote `main`: `5410807` verified before this handoff update.
+- Citrix build `#20260815-150320`: deployed from runtime commit `a211a0c`.
+- PostgreSQL grant: `GRANT USAGE, CREATE ON SCHEMA bi_reporting TO metomx;`
+  succeeded through the saved `meto_reporting_rw` connection. Direct privilege
+  checks returned `usage_ok=true` and `create_ok=true`.
+- Live headed run 106: succeeded and committed the full two-export bundle.
+- Direct PostgreSQL validation after run 106: table OID `213183`, 103,110 rows,
+  11 columns, and every column is `TEXT`.
+- Direct lineage counts after run 106: Global/Region 10,500 rows and Selected
+  Countries 92,610 rows.
+- Live headless run 107: succeeded with the same two artifacts and a managed
+  snapshot refresh.
+- Direct PostgreSQL validation after run 107: OID still `213183`, total still
+  103,110 rows, and both lineage counts unchanged. The second run did not append
+  or recreate the target.
+- The running headless flow exposed its Stop control in the Flows list.
 
 ## Open Questions
 
-- `dg_upload_pguser` needs schema-level permission to create the managed staging
-  table in `bi_reporting`. This is required even when refreshing an existing
-  target because the atomic snapshot uses a transaction-scoped staging table.
-- The first successful database run and a second non-accumulating refresh still
-  require live PostgreSQL validation. Production headless mode also remains to
-  be re-enabled and tested after headed debugging succeeds.
+- None for the bundled flow acceptance path. Future source schema changes should
+  still be observed on their first live run because managed snapshot refresh adds
+  new nullable `TEXT` columns while preserving older target columns.
 
 ## Next Step
 
-After fresh approval, grant `USAGE, CREATE` on schema `bi_reporting` in database
-`meto_db` to `dg_upload_pguser`, rerun the flow, validate both source counts and
-the target table OID, then run once more in headless mode and verify the row count
-does not double.
+Monitor the next scheduled day-1 08:00 run and confirm it retains OID `213183`
+and the expected non-accumulating snapshot behavior.
