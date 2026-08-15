@@ -228,6 +228,39 @@ def test_asap_navigation_waits_for_replacement_and_requested_breadcrumb(monkeypa
     assert target.waited == {"state": "hidden", "timeout": 1_000}
 
 
+def test_asap_navigation_accepts_stable_requested_breadcrumb_in_reused_frame(monkeypatch):
+    class Frame:
+        def is_detached(self):
+            return False
+
+    current = Frame()
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: current)
+    monkeypatch.setattr(flow_worker, "_asap_frame_signature", lambda _frame: "same-body")
+    monkeypatch.setattr(
+        flow_worker, "_asap_text_visible_across_frames", lambda _page, _label: True,
+    )
+
+    class Target:
+        def wait_for(self, **_kwargs):
+            pass
+
+    class Page:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = Page()
+    result = _asap_wait_for_report_navigation(
+        page, current, Target(), ["Market", "TechInsights Smartphone M/S"],
+        previous_signature="same-body", timeout_ms=1_000,
+    )
+
+    assert result is current
+    assert page.waits == [250, 250]
+
+
 def test_asap_menu_wait_allows_delayed_hover_items(monkeypatch):
     expected = object()
     states = iter([None, None, expected])

@@ -388,6 +388,18 @@ def _asap_frame_signature(frame: Frame | None) -> str | None:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _asap_text_visible_across_frames(page: Page, label: str) -> bool:
+    """Find an exact ASAP breadcrumb in either the portal shell or report frame."""
+    roots = [getattr(page, "main_frame", page), *getattr(page, "frames", [])]
+    for root in list(dict.fromkeys(roots)):
+        try:
+            if _asap_first_visible(root.get_by_text(label, exact=True)) is not None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _asap_wait_for_report_navigation(
     page: Page, previous_frame: Frame | None, target_control, path: list[str],
     previous_signature: str | None = None, timeout_ms: int = 120_000,
@@ -415,8 +427,7 @@ def _asap_wait_for_report_navigation(
             visible_path = True
             last_path_visibility = {}
             for label in path[-2:]:
-                matches = page.get_by_text(label, exact=True)
-                label_visible = _asap_first_visible(matches) is not None
+                label_visible = _asap_text_visible_across_frames(page, label)
                 last_path_visibility[label] = label_visible
                 if not label_visible:
                     visible_path = False
@@ -427,13 +438,22 @@ def _asap_wait_for_report_navigation(
             )
             last_frame_replaced = frame_replaced
             last_content_changed = content_changed
-            if visible_path and frame_replaced:
-                return current
+            if visible_path:
+                # Reopening the report already preserved in ASAP can reuse
+                # both the iframe and its body. The exact live breadcrumb is
+                # still strong proof once that body is stable for three polls.
+                if current_signature == stable_signature:
+                    stable_polls += 1
+                else:
+                    stable_signature = current_signature
+                    stable_polls = 1
+                if frame_replaced or stable_polls >= 3:
+                    return current
             # Some ASAP renderings do not expose breadcrumb labels to the
             # accessibility tree even though the exact menu link was clicked.
             # For a reused iframe, the closed target control plus a changed,
             # stable report body is the reliable navigation proof.
-            if content_changed:
+            if content_changed and not visible_path:
                 if current_signature == stable_signature:
                     stable_polls += 1
                 else:
