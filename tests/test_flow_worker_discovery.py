@@ -278,6 +278,27 @@ def test_raw_table_excel_menu_item_is_a_direct_download_action():
     assert flow_worker._asap_wait_for_raw_menu_download_action(Page(), "csv") is None
 
 
+def test_raw_table_export_control_accepts_direct_export_options_popup():
+    popup = object()
+
+    class Page:
+        frames = []
+
+        def __init__(self):
+            self.context = type("Context", (), {"pages": [self, popup]})()
+
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("the new Export Options popup should be accepted immediately")
+
+    page = Page()
+    menu_export, wizard_opened = flow_worker._asap_wait_for_raw_menu_export_or_wizard(
+        page, {page},
+    )
+
+    assert menu_export is None
+    assert wizard_opened is True
+
+
 def test_raw_table_excel_dialog_exposes_final_export_action():
     class Locator:
         def __init__(self, visible):

@@ -1399,6 +1399,38 @@ def _asap_wait_for_raw_menu_download_action(
     return None
 
 
+def _asap_wait_for_raw_menu_export_or_wizard(
+    page: Page, pages_before: set, timeout_ms: int = 10_000,
+):
+    """Return the intermediate menu action, or report that Export Options opened directly."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    wizard_pattern = re.compile(r"^(?:Excel|CSV) file format$", re.I)
+    while time.monotonic() < deadline:
+        current_pages = page.context.pages
+        if any(candidate not in pages_before for candidate in current_pages):
+            return None, True
+        for candidate in reversed(current_pages):
+            for root in [candidate, *reversed(candidate.frames)]:
+                try:
+                    wizard_marker = root.get_by_text(wizard_pattern)
+                    if wizard_marker.count() and wizard_marker.first.is_visible():
+                        return None, True
+                except Exception:
+                    pass
+                for locator in (
+                    root.get_by_role("menuitem", name="Export", exact=True),
+                    root.get_by_role("button", name="Export", exact=True),
+                    root.get_by_text("Export", exact=True),
+                ):
+                    try:
+                        if locator.count() and locator.first.is_visible():
+                            return locator.first, False
+                    except Exception:
+                        continue
+        page.wait_for_timeout(200)
+    return None, False
+
+
 def _asap_wait_for_raw_export_confirmation(
     page: Page, file_format: str, timeout_ms: int = 10_000,
 ):
@@ -1515,29 +1547,14 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control.click()
     direct_download_action = None
     if opens_export_menu:
-        menu_export = None
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and menu_export is None:
-            for root in [page.main_frame, *reversed(page.frames)]:
-                for locator in (
-                    root.get_by_role("menuitem", name="Export", exact=True),
-                    root.get_by_role("button", name="Export", exact=True),
-                    root.get_by_text("Export", exact=True),
-                ):
-                    try:
-                        if locator.count() and locator.first.is_visible():
-                            menu_export = locator.first
-                            break
-                    except Exception:
-                        continue
-                if menu_export is not None:
-                    break
-            if menu_export is None:
-                page.wait_for_timeout(200)
-        if menu_export is None:
+        menu_export, wizard_opened = _asap_wait_for_raw_menu_export_or_wizard(
+            page, pages_before,
+        )
+        if menu_export is None and not wizard_opened:
             raise RuntimeError("ASAP raw-table information menu opened, but its Export action was not visible.")
-        menu_export.click()
-        direct_download_action = _asap_wait_for_raw_menu_download_action(page, file_format)
+        if menu_export is not None:
+            menu_export.click()
+            direct_download_action = _asap_wait_for_raw_menu_download_action(page, file_format)
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
     # in the existing page. Search both shapes instead of requiring a popup.
     format_option = None
