@@ -300,6 +300,15 @@ def test_asap_export_action_accepts_input_value_rendering():
     assert flow_worker._asap_export_action(Root()) is input_export
 
 
+def test_asap_xlsx_format_prefers_flat_excel_export_and_accepts_legacy_label():
+    preferred, pattern = flow_worker._asap_export_format_names("xlsx")
+
+    assert preferred == "Excel with plain text"
+    assert pattern.fullmatch("Excel with plain text")
+    assert pattern.fullmatch("Excel file format")
+    assert not pattern.fullmatch("Excel with formatting")
+
+
 def test_raw_table_excel_menu_item_is_a_direct_download_action():
     class Locator:
         def __init__(self, visible):

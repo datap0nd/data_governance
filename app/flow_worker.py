@@ -1382,6 +1382,23 @@ def _asap_export_action(root: Page | Frame):
     return None
 
 
+def _asap_export_format_names(file_format: str) -> tuple[str, re.Pattern]:
+    """Return the preferred raw export label and compatible MicroStrategy variants."""
+    if file_format == "xlsx":
+        return (
+            "Excel with plain text",
+            re.compile(
+                r"^(?:Microsoft )?Excel(?: workbook| file format| with plain text)?"
+                r"(?: \(.*\.xlsx.*\))?$",
+                re.I,
+            ),
+        )
+    return (
+        "CSV file format",
+        re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I),
+    )
+
+
 def _asap_raw_table_information_control(root: Page | Frame, canvas):
     """Find an unlabeled hover control by its documented table-corner position."""
     try:
@@ -1593,17 +1610,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_action = None
     wizard_pages = set()
     deadline = time.monotonic() + 60
-    format_names = (
-        (
-            "Excel file format",
-            re.compile(r"^(?:Microsoft )?Excel(?: workbook| file format)?(?: \(.*\.xlsx.*\))?$", re.I),
-        )
-        if file_format == "xlsx" else
-        (
-            "CSV file format",
-            re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I),
-        )
-    )
+    format_names = _asap_export_format_names(file_format)
     while (
         direct_download_action is None
         and time.monotonic() < deadline
@@ -1631,7 +1638,11 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         if format_option is None or export_action is None:
             page.wait_for_timeout(250)
     if direct_download_action is None and (format_option is None or export_action is None):
-        raise RuntimeError(f"ASAP Export Wizard opened, but its {file_format.upper()} option or Export action was not recognized.")
+        raise RuntimeError(
+            f"ASAP Export Wizard opened, but its {file_format.upper()} option or Export action "
+            f"was not recognized. Format option found: {format_option is not None}. "
+            f"Export action found: {export_action is not None}."
+        )
     if direct_download_action is None:
         try:
             format_option.check()
