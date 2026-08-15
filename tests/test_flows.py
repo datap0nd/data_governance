@@ -1069,6 +1069,21 @@ def test_week_prompt_can_be_supplied_by_range_instead_of_selection(flow_db):
         flows._validate_flow_selections(db, body)
 
 
+def test_manual_catalog_report_can_be_used_before_discovery(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+
+    body = _flow(
+        site["id"], report["id"], download_mode="single",
+        selections={"data_configuration": "MENA - Global - Global"},
+    )
+    with database.get_db() as db:
+        flows._validate_flow_selections(db, body)
+
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'report.source_kind === "discovered"' not in source
+
+
 def test_asap_report_navigation_metadata_stays_local_and_enters_job(flow_db):
     site = flows.create_site(_asap_site(), _request())
     report = flows.create_report(_asap_report(site["id"]), _request())
@@ -1205,10 +1220,10 @@ def test_unknown_and_invalid_filter_values_are_rejected(flow_db):
         )
 
 
-def test_flow_rejects_manual_report_metadata(flow_db):
+def test_flow_accepts_manual_report_metadata(flow_db):
     site, report = _seed_catalog()
-    with pytest.raises(HTTPException, match="discovered"):
-        flows.create_flow(_flow(site["id"], report["id"]), _request())
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    assert saved["report_id"] == report["id"]
 
 
 def test_scan_discovery_upserts_and_marks_missing_stale_without_deleting(flow_db):

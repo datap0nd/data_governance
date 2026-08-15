@@ -9321,10 +9321,10 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
 }
 
 function _flowReportOptions(catalog, siteId, selected) {
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.source_kind === "discovered");
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
     return reports.length
         ? reports.map(report => `<option value="${report.id}" ${String(report.id) === String(selected) ? "selected" : ""}>${esc(report.name)}</option>`).join("")
-        : '<option value="">Run discovery for this website first</option>';
+        : '<option value="">Add or discover a report for this website first</option>';
 }
 
 function _flowFilterControl(definition, value) {
@@ -9380,7 +9380,7 @@ function _flowHasWeekFilter(report) {
 function _flowBuilderHtml(catalog, existing = null) {
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
-    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale && report.source_kind === "discovered");
+    const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
     const reportId = existing?.report_id || reports[0]?.id || "";
     const report = catalog.reports.find(item => String(item.id) === String(reportId));
     const selections = { ...(existing?.selections || {}) };
@@ -9407,7 +9407,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             <div class="flow-builder-main">
                 <form id="flow-builder-form" data-id="${existing?.id || ""}">
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose from reports and filters discovered by the latest ASAP scan.</p></div>
+                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose an enabled catalog report and its configured filters.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
@@ -9533,7 +9533,7 @@ async function renderFlows() {
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"),
     ]);
     window._flowsState = { catalog, flows, runs, workers, scans, estimates, sqlCatalog, view: "list" };
-    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled && !report.stale && report.source_kind === "discovered");
+    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled && !report.stale);
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads executed by the authenticated BI desktop.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>

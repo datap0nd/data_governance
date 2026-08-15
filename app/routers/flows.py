@@ -620,11 +620,11 @@ def _validate_sql_target(db, body: FlowWrite):
 def _validate_flow_selections(db, body: FlowWrite):
     report = db.execute(
         """SELECT site_id, automation_json FROM flow_reports
-           WHERE id = ? AND enabled = 1 AND stale = 0 AND source_kind = 'discovered'""",
+           WHERE id = ? AND enabled = 1 AND stale = 0""",
         (body.report_id,),
     ).fetchone()
     if not report or report["site_id"] != body.site_id:
-        raise HTTPException(400, "Choose a report discovered from the selected website.")
+        raise HTTPException(400, "Choose an enabled report from the selected website.")
     rows = db.execute(
         "SELECT * FROM flow_report_filters WHERE report_id = ? AND enabled = 1 ORDER BY position, id",
         (body.report_id,),
