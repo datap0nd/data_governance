@@ -1748,6 +1748,11 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
     root_names = list(dict.fromkeys(root["text"] for root in roots))
     paths: list[list[str]] = []
     for root_name in root_names:
+        # The portal renders its navigation shell before removing the blocking
+        # loading overlay. Playwright can therefore resolve a menu link while
+        # the overlay still intercepts the click. Wait for a sustained clear
+        # state before resolving the live link used for this interaction.
+        _asap_wait_for_loading_clear(page)
         # Mega-menu contents change the number and order of matching elements.
         # Re-resolve the navigation trigger instead of retaining an nth-based
         # Playwright locator from the initial DOM snapshot.

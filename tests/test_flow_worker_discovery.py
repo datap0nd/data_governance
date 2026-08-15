@@ -66,6 +66,39 @@ def test_navigation_waits_for_client_rendered_controls(monkeypatch):
     assert [item["text"] for item in _wait_for_navigation_roots(Page(), 1_000)] == ["Market", "Mobile"]
 
 
+def test_menu_discovery_waits_for_loading_overlay_before_click(monkeypatch):
+    events = []
+
+    class Link:
+        def click(self, **_kwargs):
+            events.append("click")
+
+    root = _record("Mobile", 235, 90)
+    root["link"] = Link()
+    monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_wait_for_loading_clear",
+        lambda _page: events.append("wait"),
+    )
+    monkeypatch.setattr(
+        flow_worker,
+        "_menu_report_paths",
+        lambda *_args: [["Mobile", "Regional FOTA", "Regional FOTA"]],
+    )
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    assert flow_worker._asap_discover_menu_reports(Page(), []) == [
+        ["Mobile", "Regional FOTA", "Regional FOTA"],
+    ]
+    assert events[0:2] == ["wait", "click"]
+
+
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
     states = [False, False, True]
     calls = []
