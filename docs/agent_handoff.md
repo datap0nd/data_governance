@@ -2,74 +2,66 @@
 
 ## Current Objective
 
-Deploy and live-verify one bundled ASAP flow that downloads the Global/Region
-and Selected Countries Excel exports, then atomically creates or refreshes one
-`ASAP_TI` PostgreSQL table with both sources.
+Live-verify one bundled ASAP flow that downloads the Global/Region and Selected
+Countries Excel exports, then atomically creates or refreshes
+`meto_db.bi_reporting.ASAP_TI` without accumulating prior snapshots.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Runtime commit: `6f4a175 Add atomic multi-export ASAP flows`
+- Latest commit: `a211a0c Confirm ASAP raw Excel exports`
 - Stable rollback tag: `asap-ti-pre-multiexport-stable-2026-08-15` at `2560be8`
 - Public repo: no, private
-- Push status: runtime commit verified on `origin/main`
+- Push status: `a211a0c` verified on `origin/main`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
 
-- One logical flow owns both export views. Every selected export must download
-  and validate before the one downstream SQL transaction begins.
-- Export views are catalogued explicitly and selected in the flow builder.
-- Reports without a week prompt use `period_strategy=none` and do not click RUN.
-- Excel originals are preserved and normalized to SQL-ready UTF-8 CSV files.
-- Every normalized file receives `Metronome Export View` source lineage.
-- Managed snapshot mode unions differing source columns by normalized name,
-  creates a missing table, or refreshes an existing table without replacing its
-  object. Missing source-specific fields are null.
-- Monthly scheduling supports day of month. Invalid dates are skipped.
-- The old startup migration that forced XLSX flows back to CSV was removed.
+- One flow owns both export views and starts one SQL transaction only after both
+  files download and normalize successfully.
+- Raw TechInsights tables export through the hover information control, the
+  `Export` submenu, the `Excel` item, and the final `Export to Excel` dialog.
+- Excel originals are preserved and normalized with a `Metronome Export View`
+  lineage column.
+- Managed snapshot mode creates a missing target or refreshes an existing target
+  in place, unions differing source columns, and rolls back the entire SQL stage
+  on failure.
+- Do not change PostgreSQL schema privileges without fresh action-time approval.
 
 ## Files Changed
 
-- `app/database.py`: persist export-view selection and monthly schedule day.
-- `app/routers/flows.py`: validate bundle views, no-period reports, XLSX, and monthly schedules.
-- `app/flow_worker.py`: scan and execute multiple views, raw-table export fallback, Excel normalization, and source lineage.
-- `app/flow_sql.py`: union different bundle schemas in one managed snapshot.
-- `app/static/app.js`: bundle, XLSX, no-period, monthly, and SQL builder controls.
-- `app/static/index.html`: main JavaScript cache bump.
-- `README.md`: document the bundled execution contract.
-- `tests/test_flows.py`, `tests/test_flow_sql.py`, `tests/test_flow_worker_discovery.py`: regression coverage.
+- `app/flow_worker.py`: wait for ASAP overlays, accept preserved navigation,
+  recognize populated raw tables, find the unlabeled table control, and complete
+  the raw Excel submenu and confirmation-dialog path.
+- `tests/test_flow_worker_discovery.py`: regression coverage for the live ASAP
+  navigation, raw-table readiness, geometric control, Excel menu, and final
+  confirmation behavior.
 
 ## Commands And Checks
 
-- Full Python suite: `213 passed in 2.63s`.
-- `node --check app/static/app.js`: passed.
-- `node --check app/static/flow_run_log.js`: passed.
-- Python compilation for changed runtime modules: passed.
-- `git diff --check`: passed.
-- Real temporary PostgreSQL integration: passed first-run create and second-run
-  refresh using two files with different columns and column order. Verified
-  stable table OID, no duplicate accumulation, expected per-source counts,
-  schema evolution, and source-specific nulls.
-- Live Metronome deployment and ASAP download: not yet run.
+- `PYTHONPATH=. .../pytest -q`: 226 passed in 3.76s.
+- `git diff --check`: passed before both scoped commits.
+- Remote `main`: `a211a0c32b404b3777f82821ff24c61b5a5488fd` verified.
+- Citrix build `#20260815-150320`: deployed from that commit.
+- Live run 105: both XLSX downloads completed and normalized.
+- Global/Region artifact: 105,050 rows, 934,452-byte original workbook.
+- Selected Countries artifact: 926,160 rows, 8,906,633-byte original workbook.
+- SQL staging failed closed with SQLSTATE `42501`, permission denied for schema
+  `bi_reporting`; PostgreSQL confirmed rollback and no SQL changes were committed.
 
 ## Open Questions
 
-- Citrix is connected, but the nested work desktop is currently shown in a
-  windowed RDP session with Outlook active. Computer Use has keyboard access but
-  no coordinate targeting for the RDP window, so Edge cannot be selected safely.
-- The actual Excel attachment/header shape still needs live inspection through
-  the deployed worker. The implementation fails closed if no usable table header
-  is found.
-- Do not grant or change PostgreSQL schema permissions without a fresh exact
-  approval naming the schema and privilege. First attempt the already approved
-  flow with the current SQL role.
+- `dg_upload_pguser` needs schema-level permission to create the managed staging
+  table in `bi_reporting`. This is required even when refreshing an existing
+  target because the atomic snapshot uses a transaction-scoped staging table.
+- The first successful database run and a second non-accumulating refresh still
+  require live PostgreSQL validation. Production headless mode also remains to
+  be re-enabled and tested after headed debugging succeeds.
 
 ## Next Step
 
-Have the user click the Edge icon inside the nested work desktop and leave
-Metronome visible. Then update Metronome from `main`, run a targeted catalog
-refresh for `ASAP -> TechInsights Smartphone M/S`, create the two-view monthly
-XLSX managed-snapshot flow targeting `ASAP_TI`, and run it twice while verifying
-the table and source counts in PostgreSQL.
+After fresh approval, grant `USAGE, CREATE` on schema `bi_reporting` in database
+`meto_db` to `dg_upload_pguser`, rerun the flow, validate both source counts and
+the target table OID, then run once more in headless mode and verify the row count
+does not double.
