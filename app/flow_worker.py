@@ -42,6 +42,8 @@ except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
 AUTH_MARKER = ".asap_authenticated"
+ASAP_LOADING_OVERLAY_SELECTOR = ".loading-spinner-container"
+ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
 
 
 @contextmanager
@@ -323,6 +325,45 @@ def _asap_first_visible(locator):
     return None
 
 
+def _asap_loading_overlay_visible(page: Page) -> bool:
+    """Return whether ASAP is currently blocking report interaction.
+
+    ASAP leaves report controls visible beneath its loading overlay. Playwright
+    therefore considers the control actionable until the overlay intercepts
+    the actual pointer event. Inspect every live frame because the overlay can
+    move with MicroStrategy's replacement iframe.
+    """
+    roots = list(dict.fromkeys([page.main_frame, *page.frames]))
+    for root in roots:
+        try:
+            overlays = root.locator(ASAP_LOADING_OVERLAY_SELECTOR)
+            for index in range(overlays.count()):
+                if overlays.nth(index).is_visible():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _asap_wait_for_loading_clear(page: Page, timeout_ms: int = ASAP_REPORT_RESULT_TIMEOUT_MS):
+    """Wait for a sustained clear state before clicking an ASAP control."""
+    deadline = time.monotonic() + (timeout_ms / 1_000)
+    clear_polls = 0
+    while time.monotonic() < deadline:
+        if _asap_loading_overlay_visible(page):
+            clear_polls = 0
+        else:
+            clear_polls += 1
+            # A single clear DOM sample can occur between replacement frames.
+            # Require one full second without the blocking overlay.
+            if clear_polls >= 4:
+                return
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        f"ASAP loading overlay did not clear within {timeout_ms // 1_000} seconds."
+    )
+
+
 def _asap_wait_for_visible(page: Page, *locators, timeout_ms: int = 15_000):
     """Wait for a portal menu item that may appear after hover animation."""
     deadline = time.monotonic() + (timeout_ms / 1_000)
@@ -411,7 +452,9 @@ def _asap_wait_for_report_navigation(
     )
 
 
-def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
+def _asap_wait_for_results(
+    page: Page, timeout_ms: int = ASAP_REPORT_RESULT_TIMEOUT_MS,
+) -> Frame:
     """Return the live report frame once ASAP has rendered result rows.
 
     Running a report replaces ``iframe#content-frame`` in the current ASAP UI.
@@ -421,8 +464,10 @@ def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
     """
     deadline = time.monotonic() + (timeout_ms / 1_000)
     last_error: Exception | None = None
+    last_loading_state = False
     while time.monotonic() < deadline:
         try:
+            last_loading_state = _asap_loading_overlay_visible(page)
             # MicroStrategy may briefly retain the old iframe element and add
             # the replacement as another frame. Inspect every current frame,
             # newest first, instead of trusting the first matching element.
@@ -436,6 +481,11 @@ def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
             last_error = exc
         page.wait_for_timeout(500)
     detail = f" Last frame error: {last_error}" if last_error else ""
+    detail += (
+        " The ASAP loading overlay was still visible."
+        if last_loading_state else
+        " The loading overlay cleared, but the Data rows marker never appeared."
+    )
     raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
 
 
@@ -1592,7 +1642,11 @@ def _asap_activate_export_view(
     page: Page, frame: Frame, requested_label: str | None = None,
 ) -> tuple[Frame, str | None]:
     """Open one exact export-oriented view using visible ASAP semantics."""
-    visible = _asap_export_view_candidates(page, frame)
+    # The report shell exposes its tabs before the default report has finished
+    # loading. Wait until the overlay is stably gone, then resolve the tab
+    # again so the click cannot target a control from a replaced frame.
+    _asap_wait_for_loading_clear(page)
+    visible = _asap_export_view_candidates(page, _asap_frame(page))
     if not visible:
         if requested_label:
             raise RuntimeError(f"ASAP export view is no longer visible: {requested_label}")
@@ -1611,8 +1665,9 @@ def _asap_activate_export_view(
         label, control = next(
             (item for item in visible if "detail" in item[0].casefold()), visible[0],
         )
-    control.click(timeout=15_000)
+    control.click(timeout=30_000)
     page.wait_for_timeout(500)
+    _asap_wait_for_loading_clear(page)
     active_frame = _asap_frame(page)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -2120,6 +2175,8 @@ def execute_job(
                     artifacts,
                 )
                 with timings.measure("report_execution", report_id=job["report"].get("id")):
+                    _asap_wait_for_loading_clear(page)
+                    frame = _asap_frame(page)
                     _click_named(frame, "RUN")
                     page.wait_for_timeout(1_000)
                     frame = _asap_wait_for_results(page)

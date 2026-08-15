@@ -122,6 +122,69 @@ def test_asap_frame_uses_newest_live_replacement():
     assert _asap_frame(Page()) is current
 
 
+def test_asap_loading_wait_requires_four_clear_samples(monkeypatch):
+    states = iter([True, False, False, False, False])
+    waits = []
+    monkeypatch.setattr(
+        flow_worker, "_asap_loading_overlay_visible", lambda _page: next(states),
+    )
+
+    class Page:
+        def wait_for_timeout(self, milliseconds):
+            waits.append(milliseconds)
+
+    flow_worker._asap_wait_for_loading_clear(Page(), timeout_ms=5_000)
+
+    assert waits == [250, 250, 250, 250]
+
+
+def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatch):
+    waits = []
+
+    class Control:
+        def click(self, **kwargs):
+            assert kwargs == {"timeout": 30_000}
+
+    class VisibleMarker:
+        def is_visible(self):
+            return True
+
+    class Markers:
+        def all(self):
+            return [VisibleMarker()]
+
+    class ActiveFrame:
+        def get_by_text(self, *_args, **_kwargs):
+            return Markers()
+
+    active_frame = ActiveFrame()
+    frame_values = iter(["fresh-before-click", active_frame])
+    monkeypatch.setattr(
+        flow_worker, "_asap_wait_for_loading_clear",
+        lambda _page: waits.append("clear"),
+    )
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: next(frame_values))
+
+    candidate_frames = []
+    monkeypatch.setattr(
+        flow_worker, "_asap_export_view_candidates",
+        lambda _page, frame: candidate_frames.append(frame) or [("Target view", Control())],
+    )
+
+    class Page:
+        def wait_for_timeout(self, milliseconds):
+            waits.append(milliseconds)
+
+    returned_frame, selected = flow_worker._asap_activate_export_view(
+        Page(), object(), "Target view",
+    )
+
+    assert candidate_frames == ["fresh-before-click"]
+    assert waits[:3] == ["clear", 500, "clear"]
+    assert returned_frame is active_frame
+    assert selected == "Target view"
+
+
 def test_asap_navigation_waits_for_replacement_and_requested_breadcrumb(monkeypatch):
     class Frame:
         def is_detached(self):
