@@ -503,6 +503,17 @@ def _asap_first_visible(locator):
     return None
 
 
+def _asap_last_visible(locator):
+    """Return the last visible match when a menu group and leaf share a label."""
+    for item in reversed(locator.all()):
+        try:
+            if item.is_visible():
+                return item
+        except Exception:
+            continue
+    return None
+
+
 def _asap_loading_overlay_visible(page: Page) -> bool:
     """Return whether ASAP is currently blocking report interaction.
 
@@ -542,12 +553,15 @@ def _asap_wait_for_loading_clear(page: Page, timeout_ms: int = ASAP_REPORT_RESUL
     )
 
 
-def _asap_wait_for_visible(page: Page, *locators, timeout_ms: int = 15_000):
+def _asap_wait_for_visible(
+    page: Page, *locators, timeout_ms: int = 15_000, prefer_last: bool = False,
+):
     """Wait for a portal menu item that may appear after hover animation."""
+    visible_match = _asap_last_visible if prefer_last else _asap_first_visible
     deadline = time.monotonic() + (timeout_ms / 1_000)
     while time.monotonic() < deadline:
         for locator in locators:
-            item = _asap_first_visible(locator)
+            item = visible_match(locator)
             if item is not None:
                 return item
         page.wait_for_timeout(100)
@@ -793,10 +807,12 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
             )
             if visible_group is not None:
                 visible_group.hover()
+        repeated_label = len(path) > 2 and path[-1].casefold() == path[-2].casefold()
         target = _asap_wait_for_visible(
             page,
             page.get_by_role("link", name=path[-1], exact=True),
             page.get_by_text(path[-1], exact=True),
+            prefer_last=repeated_label,
         )
         if target is None:
             raise RuntimeError(f"ASAP report menu item was not visible: {path[-1]}")

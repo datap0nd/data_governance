@@ -6,6 +6,7 @@ from app import flow_worker
 from app.flow_worker import (
     _asap_frame,
     _asap_goto,
+    _asap_last_visible,
     _asap_wait_for_visible,
     _asap_wait_for_report_navigation,
     _menu_report_paths,
@@ -460,6 +461,39 @@ def test_asap_menu_wait_allows_delayed_hover_items(monkeypatch):
     page = Page()
     assert _asap_wait_for_visible(page, object(), timeout_ms=1_000) is expected
     assert page.waits == [100, 100]
+
+
+def test_asap_last_visible_chooses_leaf_when_group_reuses_label():
+    class Item:
+        def __init__(self, name, visible=True):
+            self.name = name
+            self.visible = visible
+
+        def is_visible(self):
+            return self.visible
+
+    group = Item("group")
+    hidden = Item("hidden", visible=False)
+    leaf = Item("leaf")
+
+    class Locator:
+        def all(self):
+            return [group, hidden, leaf]
+
+    assert _asap_last_visible(Locator()) is leaf
+
+
+def test_asap_menu_wait_can_prefer_last_duplicate_label(monkeypatch):
+    expected = object()
+    monkeypatch.setattr(flow_worker, "_asap_last_visible", lambda _locator: expected)
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("visible duplicate leaf should be found immediately")
+
+    assert _asap_wait_for_visible(
+        Page(), object(), timeout_ms=1_000, prefer_last=True,
+    ) is expected
 
 
 def test_asap_navigation_accepts_stable_changed_body_when_iframe_is_reused(monkeypatch):
