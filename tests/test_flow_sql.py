@@ -84,6 +84,36 @@ def test_excel_download_is_preserved_and_normalized_with_export_lineage(tmp_path
     ]
 
 
+def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Regional FOTA"])
+    sheet.append(["Week filter", "2025-W20"])
+    sheet.append([])
+    sheet.append(["Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520"])
+    sheet.append(["Middle East", "SEEG", "FOTA", 123])
+    workbook.save(source)
+
+    output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+    )
+
+    normalized = Path(metadata["file_path"])
+    assert metadata["preamble_rows_removed"] == 2
+    assert metadata["columns"] == [
+        "Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520",
+    ]
+    assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
+        "Sell-out Region,Sell-out Subsidiary,Weekly,202520,Metronome Export View",
+        "Middle East,SEEG,FOTA,123,Export Wizard (Sell-out Sub)",
+    ]
+
+
 def test_managed_snapshot_unions_different_bundle_columns_by_name(tmp_path, monkeypatch):
     global_path = tmp_path / "global.csv"
     country_path = tmp_path / "countries.csv"

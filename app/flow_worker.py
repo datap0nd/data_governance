@@ -2355,13 +2355,17 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                     rows.append(values)
             if not rows:
                 continue
-            header_index = next(
+            header_candidates = [
                 (
-                    index for index, row in enumerate(rows[:50])
-                    if sum(bool(str(value).strip()) for value in row) >= 2
-                ),
-                None,
-            )
+                    sum(bool(str(value).strip()) for value in row),
+                    len(row),
+                    -index,
+                    index,
+                )
+                for index, row in enumerate(rows[:50])
+                if sum(bool(str(value).strip()) for value in row) >= 2
+            ]
+            header_index = max(header_candidates)[-1] if header_candidates else None
             if header_index is None:
                 continue
             header = [str(value).strip() for value in rows[header_index]]
