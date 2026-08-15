@@ -1,7 +1,14 @@
 from pathlib import Path
 
 from app import flow_worker
-from app.flow_worker import _asap_goto, _menu_report_paths, _navigation_roots, _wait_for_navigation_roots
+from app.flow_worker import (
+    _asap_frame,
+    _asap_goto,
+    _asap_wait_for_report_navigation,
+    _menu_report_paths,
+    _navigation_roots,
+    _wait_for_navigation_roots,
+)
 
 
 def _record(text, x, y, *, href="", onclick=""):
@@ -75,6 +82,84 @@ def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_p
 
     assert _asap_goto(Page(), "https://portal.example/login", tmp_path) is True
     assert calls == ["https://portal.example/login", tmp_path]
+
+
+def test_asap_frame_uses_newest_live_replacement():
+    class Frame:
+        def __init__(self, detached):
+            self.detached = detached
+
+        def is_detached(self):
+            return self.detached
+
+    class Element:
+        def __init__(self, frame):
+            self.frame = frame
+
+        def content_frame(self):
+            return self.frame
+
+    old = Frame(True)
+    current = Frame(False)
+
+    class Locator:
+        def wait_for(self, **_kwargs):
+            pass
+
+        def element_handles(self):
+            return [old_element, current_element]
+
+    old_element = Element(old)
+    current_element = Element(current)
+
+    class Page:
+        def locator(self, _selector):
+            return Locator()
+
+    assert _asap_frame(Page()) is current
+
+
+def test_asap_navigation_waits_for_replacement_and_requested_breadcrumb(monkeypatch):
+    class Frame:
+        def is_detached(self):
+            return False
+
+    previous = Frame()
+    current = Frame()
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: current)
+
+    class Item:
+        def is_visible(self):
+            return True
+
+    class Locator:
+        def all(self):
+            return [Item()]
+
+    class Target:
+        def __init__(self):
+            self.waited = None
+
+        def wait_for(self, **kwargs):
+            self.waited = kwargs
+
+    class Page:
+        def get_by_text(self, _label, exact=True):
+            assert exact is True
+            return Locator()
+
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("replacement and breadcrumb should be accepted immediately")
+
+    target = Target()
+    result = _asap_wait_for_report_navigation(
+        Page(), previous, target,
+        ["Market", "TechInsights Smartphone M/S", "All Products Demand"],
+        timeout_ms=1_000,
+    )
+
+    assert result is current
+    assert target.waited == {"state": "hidden", "timeout": 1_000}
 
 
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):

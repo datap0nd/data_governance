@@ -302,10 +302,62 @@ def _week_to_asap(value: str) -> str:
 def _asap_frame(page: Page) -> Frame:
     handle = page.locator(ASAP_FRAME_SELECTOR)
     handle.wait_for(state="attached", timeout=120_000)
-    frame = handle.element_handle().content_frame()
-    if frame is None:
-        raise RuntimeError("ASAP report frame did not become available.")
-    return frame
+    # ASAP replaces the report iframe during navigation. For a short interval
+    # both the detached predecessor and its replacement can remain in the DOM.
+    # Always choose the newest live frame so discovery cannot inspect the
+    # report that was open before the requested menu item was clicked.
+    for element in reversed(handle.element_handles()):
+        frame = element.content_frame()
+        if frame is not None and not frame.is_detached():
+            return frame
+    raise RuntimeError("ASAP report frame did not become available.")
+
+
+def _asap_first_visible(locator):
+    for item in locator.all():
+        try:
+            if item.is_visible():
+                return item
+        except Exception:
+            continue
+    return None
+
+
+def _asap_wait_for_report_navigation(
+    page: Page, previous_frame: Frame | None, target_control, path: list[str],
+    timeout_ms: int = 120_000,
+) -> Frame:
+    """Wait until the clicked menu item closes and its report iframe replaces the old one."""
+    try:
+        target_control.wait_for(state="hidden", timeout=min(timeout_ms, 30_000))
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError(
+            f"ASAP did not leave the menu item for the requested report: {path[-1]}"
+        ) from exc
+
+    deadline = time.monotonic() + (timeout_ms / 1_000)
+    while time.monotonic() < deadline:
+        try:
+            current = _asap_frame(page)
+            frame_replaced = previous_frame is None or current is not previous_frame
+            if previous_frame is not None:
+                frame_replaced = frame_replaced or previous_frame.is_detached()
+            if frame_replaced:
+                visible_path = True
+                for label in path[-2:]:
+                    matches = page.get_by_text(label, exact=True)
+                    if _asap_first_visible(matches) is None:
+                        visible_path = False
+                        break
+                if visible_path:
+                    return current
+        except Exception:
+            pass
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "ASAP did not finish navigating to the requested report breadcrumb: "
+        + " > ".join(path)
+    )
 
 
 def _asap_wait_for_results(page: Page, timeout_ms: int = 180_000) -> Frame:
@@ -399,21 +451,36 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
     if len(path) < 2:
         raise RuntimeError("ASAP reports need a category path with a menu and report name.")
     _asap_goto(page, job["site"].get("auth_url") or report["url"], profile_dir)
-    def navigate():
-        page.get_by_text(path[0], exact=True).first.click()
+    def navigate(previous_frame: Frame | None):
+        root = _asap_first_visible(page.get_by_role("link", name=path[0], exact=True))
+        if root is None:
+            root = _asap_first_visible(page.get_by_text(path[0], exact=True))
+        if root is None:
+            raise RuntimeError(f"ASAP menu was not visible: {path[0]}")
+        root.click()
         if len(path) > 2:
             group = page.get_by_text(path[-2], exact=True)
-            if group.count() and group.first.is_visible():
-                group.first.hover()
-        page.get_by_text(path[-1], exact=True).first.click()
+            visible_group = _asap_first_visible(group)
+            if visible_group is not None:
+                visible_group.hover()
+        target = _asap_first_visible(page.get_by_role("link", name=path[-1], exact=True))
+        if target is None:
+            target = _asap_first_visible(page.get_by_text(path[-1], exact=True))
+        if target is None:
+            raise RuntimeError(f"ASAP report menu item was not visible: {path[-1]}")
+        target.click()
+        return _asap_wait_for_report_navigation(page, previous_frame, target, path)
 
-    navigate()
+    try:
+        previous_frame = _asap_frame(page)
+    except Exception:
+        previous_frame = None
+    frame = navigate(previous_frame)
 
     expected = automation.get("report_tab") or report.get("ready_text")
     last_error = None
     for attempt in range(2):
         try:
-            frame = _asap_frame(page)
             if expected:
                 # Export-view links can live in the outer ASAP shell or in a
                 # nested MicroStrategy frame. Waiting in only content-frame
@@ -442,7 +509,11 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
             if attempt:
                 break
             page.go_back(wait_until="domcontentloaded", timeout=120_000)
-            navigate()
+            try:
+                previous_frame = _asap_frame(page)
+            except Exception:
+                previous_frame = None
+            frame = navigate(previous_frame)
     raise RuntimeError(f"ASAP report did not load after one retry: {last_error}")
 
 
