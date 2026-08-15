@@ -1159,6 +1159,36 @@ def _asap_wait_for_raw_menu_download_action(
     return None
 
 
+def _asap_wait_for_raw_export_confirmation(
+    page: Page, file_format: str, timeout_ms: int = 10_000,
+):
+    """Find the final Export button in ASAP's compact raw-table dialog."""
+    if file_format != "xlsx":
+        return None
+    title_pattern = re.compile(r"^Export to (?:Microsoft )?Excel$", re.I)
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        for candidate in reversed(page.context.pages):
+            for root in [candidate, *reversed(candidate.frames)]:
+                try:
+                    title = root.get_by_text(title_pattern)
+                    if not title.count() or not title.first.is_visible():
+                        continue
+                except Exception:
+                    continue
+                for locator in (
+                    root.get_by_role("button", name="Export", exact=True),
+                    root.locator("button:visible").filter(has_text=re.compile(r"^Export$", re.I)),
+                ):
+                    try:
+                        if locator.count() and locator.first.is_visible():
+                            return locator.first
+                    except Exception:
+                        continue
+        page.wait_for_timeout(100)
+    return None
+
+
 def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
     opens_export_menu = False
@@ -1340,6 +1370,13 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         candidate.on("download", capture_download)
     try:
         (direct_download_action or export_action).click()
+        if direct_download_action is not None:
+            confirmation = _asap_wait_for_raw_export_confirmation(page, file_format)
+            if confirmation is None:
+                raise RuntimeError(
+                    "ASAP raw-table Excel dialog opened, but its final Export action was not visible."
+                )
+            confirmation.click()
         deadline = time.monotonic() + 180
         while not downloads and time.monotonic() < deadline:
             page.wait_for_timeout(100)

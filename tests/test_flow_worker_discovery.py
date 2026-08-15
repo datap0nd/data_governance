@@ -191,6 +191,9 @@ def test_raw_table_excel_menu_item_is_a_direct_download_action():
         def is_visible(self):
             return self.visible
 
+        def filter(self, **_kwargs):
+            return self
+
     class Page:
         frames = []
 
@@ -211,6 +214,51 @@ def test_raw_table_excel_menu_item_is_a_direct_download_action():
 
     assert action.is_visible()
     assert flow_worker._asap_wait_for_raw_menu_download_action(Page(), "csv") is None
+
+
+def test_raw_table_excel_dialog_exposes_final_export_action():
+    class Locator:
+        def __init__(self, visible):
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return int(self.visible)
+
+        def is_visible(self):
+            return self.visible
+
+        def filter(self, **_kwargs):
+            return self
+
+    class Page:
+        frames = []
+
+        def __init__(self):
+            self.context = type("Context", (), {"pages": [self]})()
+
+        def get_by_text(self, pattern):
+            assert pattern.fullmatch("Export to Excel")
+            return Locator(True)
+
+        def get_by_role(self, role, **kwargs):
+            assert role == "button"
+            assert kwargs == {"name": "Export", "exact": True}
+            return Locator(True)
+
+        def locator(self, _selector):
+            return Locator(False)
+
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("the visible Export button should be accepted immediately")
+
+    action = flow_worker._asap_wait_for_raw_export_confirmation(Page(), "xlsx")
+
+    assert action.is_visible()
+    assert flow_worker._asap_wait_for_raw_export_confirmation(Page(), "csv") is None
 
 
 def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatch):
