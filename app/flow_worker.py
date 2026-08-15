@@ -323,6 +323,18 @@ def _asap_first_visible(locator):
     return None
 
 
+def _asap_wait_for_visible(page: Page, *locators, timeout_ms: int = 15_000):
+    """Wait for a portal menu item that may appear after hover animation."""
+    deadline = time.monotonic() + (timeout_ms / 1_000)
+    while time.monotonic() < deadline:
+        for locator in locators:
+            item = _asap_first_visible(locator)
+            if item is not None:
+                return item
+        page.wait_for_timeout(100)
+    return None
+
+
 def _asap_wait_for_report_navigation(
     page: Page, previous_frame: Frame | None, target_control, path: list[str],
     timeout_ms: int = 120_000,
@@ -452,20 +464,27 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
         raise RuntimeError("ASAP reports need a category path with a menu and report name.")
     _asap_goto(page, job["site"].get("auth_url") or report["url"], profile_dir)
     def navigate(previous_frame: Frame | None):
-        root = _asap_first_visible(page.get_by_role("link", name=path[0], exact=True))
-        if root is None:
-            root = _asap_first_visible(page.get_by_text(path[0], exact=True))
+        root = _asap_wait_for_visible(
+            page,
+            page.get_by_role("link", name=path[0], exact=True),
+            page.get_by_text(path[0], exact=True),
+        )
         if root is None:
             raise RuntimeError(f"ASAP menu was not visible: {path[0]}")
         root.click()
         if len(path) > 2:
-            group = page.get_by_text(path[-2], exact=True)
-            visible_group = _asap_first_visible(group)
+            visible_group = _asap_wait_for_visible(
+                page,
+                page.get_by_role("link", name=path[-2], exact=True),
+                page.get_by_text(path[-2], exact=True),
+            )
             if visible_group is not None:
                 visible_group.hover()
-        target = _asap_first_visible(page.get_by_role("link", name=path[-1], exact=True))
-        if target is None:
-            target = _asap_first_visible(page.get_by_text(path[-1], exact=True))
+        target = _asap_wait_for_visible(
+            page,
+            page.get_by_role("link", name=path[-1], exact=True),
+            page.get_by_text(path[-1], exact=True),
+        )
         if target is None:
             raise RuntimeError(f"ASAP report menu item was not visible: {path[-1]}")
         target.click()

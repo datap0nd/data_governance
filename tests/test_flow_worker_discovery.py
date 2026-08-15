@@ -4,6 +4,7 @@ from app import flow_worker
 from app.flow_worker import (
     _asap_frame,
     _asap_goto,
+    _asap_wait_for_visible,
     _asap_wait_for_report_navigation,
     _menu_report_paths,
     _navigation_roots,
@@ -160,6 +161,23 @@ def test_asap_navigation_waits_for_replacement_and_requested_breadcrumb(monkeypa
 
     assert result is current
     assert target.waited == {"state": "hidden", "timeout": 1_000}
+
+
+def test_asap_menu_wait_allows_delayed_hover_items(monkeypatch):
+    expected = object()
+    states = iter([None, None, expected])
+    monkeypatch.setattr(flow_worker, "_asap_first_visible", lambda _locator: next(states))
+
+    class Page:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = Page()
+    assert _asap_wait_for_visible(page, object(), timeout_ms=1_000) is expected
+    assert page.waits == [100, 100]
 
 
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
