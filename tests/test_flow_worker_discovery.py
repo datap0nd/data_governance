@@ -171,6 +171,34 @@ def test_asap_loading_wait_requires_four_clear_samples(monkeypatch):
     assert waits == [250, 250, 250, 250]
 
 
+def test_asap_loading_overlay_detects_live_id_selector():
+    selectors = []
+
+    class Overlay:
+        def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self):
+            return True
+
+    class Frame:
+        def locator(self, selector):
+            selectors.append(selector)
+            return Overlay()
+
+    frame = Frame()
+
+    class Page:
+        main_frame = frame
+        frames = [frame]
+
+    assert flow_worker._asap_loading_overlay_visible(Page()) is True
+    assert "#loading-spinner-container" in selectors[0]
+
+
 def test_asap_results_accept_populated_raw_table_without_data_rows_marker(monkeypatch):
     class EmptyRows:
         @property

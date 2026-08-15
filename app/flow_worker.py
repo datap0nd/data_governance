@@ -42,7 +42,9 @@ except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
 AUTH_MARKER = ".asap_authenticated"
-ASAP_LOADING_OVERLAY_SELECTOR = ".loading-spinner-container"
+ASAP_LOADING_OVERLAY_SELECTOR = (
+    "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
+)
 ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
 
 
