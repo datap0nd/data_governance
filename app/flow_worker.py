@@ -1344,6 +1344,25 @@ def _asap_table_control_score(
     return abs(center_x - (table_right - 14)) + abs(center_y - (table_top + 14))
 
 
+def _asap_run_control(root: Page | Frame):
+    """Return ASAP's RUN control across button, input, and text renderings."""
+    for build_locator in (
+        lambda: root.get_by_role("button", name=re.compile(r"^RUN$", re.I)),
+        lambda: root.locator(
+            "input[type='button'][value='RUN' i]:visible,"
+            "input[type='submit'][value='RUN' i]:visible"
+        ),
+        lambda: root.get_by_text("RUN", exact=True),
+    ):
+        try:
+            locator = build_locator()
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
 def _asap_raw_table_information_control(root: Page | Frame, canvas):
     """Find an unlabeled hover control by its documented table-corner position."""
     try:
@@ -1471,8 +1490,8 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     # button-like control after RUN within the same toolbar.
     for root in reversed(page.frames):
         try:
-            run = root.get_by_text("RUN", exact=True).first
-            if not run.count() or not run.is_visible():
+            run = _asap_run_control(root)
+            if run is None:
                 continue
             export_control = run.locator("xpath=following::*[self::button or self::a or self::input or @role='button'][1]")
             if not export_control.count() or not export_control.first.is_visible():
