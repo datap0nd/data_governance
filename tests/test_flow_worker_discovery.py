@@ -180,6 +180,49 @@ def test_asap_menu_wait_allows_delayed_hover_items(monkeypatch):
     assert page.waits == [100, 100]
 
 
+def test_asap_navigation_accepts_stable_changed_body_when_iframe_is_reused(monkeypatch):
+    class Frame:
+        def is_detached(self):
+            return False
+
+    current = Frame()
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: current)
+    monkeypatch.setattr(flow_worker, "_asap_frame_signature", lambda _frame: "new-body")
+
+    class Item:
+        def is_visible(self):
+            return True
+
+    class Locator:
+        def all(self):
+            return [Item()]
+
+    class Target:
+        def wait_for(self, **_kwargs):
+            pass
+
+    class Page:
+        def __init__(self):
+            self.waits = []
+
+        def get_by_text(self, _label, exact=True):
+            assert exact is True
+            return Locator()
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = Page()
+    result = _asap_wait_for_report_navigation(
+        page, current, Target(),
+        ["Market", "TechInsights Smartphone M/S", "All Products Demand"],
+        previous_signature="old-body", timeout_ms=1_000,
+    )
+
+    assert result is current
+    assert page.waits == [250, 250]
+
+
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
     activated = []
     staged = []

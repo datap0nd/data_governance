@@ -335,11 +335,23 @@ def _asap_wait_for_visible(page: Page, *locators, timeout_ms: int = 15_000):
     return None
 
 
+def _asap_frame_signature(frame: Frame | None) -> str | None:
+    if frame is None or frame.is_detached():
+        return None
+    try:
+        text = _clean_text(frame.locator("body").inner_text(timeout=2_000))
+    except Exception:
+        return None
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
 def _asap_wait_for_report_navigation(
     page: Page, previous_frame: Frame | None, target_control, path: list[str],
-    timeout_ms: int = 120_000,
+    previous_signature: str | None = None, timeout_ms: int = 120_000,
 ) -> Frame:
-    """Wait until the clicked menu item closes and its report iframe replaces the old one."""
+    """Wait until the clicked menu item closes and the requested report becomes stable."""
     try:
         target_control.wait_for(state="hidden", timeout=min(timeout_ms, 30_000))
     except PlaywrightTimeoutError as exc:
@@ -348,20 +360,34 @@ def _asap_wait_for_report_navigation(
         ) from exc
 
     deadline = time.monotonic() + (timeout_ms / 1_000)
+    stable_signature = None
+    stable_polls = 0
     while time.monotonic() < deadline:
         try:
             current = _asap_frame(page)
             frame_replaced = previous_frame is None or current is not previous_frame
             if previous_frame is not None:
                 frame_replaced = frame_replaced or previous_frame.is_detached()
-            if frame_replaced:
-                visible_path = True
-                for label in path[-2:]:
-                    matches = page.get_by_text(label, exact=True)
-                    if _asap_first_visible(matches) is None:
-                        visible_path = False
-                        break
-                if visible_path:
+            visible_path = True
+            for label in path[-2:]:
+                matches = page.get_by_text(label, exact=True)
+                if _asap_first_visible(matches) is None:
+                    visible_path = False
+                    break
+            current_signature = _asap_frame_signature(current)
+            content_changed = bool(
+                previous_signature and current_signature
+                and current_signature != previous_signature
+            )
+            if visible_path and frame_replaced:
+                return current
+            if visible_path and content_changed:
+                if current_signature == stable_signature:
+                    stable_polls += 1
+                else:
+                    stable_signature = current_signature
+                    stable_polls = 1
+                if stable_polls >= 3:
                     return current
         except Exception:
             pass
@@ -463,7 +489,7 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
     if len(path) < 2:
         raise RuntimeError("ASAP reports need a category path with a menu and report name.")
     _asap_goto(page, job["site"].get("auth_url") or report["url"], profile_dir)
-    def navigate(previous_frame: Frame | None):
+    def navigate(previous_frame: Frame | None, previous_signature: str | None):
         root = _asap_wait_for_visible(
             page,
             page.get_by_role("link", name=path[0], exact=True),
@@ -488,13 +514,16 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
         if target is None:
             raise RuntimeError(f"ASAP report menu item was not visible: {path[-1]}")
         target.click()
-        return _asap_wait_for_report_navigation(page, previous_frame, target, path)
+        return _asap_wait_for_report_navigation(
+            page, previous_frame, target, path, previous_signature,
+        )
 
     try:
         previous_frame = _asap_frame(page)
     except Exception:
         previous_frame = None
-    frame = navigate(previous_frame)
+    previous_signature = _asap_frame_signature(previous_frame)
+    frame = navigate(previous_frame, previous_signature)
 
     expected = automation.get("report_tab") or report.get("ready_text")
     last_error = None
@@ -532,7 +561,8 @@ def _asap_open_report(page: Page, job: dict, profile_dir: Path) -> Frame:
                 previous_frame = _asap_frame(page)
             except Exception:
                 previous_frame = None
-            frame = navigate(previous_frame)
+            previous_signature = _asap_frame_signature(previous_frame)
+            frame = navigate(previous_frame, previous_signature)
     raise RuntimeError(f"ASAP report did not load after one retry: {last_error}")
 
 
