@@ -138,6 +138,32 @@ def test_asap_loading_wait_requires_four_clear_samples(monkeypatch):
     assert waits == [250, 250, 250, 250]
 
 
+def test_asap_results_accept_populated_raw_table_without_data_rows_marker(monkeypatch):
+    class EmptyRows:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+    class Frame:
+        def get_by_text(self, *_args, **_kwargs):
+            return EmptyRows()
+
+    frame = Frame()
+    monkeypatch.setattr(flow_worker, "_asap_loading_overlay_visible", lambda _page: False)
+    monkeypatch.setattr(flow_worker, "_asap_raw_table_ready", lambda candidate: candidate is frame)
+
+    class Page:
+        frames = [frame]
+
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("the populated raw table should be accepted immediately")
+
+    assert flow_worker._asap_wait_for_results(Page(), timeout_ms=1_000) is frame
+
+
 def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatch):
     waits = []
 

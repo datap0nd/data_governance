@@ -472,6 +472,26 @@ def _asap_wait_for_report_navigation(
     )
 
 
+def _asap_raw_table_ready(frame: Frame) -> bool:
+    """Recognize TechInsights raw-data views that omit the Data rows marker."""
+    try:
+        hint = frame.get_by_text(re.compile(r"to download raw data", re.I)).first
+        if not hint.count() or not hint.is_visible():
+            return False
+        tables = frame.locator("table:visible")
+        for index in range(tables.count()):
+            rows = tables.nth(index).locator("tr")
+            visible_rows = 0
+            for row_index in range(rows.count()):
+                if rows.nth(row_index).is_visible():
+                    visible_rows += 1
+                    if visible_rows >= 2:
+                        return True
+    except Exception:
+        return False
+    return False
+
+
 def _asap_wait_for_results(
     page: Page, timeout_ms: int = ASAP_REPORT_RESULT_TIMEOUT_MS,
 ) -> Frame:
@@ -495,6 +515,12 @@ def _asap_wait_for_results(
                 rows = frame.get_by_text("Data rows:", exact=False).first
                 if rows.count() and rows.is_visible():
                     return frame
+                # TechInsights export views render the populated raw table
+                # directly and never add MicroStrategy's Data rows label.
+                # Require both the report's raw-data instruction and at least
+                # two visible table rows, with no blocking overlay remaining.
+                if not last_loading_state and _asap_raw_table_ready(frame):
+                    return frame
         except Exception as exc:
             # Frame replacement can race any locator operation. The next poll
             # resolves the new element instead of retaining the detached frame.
@@ -504,7 +530,7 @@ def _asap_wait_for_results(
     detail += (
         " The ASAP loading overlay was still visible."
         if last_loading_state else
-        " The loading overlay cleared, but the Data rows marker never appeared."
+        " The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
     )
     raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
 
