@@ -1531,13 +1531,16 @@ def queue_catalog_scan(site_id: int, request: Request):
 
 @router.post("/reports/{report_id}/scan")
 def queue_report_scan(report_id: int, request: Request):
-    """Refresh one discovered report without staling or deleting other catalog entries."""
+    """Refresh one catalog report without staling or deleting other catalog entries."""
     with get_db() as db:
         report = db.execute(
-            "SELECT * FROM flow_reports WHERE id=? AND source_kind='discovered'", (report_id,)
+            "SELECT * FROM flow_reports WHERE id=?", (report_id,)
         ).fetchone()
         if not report:
-            raise HTTPException(404, "Discovered report not found.")
+            raise HTTPException(404, "Report not found.")
+        category_path = _loads(report["automation_json"], {}).get("category_path", [])
+        if not category_path:
+            raise HTTPException(400, "Report does not define an ASAP menu path.")
         site = db.execute(
             "SELECT * FROM flow_sites WHERE id=? AND enabled=1", (report["site_id"],)
         ).fetchone()
@@ -1595,6 +1598,16 @@ def _apply_discovery(
                AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
             (site_id, item.discovery_key, catalog_name),
         ).fetchone()
+        if not existing and category_path:
+            for candidate in db.execute(
+                """SELECT id, automation_json FROM flow_reports
+                   WHERE site_id=? AND source_kind='manual' ORDER BY id""",
+                (site_id,),
+            ).fetchall():
+                candidate_path = _loads(candidate["automation_json"], {}).get("category_path", [])
+                if candidate_path == category_path:
+                    existing = candidate
+                    break
         if existing:
             report_id = existing["id"]
             db.execute(

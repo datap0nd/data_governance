@@ -1165,6 +1165,43 @@ def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_ent
     assert job["discovery"]["delete_missing"] is False
 
 
+def test_targeted_manual_report_scan_queues_explicit_path_and_is_promoted_by_discovery(flow_db, monkeypatch):
+    site = flows.create_site(_asap_site(), _request())
+    manual = flows.create_report(_asap_report(site["id"]), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "online"})
+
+    queued = flows.queue_report_scan(manual["id"], _request())
+    with database.get_db() as db:
+        scan = db.execute(
+            "SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)
+        ).fetchone()
+        job = json.loads(scan["job_json"])
+        assert job["discovery"]["report_paths"] == [
+            ["Mobile", "Installed Base", "Installed Base (MENA)"]
+        ]
+
+        discovered = flows.DiscoveredReport(
+            discovery_key="Mobile > Installed Base > Installed Base (MENA)",
+            name="Installed Base (MENA)",
+            report_url="https://portal.example.test",
+            automation={
+                "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"]
+            },
+        )
+        result = flows._apply_discovery(
+            db, site["id"], [discovered], "2026-08-15T05:30:00", complete=False
+        )
+        reports = db.execute(
+            "SELECT id, source_kind, discovery_key FROM flow_reports ORDER BY id"
+        ).fetchall()
+
+    assert result["report_count"] == 1
+    assert len(reports) == 1
+    assert reports[0]["id"] == manual["id"]
+    assert reports[0]["source_kind"] == "discovered"
+    assert reports[0]["discovery_key"] == "Mobile > Installed Base > Installed Base (MENA)"
+
+
 def test_scan_estimate_uses_recorded_median(flow_db):
     site = flows.create_site(_asap_site(), _request())
     with database.get_db() as db:
