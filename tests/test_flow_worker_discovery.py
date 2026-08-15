@@ -193,7 +193,7 @@ def test_asap_navigation_accepts_stable_changed_body_when_iframe_is_reused(monke
 
     class Item:
         def is_visible(self):
-            return True
+            return False
 
     class Locator:
         def all(self):

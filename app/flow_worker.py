@@ -388,7 +388,11 @@ def _asap_wait_for_report_navigation(
             last_content_changed = content_changed
             if visible_path and frame_replaced:
                 return current
-            if visible_path and content_changed:
+            # Some ASAP renderings do not expose breadcrumb labels to the
+            # accessibility tree even though the exact menu link was clicked.
+            # For a reused iframe, the closed target control plus a changed,
+            # stable report body is the reliable navigation proof.
+            if content_changed:
                 if current_signature == stable_signature:
                     stable_polls += 1
                 else:
