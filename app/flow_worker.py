@@ -362,6 +362,9 @@ def _asap_wait_for_report_navigation(
     deadline = time.monotonic() + (timeout_ms / 1_000)
     stable_signature = None
     stable_polls = 0
+    last_path_visibility: dict[str, bool] = {}
+    last_frame_replaced = False
+    last_content_changed = False
     while time.monotonic() < deadline:
         try:
             current = _asap_frame(page)
@@ -369,16 +372,20 @@ def _asap_wait_for_report_navigation(
             if previous_frame is not None:
                 frame_replaced = frame_replaced or previous_frame.is_detached()
             visible_path = True
+            last_path_visibility = {}
             for label in path[-2:]:
                 matches = page.get_by_text(label, exact=True)
-                if _asap_first_visible(matches) is None:
+                label_visible = _asap_first_visible(matches) is not None
+                last_path_visibility[label] = label_visible
+                if not label_visible:
                     visible_path = False
-                    break
             current_signature = _asap_frame_signature(current)
             content_changed = bool(
                 previous_signature and current_signature
                 and current_signature != previous_signature
             )
+            last_frame_replaced = frame_replaced
+            last_content_changed = content_changed
             if visible_path and frame_replaced:
                 return current
             if visible_path and content_changed:
@@ -395,6 +402,8 @@ def _asap_wait_for_report_navigation(
     raise RuntimeError(
         "ASAP did not finish navigating to the requested report breadcrumb: "
         + " > ".join(path)
+        + f". Visible path labels: {last_path_visibility}; "
+        + f"iframe replaced: {last_frame_replaced}; body changed: {last_content_changed}."
     )
 
 
@@ -1625,6 +1634,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             page, job["discovery"].get("scope") or ["Mobile"]
         )
     reports = []
+    failures = []
     complete = not target_paths
     for index, path in enumerate(paths, start=1):
         if time.monotonic() >= deadline:
@@ -1700,11 +1710,14 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             })
         except Exception as exc:
             complete = False
+            failures.append(f"{' > '.join(path)}: {exc}")
             timings.items.append({
                 "phase": "report_inspection", "duration_ms": 0, "status": "failed",
                 "metadata": {"path": path, "error": str(exc)},
             })
             _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
+    if target_paths and not reports and failures:
+        raise RuntimeError("ASAP targeted catalog scan failed. " + " | ".join(failures))
     return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
 
 

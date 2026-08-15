@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app import flow_worker
 from app.flow_worker import (
     _asap_frame,
@@ -221,6 +223,27 @@ def test_asap_navigation_accepts_stable_changed_body_when_iframe_is_reused(monke
 
     assert result is current
     assert page.waits == [250, 250]
+
+
+def test_targeted_scan_surfaces_path_error_when_no_report_is_discovered(monkeypatch, tmp_path):
+    monkeypatch.setattr(flow_worker, "_asap_goto", lambda *_args: False)
+    monkeypatch.setattr(
+        flow_worker, "_asap_open_report",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("breadcrumb proof missing")),
+    )
+    job = {
+        "site": {"base_url": "https://portal.example", "auth_url": None},
+        "discovery": {
+            "max_duration_minutes": 1,
+            "scope": ["*"],
+            "report_paths": [["Market", "Group", "Target Report"]],
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="Target Report: breadcrumb proof missing"):
+        flow_worker.discover_asap_catalog(
+            object(), job, lambda *_args: None, tmp_path,
+        )
 
 
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
