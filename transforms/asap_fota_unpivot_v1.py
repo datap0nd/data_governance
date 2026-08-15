@@ -26,15 +26,30 @@ def _week_dates(compact_week: str) -> tuple[str, str, str]:
     return f"{year:04d}-W{week:02d}", sunday.isoformat(), saturday.isoformat()
 
 
+def _column_plan(header: list[str]) -> tuple[list[str], list[int], dict[str, list[int]]]:
+    """Plan a safe collapse of repeated export columns.
+
+    ASAP can repeat a selected dimension in the flat Excel export. Keeping both
+    copies would create an invalid SQL schema, while blindly dropping one could
+    hide a real data conflict. The safe case is an exact duplicate column: the
+    header matches and every row carries the same value in both positions.
+    """
+    positions: dict[str, list[int]] = {}
+    for index, name in enumerate(header):
+        positions.setdefault(name, []).append(index)
+    duplicate_groups = {name: indexes for name, indexes in positions.items() if len(indexes) > 1}
+    keep = [indexes[0] for indexes in positions.values()]
+    return [header[index] for index in keep], keep, duplicate_groups
+
+
 def transform(source: Path, target: Path) -> int:
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
         try:
-            header = [str(value).strip() for value in next(reader)]
+            raw_header = [str(value).strip() for value in next(reader)]
         except StopIteration as exc:
             raise ValueError("The normalized export is empty.") from exc
-        if len(header) != len(set(header)):
-            raise ValueError("The normalized export contains duplicate column names.")
+        header, keep, duplicate_groups = _column_plan(raw_header)
         week_columns = [name for name in header if WEEK_COLUMN.fullmatch(name)]
         if len(week_columns) != 1:
             raise ValueError(
@@ -52,31 +67,45 @@ def transform(source: Path, target: Path) -> int:
         week, week_start, week_end = _week_dates(week_column)
         week_index = header.index(week_column)
         dimensions = [name for name in header if name != week_column]
-        rows = []
-        for row_number, raw_row in enumerate(reader, start=2):
-            row = list(raw_row[: len(header)]) + [""] * max(0, len(header) - len(raw_row))
-            if not any(str(value).strip() for value in row):
-                continue
-            if len(raw_row) > len(header) and any(str(value).strip() for value in raw_row[len(header):]):
-                raise ValueError(f"Row {row_number} has more values than the header.")
-            dimension_values = [row[index] for index in range(len(header)) if index != week_index]
-            rows.append([*dimension_values, week, week_start, week_end, row[week_index]])
-    if not rows:
-        raise ValueError("The normalized export contains no data rows.")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp")
-    if temporary.exists():
-        raise ValueError(f"Temporary output already exists: {temporary}")
-    try:
-        with temporary.open("x", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.writer(handle, lineterminator="\n")
-            writer.writerow([*dimensions, "Week", "Week Start Date", "Week End Date", "FOTA Value"])
-            writer.writerows(rows)
-        temporary.replace(target)
-    finally:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
         if temporary.exists():
-            temporary.unlink()
-    return len(rows)
+            raise ValueError(f"Temporary output already exists: {temporary}")
+        row_count = 0
+        try:
+            with temporary.open("x", encoding="utf-8-sig", newline="") as output_handle:
+                writer = csv.writer(output_handle, lineterminator="\n")
+                writer.writerow([*dimensions, "Week", "Week Start Date", "Week End Date", "FOTA Value"])
+                for row_number, raw_row in enumerate(reader, start=2):
+                    row = list(raw_row[: len(raw_header)]) + [""] * max(0, len(raw_header) - len(raw_row))
+                    if not any(str(value).strip() for value in row):
+                        continue
+                    if len(raw_row) > len(raw_header) and any(
+                        str(value).strip() for value in raw_row[len(raw_header):]
+                    ):
+                        raise ValueError(f"Row {row_number} has more values than the header.")
+                    for name, indexes in duplicate_groups.items():
+                        baseline = str(row[indexes[0]]).strip()
+                        if any(str(row[index]).strip() != baseline for index in indexes[1:]):
+                            label = name or "<blank>"
+                            raise ValueError(
+                                f"Duplicate column {label!r} contains conflicting values at row {row_number}."
+                            )
+                    selected = [row[index] for index in keep]
+                    dimension_values = [
+                        selected[index] for index in range(len(header)) if index != week_index
+                    ]
+                    writer.writerow([
+                        *dimension_values, week, week_start, week_end, selected[week_index],
+                    ])
+                    row_count += 1
+            if row_count == 0:
+                raise ValueError("The normalized export contains no data rows.")
+            temporary.replace(target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return row_count
 
 
 def main() -> int:

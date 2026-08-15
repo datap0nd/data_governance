@@ -49,3 +49,40 @@ def test_fota_transform_rejects_week_mismatch_without_creating_output(tmp_path):
         MODULE.transform(source, target)
 
     assert not target.exists()
+
+
+def test_fota_transform_collapses_identical_duplicate_dimensions(tmp_path):
+    source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
+    target = tmp_path / "result.csv"
+    _write_csv(source, [
+        ["Sell-out Region", "Sell-out Region", "Sell-out Subsidiary", "202520"],
+        ["Middle East", "Middle East", "SEEG", "123"],
+        ["Middle East", "Middle East", "SEIL", "456"],
+    ])
+
+    assert MODULE.transform(source, target) == 2
+
+    with target.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows == [
+        [
+            "Sell-out Region", "Sell-out Subsidiary", "Week",
+            "Week Start Date", "Week End Date", "FOTA Value",
+        ],
+        ["Middle East", "SEEG", "2025-W20", "2025-05-11", "2025-05-17", "123"],
+        ["Middle East", "SEIL", "2025-W20", "2025-05-11", "2025-05-17", "456"],
+    ]
+
+
+def test_fota_transform_rejects_conflicting_duplicate_dimensions(tmp_path):
+    source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
+    target = tmp_path / "result.csv"
+    _write_csv(source, [
+        ["Sell-out Region", "Sell-out Region", "202520"],
+        ["Middle East", "Europe", "123"],
+    ])
+
+    with pytest.raises(ValueError, match="conflicting values at row 2"):
+        MODULE.transform(source, target)
+
+    assert not target.exists()
