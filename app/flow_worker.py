@@ -1150,7 +1150,16 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
         automation = definition.get("automation") or {}
-        if definition["control_type"] == "week" and automation.get("kind") == "range_slider":
+        range_slider = definition["control_type"] == "week" and automation.get("kind") == "range_slider"
+        if definition["control_type"] == "week" and not range_slider:
+            try:
+                _asap_range_scope(frame, definition["control_label"])
+                range_slider = True
+            except Exception:
+                # This is only capability probing. The established visible-list
+                # path below remains authoritative when no live slider is found.
+                pass
+        if range_slider:
             _asap_set_range(frame, definition["control_label"], values[0], values[-1], "week")
             start_date = _asap_week_dates(str(value[0] if isinstance(value, list) else value))[0]
             end_date = _asap_week_dates(str(value[-1] if isinstance(value, list) else value))[1]

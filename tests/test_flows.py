@@ -177,6 +177,38 @@ def test_asap_collapsed_range_advances_upper_handle_first(monkeypatch):
     assert events[0] == (1, "ArrowRight")
 
 
+def test_asap_manual_week_definition_infers_visible_range_slider(monkeypatch):
+    ranges = []
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (object(), [object(), object()]))
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_set_range",
+        lambda _frame, label, start, end, kind: ranges.append((label, start, end, kind)),
+    )
+
+    flow_worker._asap_apply_configuration(
+        object(),
+        {
+            "selections": {},
+            "report": {
+                "filters": [{
+                    "filter_key": "week",
+                    "control_label": "Week",
+                    "control_type": "week",
+                    "options": ["202520", "202633"],
+                    "automation": {},
+                }],
+            },
+        },
+        ["2025-W20", "2025-W20"],
+    )
+
+    assert ranges == [
+        ("Week", "202520", "202520", "week"),
+        ("Date", "20250511", "20250517", "date"),
+    ]
+
+
 def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_state(monkeypatch):
     events = []
     selected = {"202629": True, "202630": True, "202631": True, "202632": False}
