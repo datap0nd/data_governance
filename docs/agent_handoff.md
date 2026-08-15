@@ -2,75 +2,69 @@
 
 ## Current Objective
 
-Live-verify one bundled ASAP flow that downloads the Global/Region and Selected
-Countries Excel exports, then atomically creates or refreshes
-`meto_db.bi_reporting.ASAP_TI` without accumulating prior snapshots.
+Finish live run `#114` of the 66-week ASAP FOTA backfill, then prove the
+external transform and atomic managed-snapshot refresh of
+`meto_db.bi_reporting.ASAP_Fota` in the live target system.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit before this handoff update: `5410807 Update ASAP bundled flow handoff`
-- Stable rollback tag: `asap-ti-pre-multiexport-stable-2026-08-15` at `2560be8`
+- Latest runtime commit before this handoff update: `d196306`
 - Public repo: no, private
-- Push status: `5410807` verified on `origin/main`; publish this handoff update next
+- Push status: `d196306` verified on `origin/main`; publish this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
 
-- One flow owns both export views and starts one SQL transaction only after both
-  files download and normalize successfully.
-- Raw TechInsights tables export through the hover information control, the
-  `Export` submenu, the `Excel` item, and the final `Export to Excel` dialog.
-- Excel originals are preserved and normalized with a `Metronome Export View`
-  lineage column.
-- Managed snapshot mode creates a missing target or refreshes an existing target
-  in place, unions differing source columns, and rolls back the entire SQL stage
-  on failure.
-- The configured Metronome connection label is `dg_upload_pguser`, but its
-  PostgreSQL role is `metomx`.
-- With user approval, `metomx` now has `USAGE` and `CREATE` on schema
-  `meto_db.bi_reporting`. Read-back returned true for both privileges.
-- The production flow remains active in headless mode on its monthly day-1
-  08:00 schedule.
+- Each run downloads 66 single-week flat Excel exports for 2025-W20 through
+  2026-W33. SQL is a full atomic snapshot replacement, never a 12-week append.
+- FOTA-specific unpivot logic stays in the external MX Share script
+  `asap_fota_unpivot_v1.py`; Metronome only supplies its generic transform hook.
+- Metronome downloads and normalizes every workbook before it invokes the
+  transform. SQL starts only after all downloads and transformations succeed.
+- The transform validates the one dynamic `YYYYWW` column against the filename
+  and emits the 13 dimensions plus Week, Week Start Date, Week End Date, and
+  FOTA Value.
+- The live ASAP export format is `Excel with plain text`, not the formatted
+  workbook option.
+- The Week and Date controls are coupled two-handle sliders. Their values are
+  visible labels rather than semantic handle values, so automation reads the
+  labels and verifies both ranges before RUN.
 
 ## Files Changed
 
-- `app/flow_worker.py`: wait for ASAP overlays, accept preserved navigation,
-  recognize populated raw tables, find the unlabeled table control, and complete
-  the raw Excel submenu and confirmation-dialog path.
-- `tests/test_flow_worker_discovery.py`: regression coverage for the live ASAP
-  navigation, raw-table readiness, geometric control, Excel menu, and final
-  confirmation behavior.
+- `app/flow_worker.py`: live ASAP slider readback, export-toolbar discovery,
+  direct Export Options handling, input-based Export actions, and flat Excel
+  format recognition.
+- `tests/test_flow_worker_discovery.py`: regression coverage for the live control
+  shapes and export format.
+- `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract.
+- `docs/metric_contracts.md`: FOTA snapshot grain, date logic, and acceptance rules.
 
 ## Commands And Checks
 
-- `PYTHONPATH=. .../pytest -q`: 226 passed in 3.76s.
-- `git diff --check`: passed before both scoped commits.
-- Remote `main`: `5410807` verified before this handoff update.
-- Citrix build `#20260815-150320`: deployed from runtime commit `a211a0c`.
-- PostgreSQL grant: `GRANT USAGE, CREATE ON SCHEMA bi_reporting TO metomx;`
-  succeeded through the saved `meto_reporting_rw` connection. Direct privilege
-  checks returned `usage_ok=true` and `create_ok=true`.
-- Live headed run 106: succeeded and committed the full two-export bundle.
-- Direct PostgreSQL validation after run 106: table OID `213183`, 103,110 rows,
-  11 columns, and every column is `TEXT`.
-- Direct lineage counts after run 106: Global/Region 10,500 rows and Selected
-  Countries 92,610 rows.
-- Live headless run 107: succeeded with the same two artifacts and a managed
-  snapshot refresh.
-- Direct PostgreSQL validation after run 107: OID still `213183`, total still
-  103,110 rows, and both lineage counts unchanged. The second run did not append
-  or recreate the target.
-- The running headless flow exposed its Stop control in the Flows list.
+- `PYTHONPATH=. .../pytest -q`: 242 passed in 3.11s.
+- Remote `main`: `d1963061cc4edf806e9f8a2f7ecfd611f0ba3028` verified.
+- Citrix build `#20260815-204443`: deployed from `d196306`.
+- Live run `#114`: running. Three weekly files cleared the download,
+  normalization, and MX Share copy path; the UI showed `Configuring export 4 of
+  66` at this handoff.
+- Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
+- Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
+- Observed cadence is about five to six minutes per week, so the initial backfill
+  is a multi-hour run.
 
 ## Open Questions
 
-- None for the bundled flow acceptance path. Future source schema changes should
-  still be observed on their first live run because managed snapshot refresh adds
-  new nullable `TEXT` columns while preserving older target columns.
+- Run `#114` is not accepted until all 66 exports and transforms succeed and the
+  live SQL table proves 66 distinct weeks, minimum 2025-W20, maximum 2026-W33,
+  a positive row count, and the contracted columns.
+- The report contains roughly 300k rows per week, not the earlier rough 90k
+  estimate. Reassess storage and recurring full-history download cost after the
+  backfill, without changing the requested full-table SQL replacement behavior.
 
 ## Next Step
 
-Monitor the next scheduled day-1 08:00 run and confirm it retains OID `213183`
-and the expected non-accumulating snapshot behavior.
+Monitor run `#114` to terminal state. If it succeeds, validate the SQL table in
+the live system against the full acceptance checklist before calling FOTA done.

@@ -1,5 +1,16 @@
 # Metric Contracts
 
+## ASAP FOTA managed snapshot
+- Business meaning: Weekly FOTA value at the complete Sell-out geography, operator, and product grain exported by the Regional FOTA report.
+- Numerator: The report's single dynamic weekly value column, renamed to `FOTA Value` by the external transform.
+- Denominator: None.
+- Grain: Sell-out Region, Sell-out Subsidiary, Sell-out Country, Country Code, Operator, Province, Latitude, Longitude, Category, Biz Sub, Series, MKT Name, Item, and Week.
+- Date logic: One export per ISO week from 2025-W20 through 2026-W33. The transform derives Sunday `Week Start Date` and Saturday `Week End Date` and verifies that the dynamic `YYYYWW` source column matches the week encoded in the filename.
+- Filters: ASAP Data Option `Show All`, Category `Weekly`, export view `Export Wizard (Sell-out Sub)`, and the 13 contracted dimensions above.
+- Refresh behavior: Build all transformed files first, then atomically replace `meto_db.bi_reporting.ASAP_Fota`. Never append a rolling 12-week slice and never modify the existing table if any download, transform, or SQL stage fails.
+- Validation method: Require 66 distinct weeks, minimum 2025-W20, maximum 2026-W33, a positive total row count, and the full contracted column set after the live SQL commit.
+- Edge cases: Reject missing or multiple dynamic week columns, a filename/week mismatch, unusable headers, empty data, or a partial 66-file bundle.
+
 ## Views last 30d
 - Business meaning: Raw Power BI report view count over the most recent 30 dates available in the usage CSV export.
 - Numerator: Count of report-view rows from `Report_views.csv`.
