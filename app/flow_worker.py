@@ -1363,6 +1363,25 @@ def _asap_run_control(root: Page | Frame):
     return None
 
 
+def _asap_export_action(root: Page | Frame):
+    """Return a visible Export action across button, input, and text renderings."""
+    for build_locator in (
+        lambda: root.get_by_role("button", name="Export", exact=True),
+        lambda: root.locator(
+            "input[type='button'][value='Export' i]:visible,"
+            "input[type='submit'][value='Export' i]:visible"
+        ),
+        lambda: root.get_by_text("Export", exact=True),
+    ):
+        try:
+            locator = build_locator()
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
 def _asap_raw_table_information_control(root: Page | Frame, canvas):
     """Find an unlabeled hover control by its documented table-corner position."""
     try:
@@ -1467,15 +1486,9 @@ def _asap_wait_for_raw_export_confirmation(
                         continue
                 except Exception:
                     continue
-                for locator in (
-                    root.get_by_role("button", name="Export", exact=True),
-                    root.locator("button:visible").filter(has_text=re.compile(r"^Export$", re.I)),
-                ):
-                    try:
-                        if locator.count() and locator.first.is_visible():
-                            return locator.first
-                    except Exception:
-                        continue
+                action = _asap_export_action(root)
+                if action is not None:
+                    return action
         page.wait_for_timeout(100)
     return None
 
@@ -1611,17 +1624,10 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
                         break
                 except Exception:
                     continue
-            for locator in (
-                root.get_by_role("button", name="Export", exact=True),
-                root.get_by_text("Export", exact=True),
-            ):
-                try:
-                    if locator.count() and locator.first.is_visible():
-                        export_action = locator.first
-                        wizard_pages.add(root if isinstance(root, Page) else root.page)
-                        break
-                except Exception:
-                    continue
+            action = _asap_export_action(root)
+            if action is not None:
+                export_action = action
+                wizard_pages.add(root if isinstance(root, Page) else root.page)
         if format_option is None or export_action is None:
             page.wait_for_timeout(250)
     if direct_download_action is None and (format_option is None or export_action is None):

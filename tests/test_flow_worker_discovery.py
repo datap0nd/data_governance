@@ -269,6 +269,37 @@ def test_asap_run_control_accepts_input_value_rendering():
     assert flow_worker._asap_run_control(Root()) is input_run
 
 
+def test_asap_export_action_accepts_input_value_rendering():
+    class Locator:
+        def __init__(self, visible):
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return int(self.visible)
+
+        def is_visible(self):
+            return self.visible
+
+    input_export = Locator(True)
+
+    class Root:
+        def get_by_role(self, _role, **_kwargs):
+            return Locator(False)
+
+        def locator(self, selector):
+            assert "input[type='button'][value='Export' i]" in selector
+            return input_export
+
+        def get_by_text(self, _text, **_kwargs):
+            raise AssertionError("the visible Export input should be accepted before text fallback")
+
+    assert flow_worker._asap_export_action(Root()) is input_export
+
+
 def test_raw_table_excel_menu_item_is_a_direct_download_action():
     class Locator:
         def __init__(self, visible):
