@@ -46,6 +46,21 @@ ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
 ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
+XLSX_HEADER_LABEL_HINTS = frozenset({
+    "sell_out_region",
+    "sell_out_subsidiary",
+    "sell_out_country",
+    "country_code",
+    "operator",
+    "province",
+    "latitude",
+    "longitude",
+    "category",
+    "biz_sub",
+    "series",
+    "mkt_name",
+    "item",
+})
 
 
 @contextmanager
@@ -2378,8 +2393,9 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                     re.fullmatch(r"20\d{2}(?:0[1-9]|[1-4]\d|5[0-3])", str(value).strip())
                     for value in row
                 )
+                header_label_hits = len(set(candidate_names) & XLSX_HEADER_LABEL_HINTS)
                 header_candidates.append(
-                    (has_year_week_header, populated, len(row), -index, index)
+                    (header_label_hits, has_year_week_header, populated, len(row), -index, index)
                 )
             header_index = max(header_candidates)[-1] if header_candidates else None
             if header_index is None:

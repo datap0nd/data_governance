@@ -52,9 +52,10 @@ def transform(source: Path, target: Path) -> int:
         header, keep, duplicate_groups = _column_plan(raw_header)
         week_columns = [name for name in header if WEEK_COLUMN.fullmatch(name)]
         if len(week_columns) != 1:
+            preview = [name[:80] for name in header[:25]]
             raise ValueError(
                 "Expected exactly one YYYYWW value column in the weekly export; "
-                f"found {week_columns or 'none'}."
+                f"found {week_columns or 'none'}. Detected header: {preview!r}."
             )
         week_column = week_columns[0]
         filename_match = FILENAME_WEEK.search(source.name)

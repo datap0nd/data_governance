@@ -11,9 +11,9 @@ transform plus atomic managed-snapshot refresh of
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `eeca5a1`
+- Latest runtime commit before this handoff update: `61fbb8e`
 - Public repo: no, private
-- Push status: `eeca5a1` verified on `origin/main`; publish the current header
+- Push status: `61fbb8e` verified on `origin/main`; publish the current header
   selection fix and this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
@@ -43,22 +43,24 @@ transform plus atomic managed-snapshot refresh of
 
 - `app/flow_worker.py`: live ASAP slider readback, export-toolbar discovery,
   direct Export Options handling, input-based Export actions, flat Excel format
-  recognition, and XLSX header selection that prefers a valid YYYYWW label over
-  a wider data row.
+  recognition, and XLSX header selection that prefers contracted dimension
+  labels or a valid YYYYWW label over a wider data row.
 - `tests/test_flow_worker_discovery.py`: regression coverage for the live control
   shapes and export format.
 - `tests/test_flow_sql.py`: regression coverage for preambles and wider unique or
   duplicate-valued data rows that must not be selected as the XLSX header.
 - `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract.
+  Its missing-week error now reports a bounded preview of the detected header so
+  live export-shape failures are diagnosable.
 - `docs/metric_contracts.md`: FOTA snapshot grain, date logic, and acceptance rules.
 
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
-  requirements.txt pytest -q`: 247 passed in 2.79s.
-- Remote `main`: `eeca5a1bd63aab62258a423bec4dafa07d92a105` verified before
+  requirements.txt pytest -q`: 248 passed in 2.92s.
+- Remote `main`: `61fbb8ed78a51fb0be1aa6052eca6407cbc749e5` verified before
   the current change.
-- Citrix build `#20260816-024352`: deployed from `eeca5a1`.
+- Citrix build `#20260816-030401`: deployed from `61fbb8e`.
 - Live run `#114`: all 66 downloads completed, then the first transform failed
   because normalization selected a preamble/data row and exposed no YYYYWW
   header. SQL did not run.
@@ -68,6 +70,9 @@ transform plus atomic managed-snapshot refresh of
 - Run `#118` was contaminated by a browser refresh reaching the headed worker and
   failed with `Locator.count: Error: Frame was detached`; it is not transform
   evidence.
+- Clean smoke `#120` on build `#20260816-030401` again completed export in 4m30s
+  but found no compact YYYYWW header. This proved the live week heading itself is
+  not a bare six-digit value when header candidates are scored.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
