@@ -176,6 +176,43 @@ def test_asap_table_control_score_accepts_only_compact_top_right_controls():
     assert flow_worker._asap_table_control_score(table, full_overlay) is None
 
 
+def test_raw_table_excel_menu_item_is_a_direct_download_action():
+    class Locator:
+        def __init__(self, visible):
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return int(self.visible)
+
+        def is_visible(self):
+            return self.visible
+
+    class Page:
+        frames = []
+
+        def __init__(self):
+            self.context = type("Context", (), {"pages": [self]})()
+
+        def get_by_role(self, _role, **_kwargs):
+            return Locator(False)
+
+        def get_by_text(self, pattern):
+            assert pattern.fullmatch("Excel")
+            return Locator(True)
+
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("the visible Excel menu item should be accepted immediately")
+
+    action = flow_worker._asap_wait_for_raw_menu_download_action(Page(), "xlsx")
+
+    assert action.is_visible()
+    assert flow_worker._asap_wait_for_raw_menu_download_action(Page(), "csv") is None
+
+
 def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatch):
     waits = []
 

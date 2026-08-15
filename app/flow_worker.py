@@ -1135,9 +1135,34 @@ def _asap_raw_table_information_control(root: Page | Frame, canvas):
     return min(ranked, key=lambda item: item[0])[1] if ranked else None
 
 
+def _asap_wait_for_raw_menu_download_action(
+    page: Page, file_format: str, timeout_ms: int = 10_000,
+):
+    """Return a raw-table menu item that starts the requested download directly."""
+    if file_format != "xlsx":
+        return None
+    excel_pattern = re.compile(r"^(?:Microsoft )?Excel$", re.I)
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        for candidate in reversed(page.context.pages):
+            for root in [candidate, *reversed(candidate.frames)]:
+                for locator in (
+                    root.get_by_role("menuitem", name=excel_pattern),
+                    root.get_by_text(excel_pattern),
+                ):
+                    try:
+                        if locator.count() and locator.first.is_visible():
+                            return locator.first
+                    except Exception:
+                        continue
+        page.wait_for_timeout(100)
+    return None
+
+
 def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
     opens_export_menu = False
+    file_format = str(job.get("downloads", {}).get("file_format") or "csv").casefold()
     # The current MicroStrategy report has two compact controls beside RUN.
     # The first is Export Options and the second is subtotal. Their icon-only
     # markup has no stable accessible label, so resolve the first visible
@@ -1218,6 +1243,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         )
     pages_before = set(page.context.pages)
     export_control.click()
+    direct_download_action = None
     if opens_export_menu:
         menu_export = None
         deadline = time.monotonic() + 10
@@ -1241,13 +1267,13 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         if menu_export is None:
             raise RuntimeError("ASAP raw-table information menu opened, but its Export action was not visible.")
         menu_export.click()
+        direct_download_action = _asap_wait_for_raw_menu_download_action(page, file_format)
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
     # in the existing page. Search both shapes instead of requiring a popup.
     format_option = None
     export_action = None
     wizard_pages = set()
     deadline = time.monotonic() + 60
-    file_format = str(job.get("downloads", {}).get("file_format") or "csv").casefold()
     format_names = (
         (
             "Excel file format",
@@ -1259,7 +1285,11 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I),
         )
     )
-    while time.monotonic() < deadline and (format_option is None or export_action is None):
+    while (
+        direct_download_action is None
+        and time.monotonic() < deadline
+        and (format_option is None or export_action is None)
+    ):
         current_pages = page.context.pages
         popup = next((candidate for candidate in current_pages if candidate not in pages_before), None)
         roots = [root for candidate in reversed(current_pages) for root in [candidate, *reversed(candidate.frames)]]
@@ -1288,12 +1318,13 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
                     continue
         if format_option is None or export_action is None:
             page.wait_for_timeout(250)
-    if format_option is None or export_action is None:
+    if direct_download_action is None and (format_option is None or export_action is None):
         raise RuntimeError(f"ASAP Export Wizard opened, but its {file_format.upper()} option or Export action was not recognized.")
-    try:
-        format_option.check()
-    except Exception:
-        format_option.click()
+    if direct_download_action is None:
+        try:
+            format_option.check()
+        except Exception:
+            format_option.click()
     # The export wizard may render in one popup while Edge attributes the
     # resulting download to another ASAP page. Listening only on the guessed
     # popup can therefore leave a visibly completed browser download waiting
@@ -1308,7 +1339,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     for candidate in observed_pages:
         candidate.on("download", capture_download)
     try:
-        export_action.click()
+        (direct_download_action or export_action).click()
         deadline = time.monotonic() + 180
         while not downloads and time.monotonic() < deadline:
             page.wait_for_timeout(100)
