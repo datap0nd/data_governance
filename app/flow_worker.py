@@ -2355,16 +2355,22 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                     rows.append(values)
             if not rows:
                 continue
-            header_candidates = [
-                (
-                    sum(bool(str(value).strip()) for value in row),
-                    len(row),
-                    -index,
-                    index,
-                )
-                for index, row in enumerate(rows[:50])
-                if sum(bool(str(value).strip()) for value in row) >= 2
-            ]
+            header_candidates = []
+            for index, row in enumerate(rows[:50]):
+                populated = sum(bool(str(value).strip()) for value in row)
+                if populated < 2:
+                    continue
+                candidate_names = [
+                    re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
+                    or f"col_{column_index}"
+                    for column_index, value in enumerate(row)
+                ]
+                # Dense data rows can be wider than the actual Excel header.
+                # Repeated dimension values make those rows invalid column
+                # definitions, so never let them outrank a unique header row.
+                if len(candidate_names) != len(set(candidate_names)):
+                    continue
+                header_candidates.append((populated, len(row), -index, index))
             header_index = max(header_candidates)[-1] if header_candidates else None
             if header_index is None:
                 continue
