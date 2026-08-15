@@ -12,6 +12,23 @@ from pathlib import Path
 
 WEEK_COLUMN = re.compile(r"^20\d{4}$")
 FILENAME_WEEK = re.compile(r"(?<!\d)(20\d{2})-W(\d{2})(?!\d)")
+METRIC_COLUMN = "Metric"
+LINEAGE_COLUMN = "Metronome Export View"
+CONTRACTED_DIMENSIONS = [
+    "Sell-out Region",
+    "Sell-out Subsidiary",
+    "Sell-out Country",
+    "Country Code",
+    "Operator",
+    "Province",
+    "Latitude",
+    "Longitude",
+    "Category",
+    "Biz Sub",
+    "Series",
+    "MKT Name",
+    "Item",
+]
 
 
 def _week_dates(compact_week: str) -> tuple[str, str, str]:
@@ -51,23 +68,41 @@ def transform(source: Path, target: Path) -> int:
             raise ValueError("The normalized export is empty.") from exc
         header, keep, duplicate_groups = _column_plan(raw_header)
         week_columns = [name for name in header if WEEK_COLUMN.fullmatch(name)]
-        if len(week_columns) != 1:
-            preview = [name[:80] for name in header[:25]]
-            raise ValueError(
-                "Expected exactly one YYYYWW value column in the weekly export; "
-                f"found {week_columns or 'none'}. Detected header: {preview!r}."
-            )
-        week_column = week_columns[0]
         filename_match = FILENAME_WEEK.search(source.name)
-        if filename_match:
-            filename_week = "".join(filename_match.groups())
-            if filename_week != week_column:
+        filename_week = "".join(filename_match.groups()) if filename_match else None
+        if len(week_columns) == 1:
+            week_column = week_columns[0]
+            if filename_week and filename_week != week_column:
                 raise ValueError(
                     f"Filename week {filename_week} does not match export column {week_column}."
                 )
-        week, week_start, week_end = _week_dates(week_column)
-        week_index = header.index(week_column)
-        dimensions = [name for name in header if name != week_column]
+            compact_week = week_column
+            value_column = week_column
+        elif not week_columns and header.count(METRIC_COLUMN) == 1 and filename_week:
+            # The live flat Excel export names its sole weekly value field
+            # ``Metric``. Each artifact is already scoped to exactly one week,
+            # so its validated filename is the canonical week key.
+            compact_week = filename_week
+            value_column = METRIC_COLUMN
+        else:
+            preview = [name[:80] for name in header[:25]]
+            raise ValueError(
+                "Expected one YYYYWW value column or one Metric column with a week in the filename; "
+                f"found week columns {week_columns or 'none'} and {header.count(METRIC_COLUMN)} "
+                f"Metric column(s). Detected header: {preview!r}."
+            )
+        week, week_start, week_end = _week_dates(compact_week)
+        value_index = header.index(value_column)
+        allowed = {*CONTRACTED_DIMENSIONS, value_column, LINEAGE_COLUMN}
+        unexpected = [name for name in header if name not in allowed]
+        if unexpected:
+            raise ValueError(f"Unexpected FOTA column(s): {unexpected}.")
+        missing = [
+            name for name in CONTRACTED_DIMENSIONS
+            if name != "Category" and name not in header
+        ]
+        if missing:
+            raise ValueError(f"Missing contracted FOTA dimension(s): {missing}.")
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.tmp")
         if temporary.exists():
@@ -76,7 +111,10 @@ def transform(source: Path, target: Path) -> int:
         try:
             with temporary.open("x", encoding="utf-8-sig", newline="") as output_handle:
                 writer = csv.writer(output_handle, lineterminator="\n")
-                writer.writerow([*dimensions, "Week", "Week Start Date", "Week End Date", "FOTA Value"])
+                writer.writerow([
+                    *CONTRACTED_DIMENSIONS,
+                    "Week", "Week Start Date", "Week End Date", "FOTA Value",
+                ])
                 for row_number, raw_row in enumerate(reader, start=2):
                     row = list(raw_row[: len(raw_header)]) + [""] * max(0, len(raw_header) - len(raw_row))
                     if not any(str(value).strip() for value in row):
@@ -93,11 +131,14 @@ def transform(source: Path, target: Path) -> int:
                                 f"Duplicate column {label!r} contains conflicting values at row {row_number}."
                             )
                     selected = [row[index] for index in keep]
-                    dimension_values = [
-                        selected[index] for index in range(len(header)) if index != week_index
-                    ]
+                    dimension_values = []
+                    for name in CONTRACTED_DIMENSIONS:
+                        if name == "Category" and name not in header:
+                            dimension_values.append("Weekly")
+                        else:
+                            dimension_values.append(selected[header.index(name)])
                     writer.writerow([
-                        *dimension_values, week, week_start, week_end, selected[week_index],
+                        *dimension_values, week, week_start, week_end, selected[value_index],
                     ])
                     row_count += 1
             if row_count == 0:

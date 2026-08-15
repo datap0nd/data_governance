@@ -11,10 +11,10 @@ transform plus atomic managed-snapshot refresh of
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `61fbb8e`
+- Latest runtime commit before this handoff update: `7dffe15`
 - Public repo: no, private
-- Push status: `61fbb8e` verified on `origin/main`; publish the current header
-  selection fix and this handoff update next
+- Push status: `7dffe15` verified on `origin/main`; publish the current live-shape
+  transform fix and this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -25,9 +25,11 @@ transform plus atomic managed-snapshot refresh of
   `asap_fota_unpivot_v1.py`; Metronome only supplies its generic transform hook.
 - Metronome downloads and normalizes every workbook before it invokes the
   transform. SQL starts only after all downloads and transformations succeed.
-- The transform validates the one dynamic `YYYYWW` column against the filename
-  and emits the 13 dimensions plus Week, Week Start Date, Week End Date, and
-  FOTA Value.
+- The live flat Excel export actually names its sole weekly value column
+  `Metric`. The external transform therefore derives Week from the required
+  one-week filename, maps Metric to FOTA Value, adds the filtered
+  `Category = Weekly`, drops `Metronome Export View`, and emits the exact 17
+  contracted columns in fixed order. Compact YYYYWW columns remain supported.
 - The live ASAP export format is `Excel with plain text`, not the formatted
   workbook option.
 - The Week and Date controls are coupled two-handle sliders. Their values are
@@ -49,18 +51,18 @@ transform plus atomic managed-snapshot refresh of
   shapes and export format.
 - `tests/test_flow_sql.py`: regression coverage for preambles and wider unique or
   duplicate-valued data rows that must not be selected as the XLSX header.
-- `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract.
-  Its missing-week error now reports a bounded preview of the detected header so
-  live export-shape failures are diagnosable.
+- `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract,
+  live Metric-column handling, filename-derived week, filtered Category
+  restoration, lineage removal, and bounded header diagnostics.
 - `docs/metric_contracts.md`: FOTA snapshot grain, date logic, and acceptance rules.
 
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
-  requirements.txt pytest -q`: 248 passed in 2.92s.
-- Remote `main`: `61fbb8ed78a51fb0be1aa6052eca6407cbc749e5` verified before
+  requirements.txt pytest -q`: 250 passed in 2.91s.
+- Remote `main`: `7dffe15f5f1564a1bdde0994f710385c3c1931e3` verified before
   the current change.
-- Citrix build `#20260816-030401`: deployed from `61fbb8e`.
+- Citrix build `#20260816-032429`: deployed from `7dffe15`.
 - Live run `#114`: all 66 downloads completed, then the first transform failed
   because normalization selected a preamble/data row and exposed no YYYYWW
   header. SQL did not run.
@@ -73,6 +75,11 @@ transform plus atomic managed-snapshot refresh of
 - Clean smoke `#120` on build `#20260816-030401` again completed export in 4m30s
   but found no compact YYYYWW header. This proved the live week heading itself is
   not a bare six-digit value when header candidates are scored.
+- Clean smoke `#121` on build `#20260816-032429` selected the correct header and
+  exposed the live shape: the contracted dimensions except filtered Category,
+  followed by `Metric` and `Metronome Export View`. It failed before SQL by the
+  then-current YYYYWW-only transform contract, providing the evidence for the
+  current external-transform change.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
@@ -80,7 +87,7 @@ transform plus atomic managed-snapshot refresh of
 
 ## Open Questions
 
-- The current header-selection fix is locally tested but not accepted until a
+- The current live-shape transform is locally tested but not accepted until a
   live one-week export reaches the external transform successfully.
 - The objective is not accepted until all 66 exports and transforms succeed and the
   live SQL table proves 66 distinct weeks, minimum 2025-W20, maximum 2026-W33,
@@ -91,5 +98,5 @@ transform plus atomic managed-snapshot refresh of
 
 ## Next Step
 
-Commit and push the YYYYWW-aware header-selection fix, deploy it through the
-visible Metronome Update App flow, and rerun only 2025-W20 with SQL disabled.
+Commit and push the live Metric-shape transform, deploy it through the visible
+Metronome Update App flow, and rerun only 2025-W20 with SQL disabled.
