@@ -1082,6 +1082,59 @@ def _wait_for_staged_download(
     )
 
 
+def _asap_table_control_score(
+    table_box: dict[str, float] | None, control_box: dict[str, float] | None,
+) -> float | None:
+    """Rank a compact control rendered at the raw table's top-right corner."""
+    if not table_box or not control_box:
+        return None
+    width = control_box.get("width", 0)
+    height = control_box.get("height", 0)
+    if not (4 <= width <= 64 and 4 <= height <= 64):
+        return None
+    table_left = table_box["x"]
+    table_top = table_box["y"]
+    table_right = table_left + table_box["width"]
+    center_x = control_box["x"] + width / 2
+    center_y = control_box["y"] + height / 2
+    if center_x < table_left + table_box["width"] * 0.65 or center_x > table_right + 24:
+        return None
+    if center_y < table_top - 40 or center_y > table_top + 72:
+        return None
+    return abs(center_x - (table_right - 14)) + abs(center_y - (table_top + 14))
+
+
+def _asap_raw_table_information_control(root: Page | Frame, canvas):
+    """Find an unlabeled hover control by its documented table-corner position."""
+    try:
+        table_box = canvas.bounding_box()
+    except Exception:
+        return None
+    candidates = root.locator(
+        "button:visible,a:visible,[role='button']:visible,input[type='button']:visible,"
+        "img:visible,[class*='info' i]:visible,[class*='icon' i]:visible"
+    )
+    ranked = []
+    for index in range(candidates.count()):
+        candidate = candidates.nth(index)
+        try:
+            score = _asap_table_control_score(table_box, candidate.bounding_box())
+            if score is None:
+                continue
+            signal = " ".join(filter(None, (
+                candidate.get_attribute("title"),
+                candidate.get_attribute("aria-label"),
+                candidate.get_attribute("class"),
+                candidate.get_attribute("alt"),
+            ))).casefold()
+            if re.search(r"info|export|more", signal):
+                score -= 100
+            ranked.append((score, candidate))
+        except Exception:
+            continue
+    return min(ranked, key=lambda item: item[0])[1] if ranked else None
+
+
 def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
     opens_export_menu = False
@@ -1121,12 +1174,19 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         # icon is opened, matching ASAP's own download tutorial.
         for root in reversed(page.frames):
             try:
-                canvas = root.locator(
-                    "table:visible,[role=grid]:visible,[class*='grid']:visible,"
-                    "[class*='table']:visible,[class*='report']:visible"
-                ).first
+                canvas = next((
+                    locator.first
+                    for selector in (
+                        "table:visible", "[role=grid]:visible",
+                        "[class*='grid' i]:visible", "[class*='table' i]:visible",
+                        "[class*='report' i]:visible",
+                    )
+                    if (locator := root.locator(selector)).count()
+                    and locator.first.is_visible()
+                ), root.locator("table:visible").first)
                 if canvas.count() and canvas.is_visible():
                     canvas.hover()
+                    page.wait_for_timeout(750)
                 candidates = [
                     root.get_by_role(
                         "button", name=re.compile(r"^(?:information|info|more info)$", re.I),
@@ -1144,6 +1204,8 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
                     ),
                     None,
                 )
+                if export_control is None and canvas.count() and canvas.is_visible():
+                    export_control = _asap_raw_table_information_control(root, canvas)
                 if export_control is not None:
                     opens_export_menu = True
                     break

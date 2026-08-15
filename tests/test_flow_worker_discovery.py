@@ -164,6 +164,18 @@ def test_asap_results_accept_populated_raw_table_without_data_rows_marker(monkey
     assert flow_worker._asap_wait_for_results(Page(), timeout_ms=1_000) is frame
 
 
+def test_asap_table_control_score_accepts_only_compact_top_right_controls():
+    table = {"x": 100, "y": 200, "width": 800, "height": 500}
+
+    info = {"x": 870, "y": 205, "width": 20, "height": 20}
+    left_filter = {"x": 120, "y": 205, "width": 20, "height": 20}
+    full_overlay = {"x": 100, "y": 200, "width": 800, "height": 500}
+
+    assert flow_worker._asap_table_control_score(table, info) is not None
+    assert flow_worker._asap_table_control_score(table, left_filter) is None
+    assert flow_worker._asap_table_control_score(table, full_overlay) is None
+
+
 def test_export_view_waits_for_loading_overlay_before_and_after_click(monkeypatch):
     waits = []
 
