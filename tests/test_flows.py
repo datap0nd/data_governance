@@ -98,6 +98,85 @@ def test_asap_multi_select_reconciles_retained_selection_to_exact_values(monkeyp
     assert {key for key, value in selected.items() if value} == {"202619", "202620", "202621"}
 
 
+def test_asap_week_dates_follow_live_sunday_to_saturday_calendar():
+    assert flow_worker._asap_week_dates("2026-W22") == ("20260524", "20260530")
+    assert flow_worker._asap_week_dates("2026-W33") == ("20260809", "20260815")
+
+
+def test_asap_week_slider_discovery_expands_bounds_and_restores_handles(monkeypatch):
+    values = ["202622", "202633"]
+    bounds = [("202501", "202633"), ("202501", "202633")]
+
+    class Handle:
+        def __init__(self, index):
+            self.index = index
+
+        def get_attribute(self, name):
+            return values[self.index] if name == "aria-valuetext" else None
+
+        def inner_text(self):
+            return ""
+
+        def press(self, key):
+            if key == "Home":
+                values[self.index] = bounds[self.index][0]
+            elif key == "End":
+                values[self.index] = bounds[self.index][1]
+            else:
+                raw = values[self.index]
+                current = datetime.fromisocalendar(int(raw[:4]), int(raw[4:]), 1)
+                current += flow_worker.timedelta(days=7 if key == "ArrowRight" else -7)
+                year, week, _weekday = current.isocalendar()
+                values[self.index] = f"{year:04d}{week:02d}"
+
+    handles = [Handle(0), Handle(1)]
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (object(), handles))
+
+    options, automation = flow_worker._asap_discover_week_slider(object())
+
+    assert options[0] == "202501"
+    assert options[-1] == "202633"
+    assert "202520" in options
+    assert automation == {"kind": "range_slider", "date_range_label": "Date"}
+    assert values == ["202622", "202633"]
+
+
+def test_asap_collapsed_range_advances_upper_handle_first(monkeypatch):
+    values = ["202519", "202519"]
+    events = []
+
+    class Handle:
+        def __init__(self, index):
+            self.index = index
+
+        def get_attribute(self, name):
+            return values[self.index] if name == "aria-valuetext" else None
+
+        def inner_text(self):
+            return ""
+
+        def press(self, key):
+            events.append((self.index, key))
+            raw = values[self.index]
+            current = datetime.fromisocalendar(int(raw[:4]), int(raw[4:]), 1)
+            current += flow_worker.timedelta(days=7 if key == "ArrowRight" else -7)
+            year, week, _weekday = current.isocalendar()
+            candidate = f"{year:04d}{week:02d}"
+            if self.index == 0 and flow_worker._asap_slider_ordinal(candidate, "week") > flow_worker._asap_slider_ordinal(values[1], "week"):
+                return
+            if self.index == 1 and flow_worker._asap_slider_ordinal(candidate, "week") < flow_worker._asap_slider_ordinal(values[0], "week"):
+                return
+            values[self.index] = candidate
+
+    handles = [Handle(0), Handle(1)]
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (object(), handles))
+
+    flow_worker._asap_set_range(object(), "Week", "202520", "202520", "week")
+
+    assert values == ["202520", "202520"]
+    assert events[0] == (1, "ArrowRight")
+
+
 def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_state(monkeypatch):
     events = []
     selected = {"202629": True, "202630": True, "202631": True, "202632": False}

@@ -20,7 +20,7 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -299,6 +299,182 @@ def _week_to_asap(value: str) -> str:
     if not match:
         raise RuntimeError(f"ASAP week must use YYYY-Www: {value}")
     return "".join(match.groups())
+
+
+def _asap_week_dates(value: str) -> tuple[str, str]:
+    """Return ASAP's Sunday-to-Saturday dates for one ISO-numbered week."""
+    match = re.fullmatch(r"(\d{4})-W(\d{2})", value)
+    if not match:
+        raise RuntimeError(f"ASAP week must use YYYY-Www: {value}")
+    try:
+        monday = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+    except ValueError as exc:
+        raise RuntimeError(f"ASAP week does not exist: {value}") from exc
+    sunday = monday - timedelta(days=1)
+    saturday = sunday + timedelta(days=6)
+    return sunday.strftime("%Y%m%d"), saturday.strftime("%Y%m%d")
+
+
+def _asap_range_scope(frame: Frame, label: str):
+    """Return the smallest visible prompt containing a two-handle range control."""
+    labels = frame.get_by_text(re.compile(rf"^{re.escape(label)}:?$", re.I))
+    for label_index in range(labels.count()):
+        prompt = labels.nth(label_index)
+        try:
+            if not prompt.is_visible():
+                continue
+        except Exception:
+            continue
+        ancestor = prompt
+        for _depth in range(8):
+            ancestor = ancestor.locator("xpath=parent::*")
+            if not ancestor.count():
+                break
+            handles = ancestor.locator("[role=slider],input[type=range]")
+            visible = []
+            for handle_index in range(handles.count()):
+                handle = handles.nth(handle_index)
+                try:
+                    if handle.is_visible():
+                        visible.append(handle)
+                except Exception:
+                    continue
+            if len(visible) == 2:
+                return ancestor, visible
+    raise RuntimeError(f"ASAP {label} range slider was not found.")
+
+
+def _asap_slider_value(handle, value_pattern: str) -> str | None:
+    """Read one semantic slider value without trusting its screen position."""
+    for attribute in (
+        "aria-valuetext", "aria-valuenow", "value", "data-value", "data-val",
+        "data-current-value",
+    ):
+        try:
+            raw = _clean_text(handle.get_attribute(attribute))
+        except Exception:
+            raw = ""
+        match = re.search(value_pattern, raw)
+        if match:
+            return match.group(0)
+    try:
+        match = re.search(value_pattern, _clean_text(handle.inner_text()))
+    except Exception:
+        match = None
+    return match.group(0) if match else None
+
+
+def _asap_slider_ordinal(value: str, kind: str) -> int:
+    if kind == "week":
+        match = re.fullmatch(r"(\d{4})(\d{2})", value)
+        if not match:
+            raise RuntimeError(f"ASAP Week slider exposed an invalid value: {value}")
+        try:
+            return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1).toordinal() // 7
+        except ValueError as exc:
+            raise RuntimeError(f"ASAP Week slider exposed a nonexistent week: {value}") from exc
+    if kind == "date":
+        try:
+            return datetime.strptime(value, "%Y%m%d").date().toordinal()
+        except ValueError as exc:
+            raise RuntimeError(f"ASAP Date slider exposed an invalid value: {value}") from exc
+    raise RuntimeError(f"Unsupported ASAP slider kind: {kind}")
+
+
+def _asap_move_slider(handle, target: str, kind: str) -> None:
+    """Move one focused slider handle by keyboard and verify its exact value."""
+    pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
+    current = _asap_slider_value(handle, pattern)
+    if current is None:
+        handle.press("Home")
+        current = _asap_slider_value(handle, pattern)
+    if current is None:
+        raise RuntimeError(f"ASAP {kind.title()} slider did not expose its current value.")
+    delta = _asap_slider_ordinal(target, kind) - _asap_slider_ordinal(current, kind)
+    if abs(delta) > 1_000:
+        raise RuntimeError(
+            f"ASAP {kind.title()} slider target is more than 1,000 steps from its current value."
+        )
+    key = "ArrowRight" if delta > 0 else "ArrowLeft"
+    for _step in range(abs(delta)):
+        handle.press(key)
+    actual = _asap_slider_value(handle, pattern)
+    if actual != target:
+        raise RuntimeError(
+            f"ASAP {kind.title()} slider mismatch. Requested: {target}. Selected: {actual or 'unknown'}."
+        )
+
+
+def _asap_range_values(handles: list, kind: str) -> list[str | None]:
+    pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
+    return [_asap_slider_value(handle, pattern) for handle in handles]
+
+
+def _asap_set_range(frame: Frame, label: str, start: str, end: str, kind: str) -> None:
+    """Set and read back an ASAP two-handle range without coordinate guessing."""
+    if _asap_slider_ordinal(end, kind) < _asap_slider_ordinal(start, kind):
+        raise RuntimeError(f"ASAP {label} range ends before it starts: {start} to {end}")
+    _scope, handles = _asap_range_scope(frame, label)
+    current = _asap_range_values(handles, kind)
+    # When advancing a collapsed one-period range, the upper handle must move
+    # first or the lower handle is constrained by the old upper value.
+    if current[1] and _asap_slider_ordinal(start, kind) > _asap_slider_ordinal(current[1], kind):
+        order = ((1, end), (0, start))
+    elif current[0] and _asap_slider_ordinal(end, kind) < _asap_slider_ordinal(current[0], kind):
+        order = ((0, start), (1, end))
+    else:
+        order = ((0, start), (1, end))
+    for index, target in order:
+        _asap_move_slider(handles[index], target, kind)
+    actual = _asap_range_values(handles, kind)
+    if actual != [start, end]:
+        raise RuntimeError(
+            f"ASAP {label} range did not match the flow. Requested: {[start, end]}. Selected: {actual}."
+        )
+
+
+def _asap_week_options(start: str, end: str) -> list[str]:
+    """Expand compact ASAP week bounds into every valid YYYYWW value."""
+    start_match = re.fullmatch(r"(\d{4})(\d{2})", start)
+    end_match = re.fullmatch(r"(\d{4})(\d{2})", end)
+    if not start_match or not end_match:
+        return []
+    try:
+        current = date.fromisocalendar(int(start_match.group(1)), int(start_match.group(2)), 1)
+        final = date.fromisocalendar(int(end_match.group(1)), int(end_match.group(2)), 1)
+    except ValueError:
+        return []
+    if final < current or (final - current).days > 7 * 104:
+        return []
+    values = []
+    while current <= final:
+        year, week, _weekday = current.isocalendar()
+        values.append(f"{year:04d}{week:02d}")
+        current += timedelta(days=7)
+    return values
+
+
+def _asap_discover_week_slider(frame: Frame) -> tuple[list[str], dict] | None:
+    """Read the complete Week range and restore the report's original handles."""
+    try:
+        _scope, handles = _asap_range_scope(frame, "Week")
+    except RuntimeError:
+        return None
+    original = _asap_range_values(handles, "week")
+    if None in original:
+        return None
+    handles[0].press("Home")
+    minimum = _asap_range_values(handles, "week")[0]
+    _asap_move_slider(handles[0], original[0], "week")
+    handles[1].press("End")
+    maximum = _asap_range_values(handles, "week")[1]
+    _asap_move_slider(handles[1], original[1], "week")
+    if _asap_range_values(handles, "week") != original:
+        raise RuntimeError("ASAP Week slider could not be restored after discovery.")
+    options = _asap_week_options(minimum or "", maximum or "")
+    if not options:
+        return None
+    return options, {"kind": "range_slider", "date_range_label": "Date"}
 
 
 def _asap_frame(page: Page) -> Frame:
@@ -971,6 +1147,16 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             continue
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
+        automation = definition.get("automation") or {}
+        if definition["control_type"] == "week" and automation.get("kind") == "range_slider":
+            _asap_set_range(frame, definition["control_label"], values[0], values[-1], "week")
+            start_date = _asap_week_dates(str(value[0] if isinstance(value, list) else value))[0]
+            end_date = _asap_week_dates(str(value[-1] if isinstance(value, list) else value))[1]
+            _asap_set_range(
+                frame, str(automation.get("date_range_label") or "Date"),
+                start_date, end_date, "date",
+            )
+            continue
         visible_list_only = (
             definition["control_label"].casefold().rstrip(":") == "dimension"
             or definition["control_type"] == "week"
@@ -1635,8 +1821,17 @@ def _asap_owned_popup_roots(frame: Frame, control) -> list:
 def _asap_discover_filters(frame: Frame) -> list[dict]:
     definitions = []
 
-    def add_definition(label: str, control_type: str, options: list[str]):
+    def add_definition(
+        label: str, control_type: str, options: list[str], automation: dict | None = None,
+    ):
         _merge_asap_filter_definition(definitions, label, control_type, options)
+        if automation:
+            key = _slug_key(label, f"filter_{len(definitions)}")
+            definition = next(
+                (item for item in definitions if item["filter_key"] == key), None,
+            )
+            if definition is not None:
+                definition["automation"] = {**definition.get("automation", {}), **automation}
 
     def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
         """Read the smallest visible MicroStrategy control containing a label."""
@@ -1757,6 +1952,14 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     # recognizes the UI control label, while every option remains page-driven.
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
+
+    # Regional FOTA exposes Week and Date as coupled two-handle sliders rather
+    # than searchable member lists. Catalog the complete Week domain while
+    # recording that execution must also drive the derived Date range.
+    week_slider = _asap_discover_week_slider(frame)
+    if week_slider:
+        options, automation = week_slider
+        add_definition("Week", "week", options, automation)
 
     # The Installed Base report exposes its week prompt as a searchable
     # MicroStrategy member list. Depending on render timing the count/search

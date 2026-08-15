@@ -268,6 +268,22 @@ if ($Inner) {
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
+# Publish versioned external flow transformations to the shared location used
+# by BI desktop workers. A temporarily unavailable share must not prevent the
+# application itself from updating; the affected flow will fail closed before
+# SQL if its configured script is unavailable.
+$BundledFlowTransforms = "$CodeDir\transforms"
+$SharedFlowTransforms = "\\MX-SHARE\Users\METOMX\Desktop\Metronome\flow_scripts"
+if (Test-Path $BundledFlowTransforms) {
+    try {
+        New-Item -ItemType Directory -Path $SharedFlowTransforms -Force | Out-Null
+        Copy-Item -Path "$BundledFlowTransforms\*" -Destination $SharedFlowTransforms -Force
+        Write-Host "  Flow transformations published to: $SharedFlowTransforms" -ForegroundColor Green
+    } catch {
+        Write-Host "  WARNING: Could not publish flow transformations to MX Share: $_" -ForegroundColor Yellow
+    }
+}
+
 # --- Stamp VERSION with download timestamp ---
 $ver = (Get-Date -Format "yyyyMMdd-HHmmss")
 Set-Content "$CodeDir\VERSION" $ver
