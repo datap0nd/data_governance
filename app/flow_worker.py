@@ -383,13 +383,15 @@ def _asap_slider_ordinal(value: str, kind: str) -> int:
     raise RuntimeError(f"Unsupported ASAP slider kind: {kind}")
 
 
-def _asap_move_slider(handle, target: str, kind: str) -> None:
+def _asap_move_slider(handle, target: str, kind: str, *, current: str | None = None,
+                      read_value=None) -> None:
     """Move one focused slider handle by keyboard and verify its exact value."""
     pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
-    current = _asap_slider_value(handle, pattern)
+    read_value = read_value or (lambda: _asap_slider_value(handle, pattern))
+    current = current or read_value()
     if current is None:
         handle.press("Home")
-        current = _asap_slider_value(handle, pattern)
+        current = read_value()
     if current is None:
         raise RuntimeError(f"ASAP {kind.title()} slider did not expose its current value.")
     delta = _asap_slider_ordinal(target, kind) - _asap_slider_ordinal(current, kind)
@@ -400,24 +402,39 @@ def _asap_move_slider(handle, target: str, kind: str) -> None:
     key = "ArrowRight" if delta > 0 else "ArrowLeft"
     for _step in range(abs(delta)):
         handle.press(key)
-    actual = _asap_slider_value(handle, pattern)
+    actual = None
+    for _attempt in range(10):
+        actual = read_value()
+        if actual == target:
+            break
+        time.sleep(0.05)
     if actual != target:
         raise RuntimeError(
             f"ASAP {kind.title()} slider mismatch. Requested: {target}. Selected: {actual or 'unknown'}."
         )
 
 
-def _asap_range_values(handles: list, kind: str) -> list[str | None]:
+def _asap_range_values(scope, handles: list, kind: str) -> list[str | None]:
+    """Read both range values from handle semantics or the control's visible labels."""
     pattern = r"20\d{4}" if kind == "week" else r"20\d{6}"
-    return [_asap_slider_value(handle, pattern) for handle in handles]
+    values = [_asap_slider_value(handle, pattern) for handle in handles]
+    if None not in values:
+        return values
+    try:
+        visible = re.findall(rf"(?<!\d){pattern}(?!\d)", _clean_text(scope.inner_text()))
+    except Exception:
+        visible = []
+    if len(visible) == len(handles):
+        return [value or visible[index] for index, value in enumerate(values)]
+    return values
 
 
 def _asap_set_range(frame: Frame, label: str, start: str, end: str, kind: str) -> None:
     """Set and read back an ASAP two-handle range without coordinate guessing."""
     if _asap_slider_ordinal(end, kind) < _asap_slider_ordinal(start, kind):
         raise RuntimeError(f"ASAP {label} range ends before it starts: {start} to {end}")
-    _scope, handles = _asap_range_scope(frame, label)
-    current = _asap_range_values(handles, kind)
+    scope, handles = _asap_range_scope(frame, label)
+    current = _asap_range_values(scope, handles, kind)
     # When advancing a collapsed one-period range, the upper handle must move
     # first or the lower handle is constrained by the old upper value.
     if current[1] and _asap_slider_ordinal(start, kind) > _asap_slider_ordinal(current[1], kind):
@@ -427,8 +444,12 @@ def _asap_set_range(frame: Frame, label: str, start: str, end: str, kind: str) -
     else:
         order = ((0, start), (1, end))
     for index, target in order:
-        _asap_move_slider(handles[index], target, kind)
-    actual = _asap_range_values(handles, kind)
+        _asap_move_slider(
+            handles[index], target, kind, current=current[index],
+            read_value=lambda index=index: _asap_range_values(scope, handles, kind)[index],
+        )
+        current = _asap_range_values(scope, handles, kind)
+    actual = _asap_range_values(scope, handles, kind)
     if actual != [start, end]:
         raise RuntimeError(
             f"ASAP {label} range did not match the flow. Requested: {[start, end]}. Selected: {actual}."
@@ -459,19 +480,25 @@ def _asap_week_options(start: str, end: str) -> list[str]:
 def _asap_discover_week_slider(frame: Frame) -> tuple[list[str], dict] | None:
     """Read the complete Week range and restore the report's original handles."""
     try:
-        _scope, handles = _asap_range_scope(frame, "Week")
+        scope, handles = _asap_range_scope(frame, "Week")
     except RuntimeError:
         return None
-    original = _asap_range_values(handles, "week")
+    original = _asap_range_values(scope, handles, "week")
     if None in original:
         return None
     handles[0].press("Home")
-    minimum = _asap_range_values(handles, "week")[0]
-    _asap_move_slider(handles[0], original[0], "week")
+    minimum = _asap_range_values(scope, handles, "week")[0]
+    _asap_move_slider(
+        handles[0], original[0], "week", current=minimum,
+        read_value=lambda: _asap_range_values(scope, handles, "week")[0],
+    )
     handles[1].press("End")
-    maximum = _asap_range_values(handles, "week")[1]
-    _asap_move_slider(handles[1], original[1], "week")
-    if _asap_range_values(handles, "week") != original:
+    maximum = _asap_range_values(scope, handles, "week")[1]
+    _asap_move_slider(
+        handles[1], original[1], "week", current=maximum,
+        read_value=lambda: _asap_range_values(scope, handles, "week")[1],
+    )
+    if _asap_range_values(scope, handles, "week") != original:
         raise RuntimeError("ASAP Week slider could not be restored after discovery.")
     options = _asap_week_options(minimum or "", maximum or "")
     if not options:

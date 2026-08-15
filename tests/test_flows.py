@@ -177,6 +177,43 @@ def test_asap_collapsed_range_advances_upper_handle_first(monkeypatch):
     assert events[0] == (1, "ArrowRight")
 
 
+def test_asap_range_uses_visible_labels_when_handles_have_no_values(monkeypatch):
+    values = ["202622", "202633"]
+
+    class Scope:
+        def inner_text(self):
+            return f"Week\n{values[0]}\n{values[1]}"
+
+    class Handle:
+        def __init__(self, index):
+            self.index = index
+
+        def get_attribute(self, _name):
+            return None
+
+        def inner_text(self):
+            return ""
+
+        def press(self, key):
+            raw = values[self.index]
+            current = datetime.fromisocalendar(int(raw[:4]), int(raw[4:]), 1)
+            current += flow_worker.timedelta(days=7 if key == "ArrowRight" else -7)
+            year, week, _weekday = current.isocalendar()
+            candidate = f"{year:04d}{week:02d}"
+            if self.index == 0 and flow_worker._asap_slider_ordinal(candidate, "week") > flow_worker._asap_slider_ordinal(values[1], "week"):
+                return
+            if self.index == 1 and flow_worker._asap_slider_ordinal(candidate, "week") < flow_worker._asap_slider_ordinal(values[0], "week"):
+                return
+            values[self.index] = candidate
+
+    handles = [Handle(0), Handle(1)]
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (Scope(), handles))
+
+    flow_worker._asap_set_range(object(), "Week", "202620", "202620", "week")
+
+    assert values == ["202620", "202620"]
+
+
 def test_asap_manual_week_definition_infers_visible_range_slider(monkeypatch):
     ranges = []
     monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, _label: (object(), [object(), object()]))
