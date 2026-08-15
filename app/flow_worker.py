@@ -2370,7 +2370,17 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                 # definitions, so never let them outrank a unique header row.
                 if len(candidate_names) != len(set(candidate_names)):
                     continue
-                header_candidates.append((populated, len(row), -index, index))
+                # Weekly exports expose their value column as a compact YYYYWW
+                # label. Prefer a candidate containing that strong header
+                # signal before falling back to density. Otherwise a wide data
+                # row whose values happen to be unique can still win.
+                has_year_week_header = any(
+                    re.fullmatch(r"20\d{2}(?:0[1-9]|[1-4]\d|5[0-3])", str(value).strip())
+                    for value in row
+                )
+                header_candidates.append(
+                    (has_year_week_header, populated, len(row), -index, index)
+                )
             header_index = max(header_candidates)[-1] if header_candidates else None
             if header_index is None:
                 continue

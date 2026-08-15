@@ -2,17 +2,19 @@
 
 ## Current Objective
 
-Finish live run `#114` of the 66-week ASAP FOTA backfill, then prove the
-external transform and atomic managed-snapshot refresh of
+Pass isolated 2025-W20 and latest-week FOTA smoke runs with SQL disabled, then
+run the 66-week 2025-W20 through 2026-W33 backfill and prove the external
+transform plus atomic managed-snapshot refresh of
 `meto_db.bi_reporting.ASAP_Fota` in the live target system.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `d196306`
+- Latest runtime commit before this handoff update: `eeca5a1`
 - Public repo: no, private
-- Push status: `d196306` verified on `origin/main`; publish this handoff update next
+- Push status: `eeca5a1` verified on `origin/main`; publish the current header
+  selection fix and this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -31,25 +33,41 @@ external transform and atomic managed-snapshot refresh of
 - The Week and Date controls are coupled two-handle sliders. Their values are
   visible labels rather than semantic handle values, so automation reads the
   labels and verifies both ranges before RUN.
+- Do not start another full-range run until isolated 2025-W20 and 2026-W33
+  downloads both normalize and transform successfully with SQL disabled.
+- Monitor the headed worker only from the separate Metronome browser window.
+  Keyboard refresh can land on the worker and detach its Playwright frame; use
+  the visible mouse reload control only after verifying Metronome is foreground.
 
 ## Files Changed
 
 - `app/flow_worker.py`: live ASAP slider readback, export-toolbar discovery,
-  direct Export Options handling, input-based Export actions, and flat Excel
-  format recognition.
+  direct Export Options handling, input-based Export actions, flat Excel format
+  recognition, and XLSX header selection that prefers a valid YYYYWW label over
+  a wider data row.
 - `tests/test_flow_worker_discovery.py`: regression coverage for the live control
   shapes and export format.
+- `tests/test_flow_sql.py`: regression coverage for preambles and wider unique or
+  duplicate-valued data rows that must not be selected as the XLSX header.
 - `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract.
 - `docs/metric_contracts.md`: FOTA snapshot grain, date logic, and acceptance rules.
 
 ## Commands And Checks
 
-- `PYTHONPATH=. .../pytest -q`: 242 passed in 3.11s.
-- Remote `main`: `d1963061cc4edf806e9f8a2f7ecfd611f0ba3028` verified.
-- Citrix build `#20260815-204443`: deployed from `d196306`.
-- Live run `#114`: running. Three weekly files cleared the download,
-  normalization, and MX Share copy path; the UI showed `Configuring export 4 of
-  66` at this handoff.
+- `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
+  requirements.txt pytest -q`: 247 passed in 2.79s.
+- Remote `main`: `eeca5a1bd63aab62258a423bec4dafa07d92a105` verified before
+  the current change.
+- Citrix build `#20260816-024352`: deployed from `eeca5a1`.
+- Live run `#114`: all 66 downloads completed, then the first transform failed
+  because normalization selected a preamble/data row and exposed no YYYYWW
+  header. SQL did not run.
+- Live runs `#116`, `#117`, and clean smoke `#119` narrowed the remaining issue
+  to XLSX header selection. Run `#119` completed navigation, configuration, report
+  execution, and export in 4m37s, then failed before SQL with no YYYYWW column.
+- Run `#118` was contaminated by a browser refresh reaching the headed worker and
+  failed with `Locator.count: Error: Frame was detached`; it is not transform
+  evidence.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
@@ -57,7 +75,9 @@ external transform and atomic managed-snapshot refresh of
 
 ## Open Questions
 
-- Run `#114` is not accepted until all 66 exports and transforms succeed and the
+- The current header-selection fix is locally tested but not accepted until a
+  live one-week export reaches the external transform successfully.
+- The objective is not accepted until all 66 exports and transforms succeed and the
   live SQL table proves 66 distinct weeks, minimum 2025-W20, maximum 2026-W33,
   a positive row count, and the contracted columns.
 - The report contains roughly 300k rows per week, not the earlier rough 90k
@@ -66,5 +86,5 @@ external transform and atomic managed-snapshot refresh of
 
 ## Next Step
 
-Monitor run `#114` to terminal state. If it succeeds, validate the SQL table in
-the live system against the full acceptance checklist before calling FOTA done.
+Commit and push the YYYYWW-aware header-selection fix, deploy it through the
+visible Metronome Update App flow, and rerun only 2025-W20 with SQL disabled.
