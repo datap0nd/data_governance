@@ -61,7 +61,7 @@ XLSX_HEADER_LABEL_HINTS = frozenset({
     "mkt_name",
     "item",
 })
-XLSX_FILENAME_WEEK = re.compile(r"(?<!\d)(20\d{2})-W(\d{2})(?!\d)", re.IGNORECASE)
+REQUESTED_WEEK = re.compile(r"^(20\d{2})-W(\d{2})$", re.IGNORECASE)
 
 
 @contextmanager
@@ -2385,45 +2385,59 @@ def _excel_cell_value(value: Any) -> Any:
     return "" if value is None else value
 
 
-def _xlsx_filename_weeks(source: Path) -> list[str]:
-    """Return validated compact weeks encoded in an ASAP artifact name."""
+def _validated_requested_weeks(period: Any) -> list[str]:
+    """Return the exact contiguous week list supplied by the Metronome job."""
+    if period is None:
+        return []
+    values = period if isinstance(period, list) else [period]
     weeks: list[str] = []
-    for match in XLSX_FILENAME_WEEK.finditer(source.name):
-        year, week = (int(value) for value in match.groups())
+    mondays: list[date] = []
+    for value in values:
+        match = REQUESTED_WEEK.fullmatch(str(value).strip())
+        if not match:
+            raise RuntimeError(
+                f"Metronome supplied an invalid requested week {value!r}; expected YYYY-Www."
+            )
+        year, week = (int(item) for item in match.groups())
         try:
-            date.fromisocalendar(year, week, 1)
+            monday = date.fromisocalendar(year, week, 1)
         except ValueError as exc:
             raise RuntimeError(
-                f"Downloaded Excel filename contains a nonexistent week: {year:04d}-W{week:02d}."
+                f"Metronome supplied a nonexistent requested week: {year:04d}-W{week:02d}."
             ) from exc
         compact = f"{year:04d}{week:02d}"
-        if compact not in weeks:
-            weeks.append(compact)
+        if compact in weeks:
+            raise RuntimeError(f"Metronome supplied a duplicate requested week: {compact}.")
+        weeks.append(compact)
+        mondays.append(monday)
+    if any(current - previous != timedelta(days=7) for previous, current in zip(mondays, mondays[1:])):
+        raise RuntimeError(
+            f"Metronome supplied requested weeks that are not ordered and contiguous: {weeks}."
+        )
     return weeks
 
 
 def _xlsx_expand_multi_week_metric_header(
-    source: Path, header: list[str], data_rows: list[list[Any]], worksheet_title: str,
+    requested_weeks: list[str], header: list[str], data_rows: list[list[Any]],
+    worksheet_title: str,
 ) -> tuple[list[str], list[str], str | None]:
     """Recover ASAP's multi-level week headings without guessing column count.
 
     In the live flat Excel matrix, the lower header row ends in ``Metrics``.
     Each selected week occupies one value column, but only the first value
     column has that lower-level label. The prior normalizer used the lower
-    header width and silently truncated every later week. The artifact name is
-    already generated from the range that Metronome set and read back in ASAP,
-    so it can provide the week labels only when the physical value-column count
-    proves a one-to-one mapping.
+    header width and silently truncated every later week. Metronome passes the
+    complete in-memory period list that it set and read back in ASAP, so the
+    physical value-column count must prove a one-to-one mapping to that list.
     """
-    filename_weeks = _xlsx_filename_weeks(source)
-    if len(filename_weeks) < 2:
+    if len(requested_weeks) < 2:
         return header, [], None
 
     # The current Regional FOTA export can also arrive with a fully expanded
     # header: ``Weekly, 202630, 202631``. ``Weekly`` is not a dimension in the
     # file. It is a constant descriptor whose row value is ``Sell-out``. Keep
     # the explicit week columns, but remove that descriptor only when both the
-    # selected filename range and every populated descriptor value prove the
+    # requested period list and every populated descriptor value prove the
     # shape. This avoids teaching the downstream flow-specific script to
     # tolerate an ambiguous extra column.
     explicit_week_columns = [
@@ -2432,10 +2446,10 @@ def _xlsx_expand_multi_week_metric_header(
     ]
     if explicit_week_columns:
         explicit_weeks = [value for _, value in explicit_week_columns]
-        if explicit_weeks != filename_weeks:
+        if explicit_weeks != requested_weeks:
             raise RuntimeError(
-                "Downloaded multi-week Excel columns do not match the selected filename range "
-                f"on sheet {worksheet_title!r}. Selected weeks: {filename_weeks}; explicit "
+                "Downloaded multi-week Excel columns do not match Metronome's requested weeks "
+                f"on sheet {worksheet_title!r}. Requested weeks: {requested_weeks}; explicit "
                 f"week columns: {explicit_weeks}."
             )
         descriptor_indexes = [
@@ -2483,38 +2497,38 @@ def _xlsx_expand_multi_week_metric_header(
         else None
     )
     if recognized_metric_label:
-        expected_width = metric_index + 1 + len(filename_weeks)
+        expected_width = metric_index + 1 + len(requested_weeks)
         if max_data_width != expected_width:
             actual_values = max(0, max_data_width - metric_index - 1)
             raise RuntimeError(
                 "Downloaded multi-week Excel matrix does not contain one numeric value column "
-                f"per selected week on sheet {worksheet_title!r}. Selected weeks: "
-                f"{filename_weeks}; metric label: {recognized_metric_label!r}; expected numeric "
-                f"week columns: {len(filename_weeks)}; observed numeric week columns: "
+                f"per requested week on sheet {worksheet_title!r}. Requested weeks: "
+                f"{requested_weeks}; metric label: {recognized_metric_label!r}; expected numeric "
+                f"week columns: {len(requested_weeks)}; observed numeric week columns: "
                 f"{actual_values}."
             )
         for row in data_rows:
             if len(row) > metric_index:
                 row.pop(metric_index)
-        return [*header[:metric_index], *filename_weeks], filename_weeks, recognized_metric_label
-    expected_width = metric_index + len(filename_weeks)
+        return [*header[:metric_index], *requested_weeks], requested_weeks, recognized_metric_label
+    expected_width = metric_index + len(requested_weeks)
     if max_data_width == expected_width:
-        return [*header[:metric_index], *filename_weeks], filename_weeks, None
+        return [*header[:metric_index], *requested_weeks], requested_weeks, None
     if max_data_width <= len(header):
         raise RuntimeError(
             "Downloaded multi-week Excel matrix exposes one Metrics column but no distinct "
-            f"value column per selected week on sheet {worksheet_title!r}. Selected weeks: "
-            f"{filename_weeks}; header width: {len(header)}; maximum data width: {max_data_width}."
+            f"value column per requested week on sheet {worksheet_title!r}. Requested weeks: "
+            f"{requested_weeks}; header width: {len(header)}; maximum data width: {max_data_width}."
         )
     raise RuntimeError(
-        "Downloaded multi-week Excel matrix width does not match its selected weeks on sheet "
-        f"{worksheet_title!r}. Selected weeks: {filename_weeks}; Metrics starts at column "
+        "Downloaded multi-week Excel matrix width does not match its requested weeks on sheet "
+        f"{worksheet_title!r}. Requested weeks: {requested_weeks}; Metrics starts at column "
         f"{metric_index + 1}; expected width: {expected_width}; maximum data width: "
         f"{max_data_width}."
     )
 
 
-def _normalize_xlsx(source: Path, output: Path) -> dict:
+def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -> dict:
     """Convert populated workbook sheets into one normalized UTF-8 CSV."""
     try:
         from openpyxl import load_workbook
@@ -2577,7 +2591,7 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                 continue
             data_rows = rows[header_index + 1:]
             header, sheet_week_columns, sheet_metric_label = _xlsx_expand_multi_week_metric_header(
-                source, header, data_rows, worksheet.title,
+                requested_weeks, header, data_rows, worksheet.title,
             )
             if sheet_metric_label:
                 if removed_metric_label and removed_metric_label != sheet_metric_label:
@@ -2699,6 +2713,7 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
             "METRONOME_FLOW_INPUT": str(input_path),
             "METRONOME_FLOW_OUTPUT": str(output_path),
             "METRONOME_FLOW_RESULTS_DIR": str(results_folder),
+            "METRONOME_FLOW_PERIODS": json.dumps(artifact.get("period_key") or []),
         })
         completed = subprocess.run(
             _script_command(script_path, input_path, output_path),
@@ -2750,7 +2765,7 @@ def _csv_metadata(path: Path) -> dict:
 
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
-    export_view: str | None = None,
+    export_view: str | None = None, requested_period: Any = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -2772,7 +2787,10 @@ def _store_completed_download(
         normalized_output = _safe_output_path(
             output.parent, f"{output.stem}_normalized.csv",
         )
-        normalization = _normalize_xlsx(output, normalized_output)
+        requested_weeks = _validated_requested_weeks(requested_period)
+        normalization = _normalize_xlsx(
+            output, normalized_output, requested_weeks=requested_weeks,
+        )
         lineage = _add_export_view_column(normalized_output, export_view)
         metadata = {**_csv_metadata(normalized_output), **normalization, **lineage}
         return {
@@ -2940,6 +2958,7 @@ def execute_job(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
                     export_view=export_view,
+                    requested_period=period,
                 )
             else:
                 download.save_as(output)

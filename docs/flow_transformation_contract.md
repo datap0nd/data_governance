@@ -16,6 +16,9 @@ The same paths are available as environment variables:
 - `METRONOME_FLOW_INPUT`
 - `METRONOME_FLOW_OUTPUT`
 - `METRONOME_FLOW_RESULTS_DIR`
+- `METRONOME_FLOW_PERIODS` - JSON array containing the exact ordered period
+  values assigned to the current artifact, for example
+  `["2026-W22", "2026-W23", "2026-W24"]`.
 
 Supported entry points are `.py`, `.ps1`, and `.exe`. Python and executable
 entry points receive `--input` and `--output`. Python scripts run with the same

@@ -76,13 +76,13 @@ def test_fota_transform_unpivots_compact_week_column_and_adds_calendar_dates(tmp
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "123", "Export Wizard (Sell-out Sub)"],
     ])
 
-    assert MODULE.transform(source, target) == 1
+    assert MODULE.transform(source, target, ["2025-W20"]) == 1
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         assert list(csv.reader(handle)) == _expected_rows()
 
 
-def test_fota_transform_uses_live_metric_column_filename_week_and_preserves_category(tmp_path):
+def test_fota_transform_uses_requested_week_for_live_metric_column_and_preserves_category(tmp_path):
     source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
     target = tmp_path / "result.csv"
     _write_csv(source, [
@@ -90,7 +90,7 @@ def test_fota_transform_uses_live_metric_column_filename_week_and_preserves_cate
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "456", "Export Wizard (Sell-out Sub)"],
     ])
 
-    assert MODULE.transform(source, target) == 1
+    assert MODULE.transform(source, target, ["2025-W20"]) == 1
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         assert list(csv.reader(handle)) == _expected_rows("456")
@@ -111,7 +111,7 @@ def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_pa
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "300", "310", "Export Wizard (Sell-out Sub)"],
     ])
 
-    assert MODULE.transform(source, target) == 2
+    assert MODULE.transform(source, target, ["2026-W30", "2026-W31"]) == 2
     assert calls == [[(25.2, 55.3)]]
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -130,6 +130,32 @@ def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_pa
     ]
 
 
+def test_fota_transform_uses_complete_requested_period_list_not_filename_endpoints(tmp_path):
+    source = tmp_path / "ASAP_Fota_2026-W22_2026-W26_normalized.csv"
+    target = tmp_path / "result.csv"
+    requested = [f"2026-W{week:02d}" for week in range(22, 27)]
+    _write_csv(source, [
+        [*MODULE.CONTRACTED_DIMENSIONS, "202622", "202623", "202624", "202625", "202626"],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "22", "23", "24", "25", "26"],
+    ])
+
+    assert MODULE.transform(source, target, requested) == 5
+    assert MODULE._output_week_counts(target) == {week: 1 for week in requested}
+
+
+def test_fota_transform_reads_requested_periods_from_metronome_environment(tmp_path, monkeypatch):
+    source = tmp_path / "filename_without_a_week.csv"
+    target = tmp_path / "result.csv"
+    _write_csv(source, [
+        [*MODULE.CONTRACTED_DIMENSIONS, MODULE.METRIC_COLUMN],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "123"],
+    ])
+    monkeypatch.setenv("METRONOME_FLOW_PERIODS", '["2025-W20"]')
+
+    assert MODULE.transform(source, target) == 1
+    assert MODULE._output_week_counts(target) == {"2025-W20": 1}
+
+
 def test_fota_transform_skips_blank_week_cells_in_sparse_multi_week_matrix(tmp_path):
     source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
     target = tmp_path / "result.csv"
@@ -140,7 +166,7 @@ def test_fota_transform_skips_blank_week_cells_in_sparse_multi_week_matrix(tmp_p
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "", ""],
     ])
 
-    assert MODULE.transform(source, target) == 2
+    assert MODULE.transform(source, target, ["2026-W30", "2026-W31"]) == 2
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.reader(handle))
@@ -158,7 +184,7 @@ def test_fota_transform_rejects_metric_label_as_week_value(tmp_path):
     ])
 
     with pytest.raises(ValueError, match="Sell-out Qty must be numeric.*2026-W30.*Sell-out"):
-        MODULE.transform(source, target)
+        MODULE.transform(source, target, ["2026-W30", "2026-W31"])
 
     assert not target.exists()
 
@@ -172,7 +198,7 @@ def test_fota_transform_leaves_geography_blank_for_missing_coordinates(tmp_path)
         [*[values[name] for name in MODULE.CONTRACTED_DIMENSIONS], "123"],
     ])
 
-    assert MODULE.transform(source, target) == 1
+    assert MODULE.transform(source, target, ["2025-W20"]) == 1
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.reader(handle))
@@ -188,8 +214,8 @@ def test_fota_transform_rejects_week_mismatch_without_creating_output(tmp_path):
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "123"],
     ])
 
-    with pytest.raises(ValueError, match="does not match"):
-        MODULE.transform(source, target)
+    with pytest.raises(ValueError, match="do not match"):
+        MODULE.transform(source, target, ["2025-W20"])
 
     assert not target.exists()
 
@@ -203,7 +229,7 @@ def test_fota_transform_collapses_identical_duplicate_dimensions(tmp_path):
         ["Middle East", "Middle East", *_values_for(remaining_dimensions), "123"],
     ])
 
-    assert MODULE.transform(source, target) == 1
+    assert MODULE.transform(source, target, ["2025-W20"]) == 1
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         assert list(csv.reader(handle)) == _expected_rows()
@@ -219,7 +245,7 @@ def test_fota_transform_rejects_conflicting_duplicate_dimensions(tmp_path):
     ])
 
     with pytest.raises(ValueError, match="conflicting values at row 2"):
-        MODULE.transform(source, target)
+        MODULE.transform(source, target, ["2025-W20"])
 
     assert not target.exists()
 
@@ -238,6 +264,6 @@ def test_fota_transform_rejects_missing_contracted_dimension(tmp_path):
     with pytest.raises(
         ValueError, match=r"Missing contracted FOTA dimension\(s\): \['Category'\]"
     ):
-        MODULE.transform(source, target)
+        MODULE.transform(source, target, ["2025-W20"])
 
     assert not target.exists()

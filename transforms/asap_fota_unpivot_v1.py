@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
+import os
 import re
 import sys
 from datetime import date, timedelta
@@ -19,7 +21,7 @@ WEEK_ONLY_COLUMN = re.compile(
     r"^(?:W|Week)\s*[-_:]?\s*(\d{1,2})(?:\s*[-_/ ]\s*(20\d{2}))?$",
     re.IGNORECASE,
 )
-FILENAME_WEEK = re.compile(r"(?<!\d)(20\d{2})-W(\d{2})(?!\d)", re.IGNORECASE)
+REQUESTED_WEEK = re.compile(r"^(20\d{2})-W(\d{2})$", re.IGNORECASE)
 METRIC_COLUMN = "Metric"
 METRIC_COLUMN_ALIASES = frozenset({METRIC_COLUMN, "Metrics"})
 LINEAGE_COLUMN = "Metronome Export View"
@@ -65,20 +67,39 @@ def _compact_week(year: str | int, week: str | int) -> str:
     return compact
 
 
-def _filename_weeks(filename: str) -> list[str]:
+def _validated_requested_weeks(values: list[str] | None = None) -> list[str]:
+    """Return the exact contiguous period list supplied by Metronome."""
+    if values is None:
+        raw = os.environ.get("METRONOME_FLOW_PERIODS")
+        if not raw:
+            raise ValueError("Metronome did not supply METRONOME_FLOW_PERIODS.")
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("METRONOME_FLOW_PERIODS is not valid JSON.") from exc
+    if not isinstance(values, list) or not values:
+        raise ValueError("Metronome must supply at least one requested week.")
     weeks: list[str] = []
-    for match in FILENAME_WEEK.finditer(filename):
+    mondays: list[date] = []
+    for value in values:
+        match = REQUESTED_WEEK.fullmatch(str(value).strip())
+        if not match:
+            raise ValueError(f"Invalid requested week {value!r}; expected YYYY-Www.")
         compact = _compact_week(*match.groups())
-        if compact not in weeks:
-            weeks.append(compact)
+        if compact in weeks:
+            raise ValueError(f"Duplicate requested week: {compact}.")
+        weeks.append(compact)
+        mondays.append(date.fromisocalendar(int(compact[:4]), int(compact[4:]), 1))
+    if any(current - previous != timedelta(days=7) for previous, current in zip(mondays, mondays[1:])):
+        raise ValueError(f"Requested weeks are not ordered and contiguous: {weeks}.")
     return weeks
 
 
-def _week_value_columns(header: list[str], filename_weeks: list[str]) -> list[tuple[str, str]]:
+def _week_value_columns(header: list[str], requested_weeks: list[str]) -> list[tuple[str, str]]:
     """Return ``(column name, YYYYWW)`` pairs in source-column order."""
-    filename_years = {compact[:4] for compact in filename_weeks}
-    filename_by_number = {int(compact[4:]): compact for compact in filename_weeks}
-    default_year = next(iter(filename_years)) if len(filename_years) == 1 else None
+    requested_years = {compact[:4] for compact in requested_weeks}
+    requested_by_number = {int(compact[4:]): compact for compact in requested_weeks}
+    default_year = next(iter(requested_years)) if len(requested_years) == 1 else None
     value_columns: list[tuple[str, str]] = []
     for name in header:
         explicit = EXPLICIT_WEEK_COLUMN.fullmatch(name)
@@ -89,7 +110,7 @@ def _week_value_columns(header: list[str], filename_weeks: list[str]) -> list[tu
             if not week_only:
                 continue
             week_number, explicit_year = week_only.groups()
-            known = filename_by_number.get(int(week_number))
+            known = requested_by_number.get(int(week_number))
             year = explicit_year or (known[:4] if known else default_year)
             if not year:
                 continue
@@ -224,7 +245,7 @@ def _reverse_geocode_coordinates(
     return enriched
 
 
-def transform(source: Path, target: Path) -> int:
+def transform(source: Path, target: Path, requested_periods: list[str] | None = None) -> int:
     with source.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
         try:
@@ -232,29 +253,28 @@ def transform(source: Path, target: Path) -> int:
         except StopIteration as exc:
             raise ValueError("The normalized export is empty.") from exc
         header, keep, duplicate_groups = _column_plan(raw_header)
-        filename_weeks = _filename_weeks(source.name)
-        week_columns = _week_value_columns(header, filename_weeks)
+        requested_weeks = _validated_requested_weeks(requested_periods)
+        week_columns = _week_value_columns(header, requested_weeks)
         metric_columns = [name for name in header if name in METRIC_COLUMN_ALIASES]
         if week_columns:
             compact_weeks = [compact for _, compact in week_columns]
-            if filename_weeks and filename_weeks != compact_weeks:
+            if requested_weeks != compact_weeks:
                 raise ValueError(
-                    f"Filename week selection {filename_weeks} does not match export columns "
+                    f"Metronome requested weeks {requested_weeks} do not match export columns "
                     f"{compact_weeks}."
                 )
             value_columns = week_columns
-        elif len(metric_columns) == 1 and len(filename_weeks) == 1:
+        elif len(metric_columns) == 1 and len(requested_weeks) == 1:
             # The live flat Excel export names its sole weekly value field
-            # ``Metric``. Each artifact is already scoped to exactly one week,
-            # so its validated filename is the canonical week key.
-            value_columns = [(metric_columns[0], filename_weeks[0])]
+            # ``Metric``. Metronome's requested period is the canonical key.
+            value_columns = [(metric_columns[0], requested_weeks[0])]
         else:
             preview = [name[:80] for name in header[:25]]
             raise ValueError(
                 "Expected one or more week value columns, or one Metric column with exactly one "
-                "week in the filename; "
-                f"found week columns {[name for name, _ in week_columns] or 'none'}, filename weeks "
-                f"{filename_weeks or 'none'}, and metric columns {metric_columns or 'none'}. "
+                "requested week; "
+                f"found week columns {[name for name, _ in week_columns] or 'none'}, requested weeks "
+                f"{requested_weeks}, and metric columns {metric_columns or 'none'}. "
                 f"Detected header: {preview!r}."
             )
         allowed = {*CONTRACTED_DIMENSIONS, *(name for name, _ in value_columns), LINEAGE_COLUMN}

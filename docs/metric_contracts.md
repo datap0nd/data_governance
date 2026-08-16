@@ -7,16 +7,17 @@
   `YYYY-Www`, `Week ww`, or `Www` columns; all are unpivoted into one row per
   source row and ISO week. The live multi-week XLSX matrix may expose only the
   lower `Metrics` header even though its data rows contain one value cell per
-  selected week. The normalizer recovers those week columns from the validated
-  artifact range only when the physical value-column count matches one-to-one;
+  selected week. The normalizer recovers those week columns from Metronome's
+  exact in-memory requested period list only when the physical value-column count matches one-to-one;
   it never truncates populated cells. Blank week cells are not emitted. The
   `Metric`/`Metrics` aliases remain supported directly only for a single-week
-  file whose filename supplies exactly one week.
+  file whose Metronome period list supplies exactly one week. Filenames are
+  presentation-only and never supply or validate week identity.
 - Denominator: None.
 - Grain: Sell-out Region, Sell-out Subsidiary, Sell-out Country, Country Code, Operator, Province, Latitude, Longitude, Category, Biz Sub, Series, MKT Name, Item, and Week.
 - Date logic: A complete managed snapshot from 2026-W20 through the latest week
   available in ASAP. Downloads may contain multiple contiguous ISO weeks. The
-  transform validates their week columns against the filename, derives Sunday
+  transform validates their week columns against Metronome's requested period list, derives Sunday
   `Week Start Date` and Saturday `Week End Date`, and emits long-form rows.
 - Filters: ASAP Data Option `Show All`, Category `Weekly`, export view `Export
   Wizard (Sell-out Sub)`, and the 13 contracted dimensions above. The visible
@@ -35,7 +36,7 @@
 - Validation method: Require every distinct week from 2026-W20 through the live
   latest week, the exact minimum and maximum week, a positive total row count,
   and the full 21-column contract after the live SQL commit.
-- Edge cases: Reject ambiguous week-only headers, a filename/week mismatch,
+- Edge cases: Reject ambiguous week-only headers, a requested-period/export mismatch,
   duplicate week columns, multiple `Metric` columns, missing contracted
   dimensions, unexpected columns, unusable headers, an unprovable multi-week
   matrix width, populated cells beyond a resolved header, empty data, a partial

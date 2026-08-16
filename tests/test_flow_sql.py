@@ -101,6 +101,7 @@ def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
     metadata = flow_worker._store_completed_download(
         source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        requested_period=["2025-W20"],
     )
 
     normalized = Path(metadata["file_path"])
@@ -152,6 +153,7 @@ def test_excel_normalization_recovers_live_multi_week_metric_columns(tmp_path):
     output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     metadata = flow_worker._store_completed_download(
         source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        requested_period=["2026-W30", "2026-W31"],
     )
 
     normalized = Path(metadata["file_path"])
@@ -185,6 +187,7 @@ def test_excel_normalization_removes_live_weekly_sell_out_descriptor(tmp_path):
     output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     metadata = flow_worker._store_completed_download(
         source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        requested_period=["2026-W30", "2026-W31"],
     )
 
     normalized = Path(metadata["file_path"])
@@ -217,7 +220,41 @@ def test_excel_normalization_rejects_metric_label_plus_one_value_for_two_weeks(t
     with pytest.raises(RuntimeError, match="expected numeric week columns: 2.*observed.*1"):
         flow_worker._store_completed_download(
             source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+            requested_period=["2026-W30", "2026-W31"],
         )
+
+
+def test_excel_normalization_uses_complete_requested_period_not_filename_endpoints(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Regional FOTA"])
+    sheet.append(["Week filter", "2026-W22 to 2026-W26"])
+    sheet.append([])
+    sheet.append([
+        "Sell-out Region", "Sell-out Subsidiary", "Weekly",
+        "202622", "202623", "202624", "202625", "202626",
+    ])
+    sheet.append(["Middle East", "SEEG", "Sell-out", 22, 23, 24, 25, 26])
+    workbook.save(source)
+
+    output = tmp_path / "ASAP_Fota_2026-W22_2026-W26.xlsx"
+    requested = [f"2026-W{week:02d}" for week in range(22, 27)]
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        requested_period=requested,
+    )
+
+    assert metadata["recovered_week_columns"] == [
+        "202622", "202623", "202624", "202625", "202626",
+    ]
+    assert metadata["columns"] == [
+        "Sell-out Region", "Sell-out Subsidiary",
+        "202622", "202623", "202624", "202625", "202626",
+    ]
 
 
 def test_excel_normalization_prefers_year_week_header(tmp_path):
@@ -345,9 +382,10 @@ def test_transformations_run_once_per_file_and_use_script_results(tmp_path):
     source.write_text("name,value\na,1\n", encoding="utf-8")
     script = tmp_path / "transform.py"
     script.write_text(
-        "from argparse import ArgumentParser\nfrom pathlib import Path\n"
+        "from argparse import ArgumentParser\nimport json\nimport os\nfrom pathlib import Path\n"
         "parser = ArgumentParser()\nparser.add_argument('--input', required=True)\n"
         "parser.add_argument('--output', required=True)\nargs = parser.parse_args()\n"
+        "assert json.loads(os.environ['METRONOME_FLOW_PERIODS']) == ['2026-W01']\n"
         "Path(args.output).write_text(Path(args.input).read_text(), encoding='utf-8')\n",
         encoding="utf-8",
     )
