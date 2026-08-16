@@ -34,7 +34,9 @@ def get_dashboard():
     with get_db() as db:
         reports_total = len(visible_reports)
         last_scan_row = db.execute(
-            "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1"
+            """SELECT * FROM scan_runs
+               WHERE status = 'completed'
+               ORDER BY started_at DESC LIMIT 1"""
         ).fetchone()
         last_scan = ScanRunOut(**dict(last_scan_row)) if last_scan_row else None
         check_rows = db.execute(
