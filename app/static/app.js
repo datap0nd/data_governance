@@ -7930,7 +7930,7 @@ function bindDocumentationPage() {
 
 const LINEAGE_COLS = [
     { key: "visuals", label: "Visuals" },
-    { key: "tables", label: "Tables" },
+    { key: "tables", label: "Power BI Tables" },
     { key: "sources", label: "Sources" },
     { key: "mv_upstream", label: "Source Dependencies" },
     { key: "flows", label: "Flows" },
@@ -7939,12 +7939,16 @@ const LINEAGE_COLS = [
     { key: "upstreams", label: "Upstream Systems" },
 ];
 
+const LINEAGE_COL_STORAGE_KEY = "lineage_cols_v2";
+
 function _getLineageCols() {
     const defaults = Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
-    try { const s = sessionStorage.getItem("lineage_cols"); if (s) return { ...defaults, ...JSON.parse(s) }; } catch (_) {}
+    defaults.visuals = false;
+    defaults.tables = false;
+    try { const s = sessionStorage.getItem(LINEAGE_COL_STORAGE_KEY); if (s) return { ...defaults, ...JSON.parse(s) }; } catch (_) {}
     return defaults;
 }
-function _setLineageCols(state) { sessionStorage.setItem("lineage_cols", JSON.stringify(state)); }
+function _setLineageCols(state) { sessionStorage.setItem(LINEAGE_COL_STORAGE_KEY, JSON.stringify(state)); }
 
 async function renderLineageDiagram() {
     const showArchived = sessionStorage.getItem("lineage_show_archived") === "1";

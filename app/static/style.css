@@ -3903,12 +3903,17 @@ button.btn-danger-outline:hover {
 }
 .lin-card:hover { border-color: var(--accent); }
 .lin-card-hdr {
-    display: flex; align-items: center; gap: 0.3rem;
+    display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.3rem;
     padding: 0.35rem 0.5rem; min-height: 1.9rem;
 }
 .lin-card-lbl {
-    flex: 1; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-weight: 500;
+    line-height: 1.25;
 }
 .lin-refresh-action {
     flex-shrink: 0;
@@ -3941,7 +3946,14 @@ button.btn-danger-outline:hover {
     overflow-wrap: anywhere;
 }
 .lin-card-meta {
-    font-size: 0.6rem; color: var(--text-dim); white-space: nowrap; flex-shrink: 0;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    text-align: left;
+    flex: 1 0 100%;
+    padding-left: 1rem;
 }
 .lin-hint { font-size: 0.6rem; color: var(--text-dim); font-style: italic; }
 
@@ -3963,18 +3975,25 @@ button.btn-danger-outline:hover {
 
 /* Sub-rows (fields inside tables, visuals inside type groups) */
 .lin-subrow {
-    display: flex; align-items: center; gap: 0.3rem;
+    display: flex; align-items: flex-start; gap: 0.3rem;
     padding: 0.2rem 0.5rem 0.2rem 0.6rem;
     font-size: 0.68rem; color: var(--text-secondary);
     border-bottom: 1px solid rgba(214,211,203,0.3);
     cursor: pointer;
     transition: background 0.1s, opacity 0.3s ease, max-height 0.35s ease,
                 margin 0.35s ease, padding 0.35s ease, border-width 0.35s ease;
-    max-height: 100px;
+    max-height: 500px;
 }
 .lin-subrow:last-child { border-bottom: none; }
 .lin-subrow:hover { background: var(--surface-2); }
-.lin-subrow-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lin-subrow-label {
+    flex: 1;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.3;
+}
 
 /* Visual type badge */
 .lin-vtype {
@@ -4059,9 +4078,9 @@ button.btn-danger-outline:hover {
     font-size: 0.62rem;
     color: var(--text-dim);
     padding: 0 8px 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 .lin-card-time {
     font-size: 0.68rem;
@@ -4071,11 +4090,14 @@ button.btn-danger-outline:hover {
 .lin-card-facts {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 0.3rem;
     padding: 0 8px 4px 22px;
     font-size: 0.66rem;
     color: var(--text-secondary);
     min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 .lin-card-sep {
     color: var(--text-dim);
