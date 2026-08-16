@@ -104,6 +104,73 @@ def test_fota_discovery_reads_searchable_sell_out_country_member_list(monkeypatc
     ]
 
 
+def test_fota_discovery_labels_native_aside_multiselect_from_field_owner(monkeypatch):
+    countries = ["Saudi Arabia", "Morocco", "Iraq", "Egypt", "Pakistan", "Syria"]
+
+    class EmptyCollection:
+        def all(self):
+            return []
+
+        def all_inner_texts(self):
+            return []
+
+    class Options:
+        def all_text_contents(self):
+            return countries
+
+    class Label:
+        def inner_text(self):
+            return "Sell-out Country"
+
+    class Labels:
+        first = Label()
+
+        def count(self):
+            return 1
+
+    class Owner:
+        first = None
+
+        def __init__(self):
+            self.first = self
+
+        def count(self):
+            return 1
+
+        def locator(self, selector):
+            assert selector == "label.asap-aside-label, label"
+            return Labels()
+
+    class NativeSelect:
+        def locator(self, selector):
+            if selector == "option":
+                return Options()
+            assert "asap-aside-item" in selector
+            return Owner()
+
+        def get_attribute(self, name):
+            return "" if name == "multiple" else None
+
+    class Selects:
+        def all(self):
+            return [NativeSelect()]
+
+    class Frame:
+        def locator(self, selector):
+            return Selects() if selector == "select" else EmptyCollection()
+
+        def get_by_text(self, *_args, **_kwargs):
+            return EmptyCollection()
+
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+
+    definitions = flow_worker._asap_discover_filters(Frame())
+
+    country = next(item for item in definitions if item["filter_key"] == "sell_out_country")
+    assert country["control_type"] == "multi_select"
+    assert country["options"] == countries
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]

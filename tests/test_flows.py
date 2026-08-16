@@ -731,7 +731,7 @@ def test_asap_category_bypasses_native_selection(monkeypatch):
     assert calls == [("Category", ["Weekly"], ["Weekly", "Daily"])]
 
 
-def test_asap_sell_out_country_bypasses_native_selection(monkeypatch):
+def test_asap_sell_out_country_uses_verified_native_selection(monkeypatch):
     calls = []
     countries = ["Saudi Arabia", "Morocco", "Iraq", "Egypt", "Pakistan", "Syria"]
     definition = {
@@ -747,16 +747,16 @@ def test_asap_sell_out_country_bypasses_native_selection(monkeypatch):
 
     monkeypatch.setattr(
         flow_worker, "_select_native_options_by_text",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native control used")),
+        lambda _frame, values, options: calls.append((values, options)) or True,
     )
     monkeypatch.setattr(
         flow_worker, "_asap_select_list_values",
-        lambda _frame, label, values, options: calls.append((label, values, options)),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("visual fallback used")),
     )
 
     flow_worker._asap_apply_configuration(object(), job, None)
 
-    assert calls == [("Sell-out Country", countries, countries)]
+    assert calls == [(countries, countries)]
 
 
 def test_asap_week_bypasses_native_selection_and_uses_visible_exact_value(monkeypatch):

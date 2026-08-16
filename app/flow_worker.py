@@ -1233,7 +1233,7 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             continue
         visible_list_only = (
             definition["control_label"].casefold().rstrip(":")
-            in {"dimension", "category", "sell-out country"}
+            in {"dimension", "category"}
             or definition["control_type"] == "week"
         )
         if visible_list_only:
@@ -2069,6 +2069,22 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
         if not label:
             aria = control.get_attribute("aria-label") or control.get_attribute("name") or ""
             label = re.sub(r"\s+", " ", aria).strip()
+        if not label:
+            # ASAP's aside prompts render a direct label sibling above a
+            # native multi-select. The select intentionally has no id, name,
+            # or ARIA label, so ordinary label association cannot discover it.
+            # Resolve the visible field owner instead of dropping its options.
+            try:
+                owner = control.locator(
+                    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                    "' asap-aside-item ')][1]"
+                )
+                if owner.count():
+                    owner_label = owner.first.locator("label.asap-aside-label, label")
+                    if owner_label.count():
+                        label = _clean_text(owner_label.first.inner_text())
+            except Exception:
+                pass
         # ASAP's Select2 Data Configuration owner has no accessible name. Its
         # three-part region choices identify the prompt without hardcoding any
         # actual region value into the repository.
@@ -2079,7 +2095,10 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             label = options[0]
         if not label:
             continue
-        add_definition(label, "select", options)
+        control_type = (
+            "multi_select" if control.get_attribute("multiple") is not None else "select"
+        )
+        add_definition(label, control_type, options)
 
     # New ASAP renders some selects as asynchronous Select2 comboboxes. Open
     # them long enough for the remote results to settle, then restore the page
