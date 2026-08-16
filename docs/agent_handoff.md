@@ -10,7 +10,7 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest pre-task commit: `a885cea` (`Update pipeline layout handoff`)
+- Latest feature commit: `a746681` (`Simplify dashboard alerts and recover ASAP frames`)
 - Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
 - Push status: code commit verified on `origin/main`
@@ -71,6 +71,12 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 - Local rendered Dashboard: six expected headers, no Status header or Open
   button, Notify SLA visible, neutral Issue background, and 180px unclipped
   Owner select. Browser console had no errors.
+- Production updater installed build `20260816-234836`. It retried three
+  transient 502 download failures, succeeded on attempt four, preserved the
+  database, authenticated the ASAP worker browser, and restarted the service.
+- Production Dashboard: Asset, Views, First detected, Issue, Owner, and Action
+  are the only alert columns; row Open and Status are absent; neutral Issue
+  labels, full Owner selects, and Notify SLA are visible.
 - Local browser verification with a deliberately long script name: labels and
   metadata had no hidden overflow or ellipsis; default columns were Sources and
   Scripts; Visuals and Power BI Tables could be enabled; no console errors.
@@ -97,6 +103,5 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 
 ## Next Step
 
-Commit and push the scoped changes, run the already authorized Update App action,
-then verify the installed Dashboard in Citrix. Live CSV 5 acceptance remains for
-the next explicitly authorized Flow run.
+On the next explicitly authorized production Flow run, verify that a multi-file
+ASAP export passes CSV 5 without a detached-frame failure or duplicate download.
