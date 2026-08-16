@@ -261,10 +261,7 @@ def transform(source: Path, target: Path) -> int:
         unexpected = [name for name in header if name not in allowed]
         if unexpected:
             raise ValueError(f"Unexpected FOTA column(s): {unexpected}.")
-        missing = [
-            name for name in CONTRACTED_DIMENSIONS
-            if name != "Category" and name not in header
-        ]
+        missing = [name for name in CONTRACTED_DIMENSIONS if name not in header]
         if missing:
             raise ValueError(f"Missing contracted FOTA dimension(s): {missing}.")
 
@@ -298,10 +295,7 @@ def transform(source: Path, target: Path) -> int:
                 ):
                     dimension_values: dict[str, str] = {}
                     for name in CONTRACTED_DIMENSIONS:
-                        if name == "Category" and name not in header:
-                            dimension_values[name] = "Weekly"
-                        else:
-                            dimension_values[name] = selected[header.index(name)]
+                        dimension_values[name] = selected[header.index(name)]
                     geo_values = geocoded.get(_coordinate(selected, header), EMPTY_GEO)
                     output_dimensions = [
                         dimension_values[name] if name in dimension_values else geo_values[name]

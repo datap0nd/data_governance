@@ -9,9 +9,9 @@ export and wait for the user to decide the next range and batch size.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `ceb0448`
+- Latest Citrix-deployed runtime commit: `ceb0448`
 - Public repo: no, private
-- Push status: `ceb0448` verified on `origin/main`; publish this handoff update next
+- Push status: maintained on `origin/main`; verify the current HEAD after each update
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -43,7 +43,8 @@ export and wait for the user to decide the next range and batch size.
   selects and verifies Weekly, preserves all populated multi-week matrix values,
   and normalizes the expanded `Weekly, YYYYWW...` download header safely.
 - `transforms/asap_fota_unpivot_v1.py`: multi-week unpivot, sparse-cell handling,
-  per-week diagnostics, week dates, and reverse geolocation.
+  per-week diagnostics, week dates, reverse geolocation, and strict pass-through
+  validation of the downloaded business `Category` dimension.
 - `requirements.txt`: includes `pycountry` and `reverse_geocoder==1.5.1`.
 - `tests/test_flow_worker_discovery.py` and transform tests: multi-week matrix,
   no-silent-truncation, and sparse-week coverage.
@@ -80,10 +81,6 @@ export and wait for the user to decide the next range and batch size.
 
 ## Open Questions
 
-- The transform still has a fallback that writes `Category = Weekly` if the
-  exported business-dimension column is absent. Because the live smoke proved
-  that the frequency filter and exported `Category` dimension are different,
-  remove that fallback and fail closed before any production-table run.
 - Decide the intended handling of explicit zero FOTA values versus truly blank
   week cells. The accepted transform drops blanks and retains explicit zeros.
 - Decide whether the isolated smoke table should remain for repeatable testing or
@@ -91,6 +88,6 @@ export and wait for the user to decide the next range and batch size.
 
 ## Next Step
 
-Stop and report the targeted smoke evidence. Before any production-table run,
-remove the ambiguous Category fallback, redeploy, and repeat the same isolated
-two-by-two-week smoke only after the user authorizes that follow-up.
+Stop and report the targeted smoke evidence. The Category fallback has been
+removed in the repository; deploy that commit before any later production-table
+run. Do not start another export without explicit user authorization.

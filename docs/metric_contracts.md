@@ -39,10 +39,9 @@
   duplicate week columns, multiple `Metric` columns, missing contracted
   dimensions, unexpected columns, unusable headers, an unprovable multi-week
   matrix width, populated cells beyond a resolved header, empty data, a partial
-  requested range, or unavailable geolocation dependencies. The runtime still
-  contains a legacy fallback that fills a missing exported Category dimension
-  with `Weekly`; remove it and fail closed before a production-table run because
-  the smoke proved those two Category concepts are different.
+  requested range, or unavailable geolocation dependencies. The exported
+  business `Category` dimension is required and passes through unchanged; the
+  transform never substitutes the Weekly/Daily filter selection for it.
 
 ## Views last 30d
 - Business meaning: Raw Power BI report view count over the most recent 30 dates available in the usage CSV export.

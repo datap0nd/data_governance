@@ -19,7 +19,7 @@ DIMENSION_VALUES = {
     "Province": "Dubai",
     "Latitude": "25.2",
     "Longitude": "55.3",
-    "Category": "Weekly",
+    "Category": "Domestic",
     "Biz Sub": "Mobile",
     "Series": "Galaxy",
     "MKT Name": "Model A",
@@ -82,15 +82,12 @@ def test_fota_transform_unpivots_compact_week_column_and_adds_calendar_dates(tmp
         assert list(csv.reader(handle)) == _expected_rows()
 
 
-def test_fota_transform_uses_live_metric_column_filename_week_and_filtered_category(tmp_path):
+def test_fota_transform_uses_live_metric_column_filename_week_and_preserves_category(tmp_path):
     source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
     target = tmp_path / "result.csv"
-    exported_dimensions = [
-        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
-    ]
     _write_csv(source, [
-        [*exported_dimensions, "Metrics", MODULE.LINEAGE_COLUMN],
-        [*_values_for(exported_dimensions), "456", "Export Wizard (Sell-out Sub)"],
+        [*MODULE.CONTRACTED_DIMENSIONS, "Metrics", MODULE.LINEAGE_COLUMN],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "456", "Export Wizard (Sell-out Sub)"],
     ])
 
     assert MODULE.transform(source, target) == 1
@@ -102,9 +99,6 @@ def test_fota_transform_uses_live_metric_column_filename_week_and_filtered_categ
 def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_path, monkeypatch):
     source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
     target = tmp_path / "result.csv"
-    exported_dimensions = [
-        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
-    ]
     calls = []
 
     def fake_geocoder(coordinates):
@@ -113,8 +107,8 @@ def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_pa
 
     monkeypatch.setattr(MODULE, "_reverse_geocode_coordinates", fake_geocoder)
     _write_csv(source, [
-        [*exported_dimensions, "Week 30", "Week 31", MODULE.LINEAGE_COLUMN],
-        [*_values_for(exported_dimensions), "300", "310", "Export Wizard (Sell-out Sub)"],
+        [*MODULE.CONTRACTED_DIMENSIONS, "Week 30", "Week 31", MODULE.LINEAGE_COLUMN],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "300", "310", "Export Wizard (Sell-out Sub)"],
     ])
 
     assert MODULE.transform(source, target) == 2
@@ -139,14 +133,11 @@ def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_pa
 def test_fota_transform_skips_blank_week_cells_in_sparse_multi_week_matrix(tmp_path):
     source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
     target = tmp_path / "result.csv"
-    exported_dimensions = [
-        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
-    ]
     _write_csv(source, [
-        [*exported_dimensions, "202630", "202631"],
-        [*_values_for(exported_dimensions), "300", ""],
-        [*_values_for(exported_dimensions), "", "310"],
-        [*_values_for(exported_dimensions), "", ""],
+        [*MODULE.CONTRACTED_DIMENSIONS, "202630", "202631"],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "300", ""],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "", "310"],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "", ""],
     ])
 
     assert MODULE.transform(source, target) == 2
@@ -161,12 +152,9 @@ def test_fota_transform_skips_blank_week_cells_in_sparse_multi_week_matrix(tmp_p
 def test_fota_transform_rejects_metric_label_as_week_value(tmp_path):
     source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
     target = tmp_path / "result.csv"
-    exported_dimensions = [
-        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
-    ]
     _write_csv(source, [
-        [*exported_dimensions, "202630", "202631"],
-        [*_values_for(exported_dimensions), "Sell-out", "310"],
+        [*MODULE.CONTRACTED_DIMENSIONS, "202630", "202631"],
+        [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "Sell-out", "310"],
     ])
 
     with pytest.raises(ValueError, match="FOTA value must be numeric.*2026-W30.*Sell-out"):
@@ -240,15 +228,16 @@ def test_fota_transform_rejects_missing_contracted_dimension(tmp_path):
     source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
     target = tmp_path / "result.csv"
     exported_dimensions = [
-        name for name in MODULE.CONTRACTED_DIMENSIONS
-        if name not in {"Category", "Item"}
+        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
     ]
     _write_csv(source, [
         [*exported_dimensions, MODULE.METRIC_COLUMN],
         [*_values_for(exported_dimensions), "123"],
     ])
 
-    with pytest.raises(ValueError, match="Missing contracted FOTA dimension"):
+    with pytest.raises(
+        ValueError, match=r"Missing contracted FOTA dimension\(s\): \['Category'\]"
+    ):
         MODULE.transform(source, target)
 
     assert not target.exists()
