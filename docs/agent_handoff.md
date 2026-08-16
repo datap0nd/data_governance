@@ -2,7 +2,8 @@
 
 ## Current Objective
 
-Maintain the deployed Pipelines refresh controls and the simplified Alerts UI.
+Deploy and verify the Pipelines readability update. Pipeline node names and
+metadata now wrap, while Visuals and Power BI Tables are hidden by default.
 Flow nodes are implemented but cannot be verified in production until matching
 target tables exist. Keep the paused production Flow paused until the user
 explicitly resumes it.
@@ -11,10 +12,10 @@ explicitly resumes it.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest commit: `bfabd04` (`Ignore incomplete scans in dashboard summary`)
+- Latest code commit: `41b353d` (`Wrap pipeline labels and reduce default columns`)
 - Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
-- Push status: local `HEAD` and `origin/main` both resolve to `bfabd04`
+- Push status: code commit verified on `origin/main`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -29,6 +30,10 @@ explicitly resumes it.
   or failed scan must not replace valid report/source counts with null values.
 - Best-practice actions stay excluded from operational Alerts, and redundant
   alert families remain collapsed by the existing cleanup logic.
+- Pipeline card names, nested field/visual names, schedules, facts, and metadata
+  wrap without ellipsis. Secondary metadata uses its own line.
+- Visuals and Power BI Tables use a versioned session preference and start
+  hidden for both new and existing browser sessions after the update.
 
 ## Files Changed
 
@@ -38,8 +43,11 @@ explicitly resumes it.
 - `app/static/app.js`, `app/static/style.css`: alert logos, simplified columns,
   wider Owner controls, and neutral styling.
 - `app/routers/dashboard.py`: select the latest completed scan for the summary.
+- `app/static/app.js`, `app/static/style.css`: Pipeline default visibility and
+  non-truncating node layout.
 - `tests/test_actions_dedupe.py`, `tests/test_pbi_fetch.py`,
-  `tests/test_report_refresh.py`, `tests/test_dashboard.py`: regression coverage.
+  `tests/test_report_refresh.py`, `tests/test_dashboard.py`,
+  `tests/test_lineage_display.mjs`: regression coverage.
 
 ## Commands And Checks
 
@@ -47,6 +55,10 @@ explicitly resumes it.
 - `node --check app/static/app.js`: passed.
 - `/tmp/data-governance-test-env/bin/python -m compileall -q app`: passed.
 - `git diff --check`: passed.
+- `node tests/test_lineage_display.mjs`: passed.
+- Local browser verification with a deliberately long script name: labels and
+  metadata had no hidden overflow or ellipsis; default columns were Sources and
+  Scripts; Visuals and Power BI Tables could be enabled; no console errors.
 - Production updater installed build `20260816-232302`; service restart reported
   success.
 - Live Alerts page: logos visible, no Type column, Owner controls fully visible,
@@ -64,8 +76,11 @@ explicitly resumes it.
   target tables are not yet present.
 - The available PostgreSQL role cannot independently read the materialized
   view's storage modification timestamp.
+- Pipelines wrapping/default-column changes are on `origin/main` but are not yet
+  installed in the production app because no fresh Update App approval was given.
 
 ## Next Step
 
-After matching Flow target tables reach production, run the metadata scan and
-verify that each Flow appears directly upstream of its target table in Pipelines.
+After the user explicitly approves Update App, install the latest `origin/main`
+build and verify long production source/script names plus the two default-hidden
+columns in Citrix.
