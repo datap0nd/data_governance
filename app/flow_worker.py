@@ -1036,9 +1036,7 @@ def _asap_live_list_values(scope, label: str) -> list[str]:
     for value in lines:
         if value.casefold().rstrip(":") == label.casefold().rstrip(":"):
             continue
-        if re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I):
-            continue
-        if "type to search" in value.casefold():
+        if _is_asap_list_metadata(value):
             continue
         values.append(value)
     return values
@@ -1228,7 +1226,8 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
             continue
         visible_list_only = (
-            definition["control_label"].casefold().rstrip(":") in {"dimension", "category"}
+            definition["control_label"].casefold().rstrip(":")
+            in {"dimension", "category", "sell-out country"}
             or definition["control_type"] == "week"
         )
         if visible_list_only:
@@ -1751,6 +1750,17 @@ def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def _is_asap_list_metadata(value: str) -> bool:
+    """Return whether a rendered prompt line describes the list, not a member."""
+    cleaned = _clean_text(value)
+    return (
+        "type to search" in cleaned.casefold()
+        or bool(re.fullmatch(
+            r"\(all\)(?:\s*(?:\(\d+\s+values?\)|\d+\s+values?))?", cleaned, re.I,
+        ))
+    )
+
+
 def _normalize_asap_filter_label(label: str, control_type: str, options: list[str]) -> str:
     """Repair labels omitted by custom MicroStrategy prompt controls."""
     if (
@@ -1775,8 +1785,7 @@ def _merge_asap_filter_definition(
     label = _normalize_asap_filter_label(label, control_type, raw_options)
     options = [
         value for value in raw_options
-        if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
-        and "type to search" not in value.casefold()
+        if value and value != label and not _is_asap_list_metadata(value)
     ]
     if not label or not options:
         return
@@ -2002,7 +2011,16 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
                 for line in lines
             )
-            if len(lines) >= 3 and (has_marker or not require_search_marker):
+            member_values = [
+                value for value in lines[1:]
+                if value.casefold().rstrip(":") != lines[0].casefold().rstrip(":")
+                and not _is_asap_list_metadata(value)
+            ]
+            # Some MicroStrategy prompts wrap the label, search box, and
+            # member list in separate nested containers. Do not stop at the
+            # metadata-only wrapper. Continue outward until at least one real
+            # member is present.
+            if member_values and (has_marker or not require_search_marker):
                 return lines[1:500]
         return []
 
@@ -2098,15 +2116,35 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             marker_index = next((i for i, line in enumerate(lines) if
                                  "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)), -1)
             if marker_index > 0 and len(lines) > marker_index + 1:
-                label = lines[marker_index - 1]
+                label_index = next(
+                    (
+                        index for index in range(marker_index - 1, -1, -1)
+                        if not _is_asap_list_metadata(lines[index])
+                    ),
+                    -1,
+                )
+                if label_index < 0:
+                    continue
+                label = lines[label_index]
                 control_type = "week" if "week" in label.casefold() else "multi_select"
-                add_definition(label, control_type, lines[marker_index + 1:500])
+                add_definition(label, control_type, lines[label_index + 1:500])
                 break
 
     # Dimension pickers use a named member list but no ARIA roles. The adapter
     # recognizes the UI control label, while every option remains page-driven.
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
+
+    # Regional FOTA renders Sell-out Country as a searchable visual member
+    # list, not a heading, native select, or ARIA listbox. Anchor directly on
+    # the live prompt label and keep its values page-driven. The dedicated path
+    # makes discovery independent of whether the search/count marker is split
+    # into a sibling container by the current MicroStrategy rendering.
+    for country_label in frame.get_by_text(re.compile(r"^sell-out country:?$", re.I)).all():
+        add_definition(
+            "Sell-out Country", "multi_select",
+            nearest_list_values(country_label, require_search_marker=True),
+        )
 
     # Regional FOTA renders Category as the same visual-only member list used
     # by Dimension. It has no search/count marker or native select, so the

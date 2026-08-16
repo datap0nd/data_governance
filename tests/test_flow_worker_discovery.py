@@ -44,6 +44,64 @@ def test_fota_discovery_includes_visual_category_member_list():
     assert '{"weekly", "daily"}' in source
 
 
+def test_fota_discovery_reads_searchable_sell_out_country_member_list(monkeypatch):
+    class EmptyCollection:
+        def all(self):
+            return []
+
+        def all_inner_texts(self):
+            return []
+
+    class Parent:
+        def __init__(self, text, parent=None):
+            self._text = text
+            self._parent = parent
+            self.first = self
+
+        def count(self):
+            return 1
+
+        def inner_text(self):
+            return self._text
+
+        def locator(self, selector):
+            assert selector == "xpath=parent::*"
+            return self._parent or EmptyCollection()
+
+    complete = Parent(
+        "Sell-out Country\nType to search in list\n(All) 22 values\n"
+        "Saudi Arabia\nMorocco\nIraq\nEgypt\nPakistan\nSyria"
+    )
+    metadata_only = Parent(
+        "Sell-out Country\nType to search in list\n(All) 22 values", complete,
+    )
+    label = Parent("Sell-out Country", metadata_only)
+
+    class Frame:
+        def locator(self, _selector):
+            return EmptyCollection()
+
+        def get_by_text(self, value, **_kwargs):
+            pattern = getattr(value, "pattern", str(value)).casefold()
+            if "sell-out country" in pattern:
+                class Collection:
+                    def all(self):
+                        return [label]
+                return Collection()
+            return EmptyCollection()
+
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+
+    definitions = flow_worker._asap_discover_filters(Frame())
+
+    country = next(item for item in definitions if item["filter_key"] == "sell_out_country")
+    assert country["label"] == "Sell-out Country"
+    assert country["control_type"] == "multi_select"
+    assert country["options"] == [
+        "Saudi Arabia", "Morocco", "Iraq", "Egypt", "Pakistan", "Syria",
+    ]
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]
