@@ -152,13 +152,6 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None)
                 exc.response is not None and exc.response.status_code >= 500
             )
             if not retryable or attempt == 5:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
-                    detail = exc.response.text.strip()
-                    if detail:
-                        raise RuntimeError(
-                            f"Local API rejected {method} {path} with HTTP "
-                            f"{exc.response.status_code}: {detail[:4000]}"
-                        ) from exc
                 raise
             time.sleep(attempt)
     raise RuntimeError("Local API request failed after retries.") from last_error
@@ -969,48 +962,42 @@ def _asap_list_scope(frame: Frame, label: str, requested: list[str]):
     # Legacy MicroStrategy controls do not always expose listbox semantics.
     # In that case, narrow from every matching label to the nearest ancestor
     # containing every requested member, then use only descendants of it.
-    anchor_locators = [frame.get_by_text(label, exact=True)]
-    # A custom prompt may render its heading as part of one combined card
-    # rather than as an exact standalone text node. A requested member is an
-    # equally reliable starting point because the resolved ancestor still has
-    # to contain every requested value, and the smallest matching owner wins.
-    anchor_locators.append(frame.get_by_text(requested[0], exact=True))
+    labels = frame.get_by_text(label, exact=True)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         matches = []
-        for anchors in anchor_locators:
-            for index in range(anchors.count()):
-                heading = anchors.nth(index)
-                try:
-                    if not heading.is_visible():
-                        continue
-                    # Lightweight test doubles and older adapters do not expose
-                    # locator traversal. Their frame is already the list scope.
-                    if not callable(getattr(heading, "locator", None)):
-                        return frame
-                    ancestor = heading
-                    for depth in range(1, 17):
-                        parents = ancestor.locator("xpath=parent::*")
-                        if not parents.count():
-                            break
-                        ancestor = parents.first
-                        contains_requested = True
-                        for value in requested:
-                            candidates = ancestor.get_by_text(value, exact=True)
-                            if not any(
-                                candidates.nth(option_index).is_visible()
-                                for option_index in range(candidates.count())
-                            ):
-                                contains_requested = False
-                                break
-                        if not contains_requested:
-                            continue
-                        box = ancestor.bounding_box()
-                        area = box["width"] * box["height"] if box else float("inf")
-                        matches.append((depth, area, ancestor))
-                        break
-                except Exception:
+        for index in range(labels.count()):
+            heading = labels.nth(index)
+            try:
+                if not heading.is_visible():
                     continue
+                # Lightweight test doubles and older adapters do not expose
+                # locator traversal. Their frame is already the list scope.
+                if not callable(getattr(heading, "locator", None)):
+                    return frame
+                ancestor = heading
+                for depth in range(1, 9):
+                    parents = ancestor.locator("xpath=parent::*")
+                    if not parents.count():
+                        break
+                    ancestor = parents.first
+                    contains_requested = True
+                    for value in requested:
+                        candidates = ancestor.get_by_text(value, exact=True)
+                        if not any(
+                            candidates.nth(option_index).is_visible()
+                            for option_index in range(candidates.count())
+                        ):
+                            contains_requested = False
+                            break
+                    if not contains_requested:
+                        continue
+                    box = ancestor.bounding_box()
+                    area = box["width"] * box["height"] if box else float("inf")
+                    matches.append((depth, area, ancestor))
+                    break
+            except Exception:
+                continue
         if matches:
             return min(matches, key=lambda match: (match[0], match[1]))[2]
         frame.page.wait_for_timeout(250)
@@ -1049,7 +1036,9 @@ def _asap_live_list_values(scope, label: str) -> list[str]:
     for value in lines:
         if value.casefold().rstrip(":") == label.casefold().rstrip(":"):
             continue
-        if _is_asap_list_metadata(value):
+        if re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I):
+            continue
+        if "type to search" in value.casefold():
             continue
         values.append(value)
     return values
@@ -1239,8 +1228,7 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
             continue
         visible_list_only = (
-            definition["control_label"].casefold().rstrip(":")
-            in {"dimension", "category"}
+            definition["control_label"].casefold().rstrip(":") in {"dimension", "category"}
             or definition["control_type"] == "week"
         )
         if visible_list_only:
@@ -1763,17 +1751,6 @@ def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
-def _is_asap_list_metadata(value: str) -> bool:
-    """Return whether a rendered prompt line describes the list, not a member."""
-    cleaned = _clean_text(value)
-    return (
-        "type to search" in cleaned.casefold()
-        or bool(re.fullmatch(
-            r"\(all\)(?:\s*(?:\(\d+\s+values?\)|\d+\s+values?))?", cleaned, re.I,
-        ))
-    )
-
-
 def _normalize_asap_filter_label(label: str, control_type: str, options: list[str]) -> str:
     """Repair labels omitted by custom MicroStrategy prompt controls."""
     if (
@@ -1798,25 +1775,21 @@ def _merge_asap_filter_definition(
     label = _normalize_asap_filter_label(label, control_type, raw_options)
     options = [
         value for value in raw_options
-        if value and value != label and not _is_asap_list_metadata(value)
-    ][:2000]
+        if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
+        and "type to search" not in value.casefold()
+    ]
     if not label or not options:
         return
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
     existing = next((item for item in definitions if item["filter_key"] == key), None)
     if existing is not None:
-        existing["options"] = _merge_asap_filter_options(existing["options"], options)
+        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))
         return
     definitions.append({
         "filter_key": key, "label": label, "control_label": label,
         "control_type": control_type, "options": options, "automation": {},
         "required": False, "position": len(definitions),
     })
-
-
-def _merge_asap_filter_options(existing: list[str], discovered: list[str]) -> list[str]:
-    """Merge values from multiple ASAP views without exceeding the API contract."""
-    return list(dict.fromkeys([*existing, *discovered]))[:2000]
 
 
 def _visible_anchor_records(page: Page) -> list[dict]:
@@ -2018,25 +1991,18 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
         """Read the smallest visible MicroStrategy control containing a label."""
         ancestor = label_locator
-        for depth in range(17):
-            if depth:
-                ancestor = ancestor.locator("xpath=parent::*")
-                if not ancestor.count():
-                    break
+        for _ in range(7):
+            ancestor = ancestor.locator("xpath=parent::*")
+            if not ancestor.count():
+                break
             lines = list(dict.fromkeys(
                 _clean_text(line) for line in ancestor.first.inner_text().splitlines() if _clean_text(line)
             ))
-            has_marker = any(_is_asap_list_metadata(line) for line in lines)
-            member_values = [
-                value for value in lines[1:]
-                if value.casefold().rstrip(":") != lines[0].casefold().rstrip(":")
-                and not _is_asap_list_metadata(value)
-            ]
-            # Some MicroStrategy prompts wrap the label, search box, and
-            # member list in separate nested containers. Do not stop at the
-            # metadata-only wrapper. Continue outward until at least one real
-            # member is present.
-            if member_values and (has_marker or not require_search_marker):
+            has_marker = any(
+                "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
+                for line in lines
+            )
+            if len(lines) >= 3 and (has_marker or not require_search_marker):
                 return lines[1:500]
         return []
 
@@ -2081,22 +2047,6 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
         if not label:
             aria = control.get_attribute("aria-label") or control.get_attribute("name") or ""
             label = re.sub(r"\s+", " ", aria).strip()
-        if not label:
-            # ASAP's aside prompts render a direct label sibling above a
-            # native multi-select. The select intentionally has no id, name,
-            # or ARIA label, so ordinary label association cannot discover it.
-            # Resolve the visible field owner instead of dropping its options.
-            try:
-                owner = control.locator(
-                    "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
-                    "' asap-aside-item ')][1]"
-                )
-                if owner.count():
-                    owner_label = owner.first.locator("label.asap-aside-label, label")
-                    if owner_label.count():
-                        label = _clean_text(owner_label.first.inner_text())
-            except Exception:
-                pass
         # ASAP's Select2 Data Configuration owner has no accessible name. Its
         # three-part region choices identify the prompt without hardcoding any
         # actual region value into the repository.
@@ -2107,10 +2057,7 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             label = options[0]
         if not label:
             continue
-        control_type = (
-            "multi_select" if control.get_attribute("multiple") is not None else "select"
-        )
-        add_definition(label, control_type, options)
+        add_definition(label, "select", options)
 
     # New ASAP renders some selects as asynchronous Select2 comboboxes. Open
     # them long enough for the remote results to settle, then restore the page
@@ -2138,52 +2085,28 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     # Searchable member selectors expose their label and values as plain divs,
     # without heading or option roles. Their search/count marker is the stable
     # structural signal across reports.
-    search_markers = frame.get_by_text(re.compile(r"type to search|\b\d+\s+values?\b", re.I))
+    search_markers = frame.get_by_text(re.compile(r"type to search|\(\d+\s+values?\)", re.I))
     for marker in search_markers.all():
         block = marker
-        for _ in range(16):
+        for _ in range(6):
             block = block.locator("xpath=parent::*")
             if not block.count():
                 break
             lines = list(dict.fromkeys(
                 _clean_text(line) for line in block.first.inner_text().splitlines() if _clean_text(line)
             ))
-            marker_index = next((
-                i for i, line in enumerate(lines)
-                if _is_asap_list_metadata(line) or re.search(r"\b\d+\s+values?\b", line, re.I)
-            ), -1)
+            marker_index = next((i for i, line in enumerate(lines) if
+                                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)), -1)
             if marker_index > 0 and len(lines) > marker_index + 1:
-                label_index = next(
-                    (
-                        index for index in range(marker_index - 1, -1, -1)
-                        if not _is_asap_list_metadata(lines[index])
-                    ),
-                    -1,
-                )
-                if label_index < 0:
-                    continue
-                label = lines[label_index]
+                label = lines[marker_index - 1]
                 control_type = "week" if "week" in label.casefold() else "multi_select"
-                add_definition(label, control_type, lines[label_index + 1:500])
+                add_definition(label, control_type, lines[marker_index + 1:500])
                 break
 
     # Dimension pickers use a named member list but no ARIA roles. The adapter
     # recognizes the UI control label, while every option remains page-driven.
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
-
-    # Regional FOTA renders Sell-out Country as a searchable visual member
-    # list, not a heading, native select, or ARIA listbox. Anchor directly on
-    # the live prompt label and keep its values page-driven. The dedicated path
-    # makes discovery independent of whether the search/count marker is split
-    # into a sibling container by the current MicroStrategy rendering.
-    for country_label in frame.get_by_text(
-        re.compile(r"sell\s*[-‐‑‒–—]?\s*out\s+country", re.I),
-    ).all():
-        add_definition(
-            "Sell-out Country", "multi_select",
-            nearest_list_values(country_label, require_search_marker=True),
-        )
 
     # Regional FOTA renders Category as the same visual-only member list used
     # by Dimension. It has no search/count marker or native select, so the
@@ -2368,9 +2291,9 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                         if existing is None:
                             filters.append(definition)
                         else:
-                            existing["options"] = _merge_asap_filter_options(
-                                existing.get("options", []), definition.get("options", []),
-                            )
+                            existing["options"] = list(dict.fromkeys([
+                                *existing.get("options", []), *definition.get("options", []),
+                            ]))
                     if selected_label:
                         export_views.append({
                             "label": selected_label, "filter_keys": view_filter_keys,

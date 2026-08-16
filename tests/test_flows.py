@@ -506,11 +506,8 @@ def test_asap_list_scope_prefers_nearest_owner_when_labels_repeat():
             return Collection([])
 
         def get_by_text(self, value, exact=True):
-            if value == "Repeated Label":
-                return Collection([repeated_member, actual_label])
-            if value == "Choice":
-                return Collection([Node("choice anchor", parent=prompt)])
-            raise AssertionError(value)
+            assert value == "Repeated Label"
+            return Collection([repeated_member, actual_label])
 
     assert flow_worker._asap_list_scope(Frame(), "Repeated Label", ["Choice"]) is prompt
 
@@ -729,34 +726,6 @@ def test_asap_category_bypasses_native_selection(monkeypatch):
     flow_worker._asap_apply_configuration(object(), job, None)
 
     assert calls == [("Category", ["Weekly"], ["Weekly", "Daily"])]
-
-
-def test_asap_sell_out_country_uses_verified_native_selection(monkeypatch):
-    calls = []
-    countries = ["Saudi Arabia", "Morocco", "Iraq", "Egypt", "Pakistan", "Syria"]
-    definition = {
-        "filter_key": "sell_out_country",
-        "control_label": "Sell-out Country",
-        "control_type": "multi_select",
-        "options": countries,
-    }
-    job = {
-        "selections": {"sell_out_country": countries},
-        "report": {"filters": [definition]},
-    }
-
-    monkeypatch.setattr(
-        flow_worker, "_select_native_options_by_text",
-        lambda _frame, values, options: calls.append((values, options)) or True,
-    )
-    monkeypatch.setattr(
-        flow_worker, "_asap_select_list_values",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("visual fallback used")),
-    )
-
-    flow_worker._asap_apply_configuration(object(), job, None)
-
-    assert calls == [(countries, countries)]
 
 
 def test_asap_week_bypasses_native_selection_and_uses_visible_exact_value(monkeypatch):
@@ -2332,23 +2301,6 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
     assert flow_worker._api(Client(), "POST", "/progress") == {"status": "running"}
     assert len(attempts) == 3
-
-
-def test_worker_api_includes_validation_response_in_error():
-    httpx = __import__("httpx")
-    request = httpx.Request("POST", "http://127.0.0.1/progress")
-    response = httpx.Response(
-        422, request=request,
-        json={"detail": [{"loc": ["body", "reports", 0, "filters", 0, "options"],
-                          "msg": "List should have at most 2000 items"}]},
-    )
-
-    class Client:
-        def request(self, *_args, **_kwargs):
-            return response
-
-    with pytest.raises(RuntimeError, match="options.*at most 2000 items"):
-        flow_worker._api(Client(), "POST", "/progress")
 
 
 def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
