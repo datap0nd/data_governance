@@ -2,14 +2,18 @@
 
 ## Current Objective
 
-The targeted ASAP FOTA acceptance smoke is complete. Stop before any large
-export and wait for the user to decide the next range and batch size.
+ASAP FOTA is paused at the user's request. The Sell-out Country discovery and
+filtering experiment was reverted. Do not scan, configure, or run FOTA until the
+user explicitly resumes the project.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest Citrix-deployed runtime commit: `ceb0448`
+- Latest repository commit: `64ddfe4` (`Revert ASAP country filter changes`)
+- Application and test files match pre-country commit `b72e726`
+- Latest Citrix-deployed build: `20260816-210239`, from the now-reverted country
+  work. The rollback has not been deployed through Update App.
 - Public repo: no, private
 - Push status: maintained on `origin/main`; verify the current HEAD after each update
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
@@ -36,6 +40,8 @@ export and wait for the user to decide the next range and batch size.
   (Incl. Wi...)`, not the filter value `Weekly`.
 - The flow is manual and inactive. Do not start a current-year or other large run
   until the user finishes analysis and explicitly approves it.
+- Sell-out Country filtering is not part of the paused flow. Commits `f2236ab`
+  through `8018a0d` were reverted together by `64ddfe4`.
 
 ## Files Changed
 
@@ -49,13 +55,16 @@ export and wait for the user to decide the next range and batch size.
 - `tests/test_flow_worker_discovery.py` and transform tests: multi-week matrix,
   no-silent-truncation, and sparse-week coverage.
 - `docs/metric_contracts.md`: 21-column FOTA snapshot contract and validation rules.
+- `app/flow_worker.py`, `tests/test_flow_worker_discovery.py`, and
+  `tests/test_flows.py`: restored to their exact `b72e726` content for the
+  country-filter rollback.
 
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.13 --with pytest --with-requirements
-  requirements.txt pytest -q`: 264 passed.
-- Remote `main`: current local HEAD was verified equal to `origin/main` after
-  publishing the Category pass-through change.
+  requirements.txt pytest -q`: 267 passed after the rollback.
+- Remote `main`: `64ddfe4b296f9c359047fe2c6f0fdea54e76eea2`, verified equal to
+  local `HEAD` after push.
 - Visible Citrix deployment: build `20260816-170611` from `ceb0448`; `setup.ps1`
   installed dependencies and registered the worker successfully.
 - Live headed run `#139`: both two-week exports visibly had `Weekly` selected
@@ -88,6 +97,7 @@ export and wait for the user to decide the next range and batch size.
 
 ## Next Step
 
-Stop and report the targeted smoke evidence. The Category fallback has been
-removed in the repository; deploy that commit before any later production-table
-run. Do not start another export without explicit user authorization.
+Wait for explicit user direction. If FOTA is resumed, deploy current `main`
+through the visible Update App flow before any scan or run, because Citrix is
+still running the reverted country-filter build. Do not start another export
+without explicit user authorization.
