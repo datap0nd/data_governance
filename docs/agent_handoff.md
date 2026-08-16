@@ -11,10 +11,10 @@ transform plus atomic managed-snapshot refresh of
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `46a218a`
+- Latest runtime commit before this handoff update: `1939d77`
 - Public repo: no, private
-- Push status: `46a218a` verified on `origin/main`; publish the current Metrics
-  transform fix and this handoff update next
+- Push status: `1939d77` verified on `origin/main`; publish the bounded export
+  retry and this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -37,6 +37,9 @@ transform plus atomic managed-snapshot refresh of
   labels and verifies both ranges before RUN.
 - Do not start another full-range run until isolated 2025-W20 and 2026-W33
   downloads both normalize and transform successfully with SQL disabled.
+- Retry exactly once only when an opened Export Wizard exposes neither its
+  requested format nor its Export action. The failure occurs before a download
+  begins, and unrelated download failures remain immediately fatal.
 - Monitor the headed worker only from the separate Metronome browser window.
   Keyboard refresh can land on the worker and detach its Playwright frame; use
   the visible mouse reload control only after verifying Metronome is foreground.
@@ -46,9 +49,11 @@ transform plus atomic managed-snapshot refresh of
 - `app/flow_worker.py`: live ASAP slider readback, export-toolbar discovery,
   direct Export Options handling, input-based Export actions, flat Excel format
   recognition, and XLSX header selection that prefers contracted dimension
-  labels or a valid YYYYWW label over a wider data row.
+  labels or a valid YYYYWW label over a wider data row. The current change adds
+  one bounded retry for the exact transient Export Wizard recognition failure.
 - `tests/test_flow_worker_discovery.py`: regression coverage for the live control
-  shapes and export format.
+  shapes, export format, retry limit, and immediate propagation of unrelated
+  download failures.
 - `tests/test_flow_sql.py`: regression coverage for preambles and wider unique or
   duplicate-valued data rows that must not be selected as the XLSX header.
 - `transforms/asap_fota_unpivot_v1.py`: strict external FOTA reshaping contract,
@@ -59,8 +64,11 @@ transform plus atomic managed-snapshot refresh of
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
-  requirements.txt pytest -q`: 250 passed in 3.02s.
-- Remote `main`: `46a218a52d1f4e22a00a1214db6616cce10d11ca` verified before
+  requirements.txt pytest -q tests/test_flow_worker_discovery.py`: 28 passed in
+  0.14s.
+- `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
+  requirements.txt pytest -q`: 253 passed in 3.01s.
+- Remote `main`: `1939d778e083ac8d01859d93e25813bdb5c98d2e` verified before
   the current change.
 - Citrix build `#20260816-035043`: deployed from `46a218a`.
 - Live run `#114`: all 66 downloads completed, then the first transform failed
@@ -83,6 +91,12 @@ transform plus atomic managed-snapshot refresh of
 - Clean smoke `#122` on build `#20260816-035043` reached the new live-shape gate
   and proved the final value-column spelling is `Metrics` plural. All other
   detected columns matched the expected live export shape; SQL remained disabled.
+- Endpoint smokes `#123` for 2025-W20 and `#124` for 2026-W33 both completed the
+  download and external transform with SQL disabled. They took 4m38s and 3m14s.
+- Full run `#125` failed after 177m32s and 39 successful weekly exports. The next
+  Export Wizard exposed neither its XLSX format option nor its Export action.
+  Transform aggregation and SQL did not run. This is the exact failure covered
+  by the current one-retry change.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
@@ -90,8 +104,8 @@ transform plus atomic managed-snapshot refresh of
 
 ## Open Questions
 
-- The current live-shape transform is locally tested but not accepted until a
-  live one-week export reaches the external transform successfully.
+- The one-retry recovery is locally tested but still requires deployment and
+  new endpoint smoke evidence before another full-range run.
 - The objective is not accepted until all 66 exports and transforms succeed and the
   live SQL table proves 66 distinct weeks, minimum 2025-W20, maximum 2026-W33,
   a positive row count, and the contracted columns.
@@ -101,5 +115,6 @@ transform plus atomic managed-snapshot refresh of
 
 ## Next Step
 
-Commit and push the live Metrics alias, deploy it through the visible
-Metronome Update App flow, and rerun only 2025-W20 with SQL disabled.
+Commit and push the bounded Export Wizard retry, deploy it through the visible
+Metronome Update App flow, then repeat the 2025-W20 and 2026-W33 smoke gates with
+SQL disabled before another full-range run.

@@ -1701,6 +1701,33 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             candidate.remove_listener("download", capture_download)
 
 
+def _asap_download_with_retry(
+    page: Page, frame: Frame, job: dict, staging_dir: Path,
+):
+    """Retry one transient export-wizard recognition failure.
+
+    A long ASAP run repeatedly opens the same MicroStrategy export wizard. In
+    practice, the popup can occasionally open without exposing either of its
+    controls to Playwright. Reopening that same export once is safe because no
+    download has started at the point where this specific error is raised.
+    """
+    retryable_prefix = "ASAP Export Wizard opened, but its "
+    retryable_suffix = "option or Export action was not recognized."
+    for attempt in range(2):
+        try:
+            return _asap_download(page, frame, job, staging_dir)
+        except RuntimeError as exc:
+            message = str(exc)
+            if (
+                attempt == 1
+                or not message.startswith(retryable_prefix)
+                or retryable_suffix not in message
+            ):
+                raise
+            page.wait_for_timeout(1_500)
+    raise AssertionError("unreachable")
+
+
 def _slug_key(value: str, fallback: str) -> str:
     key = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
     if not key or not key[0].isalpha():
@@ -2717,7 +2744,7 @@ def execute_job(
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
-                staged_file, export_pages = _asap_download(
+                staged_file, export_pages = _asap_download_with_retry(
                     page, frame, job, download_staging_dir or profile_dir / "downloads",
                 )
         else:

@@ -309,6 +309,79 @@ def test_asap_xlsx_format_prefers_flat_excel_export_and_accepts_legacy_label():
     assert not pattern.fullmatch("Excel with formatting")
 
 
+def test_asap_download_retries_one_wizard_recognition_failure(monkeypatch, tmp_path):
+    attempts = []
+
+    def download(*_args):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise RuntimeError(
+                "ASAP Export Wizard opened, but its XLSX option or Export action "
+                "was not recognized. Format option found: False. Export action found: False."
+            )
+        return tmp_path / "download.xlsx", []
+
+    monkeypatch.setattr(flow_worker, "_asap_download", download)
+
+    class Page:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = Page()
+    result = flow_worker._asap_download_with_retry(
+        page, object(), {}, tmp_path,
+    )
+
+    assert result == (tmp_path / "download.xlsx", [])
+    assert attempts == [1, 2]
+    assert page.waits == [1_500]
+
+
+def test_asap_download_stops_after_second_wizard_recognition_failure(monkeypatch, tmp_path):
+    attempts = []
+    error = (
+        "ASAP Export Wizard opened, but its XLSX option or Export action was not "
+        "recognized. Format option found: False. Export action found: False."
+    )
+
+    def download(*_args):
+        attempts.append(len(attempts) + 1)
+        raise RuntimeError(error)
+
+    monkeypatch.setattr(flow_worker, "_asap_download", download)
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    with pytest.raises(RuntimeError, match="ASAP Export Wizard opened"):
+        flow_worker._asap_download_with_retry(Page(), object(), {}, tmp_path)
+
+    assert attempts == [1, 2]
+
+
+def test_asap_download_does_not_retry_other_failures(monkeypatch, tmp_path):
+    attempts = []
+
+    def download(*_args):
+        attempts.append(len(attempts) + 1)
+        raise RuntimeError("ASAP export started, but no download was emitted.")
+
+    monkeypatch.setattr(flow_worker, "_asap_download", download)
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("non-retryable failures must not wait")
+
+    with pytest.raises(RuntimeError, match="no download was emitted"):
+        flow_worker._asap_download_with_retry(Page(), object(), {}, tmp_path)
+
+    assert attempts == [1]
+
+
 def test_raw_table_excel_menu_item_is_a_direct_download_action():
     class Locator:
         def __init__(self, visible):
