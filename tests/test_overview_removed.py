@@ -59,3 +59,16 @@ def test_alert_surfaces_use_degradation_dates_and_power_bi_error_details():
     assert "Degraded since" in app_js
     assert "PBI Refresh Error:" in app_js
     assert "check the notes" not in app_js
+
+
+def test_alert_table_uses_source_logos_and_gives_owner_room():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    style_css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert "function alertAssetLogo(action)" in app_js
+    assert 'aria-label="${labels[kind]}"' in app_js
+    assert '<th style="width:9%">Type</th>' not in app_js
+    assert 'class="alerts-owner-cell"' in app_js
+    assert ".alert-source-logo-powerbi" in style_css
+    assert ".alerts-owner-cell" in style_css
+    assert "min-width: 1180px" in style_css

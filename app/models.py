@@ -150,6 +150,7 @@ class ActionOut(BaseModel):
     id: int
     source_id: int | None = None
     source_name: str | None = None
+    source_type: str | None = None
     report_id: int | None = None
     report_name: str | None = None
     flow_id: int | None = None

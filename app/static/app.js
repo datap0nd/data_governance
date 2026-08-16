@@ -323,6 +323,37 @@ function actionTypeLabel(type) {
     return labels[type] || String(type || "Alert").replace(/_/g, " ");
 }
 
+function alertAssetKind(action) {
+    const assetType = String(action.asset_type || "").toLowerCase();
+    if (assetType === "report") return "powerbi";
+    if (["flow", "script", "scheduled_task"].includes(assetType)) return "flow";
+
+    const sourceType = String(action.source_type || "").toLowerCase();
+    const sourceName = String(action.asset_name || action.source_name || "").toLowerCase();
+    if (["excel", "csv", "file", "folder"].some(type => sourceType.includes(type)) ||
+        /\.(xlsx?|xlsm|csv)(?:$|[?#])/.test(sourceName)) {
+        return "excel";
+    }
+    return "sql";
+}
+
+function alertAssetLogo(action) {
+    const kind = alertAssetKind(action);
+    const labels = {
+        powerbi: "Power BI report",
+        excel: "Excel source",
+        sql: "SQL source",
+        flow: "Flow automation",
+    };
+    const icons = {
+        powerbi: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="3" height="8" rx="1"/><rect x="9" y="7" width="3" height="12" rx="1"/><rect x="14" y="4" width="3" height="15" rx="1"/><rect x="19" y="9" width="2" height="10" rx="1"/></svg>`,
+        excel: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h13a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="m7.5 8 5 8m0-8-5 8M14 8h3m-3 4h3m-3 4h3"/></svg>`,
+        sql: `<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>`,
+        flow: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8.4 6.4 15.5 7.6M16.5 10l-5.2 5.8M8.5 15.8 6.7 8.4"/></svg>`,
+    };
+    return `<span class="alert-source-logo alert-source-logo-${kind}" role="img" aria-label="${labels[kind]}" title="${labels[kind]}">${icons[kind]}</span>`;
+}
+
 function _notifySlaIssueReasons(type) {
     if (type === "refresh_failed" || type === "refresh_overdue" || type === "schedule_mismatch") {
         return [
@@ -1940,6 +1971,7 @@ function renderFixFirstPanel(openActions) {
                 <div class="fix-first-rank">${a.triage_rank}</div>
                 <div class="fix-first-body">
                     <div class="fix-first-title-row">
+                        ${alertAssetLogo(a)}
                         <strong>${esc(assetName)}</strong>
                         ${actionTypeBadge(a.type)}
                     </div>
@@ -2048,15 +2080,10 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">stale vs: ${summary}${more}</div>`;
         }
 
-        const assetBody = `<div class="alerts-asset-title"><strong>${esc(assetName)}</strong></div>${sub}`;
+        const assetBody = `<div class="alerts-asset-body"><div class="alerts-asset-title"><strong>${esc(assetName)}</strong></div>${sub}</div>`;
         const assetCell = linkData
-            ? `<a class="alerts-link ${linkData}" title="Open detail">${assetBody}</a>`
-            : `<div class="alerts-asset-plain">${assetBody}</div>`;
-
-        const typeLabel = a.asset_type === "scheduled_task" ? "task" : a.asset_type;
-        const typeCell = a.asset_type
-            ? `<span class="asset-type-badge asset-type-${a.asset_type}">${typeLabel}</span>`
-            : '<span style="color:var(--text-dim)">-</span>';
+            ? `<a class="alerts-link ${linkData}" title="Open detail">${alertAssetLogo(a)}${assetBody}</a>`
+            : `<div class="alerts-asset-plain">${alertAssetLogo(a)}${assetBody}</div>`;
 
         const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
@@ -2080,7 +2107,6 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                         : '<span class="alerts-expand-spacer"></span>'}
                     <span class="alerts-asset-wrap">${assetCell}</span>
                 </td>
-                <td>${typeCell}</td>
                 <td style="text-align:right">
                     <span class="impact-pill" title="Views in the last 30 days">${fmtInt(impact)}</span>
                 </td>
@@ -2088,7 +2114,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                     <span class="degraded-since" title="${esc(degradedSince || "Unknown")}">${formatDateOnly(degradedSince)}</span>
                 </td>
                 <td>${actionTypeBadge(a.type)}</td>
-                <td>
+                <td class="alerts-owner-cell">
                     <select class="dashboard-action-owner-select" data-action-id="${a.id}">
                         ${ownerOptions(a.assigned_to || "")}
                     </select>
@@ -2124,7 +2150,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
-                <td colspan="8" class="alerts-expand-cell">
+                <td colspan="7" class="alerts-expand-cell">
                     ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
@@ -2141,13 +2167,12 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 <thead>
                     <tr>
                         <th style="width:30%">Asset</th>
-                        <th style="width:9%">Type</th>
-                        <th style="width:9%;text-align:right">Views</th>
-                        <th style="width:12%">Degraded since</th>
+                        <th style="width:7%;text-align:right">Views</th>
+                        <th style="width:11%">Degraded since</th>
                         <th style="width:13%">Issue</th>
-                        <th style="width:11%">Owner</th>
+                        <th style="width:16%">Owner</th>
                         <th style="width:10%">Status</th>
-                        <th style="width:11%">Action</th>
+                        <th style="width:13%">Action</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -7972,8 +7997,10 @@ function bindLineageDiagramPage() {
             reportRefresh.dataset.canRefresh = data.report.can_refresh ? "1" : "0";
             reportRefresh.disabled = !data.report.can_refresh;
             reportRefresh.title = data.report.can_refresh
-                ? `Refresh ${data.report.name} in Power BI`
-                : "This report has no Power BI semantic model ID";
+                ? (data.report.pbi_dataset_id
+                    ? `Refresh ${data.report.name} in Power BI`
+                    : `Find ${data.report.name}'s semantic model in Power BI and refresh it`)
+                : "Power BI refresh is unavailable because no workspace is configured";
             _renderLineageDiagram(data);
         } catch (e) {
             document.getElementById("lineage-container").innerHTML =

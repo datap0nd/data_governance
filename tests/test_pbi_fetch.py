@@ -57,6 +57,55 @@ def test_trigger_dataset_refresh_posts_to_power_bi_and_returns_tracking_headers(
     assert result["request_id"] == "request-123"
 
 
+def test_resolve_report_dataset_matches_name_case_insensitively(monkeypatch):
+    monkeypatch.setattr(
+        pbi_fetch,
+        "fetch_workspace_reports",
+        lambda _workspace: {
+            "workspace": {"id": "workspace-1", "name": "Governed Workspace"},
+            "reports": [
+                {
+                    "id": "report-1",
+                    "name": "Daily Sellout",
+                    "dataset_id": "dataset-1",
+                    "web_url": "https://app.powerbi.test/reports/report-1",
+                }
+            ],
+        },
+    )
+
+    result = pbi_fetch.resolve_report_dataset("Governed Workspace", " daily sellout ")
+
+    assert result == {
+        "workspace": {"id": "workspace-1", "name": "Governed Workspace"},
+        "report_id": "report-1",
+        "report_name": "Daily Sellout",
+        "dataset_id": "dataset-1",
+        "web_url": "https://app.powerbi.test/reports/report-1",
+    }
+
+
+def test_resolve_report_dataset_rejects_ambiguous_names(monkeypatch):
+    monkeypatch.setattr(
+        pbi_fetch,
+        "fetch_workspace_reports",
+        lambda _workspace: {
+            "workspace": {"id": "workspace-1", "name": "Governed Workspace"},
+            "reports": [
+                {"id": "report-1", "name": "Shared Name", "dataset_id": "dataset-1"},
+                {"id": "report-2", "name": "Shared Name", "dataset_id": "dataset-2"},
+            ],
+        },
+    )
+
+    try:
+        pbi_fetch.resolve_report_dataset("Governed Workspace", "Shared Name")
+    except pbi_fetch.PbiFetchError as exc:
+        assert "multiple semantic models" in str(exc)
+    else:
+        raise AssertionError("Expected an ambiguous Power BI report name to fail")
+
+
 def test_fetch_dataset_last_refresh_uses_cached_auth_and_extracts_failure_reason(monkeypatch):
     observed = {}
 

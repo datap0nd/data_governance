@@ -332,7 +332,8 @@ def list_actions(status: str | None = None):
         # resolved on next probe but we don't want them cluttering the UI
         # in the meantime).
         query = """
-            SELECT a.*, s.name AS source_name, s.archived AS source_archived,
+            SELECT a.*, s.name AS source_name, s.type AS source_type,
+                   s.archived AS source_archived,
                    r.name AS report_name, r.archived AS report_archived,
                    r.pbi_refresh_error,
                    st.task_name AS task_name, st.archived AS task_archived,
@@ -472,6 +473,7 @@ def list_actions(status: str | None = None):
             id=r["id"],
             source_id=sid,
             source_name=r["source_name"],
+            source_type=r["source_type"],
             report_id=rid,
             report_name=r["report_name"],
             flow_id=fid,

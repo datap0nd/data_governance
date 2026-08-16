@@ -3,7 +3,11 @@ from app.config import PBI_WORKSPACE
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
 from app.routers.eventlog import get_actor, log_event
-from app.scanner.pbi_fetch import PbiFetchError, trigger_dataset_refresh
+from app.scanner.pbi_fetch import (
+    PbiFetchError,
+    resolve_report_dataset,
+    trigger_dataset_refresh,
+)
 from app.usage import get_report_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -109,11 +113,21 @@ def refresh_report(report_id: int, request: Request):
         ).fetchone()
     if not report:
         raise HTTPException(404, "Report not found.")
-    if not report["pbi_dataset_id"]:
-        raise HTTPException(409, "This report has no Power BI semantic model ID.")
-
     try:
-        result = trigger_dataset_refresh(PBI_WORKSPACE, report["pbi_dataset_id"])
+        dataset_id = report["pbi_dataset_id"]
+        resolved = None
+        if not dataset_id:
+            resolved = resolve_report_dataset(PBI_WORKSPACE, report["name"])
+            dataset_id = resolved["dataset_id"]
+            with get_db() as db:
+                db.execute(
+                    """UPDATE reports
+                       SET pbi_dataset_id=?, powerbi_url=COALESCE(?, powerbi_url),
+                           updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (dataset_id, resolved.get("web_url"), report_id),
+                )
+        result = trigger_dataset_refresh(PBI_WORKSPACE, dataset_id)
     except PbiFetchError as exc:
         raise HTTPException(403 if exc.permission else 502, str(exc)) from exc
 
@@ -124,7 +138,7 @@ def refresh_report(report_id: int, request: Request):
             report_id,
             report["name"],
             "refresh_requested",
-            f"dataset_id={report['pbi_dataset_id']}; request_id={result.get('request_id') or 'unavailable'}",
+            f"dataset_id={dataset_id}; request_id={result.get('request_id') or 'unavailable'}",
             get_actor(request),
         )
     return result

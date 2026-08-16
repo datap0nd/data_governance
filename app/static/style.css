@@ -2871,6 +2871,8 @@ body.ai-panel-open main {
 }
 .alerts-table {
     width: 100%;
+    min-width: 1180px;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 0.82rem;
 }
@@ -2910,13 +2912,14 @@ body.ai-panel-open main {
     border-radius: 999px;
     font-size: 0.72rem;
     font-weight: 600;
-    background: rgba(37,99,235,0.14);
-    color: var(--blue);
+    background: var(--surface-2);
+    color: var(--text-secondary);
     min-width: 2.4rem;
     text-align: center;
 }
 .dashboard-action-owner-select {
     width: 100%;
+    min-width: 8.5rem;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
@@ -2928,7 +2931,10 @@ body.ai-panel-open main {
 .alerts-link {
     color: inherit;
     cursor: pointer;
-    display: block;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    min-width: 0;
     text-decoration: none;
     border-bottom: 1px dotted transparent;
     transition: color 0.12s, border-color 0.12s;
@@ -2938,13 +2944,47 @@ body.ai-panel-open main {
     border-bottom-color: var(--accent);
 }
 .alerts-asset-plain {
-    display: block;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    min-width: 0;
+}
+.alerts-asset-body {
+    min-width: 0;
 }
 .alerts-asset-title {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     min-width: 0;
+}
+.alert-source-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem;
+    height: 1.55rem;
+    flex: 0 0 1.55rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text-secondary);
+}
+.alert-source-logo svg {
+    width: 1.05rem;
+    height: 1.05rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.alert-source-logo-powerbi svg rect {
+    fill: currentColor;
+    stroke: none;
+}
+.alerts-owner-cell {
+    min-width: 10rem;
 }
 .alerts-go-report {
     border: 1px solid var(--border);
@@ -3001,32 +3041,6 @@ body.ai-panel-open main {
     background: var(--accent);
 }
 
-.asset-type-badge {
-    display: inline-block;
-    padding: 0.1rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.asset-type-source {
-    background: rgba(59, 130, 246, 0.18);
-    color: #60a5fa;
-}
-.asset-type-report {
-    background: rgba(168, 85, 247, 0.18);
-    color: #c084fc;
-}
-.asset-type-script {
-    background: rgba(234, 179, 8, 0.18);
-    color: #facc15;
-}
-.asset-type-scheduled_task {
-    background: rgba(16, 185, 129, 0.18);
-    color: #34d399;
-}
-
 .alerts-expand-btn {
     display: inline-flex;
     align-items: center;
@@ -3071,8 +3085,10 @@ body.ai-panel-open main {
     width: 4.9rem;
 }
 .alerts-asset-wrap {
-    display: inline-block;
-    vertical-align: top;
+    display: inline-flex;
+    max-width: calc(100% - 5.5rem);
+    min-width: 0;
+    vertical-align: middle;
 }
 .alerts-expand-row > td.alerts-expand-cell {
     padding: 0.6rem 0.75rem 0.8rem 2.4rem;

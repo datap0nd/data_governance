@@ -1,6 +1,7 @@
 import re
 
 from fastapi import APIRouter, HTTPException
+from app.config import PBI_WORKSPACE
 from app.database import get_db
 from app.models import LineageEdge
 
@@ -390,7 +391,7 @@ def get_lineage_diagram(report_id: int):
             "owner": report["owner"],
             "archived": bool(report["archived"]),
             "pbi_dataset_id": report["pbi_dataset_id"],
-            "can_refresh": bool(report["pbi_dataset_id"]),
+            "can_refresh": bool(report["pbi_dataset_id"] or PBI_WORKSPACE),
         },
         "pages": pages_list,
         "tables": tables,

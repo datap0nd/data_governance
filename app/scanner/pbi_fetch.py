@@ -112,6 +112,48 @@ def fetch_workspace_reports(workspace_name: str | None = None) -> dict:
     }
 
 
+def resolve_report_dataset(workspace_name: str, report_name: str) -> dict:
+    """Resolve one governed report to its live Power BI semantic model.
+
+    Existing installations can have reports that predate the local
+    ``pbi_dataset_id`` column. Resolve those records lazily when a user asks
+    for a refresh instead of requiring a full workspace sync first.
+    """
+    normalized_name = (report_name or "").strip().casefold()
+    if not normalized_name:
+        raise PbiFetchError("The governed report has no name to match in Power BI.")
+
+    payload = fetch_workspace_reports(workspace_name)
+    matches = [
+        report
+        for report in payload["reports"]
+        if (report.get("name") or "").strip().casefold() == normalized_name
+    ]
+    if not matches:
+        raise PbiFetchError(
+            f"Report '{report_name}' was not found in Power BI workspace "
+            f"'{payload['workspace']['name']}'."
+        )
+
+    dataset_ids = {report.get("dataset_id") for report in matches if report.get("dataset_id")}
+    if not dataset_ids:
+        raise PbiFetchError(f"Report '{report_name}' has no semantic model in Power BI.")
+    if len(dataset_ids) > 1:
+        raise PbiFetchError(
+            f"Report name '{report_name}' matches multiple semantic models in Power BI. "
+            "Run a Power BI sync so Metronome can store the exact model ID."
+        )
+
+    match = next(report for report in matches if report.get("dataset_id") in dataset_ids)
+    return {
+        "workspace": payload["workspace"],
+        "report_id": match.get("id"),
+        "report_name": match.get("name"),
+        "dataset_id": match.get("dataset_id"),
+        "web_url": match.get("web_url"),
+    }
+
+
 def trigger_dataset_refresh(workspace_name: str, dataset_id: str) -> dict:
     """Request an asynchronous refresh for a Power BI semantic model."""
     selected_workspace = (workspace_name or "").strip()
