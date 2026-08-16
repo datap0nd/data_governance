@@ -54,8 +54,8 @@ export and wait for the user to decide the next range and batch size.
 
 - `PYTHONPATH=. uv run --python 3.13 --with pytest --with-requirements
   requirements.txt pytest -q`: 264 passed.
-- Remote `main`: `ceb04483816c1e19da8cf4e598f6fa80fb0be48a` verified before
-  this handoff update.
+- Remote `main`: current local HEAD was verified equal to `origin/main` after
+  publishing the Category pass-through change.
 - Visible Citrix deployment: build `20260816-170611` from `ceb0448`; `setup.ps1`
   installed dependencies and registered the worker successfully.
 - Live headed run `#139`: both two-week exports visibly had `Weekly` selected
