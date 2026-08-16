@@ -2,87 +2,70 @@
 
 ## Current Objective
 
-Integrate SQL-loading Flows into Pipelines, add governed refresh controls for
-Power BI semantic models, Flows, and PostgreSQL materialized views, and remove
-redundant operational alerts. FOTA execution remains paused. Do not scan,
-configure, or run FOTA until the user explicitly resumes it.
+Maintain the deployed Pipelines refresh controls and the simplified Alerts UI.
+Flow nodes are implemented but cannot be verified in production until matching
+target tables exist. Keep the paused production Flow paused until the user
+explicitly resumes it.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Base commit before this task: `8ab506c` (`Reorganize pipeline navigation`)
-- Implementation commit: `3b86d5f` (`Integrate flows and refresh controls into pipelines`)
+- Latest commit: `bfabd04` (`Ignore incomplete scans in dashboard summary`)
+- Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
-- Push status: implementation commit verified on `origin/main`
+- Push status: local `HEAD` and `origin/main` both resolve to `bfabd04`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
-- Citrix was inspected read-only. No production refresh, Flow run, deployment,
-  alert mutation, or other persistent Citrix change was made.
 
 ## Decisions Made
 
-- A Flow joins a report pipeline when its enabled SQL handoff target matches
-  any reachable report source by schema and table, case-insensitively.
-- `flows.last_success_at` records only a successful terminal Flow run. Failed,
-  cancelled, queued, and running attempts do not overwrite the last confirmed
-  load timestamp.
-- Flow failures are scanner-managed `flow_failed` operational actions. Target
-  table freshness remains governed by the existing source probe. No Flow-age
-  SLA was invented because none was specified.
-- Power BI refresh means an asynchronous semantic-model refresh request through
-  the Power BI REST API. The UI prevents duplicate submissions and exposes
-  permission or API failures.
-- Materialized-view refresh reuses the validated PostgreSQL refresh endpoint and
-  tells users that freshness evidence updates on the next source probe.
-- Best-practice findings remain in their dedicated checker, but no longer create
-  Alerts actions. Legacy best-practice actions are resolved and hidden.
-- Freshness aliases collapse to one active issue per source. Query-change alerts
-  keep only the latest unresolved change per source; older changes remain in
-  resolved history.
+- Alerts identify assets with an inline Power BI, Excel, SQL, or Flow logo. The
+  redundant source/report text column is removed.
+- Alert owners use a wider control, and decorative purple asset badges are not
+  used. Existing severity colors remain semantic.
+- A Power BI refresh can discover and persist a missing semantic-model ID from
+  the configured workspace before requesting the refresh.
+- The dashboard Last Scan card uses the latest completed scan. A newer stopped
+  or failed scan must not replace valid report/source counts with null values.
+- Best-practice actions stay excluded from operational Alerts, and redundant
+  alert families remain collapsed by the existing cleanup logic.
 
 ## Files Changed
 
-- `app/routers/lineage.py`, `app/static/app.js`, `app/static/style.css`: Flow
-  target matching, pipeline nodes/edges, last-load evidence, and refresh controls.
-- `app/scanner/pbi_fetch.py`, `app/routers/reports.py`: Power BI semantic-model
-  refresh request and audit logging.
-- `app/routers/flows.py`, `app/scanner/findings.py`, `app/models.py`,
-  `app/database.py`: successful-load timestamp and Flow failure alert lifecycle.
-- `app/routers/actions.py`, `app/scanner/prober.py`, `app/scanner/runner.py`,
-  `app/routers/best_practices.py`: best-practice removal and duplicate prevention.
-- `tests/`: Flow lineage, last-success/failure lifecycle, Power BI request,
-  alert cleanup, and Pipelines control coverage.
+- `app/models.py`, `app/routers/actions.py`: expose asset source type to Alerts.
+- `app/scanner/pbi_fetch.py`, `app/routers/reports.py`, `app/routers/lineage.py`:
+  lazy semantic-model discovery and enabled report refresh controls.
+- `app/static/app.js`, `app/static/style.css`: alert logos, simplified columns,
+  wider Owner controls, and neutral styling.
+- `app/routers/dashboard.py`: select the latest completed scan for the summary.
+- `tests/test_actions_dedupe.py`, `tests/test_pbi_fetch.py`,
+  `tests/test_report_refresh.py`, `tests/test_dashboard.py`: regression coverage.
 
 ## Commands And Checks
 
-- `PYTHONPATH=. uv run --python 3.13 --with pytest --with-requirements
-  requirements.txt pytest -q tests --ignore=tests/test_lineage_depth.py`: 267 passed.
-- Isolated `tests/test_lineage_depth.py`: 5 passed. It is isolated because its
-  minimal FastAPI stub pollutes later test collection when combined.
-- `node tests/test_lineage_layers.mjs`: passed.
-- `python3 -m compileall -q app`, `node --check app/static/app.js`, and
-  `git diff --check`: passed.
-- Rendered local Pipelines preview against a temporary database: report, Flow,
-  and materialized-view controls visible; Flow appears upstream of its target;
-  last successful load visible; browser console had no errors.
-- Live Citrix dashboard read-only audit: 124 active alerts. Repeated freshness
-  aliases and superseded query-change rows explained much of the redundancy;
-  best-practice actions were also present.
-- Not run: live Power BI refresh, live Flow refresh, live materialized-view
-  refresh, production source mapping, deployment, or post-deployment Citrix
-  verification. The production Flow target does not exist yet and refreshes
-  would mutate live systems.
+- `/tmp/data-governance-test-env/bin/python -m pytest -q`: 277 passed.
+- `node --check app/static/app.js`: passed.
+- `/tmp/data-governance-test-env/bin/python -m compileall -q app`: passed.
+- `git diff --check`: passed.
+- Production updater installed build `20260816-232302`; service restart reported
+  success.
+- Live Alerts page: logos visible, no Type column, Owner controls fully visible,
+  and no decorative purple asset badges.
+- Live dashboard: Last Scan displays `36 reports` and `130 sources`, not nulls.
+- Live report refresh: request accepted, audit event recorded, and Power BI later
+  reported `Completed` with a new completion timestamp.
+- Live materialized-view validation: read-only PostgreSQL query returned 487,416
+  rows and current week/month maxima. Exact relation modification time was not
+  readable with the available database role.
 
 ## Open Questions
 
-- Production acceptance still requires a future scan after the target tables
-  exist, plus authorized live refresh tests for each supported node type.
-- The Citrix app remains on an older build until the normal Update App deployment
-  is explicitly performed.
-- FOTA remains paused independently of the Pipelines feature work.
+- Flow-to-Pipeline production matching remains unverified because the matching
+  target tables are not yet present.
+- The available PostgreSQL role cannot independently read the materialized
+  view's storage modification timestamp.
 
 ## Next Step
 
-After the SQL target tables exist and live mutation is authorized, deploy the
-exact tested `origin/main`, refresh report metadata, and verify the complete
-Pipelines refresh path in Citrix.
+After matching Flow target tables reach production, run the metadata scan and
+verify that each Flow appears directly upstream of its target table in Pipelines.
