@@ -12,9 +12,9 @@ configure, or run FOTA until the user explicitly resumes it.
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
 - Base commit before this task: `8ab506c` (`Reorganize pipeline navigation`)
+- Implementation commit: `3b86d5f` (`Integrate flows and refresh controls into pipelines`)
 - Public repo: no, private
-- Push status: implementation is locally verified and pending commit/push at
-  the time of this handoff update
+- Push status: implementation commit verified on `origin/main`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 - Citrix was inspected read-only. No production refresh, Flow run, deployment,
   alert mutation, or other persistent Citrix change was made.
@@ -83,6 +83,6 @@ configure, or run FOTA until the user explicitly resumes it.
 
 ## Next Step
 
-Commit and push these scoped changes to `origin/main`. Later, after the SQL target
-tables exist and live mutation is authorized, deploy the exact tested commit,
-refresh report metadata, and verify the complete Pipelines refresh path in Citrix.
+After the SQL target tables exist and live mutation is authorized, deploy the
+exact tested `origin/main`, refresh report metadata, and verify the complete
+Pipelines refresh path in Citrix.
