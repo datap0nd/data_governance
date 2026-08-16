@@ -101,11 +101,6 @@ if (Test-Path $DbPath) {
     Write-Host "  DB: new (will be created on first run)" -ForegroundColor Yellow
 }
 
-# Stop both Flow runtimes before replacing their Python source. The service
-# stop below handles headless discovery; the scheduled-task stop is required
-# because a headed worker can otherwise keep running the pre-update code.
-Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
-
 # --- Portable Python 3.13 ---
 if (-not (Test-Path $PyExe)) {
     Write-Host "[1/5] Downloading portable Python 3.13..." -ForegroundColor Yellow
@@ -164,48 +159,6 @@ if (-not (Test-Path $PyExe)) {
 }
 Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 
-# --- Stop existing service and free the port ---
-$NssmExe = "$CodeDir\tools\nssm.exe"
-$ErrorActionPreference = "Continue"
-$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($existing) {
-    Write-Host "[2/5] Stopping service..." -ForegroundColor Yellow
-    & $NssmExe stop $ServiceName 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
-    & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
-} else {
-    Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
-}
-$existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
-if ($existingFlowService) {
-    & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
-    try {
-        $existingFlowService.WaitForStatus(
-            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
-            [TimeSpan]::FromSeconds(30)
-        )
-        Write-Host "  Flows worker stopped." -ForegroundColor Green
-    } catch {
-        throw "Flows worker did not stop within 30 seconds. Update aborted before replacing code."
-    }
-}
-
-# Kill anything still holding the port
-$portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
-    ($_ -split '\s+')[-1]
-} | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique)
-foreach ($p in $portPid) {
-    if ($p -and $p -ne "0") {
-        Write-Host "  Killing PID $p holding port $Port" -ForegroundColor Yellow
-        $KillProcess = Start-Process taskkill.exe -ArgumentList @("/PID", $p, "/F") -PassThru -WindowStyle Hidden
-        if (-not $KillProcess.WaitForExit(10000)) {
-            Stop-Process -Id $KillProcess.Id -Force -ErrorAction SilentlyContinue
-            Write-Host "  WARNING: Timed out waiting for taskkill on PID $p. Continuing setup." -ForegroundColor Yellow
-        }
-    }
-}
-$ErrorActionPreference = "Stop"
-
 # --- Download latest code ---
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
@@ -246,6 +199,51 @@ try {
     Move-Item $BrowserZip $ZipPath -Force
     Write-Host "  Downloaded via Edge." -ForegroundColor Green
 }
+
+# Stop runtimes only after the complete update archive is available. A proxy,
+# authentication, or download failure must leave the currently installed app
+# and workers running.
+Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
+$NssmExe = "$CodeDir\tools\nssm.exe"
+$ErrorActionPreference = "Continue"
+$existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($existing) {
+    Write-Host "[2/5] Stopping service..." -ForegroundColor Yellow
+    & $NssmExe stop $ServiceName 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+    & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
+} else {
+    Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
+}
+$existingFlowService = Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue
+if ($existingFlowService) {
+    & $NssmExe stop $FlowServiceName 2>&1 | Out-Null
+    try {
+        $existingFlowService.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30)
+        )
+        Write-Host "  Flows worker stopped." -ForegroundColor Green
+    } catch {
+        throw "Flows worker did not stop within 30 seconds. Update aborted before replacing code."
+    }
+}
+
+# Kill anything still holding the port
+$portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
+    ($_ -split '\s+')[-1]
+} | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique)
+foreach ($p in $portPid) {
+    if ($p -and $p -ne "0") {
+        Write-Host "  Killing PID $p holding port $Port" -ForegroundColor Yellow
+        $KillProcess = Start-Process taskkill.exe -ArgumentList @("/PID", $p, "/F") -PassThru -WindowStyle Hidden
+        if (-not $KillProcess.WaitForExit(10000)) {
+            Stop-Process -Id $KillProcess.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "  WARNING: Timed out waiting for taskkill on PID $p. Continuing setup." -ForegroundColor Yellow
+        }
+    }
+}
+$ErrorActionPreference = "Stop"
 
 # --- Extract new code over existing folder (no deletion) ---
 Write-Host "[4/5] Extracting update over existing code..." -ForegroundColor Yellow

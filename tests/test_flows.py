@@ -1670,6 +1670,19 @@ def test_setup_stops_headed_worker_before_replacing_runtime_code():
         assert source.index(stop) < source.index("Expand-Archive -Path $ZipPath")
 
 
+def test_setup_downloads_update_before_stopping_running_services():
+    root = Path(__file__).parents[1]
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
+        source = root.joinpath(filename).read_text()
+        download = "Invoke-WebRequestWithRetry -Uri $ZipUrl"
+        headed_stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
+        service_stop = '& $NssmExe stop $ServiceName'
+        worker_stop = '& $NssmExe stop $FlowServiceName'
+        assert source.index(download) < source.index(headed_stop)
+        assert source.index(download) < source.index(service_stop)
+        assert source.index(download) < source.index(worker_stop)
+
+
 def test_setup_waits_for_headless_worker_to_stop_before_replacing_code():
     root = Path(__file__).parents[1]
     for filename in ("setup.ps1", "setup_ps1_clean.txt"):
