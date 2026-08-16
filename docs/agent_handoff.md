@@ -26,7 +26,7 @@ export and wait for the user to decide the next range and batch size.
   `name`, District from `admin1`, and State from `admin2`.
 - Managed snapshot SQL normalizes CSV headers to lowercase snake_case identifiers.
   The 21-column SQL contract therefore ends with `week`, `week_start_date`,
-  `week_end_date`, and `fota_value`.
+  `week_end_date`, and `sell_out_qty`.
 - Small acceptance uses two XLSX exports with two weeks each: 2026-W30/W31 and
   2026-W32/W33. SQL writes to isolated
   `meto_db.bi_reporting.ASAP_Fota_Smoke`, never the production `ASAP_Fota` table.
@@ -77,7 +77,7 @@ export and wait for the user to decide the next range and batch size.
   `sell_out_region`, `sell_out_subsidiary`, `sell_out_country`, `country_code`,
   `operator`, `province`, `latitude`, `longitude`, `country`, `city`, `district`,
   `state`, `category`, `biz_sub`, `series`, `mkt_name`, `item`, `week`,
-  `week_start_date`, `week_end_date`, `fota_value`.
+  `week_start_date`, `week_end_date`, `sell_out_qty`.
 
 ## Open Questions
 

@@ -59,7 +59,7 @@ def _expected_rows(value="123"):
     return [
         [
             *MODULE.OUTPUT_DIMENSIONS,
-            "Week", "Week Start Date", "Week End Date", "FOTA Value",
+            "Week", "Week Start Date", "Week End Date", "Sell-out Qty",
         ],
         [
             *[dimensions[name] for name in MODULE.OUTPUT_DIMENSIONS],
@@ -118,7 +118,7 @@ def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_pa
         rows = list(csv.reader(handle))
     dimensions = {**DIMENSION_VALUES, **GEO_VALUES}
     assert rows == [
-        [*MODULE.OUTPUT_DIMENSIONS, "Week", "Week Start Date", "Week End Date", "FOTA Value"],
+        [*MODULE.OUTPUT_DIMENSIONS, "Week", "Week Start Date", "Week End Date", "Sell-out Qty"],
         [
             *[dimensions[name] for name in MODULE.OUTPUT_DIMENSIONS],
             "2026-W30", "2026-07-19", "2026-07-25", "300",
@@ -157,7 +157,7 @@ def test_fota_transform_rejects_metric_label_as_week_value(tmp_path):
         [*_values_for(MODULE.CONTRACTED_DIMENSIONS), "Sell-out", "310"],
     ])
 
-    with pytest.raises(ValueError, match="FOTA value must be numeric.*2026-W30.*Sell-out"):
+    with pytest.raises(ValueError, match="Sell-out Qty must be numeric.*2026-W30.*Sell-out"):
         MODULE.transform(source, target)
 
     assert not target.exists()

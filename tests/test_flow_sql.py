@@ -392,10 +392,13 @@ def test_csv_reader_rejects_duplicate_normalized_columns(tmp_path):
 
 def test_csv_reader_uses_normalized_comma_format(tmp_path, monkeypatch):
     path = tmp_path / "normalized.csv"
-    path.write_text("Sell-out Week,Active\n202630,116\n", encoding="utf-8-sig")
+    path.write_text(
+        "Sell-out Week,Sell-out Qty,Active\n202630,123,116\n",
+        encoding="utf-8-sig",
+    )
     artifact = flow_sql._read_artifact(path)
 
-    assert artifact["columns"] == ["sell_out_week", "active"]
+    assert artifact["columns"] == ["sell_out_week", "sell_out_qty", "active"]
     assert artifact["row_count"] == 1
     assert artifact["path"] == path
 

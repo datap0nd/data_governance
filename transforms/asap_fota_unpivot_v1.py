@@ -176,7 +176,7 @@ def _has_week_value(
     return any(str(selected[header.index(name)]).strip() for name, _compact in value_columns)
 
 
-def _validated_fota_value(value: object, *, row_number: int, week: str) -> str:
+def _validated_sell_out_qty(value: object, *, row_number: int, week: str) -> str:
     text = str(value).strip()
     if not text:
         return ""
@@ -184,11 +184,11 @@ def _validated_fota_value(value: object, *, row_number: int, week: str) -> str:
         number = float(text.replace(",", ""))
     except ValueError as exc:
         raise ValueError(
-            f"FOTA value must be numeric at source row {row_number}, week {week}: {text!r}."
+            f"Sell-out Qty must be numeric at source row {row_number}, week {week}: {text!r}."
         ) from exc
     if not math.isfinite(number):
         raise ValueError(
-            f"FOTA value must be finite at source row {row_number}, week {week}: {text!r}."
+            f"Sell-out Qty must be finite at source row {row_number}, week {week}: {text!r}."
         )
     return text
 
@@ -288,7 +288,7 @@ def transform(source: Path, target: Path) -> int:
                 writer = csv.writer(output_handle, lineterminator="\n")
                 writer.writerow([
                     *OUTPUT_DIMENSIONS,
-                    "Week", "Week Start Date", "Week End Date", "FOTA Value",
+                    "Week", "Week Start Date", "Week End Date", "Sell-out Qty",
                 ])
                 for row_number, selected in _selected_rows(
                     source, raw_header, keep, duplicate_groups,
@@ -303,7 +303,7 @@ def transform(source: Path, target: Path) -> int:
                     ]
                     for value_column, compact_week in value_columns:
                         week, week_start, week_end = _week_dates(compact_week)
-                        value = _validated_fota_value(
+                        value = _validated_sell_out_qty(
                             selected[header.index(value_column)],
                             row_number=row_number,
                             week=week,

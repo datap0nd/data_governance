@@ -1,8 +1,8 @@
 # Metric Contracts
 
 ## ASAP FOTA managed snapshot
-- Business meaning: Weekly FOTA value at the complete Sell-out geography, operator, and product grain exported by the Regional FOTA report.
-- Numerator: Each live flat export week value, renamed to `FOTA Value` by the
+- Business meaning: Weekly Sell-out quantity at the complete Sell-out geography, operator, and product grain exported by the Regional FOTA report.
+- Numerator: Each live flat export week value, named `Sell-out Qty` by the
   external transform. Multi-week exports may expose compact `YYYYWW`,
   `YYYY-Www`, `Week ww`, or `Www` columns; all are unpivoted into one row per
   source row and ISO week. The live multi-week XLSX matrix may expose only the
