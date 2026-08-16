@@ -2,26 +2,37 @@
 
 ## ASAP FOTA managed snapshot
 - Business meaning: Weekly FOTA value at the complete Sell-out geography, operator, and product grain exported by the Regional FOTA report.
-- Numerator: The live flat export's single `Metrics` value column, renamed to
-  `FOTA Value` by the external transform. The `Metric` singular alias and a
-  compact `YYYYWW` value column remain supported for compatible exports.
+- Numerator: Each live flat export week value, renamed to `FOTA Value` by the
+  external transform. Multi-week exports may expose compact `YYYYWW`,
+  `YYYY-Www`, `Week ww`, or `Www` columns; all are unpivoted into one row per
+  source row and ISO week. The `Metric`/`Metrics` aliases remain supported only
+  for a single-week file whose filename supplies exactly one week.
 - Denominator: None.
 - Grain: Sell-out Region, Sell-out Subsidiary, Sell-out Country, Country Code, Operator, Province, Latitude, Longitude, Category, Biz Sub, Series, MKT Name, Item, and Week.
-- Date logic: One export per ISO week from 2025-W20 through 2026-W33. The
-  transform requires the week in each filename, derives Sunday `Week Start Date`
-  and Saturday `Week End Date`, and validates a compact `YYYYWW` source column
-  against the filename when that legacy shape is present.
+- Date logic: A complete managed snapshot from 2026-W20 through the latest week
+  available in ASAP. Downloads may contain multiple contiguous ISO weeks. The
+  transform validates their week columns against the filename, derives Sunday
+  `Week Start Date` and Saturday `Week End Date`, and emits long-form rows.
 - Filters: ASAP Data Option `Show All`, Category `Weekly`, export view `Export
   Wizard (Sell-out Sub)`, and the 13 contracted dimensions above. The live flat
   export omits the filtered Category field, so the transform adds
   `Category = Weekly` and removes the operational `Metronome Export View`
   lineage column before SQL.
+- Geolocation: For each unique valid `Latitude`/`Longitude` pair, the external
+  transform uses the offline `reverse_geocoder` GeoNames index. It adds
+  `Country` from the returned ISO alpha-2 code, `City` from `name`, `District`
+  from `admin1`, and `State` from `admin2`, matching the authorized legacy
+  script. Missing, nonnumeric, nonfinite, or out-of-range coordinates retain the
+  source row with those four derived fields blank.
 - Refresh behavior: Build all transformed files first, then atomically replace `meto_db.bi_reporting.ASAP_Fota`. Never append a rolling 12-week slice and never modify the existing table if any download, transform, or SQL stage fails.
-- Validation method: Require 66 distinct weeks, minimum 2025-W20, maximum 2026-W33, a positive total row count, and the full contracted column set after the live SQL commit.
-- Edge cases: Reject a missing filename week, a filename/week mismatch, more
-  than one value column, missing contracted dimensions other than the fixed
-  Category field, unexpected columns, unusable headers, empty data, or a partial
-  66-file bundle.
+- Validation method: Require every distinct week from 2026-W20 through the live
+  latest week, the exact minimum and maximum week, a positive total row count,
+  and the full 21-column contract after the live SQL commit.
+- Edge cases: Reject ambiguous week-only headers, a filename/week mismatch,
+  duplicate week columns, multiple `Metric` columns, missing contracted
+  dimensions other than the fixed Category field, unexpected columns, unusable
+  headers, empty data, a partial requested range, or unavailable geolocation
+  dependencies.
 
 ## Views last 30d
 - Business meaning: Raw Power BI report view count over the most recent 30 dates available in the usage CSV export.

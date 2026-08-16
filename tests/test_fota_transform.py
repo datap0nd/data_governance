@@ -25,6 +25,21 @@ DIMENSION_VALUES = {
     "MKT Name": "Model A",
     "Item": "SKU 1",
 }
+GEO_VALUES = {
+    "Country": "United Arab Emirates",
+    "City": "Dubai",
+    "District": "Dubai",
+    "State": "",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_reverse_geocoder(monkeypatch):
+    monkeypatch.setattr(
+        MODULE,
+        "_reverse_geocode_coordinates",
+        lambda coordinates: {coordinate: dict(GEO_VALUES) for coordinate in coordinates},
+    )
 
 
 def _write_csv(path, rows):
@@ -37,13 +52,17 @@ def _values_for(dimensions):
 
 
 def _expected_rows(value="123"):
+    dimensions = {
+        **DIMENSION_VALUES,
+        **GEO_VALUES,
+    }
     return [
         [
-            *MODULE.CONTRACTED_DIMENSIONS,
+            *MODULE.OUTPUT_DIMENSIONS,
             "Week", "Week Start Date", "Week End Date", "FOTA Value",
         ],
         [
-            *_values_for(MODULE.CONTRACTED_DIMENSIONS),
+            *[dimensions[name] for name in MODULE.OUTPUT_DIMENSIONS],
             "2025-W20", "2025-05-11", "2025-05-17", value,
         ],
     ]
@@ -78,6 +97,60 @@ def test_fota_transform_uses_live_metric_column_filename_week_and_filtered_categ
 
     with target.open("r", encoding="utf-8-sig", newline="") as handle:
         assert list(csv.reader(handle)) == _expected_rows("456")
+
+
+def test_fota_transform_unpivots_two_human_week_columns_and_geocodes_once(tmp_path, monkeypatch):
+    source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
+    target = tmp_path / "result.csv"
+    exported_dimensions = [
+        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
+    ]
+    calls = []
+
+    def fake_geocoder(coordinates):
+        calls.append(coordinates)
+        return {coordinate: dict(GEO_VALUES) for coordinate in coordinates}
+
+    monkeypatch.setattr(MODULE, "_reverse_geocode_coordinates", fake_geocoder)
+    _write_csv(source, [
+        [*exported_dimensions, "Week 30", "Week 31", MODULE.LINEAGE_COLUMN],
+        [*_values_for(exported_dimensions), "300", "310", "Export Wizard (Sell-out Sub)"],
+    ])
+
+    assert MODULE.transform(source, target) == 2
+    assert calls == [[(25.2, 55.3)]]
+
+    with target.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    dimensions = {**DIMENSION_VALUES, **GEO_VALUES}
+    assert rows == [
+        [*MODULE.OUTPUT_DIMENSIONS, "Week", "Week Start Date", "Week End Date", "FOTA Value"],
+        [
+            *[dimensions[name] for name in MODULE.OUTPUT_DIMENSIONS],
+            "2026-W30", "2026-07-19", "2026-07-25", "300",
+        ],
+        [
+            *[dimensions[name] for name in MODULE.OUTPUT_DIMENSIONS],
+            "2026-W31", "2026-07-26", "2026-08-01", "310",
+        ],
+    ]
+
+
+def test_fota_transform_leaves_geography_blank_for_missing_coordinates(tmp_path):
+    source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
+    target = tmp_path / "result.csv"
+    values = dict(DIMENSION_VALUES, Latitude="Empty", Longitude="")
+    _write_csv(source, [
+        [*MODULE.CONTRACTED_DIMENSIONS, "202520"],
+        [*[values[name] for name in MODULE.CONTRACTED_DIMENSIONS], "123"],
+    ])
+
+    assert MODULE.transform(source, target) == 1
+
+    with target.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[1][MODULE.OUTPUT_DIMENSIONS.index("Country")] == ""
+    assert rows[1][MODULE.OUTPUT_DIMENSIONS.index("City")] == ""
 
 
 def test_fota_transform_rejects_week_mismatch_without_creating_output(tmp_path):
