@@ -13,6 +13,7 @@ from pathlib import Path
 WEEK_COLUMN = re.compile(r"^20\d{4}$")
 FILENAME_WEEK = re.compile(r"(?<!\d)(20\d{2})-W(\d{2})(?!\d)")
 METRIC_COLUMN = "Metric"
+METRIC_COLUMN_ALIASES = frozenset({METRIC_COLUMN, "Metrics"})
 LINEAGE_COLUMN = "Metronome Export View"
 CONTRACTED_DIMENSIONS = [
     "Sell-out Region",
@@ -68,6 +69,7 @@ def transform(source: Path, target: Path) -> int:
             raise ValueError("The normalized export is empty.") from exc
         header, keep, duplicate_groups = _column_plan(raw_header)
         week_columns = [name for name in header if WEEK_COLUMN.fullmatch(name)]
+        metric_columns = [name for name in header if name in METRIC_COLUMN_ALIASES]
         filename_match = FILENAME_WEEK.search(source.name)
         filename_week = "".join(filename_match.groups()) if filename_match else None
         if len(week_columns) == 1:
@@ -78,18 +80,18 @@ def transform(source: Path, target: Path) -> int:
                 )
             compact_week = week_column
             value_column = week_column
-        elif not week_columns and header.count(METRIC_COLUMN) == 1 and filename_week:
+        elif not week_columns and len(metric_columns) == 1 and filename_week:
             # The live flat Excel export names its sole weekly value field
             # ``Metric``. Each artifact is already scoped to exactly one week,
             # so its validated filename is the canonical week key.
             compact_week = filename_week
-            value_column = METRIC_COLUMN
+            value_column = metric_columns[0]
         else:
             preview = [name[:80] for name in header[:25]]
             raise ValueError(
                 "Expected one YYYYWW value column or one Metric column with a week in the filename; "
-                f"found week columns {week_columns or 'none'} and {header.count(METRIC_COLUMN)} "
-                f"Metric column(s). Detected header: {preview!r}."
+                f"found week columns {week_columns or 'none'} and metric columns "
+                f"{metric_columns or 'none'}. Detected header: {preview!r}."
             )
         week, week_start, week_end = _week_dates(compact_week)
         value_index = header.index(value_column)

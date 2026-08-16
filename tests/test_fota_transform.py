@@ -70,7 +70,7 @@ def test_fota_transform_uses_live_metric_column_filename_week_and_filtered_categ
         name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
     ]
     _write_csv(source, [
-        [*exported_dimensions, MODULE.METRIC_COLUMN, MODULE.LINEAGE_COLUMN],
+        [*exported_dimensions, "Metrics", MODULE.LINEAGE_COLUMN],
         [*_values_for(exported_dimensions), "456", "Export Wizard (Sell-out Sub)"],
     ])
 

@@ -11,9 +11,9 @@ transform plus atomic managed-snapshot refresh of
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `7dffe15`
+- Latest runtime commit before this handoff update: `46a218a`
 - Public repo: no, private
-- Push status: `7dffe15` verified on `origin/main`; publish the current live-shape
+- Push status: `46a218a` verified on `origin/main`; publish the current Metrics
   transform fix and this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
@@ -26,7 +26,7 @@ transform plus atomic managed-snapshot refresh of
 - Metronome downloads and normalizes every workbook before it invokes the
   transform. SQL starts only after all downloads and transformations succeed.
 - The live flat Excel export actually names its sole weekly value column
-  `Metric`. The external transform therefore derives Week from the required
+  `Metrics` (plural). The external transform therefore derives Week from the required
   one-week filename, maps Metric to FOTA Value, adds the filtered
   `Category = Weekly`, drops `Metronome Export View`, and emits the exact 17
   contracted columns in fixed order. Compact YYYYWW columns remain supported.
@@ -59,10 +59,10 @@ transform plus atomic managed-snapshot refresh of
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
-  requirements.txt pytest -q`: 250 passed in 2.91s.
-- Remote `main`: `7dffe15f5f1564a1bdde0994f710385c3c1931e3` verified before
+  requirements.txt pytest -q`: 250 passed in 3.02s.
+- Remote `main`: `46a218a52d1f4e22a00a1214db6616cce10d11ca` verified before
   the current change.
-- Citrix build `#20260816-032429`: deployed from `7dffe15`.
+- Citrix build `#20260816-035043`: deployed from `46a218a`.
 - Live run `#114`: all 66 downloads completed, then the first transform failed
   because normalization selected a preamble/data row and exposed no YYYYWW
   header. SQL did not run.
@@ -80,6 +80,9 @@ transform plus atomic managed-snapshot refresh of
   followed by `Metric` and `Metronome Export View`. It failed before SQL by the
   then-current YYYYWW-only transform contract, providing the evidence for the
   current external-transform change.
+- Clean smoke `#122` on build `#20260816-035043` reached the new live-shape gate
+  and proved the final value-column spelling is `Metrics` plural. All other
+  detected columns matched the expected live export shape; SQL remained disabled.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
@@ -98,5 +101,5 @@ transform plus atomic managed-snapshot refresh of
 
 ## Next Step
 
-Commit and push the live Metric-shape transform, deploy it through the visible
+Commit and push the live Metrics alias, deploy it through the visible
 Metronome Update App flow, and rerun only 2025-W20 with SQL disabled.

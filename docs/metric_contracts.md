@@ -2,9 +2,9 @@
 
 ## ASAP FOTA managed snapshot
 - Business meaning: Weekly FOTA value at the complete Sell-out geography, operator, and product grain exported by the Regional FOTA report.
-- Numerator: The live flat export's single `Metric` value column, renamed to
-  `FOTA Value` by the external transform. A compact `YYYYWW` value column remains
-  supported for compatible historical exports.
+- Numerator: The live flat export's single `Metrics` value column, renamed to
+  `FOTA Value` by the external transform. The `Metric` singular alias and a
+  compact `YYYYWW` value column remain supported for compatible exports.
 - Denominator: None.
 - Grain: Sell-out Region, Sell-out Subsidiary, Sell-out Country, Country Code, Operator, Province, Latitude, Longitude, Category, Biz Sub, Series, MKT Name, Item, and Week.
 - Date logic: One export per ISO week from 2025-W20 through 2026-W33. The
