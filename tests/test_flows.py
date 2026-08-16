@@ -506,8 +506,11 @@ def test_asap_list_scope_prefers_nearest_owner_when_labels_repeat():
             return Collection([])
 
         def get_by_text(self, value, exact=True):
-            assert value == "Repeated Label"
-            return Collection([repeated_member, actual_label])
+            if value == "Repeated Label":
+                return Collection([repeated_member, actual_label])
+            if value == "Choice":
+                return Collection([Node("choice anchor", parent=prompt)])
+            raise AssertionError(value)
 
     assert flow_worker._asap_list_scope(Frame(), "Repeated Label", ["Choice"]) is prompt
 

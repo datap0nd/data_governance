@@ -72,9 +72,11 @@ def test_fota_discovery_reads_searchable_sell_out_country_member_list(monkeypatc
         "Sell-out Country\nType to search in list\n(All) 22 values\n"
         "Saudi Arabia\nMorocco\nIraq\nEgypt\nPakistan\nSyria"
     )
-    metadata_only = Parent(
-        "Sell-out Country\nType to search in list\n(All) 22 values", complete,
-    )
+    metadata_only = complete
+    for _ in range(10):
+        metadata_only = Parent(
+            "Sell-out Country\nType to search in list\n(All) 22 values", metadata_only,
+        )
     label = Parent("Sell-out Country", metadata_only)
 
     class Frame:
@@ -83,7 +85,7 @@ def test_fota_discovery_reads_searchable_sell_out_country_member_list(monkeypatc
 
         def get_by_text(self, value, **_kwargs):
             pattern = getattr(value, "pattern", str(value)).casefold()
-            if "sell-out country" in pattern:
+            if "country" in pattern:
                 class Collection:
                     def all(self):
                         return [label]

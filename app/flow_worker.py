@@ -962,42 +962,48 @@ def _asap_list_scope(frame: Frame, label: str, requested: list[str]):
     # Legacy MicroStrategy controls do not always expose listbox semantics.
     # In that case, narrow from every matching label to the nearest ancestor
     # containing every requested member, then use only descendants of it.
-    labels = frame.get_by_text(label, exact=True)
+    anchor_locators = [frame.get_by_text(label, exact=True)]
+    # A custom prompt may render its heading as part of one combined card
+    # rather than as an exact standalone text node. A requested member is an
+    # equally reliable starting point because the resolved ancestor still has
+    # to contain every requested value, and the smallest matching owner wins.
+    anchor_locators.append(frame.get_by_text(requested[0], exact=True))
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         matches = []
-        for index in range(labels.count()):
-            heading = labels.nth(index)
-            try:
-                if not heading.is_visible():
-                    continue
-                # Lightweight test doubles and older adapters do not expose
-                # locator traversal. Their frame is already the list scope.
-                if not callable(getattr(heading, "locator", None)):
-                    return frame
-                ancestor = heading
-                for depth in range(1, 9):
-                    parents = ancestor.locator("xpath=parent::*")
-                    if not parents.count():
-                        break
-                    ancestor = parents.first
-                    contains_requested = True
-                    for value in requested:
-                        candidates = ancestor.get_by_text(value, exact=True)
-                        if not any(
-                            candidates.nth(option_index).is_visible()
-                            for option_index in range(candidates.count())
-                        ):
-                            contains_requested = False
-                            break
-                    if not contains_requested:
+        for anchors in anchor_locators:
+            for index in range(anchors.count()):
+                heading = anchors.nth(index)
+                try:
+                    if not heading.is_visible():
                         continue
-                    box = ancestor.bounding_box()
-                    area = box["width"] * box["height"] if box else float("inf")
-                    matches.append((depth, area, ancestor))
-                    break
-            except Exception:
-                continue
+                    # Lightweight test doubles and older adapters do not expose
+                    # locator traversal. Their frame is already the list scope.
+                    if not callable(getattr(heading, "locator", None)):
+                        return frame
+                    ancestor = heading
+                    for depth in range(1, 17):
+                        parents = ancestor.locator("xpath=parent::*")
+                        if not parents.count():
+                            break
+                        ancestor = parents.first
+                        contains_requested = True
+                        for value in requested:
+                            candidates = ancestor.get_by_text(value, exact=True)
+                            if not any(
+                                candidates.nth(option_index).is_visible()
+                                for option_index in range(candidates.count())
+                            ):
+                                contains_requested = False
+                                break
+                        if not contains_requested:
+                            continue
+                        box = ancestor.bounding_box()
+                        area = box["width"] * box["height"] if box else float("inf")
+                        matches.append((depth, area, ancestor))
+                        break
+                except Exception:
+                    continue
         if matches:
             return min(matches, key=lambda match: (match[0], match[1]))[2]
         frame.page.wait_for_timeout(250)
@@ -2000,17 +2006,15 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
         """Read the smallest visible MicroStrategy control containing a label."""
         ancestor = label_locator
-        for _ in range(7):
-            ancestor = ancestor.locator("xpath=parent::*")
-            if not ancestor.count():
-                break
+        for depth in range(17):
+            if depth:
+                ancestor = ancestor.locator("xpath=parent::*")
+                if not ancestor.count():
+                    break
             lines = list(dict.fromkeys(
                 _clean_text(line) for line in ancestor.first.inner_text().splitlines() if _clean_text(line)
             ))
-            has_marker = any(
-                "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
-                for line in lines
-            )
+            has_marker = any(_is_asap_list_metadata(line) for line in lines)
             member_values = [
                 value for value in lines[1:]
                 if value.casefold().rstrip(":") != lines[0].casefold().rstrip(":")
@@ -2103,18 +2107,20 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     # Searchable member selectors expose their label and values as plain divs,
     # without heading or option roles. Their search/count marker is the stable
     # structural signal across reports.
-    search_markers = frame.get_by_text(re.compile(r"type to search|\(\d+\s+values?\)", re.I))
+    search_markers = frame.get_by_text(re.compile(r"type to search|\b\d+\s+values?\b", re.I))
     for marker in search_markers.all():
         block = marker
-        for _ in range(6):
+        for _ in range(16):
             block = block.locator("xpath=parent::*")
             if not block.count():
                 break
             lines = list(dict.fromkeys(
                 _clean_text(line) for line in block.first.inner_text().splitlines() if _clean_text(line)
             ))
-            marker_index = next((i for i, line in enumerate(lines) if
-                                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)), -1)
+            marker_index = next((
+                i for i, line in enumerate(lines)
+                if _is_asap_list_metadata(line) or re.search(r"\b\d+\s+values?\b", line, re.I)
+            ), -1)
             if marker_index > 0 and len(lines) > marker_index + 1:
                 label_index = next(
                     (
@@ -2140,7 +2146,9 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     # the live prompt label and keep its values page-driven. The dedicated path
     # makes discovery independent of whether the search/count marker is split
     # into a sibling container by the current MicroStrategy rendering.
-    for country_label in frame.get_by_text(re.compile(r"^sell-out country:?$", re.I)).all():
+    for country_label in frame.get_by_text(
+        re.compile(r"sell\s*[-‐‑‒–—]?\s*out\s+country", re.I),
+    ).all():
         add_definition(
             "Sell-out Country", "multi_select",
             nearest_list_values(country_label, require_search_marker=True),
