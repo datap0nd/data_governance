@@ -11,10 +11,10 @@ transform plus atomic managed-snapshot refresh of
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `1939d77`
+- Latest runtime commit before this handoff update: `a528c84`
 - Public repo: no, private
-- Push status: `1939d77` verified on `origin/main`; publish the bounded export
-  retry and this handoff update next
+- Push status: `a528c84` verified on `origin/main`; publish this live-run handoff
+  update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -35,7 +35,7 @@ transform plus atomic managed-snapshot refresh of
 - The Week and Date controls are coupled two-handle sliders. Their values are
   visible labels rather than semantic handle values, so automation reads the
   labels and verifies both ranges before RUN.
-- Do not start another full-range run until isolated 2025-W20 and 2026-W33
+- The full-range gate is satisfied only after isolated 2025-W20 and 2026-W33
   downloads both normalize and transform successfully with SQL disabled.
 - Retry exactly once only when an opened Export Wizard exposes neither its
   requested format nor its Export action. The failure occurs before a download
@@ -68,9 +68,11 @@ transform plus atomic managed-snapshot refresh of
   0.14s.
 - `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements
   requirements.txt pytest -q`: 253 passed in 3.01s.
-- Remote `main`: `1939d778e083ac8d01859d93e25813bdb5c98d2e` verified before
-  the current change.
-- Citrix build `#20260816-035043`: deployed from `46a218a`.
+- Remote `main`: `a528c8486bb265260cc0d0ba5596c15e0a96e058` verified before
+  this handoff update.
+- Citrix build `#20260816-080834`: deployed after `a528c84` was pushed. The
+  installer preserved the database, republished the external transforms, and
+  visibly restarted both Metronome services and the headed worker.
 - Live run `#114`: all 66 downloads completed, then the first transform failed
   because normalization selected a preamble/data row and exposed no YYYYWW
   header. SQL did not run.
@@ -97,6 +99,15 @@ transform plus atomic managed-snapshot refresh of
   Export Wizard exposed neither its XLSX format option nor its Export action.
   Transform aggregation and SQL did not run. This is the exact failure covered
   by the current one-retry change.
+- Post-fix smoke `#127` for 2025-W20 succeeded in 4m43s with one download and one
+  transformed CSV while SQL was disabled.
+- Post-fix smoke `#128` for 2026-W33 succeeded in 3m13s with one download and one
+  transformed CSV while SQL was disabled.
+- Full run `#129` is live on `bi-desktop-headed`, configured for 66 one-week XLSX
+  exports from 2025-W20 through 2026-W33, external transformation, and managed
+  snapshot refresh of `meto_db.bi_reporting.ASAP_Fota`. At the latest visible
+  check it was running and exporting XLSX 1 of 66. Do not stop, restart, refresh,
+  or otherwise touch the headed worker while it remains healthy.
 - Live week 1: 2025-W20, Date 2025-05-11 through 2025-05-17, 300,548 rows.
 - Live week 2: 2025-W21, Date 2025-05-18 through 2025-05-24, 281,088 rows.
 - Observed cadence is about five to six minutes per week, so the initial backfill
@@ -104,8 +115,9 @@ transform plus atomic managed-snapshot refresh of
 
 ## Open Questions
 
-- The one-retry recovery is locally tested but still requires deployment and
-  new endpoint smoke evidence before another full-range run.
+- The bounded retry is deployed and both endpoint smokes pass. It has not yet
+  been exercised by a live transient wizard failure, so run `#129` remains the
+  decisive full-range evidence.
 - The objective is not accepted until all 66 exports and transforms succeed and the
   live SQL table proves 66 distinct weeks, minimum 2025-W20, maximum 2026-W33,
   a positive row count, and the contracted columns.
@@ -115,6 +127,7 @@ transform plus atomic managed-snapshot refresh of
 
 ## Next Step
 
-Commit and push the bounded Export Wizard retry, deploy it through the visible
-Metronome Update App flow, then repeat the 2025-W20 and 2026-W33 smoke gates with
-SQL disabled before another full-range run.
+Monitor live run `#129` only from the independent Metronome window. If it
+succeeds, run direct read-only SQL validation for row count, 66 distinct weeks,
+2025-W20 to 2026-W33 bounds, and the exact 17-column contract. If it fails,
+capture the exact terminal error before changing or rerunning anything.
