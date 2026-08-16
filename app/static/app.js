@@ -9343,12 +9343,42 @@ function _flowFilterControl(definition, value) {
     return `<input id="${id}" type="text" data-flow-filter="${esc(definition.filter_key)}" value="${esc(value || "")}" ${required}>`;
 }
 
+function _flowIsoWeekMonday(value) {
+    const match = /^(\d{4})-W(\d{2})$/.exec(String(value));
+    if (!match) return null;
+    const year = Number(match[1]);
+    const week = Number(match[2]);
+    const january4 = new Date(Date.UTC(year, 0, 4));
+    const january4Day = january4.getUTCDay() || 7;
+    const monday = new Date(january4);
+    monday.setUTCDate(january4.getUTCDate() - january4Day + 1 + ((week - 1) * 7));
+    return monday;
+}
+
+function _flowIsoWeekValue(date) {
+    const thursday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const day = thursday.getUTCDay() || 7;
+    thursday.setUTCDate(thursday.getUTCDate() + 4 - day);
+    const year = thursday.getUTCFullYear();
+    const yearStart = new Date(Date.UTC(year, 0, 1));
+    const week = Math.ceil((((thursday - yearStart) / 86400000) + 1) / 7);
+    return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
 function _flowDiscoveredWeeks(report, selected) {
     const definition = (report?.filters || []).find(filter => filter.control_type === "week" && filter.enabled && !filter.stale);
-    const weeks = [...new Set((definition?.options || []).map(option => {
+    const discovered = [...new Set((definition?.options || []).map(option => {
         const raw = String(option).trim();
         return /^\d{6}$/.test(raw) ? `${raw.slice(0, 4)}-W${raw.slice(4)}` : raw;
     }).filter(value => /^\d{4}-W\d{2}$/.test(value)))].sort();
+    const weeks = [];
+    if (discovered.length) {
+        const first = _flowIsoWeekMonday(discovered[0]);
+        const last = _flowIsoWeekMonday(discovered[discovered.length - 1]);
+        for (const cursor = first; cursor && last && cursor <= last; cursor.setUTCDate(cursor.getUTCDate() + 7)) {
+            weeks.push(_flowIsoWeekValue(cursor));
+        }
+    }
     if (selected && !weeks.includes(selected)) weeks.push(selected);
     weeks.sort();
     return weeks.map(value => {

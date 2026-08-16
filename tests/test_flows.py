@@ -1716,8 +1716,20 @@ def test_flow_list_does_not_require_builder_only_sql_controls():
 def test_flow_builder_uses_discovered_week_dropdowns():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
     assert "function _flowDiscoveredWeeks" in source
+    assert "function _flowIsoWeekMonday" in source
+    assert "function _flowIsoWeekValue" in source
+    assert "cursor.setUTCDate(cursor.getUTCDate() + 7)" in source
     assert '<select id="flow-start-week" required>' in source
     assert '<select id="flow-end-week" required>' in source
+
+
+def test_setup_fails_closed_when_python_dependencies_cannot_install():
+    root = Path(__file__).parents[1]
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
+        source = root.joinpath(filename).read_text()
+        assert "install --upgrade setuptools wheel -q" in source
+        assert "install --no-build-isolation -r requirements.txt -q" in source
+        assert "Python dependency installation failed with exit code" in source
 
 
 def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():

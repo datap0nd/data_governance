@@ -293,8 +293,21 @@ Set-Location $CodeDir
 $PipExe = "$PyDir\Scripts\pip.exe"
 # Install bundled wheels first (pbixray + xpress9 + kaitaistruct, no network)
 & $PipExe install --no-index --find-links vendor pbixray xpress9 kaitaistruct -q
+if ($LASTEXITCODE -ne 0) {
+    throw "Bundled Python dependency installation failed with exit code $LASTEXITCODE"
+}
+# reverse_geocoder is published as a source distribution. Ensure its legacy
+# setuptools backend exists in the portable runtime, then reuse that backend
+# instead of an isolated build environment that cannot import it.
+& $PipExe install --upgrade setuptools wheel -q
+if ($LASTEXITCODE -ne 0) {
+    throw "Python build dependency installation failed with exit code $LASTEXITCODE"
+}
 # Install remaining deps from public PyPI (portable Python has clean config)
-& $PipExe install -r requirements.txt -q
+& $PipExe install --no-build-isolation -r requirements.txt -q
+if ($LASTEXITCODE -ne 0) {
+    throw "Python dependency installation failed with exit code $LASTEXITCODE"
+}
 
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
