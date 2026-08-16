@@ -170,6 +170,12 @@ def _coordinate(selected: list[str], header: list[str]) -> tuple[float, float] |
     return latitude, longitude
 
 
+def _has_week_value(
+    selected: list[str], header: list[str], value_columns: list[tuple[str, str]],
+) -> bool:
+    return any(str(selected[header.index(name)]).strip() for name, _compact in value_columns)
+
+
 def _reverse_geocode_coordinates(
     coordinates: list[tuple[float, float]],
 ) -> dict[tuple[float, float], dict[str, str]]:
@@ -248,6 +254,8 @@ def transform(source: Path, target: Path) -> int:
         coordinates: dict[tuple[float, float], None] = {}
         source_row_count = 0
         for _row_number, selected in _selected_rows(source, raw_header, keep, duplicate_groups):
+            if not _has_week_value(selected, header, value_columns):
+                continue
             source_row_count += 1
             coordinate = _coordinate(selected, header)
             if coordinate is not None:
@@ -283,13 +291,16 @@ def transform(source: Path, target: Path) -> int:
                         for name in OUTPUT_DIMENSIONS
                     ]
                     for value_column, compact_week in value_columns:
+                        value = selected[header.index(value_column)]
+                        if not str(value).strip():
+                            continue
                         week, week_start, week_end = _week_dates(compact_week)
                         writer.writerow([
                             *output_dimensions,
                             week,
                             week_start,
                             week_end,
-                            selected[header.index(value_column)],
+                            value,
                         ])
                         row_count += 1
             temporary.replace(target)
@@ -297,6 +308,18 @@ def transform(source: Path, target: Path) -> int:
             if temporary.exists():
                 temporary.unlink()
     return row_count
+
+
+def _output_week_counts(target: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    with target.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or "Week" not in reader.fieldnames:
+            raise ValueError("Transformed output does not contain the contracted Week column.")
+        for row in reader:
+            week = str(row.get("Week") or "").strip()
+            counts[week] = counts.get(week, 0) + 1
+    return counts
 
 
 def main() -> int:
@@ -311,7 +334,9 @@ def main() -> int:
     except Exception as exc:
         print(f"FOTA transformation failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Transformed {row_count} row(s) from {source.name}.")
+    week_counts = _output_week_counts(target)
+    summary = ", ".join(f"{week}={count}" for week, count in week_counts.items())
+    print(f"Transformed {row_count} row(s) from {source.name}. Week rows: {summary}.")
     return 0
 
 

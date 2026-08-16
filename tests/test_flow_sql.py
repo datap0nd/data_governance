@@ -114,7 +114,7 @@ def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
     ]
 
 
-def test_excel_normalization_rejects_wider_data_row_as_header(tmp_path):
+def test_excel_normalization_refuses_to_truncate_wider_data_row(tmp_path):
     from openpyxl import Workbook
 
     source = tmp_path / "browser-download.xlsx"
@@ -129,22 +129,43 @@ def test_excel_normalization_rejects_wider_data_row_as_header(tmp_path):
     workbook.save(source)
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
+    with pytest.raises(RuntimeError, match="Refusing to discard data"):
+        flow_worker._store_completed_download(
+            source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        )
+
+
+def test_excel_normalization_recovers_live_multi_week_metric_columns(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Regional FOTA"])
+    sheet.append(["Week filter", "2026-W30 to 2026-W31"])
+    sheet.append([])
+    sheet.append(["Sell-out Region", "Sell-out Subsidiary", "Metrics"])
+    sheet.append(["Middle East", "SEEG", 300, 310])
+    workbook.save(source)
+
+    output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     metadata = flow_worker._store_completed_download(
         source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
     )
 
     normalized = Path(metadata["file_path"])
-    assert metadata["preamble_rows_removed"] == 2
+    assert metadata["recovered_week_columns"] == ["202630", "202631"]
     assert metadata["columns"] == [
-        "Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520",
+        "Sell-out Region", "Sell-out Subsidiary", "202630", "202631",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Sell-out Region,Sell-out Subsidiary,Weekly,202520,Metronome Export View",
-        "Middle East,SEEG,FOTA,123,Export Wizard (Sell-out Sub)",
+        "Sell-out Region,Sell-out Subsidiary,202630,202631,Metronome Export View",
+        "Middle East,SEEG,300,310,Export Wizard (Sell-out Sub)",
     ]
 
 
-def test_excel_normalization_prefers_year_week_header_over_unique_wider_data_row(tmp_path):
+def test_excel_normalization_prefers_year_week_header(tmp_path):
     from openpyxl import Workbook
 
     source = tmp_path / "browser-download.xlsx"
@@ -155,7 +176,7 @@ def test_excel_normalization_prefers_year_week_header_over_unique_wider_data_row
     sheet.append(["Week filter", "2025-W20"])
     sheet.append([])
     sheet.append(["Sell-out Region", "Sell-out Subsidiary", "Weekly", 202520])
-    sheet.append(["Middle East", "SEEG", "FOTA", 123, "Galaxy", "Operator A"])
+    sheet.append(["Middle East", "SEEG", "FOTA", 123])
     workbook.save(source)
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
@@ -187,7 +208,7 @@ def test_excel_normalization_prefers_dimension_labels_when_week_heading_is_not_c
     sheet.append([
         "Sell-out Region", "Sell-out Subsidiary", "Country Code", "Week 20, 2025",
     ])
-    sheet.append(["Middle East", "SEEG", "AE", 123, "Galaxy", "Operator A"])
+    sheet.append(["Middle East", "SEEG", "AE", 123])
     workbook.save(source)
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"

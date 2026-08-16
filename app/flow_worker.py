@@ -61,6 +61,7 @@ XLSX_HEADER_LABEL_HINTS = frozenset({
     "mkt_name",
     "item",
 })
+XLSX_FILENAME_WEEK = re.compile(r"(?<!\d)(20\d{2})-W(\d{2})(?!\d)", re.IGNORECASE)
 
 
 @contextmanager
@@ -2371,6 +2372,64 @@ def _excel_cell_value(value: Any) -> Any:
     return "" if value is None else value
 
 
+def _xlsx_filename_weeks(source: Path) -> list[str]:
+    """Return validated compact weeks encoded in an ASAP artifact name."""
+    weeks: list[str] = []
+    for match in XLSX_FILENAME_WEEK.finditer(source.name):
+        year, week = (int(value) for value in match.groups())
+        try:
+            date.fromisocalendar(year, week, 1)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Downloaded Excel filename contains a nonexistent week: {year:04d}-W{week:02d}."
+            ) from exc
+        compact = f"{year:04d}{week:02d}"
+        if compact not in weeks:
+            weeks.append(compact)
+    return weeks
+
+
+def _xlsx_expand_multi_week_metric_header(
+    source: Path, header: list[str], data_rows: list[list[Any]], worksheet_title: str,
+) -> tuple[list[str], list[str]]:
+    """Recover ASAP's multi-level week headings without guessing column count.
+
+    In the live flat Excel matrix, the lower header row ends in ``Metrics``.
+    Each selected week occupies one value column, but only the first value
+    column has that lower-level label. The prior normalizer used the lower
+    header width and silently truncated every later week. The artifact name is
+    already generated from the range that Metronome set and read back in ASAP,
+    so it can provide the week labels only when the physical value-column count
+    proves a one-to-one mapping.
+    """
+    filename_weeks = _xlsx_filename_weeks(source)
+    if len(filename_weeks) < 2:
+        return header, []
+    metric_indexes = [
+        index for index, value in enumerate(header)
+        if str(value).strip().casefold() in {"metric", "metrics"}
+    ]
+    if len(metric_indexes) != 1 or metric_indexes[0] != len(header) - 1:
+        return header, []
+    metric_index = metric_indexes[0]
+    max_data_width = max((len(row) for row in data_rows), default=0)
+    expected_width = metric_index + len(filename_weeks)
+    if max_data_width == expected_width:
+        return [*header[:metric_index], *filename_weeks], filename_weeks
+    if max_data_width <= len(header):
+        raise RuntimeError(
+            "Downloaded multi-week Excel matrix exposes one Metrics column but no distinct "
+            f"value column per selected week on sheet {worksheet_title!r}. Selected weeks: "
+            f"{filename_weeks}; header width: {len(header)}; maximum data width: {max_data_width}."
+        )
+    raise RuntimeError(
+        "Downloaded multi-week Excel matrix width does not match its selected weeks on sheet "
+        f"{worksheet_title!r}. Selected weeks: {filename_weeks}; Metrics starts at column "
+        f"{metric_index + 1}; expected width: {expected_width}; maximum data width: "
+        f"{max_data_width}."
+    )
+
+
 def _normalize_xlsx(source: Path, output: Path) -> dict:
     """Convert populated workbook sheets into one normalized UTF-8 CSV."""
     try:
@@ -2385,6 +2444,7 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
     common_normalized: list[str] | None = None
     output_rows: list[list[Any]] = []
     source_sheets = []
+    recovered_week_columns: list[str] = []
     preamble_rows_removed = 0
     try:
         for worksheet in workbook.worksheets:
@@ -2430,6 +2490,17 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
             header = [str(value).strip() for value in rows[header_index]]
             if len(header) < 2:
                 continue
+            data_rows = rows[header_index + 1:]
+            header, sheet_week_columns = _xlsx_expand_multi_week_metric_header(
+                source, header, data_rows, worksheet.title,
+            )
+            if sheet_week_columns:
+                if recovered_week_columns and recovered_week_columns != sheet_week_columns:
+                    raise RuntimeError(
+                        "Downloaded Excel workbook resolved different multi-week columns across "
+                        f"its populated sheets: {recovered_week_columns} and {sheet_week_columns}."
+                    )
+                recovered_week_columns = sheet_week_columns
             normalized = [
                 re.sub(r"\W+", "_", value).strip("_").casefold() or f"col_{index}"
                 for index, value in enumerate(header)
@@ -2443,7 +2514,15 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
                     f"{', '.join(source_sheets)} and {worksheet.title}."
                 )
             width = len(common_header)
-            for row in rows[header_index + 1:]:
+            for row_number, row in enumerate(data_rows, start=header_index + 2):
+                if len(row) > width and any(
+                    str(value).strip() for value in row[width:]
+                ):
+                    raise RuntimeError(
+                        "Downloaded Excel row contains populated cells beyond the resolved header "
+                        f"on sheet {worksheet.title!r}, row {row_number}. Header width: {width}; "
+                        f"row width: {len(row)}. Refusing to discard data."
+                    )
                 values = list(row[:width]) + [""] * max(0, width - len(row))
                 if any(str(value).strip() for value in values):
                     output_rows.append(values)
@@ -2463,6 +2542,7 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
         "source_delimiter": None,
         "source_sheets": source_sheets,
         "columns": common_header,
+        "recovered_week_columns": recovered_week_columns,
     }
 
 

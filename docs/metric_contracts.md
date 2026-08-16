@@ -5,8 +5,13 @@
 - Numerator: Each live flat export week value, renamed to `FOTA Value` by the
   external transform. Multi-week exports may expose compact `YYYYWW`,
   `YYYY-Www`, `Week ww`, or `Www` columns; all are unpivoted into one row per
-  source row and ISO week. The `Metric`/`Metrics` aliases remain supported only
-  for a single-week file whose filename supplies exactly one week.
+  source row and ISO week. The live multi-week XLSX matrix may expose only the
+  lower `Metrics` header even though its data rows contain one value cell per
+  selected week. The normalizer recovers those week columns from the validated
+  artifact range only when the physical value-column count matches one-to-one;
+  it never truncates populated cells. Blank week cells are not emitted. The
+  `Metric`/`Metrics` aliases remain supported directly only for a single-week
+  file whose filename supplies exactly one week.
 - Denominator: None.
 - Grain: Sell-out Region, Sell-out Subsidiary, Sell-out Country, Country Code, Operator, Province, Latitude, Longitude, Category, Biz Sub, Series, MKT Name, Item, and Week.
 - Date logic: A complete managed snapshot from 2026-W20 through the latest week
@@ -31,8 +36,9 @@
 - Edge cases: Reject ambiguous week-only headers, a filename/week mismatch,
   duplicate week columns, multiple `Metric` columns, missing contracted
   dimensions other than the fixed Category field, unexpected columns, unusable
-  headers, empty data, a partial requested range, or unavailable geolocation
-  dependencies.
+  headers, an unprovable multi-week matrix width, populated cells beyond a
+  resolved header, empty data, a partial requested range, or unavailable
+  geolocation dependencies.
 
 ## Views last 30d
 - Business meaning: Raw Power BI report view count over the most recent 30 dates available in the usage CSV export.
