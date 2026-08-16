@@ -158,6 +158,23 @@ def test_fota_transform_skips_blank_week_cells_in_sparse_multi_week_matrix(tmp_p
     assert MODULE._output_week_counts(target) == {"2026-W30": 1, "2026-W31": 1}
 
 
+def test_fota_transform_rejects_metric_label_as_week_value(tmp_path):
+    source = tmp_path / "ASAP_Fota_2026-W30_2026-W31_normalized.csv"
+    target = tmp_path / "result.csv"
+    exported_dimensions = [
+        name for name in MODULE.CONTRACTED_DIMENSIONS if name != "Category"
+    ]
+    _write_csv(source, [
+        [*exported_dimensions, "202630", "202631"],
+        [*_values_for(exported_dimensions), "Sell-out", "310"],
+    ])
+
+    with pytest.raises(ValueError, match="FOTA value must be numeric.*2026-W30.*Sell-out"):
+        MODULE.transform(source, target)
+
+    assert not target.exists()
+
+
 def test_fota_transform_leaves_geography_blank_for_missing_coordinates(tmp_path):
     source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
     target = tmp_path / "result.csv"

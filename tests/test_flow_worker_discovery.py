@@ -37,6 +37,13 @@ def test_navigation_roots_are_inferred_from_top_link_row():
     assert [item["text"] for item in _navigation_roots(records)] == ["Market", "Mobile", "Eco"]
 
 
+def test_fota_discovery_includes_visual_category_member_list():
+    source = Path(flow_worker.__file__).read_text()
+
+    assert 'add_definition("Category", "multi_select", category_options)' in source
+    assert '{"weekly", "daily"}' in source
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]

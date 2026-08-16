@@ -1228,7 +1228,7 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
             continue
         visible_list_only = (
-            definition["control_label"].casefold().rstrip(":") == "dimension"
+            definition["control_label"].casefold().rstrip(":") in {"dimension", "category"}
             or definition["control_type"] == "week"
         )
         if visible_list_only:
@@ -2108,6 +2108,19 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
 
+    # Regional FOTA renders Category as the same visual-only member list used
+    # by Dimension. It has no search/count marker or native select, so the
+    # generic discovery paths above cannot see it. Capture the two live report
+    # members explicitly; execution still resolves and verifies the visible
+    # list before changing its exact selection.
+    category_options = []
+    for category_label in frame.get_by_text(re.compile(r"^category:?$", re.I)).all():
+        for value in nearest_list_values(category_label):
+            if value.casefold() in {"weekly", "daily"} and value not in category_options:
+                category_options.append(value)
+    if category_options:
+        add_definition("Category", "multi_select", category_options)
+
     # Regional FOTA exposes Week and Date as coupled two-handle sliders rather
     # than searchable member lists. Catalog the complete Week domain while
     # recording that execution must also drive the derived Date range.
@@ -2391,7 +2404,7 @@ def _xlsx_filename_weeks(source: Path) -> list[str]:
 
 def _xlsx_expand_multi_week_metric_header(
     source: Path, header: list[str], data_rows: list[list[Any]], worksheet_title: str,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], str | None]:
     """Recover ASAP's multi-level week headings without guessing column count.
 
     In the live flat Excel matrix, the lower header row ends in ``Metrics``.
@@ -2404,18 +2417,42 @@ def _xlsx_expand_multi_week_metric_header(
     """
     filename_weeks = _xlsx_filename_weeks(source)
     if len(filename_weeks) < 2:
-        return header, []
+        return header, [], None
     metric_indexes = [
         index for index, value in enumerate(header)
         if str(value).strip().casefold() in {"metric", "metrics"}
     ]
     if len(metric_indexes) != 1 or metric_indexes[0] != len(header) - 1:
-        return header, []
+        return header, [], None
     metric_index = metric_indexes[0]
     max_data_width = max((len(row) for row in data_rows), default=0)
+    metric_labels = {
+        re.sub(r"\W+", "_", str(row[metric_index]).strip()).strip("_").casefold()
+        for row in data_rows if len(row) > metric_index and str(row[metric_index]).strip()
+    }
+    recognized_metric_label = (
+        next(iter(metric_labels))
+        if len(metric_labels) == 1 and metric_labels <= {"sell_out", "fota"}
+        else None
+    )
+    if recognized_metric_label:
+        expected_width = metric_index + 1 + len(filename_weeks)
+        if max_data_width != expected_width:
+            actual_values = max(0, max_data_width - metric_index - 1)
+            raise RuntimeError(
+                "Downloaded multi-week Excel matrix does not contain one numeric value column "
+                f"per selected week on sheet {worksheet_title!r}. Selected weeks: "
+                f"{filename_weeks}; metric label: {recognized_metric_label!r}; expected numeric "
+                f"week columns: {len(filename_weeks)}; observed numeric week columns: "
+                f"{actual_values}."
+            )
+        for row in data_rows:
+            if len(row) > metric_index:
+                row.pop(metric_index)
+        return [*header[:metric_index], *filename_weeks], filename_weeks, recognized_metric_label
     expected_width = metric_index + len(filename_weeks)
     if max_data_width == expected_width:
-        return [*header[:metric_index], *filename_weeks], filename_weeks
+        return [*header[:metric_index], *filename_weeks], filename_weeks, None
     if max_data_width <= len(header):
         raise RuntimeError(
             "Downloaded multi-week Excel matrix exposes one Metrics column but no distinct "
@@ -2445,6 +2482,7 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
     output_rows: list[list[Any]] = []
     source_sheets = []
     recovered_week_columns: list[str] = []
+    removed_metric_label: str | None = None
     preamble_rows_removed = 0
     try:
         for worksheet in workbook.worksheets:
@@ -2491,9 +2529,16 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
             if len(header) < 2:
                 continue
             data_rows = rows[header_index + 1:]
-            header, sheet_week_columns = _xlsx_expand_multi_week_metric_header(
+            header, sheet_week_columns, sheet_metric_label = _xlsx_expand_multi_week_metric_header(
                 source, header, data_rows, worksheet.title,
             )
+            if sheet_metric_label:
+                if removed_metric_label and removed_metric_label != sheet_metric_label:
+                    raise RuntimeError(
+                        "Downloaded Excel workbook exposed different metric labels across "
+                        f"populated sheets: {removed_metric_label!r} and {sheet_metric_label!r}."
+                    )
+                removed_metric_label = sheet_metric_label
             if sheet_week_columns:
                 if recovered_week_columns and recovered_week_columns != sheet_week_columns:
                     raise RuntimeError(
@@ -2543,6 +2588,7 @@ def _normalize_xlsx(source: Path, output: Path) -> dict:
         "source_sheets": source_sheets,
         "columns": common_header,
         "recovered_week_columns": recovered_week_columns,
+        "removed_metric_label": removed_metric_label,
     }
 
 
