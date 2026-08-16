@@ -152,6 +152,13 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None)
                 exc.response is not None and exc.response.status_code >= 500
             )
             if not retryable or attempt == 5:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                    detail = exc.response.text.strip()
+                    if detail:
+                        raise RuntimeError(
+                            f"Local API rejected {method} {path} with HTTP "
+                            f"{exc.response.status_code}: {detail[:4000]}"
+                        ) from exc
                 raise
             time.sleep(attempt)
     raise RuntimeError("Local API request failed after retries.") from last_error
@@ -1792,13 +1799,13 @@ def _merge_asap_filter_definition(
     options = [
         value for value in raw_options
         if value and value != label and not _is_asap_list_metadata(value)
-    ]
+    ][:2000]
     if not label or not options:
         return
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
     existing = next((item for item in definitions if item["filter_key"] == key), None)
     if existing is not None:
-        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))
+        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))[:2000]
         return
     definitions.append({
         "filter_key": key, "label": label, "control_label": label,

@@ -2334,6 +2334,23 @@ def test_worker_api_retries_transient_server_errors(monkeypatch):
     assert len(attempts) == 3
 
 
+def test_worker_api_includes_validation_response_in_error():
+    httpx = __import__("httpx")
+    request = httpx.Request("POST", "http://127.0.0.1/progress")
+    response = httpx.Response(
+        422, request=request,
+        json={"detail": [{"loc": ["body", "reports", 0, "filters", 0, "options"],
+                          "msg": "List should have at most 2000 items"}]},
+    )
+
+    class Client:
+        def request(self, *_args, **_kwargs):
+            return response
+
+    with pytest.raises(RuntimeError, match="options.*at most 2000 items"):
+        flow_worker._api(Client(), "POST", "/progress")
+
+
 def test_asap_download_observes_every_open_portal_page_and_uses_staging_folder():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert 'candidate.on("download", capture_download)' in source

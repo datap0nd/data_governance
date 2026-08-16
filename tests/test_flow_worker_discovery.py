@@ -171,6 +171,22 @@ def test_fota_discovery_labels_native_aside_multiselect_from_field_owner(monkeyp
     assert country["options"] == countries
 
 
+def test_discovered_filter_options_are_bounded_to_api_contract():
+    definitions = []
+
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Large prompt", "multi_select",
+        [f"Option {index}" for index in range(2500)],
+    )
+    flow_worker._merge_asap_filter_definition(
+        definitions, "Large prompt", "multi_select", ["Additional option"],
+    )
+
+    assert len(definitions[0]["options"]) == 2000
+    assert definitions[0]["options"][0] == "Option 0"
+    assert definitions[0]["options"][-1] == "Option 1999"
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]
