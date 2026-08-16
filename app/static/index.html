@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Metronome</title>
-    <link rel="stylesheet" href="/static/style.css?v=47">
+    <link rel="stylesheet" href="/static/style.css?v=48">
 </head>
 <body>
     <a href="#app" class="skip-link">Skip to main content</a>
@@ -19,7 +19,11 @@
             </svg>
         </span>
         <a href="#dashboard" data-page="dashboard" class="active"><span class="nav-health-dot" id="nav-health-dot"></span>Dashboard</a>
-        <a href="#lineage" data-page="lineage">Lineage</a>
+        <a href="#lineage" data-page="lineage">Pipelines</a>
+        <a href="#flows" data-page="flows" class="nav-item-with-badge">
+            <span>Flows</span>
+            <span class="nav-new-badge">New</span>
+        </a>
         <div class="nav-group" data-pages="reports,sources,scripts,scheduledtasks,powerautomate" role="group" aria-label="Data pages">
             <span class="nav-group-label" tabindex="0" aria-haspopup="true">Data <span class="nav-arrow">&#9662;</span></span>
             <div class="nav-dropdown" role="menu">
@@ -36,10 +40,9 @@
                 <a href="#create" data-page="create" role="menuitem">Create</a>
             </div>
         </div>
-        <div class="nav-group" data-pages="flows,bestpractices,dataquality,email,recurrences,export,dataimport" role="group" aria-label="Tools pages">
+        <div class="nav-group" data-pages="bestpractices,dataquality,email,recurrences,export,dataimport" role="group" aria-label="Tools pages">
             <span class="nav-group-label" tabindex="0" aria-haspopup="true">Tools <span class="nav-arrow">&#9662;</span></span>
             <div class="nav-dropdown" role="menu">
-                <a href="#flows" data-page="flows" role="menuitem">Flows</a>
                 <a href="#bestpractices" data-page="bestpractices" role="menuitem">TMDL Checker</a>
                 <a href="#dataquality" data-page="dataquality" role="menuitem">Data Quality</a>
                 <a href="#email" data-page="email" role="menuitem">Email</a>

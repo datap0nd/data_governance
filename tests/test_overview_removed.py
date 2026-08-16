@@ -27,6 +27,19 @@ def test_manual_tasks_surface_is_removed_but_scheduled_tasks_remain():
     assert 'data-page="scheduledtasks"' in index_html
 
 
+def test_pipelines_and_new_flows_are_top_level_navigation_items():
+    index_html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    style_css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert '<a href="#lineage" data-page="lineage">Pipelines</a>' in index_html
+    assert index_html.count('data-page="flows"') == 1
+    assert '<a href="#flows" data-page="flows" class="nav-item-with-badge">' in index_html
+    assert '<span class="nav-new-badge">New</span>' in index_html
+    assert 'data-pages="flows,bestpractices' not in index_html
+    assert 'data-pages="lineage,flows"' not in index_html
+    assert ".nav-new-badge" in style_css
+
+
 def test_alert_surfaces_use_degradation_dates_and_power_bi_error_details():
     app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 

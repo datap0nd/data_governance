@@ -300,6 +300,25 @@ nav a:hover .nav-icon, nav a.active .nav-icon,
 .nav-dropdown a:hover { background: var(--surface-hover); color: var(--text); }
 .nav-dropdown a.active { color: var(--accent); background: var(--accent-bg); font-weight: 600; }
 
+.nav-item-with-badge {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.35rem;
+}
+
+.nav-new-badge {
+    background: var(--purple-bg);
+    border: 1px solid var(--purple-border);
+    border-radius: 999px;
+    color: var(--purple);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    padding: 0.18rem 0.34rem;
+    text-transform: uppercase;
+}
+
 /* Health dot in nav */
 .nav-health-dot {
     display: inline-block;
