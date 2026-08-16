@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 # Keep direct-file execution compatible with the isolated Windows embedded
@@ -1268,6 +1269,26 @@ def _download_staging_snapshot(staging_dir: Path) -> dict[Path, tuple[int, int]]
     return snapshot
 
 
+def _asap_frame_was_detached(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return "frame was detached" in message or "frame has been detached" in message
+
+
+def _asap_wait_for_download_start(
+    staging_dir: Path,
+    files_before: dict[Path, tuple[int, int]],
+    timeout_seconds: int = 15,
+) -> bool:
+    """Detect a download that started while its initiating frame was replaced."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        current = _download_staging_snapshot(staging_dir)
+        if any(files_before.get(path) != state for path, state in current.items()):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def _wait_for_staged_download(
     staging_dir: Path,
     files_before: dict[Path, tuple[int, int]],
@@ -1678,14 +1699,29 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     for candidate in observed_pages:
         candidate.on("download", capture_download)
     try:
-        (direct_download_action or export_action).click()
-        if direct_download_action is not None:
-            confirmation = _asap_wait_for_raw_export_confirmation(page, file_format)
-            if confirmation is None:
-                raise RuntimeError(
-                    "ASAP raw-table Excel dialog opened, but its final Export action was not visible."
-                )
-            confirmation.click()
+        try:
+            (direct_download_action or export_action).click()
+            if direct_download_action is not None:
+                confirmation = _asap_wait_for_raw_export_confirmation(page, file_format)
+                if confirmation is None:
+                    raise RuntimeError(
+                        "ASAP raw-table Excel dialog opened, but its final Export action was not visible."
+                    )
+                confirmation.click()
+        except PlaywrightError as exc:
+            if not _asap_frame_was_detached(exc) or not _asap_wait_for_download_start(
+                staging_dir, files_before,
+            ):
+                raise
+            # The frame can disappear after the browser has accepted the
+            # export click. Recover the emitted file rather than clicking a
+            # second time and creating a duplicate CSV.
+            staged_file = _wait_for_staged_download(staging_dir, files_before)
+            export_pages = [
+                candidate for candidate in wizard_pages
+                if candidate not in pages_before and candidate is not page
+            ]
+            return staged_file, export_pages
         deadline = time.monotonic() + 180
         while not downloads and time.monotonic() < deadline:
             page.wait_for_timeout(100)
@@ -1705,7 +1741,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
 def _asap_download_with_retry(
     page: Page, frame: Frame, job: dict, staging_dir: Path,
 ):
-    """Retry one transient export-wizard recognition failure.
+    """Retry one transient export-wizard or detached-frame failure.
 
     A long ASAP run repeatedly opens the same MicroStrategy export wizard. In
     practice, the popup can occasionally open without exposing either of its
@@ -1717,6 +1753,14 @@ def _asap_download_with_retry(
     for attempt in range(2):
         try:
             return _asap_download(page, frame, job, staging_dir)
+        except PlaywrightError as exc:
+            if attempt == 1 or not _asap_frame_was_detached(exc):
+                raise
+            # A pre-download report-frame replacement is safe to retry. The
+            # final export click is handled inside _asap_download so a CSV is
+            # never requested twice after its browser download has begun.
+            page.wait_for_timeout(1_500)
+            frame = _asap_frame(page)
         except RuntimeError as exc:
             message = str(exc)
             if (

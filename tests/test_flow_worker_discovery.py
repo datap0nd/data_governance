@@ -389,6 +389,56 @@ def test_asap_download_does_not_retry_other_failures(monkeypatch, tmp_path):
     assert attempts == [1]
 
 
+def test_asap_download_retries_once_with_replaced_frame(monkeypatch, tmp_path):
+    attempts = []
+    original_frame = object()
+    replacement_frame = object()
+
+    def download(_page, frame, _job, _staging_dir):
+        attempts.append(frame)
+        if len(attempts) == 1:
+            raise flow_worker.PlaywrightError("Frame was detached")
+        return tmp_path / "download.csv", []
+
+    monkeypatch.setattr(flow_worker, "_asap_download", download)
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: replacement_frame)
+
+    class Page:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = Page()
+    result = flow_worker._asap_download_with_retry(
+        page, original_frame, {}, tmp_path,
+    )
+
+    assert result == (tmp_path / "download.csv", [])
+    assert attempts == [original_frame, replacement_frame]
+    assert page.waits == [1_500]
+
+
+def test_asap_download_does_not_retry_other_playwright_errors(monkeypatch, tmp_path):
+    attempts = []
+
+    def download(*_args):
+        attempts.append(len(attempts) + 1)
+        raise flow_worker.PlaywrightError("Target page, context or browser has been closed")
+
+    monkeypatch.setattr(flow_worker, "_asap_download", download)
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("non-frame Playwright errors must not wait")
+
+    with pytest.raises(flow_worker.PlaywrightError, match="browser has been closed"):
+        flow_worker._asap_download_with_retry(Page(), object(), {}, tmp_path)
+
+    assert attempts == [1]
+
+
 def test_raw_table_excel_menu_item_is_a_direct_download_action():
     class Locator:
         def __init__(self, visible):

@@ -2,17 +2,15 @@
 
 ## Current Objective
 
-Deploy and verify the Pipelines readability update. Pipeline node names and
-metadata now wrap, while Visuals and Power BI Tables are hidden by default.
-Flow nodes are implemented but cannot be verified in production until matching
-target tables exist. Keep the paused production Flow paused until the user
-explicitly resumes it.
+Deploy and verify the Dashboard Alerts simplification and the ASAP detached-frame
+download recovery. Keep the paused production Flow paused until the user
+explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest code commit: `41b353d` (`Wrap pipeline labels and reduce default columns`)
+- Latest pre-task commit: `a885cea` (`Update pipeline layout handoff`)
 - Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
 - Push status: code commit verified on `origin/main`
@@ -34,6 +32,13 @@ explicitly resumes it.
   wrap without ellipsis. Secondary metadata uses its own line.
 - Visuals and Power BI Tables use a versioned session preference and start
   hidden for both new and existing browser sessions after the update.
+- Dashboard Alerts do not expose manual status controls. Scanner presence
+  determines whether an alert is active, while Owner assignment remains editable.
+- Dashboard Issue badges are neutral and use precise source labels. The date
+  column is named First detected because it is based on the action creation date.
+- A transient ASAP `Frame was detached` error retries once against the current
+  report frame. If the final export already created a staged file, the worker
+  recovers that file instead of issuing a duplicate export.
 
 ## Files Changed
 
@@ -45,6 +50,11 @@ explicitly resumes it.
 - `app/routers/dashboard.py`: select the latest completed scan for the summary.
 - `app/static/app.js`, `app/static/style.css`: Pipeline default visibility and
   non-truncating node layout.
+- `app/static/app.js`, `app/static/style.css`: remove Dashboard Status and Open,
+  neutralize Issue badges, widen the useful columns, and clarify alert wording.
+- `app/flow_worker.py`: recover or safely retry detached ASAP export frames.
+- `tests/test_overview_removed.py`, `tests/test_flow_worker_discovery.py`:
+  regression coverage for the Dashboard table and CSV frame replacement.
 - `tests/test_actions_dedupe.py`, `tests/test_pbi_fetch.py`,
   `tests/test_report_refresh.py`, `tests/test_dashboard.py`,
   `tests/test_lineage_display.mjs`: regression coverage.
@@ -56,6 +66,11 @@ explicitly resumes it.
 - `/tmp/data-governance-test-env/bin/python -m compileall -q app`: passed.
 - `git diff --check`: passed.
 - `node tests/test_lineage_display.mjs`: passed.
+- `node tests/test_lineage_layers.mjs`: passed.
+- Current full suite: 280 passed.
+- Local rendered Dashboard: six expected headers, no Status header or Open
+  button, Notify SLA visible, neutral Issue background, and 180px unclipped
+  Owner select. Browser console had no errors.
 - Local browser verification with a deliberately long script name: labels and
   metadata had no hidden overflow or ellipsis; default columns were Sources and
   Scripts; Visuals and Power BI Tables could be enabled; no console errors.
@@ -76,11 +91,12 @@ explicitly resumes it.
   target tables are not yet present.
 - The available PostgreSQL role cannot independently read the materialized
   view's storage modification timestamp.
-- Pipelines wrapping/default-column changes are on `origin/main` but are not yet
-  installed in the production app because no fresh Update App approval was given.
+- The ASAP CSV recovery is covered locally but has not been verified with a live
+  multi-file production Flow because that Flow remains paused and no run was
+  authorized in this task.
 
 ## Next Step
 
-After the user explicitly approves Update App, install the latest `origin/main`
-build and verify long production source/script names plus the two default-hidden
-columns in Citrix.
+Commit and push the scoped changes, run the already authorized Update App action,
+then verify the installed Dashboard in Citrix. Live CSV 5 acceptance remains for
+the next explicitly authorized Flow run.

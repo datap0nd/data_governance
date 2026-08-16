@@ -51,12 +51,12 @@ def test_pipelines_exposes_report_flow_and_materialized_view_refresh_controls():
     assert 'add(`source-${sourceId}`, `flow-${flow.id}`, true)' in app_js
 
 
-def test_alert_surfaces_use_degradation_dates_and_power_bi_error_details():
+def test_alert_surfaces_use_detection_dates_and_power_bi_error_details():
     app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 
     assert "Weighted views" not in app_js
     assert "weighted impact" not in app_js
-    assert "Degraded since" in app_js
+    assert "First detected" in app_js
     assert "PBI Refresh Error:" in app_js
     assert "check the notes" not in app_js
 
@@ -71,4 +71,17 @@ def test_alert_table_uses_source_logos_and_gives_owner_room():
     assert 'class="alerts-owner-cell"' in app_js
     assert ".alert-source-logo-powerbi" in style_css
     assert ".alerts-owner-cell" in style_css
-    assert "min-width: 1180px" in style_css
+    assert "min-width: 960px" in style_css
+
+
+def test_dashboard_alert_table_has_scan_driven_state_and_neutral_issue_labels():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    table_start = app_js.index("function renderDashboardAlertsTable")
+    table_end = app_js.index("function bindDashboardAlerts", table_start)
+    table_source = app_js[table_start:table_end]
+
+    assert '>Status</th>' not in table_source
+    assert 'alerts-row-open' not in table_source
+    assert 'status-pill-wrapper' not in table_source
+    assert 'actionTypeBadge(a.type, true)' in table_source
+    assert 'colspan="6"' in table_source

@@ -261,11 +261,11 @@ function actionStatusBadge(status) {
     return `<span class="badge ${colors[status] || "badge-muted"}">${status}</span>`;
 }
 
-function actionTypeBadge(type) {
+function actionTypeBadge(type, neutral = false) {
     const labels = {
-        stale_source: "Degraded",
-        outdated_source: "Degraded",
-        error_source: "Degraded",
+        stale_source: "Stale Source",
+        outdated_source: "Outdated Source",
+        error_source: "Source Error",
         empty_source: "Empty Source",
         broken_ref: "Broken Ref",
         changed_query: "Query Changed",
@@ -298,13 +298,14 @@ function actionTypeBadge(type) {
         best_practice: "badge-yellow",
         documentation_missing: "badge-yellow",
     };
-    return `<span class="badge ${colors[type] || "badge-muted"}">${labels[type] || type}</span>`;
+    const badgeClass = neutral ? "badge-muted alerts-issue-label" : (colors[type] || "badge-muted");
+    return `<span class="badge ${badgeClass}">${labels[type] || type}</span>`;
 }
 
 function actionTypeLabel(type) {
     const labels = {
-        stale_source: "Degraded source",
-        outdated_source: "Degraded source",
+        stale_source: "Stale source",
+        outdated_source: "Outdated source",
         error_source: "Source error",
         empty_source: "Empty source",
         broken_ref: "Broken reference",
@@ -1990,7 +1991,7 @@ function renderFixFirstPanel(openActions) {
             <div class="fix-first-header">
                 <div>
                     <h3>Fix This First</h3>
-                    <span>Ranked by views, issue type, time degraded, and ownership.</span>
+                    <span>Ranked by views, issue type, time since detection, and ownership.</span>
                 </div>
             </div>
             <div class="fix-first-list">${items}</div>
@@ -2001,21 +2002,21 @@ function renderFixFirstPanel(openActions) {
 function renderDashboardAlertsSection(actions, people) {
     const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
 
-    // Open = not resolved or expected
-    const openActions = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
-    const unassignedCount = openActions.filter(a => !a.assigned_to).length;
+    // The scanner controls whether an alert remains active.
+    const activeActions = actions.filter(a => a.status !== "resolved" && a.status !== "expected");
+    const unassignedCount = activeActions.filter(a => !a.assigned_to).length;
 
-    // Per-person open counts
+    // Per-person active counts
     const personCounts = {};
     biPeople.forEach(p => { personCounts[p] = 0; });
-    openActions.forEach(a => {
+    activeActions.forEach(a => {
         if (a.assigned_to && personCounts[a.assigned_to] !== undefined) {
             personCounts[a.assigned_to]++;
         }
     });
 
     const chipsHtml = `
-        <button class="alerts-chip active" data-filter-person="all">All <span class="alerts-chip-count">${openActions.length}</span></button>
+        <button class="alerts-chip active" data-filter-person="all">All <span class="alerts-chip-count">${activeActions.length}</span></button>
         <button class="alerts-chip" data-filter-person="__unassigned__">Unassigned <span class="alerts-chip-count">${unassignedCount}</span></button>
         ${biPeople.map(p => `
             <button class="alerts-chip" data-filter-person="${esc(p)}">${esc(p)} <span class="alerts-chip-count">${personCounts[p]}</span></button>
@@ -2023,12 +2024,12 @@ function renderDashboardAlertsSection(actions, people) {
     `;
 
     const tableHtml = renderDashboardAlertsTable(actions, biPeople, "all");
-    const fixFirstHtml = renderFixFirstPanel(openActions);
+    const fixFirstHtml = renderFixFirstPanel(activeActions);
 
     return `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.6rem;flex-wrap:wrap;gap:0.5rem">
             <h2 style="margin:0">Alerts</h2>
-            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by views, then date degraded</span>
+            <span style="color:var(--text-dim);font-size:0.78rem">Sorted by views, then first detected</span>
         </div>
         ${fixFirstHtml}
         <div class="alerts-chips">${chipsHtml}</div>
@@ -2047,10 +2048,9 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
     }
 
     if (filtered.length === 0) {
-        return '<div class="empty-state" style="padding:1.5rem">No open alerts for this filter</div>';
+        return '<div class="empty-state" style="padding:1.5rem">No active alerts for this filter</div>';
     }
 
-    const statusOptions = ["open", "acknowledged", "investigating", "expected", "resolved"];
     const ownerOptions = (currentOwner) => `
         <option value=""${!currentOwner ? ' selected' : ''}>Unassigned</option>
         ${biPeople.map(p => `<option value="${esc(p)}"${p === currentOwner ? ' selected' : ''}>${esc(p)}</option>`).join("")}
@@ -2088,17 +2088,6 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
         const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0);
-        let openButton = '<button type="button" class="alerts-action-btn alerts-row-open" disabled>Open</button>';
-        if (a.asset_type === "source" && a.asset_id) {
-            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-source-link" data-source-id="${a.asset_id}">Open</button>`;
-        } else if (a.asset_type === "report" && a.asset_id) {
-            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-go-report" data-report-id="${a.asset_id}">Open</button>`;
-        } else if (a.asset_type === "scheduled_task" && a.asset_id) {
-            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-task-link" data-task-id="${a.asset_id}">Open</button>`;
-        } else if (a.asset_type === "script" && a.asset_id) {
-            openButton = `<button type="button" class="alerts-action-btn alerts-row-open alerts-script-link" data-script-id="${a.asset_id}">Open</button>`;
-        }
-
         const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
@@ -2113,23 +2102,14 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 <td>
                     <span class="degraded-since" title="${esc(degradedSince || "Unknown")}">${formatDateOnly(degradedSince)}</span>
                 </td>
-                <td>${actionTypeBadge(a.type)}</td>
+                <td>${actionTypeBadge(a.type, true)}</td>
                 <td class="alerts-owner-cell">
                     <select class="dashboard-action-owner-select" data-action-id="${a.id}">
                         ${ownerOptions(a.assigned_to || "")}
                     </select>
                 </td>
                 <td>
-                    <div class="status-pill-wrapper">
-                        <button class="status-pill status-${a.status}" data-action-id="${a.id}" data-current="${a.status}">${a.status} <span class="pill-chevron">&#9662;</span></button>
-                        <div class="status-dropdown" data-action-id="${a.id}">
-                            ${statusOptions.map(s => `<div class="status-option status-${s}${s === a.status ? ' active' : ''}" data-value="${s}">${s}</div>`).join("")}
-                        </div>
-                    </div>
-                </td>
-                <td>
                     <div class="alerts-row-actions">
-                        ${openButton}
                         <button type="button" class="alerts-action-btn alerts-notify-sla" data-action-id="${a.id}">Notify SLA</button>
                     </div>
                 </td>
@@ -2150,7 +2130,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
-                <td colspan="7" class="alerts-expand-cell">
+                <td colspan="6" class="alerts-expand-cell">
                     ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
@@ -2166,13 +2146,12 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             <table class="alerts-table">
                 <thead>
                     <tr>
-                        <th style="width:30%">Asset</th>
-                        <th style="width:7%;text-align:right">Views</th>
-                        <th style="width:11%">Degraded since</th>
-                        <th style="width:13%">Issue</th>
-                        <th style="width:16%">Owner</th>
-                        <th style="width:10%">Status</th>
-                        <th style="width:13%">Action</th>
+                        <th style="width:38%">Asset</th>
+                        <th style="width:8%;text-align:right">Views</th>
+                        <th style="width:13%">First detected</th>
+                        <th style="width:16%">Issue</th>
+                        <th style="width:17%">Owner</th>
+                        <th style="width:8%">Action</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -2383,63 +2362,6 @@ function bindDashboardAlertsRowControls() {
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
             _openNotifySlaModal(btn.dataset.actionId);
-        });
-    });
-
-    // Status pill dropdowns (reuse open/close behavior) + dashboard-aware state update
-    if (!window._statusDropdownOutsideClick) {
-        window._statusDropdownOutsideClick = true;
-        document.addEventListener("click", (e) => {
-            if (!e.target.closest(".status-pill-wrapper")) {
-                document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
-                document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
-            }
-        });
-    }
-
-    document.querySelectorAll(".alerts-table .status-pill").forEach(pill => {
-        pill.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const wrapper = pill.closest(".status-pill-wrapper");
-            const dropdown = wrapper.querySelector(".status-dropdown");
-            const wasOpen = dropdown.classList.contains("visible");
-            document.querySelectorAll(".status-dropdown.visible").forEach(d => d.classList.remove("visible"));
-            document.querySelectorAll(".status-pill.open").forEach(p => p.classList.remove("open"));
-            if (!wasOpen) {
-                dropdown.classList.add("visible");
-                pill.classList.add("open");
-            }
-        });
-    });
-
-    document.querySelectorAll(".alerts-table .status-option").forEach(option => {
-        option.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const dropdown = option.closest(".status-dropdown");
-            const actionId = dropdown.dataset.actionId;
-            const newStatus = option.dataset.value;
-            dropdown.classList.remove("visible");
-            try {
-                await apiPatch(`/api/actions/${actionId}`, { status: newStatus });
-                if (window._dashboardActions) {
-                    const a = window._dashboardActions.find(x => x.id == actionId);
-                    if (a) a.status = newStatus;
-                }
-                toast(`Alert updated to ${newStatus}`);
-                // Re-render table (filter may now hide this row) and refresh chip counts
-                const activeChip = document.querySelector(".alerts-chip.active");
-                const person = activeChip ? activeChip.dataset.filterPerson : "all";
-                const people = window._dashboardPeople || [];
-                const biPeople = people.filter(p => p.role === "BI").map(p => p.name);
-                const wrap = document.getElementById("dashboard-alerts-tbody-wrap");
-                if (wrap) {
-                    wrap.innerHTML = renderDashboardAlertsTable(window._dashboardActions || [], biPeople, person);
-                    bindDashboardAlertsRowControls();
-                }
-                _refreshDashboardAlertChipCounts();
-            } catch (err) {
-                toast("Failed to update: " + err.message);
-            }
         });
     });
 
