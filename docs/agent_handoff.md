@@ -2,17 +2,16 @@
 
 ## Current Objective
 
-Pause before any large ASAP FOTA export and analyze the verified four-week
-multi-week smoke. No further export is authorized until the user explicitly
-approves it.
+The targeted ASAP FOTA acceptance smoke is complete. Stop before any large
+export and wait for the user to decide the next range and batch size.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest runtime commit before this handoff update: `e733850`
+- Latest runtime commit before this handoff update: `ceb0448`
 - Public repo: no, private
-- Push status: `e733850` verified on `origin/main`; publish this handoff update next
+- Push status: `ceb0448` verified on `origin/main`; publish this handoff update next
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
 ## Decisions Made
@@ -31,13 +30,18 @@ approves it.
 - Small acceptance uses two XLSX exports with two weeks each: 2026-W30/W31 and
   2026-W32/W33. SQL writes to isolated
   `meto_db.bi_reporting.ASAP_Fota_Smoke`, never the production `ASAP_Fota` table.
+- ASAP's visible `Category = Weekly` control selects the report frequency. The
+  exported column also named `Category` is a different business dimension. In
+  the accepted output it contains `Domestic`, `Non-domestic`, and `Unknown
+  (Incl. Wi...)`, not the filter value `Weekly`.
 - The flow is manual and inactive. Do not start a current-year or other large run
   until the user finishes analysis and explicitly approves it.
 
 ## Files Changed
 
-- `app/flow_worker.py`: preserves all populated multi-week matrix values and
-  recovers week columns only when file width proves a safe one-to-one mapping.
+- `app/flow_worker.py`: discovers the visual-only Weekly/Daily Category filter,
+  selects and verifies Weekly, preserves all populated multi-week matrix values,
+  and normalizes the expanded `Weekly, YYYYWW...` download header safely.
 - `transforms/asap_fota_unpivot_v1.py`: multi-week unpivot, sparse-cell handling,
   per-week diagnostics, week dates, and reverse geolocation.
 - `requirements.txt`: includes `pycountry` and `reverse_geocoder==1.5.1`.
@@ -48,26 +52,27 @@ approves it.
 ## Commands And Checks
 
 - `PYTHONPATH=. uv run --python 3.13 --with pytest --with-requirements
-  requirements.txt pytest -q`: 259 passed in 2.80s.
-- Remote `main`: `e73385043ea7865e571ea73a4441ea341d7ce858` verified before
+  requirements.txt pytest -q`: 264 passed.
+- Remote `main`: `ceb04483816c1e19da8cf4e598f6fa80fb0be48a` verified before
   this handoff update.
-- Visible Citrix deployment: build `20260816-141512` from `e733850`; `setup.ps1`
+- Visible Citrix deployment: build `20260816-170611` from `ceb0448`; `setup.ps1`
   installed dependencies and registered the worker successfully.
-- Live run `#133`, SQL disabled: two two-week downloads and both external
-  transforms succeeded. Source rows were 405,301 for W30/W31 and 357,878 for
-  W32/W33. Transform rows were 810,602 and 715,756, with per-week counts
-  W30=405,301, W31=405,301, W32=357,878, W33=357,878.
-- Live run `#134`, SQL enabled to the isolated smoke table: succeeded from
-  14:47:03 to 15:01:06 Dubai time. Transformation took 4m07s, SQL insertion
-  took 1m28s, and total runtime was 14m03s. PostgreSQL atomically created the
-  target and committed 1,526,358 rows from two transformed files.
-- Direct pgAdmin validation of `meto_db.bi_reporting.ASAP_Fota_Smoke`: 1,526,358
-  rows, four distinct weeks, minimum 2026-W30, maximum 2026-W33. Per-week rows:
-  W30=405,301; W31=405,301; W32=357,878; W33=357,878.
-- Direct geolocation coverage: Country=1,460,100; City=1,460,100;
-  District=1,454,210; State=150,178. Visible samples included Kaleybar in East
-  Azerbaijan and Razan in Hamadan.
-- Direct 21-column projection succeeded for:
+- Live headed run `#139`: both two-week exports visibly had `Weekly` selected
+  and `Daily` unselected. W30/W31 covered 2026-07-19 through 2026-08-01 and
+  W32/W33 covered 2026-08-02 through 2026-08-15. Both XLSX downloads, both
+  external transforms, and the isolated managed SQL replacement succeeded.
+- Run `#139` file evidence: normalized source rows were 409,379 for W30/W31 and
+  381,842 for W32/W33. Transformed rows were 460,621 and 429,482. PostgreSQL
+  committed their exact sum, 890,103 rows, to
+  `meto_db.bi_reporting.ASAP_Fota_Smoke`.
+- Direct pgAdmin validation: total 890,103 rows and exactly four week suffixes.
+  Per-week rows were W30=241,746; W31=218,875; W32=252,035; W33=177,447. The
+  first pair sums to 460,621 and the second to 429,482, exactly matching the two
+  transformed artifacts.
+- Direct geolocation sample validation returned populated country/city/district
+  values including Azerbaijan/Zyrya/Baki, Russian Federation/Zyablikovo/Moscow,
+  Netherlands/Zwolle/Overijssel, and Germany/Zwickau/Saxony.
+- Direct schema inspection returned 21 columns. The contracted projection is:
   `sell_out_region`, `sell_out_subsidiary`, `sell_out_country`, `country_code`,
   `operator`, `province`, `latitude`, `longitude`, `country`, `city`, `district`,
   `state`, `category`, `biz_sub`, `series`, `mkt_name`, `item`, `week`,
@@ -75,17 +80,17 @@ approves it.
 
 ## Open Questions
 
-- Each two-week workbook produced the same row count for both weeks. A prior
-  single-week W33 smoke had 150,724 rows, while W33 in the two-week matrix has
-  357,878 rows. Determine whether ASAP emits a dense union of item rows with
-  zero/blank semantics across selected weeks before deciding that ten-week files
-  are safe.
-- Decide the intended handling of zero FOTA values versus truly blank week cells.
-  The current transform drops blank cells and retains explicit zero values.
+- The transform still has a fallback that writes `Category = Weekly` if the
+  exported business-dimension column is absent. Because the live smoke proved
+  that the frequency filter and exported `Category` dimension are different,
+  remove that fallback and fail closed before any production-table run.
+- Decide the intended handling of explicit zero FOTA values versus truly blank
+  week cells. The accepted transform drops blanks and retains explicit zeros.
 - Decide whether the isolated smoke table should remain for repeatable testing or
   be removed later. Do not delete it without explicit approval.
 
 ## Next Step
 
-Discuss the row-shape discrepancy and batching tradeoff with the user. Do not run
-another export until the user explicitly approves the next range and batch size.
+Stop and report the targeted smoke evidence. Before any production-table run,
+remove the ambiguous Category fallback, redeploy, and repeat the same isolated
+two-by-two-week smoke only after the user authorizes that follow-up.

@@ -19,10 +19,12 @@
   transform validates their week columns against the filename, derives Sunday
   `Week Start Date` and Saturday `Week End Date`, and emits long-form rows.
 - Filters: ASAP Data Option `Show All`, Category `Weekly`, export view `Export
-  Wizard (Sell-out Sub)`, and the 13 contracted dimensions above. The live flat
-  export omits the filtered Category field, so the transform adds
-  `Category = Weekly` and removes the operational `Metronome Export View`
-  lineage column before SQL.
+  Wizard (Sell-out Sub)`, and the 13 contracted dimensions above. The visible
+  Weekly/Daily Category control selects report frequency. It is not the exported
+  business dimension that is also named `Category`; live SQL values for that
+  dimension include `Domestic`, `Non-domestic`, and `Unknown (Incl. Wi...)`.
+  The transform preserves the exported business dimension and removes the
+  operational `Metronome Export View` lineage column before SQL.
 - Geolocation: For each unique valid `Latitude`/`Longitude` pair, the external
   transform uses the offline `reverse_geocoder` GeoNames index. It adds
   `Country` from the returned ISO alpha-2 code, `City` from `name`, `District`
@@ -35,10 +37,12 @@
   and the full 21-column contract after the live SQL commit.
 - Edge cases: Reject ambiguous week-only headers, a filename/week mismatch,
   duplicate week columns, multiple `Metric` columns, missing contracted
-  dimensions other than the fixed Category field, unexpected columns, unusable
-  headers, an unprovable multi-week matrix width, populated cells beyond a
-  resolved header, empty data, a partial requested range, or unavailable
-  geolocation dependencies.
+  dimensions, unexpected columns, unusable headers, an unprovable multi-week
+  matrix width, populated cells beyond a resolved header, empty data, a partial
+  requested range, or unavailable geolocation dependencies. The runtime still
+  contains a legacy fallback that fills a missing exported Category dimension
+  with `Weekly`; remove it and fail closed before a production-table run because
+  the smoke proved those two Category concepts are different.
 
 ## Views last 30d
 - Business meaning: Raw Power BI report view count over the most recent 30 dates available in the usage CSV export.
