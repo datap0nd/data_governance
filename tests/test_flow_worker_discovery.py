@@ -187,6 +187,17 @@ def test_discovered_filter_options_are_bounded_to_api_contract():
     assert definitions[0]["options"][-1] == "Option 1999"
 
 
+def test_options_merged_across_export_views_stay_within_api_contract():
+    first_view = [f"Location {index}" for index in range(2000)]
+    second_view = [f"Location {index}" for index in range(1984, 2030)]
+
+    merged = flow_worker._merge_asap_filter_options(first_view, second_view)
+
+    assert len(merged) == 2000
+    assert merged[0] == "Location 0"
+    assert merged[-1] == "Location 1999"
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]

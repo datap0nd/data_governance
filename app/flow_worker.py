@@ -1805,13 +1805,18 @@ def _merge_asap_filter_definition(
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
     existing = next((item for item in definitions if item["filter_key"] == key), None)
     if existing is not None:
-        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))[:2000]
+        existing["options"] = _merge_asap_filter_options(existing["options"], options)
         return
     definitions.append({
         "filter_key": key, "label": label, "control_label": label,
         "control_type": control_type, "options": options, "automation": {},
         "required": False, "position": len(definitions),
     })
+
+
+def _merge_asap_filter_options(existing: list[str], discovered: list[str]) -> list[str]:
+    """Merge values from multiple ASAP views without exceeding the API contract."""
+    return list(dict.fromkeys([*existing, *discovered]))[:2000]
 
 
 def _visible_anchor_records(page: Page) -> list[dict]:
@@ -2363,9 +2368,9 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                         if existing is None:
                             filters.append(definition)
                         else:
-                            existing["options"] = list(dict.fromkeys([
-                                *existing.get("options", []), *definition.get("options", []),
-                            ]))
+                            existing["options"] = _merge_asap_filter_options(
+                                existing.get("options", []), definition.get("options", []),
+                            )
                     if selected_label:
                         export_views.append({
                             "label": selected_label, "filter_keys": view_filter_keys,
