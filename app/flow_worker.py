@@ -2418,6 +2418,53 @@ def _xlsx_expand_multi_week_metric_header(
     filename_weeks = _xlsx_filename_weeks(source)
     if len(filename_weeks) < 2:
         return header, [], None
+
+    # The current Regional FOTA export can also arrive with a fully expanded
+    # header: ``Weekly, 202630, 202631``. ``Weekly`` is not a dimension in the
+    # file. It is a constant descriptor whose row value is ``Sell-out``. Keep
+    # the explicit week columns, but remove that descriptor only when both the
+    # selected filename range and every populated descriptor value prove the
+    # shape. This avoids teaching the downstream flow-specific script to
+    # tolerate an ambiguous extra column.
+    explicit_week_columns = [
+        (index, str(value).strip()) for index, value in enumerate(header)
+        if re.fullmatch(r"20\d{2}(?:0[1-9]|[1-4]\d|5[0-3])", str(value).strip())
+    ]
+    if explicit_week_columns:
+        explicit_weeks = [value for _, value in explicit_week_columns]
+        if explicit_weeks != filename_weeks:
+            raise RuntimeError(
+                "Downloaded multi-week Excel columns do not match the selected filename range "
+                f"on sheet {worksheet_title!r}. Selected weeks: {filename_weeks}; explicit "
+                f"week columns: {explicit_weeks}."
+            )
+        descriptor_indexes = [
+            index for index, value in enumerate(header)
+            if str(value).strip().casefold() in {"weekly", "metric", "metrics"}
+        ]
+        if len(descriptor_indexes) == 1:
+            descriptor_index = descriptor_indexes[0]
+            descriptor_labels = {
+                re.sub(r"\W+", "_", str(row[descriptor_index]).strip()).strip("_").casefold()
+                for row in data_rows
+                if len(row) > descriptor_index and str(row[descriptor_index]).strip()
+            }
+            recognized_descriptor = (
+                next(iter(descriptor_labels))
+                if len(descriptor_labels) == 1 and descriptor_labels <= {"sell_out", "fota"}
+                else None
+            )
+            if recognized_descriptor:
+                for row in data_rows:
+                    if len(row) > descriptor_index:
+                        row.pop(descriptor_index)
+                return (
+                    [value for index, value in enumerate(header) if index != descriptor_index],
+                    explicit_weeks,
+                    recognized_descriptor,
+                )
+        return header, [], None
+
     metric_indexes = [
         index for index, value in enumerate(header)
         if str(value).strip().casefold() in {"metric", "metrics"}

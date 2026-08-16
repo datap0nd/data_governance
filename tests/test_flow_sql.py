@@ -166,6 +166,39 @@ def test_excel_normalization_recovers_live_multi_week_metric_columns(tmp_path):
     ]
 
 
+def test_excel_normalization_removes_live_weekly_sell_out_descriptor(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Regional FOTA"])
+    sheet.append(["Week filter", "2026-W30 to 2026-W31"])
+    sheet.append([])
+    sheet.append([
+        "Sell-out Region", "Sell-out Subsidiary", "Weekly", "202630", "202631",
+    ])
+    sheet.append(["Middle East", "SEEG", "Sell-out", 300, 310])
+    workbook.save(source)
+
+    output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+    )
+
+    normalized = Path(metadata["file_path"])
+    assert metadata["recovered_week_columns"] == ["202630", "202631"]
+    assert metadata["removed_metric_label"] == "sell_out"
+    assert metadata["columns"] == [
+        "Sell-out Region", "Sell-out Subsidiary", "202630", "202631",
+    ]
+    assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
+        "Sell-out Region,Sell-out Subsidiary,202630,202631,Metronome Export View",
+        "Middle East,SEEG,300,310,Export Wizard (Sell-out Sub)",
+    ]
+
+
 def test_excel_normalization_rejects_metric_label_plus_one_value_for_two_weeks(tmp_path):
     from openpyxl import Workbook
 
