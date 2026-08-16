@@ -1,6 +1,62 @@
 from app.scanner import pbi_fetch
 
 
+def test_trigger_dataset_refresh_posts_to_power_bi_and_returns_tracking_headers(monkeypatch):
+    observed = {}
+
+    class Response:
+        status_code = 202
+        text = ""
+        headers = {
+            "x-ms-request-id": "request-123",
+            "location": "https://api.powerbi.com/refreshes/request-123",
+        }
+
+    class FakeClient:
+        def __init__(self, *, timeout, proxy):
+            observed.update(timeout=timeout, proxy=proxy)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def post(self, url, *, headers, json):
+            observed.update(url=url, headers=headers, json=json)
+            return Response()
+
+    monkeypatch.setattr(
+        pbi_fetch,
+        "get_access_token",
+        lambda: {"access_token": "cached-token", "account": "analyst@example.test"},
+    )
+    monkeypatch.setattr(pbi_fetch, "resolve_proxy", lambda _url: None)
+    monkeypatch.setattr(pbi_fetch.httpx, "Client", FakeClient)
+    monkeypatch.setattr(
+        pbi_fetch,
+        "_find_workspace",
+        lambda _client, _token, _name: {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "Governed Workspace",
+        },
+    )
+
+    result = pbi_fetch.trigger_dataset_refresh(
+        "Governed Workspace",
+        "33333333-3333-3333-3333-333333333333",
+    )
+
+    assert observed["url"].endswith(
+        "/groups/11111111-1111-1111-1111-111111111111/"
+        "datasets/33333333-3333-3333-3333-333333333333/refreshes"
+    )
+    assert observed["headers"] == {"Authorization": "Bearer cached-token"}
+    assert observed["json"] == {"notifyOption": "MailOnFailure"}
+    assert result["status"] == "accepted"
+    assert result["request_id"] == "request-123"
+
+
 def test_fetch_dataset_last_refresh_uses_cached_auth_and_extracts_failure_reason(monkeypatch):
     observed = {}
 

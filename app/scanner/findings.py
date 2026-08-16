@@ -17,7 +17,8 @@ def sync_managed_actions(
     """Upsert current findings and resolve scanner-managed findings that cleared.
 
     Every finding must contain a stable ``fingerprint`` and may include
-    ``source_id``, ``report_id``, ``check_id``, ``assigned_to``, and ``notes``.
+    ``source_id``, ``report_id``, ``flow_id``, ``check_id``, ``assigned_to``,
+    and ``notes``.
     Actions marked ``expected`` remain suppressed while the finding persists.
     A resolved finding creates a new action if it later reappears.
     """
@@ -42,6 +43,7 @@ def sync_managed_actions(
         values = (
             finding.get("source_id"),
             finding.get("report_id"),
+            finding.get("flow_id"),
             finding.get("check_id"),
             finding.get("assigned_to"),
             finding.get("notes"),
@@ -50,7 +52,7 @@ def sync_managed_actions(
         if existing and existing["status"] != "resolved":
             db.execute(
                 """UPDATE actions
-                   SET source_id = ?, report_id = ?, check_id = ?, assigned_to = ?,
+                   SET source_id = ?, report_id = ?, flow_id = ?, check_id = ?, assigned_to = ?,
                        notes = ?, updated_at = ?
                    WHERE id = ?""",
                 (*values, existing["id"]),
@@ -60,12 +62,13 @@ def sync_managed_actions(
 
         db.execute(
             """INSERT INTO actions
-               (source_id, report_id, check_id, type, status, assigned_to, notes,
+               (source_id, report_id, flow_id, check_id, type, status, assigned_to, notes,
                 fingerprint, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)""",
             (
                 finding.get("source_id"),
                 finding.get("report_id"),
+                finding.get("flow_id"),
                 finding.get("check_id"),
                 action_type,
                 finding.get("assigned_to"),

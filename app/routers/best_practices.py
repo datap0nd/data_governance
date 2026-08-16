@@ -85,7 +85,7 @@ def _db_findings() -> list[dict]:
     return findings
 
 
-def run_best_practice_scan(*, persist: bool = True) -> dict:
+def run_best_practice_scan(*, persist: bool = False) -> dict:
     """Scan reports and optionally synchronize one owned action per report."""
     # File-based checks (TMDL/PBIX)
     tmdl_findings = scan_all(TMDL_ROOT)
@@ -150,5 +150,5 @@ def run_best_practice_scan(*, persist: bool = True) -> dict:
 
 @router.get("")
 def get_findings():
-    """Scan all reports, persist current findings, and return them."""
-    return run_best_practice_scan(persist=True)
+    """Scan all reports and return checker findings without creating alerts."""
+    return run_best_practice_scan(persist=False)

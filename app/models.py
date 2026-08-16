@@ -152,6 +152,8 @@ class ActionOut(BaseModel):
     source_name: str | None = None
     report_id: int | None = None
     report_name: str | None = None
+    flow_id: int | None = None
+    flow_name: str | None = None
     report_names: list[str] = []
     top_report_id: int | None = None
     top_report_name: str | None = None

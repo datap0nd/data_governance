@@ -183,12 +183,12 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
         return "Open the scheduled task, review the last run output, and re-run once the underlying issue is resolved."
     if action_type == "script_failed":
         return "Check the script log for errors. The linked scheduled task(s) may need to be re-run after fixing."
+    if action_type == "flow_failed":
+        return "Open the Flow, review its latest run error, and refresh it again after correcting the cause."
     if action_type == "broken_ref":
         return "Update the report to point at an existing source, or remove the unused table."
     if action_type == "changed_query":
         return "Review the query change - confirm downstream usage is still correct."
-    if action_type == "best_practice":
-        return "Review the report findings and address the highest-severity model issue first."
     if action_type == "schedule_discrepancy":
         return "Move the upstream, source, or report schedule so each dependent step runs after its inputs."
     if action_type == "documentation_missing":
@@ -210,12 +210,12 @@ TRIAGE_TYPE_WEIGHT = {
     "refresh_overdue": 680,
     "task_failed": 620,
     "script_failed": 620,
+    "flow_failed": 720,
     "broken_ref": 540,
     "changed_query": 420,
     "data_quality": 850,
     "dependency_stale": 800,
     "schedule_discrepancy": 700,
-    "best_practice": 360,
     "documentation_missing": 260,
 }
 
@@ -231,12 +231,12 @@ def _issue_reason(action_type: str) -> str:
         "empty_source": "Source row count dropped to zero",
         "task_failed": "Scheduled task failed",
         "script_failed": "Script-linked refresh failed",
+        "flow_failed": "Flow refresh failed",
         "broken_ref": "Report points to a missing source",
         "changed_query": "Source query changed",
         "data_quality": "Automated data-quality check failed",
         "dependency_stale": "Materialized view is behind upstream data",
         "schedule_discrepancy": "Refresh schedules are in the wrong order",
-        "best_practice": "Report model has governance findings",
         "documentation_missing": "Report documentation is incomplete",
     }.get(action_type, action_type.replace("_", " "))
 
@@ -252,6 +252,8 @@ def _triage_cta(asset_type: str | None, assigned_to: str | None) -> str:
         return "Open task"
     if asset_type == "script":
         return "Open script"
+    if asset_type == "flow":
+        return "Open flow"
     return "Open details"
 
 
@@ -335,6 +337,7 @@ def list_actions(status: str | None = None):
                    r.pbi_refresh_error,
                    st.task_name AS task_name, st.archived AS task_archived,
                    sc.display_name AS script_name, sc.archived AS script_archived,
+                   f.name AS flow_name,
                    sp.status AS latest_source_status,
                    sp.row_count AS latest_source_row_count
             FROM actions a
@@ -342,6 +345,7 @@ def list_actions(status: str | None = None):
             LEFT JOIN reports r ON r.id = a.report_id
             LEFT JOIN scheduled_tasks st ON st.id = a.scheduled_task_id
             LEFT JOIN scripts sc ON sc.id = a.script_id
+            LEFT JOIN flows f ON f.id = a.flow_id
             LEFT JOIN (
                 SELECT source_id, status, row_count,
                        ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC, id DESC) AS rn
@@ -349,8 +353,9 @@ def list_actions(status: str | None = None):
             ) sp ON sp.source_id = a.source_id AND sp.rn = 1
         """
         params = []
+        query += " WHERE a.type != 'best_practice'"
         if status:
-            query += " WHERE a.status = ?"
+            query += " AND a.status = ?"
             params.append(status)
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
@@ -371,6 +376,7 @@ def list_actions(status: str | None = None):
         rid = r["report_id"]
         tid = r["scheduled_task_id"] if "scheduled_task_id" in r.keys() else None
         scid = r["script_id"] if "script_id" in r.keys() else None
+        fid = r["flow_id"] if "flow_id" in r.keys() else None
         latest = r["latest_source_status"]
         latest_row_count = r["latest_source_row_count"]
 
@@ -428,6 +434,18 @@ def list_actions(status: str | None = None):
             asset_name = r["script_name"]
             asset_days = 0
             impact_views_30d = 0
+        elif fid is not None:
+            asset_type = "flow"
+            asset_id = fid
+            asset_name = r["flow_name"]
+            try:
+                created = datetime.fromisoformat(r["created_at"])
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                asset_days = max(0, (datetime.now(timezone.utc) - created).days)
+            except (ValueError, TypeError, AttributeError):
+                asset_days = 0
+            impact_views_30d = 0
         else:
             asset_type = None
             asset_id = None
@@ -456,6 +474,8 @@ def list_actions(status: str | None = None):
             source_name=r["source_name"],
             report_id=rid,
             report_name=r["report_name"],
+            flow_id=fid,
+            flow_name=r["flow_name"],
             report_names=names,
             top_report_id=top_rid,
             top_report_name=top_rname,
@@ -500,7 +520,14 @@ def list_actions(status: str | None = None):
         if a.asset_type is None or a.asset_id is None:
             deduped.append(a)
             continue
-        key = (a.asset_type, a.asset_id, a.fingerprint or a.type)
+        family = (
+            "source_freshness"
+            if a.type in FRESHNESS_ACTION_TYPES
+            else "changed_query"
+            if a.type == "changed_query"
+            else a.fingerprint or a.type
+        )
+        key = (a.asset_type, a.asset_id, family)
         if key in seen:
             continue
         seen.add(key)

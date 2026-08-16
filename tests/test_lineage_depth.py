@@ -213,6 +213,49 @@ class LineageDepthTests(unittest.TestCase):
         self.assertEqual(len(returned_edges), len(edges))
         self.assertEqual({s["id"] for s in result["sources"]}, set(source_ids))
 
+    def test_diagram_places_matching_flow_upstream_of_target_source(self):
+        self._seed_report_graph([10], [])
+        with get_db() as db:
+            db.execute(
+                """UPDATE reports
+                   SET pbi_dataset_id='33333333-3333-3333-3333-333333333333'
+                   WHERE id=1"""
+            )
+            db.execute(
+                """UPDATE sources
+                   SET name='bi_reporting.asap_fota_output',
+                       connection_info='warehouse/postgres/bi_reporting.asap_fota_output'
+                   WHERE id=10"""
+            )
+            db.execute(
+                """INSERT INTO flow_sites (id, name, adapter, base_url)
+                   VALUES (1, 'Portal', 'web_export', 'https://example.test')"""
+            )
+            db.execute(
+                """INSERT INTO flow_reports (id, site_id, name, report_url)
+                   VALUES (1, 1, 'FOTA export', 'https://example.test/fota')"""
+            )
+            db.execute(
+                """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, sql_database, sql_schema, sql_table,
+                    last_run_at, last_success_at, last_status)
+                   VALUES
+                   (1, 'FOTA', 1, 1, '/tmp', 'fota.csv', 1, 'postgres',
+                    'BI_REPORTING', 'ASAP_FOTA_OUTPUT',
+                    '2026-08-15T11:00:00', '2026-08-15T11:00:00', 'succeeded'),
+                   (2, 'Unrelated', 1, 1, '/tmp', 'other.csv', 1, 'postgres',
+                    'other_schema', 'other_table', NULL, NULL, NULL)"""
+            )
+
+        result = get_lineage_diagram(1)
+
+        self.assertTrue(result["report"]["can_refresh"])
+        self.assertEqual(len(result["flows"]), 1)
+        self.assertEqual(result["flows"][0]["name"], "FOTA")
+        self.assertEqual(result["flows"][0]["target_source_ids"], [10])
+        self.assertEqual(result["flows"][0]["last_success_at"], "2026-08-15T11:00:00")
+
     def test_diagram_terminates_on_dependency_cycle(self):
         source_ids = [10, 11, 12]
         edges = [(10, 11), (11, 12), (12, 10)]

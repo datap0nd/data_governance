@@ -571,7 +571,7 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
 
 
 def _dedupe_open_actions(db, now: str) -> int:
-    """Collapse multiple open stale_source actions for the same source.
+    """Collapse multiple active freshness actions for the same source.
 
     Sources can end up with multiple open actions when merge logic in the
     scanner reparents action rows to a new source_id. Keep the oldest
@@ -579,15 +579,18 @@ def _dedupe_open_actions(db, now: str) -> int:
 
     Returns the count of duplicates closed.
     """
-    # Find source_ids that have more than one open stale-source action.
+    freshness_types = ("stale_source", "outdated_source", "error_source")
+    type_ph = ",".join("?" * len(freshness_types))
+    # Find source_ids that have more than one active freshness action.
     dup_rows = db.execute(
-        """SELECT source_id
+        f"""SELECT source_id
            FROM actions
            WHERE source_id IS NOT NULL
-             AND type = 'stale_source'
+             AND type IN ({type_ph})
              AND status NOT IN ('resolved', 'expected')
            GROUP BY source_id
-           HAVING COUNT(*) > 1"""
+           HAVING COUNT(*) > 1""",
+        freshness_types,
     ).fetchall()
 
     closed = 0
@@ -595,25 +598,25 @@ def _dedupe_open_actions(db, now: str) -> int:
         sid = row["source_id"]
         # Keep the oldest, close the rest
         keep = db.execute(
-            """SELECT id FROM actions
+            f"""SELECT id FROM actions
                WHERE source_id = ?
-                 AND type = 'stale_source'
+                 AND type IN ({type_ph})
                  AND status NOT IN ('resolved', 'expected')
-               ORDER BY created_at ASC LIMIT 1""",
-            (sid,),
+               ORDER BY created_at ASC, id ASC LIMIT 1""",
+            (sid, *freshness_types),
         ).fetchone()
         keep_id = keep["id"] if keep else None
         if keep_id is None:
             continue
         result = db.execute(
-            """UPDATE actions
+            f"""UPDATE actions
                SET status = 'resolved', resolved_at = ?, updated_at = ?,
                    notes = COALESCE(notes, '') || ' [auto-resolved: deduplicated]'
                WHERE source_id = ?
-                 AND type = 'stale_source'
+                 AND type IN ({type_ph})
                  AND id != ?
                  AND status NOT IN ('resolved', 'expected')""",
-            (now, now, sid, keep_id),
+            (now, now, sid, *freshness_types, keep_id),
         )
         closed += result.rowcount or 0
     return closed

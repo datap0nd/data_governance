@@ -1,8 +1,47 @@
+import re
+
 from fastapi import APIRouter, HTTPException
 from app.database import get_db
 from app.models import LineageEdge
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
+
+
+def _normalized_object_name(value: str | None) -> str:
+    value = (value or "").strip().casefold()
+    value = value.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
+    return re.sub(r"[\\/]+", ".", value).strip(".")
+
+
+def _source_matches_flow_target(source: dict, flow: dict) -> bool:
+    """Match a governed source to a Flow SQL handoff target."""
+    table = _normalized_object_name(flow.get("sql_table"))
+    schema = _normalized_object_name(flow.get("sql_schema"))
+    if not table:
+        return False
+    target = f"{schema}.{table}" if schema else table
+    candidates = {
+        _normalized_object_name(source.get("name")),
+        _normalized_object_name(source.get("connection_info")),
+    }
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate == target or candidate.endswith(f".{target}"):
+            return True
+        if not schema and candidate.rsplit(".", 1)[-1] == table:
+            return True
+    return False
+
+
+def _postgres_ref(source_name: str | None) -> dict | None:
+    """Extract the schema and relation from a PostgreSQL lineage source name."""
+    cleaned = (source_name or "").strip().replace("\\", "/").split("/")[-1]
+    cleaned = cleaned.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
+    parts = [part.strip() for part in cleaned.split(".") if part.strip()]
+    if len(parts) < 2:
+        return None
+    return {"schema": parts[-2], "name": parts[-1]}
 
 
 @router.get("", response_model=list[LineageEdge])
@@ -51,7 +90,8 @@ def get_lineage_diagram(report_id: int):
     with get_db() as db:
         # 1. Report info
         report = db.execute(
-            "SELECT id, name, owner, business_owner, archived FROM reports WHERE id = ?",
+            """SELECT id, name, owner, business_owner, archived, pbi_dataset_id
+               FROM reports WHERE id = ?""",
             (report_id,),
         ).fetchone()
         if not report:
@@ -149,7 +189,7 @@ def get_lineage_diagram(report_id: int):
         if source_ids:
             placeholders = ",".join("?" * len(source_ids))
             source_rows = db.execute(f"""
-                SELECT s.id, s.name, s.type, s.owner, s.upstream_id,
+                SELECT s.id, s.name, s.type, s.owner, s.upstream_id, s.connection_info,
                        s.refresh_schedule, s.custom_fresh_days,
                        s.freshness_rule_type, s.freshness_schedule_days,
                        sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at,
@@ -168,6 +208,7 @@ def get_lineage_diagram(report_id: int):
                     "id": r["id"],
                     "name": r["name"],
                     "type": r["type"],
+                    "connection_info": r["connection_info"],
                     "status": r["status"] or "unknown",
                     "last_data_at": r["last_data_at"],
                     "row_count": r["row_count"],
@@ -235,7 +276,58 @@ def get_lineage_diagram(report_id: int):
                 for r in dep_rows
             ]
 
-        # 8. Scripts that write to any source in the dependency chain
+        materialized_source_ids = {dep["source_id"] for dep in source_deps}
+        for source in sources:
+            source["is_materialized_view"] = source["id"] in materialized_source_ids
+            source["postgres_ref"] = (
+                _postgres_ref(source["name"])
+                if source["is_materialized_view"] and (source["type"] or "").casefold() == "postgresql"
+                else None
+            )
+
+        # 8. Flows that load a SQL target represented anywhere in this report
+        # pipeline. A Flow is upstream of its target source.
+        flows = []
+        if sources:
+            flow_rows = db.execute(
+                """SELECT f.*,
+                          EXISTS(
+                              SELECT 1 FROM flow_runs fr
+                              WHERE fr.flow_id=f.id
+                                AND fr.status IN ('queued','claimed','running')
+                          ) AS has_active_run
+                   FROM flows f
+                   WHERE f.sql_handoff_enabled=1
+                     AND NULLIF(TRIM(f.sql_table), '') IS NOT NULL
+                   ORDER BY f.name"""
+            ).fetchall()
+            for row in flow_rows:
+                flow = dict(row)
+                target_source_ids = [
+                    source["id"]
+                    for source in sources
+                    if _source_matches_flow_target(source, flow)
+                ]
+                if not target_source_ids:
+                    continue
+                last_success_at = flow.get("last_success_at")
+                if not last_success_at and flow.get("last_status") == "succeeded":
+                    last_success_at = flow.get("last_run_at")
+                flows.append({
+                    "id": flow["id"],
+                    "name": flow["name"],
+                    "target_source_ids": target_source_ids,
+                    "sql_database": flow.get("sql_database"),
+                    "sql_schema": flow.get("sql_schema"),
+                    "sql_table": flow.get("sql_table"),
+                    "last_run_at": flow.get("last_run_at"),
+                    "last_success_at": last_success_at,
+                    "last_status": flow.get("last_status"),
+                    "last_error": flow.get("last_error"),
+                    "has_active_run": bool(flow.get("has_active_run")),
+                })
+
+        # 9. Scripts that write to any source in the dependency chain
         scripts = []
         all_source_ids = source_ids
         if all_source_ids:
@@ -263,7 +355,7 @@ def get_lineage_diagram(report_id: int):
                     script_map[sid]["source_ids"].append(src_id)
             scripts = list(script_map.values())
 
-        # 9. Scheduled tasks linked to these scripts
+        # 10. Scheduled tasks linked to these scripts
         scheduled_tasks = []
         script_id_list = [s["id"] for s in scripts]
         if script_id_list:
@@ -297,11 +389,14 @@ def get_lineage_diagram(report_id: int):
             "status": status,
             "owner": report["owner"],
             "archived": bool(report["archived"]),
+            "pbi_dataset_id": report["pbi_dataset_id"],
+            "can_refresh": bool(report["pbi_dataset_id"]),
         },
         "pages": pages_list,
         "tables": tables,
         "sources": sources,
         "source_deps": source_deps,
+        "flows": flows,
         "upstreams": upstreams,
         "scripts": scripts,
         "scheduled_tasks": scheduled_tasks,

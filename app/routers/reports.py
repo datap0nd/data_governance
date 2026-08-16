@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from app.config import PBI_WORKSPACE
 from app.database import get_db
 from app.models import ReportOut, ReportUpdate, ReportTableOut
+from app.routers.eventlog import get_actor, log_event
+from app.scanner.pbi_fetch import PbiFetchError, trigger_dataset_refresh
 from app.usage import get_report_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -94,6 +97,37 @@ def all_columns():
             ORDER BY r.name, rc.table_name, rc.column_name
         """).fetchall()
     return [dict(r) for r in rows]
+
+
+@router.post("/{report_id}/refresh")
+def refresh_report(report_id: int, request: Request):
+    """Queue a refresh for the report's Power BI semantic model."""
+    with get_db() as db:
+        report = db.execute(
+            "SELECT id, name, pbi_dataset_id FROM reports WHERE id=?",
+            (report_id,),
+        ).fetchone()
+    if not report:
+        raise HTTPException(404, "Report not found.")
+    if not report["pbi_dataset_id"]:
+        raise HTTPException(409, "This report has no Power BI semantic model ID.")
+
+    try:
+        result = trigger_dataset_refresh(PBI_WORKSPACE, report["pbi_dataset_id"])
+    except PbiFetchError as exc:
+        raise HTTPException(403 if exc.permission else 502, str(exc)) from exc
+
+    with get_db() as db:
+        log_event(
+            db,
+            "report",
+            report_id,
+            report["name"],
+            "refresh_requested",
+            f"dataset_id={report['pbi_dataset_id']}; request_id={result.get('request_id') or 'unavailable'}",
+            get_actor(request),
+        )
+    return result
 
 
 @router.get("/{report_id}", response_model=ReportOut)

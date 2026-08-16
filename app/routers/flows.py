@@ -24,6 +24,7 @@ from app.flow_local_runner import (
 )
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
+from app.scanner.findings import sync_managed_actions
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
@@ -51,6 +52,23 @@ def _now() -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
+
+
+def _sync_flow_failure_actions(db, now: str) -> dict:
+    """Expose current Flow failures through the shared operational alert list."""
+    failed = db.execute(
+        """SELECT id, name, last_error FROM flows
+           WHERE last_status='failed'"""
+    ).fetchall()
+    findings = [
+        {
+            "fingerprint": f"flow_failed:{row['id']}",
+            "flow_id": row["id"],
+            "notes": row["last_error"] or f"Flow {row['name']} failed.",
+        }
+        for row in failed
+    ]
+    return sync_managed_actions(db, "flow_failed", findings, now)
 
 
 def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
@@ -93,6 +111,7 @@ def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
                     (message, now_text, row["worker_id"]),
                 )
             failed.append(row["id"])
+        _sync_flow_failure_actions(db, now_text)
     return {"failed_run_ids": failed, "count": len(failed)}
 
 
@@ -1794,6 +1813,7 @@ def register_worker(body: WorkerRegister):
                        WHERE id=?""",
                     (now, message, now, run["flow_id"]),
                 )
+                _sync_flow_failure_actions(db, now)
             db.execute(
                 """UPDATE flow_workers SET status='offline', current_run_id=NULL,
                    current_scan_id=NULL, updated_at=? WHERE worker_id=?""",
@@ -1957,8 +1977,20 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             ),
         )
         db.execute(
-            "UPDATE flows SET last_run_at=?, last_status=?, last_error=?, updated_at=? WHERE id=?",
-            (finished or started or now, body.status, body.error, now, row["flow_id"]),
+            """UPDATE flows
+               SET last_run_at=?,
+                   last_success_at=CASE WHEN ?='succeeded' THEN ? ELSE last_success_at END,
+                   last_status=?, last_error=?, updated_at=?
+               WHERE id=?""",
+            (
+                finished or started or now,
+                body.status,
+                finished,
+                body.status,
+                body.error,
+                now,
+                row["flow_id"],
+            ),
         )
         job = _loads(row["job_json"], {})
         _store_timings(
@@ -1989,6 +2021,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                     for item in body.artifacts if item.get("file_path") and item.get("filename")
                 ],
             )
+            _sync_flow_failure_actions(db, now)
         else:
             db.execute(
                 "UPDATE flow_workers SET status='busy', last_seen_at=?, updated_at=? WHERE worker_id=?",

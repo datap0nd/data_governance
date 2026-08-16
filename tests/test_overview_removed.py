@@ -40,6 +40,17 @@ def test_pipelines_and_new_flows_are_top_level_navigation_items():
     assert ".nav-new-badge" in style_css
 
 
+def test_pipelines_exposes_report_flow_and_materialized_view_refresh_controls():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert '<h2>Pipelines</h2>' in app_js
+    assert '{ key: "flows", label: "Flows" }' in app_js
+    assert 'id="lineage-report-refresh"' in app_js
+    assert 'data-lin-refresh-flow' in app_js
+    assert 'data-lin-refresh-mv' in app_js
+    assert 'add(`source-${sourceId}`, `flow-${flow.id}`, true)' in app_js
+
+
 def test_alert_surfaces_use_degradation_dates_and_power_bi_error_details():
     app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 

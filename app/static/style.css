@@ -3774,6 +3774,15 @@ button.btn-danger-outline:hover {
     color: var(--text-secondary);
     font-size: 0.75rem;
 }
+.lineage-refresh-report {
+    min-height: 2rem;
+    white-space: nowrap;
+}
+.lineage-refresh-report:disabled,
+.lin-refresh-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
 
 /* Scan log panel (used by scripts, etc.) */
 .scan-log-wrap {
@@ -3884,6 +3893,36 @@ button.btn-danger-outline:hover {
 .lin-card-lbl {
     flex: 1; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-weight: 500;
+}
+.lin-refresh-action {
+    flex-shrink: 0;
+    padding: 0.12rem 0.38rem;
+    border: 1px solid var(--accent-border);
+    border-radius: 4px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font: 600 0.6rem/1.25 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.lin-refresh-action:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--surface-hover);
+}
+.lin-refresh-action:focus-visible,
+.lineage-refresh-report:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.lin-flow-status {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-size: 0.6rem;
+    text-transform: capitalize;
+}
+.lin-flow .lin-card-facts {
+    flex-wrap: wrap;
+    overflow-wrap: anywhere;
 }
 .lin-card-meta {
     font-size: 0.6rem; color: var(--text-dim); white-space: nowrap; flex-shrink: 0;

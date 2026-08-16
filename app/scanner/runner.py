@@ -329,6 +329,15 @@ def run_scan(
                             f"Previous: {old_query[:1200] or '[empty]'} | "
                             f"Current: {new_query[:1200] or '[empty]'}"
                         )
+                        db.execute(
+                            """UPDATE actions
+                               SET status='resolved', resolved_at=?, updated_at=?,
+                                   notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
+                               WHERE source_id=? AND type='changed_query'
+                                 AND fingerprint!=?
+                                 AND status IN ('open','acknowledged','investigating')""",
+                            (now, now, source_id, fingerprint),
+                        )
                         if prior:
                             db.execute(
                                 "UPDATE actions SET notes = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
@@ -655,7 +664,7 @@ def run_scan(
         try:
             from app.routers.best_practices import run_best_practice_scan
 
-            governance_results["best_practices"] = run_best_practice_scan(persist=True)
+            governance_results["best_practices"] = run_best_practice_scan(persist=False)
         except Exception as e:
             governance_results["best_practices"] = {"status": "failed", "error": str(e)}
             logger.exception("Best-practice scan failed: %s", e)

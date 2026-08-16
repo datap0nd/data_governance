@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS actions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id       INTEGER REFERENCES sources(id),
     report_id       INTEGER REFERENCES reports(id),
+    flow_id         INTEGER REFERENCES flows(id),
     type            TEXT NOT NULL,
     status          TEXT DEFAULT 'open',
     assigned_to     TEXT,
@@ -473,6 +474,7 @@ CREATE TABLE IF NOT EXISTS flows (
     schedule_day        INTEGER,
     next_run_at         DATETIME,
     last_run_at         DATETIME,
+    last_success_at     DATETIME,
     last_status         TEXT,
     last_error          TEXT,
     transform_enabled   INTEGER NOT NULL DEFAULT 0,
@@ -918,8 +920,11 @@ MIGRATIONS = [
     # Allow actions to be about scripts or scheduled tasks, not just sources/reports
     "ALTER TABLE actions ADD COLUMN scheduled_task_id INTEGER REFERENCES scheduled_tasks(id)",
     "ALTER TABLE actions ADD COLUMN script_id INTEGER REFERENCES scripts(id)",
+    "ALTER TABLE actions ADD COLUMN flow_id INTEGER REFERENCES flows(id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_scheduled_task_id ON actions(scheduled_task_id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_script_id ON actions(script_id)",
+    "CREATE INDEX IF NOT EXISTS idx_actions_flow_id ON actions(flow_id)",
+    "ALTER TABLE flows ADD COLUMN last_success_at DATETIME",
     # Power BI recurrence delivery without subgroup splitting
     "ALTER TABLE pbi_recurrences ADD COLUMN delivery_mode TEXT DEFAULT 'subgroups'",
     "ALTER TABLE pbi_recurrences ADD COLUMN recipients TEXT",
@@ -1057,6 +1062,42 @@ MIGRATIONS = [
         error TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flow_sql_catalog_names ON flow_sql_catalog(database_name, schema_name, table_name, stale)",
+    # Best-practice findings remain available in their dedicated checker, but
+    # they are not operational alerts. Retire any legacy action rows.
+    """UPDATE actions
+       SET status='resolved', resolved_at=COALESCE(resolved_at, CURRENT_TIMESTAMP),
+           updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes, '') || ' [auto-resolved: best-practice alerts removed]'
+       WHERE type='best_practice' AND status!='resolved'""",
+    # Freshness went through several historical action names. Keep the oldest
+    # active row per source so degradation history is preserved without
+    # presenting the same operational issue multiple times.
+    """UPDATE actions
+       SET status='resolved', resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes, '') || ' [auto-resolved: deduplicated freshness alert]'
+       WHERE source_id IS NOT NULL
+         AND type IN ('stale_source','outdated_source','error_source')
+         AND status IN ('open','acknowledged','investigating')
+         AND id NOT IN (
+             SELECT MIN(id) FROM actions
+             WHERE source_id IS NOT NULL
+               AND type IN ('stale_source','outdated_source','error_source')
+               AND status IN ('open','acknowledged','investigating')
+             GROUP BY source_id
+         )""",
+    # Query-change history belongs in the event trail. Alerts expose only the
+    # latest unresolved change for each source.
+    """UPDATE actions
+       SET status='resolved', resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
+       WHERE source_id IS NOT NULL AND type='changed_query'
+         AND status IN ('open','acknowledged','investigating')
+         AND id NOT IN (
+             SELECT MAX(id) FROM actions
+             WHERE source_id IS NOT NULL AND type='changed_query'
+               AND status IN ('open','acknowledged','investigating')
+             GROUP BY source_id
+         )""",
 ]
 
 

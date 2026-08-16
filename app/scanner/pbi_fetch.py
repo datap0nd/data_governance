@@ -112,6 +112,50 @@ def fetch_workspace_reports(workspace_name: str | None = None) -> dict:
     }
 
 
+def trigger_dataset_refresh(workspace_name: str, dataset_id: str) -> dict:
+    """Request an asynchronous refresh for a Power BI semantic model."""
+    selected_workspace = (workspace_name or "").strip()
+    if not selected_workspace:
+        raise PbiFetchError("No Power BI workspace is configured. Set DG_PBI_WORKSPACE.")
+    dataset_guid = _uuid_text(dataset_id, "Dataset ID")
+    auth = get_access_token()
+    token = auth["access_token"]
+
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
+        workspace = _find_workspace(client, token, selected_workspace)
+        if not workspace:
+            account = auth.get("account") or "the signed-in account"
+            raise PbiFetchError(f"Workspace '{selected_workspace}' was not found for {account}.")
+        workspace_id = _uuid_text(workspace.get("id"), "Workspace ID")
+        url = f"{PBI_API_BASE}/groups/{workspace_id}/datasets/{dataset_guid}/refreshes"
+        response = client.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"notifyOption": "MailOnFailure"},
+        )
+
+    if response.status_code in (401, 403):
+        raise PbiFetchError(
+            "Power BI rejected the refresh request. The signed-in account needs write access "
+            "to the semantic model and Dataset.ReadWrite.All consent.",
+            permission=True,
+        )
+    if response.status_code != 202:
+        raise PbiFetchError(
+            f"Power BI refresh request failed with {response.status_code}: {response.text[:300]}"
+        )
+    return {
+        "status": "accepted",
+        "workspace": {
+            "id": workspace_id,
+            "name": workspace.get("name") or selected_workspace,
+        },
+        "dataset_id": dataset_guid,
+        "request_id": response.headers.get("x-ms-request-id"),
+        "location": response.headers.get("location"),
+    }
+
+
 def fetch_report_pages(workspace_id: str, report_id: str) -> list[dict]:
     """Return live report pages using stable technical page names."""
     workspace_guid = _uuid_text(workspace_id, "Workspace ID")

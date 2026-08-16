@@ -1107,6 +1107,13 @@ def test_rolling_window_advances_only_after_success(flow_db):
         flows.WorkerProgress(status="failed", error="test failure"),
     )
     assert flows.get_flow(saved["id"])["start_week"] == "2026-W30"
+    assert flows.get_flow(saved["id"])["last_success_at"] is None
+    with database.get_db() as db:
+        failure = db.execute(
+            "SELECT status, flow_id FROM actions WHERE type='flow_failed'"
+        ).fetchone()
+    assert failure["status"] == "open"
+    assert failure["flow_id"] == saved["id"]
 
     retry = flows.queue_run(saved["id"], _request())
     claimed = flows.claim_run(worker.worker_id)
@@ -1114,7 +1121,15 @@ def test_rolling_window_advances_only_after_success(flow_db):
         worker.worker_id, claimed["run"]["id"],
         flows.WorkerProgress(status="succeeded"),
     )
-    assert flows.get_flow(saved["id"])["start_week"] == "2026-W33"
+    refreshed = flows.get_flow(saved["id"])
+    assert refreshed["start_week"] == "2026-W33"
+    assert refreshed["last_success_at"] is not None
+    with database.get_db() as db:
+        failure = db.execute(
+            "SELECT status FROM actions WHERE type='flow_failed' AND flow_id=?",
+            (saved["id"],),
+        ).fetchone()
+    assert failure["status"] == "resolved"
 
 
 def test_week_prompt_can_be_supplied_by_range_instead_of_selection(flow_db):
@@ -2047,7 +2062,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=53' in index
+    assert '/static/app.js?v=54' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():

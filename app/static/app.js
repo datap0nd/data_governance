@@ -7908,6 +7908,7 @@ const LINEAGE_COLS = [
     { key: "tables", label: "Tables" },
     { key: "sources", label: "Sources" },
     { key: "mv_upstream", label: "Source Dependencies" },
+    { key: "flows", label: "Flows" },
     { key: "scripts", label: "Scripts" },
     { key: "tasks", label: "Scheduled Tasks" },
     { key: "upstreams", label: "Upstream Systems" },
@@ -7926,14 +7927,15 @@ async function renderLineageDiagram() {
     const colState = _getLineageCols();
     return `
         <div class="page-header">
-            <h2>Lineage Diagram</h2>
-            <p class="page-subtitle">Trace data flow from visuals to upstream systems</p>
+            <h2>Pipelines</h2>
+            <p class="page-subtitle">Trace and refresh the governed path from Power BI to upstream systems</p>
         </div>
         <div class="lineage-controls">
             <select id="lineage-report-select" class="lineage-dropdown">
                 <option value="">Select a report...</option>
                 ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
+            <button class="btn-outline lineage-refresh-report" id="lineage-report-refresh" type="button" disabled>Refresh report</button>
             <label class="lineage-archive-toggle"><input type="checkbox" id="lineage-show-archived" ${showArchived ? "checked" : ""}> Show archived reports</label>
             <div class="lineage-col-toggles" id="lineage-col-toggles">
                 ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
@@ -7947,6 +7949,7 @@ async function renderLineageDiagram() {
 
 function bindLineageDiagramPage() {
     const sel = document.getElementById("lineage-report-select");
+    const reportRefresh = document.getElementById("lineage-report-refresh");
     if (!sel) return;
     document.getElementById("lineage-show-archived")?.addEventListener("change", event => {
         sessionStorage.setItem("lineage_show_archived", event.target.checked ? "1" : "0");
@@ -7954,6 +7957,8 @@ function bindLineageDiagramPage() {
     });
     sel.addEventListener("change", async () => {
         const id = sel.value;
+        reportRefresh.disabled = true;
+        reportRefresh.dataset.canRefresh = "0";
         if (!id) {
             document.getElementById("lineage-container").innerHTML =
                 '<div class="lineage-placeholder">Select a report above to view its data lineage</div>';
@@ -7964,10 +7969,31 @@ function bindLineageDiagramPage() {
         try {
             const data = await api(`/api/lineage/report/${id}/diagram`);
             window._lineageData = data;
+            reportRefresh.dataset.canRefresh = data.report.can_refresh ? "1" : "0";
+            reportRefresh.disabled = !data.report.can_refresh;
+            reportRefresh.title = data.report.can_refresh
+                ? `Refresh ${data.report.name} in Power BI`
+                : "This report has no Power BI semantic model ID";
             _renderLineageDiagram(data);
         } catch (e) {
             document.getElementById("lineage-container").innerHTML =
                 `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
+        }
+    });
+    reportRefresh?.addEventListener("click", async () => {
+        const reportId = sel.value;
+        if (!reportId || reportRefresh.dataset.canRefresh !== "1" || reportRefresh.disabled) return;
+        const original = reportRefresh.textContent;
+        reportRefresh.disabled = true;
+        reportRefresh.textContent = "Requesting...";
+        try {
+            await apiPost(`/api/reports/${reportId}/refresh`);
+            toast("Power BI refresh requested. Its status will update on the next Power BI sync.");
+        } catch (err) {
+            toast("Power BI refresh was not requested: " + err.message);
+        } finally {
+            reportRefresh.textContent = original;
+            reportRefresh.disabled = reportRefresh.dataset.canRefresh !== "1";
         }
     });
     document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
@@ -8167,7 +8193,7 @@ function _renderLineageDiagram(data) {
         fieldsByTable.get(f.table).push({ id: `field-${key}`, key, table: f.table, field: f.field });
     }
 
-    // Tables, sources, scripts, tasks, upstreams
+    // Tables, sources, flows, scripts, tasks, upstreams
     const tableMap = new Map();
     for (const t of data.tables) tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
     const scriptMap = new Map();
@@ -8190,6 +8216,9 @@ function _renderLineageDiagram(data) {
     const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => allSourceIds.has(sid)));
     const usedScriptIds = new Set(scriptNodes.map(s => s.id));
     const taskNodes = [...taskMap.values()].filter(t => usedScriptIds.has(t.script_id));
+    const flowNodes = (data.flows || []).filter(flow =>
+        (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
+    );
 
     if (visualNodes.length === 0 && tableNodes.length === 0) {
         container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Scanner.</div>';
@@ -8305,7 +8334,10 @@ function _renderLineageDiagram(data) {
         const isMV = hasDeps ? ' <span class="lin-mv-badge">MV</span>' : '';
         const staleUp = mvStaleUpstream.has(s.id) ? ' <span class="lin-dep-warn" title="Upstream data is newer than last refresh">!</span>' : '';
         const upstreamClass = isUpstream ? " lin-src-upstream" : "";
-        return `<div class="lin-card lin-src${upstreamClass} ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}</div>${sourceFacts(s)}</div>`;
+        const refresh = hasDeps && s.postgres_ref
+            ? `<button class="lin-refresh-action" type="button" data-lin-refresh-mv="${s.id}" aria-label="Refresh materialized view ${esc(s.name)}">Refresh</button>`
+            : "";
+        return `<div class="lin-card lin-src${upstreamClass} ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}${refresh}</div>${sourceFacts(s)}</div>`;
     };
 
     colHtml.sources = sourceNodes.map(s => sourceCardHtml(s)).join("");
@@ -8317,6 +8349,27 @@ function _renderLineageDiagram(data) {
         colHtml[key] = layer.map(s => sourceCardHtml(s, true)).join("");
         upstreamColumnDefs.push({ key, label: `Upstream ${depth}`, stateKey: "mv_upstream" });
     }
+
+    // -- Flows --
+    const flowStateClass = flow => {
+        if (flow.last_status === "failed") return "lin-st-err";
+        if (flow.last_status === "succeeded") return "lin-st-ok";
+        return "lin-st-warn";
+    };
+    let flowH = "";
+    for (const flow of flowNodes) {
+        const active = flow.has_active_run || ["queued", "claimed", "running"].includes(flow.last_status);
+        const statusLabel = flow.last_status ? flow.last_status.replaceAll("_", " ") : "never run";
+        const loaded = flow.last_success_at
+            ? `<span title="${esc(formatDate(flow.last_success_at))}">Loaded ${timeAgo(flow.last_success_at)}</span>`
+            : "<span>Never loaded</span>";
+        const target = [flow.sql_schema, flow.sql_table].filter(Boolean).join(".");
+        flowH += `<div class="lin-card lin-flow ${flowStateClass(flow)}" data-lin-id="flow-${flow.id}" title="${esc(flow.last_error || flow.name)}">
+            <div class="lin-card-hdr"><span class="lin-card-lbl">${esc(flow.name)}</span><span class="lin-flow-status">${esc(statusLabel)}</span><button class="lin-refresh-action" type="button" data-lin-refresh-flow="${flow.id}" ${active ? "disabled" : ""} aria-label="Refresh flow ${esc(flow.name)}">${active ? "Running" : "Refresh"}</button></div>
+            <div class="lin-card-facts">${loaded}${target ? `<span class="lin-card-sep">-</span><span title="Target table">${esc(target)}</span>` : ""}</div>
+        </div>`;
+    }
+    colHtml.flows = flowH;
 
     // -- Scripts --
     let scrH = "";
@@ -8343,7 +8396,7 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
     for (let depth = 1; depth < sourceLayers.length; depth++) {
         colCounts[`mv_upstream_${depth}`] = (sourceLayers[depth] || []).length;
     }
@@ -8567,6 +8620,12 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const d of (data.source_deps || [])) {
         add(`source-${d.source_id}`, `source-${d.depends_on_id}`, true);
     }
+    // Target source -> Flow that loads it (SVG)
+    for (const flow of (data.flows || [])) {
+        for (const sourceId of (flow.target_source_ids || [])) {
+            add(`source-${sourceId}`, `flow-${flow.id}`, true);
+        }
+    }
     // Source -> Upstream system (SVG)
     for (const s of sourceNodes) if (s.upstream_id) add(`source-${s.id}`, `upstream-${s.upstream_id}`, true);
 
@@ -8607,6 +8666,56 @@ function _drawLinEdges() {
 function _bindLinInteractions() {
     const wrap = document.getElementById("lin-wrap");
     if (!wrap) return;
+    wrap.querySelectorAll("[data-lin-refresh-flow]").forEach(button => {
+        button.addEventListener("click", async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (button.disabled) return;
+            const flowId = Number(button.dataset.linRefreshFlow);
+            const flow = (window._lineageData?.flows || []).find(item => item.id === flowId);
+            button.disabled = true;
+            button.textContent = "Queueing...";
+            try {
+                await apiPost(`/api/flows/${flowId}/run`);
+                if (flow) {
+                    flow.has_active_run = true;
+                    flow.last_status = "queued";
+                }
+                toast(`Flow refresh queued${flow?.name ? ` for ${flow.name}` : ""}.`);
+                if (window._lineageData) _renderLineageDiagram(window._lineageData);
+            } catch (err) {
+                button.disabled = false;
+                button.textContent = "Refresh";
+                toast("Flow refresh was not queued: " + err.message);
+            }
+        });
+    });
+    wrap.querySelectorAll("[data-lin-refresh-mv]").forEach(button => {
+        button.addEventListener("click", async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (button.disabled) return;
+            const sourceId = Number(button.dataset.linRefreshMv);
+            const source = (window._lineageData?.sources || []).find(item => item.id === sourceId);
+            if (!source?.postgres_ref) {
+                toast("Materialized view refresh is unavailable because its PostgreSQL name could not be resolved.");
+                return;
+            }
+            button.disabled = true;
+            button.textContent = "Refreshing...";
+            try {
+                await apiPostJson("/api/data-import/materialized-views/refresh", {
+                    materialized_views: [source.postgres_ref],
+                });
+                toast(`Materialized view ${source.name} refreshed. Freshness updates on the next probe.`);
+            } catch (err) {
+                toast("Materialized view refresh failed: " + err.message);
+            } finally {
+                button.disabled = false;
+                button.textContent = "Refresh";
+            }
+        });
+    });
     // Expand/collapse
     wrap.querySelectorAll("[data-lin-toggle]").forEach(toggle => {
         toggle.addEventListener("click", (e) => {
