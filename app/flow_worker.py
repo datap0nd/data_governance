@@ -47,6 +47,9 @@ ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
 ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
+ASAP_EMPTY_RESULT_DETAIL = (
+    "The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
+)
 XLSX_HEADER_LABEL_HINTS = frozenset({
     "sell_out_region",
     "sell_out_subsidiary",
@@ -766,9 +769,47 @@ def _asap_wait_for_results(
     detail += (
         " The ASAP loading overlay was still visible."
         if last_loading_state else
-        " The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
+        f" {ASAP_EMPTY_RESULT_DETAIL}"
     )
     raise RuntimeError(f"ASAP report rows did not render within {timeout_ms // 1000} seconds.{detail}")
+
+
+def _asap_run_report(page: Page) -> Frame:
+    """Click RUN in the live report frame and wait for the rendered rows."""
+    _asap_wait_for_loading_clear(page)
+    run_frame = _asap_frame(page)
+    _click_named(run_frame, "RUN")
+    page.wait_for_timeout(1_000)
+    frame = _asap_wait_for_results(page)
+    return frame
+
+
+def _asap_run_report_with_retry(page: Page, on_retry=None) -> Frame:
+    """Retry one silently-empty report run.
+
+    After RUN, MicroStrategy occasionally clears its loading overlay without
+    ever rendering the Data rows marker or a populated raw table: the run
+    finished with an empty rendering rather than a slow one. Clicking RUN a
+    second time is safe at the point where that specific timeout is raised —
+    no export has started and RUN re-executes the same configuration. A wait
+    that ends with the loading overlay still visible is never retried; the
+    report is genuinely still executing and a second RUN could interrupt it.
+    """
+    for attempt in range(2):
+        try:
+            return _asap_run_report(page)
+        except RuntimeError as exc:
+            message = str(exc)
+            if (
+                attempt == 1
+                or not message.startswith("ASAP report rows did not render within")
+                or ASAP_EMPTY_RESULT_DETAIL not in message
+            ):
+                raise
+            if on_retry is not None:
+                on_retry(exc)
+            page.wait_for_timeout(1_500)
+    raise AssertionError("unreachable")
 
 
 def _asap_login_visible(page: Page) -> bool:
@@ -2963,12 +3004,22 @@ def execute_job(
                     },
                     artifacts,
                 )
+                def _report_rerun(exc: Exception):
+                    report_progress(
+                        "running",
+                        {
+                            "stage": "report_execution",
+                            "message": (
+                                f"ASAP rendered no rows for export {index} of {len(tasks)}; "
+                                f"re-running the report once. {exc}"
+                            ),
+                            "period": period, "export_view": export_view,
+                        },
+                        artifacts,
+                    )
+
                 with timings.measure("report_execution", report_id=job["report"].get("id")):
-                    _asap_wait_for_loading_clear(page)
-                    frame = _asap_frame(page)
-                    _click_named(frame, "RUN")
-                    page.wait_for_timeout(1_000)
-                    frame = _asap_wait_for_results(page)
+                    frame = _asap_run_report_with_retry(page, on_retry=_report_rerun)
             report_progress(
                 "running",
                 {

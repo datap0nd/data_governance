@@ -233,6 +233,72 @@ def test_asap_results_accept_populated_raw_table_without_data_rows_marker(monkey
     assert flow_worker._asap_wait_for_results(Page(), timeout_ms=1_000) is frame
 
 
+class _WaitPage:
+    def __init__(self):
+        self.waits = []
+
+    def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
+
+
+def _empty_render_error():
+    return RuntimeError(
+        "ASAP report rows did not render within 600 seconds. "
+        + flow_worker.ASAP_EMPTY_RESULT_DETAIL
+    )
+
+
+def test_asap_run_report_retries_once_after_silently_empty_rendering(monkeypatch):
+    frame = object()
+    attempts = []
+
+    def fake_run(_page):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _empty_render_error()
+        return frame
+
+    monkeypatch.setattr(flow_worker, "_asap_run_report", fake_run)
+    page = _WaitPage()
+    retries = []
+
+    assert flow_worker._asap_run_report_with_retry(page, on_retry=retries.append) is frame
+    assert len(attempts) == 2
+    assert len(retries) == 1
+    assert page.waits == [1_500]
+
+
+def test_asap_run_report_does_not_retry_while_overlay_still_visible(monkeypatch):
+    attempts = []
+
+    def fake_run(_page):
+        attempts.append(1)
+        raise RuntimeError(
+            "ASAP report rows did not render within 600 seconds."
+            " The ASAP loading overlay was still visible."
+        )
+
+    monkeypatch.setattr(flow_worker, "_asap_run_report", fake_run)
+
+    with pytest.raises(RuntimeError, match="still visible"):
+        flow_worker._asap_run_report_with_retry(_WaitPage())
+    assert len(attempts) == 1
+
+
+def test_asap_run_report_raises_after_second_empty_rendering(monkeypatch):
+    attempts = []
+
+    def fake_run(_page):
+        attempts.append(1)
+        raise _empty_render_error()
+
+    monkeypatch.setattr(flow_worker, "_asap_run_report", fake_run)
+
+    with pytest.raises(RuntimeError, match="did not render"):
+        flow_worker._asap_run_report_with_retry(_WaitPage())
+    assert len(attempts) == 2
+
+
 def test_asap_table_control_score_accepts_only_compact_top_right_controls():
     table = {"x": 100, "y": 200, "width": 800, "height": 500}
 
