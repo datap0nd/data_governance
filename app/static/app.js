@@ -9366,7 +9366,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                 <thead><tr><th>Flow</th><th>Active</th><th>Website / report</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
                 <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
                     <tr>
-                        <td><strong>${esc(flow.name)}</strong></td>
+                        <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
                         <td>${esc(flow.site_name)}<small>${esc(flow.report_name)}</small></td>
                         <td>${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${String(flow.file_format || "csv").toUpperCase()} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${String(flow.file_format || "csv").toUpperCase()} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small></td>
@@ -9469,6 +9469,23 @@ function _flowHasWeekFilter(report) {
     return Boolean((report?.filters || []).find(filter => filter.control_type === "week" && filter.enabled && !filter.stale));
 }
 
+function _flowOwnerOptions(people, selectedId) {
+    return ['<option value="">No owner - failure alerts disabled</option>']
+        .concat(people.map(person => `<option value="${person.id}" ${person.id === selectedId ? "selected" : ""}>${esc(person.name)} (${esc(person.role)})</option>`))
+        .join("");
+}
+
+function _flowOwnerHelp(owner) {
+    if (!owner) return "Choose a person from Management > Create > People. Without an owner, nobody is emailed when this flow fails.";
+    if (!owner.email) return `${esc(owner.name)} has no email mapped in People. Add one or no failure alert can be delivered.`;
+    return `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`;
+}
+
+function _flowOwnerSummary(owner) {
+    if (!owner) return "Disabled · no owner";
+    return owner.email ? `${esc(owner.name)} · ${esc(owner.email)}` : `${esc(owner.name)} · no email mapped`;
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
@@ -9490,6 +9507,8 @@ function _flowBuilderHtml(catalog, existing = null) {
     const hasWeekFilter = _flowHasWeekFilter(report);
     const periodStrategy = hasWeekFilter ? (existing?.period_strategy || "latest") : "none";
     const fileFormat = existing?.file_format || "xlsx";
+    const people = window._flowsState?.people || [];
+    const owner = people.find(person => person.id === existing?.owner_person_id);
     const exportViewCount = _flowExportViewLabels(report).length;
     const defaultFilename = exportViewCount > 1 || !hasWeekFilter
         ? `{flow}_{export}.${fileFormat}`
@@ -9539,6 +9558,12 @@ function _flowBuilderHtml(catalog, existing = null) {
                         </div>
                     </div>
                     <div class="flow-form-section">
+                        <div class="flow-section-head"><h2>Ownership and failure alerts</h2><p>The owner receives an Outlook alert every time a run of this flow fails, for any reason.</p></div>
+                        <div class="flow-form-grid">
+                            <label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label>
+                        </div>
+                    </div>
+                    <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>Save the schedule here, then activate or pause the flow from the Flows list. SQL handoff uses transformed files when transformation is enabled.</p></div>
                         <div class="flow-form-grid">
                             <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
@@ -9560,7 +9585,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Managed snapshot" : "Append") : "Disabled"}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Managed snapshot" : "Append") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9620,11 +9645,11 @@ function _flowRunsHtml(runs) {
 }
 
 async function renderFlows() {
-    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
-        api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"),
+        api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
     ]);
-    window._flowsState = { catalog, flows, runs, workers, scans, estimates, sqlCatalog, view: "list" };
+    window._flowsState = { catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, view: "list" };
     const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled && !report.stale);
     return `
         <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads executed by the authenticated BI desktop.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
@@ -9768,7 +9793,7 @@ function _flowCollectBuilder() {
     const sqlEnabled = $("#flow-sql-enabled")?.checked || false;
     const existing = window._flowsState?.flows?.find(flow => flow.id === Number($("#flow-builder-form")?.dataset.id));
     const flowEnabled = scheduleType === "manual" ? false : (existing?.enabled || false);
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null, file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value, start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null), end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null, transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null };
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null, file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value, start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null), end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null, transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null, owner_person_id: Number($("#flow-owner")?.value) || null };
 }
 
 function _bindFlowWorkspace() {
@@ -9796,6 +9821,13 @@ function _bindFlowWorkspace() {
         $("#flow-browser-summary").textContent = headed ? "Headed · visible" : "Headless · background";
     });
     $("#flow-browser-mode")?.dispatchEvent(new Event("change"));
+    $("#flow-owner")?.addEventListener("change", event => {
+        const owner = (state.people || []).find(person => person.id === Number(event.target.value));
+        const help = $("#flow-owner-help");
+        const summary = $("#flow-owner-summary");
+        if (help) help.innerHTML = _flowOwnerHelp(owner);
+        if (summary) summary.innerHTML = _flowOwnerSummary(owner);
+    });
     $("#flow-file-format")?.addEventListener("change", event => {
         const filename = $("#flow-filename");
         if (filename) filename.value = filename.value.replace(/\.(?:csv|xlsx)$/i, `.${event.target.value}`);

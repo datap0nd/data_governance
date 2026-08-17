@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import copy
+import html
 import json
 import logging
 import re
@@ -71,6 +72,207 @@ def _sync_flow_failure_actions(db, now: str) -> dict:
     return sync_managed_actions(db, "flow_failed", findings, now)
 
 
+def _flow_failure_context(db, run_id: int) -> dict | None:
+    """Collect everything the flow owner needs to triage one failed run."""
+    row = db.execute(
+        """SELECT r.id AS run_id, r.flow_id, r.trigger_type, r.requested_by, r.worker_id,
+                  r.error, r.created_at, r.started_at, r.finished_at,
+                  f.name AS flow_name, f.target_folder,
+                  s.name AS site_name, rep.name AS report_name,
+                  p.name AS owner_name, p.email AS owner_email
+           FROM flow_runs r
+           JOIN flows f ON f.id = r.flow_id
+           JOIN flow_sites s ON s.id = f.site_id
+           JOIN flow_reports rep ON rep.id = f.report_id
+           LEFT JOIN people p ON p.id = f.owner_person_id
+           WHERE r.id = ?""",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        return None
+    context = dict(row)
+    stage = db.execute(
+        """SELECT stage FROM flow_run_events
+           WHERE run_id=? AND stage IS NOT NULL AND stage != ''
+           ORDER BY id DESC LIMIT 1""",
+        (run_id,),
+    ).fetchone()
+    context["failure_stage"] = stage["stage"] if stage else None
+    files = db.execute(
+        "SELECT COUNT(*) AS saved FROM flow_run_files WHERE run_id=?", (run_id,)
+    ).fetchone()
+    context["files_saved"] = files["saved"] if files else 0
+    return context
+
+
+def _flow_failure_message(context: dict) -> dict:
+    """One owner-facing Outlook alert for one failed flow run."""
+    run_id = context["run_id"]
+    failed_at = context.get("finished_at") or context.get("started_at") or context.get("created_at")
+    stage = str(context.get("failure_stage") or "").replace("_", " ").strip()
+    trigger = str(context.get("trigger_type") or "manual").replace("_", " ")
+    requested_by = str(context.get("requested_by") or "").strip()
+    files_saved = int(context.get("files_saved") or 0)
+
+    def detail_row(label: str, value: str) -> str:
+        return (
+            "<tr>"
+            '<td style="padding:10px 12px;border:1px solid #e1c5c5;'
+            f'background:#fff7f7;font-size:12px;font-weight:700">{html.escape(label)}</td>'
+            '<td style="padding:10px 12px;border:1px solid #e1c5c5;'
+            f'background:#ffffff;font-size:12px">{html.escape(value)}</td>'
+            "</tr>"
+        )
+
+    rows = [
+        detail_row("Flow", context["flow_name"]),
+        detail_row("Website / report", f'{context["site_name"]} / {context["report_name"]}'),
+        detail_row("Run", f"#{run_id} - {trigger}" + (f" by {requested_by}" if requested_by else "")),
+        detail_row("Worker", str(context.get("worker_id") or "Never claimed by a worker")),
+        detail_row("Failed at", str(failed_at or "Unknown")),
+    ]
+    if stage:
+        rows.append(detail_row("Last stage", stage.capitalize()))
+    rows.append(detail_row(
+        "Files saved before failure",
+        f"{files_saved} file(s) kept in {context['target_folder']}" if files_saved
+        else "None - no file was downloaded",
+    ))
+    error = str(context.get("error") or "").strip() or "The run failed without an error message."
+    body = f"""
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+           style="width:100%;border-collapse:collapse;background:#f3eeee;
+                  font-family:Segoe UI,Arial,sans-serif">
+      <tr>
+        <td align="center" style="padding:24px 12px">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+                 style="width:100%;max-width:760px;border-collapse:separate;
+                        background:#ffffff;border:1px solid #dfcaca;border-radius:12px">
+            <tr>
+              <td style="padding:25px 28px;background:#8f2d2d;color:#ffffff;
+                         border-radius:12px 12px 0 0">
+                <div style="margin:0 0 7px;color:#f6dede;font-size:11px;
+                            font-weight:700;letter-spacing:1.2px">
+                  FLOW RUN FAILED
+                </div>
+                <div style="margin:0;color:#ffffff;font-size:25px;font-weight:700;
+                            line-height:1.2">
+                  {html.escape(context["flow_name"])}
+                </div>
+                <div style="margin-top:8px;color:#f9eaea;font-size:14px;line-height:1.4">
+                  Metronome stopped run #{run_id} before it completed. Files already
+                  downloaded are kept - nothing was deleted or overwritten.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 28px 10px">
+                <table width="100%" cellspacing="0" cellpadding="0"
+                       style="width:100%;border-collapse:collapse;color:#1a1814">
+                  {"".join(rows)}
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 28px">
+                <div style="padding:16px;background:#fff2f2;border:1px solid #dcaeae;
+                            border-radius:8px">
+                  <div style="margin:0 0 6px;color:#7a2020;font-size:12px;
+                              font-weight:700">
+                    What needs attention
+                  </div>
+                  <div style="color:#451b1b;font-size:13px;line-height:1.5">
+                    {html.escape(error)}
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 28px 26px">
+                <div style="margin-top:4px;color:#433f38;font-size:13px;line-height:1.5">
+                  Open Metronome &gt; Flows &gt; Run history and use Expanded logs on
+                  run #{run_id} to see every stage, timing, and the full error trail.
+                  After fixing the cause, use Run to start a fresh download - reruns
+                  never delete or overwrite files that already exist.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 28px;background:#f8f4f4;color:#746363;
+                         border-top:1px solid #eadada;border-radius:0 0 12px 12px;
+                         font-size:11px;line-height:1.4">
+                Flow owner: {html.escape(context["owner_name"])}. You receive this
+                email for every failed run of this flow. Detected by Metronome at
+                {html.escape(_now().isoformat(timespec="minutes"))} local time.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+    """
+    return {
+        "to": context["owner_email"],
+        "subject": f"Metronome flow failed: {context['flow_name']} (run #{run_id})"[:500],
+        "html_body": body,
+    }
+
+
+def notify_flow_owner_of_failure(run_id: int) -> dict:
+    """Email the owning person about a failed run. Never raises.
+
+    Every path that turns a run failed calls this after its transaction commits:
+    worker-reported failures, lost worker heartbeats, and worker restarts. One
+    run fails exactly once (terminal states are never re-entered), so the owner
+    receives exactly one email per failed run.
+    """
+    context = None
+    try:
+        with get_db() as db:
+            context = _flow_failure_context(db, run_id)
+        if not context:
+            return {"status": "not_sent", "reason": "Run not found."}
+        if not context.get("owner_name"):
+            return {"status": "not_sent", "reason": "The flow has no owner."}
+        if not str(context.get("owner_email") or "").strip():
+            outcome = {
+                "status": "not_sent",
+                "owner_name": context["owner_name"],
+                "reason": f"Owner {context['owner_name']} has no email mapped in Management > Create > People.",
+            }
+        else:
+            from app.routers.email import _launch_outlook_payload
+
+            _launch_outlook_payload([_flow_failure_message(context)], "send")
+            outcome = {
+                "status": "launched",
+                "owner_name": context["owner_name"],
+                "owner_email": context["owner_email"],
+            }
+    except Exception as exc:
+        logging.getLogger(__name__).exception(
+            "Could not notify the flow owner about failed run %s", run_id
+        )
+        outcome = {
+            "status": "failed",
+            "owner_name": (context or {}).get("owner_name"),
+            "reason": str(exc).strip() or exc.__class__.__name__,
+        }
+    if context:
+        try:
+            with get_db() as db:
+                log_event(
+                    db, "flow", context["flow_id"], context["flow_name"],
+                    "owner_alerted" if outcome["status"] == "launched" else "owner_alert_skipped",
+                    f"run #{run_id}: {outcome.get('reason') or outcome.get('owner_email')}",
+                )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not record the owner alert outcome for run %s", run_id
+            )
+    return outcome
+
+
 def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
     """Fail work whose assigned browser stopped heartbeating."""
     now = _now()
@@ -112,6 +314,8 @@ def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
                 )
             failed.append(row["id"])
         _sync_flow_failure_actions(db, now_text)
+    for run_id in failed:
+        notify_flow_owner_of_failure(run_id)
     return {"failed_run_ids": failed, "count": len(failed)}
 
 
@@ -392,6 +596,7 @@ class FlowWrite(BaseModel):
     sql_database: str | None = Field(default=None, max_length=63)
     sql_schema: str | None = Field(default=None, max_length=63)
     sql_table: str | None = Field(default=None, max_length=63)
+    owner_person_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_flow(self):
@@ -573,10 +778,12 @@ def _report_out(db, report_id: int) -> dict:
 
 def _flow_out(db, flow_id: int) -> dict:
     row = db.execute(
-        """SELECT f.*, s.name AS site_name, r.name AS report_name
+        """SELECT f.*, s.name AS site_name, r.name AS report_name,
+                  p.name AS owner_name, p.email AS owner_email
            FROM flows f
            JOIN flow_sites s ON s.id = f.site_id
            JOIN flow_reports r ON r.id = f.report_id
+           LEFT JOIN people p ON p.id = f.owner_person_id
            WHERE f.id = ?""",
         (flow_id,),
     ).fetchone()
@@ -613,6 +820,14 @@ def _latest_discovered_week(report: dict, start_week: str) -> str:
     if latest < start_week:
         raise HTTPException(409, f"Start week is after the latest discovered ASAP week ({latest}).")
     return latest
+
+
+def _validate_owner(db, body: FlowWrite):
+    if body.owner_person_id is None:
+        return
+    row = db.execute("SELECT id FROM people WHERE id=?", (body.owner_person_id,)).fetchone()
+    if not row:
+        raise HTTPException(400, "Choose a flow owner from Management > Create > People.")
 
 
 def _validate_sql_target(db, body: FlowWrite):
@@ -1234,20 +1449,21 @@ def create_flow(body: FlowWrite, request: Request):
         with get_db() as db:
             _validate_flow_selections(db, body)
             _validate_sql_target(db, body)
+            _validate_owner(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
                    (name, site_id, report_id, export_views_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
-                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, owner_person_id, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
                  body.sql_handoff_enabled, body.sql_mode,
-                 body.sql_database, body.sql_schema, body.sql_table, get_actor(request), now, now),
+                 body.sql_database, body.sql_schema, body.sql_table, body.owner_person_id, get_actor(request), now, now),
             )
             flow_id = cursor.lastrowid
             log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
@@ -1297,19 +1513,20 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
     with get_db() as db:
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
+        _validate_owner(db, body)
         cursor = db.execute(
             """UPDATE flows SET name=?, site_id=?, report_id=?, export_views_json=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
-               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, updated_at=? WHERE id=?""",
+               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, owner_person_id=?, updated_at=? WHERE id=?""",
             (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
              body.sql_handoff_enabled, body.sql_mode,
-             body.sql_database, body.sql_schema, body.sql_table, now, flow_id),
+             body.sql_database, body.sql_schema, body.sql_table, body.owner_person_id, now, flow_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
@@ -1829,6 +2046,8 @@ def register_worker(body: WorkerRegister):
                  last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at""",
             (body.worker_id, body.display_name, _json(body.capabilities), now, now, now),
         )
+    if interrupted_run_id is not None:
+        notify_flow_owner_of_failure(interrupted_run_id)
     return {
         "worker_id": body.worker_id,
         "status": "idle",
@@ -2027,7 +2246,8 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 "UPDATE flow_workers SET status='busy', last_seen_at=?, updated_at=? WHERE worker_id=?",
                 (now, now, worker_id),
             )
-    return {"run_id": run_id, "status": body.status}
+    owner_alert = notify_flow_owner_of_failure(run_id) if body.status == "failed" else None
+    return {"run_id": run_id, "status": body.status, "owner_alert": owner_alert}
 
 
 @router.post("/worker/{worker_id}/runs/{run_id}/heartbeat")

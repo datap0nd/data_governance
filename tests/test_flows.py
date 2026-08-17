@@ -2439,3 +2439,160 @@ def test_run_heartbeat_prevents_active_worker_from_being_reaped(flow_db, monkeyp
 
     assert flows.fail_stale_runs(timeout_seconds=120)["count"] == 0
     assert flows.get_run(queued["id"])["status"] == "claimed"
+
+
+# --- Flow ownership and failure alerts ---
+
+def _person(name="Dana", role="BI", email="dana@example.test"):
+    from app.models import PersonCreate
+    from app.routers import people as people_router
+    return people_router.create_person(
+        PersonCreate(name=name, role=role, email=email), _request(),
+    ).model_dump()
+
+
+def _capture_outlook(monkeypatch):
+    from app.routers import email as email_router
+    sent = []
+    monkeypatch.setattr(
+        email_router, "_launch_outlook_payload",
+        lambda messages, mode="send": sent.append((messages, mode)) or len(messages),
+    )
+    return sent
+
+
+def test_flow_owner_persists_and_exposes_person_details(flow_db):
+    person = _person()
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], owner_person_id=person["id"]), _request(),
+    )
+    assert saved["owner_person_id"] == person["id"]
+    assert saved["owner_name"] == "Dana"
+    assert saved["owner_email"] == "dana@example.test"
+    listed = next(item for item in flows.list_flows() if item["id"] == saved["id"])
+    assert listed["owner_name"] == "Dana"
+
+    cleared = flows.update_flow(
+        saved["id"], _flow(site["id"], report["id"], owner_person_id=None), _request(),
+    )
+    assert cleared["owner_person_id"] is None
+    assert cleared["owner_name"] is None
+
+
+def test_flow_owner_must_exist_in_people(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with pytest.raises(HTTPException) as excinfo:
+        flows.create_flow(
+            _flow(site["id"], report["id"], owner_person_id=9999), _request(),
+        )
+    assert excinfo.value.status_code == 400
+    assert "People" in excinfo.value.detail
+
+
+def test_failed_run_emails_the_flow_owner(flow_db, monkeypatch):
+    sent = _capture_outlook(monkeypatch)
+    person = _person()
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], owner_person_id=person["id"]), _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="alert-worker", display_name="Alert worker", capabilities={},
+    ))
+    flows.claim_run("alert-worker")
+    result = flows.update_run(
+        "alert-worker", queued["id"],
+        flows.WorkerProgress(
+            status="failed",
+            progress={"stage": "report_execution", "message": "RUN never rendered"},
+            error="ASAP report rows did not render within 600 seconds.",
+        ),
+    )
+
+    assert result["owner_alert"]["status"] == "launched"
+    assert result["owner_alert"]["owner_email"] == "dana@example.test"
+    assert len(sent) == 1
+    messages, mode = sent[0]
+    assert mode == "send"
+    message = messages[0]
+    assert message["to"] == "dana@example.test"
+    assert saved["name"] in message["subject"]
+    assert f"run #{queued['id']}" in message["subject"]
+    assert "FLOW RUN FAILED" in message["html_body"]
+    assert "ASAP report rows did not render" in message["html_body"]
+    assert "Report portal / Weekly movement" in message["html_body"]
+    assert "Report execution" in message["html_body"]
+    assert "Dana" in message["html_body"]
+
+    # Replaying the terminal status must not email the owner a second time.
+    flows.update_run(
+        "alert-worker", queued["id"],
+        flows.WorkerProgress(status="failed", error="duplicate report"),
+    )
+    assert len(sent) == 1
+
+
+def test_failed_run_without_owner_or_email_sends_nothing(flow_db, monkeypatch):
+    sent = _capture_outlook(monkeypatch)
+    no_email = _person(name="Quiet", email=None)
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    unowned = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    owned = flows.create_flow(
+        _flow(
+            site["id"], report["id"], name="Owned without email",
+            owner_person_id=no_email["id"],
+        ),
+        _request(),
+    )
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="quiet-worker", display_name="Quiet worker", capabilities={},
+    ))
+    for flow, reason in ((unowned, "no owner"), (owned, "no email")):
+        queued = flows.queue_run(flow["id"], _request())
+        flows.claim_run("quiet-worker")
+        result = flows.update_run(
+            "quiet-worker", queued["id"],
+            flows.WorkerProgress(status="failed", error="boom"),
+        )
+        assert result["owner_alert"]["status"] == "not_sent", reason
+    assert sent == []
+
+
+def test_worker_loss_and_restart_failures_email_the_flow_owner(flow_db, monkeypatch):
+    sent = _capture_outlook(monkeypatch)
+    person = _person()
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], owner_person_id=person["id"]), _request(),
+    )
+
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="lost-worker", display_name="Lost worker",
+        capabilities={"process_id": 100},
+    ))
+    flows.claim_run("lost-worker")
+    old = "2026-08-13T10:00:00"
+    monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:05:00"))
+    with database.get_db() as db:
+        db.execute("UPDATE flow_workers SET last_seen_at=? WHERE worker_id=?", (old, "lost-worker"))
+        db.execute("UPDATE flow_runs SET heartbeat_at=? WHERE id=?", (old, queued["id"]))
+    assert flows.fail_stale_runs(timeout_seconds=120)["count"] == 1
+    assert len(sent) == 1
+    assert "stopped responding" in sent[0][0][0]["html_body"]
+
+    retry = flows.queue_run(saved["id"], _request())
+    flows.claim_run("lost-worker")
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="lost-worker", display_name="Lost worker",
+        capabilities={"process_id": 101},
+    ))
+    assert len(sent) == 2
+    assert f"run #{retry['id']}" in sent[1][0][0]["subject"]

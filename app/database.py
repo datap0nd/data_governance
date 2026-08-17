@@ -484,6 +484,7 @@ CREATE TABLE IF NOT EXISTS flows (
     sql_database        TEXT,
     sql_schema          TEXT,
     sql_table           TEXT,
+    owner_person_id     INTEGER REFERENCES people(id) ON DELETE SET NULL,
     created_by          TEXT,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -1098,6 +1099,8 @@ MIGRATIONS = [
                AND status IN ('open','acknowledged','investigating')
              GROUP BY source_id
          )""",
+    # Flow ownership and failure notification routing
+    "ALTER TABLE flows ADD COLUMN owner_person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
 ]
 
 
