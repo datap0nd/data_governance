@@ -1921,15 +1921,29 @@ def _apply_discovery(
                 if candidate_path == category_path:
                     existing = candidate
                     break
+        # An entry marked partial came from the MicroStrategy REST API after
+        # the portal UI refused to open the report. Only the UI can reveal
+        # export-view automation and ready text, so a partial entry merges
+        # over the richer stored definition instead of replacing it.
+        partial = bool(item.automation.get("partial"))
+        automation = {key: value for key, value in item.automation.items() if key != "partial"}
         if existing:
             report_id = existing["id"]
+            ready_text = item.ready_text
+            if partial:
+                stored = db.execute(
+                    "SELECT ready_text, automation_json FROM flow_reports WHERE id=?",
+                    (report_id,),
+                ).fetchone()
+                automation = {**_loads(stored["automation_json"], {}), **automation}
+                ready_text = stored["ready_text"] or item.ready_text
             db.execute(
                 """UPDATE flow_reports SET name=?, report_url=?, ready_text=?, download_text=?,
                    automation_json=?, discovery_key=?, source_kind='discovered', last_seen_at=?,
                    stale=0, enabled=1, updated_at=?
                    WHERE id=?""",
-                (catalog_name, item.report_url, item.ready_text, item.download_text,
-                 _json(item.automation), item.discovery_key, seen_at, seen_at, report_id),
+                (catalog_name, item.report_url, ready_text, item.download_text,
+                 _json(automation), item.discovery_key, seen_at, seen_at, report_id),
             )
         else:
             cursor = db.execute(
@@ -1938,18 +1952,21 @@ def _apply_discovery(
                     discovery_key, source_kind, last_seen_at, stale, enabled, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)""",
                 (site_id, catalog_name, item.report_url, item.ready_text, item.download_text,
-                 _json(item.automation), item.discovery_key, seen_at, seen_at, seen_at),
+                 _json(automation), item.discovery_key, seen_at, seen_at, seen_at),
             )
             report_id = cursor.lastrowid
         report_ids.append(report_id)
         # A targeted refresh is authoritative for the report it inspected,
         # even though it is intentionally not authoritative for the rest of
         # the site catalog. Mark prior discovered definitions stale before
-        # upserting the current set. Nothing is deleted.
-        db.execute(
-            "UPDATE flow_report_filters SET stale=1, enabled=0, updated_at=? WHERE report_id=? AND source_kind='discovered'",
-            (seen_at, report_id),
-        )
+        # upserting the current set. Nothing is deleted. A partial entry
+        # without filters carries no filter knowledge at all, so it must not
+        # retire definitions a fuller scan discovered.
+        if item.filters or not partial:
+            db.execute(
+                "UPDATE flow_report_filters SET stale=1, enabled=0, updated_at=? WHERE report_id=? AND source_kind='discovered'",
+                (seen_at, report_id),
+            )
         for definition in item.filters:
             db.execute(
                 """INSERT INTO flow_report_filters

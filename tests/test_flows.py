@@ -2733,3 +2733,79 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
 def test_worker_shares_the_artifact_list_with_its_failure_report():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert "artifacts=artifacts,\n                        )\n                        sql_artifacts = artifacts" in source
+
+
+# --- MicroStrategy partial discovery merge ---
+
+def _discovered_mena_report(**overrides):
+    data = {
+        "discovery_key": "Mobile > Installed Base > Installed Base (MENA)",
+        "name": "Installed Base (MENA)",
+        "report_url": "https://portal.example.test",
+        "ready_text": "Export Wizard (Detail)",
+        "automation": {
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "report_tab": "Export Wizard (Detail)",
+            "export_views": [{"label": "Export Wizard (Detail)", "filter_keys": ["region"]}],
+        },
+        "filters": [flows.DiscoveredFilter(
+            filter_key="region", label="Region", control_label="Region",
+            control_type="select", options=["Global"], required=True, position=0,
+        )],
+    }
+    data.update(overrides)
+    return flows.DiscoveredReport(**data)
+
+
+def test_microstrategy_partial_discovery_merges_over_ui_scan(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    now = flows._iso(flows._now())
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [_discovered_mena_report()], now)
+
+    partial = _discovered_mena_report(
+        ready_text=None,
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "partial": True,
+            "microstrategy": {"report_id": "R1", "project_id": "PROJ1"},
+        },
+        filters=[flows.DiscoveredFilter(
+            filter_key="region", label="Region", control_label="Region",
+            control_type="multi_select", options=["Global", "North", "EU"],
+            required=True, position=0,
+        )],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [partial], now)
+
+    report = flows.catalog()["reports"][0]
+    # The API-sourced update must never erase what only the UI scan can see.
+    assert report["automation"]["export_views"] == [
+        {"label": "Export Wizard (Detail)", "filter_keys": ["region"]},
+    ]
+    assert report["automation"]["report_tab"] == "Export Wizard (Detail)"
+    assert report["ready_text"] == "Export Wizard (Detail)"
+    assert report["automation"]["microstrategy"]["report_id"] == "R1"
+    assert "partial" not in report["automation"]
+    region = next(item for item in report["filters"] if item["filter_key"] == "region")
+    assert region["options"] == ["Global", "North", "EU"]
+    assert not region["stale"]
+
+    # A partial entry without filter knowledge must not retire existing filters.
+    empty = _discovered_mena_report(
+        ready_text=None,
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "partial": True,
+            "microstrategy": {"report_id": "R1"},
+        },
+        filters=[],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [empty], now)
+    region = next(
+        item for item in flows.catalog()["reports"][0]["filters"]
+        if item["filter_key"] == "region"
+    )
+    assert region["enabled"] and not region["stale"]

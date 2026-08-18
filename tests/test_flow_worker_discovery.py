@@ -1013,3 +1013,133 @@ def test_execute_job_appends_into_the_callers_artifact_list(tmp_path):
     # In-place semantics: a failure that unwinds execute_job leaves every
     # already-saved file visible in the caller's list for the failed report.
     assert artifacts is shared
+
+
+# --- MicroStrategy REST discovery ---
+
+class _MstrResponse:
+    def __init__(self, status=200, payload=None, headers=None):
+        self.status = status
+        self._payload = payload
+        self.headers = headers or {}
+
+    @property
+    def ok(self):
+        return 200 <= self.status < 300
+
+    def json(self):
+        return self._payload
+
+
+class _MstrRequestContext:
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    def _match(self, method, url):
+        self.calls.append((method, url))
+        for route_method, fragment, response in self.routes:
+            if route_method == method and fragment in url:
+                return response
+        return _MstrResponse(404)
+
+    def get(self, url, **_kwargs):
+        return self._match("get", url)
+
+    def post(self, url, **_kwargs):
+        return self._match("post", url)
+
+
+class _MstrFrame:
+    def __init__(self, url):
+        self.url = url
+
+
+class _MstrPage:
+    def __init__(self, routes, frame_urls=()):
+        self.request = _MstrRequestContext(routes)
+        self.frames = [_MstrFrame(url) for url in frame_urls]
+
+
+def test_mstr_candidate_roots_derive_from_embedded_frames_and_site():
+    page = _MstrPage([], frame_urls=[
+        "https://portal.example.test/MicroStrategy/servlet/mstrWeb?evt=3010",
+        "about:blank",
+    ])
+    site = {"base_url": "https://portal.example.test", "auth_url": None}
+    roots = flow_worker._mstr_candidate_api_roots(page, site)
+    assert "https://portal.example.test/MicroStrategyLibrary/api" in roots
+    assert "https://portal.example.test/MicroStrategy/api" in roots
+    assert len(roots) == len(set(roots))
+
+
+def test_mstr_prompt_filter_maps_prompt_types_to_asap_controls():
+    elements = flow_worker._mstr_prompt_filter({
+        "key": "K1", "title": "Data Configuration", "type": "ELEMENTS",
+        "required": True,
+        "elements": [{"name": "MENA - Global"}, {"name": "Global - CIS"}, {"name": ""}],
+    }, 0)
+    assert elements["control_type"] == "multi_select"
+    assert elements["options"] == ["MENA - Global", "Global - CIS"]
+    assert elements["required"] is True
+    assert elements["filter_key"] == "data_configuration"
+    assert elements["automation"]["microstrategy"]["prompt_key"] == "K1"
+
+    week = flow_worker._mstr_prompt_filter(
+        {"title": "Sell-out Week", "type": "ELEMENTS"}, 1,
+    )
+    assert week["control_type"] == "week"
+
+    value = flow_worker._mstr_prompt_filter({"title": "Comment", "type": "VALUE"}, 2)
+    assert value["control_type"] == "text"
+
+
+def test_mstr_discovery_rides_the_signed_in_browser_session():
+    routes = [
+        ("get", "/MicroStrategyLibrary/api/sessions/userInfo", _MstrResponse(200, {"id": "u1"})),
+        ("get", "/MicroStrategyLibrary/api/projects", _MstrResponse(200, [{"id": "PROJ1"}])),
+        ("get", "/MicroStrategyLibrary/api/searches/results", _MstrResponse(200, {
+            "result": [{
+                "id": "R1", "name": "Installed Base (MENA)",
+                "ancestors": [{"name": "Shared Reports"}, {"name": "Installed Base"}],
+            }],
+            "totalItems": 1,
+        })),
+    ]
+    page = _MstrPage(routes, frame_urls=[
+        "https://portal.example.test/MicroStrategy/servlet/mstrWeb",
+    ])
+    catalog = flow_worker._mstr_discover_catalog(
+        page, {"base_url": "https://portal.example.test"}, None,
+    )
+    assert catalog["mode"] == "browser_session"
+    assert "installed base (mena)" in catalog["reports"]
+    matched = flow_worker._mstr_match_report(
+        catalog, ["Mobile", "Installed Base", "Installed Base (MENA)"],
+    )
+    assert matched["id"] == "R1"
+    assert matched["folder_path"] == ["Shared Reports", "Installed Base"]
+    assert flow_worker._mstr_match_report(catalog, ["Mobile", "Unknown"]) is None
+
+
+def test_mstr_report_entry_is_marked_partial_and_keeps_the_menu_path(monkeypatch):
+    monkeypatch.setattr(
+        flow_worker, "_mstr_report_filters",
+        lambda _page, _catalog, _report: [
+            flow_worker._mstr_prompt_filter({"title": "Region", "type": "ELEMENTS"}, 0),
+        ],
+    )
+    catalog = {"api_root": "https://x/MicroStrategyLibrary/api", "mode": "browser_session",
+               "token": None, "reports": {}}
+    report = {"id": "R1", "project_id": "PROJ1", "name": "Installed Base (MENA)",
+              "folder_path": ["Shared Reports"]}
+    path = ["Mobile", "Installed Base", "Installed Base (MENA)"]
+
+    entry = flow_worker._mstr_report_entry(object(), catalog, report, path, {"base_url": "https://portal"})
+
+    assert entry["discovery_key"] == "Mobile > Installed Base > Installed Base (MENA)"
+    assert entry["automation"]["partial"] is True
+    assert entry["automation"]["category_path"] == path
+    assert entry["automation"]["microstrategy"]["report_id"] == "R1"
+    assert "export_views" not in entry["automation"]
+    assert entry["filters"][0]["label"] == "Region"
