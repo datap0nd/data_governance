@@ -2449,6 +2449,20 @@ def _mstr_report_display_name(name) -> str:
     return _clean_text(cleaned.split("^")[0])
 
 
+def _mstr_view_label(name) -> str:
+    """'P002_050.Regional FOTA^Export Wizard (Sub)' -> 'Export Wizard (Sub)'.
+
+    Each export view of a portal report page is its own MicroStrategy report
+    object; the portal renders the part after '^' as the visible tab label.
+    """
+    cleaned = _clean_text(str(name or ""))
+    if "^" in cleaned:
+        label = _clean_text(cleaned.split("^", 1)[1])
+        if label:
+            return label
+    return _mstr_report_display_name(cleaned)
+
+
 def _mstr_match_key(name) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).strip()
 
@@ -2541,7 +2555,7 @@ def _mstr_discover_catalog(page: Page, site: dict) -> dict | None:
     context = _mstr_session_context(page)
     if not context:
         return None
-    catalog: dict[str, Any] = {**context, "mode": "portal_session", "reports": {}}
+    catalog: dict[str, Any] = {**context, "mode": "portal_session", "reports": {}, "folders": []}
     listings = 0
     for folder in _mstr_menu_folders(page, context):
         if listings >= MSTR_MAX_FOLDER_LISTINGS:
@@ -2558,13 +2572,37 @@ def _mstr_discover_catalog(page: Page, site: dict) -> dict | None:
             entries = response.json() or []
         except Exception:
             continue
+        records = []
         for entry in entries if isinstance(entries, list) else []:
             record = _mstr_folder_entry(entry, folder["path"])
             if record is None:
                 continue
+            record["view_label"] = _mstr_view_label(record["name"])
+            records.append(record)
             for key in record["match_keys"]:
                 catalog["reports"].setdefault(key, record)
+        if records:
+            catalog["folders"].append({
+                "folder_id": folder["id"], "path": folder["path"], "objects": records,
+            })
     return catalog
+
+
+def _mstr_folder_for_path(catalog: dict | None, path: list[str]) -> dict | None:
+    """Match one requested menu path to an indexed MicroStrategy folder."""
+    if not catalog or not path:
+        return None
+    wanted = [_mstr_match_key(part) for part in path]
+    for folder in catalog.get("folders") or []:
+        if [_mstr_match_key(part) for part in folder["path"]] == wanted:
+            return folder
+    # Menu-tree nesting can differ from the visual menu by one level. A leaf
+    # match is accepted only when it is unambiguous across the whole catalog.
+    leaf_matches = [
+        folder for folder in catalog.get("folders") or []
+        if folder["path"] and _mstr_match_key(folder["path"][-1]) == wanted[-1]
+    ]
+    return leaf_matches[0] if len(leaf_matches) == 1 else None
 
 
 def _mstr_match_report(catalog: dict | None, path: list[str]) -> dict | None:
@@ -2685,7 +2723,102 @@ def _mstr_report_filters(page: Page, catalog: dict, report: dict) -> list[dict]:
                 prompt["members"] = []
                 prompt["members_truncated"] = True
         filters.append(_mstr_prompt_filter(prompt, position))
+    _mstr_disambiguate_filters(filters)
     return filters
+
+
+def _mstr_disambiguate_filters(filters: list[dict]) -> None:
+    """Give duplicate prompt titles distinct labels and keys.
+
+    Range prompts share a title ('Week' twice) while their internal names
+    carry the distinguishing part ('P002.Week_EW (From)' / '(To)'). Fold
+    that parenthetical into the label so both filters survive as separate
+    definitions; fall back to an index when even the names collide.
+    """
+    groups: dict[str, list[dict]] = {}
+    for definition in filters:
+        groups.setdefault(definition["filter_key"], []).append(definition)
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        for definition in group:
+            prompt_name = str(
+                (definition.get("automation") or {}).get("microstrategy", {}).get("prompt_name") or ""
+            )
+            suffix = re.search(r"\(([^)]+)\)\s*$", prompt_name)
+            if suffix:
+                definition["label"] = f"{definition['label']} ({suffix.group(1)})"
+                definition["control_label"] = definition["label"]
+                definition["filter_key"] = _slug_key(definition["label"], definition["filter_key"])
+    seen: set[str] = set()
+    for index, definition in enumerate(filters):
+        if definition["filter_key"] in seen:
+            definition["filter_key"] = _slug_key(
+                f"{definition['label']} {index + 1}", f"prompt_{index + 1}",
+            )
+        seen.add(definition["filter_key"])
+
+
+def _mstr_full_report_entry(page: Page, catalog: dict, folder: dict, site: dict) -> dict:
+    """Build one complete catalog entry from the REST API alone.
+
+    Every object in the menu folder is one export view of the portal report
+    page; the '^' suffix of its name is the visible tab label. Filters are
+    the union of every view's prompts, with per-view filter keys recorded
+    exactly like the UI scan records them. The entry is complete - export
+    views included - so it does not carry the partial flag; the server still
+    merges its filters over UI-discovered identities.
+    """
+    filters: list[dict] = []
+    export_views: list[dict] = []
+    for record in folder["objects"]:
+        view_filters = _mstr_report_filters(page, catalog, record)
+        view_keys = []
+        for definition in view_filters:
+            view_keys.append(definition["filter_key"])
+            existing = next(
+                (item for item in filters if item["filter_key"] == definition["filter_key"]), None,
+            )
+            if existing is None:
+                filters.append(definition)
+            else:
+                existing["options"] = list(dict.fromkeys([
+                    *existing.get("options", []), *definition.get("options", []),
+                ]))[:MSTR_MAX_PROMPT_OPTIONS]
+        export_views.append({"label": record["view_label"], "filter_keys": view_keys})
+    unique_views, seen_labels = [], set()
+    for view in export_views:
+        label_key = view["label"].casefold()
+        if label_key not in seen_labels:
+            seen_labels.add(label_key)
+            unique_views.append(view)
+    for position, definition in enumerate(filters):
+        definition["position"] = position
+    path = folder["path"]
+    ready_text = unique_views[0]["label"] if unique_views else None
+    return {
+        "discovery_key": " > ".join(path), "name": path[-1],
+        "report_url": site.get("base_url") or site.get("auth_url"),
+        "ready_text": ready_text, "download_text": "Export CSV",
+        "automation": {
+            "category_path": path, "report_tab": ready_text,
+            "report_title": path[-1], "export_text": ready_text,
+            "export_views": unique_views,
+            "scan_method": "microstrategy_api",
+            "microstrategy": {
+                "folder_id": folder["folder_id"], "api_base": catalog["api_base"],
+                "objects": [
+                    {
+                        "report_id": record["id"], "name": record["name"],
+                        "view_label": record["view_label"],
+                        "shortcut_id": record.get("shortcut_id"),
+                    }
+                    for record in folder["objects"]
+                ],
+            },
+        },
+        "filters": filters,
+    }
 
 
 def _mstr_report_entry(page: Page, catalog: dict, report: dict, path: list[str], site: dict) -> dict:
@@ -2715,6 +2848,136 @@ def _mstr_report_entry(page: Page, catalog: dict, report: dict, path: list[str],
     }
 
 
+def _asap_ui_inspect_report(page: Page, site: dict, path: list[str], profile_dir: Path,
+                            timings: _Timings) -> dict:
+    """Inspect one report through the rendered portal UI (the legacy path)."""
+    lightweight_job = {
+        "site": site,
+        "report": {
+            "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
+            "ready_text": None, "automation": {"category_path": path},
+        },
+    }
+    with timings.measure("report_navigation"):
+        frame = _asap_open_report(page, lightweight_job, profile_dir)
+        export_view_labels = [
+            label for label, _control in _asap_export_view_candidates(page, frame)
+        ]
+    filters = []
+    export_views = []
+    ready_text = export_view_labels[0] if export_view_labels else None
+    report_title = path[-1]
+    with timings.measure("filter_inspection"):
+        labels_to_scan = export_view_labels or [None]
+        for view_index, export_view_label in enumerate(labels_to_scan):
+            if view_index:
+                frame = _asap_open_report(page, lightweight_job, profile_dir)
+            active_frame, selected_label = _asap_activate_export_view(
+                page, frame, export_view_label,
+            )
+            discovered = _asap_discover_filters(active_frame)
+            view_filter_keys = []
+            for definition in discovered:
+                view_filter_keys.append(definition["filter_key"])
+                existing = next(
+                    (item for item in filters if item["filter_key"] == definition["filter_key"]),
+                    None,
+                )
+                if existing is None:
+                    filters.append(definition)
+                else:
+                    existing["options"] = list(dict.fromkeys([
+                        *existing.get("options", []), *definition.get("options", []),
+                    ]))
+            if selected_label:
+                export_views.append({
+                    "label": selected_label, "filter_keys": view_filter_keys,
+                })
+            if view_index == 0:
+                report_title = active_frame.locator("title").text_content() or path[-1]
+    for position, definition in enumerate(filters):
+        definition["position"] = position
+    return {
+        "discovery_key": " > ".join(path), "name": path[-1],
+        "report_url": site.get("base_url") or site.get("auth_url"),
+        "ready_text": ready_text, "download_text": "Export CSV",
+        "automation": {
+            "category_path": path, "report_tab": ready_text,
+            "report_title": report_title, "export_text": ready_text,
+            "export_views": export_views,
+        },
+        "filters": filters,
+    }
+
+
+def _discover_catalog_via_microstrategy(
+    page: Page, site: dict, catalog: dict, target_paths: list[list[str]],
+    report_progress, profile_dir: Path, timings: _Timings, deadline: float,
+) -> tuple[list[dict], list[dict], bool]:
+    """MicroStrategy-first scan: read every report through the REST API.
+
+    The menu tree supplies the navigable structure and each folder's report
+    objects supply the export views and prompt definitions - no report is
+    opened in the UI unless the API fails for it, in which case that one
+    report falls back to the rendered-portal inspection.
+    """
+    if target_paths:
+        selected = [(path, _mstr_folder_for_path(catalog, path)) for path in target_paths]
+    else:
+        selected = [(folder["path"], folder) for folder in catalog.get("folders") or []]
+    reports: list[dict] = []
+    failures: list[str] = []
+    complete = not target_paths
+    for index, (path, folder) in enumerate(selected, start=1):
+        if time.monotonic() >= deadline:
+            complete = False
+            report_progress("running", {
+                "stage": "time_budget_reached",
+                "message": "The scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
+                "report_index": index, "report_count": len(selected),
+            })
+            break
+        report_progress("running", {
+            "stage": "filter_inspection",
+            "message": f"Reading report {index} of {len(selected)} through the MicroStrategy REST API.",
+            "current_report": path[-1], "report_index": index, "report_count": len(selected),
+        })
+        entry = None
+        api_error: Exception | None = None
+        if folder is not None:
+            try:
+                with timings.measure("filter_inspection"):
+                    entry = _mstr_full_report_entry(page, catalog, folder, site)
+            except Exception as exc:
+                api_error = exc
+        if entry is None:
+            # The API could not serve this report - true it up through the UI.
+            report_progress("running", {
+                "stage": "ui_fallback",
+                "message": (
+                    f"Report {path[-1]} is being inspected through the portal UI because "
+                    f"the MicroStrategy REST API could not serve it"
+                    + (f": {api_error}" if api_error else " (no matching menu folder).")
+                ),
+                "report_index": index, "report_count": len(selected),
+            })
+            try:
+                entry = _asap_ui_inspect_report(page, site, path, profile_dir, timings)
+            except Exception as exc:
+                complete = False
+                failures.append(f"{' > '.join(path)}: {api_error or exc}")
+                timings.items.append({
+                    "phase": "report_inspection", "duration_ms": 0, "status": "failed",
+                    "metadata": {"path": path, "error": str(api_error or exc)},
+                })
+                _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
+                continue
+        reports.append(entry)
+    if target_paths and not reports and failures:
+        raise RuntimeError("ASAP targeted catalog scan failed. " + " | ".join(failures))
+    return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
+
+
 def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict], bool]:
     timings = _Timings()
     deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
@@ -2723,10 +2986,6 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     with timings.measure("navigation"):
         _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
     target_paths = [path for path in job["discovery"].get("report_paths", []) if len(path) >= 2]
-    with timings.measure("report_discovery"):
-        paths = target_paths or _asap_discover_menu_reports(
-            page, job["discovery"].get("scope") or ["Mobile"]
-        )
     mstr_catalog = None
     with timings.measure("microstrategy_discovery"):
         try:
@@ -2737,13 +2996,21 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
         "stage": "microstrategy_discovery",
         "message": (
             f"MicroStrategy REST session found at {mstr_catalog['api_base']} "
-            f"({mstr_catalog['mode']}); {len(mstr_catalog['reports'])} report "
-            f"entr{'y' if len(mstr_catalog['reports']) == 1 else 'ies'} indexed "
-            f"from the portal menu tree."
+            f"({mstr_catalog['mode']}); {len(mstr_catalog.get('folders') or [])} report "
+            f"folder(s) indexed from the portal menu tree."
             if mstr_catalog else
             "The portal did not expose a MicroStrategy REST session; scanning through the portal UI only."
         ),
     })
+    if mstr_catalog and mstr_catalog.get("folders"):
+        return _discover_catalog_via_microstrategy(
+            page, site, mstr_catalog, target_paths, report_progress,
+            profile_dir, timings, deadline,
+        )
+    with timings.measure("report_discovery"):
+        paths = target_paths or _asap_discover_menu_reports(
+            page, job["discovery"].get("scope") or ["Mobile"]
+        )
     reports = []
     failures = []
     complete = not target_paths
@@ -2760,74 +3027,8 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             "stage": "filter_inspection", "message": f"Inspecting report {index} of {len(paths)}.",
             "current_report": path[-1], "report_index": index, "report_count": len(paths),
         })
-        lightweight_job = {
-            "site": site,
-            "report": {
-                "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
-                "ready_text": None, "automation": {"category_path": path},
-            },
-        }
         try:
-            with timings.measure("report_navigation"):
-                frame = _asap_open_report(page, lightweight_job, profile_dir)
-                export_view_labels = [
-                    label for label, _control in _asap_export_view_candidates(page, frame)
-                ]
-            filters = []
-            export_views = []
-            ready_text = export_view_labels[0] if export_view_labels else None
-            report_title = path[-1]
-            with timings.measure("filter_inspection"):
-                labels_to_scan = export_view_labels or [None]
-                for view_index, export_view_label in enumerate(labels_to_scan):
-                    if view_index:
-                        frame = _asap_open_report(page, lightweight_job, profile_dir)
-                    active_frame, selected_label = _asap_activate_export_view(
-                        page, frame, export_view_label,
-                    )
-                    discovered = _asap_discover_filters(active_frame)
-                    view_filter_keys = []
-                    for definition in discovered:
-                        view_filter_keys.append(definition["filter_key"])
-                        existing = next(
-                            (item for item in filters if item["filter_key"] == definition["filter_key"]),
-                            None,
-                        )
-                        if existing is None:
-                            filters.append(definition)
-                        else:
-                            existing["options"] = list(dict.fromkeys([
-                                *existing.get("options", []), *definition.get("options", []),
-                            ]))
-                    if selected_label:
-                        export_views.append({
-                            "label": selected_label, "filter_keys": view_filter_keys,
-                        })
-                    if view_index == 0:
-                        report_title = active_frame.locator("title").text_content() or path[-1]
-            for position, definition in enumerate(filters):
-                definition["position"] = position
-            discovery_key = " > ".join(path)
-            automation = {
-                "category_path": path, "report_tab": ready_text,
-                "report_title": report_title, "export_text": ready_text,
-                "export_views": export_views,
-            }
-            matched = _mstr_match_report(mstr_catalog, path)
-            if matched:
-                automation["microstrategy"] = {
-                    "report_id": matched["id"], "report_name": matched["name"],
-                    "display_name": matched.get("display_name"),
-                    "shortcut_id": matched.get("shortcut_id"),
-                    "menu_path": matched.get("menu_path") or [],
-                }
-            reports.append({
-                "discovery_key": discovery_key, "name": path[-1],
-                "report_url": site.get("base_url") or site.get("auth_url"),
-                "ready_text": ready_text, "download_text": "Export CSV",
-                "automation": automation,
-                "filters": filters,
-            })
+            reports.append(_asap_ui_inspect_report(page, site, path, profile_dir, timings))
         except Exception as exc:
             # The portal UI would not reveal this report. When MicroStrategy
             # knows it, read its prompt definitions through the REST API so

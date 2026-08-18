@@ -1890,6 +1890,74 @@ def queue_due_catalog_scans() -> dict:
     return {"queued": queued, "count": len(queued), "worker": worker}
 
 
+def _enrich_filter_definitions(db, report_id: int, incoming: list[DiscoveredFilter], seen_at: str) -> int:
+    """Merge API-scanned filter definitions over UI-discovered identities.
+
+    Matching tries the filter key first, then the casefolded label. Matched
+    filters keep their key, labels, and control type - runtime automation
+    drives the rendered portal controls by exactly those values - while
+    options, the required flag, and automation metadata refresh from the
+    API. A truncated member list unions with the stored options instead of
+    replacing them, and an empty one never erases known options. Unmatched
+    incoming filters are appended as new definitions; existing filters the
+    API does not mention stay enabled.
+    """
+    rows = db.execute(
+        "SELECT * FROM flow_report_filters WHERE report_id=?", (report_id,)
+    ).fetchall()
+    by_key = {row["filter_key"]: row for row in rows}
+    by_label: dict[str, Any] = {}
+    for row in rows:
+        for label in {str(row["label"]).casefold(), str(row["control_label"]).casefold()}:
+            by_label.setdefault(label, row)
+    next_position = max([row["position"] or 0 for row in rows], default=-1) + 1
+    count = 0
+    for definition in incoming:
+        row = (
+            by_key.get(definition.filter_key)
+            or by_label.get(definition.label.casefold())
+            or by_label.get(definition.control_label.casefold())
+        )
+        truncated = bool(
+            (definition.automation or {}).get("microstrategy", {}).get("options_truncated")
+        )
+        if row is not None:
+            stored_options = _loads(row["options_json"], [])
+            if not definition.options:
+                options = stored_options
+            elif truncated:
+                options = list(dict.fromkeys([*stored_options, *definition.options]))
+            else:
+                options = definition.options
+            automation = {**_loads(row["automation_json"], {}), **definition.automation}
+            db.execute(
+                """UPDATE flow_report_filters SET options_json=?, automation_json=?, required=?,
+                   source_kind='discovered', last_seen_at=?, stale=0, enabled=1, updated_at=?
+                   WHERE id=?""",
+                (_json(options), _json(automation), definition.required,
+                 seen_at, seen_at, row["id"]),
+            )
+        else:
+            db.execute(
+                """INSERT INTO flow_report_filters
+                   (report_id, filter_key, label, control_label, control_type, options_json,
+                    automation_json, required, position, source_kind, last_seen_at, stale,
+                    enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)
+                   ON CONFLICT(report_id, filter_key) DO UPDATE SET
+                     options_json=excluded.options_json, automation_json=excluded.automation_json,
+                     required=excluded.required, source_kind='discovered',
+                     last_seen_at=excluded.last_seen_at, stale=0, enabled=1,
+                     updated_at=excluded.updated_at""",
+                (report_id, definition.filter_key, definition.label, definition.control_label,
+                 definition.control_type, _json(definition.options), _json(definition.automation),
+                 definition.required, next_position, seen_at, seen_at, seen_at),
+            )
+            next_position += 1
+        count += 1
+    return count
+
+
 def _apply_discovery(
     db, site_id: int, reports: list[DiscoveredReport], seen_at: str, *, complete: bool = True,
 ) -> dict:
@@ -1901,6 +1969,11 @@ def _apply_discovery(
         )
     report_ids = []
     filter_count = 0
+    leaf_counts: dict[str, int] = {}
+    for item in reports:
+        path = item.automation.get("category_path") or []
+        batch_leaf = str(path[-1] if path else item.name).strip().casefold()
+        leaf_counts[batch_leaf] = leaf_counts.get(batch_leaf, 0) + 1
     for item in reports:
         category_path = item.automation.get("category_path") or []
         catalog_name = " > ".join(
@@ -1921,12 +1994,36 @@ def _apply_discovery(
                 if candidate_path == category_path:
                     existing = candidate
                     break
+        leaf = str(category_path[-1] if category_path else item.name).strip().casefold()
+        if (
+            not existing
+            and item.automation.get("scan_method") == "microstrategy_api"
+            and leaf_counts.get(leaf) == 1
+        ):
+            # The MicroStrategy menu tree can nest one level differently from
+            # the visual menu. An unambiguous leaf-name match keeps rescans
+            # updating the same report instead of duplicating it and
+            # orphaning its flows. It never fires for a leaf that appears
+            # more than once in this scan or in the stored catalog, and
+            # never re-claims a report another entry of this scan updated.
+            candidates = [
+                row for row in db.execute(
+                    """SELECT id, discovery_key, name FROM flow_reports
+                       WHERE site_id=? AND source_kind='discovered'""",
+                    (site_id,),
+                ).fetchall()
+                if str(row["discovery_key"] or row["name"] or "").split(">")[-1].strip().casefold() == leaf
+                and row["id"] not in report_ids
+            ]
+            if len(candidates) == 1:
+                existing = candidates[0]
         # An entry marked partial came from the MicroStrategy REST API after
         # the portal UI refused to open the report. Only the UI can reveal
         # export-view automation and ready text, so a partial entry merges
         # over the richer stored definition instead of replacing it.
         partial = bool(item.automation.get("partial"))
         automation = {key: value for key, value in item.automation.items() if key != "partial"}
+        is_new_report = not existing
         if existing:
             report_id = existing["id"]
             ready_text = item.ready_text
@@ -1956,6 +2053,14 @@ def _apply_discovery(
             )
             report_id = cursor.lastrowid
         report_ids.append(report_id)
+        # A MicroStrategy full scan enriches existing filter definitions
+        # instead of replacing them: runtime automation drives rendered
+        # controls by the labels and keys the UI scan discovered, and flows
+        # store selections under those keys. The API refreshes options and
+        # adds filters the UI never revealed; identities stay untouched.
+        if item.automation.get("scan_method") == "microstrategy_api" and not is_new_report:
+            filter_count += _enrich_filter_definitions(db, report_id, item.filters, seen_at)
+            continue
         # A targeted refresh is authoritative for the report it inspected,
         # even though it is intentionally not authoritative for the rest of
         # the site catalog. Mark prior discovered definitions stale before

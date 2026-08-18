@@ -1245,3 +1245,141 @@ def test_mstr_report_entry_is_marked_partial_and_keeps_the_menu_path(monkeypatch
     # Tokens must never enter the persisted catalog entry.
     assert "secret" not in json.dumps(entry)
     assert entry["filters"][0]["label"] == "Region"
+
+
+def test_mstr_view_labels_come_from_the_object_name_suffix():
+    assert flow_worker._mstr_view_label(
+        "P002_050.Regional FOTA^Export Wizard (Sell-out Sub)"
+    ) == "Export Wizard (Sell-out Sub)"
+    assert flow_worker._mstr_view_label("R032_090.Installed Base MENA") == "Installed Base MENA"
+
+
+def test_mstr_duplicate_prompt_titles_are_disambiguated():
+    filters = [
+        {
+            "filter_key": "week", "label": "Week", "control_label": "Week",
+            "control_type": "week", "options": [], "required": False, "position": 0,
+            "automation": {"microstrategy": {"prompt_name": "P002.Week_EW (From)"}},
+        },
+        {
+            "filter_key": "week", "label": "Week", "control_label": "Week",
+            "control_type": "week", "options": [], "required": False, "position": 1,
+            "automation": {"microstrategy": {"prompt_name": "P002.Week_EW (To)"}},
+        },
+    ]
+    flow_worker._mstr_disambiguate_filters(filters)
+    assert [item["filter_key"] for item in filters] == ["week_from", "week_to"]
+    assert [item["label"] for item in filters] == ["Week (From)", "Week (To)"]
+
+
+def test_mstr_full_entry_builds_export_views_and_union_filters(monkeypatch):
+    def fake_filters(_page, _catalog, record):
+        if record["view_label"] == "Export Wizard (Detail)":
+            return [
+                {"filter_key": "region", "label": "Region", "control_label": "Region",
+                 "control_type": "multi_select", "options": ["Global"], "required": True,
+                 "position": 0, "automation": {}},
+            ]
+        return [
+            {"filter_key": "region", "label": "Region", "control_label": "Region",
+             "control_type": "multi_select", "options": ["North"], "required": True,
+             "position": 0, "automation": {}},
+            {"filter_key": "channel", "label": "Channel", "control_label": "Channel",
+             "control_type": "multi_select", "options": ["Open"], "required": False,
+             "position": 1, "automation": {}},
+        ]
+
+    monkeypatch.setattr(flow_worker, "_mstr_report_filters", fake_filters)
+    catalog = {"api_base": "https://x/lib/api", "mode": "portal_session", "reports": {}}
+    folder = {
+        "folder_id": "LEAF1", "path": ["Mobile", "Regional FOTA", "Regional FOTA"],
+        "objects": [
+            {"id": "R1", "name": "P1^Export Wizard (Detail)",
+             "view_label": "Export Wizard (Detail)", "shortcut_id": "S1"},
+            {"id": "R2", "name": "P2^Export Wizard (Sub)",
+             "view_label": "Export Wizard (Sub)", "shortcut_id": "S2"},
+        ],
+    }
+
+    entry = flow_worker._mstr_full_report_entry(object(), catalog, folder, {"base_url": "https://p"})
+
+    assert entry["discovery_key"] == "Mobile > Regional FOTA > Regional FOTA"
+    assert entry["ready_text"] == "Export Wizard (Detail)"
+    assert entry["automation"]["scan_method"] == "microstrategy_api"
+    assert entry["automation"]["export_views"] == [
+        {"label": "Export Wizard (Detail)", "filter_keys": ["region"]},
+        {"label": "Export Wizard (Sub)", "filter_keys": ["region", "channel"]},
+    ]
+    region = next(item for item in entry["filters"] if item["filter_key"] == "region")
+    assert region["options"] == ["Global", "North"]
+    assert "partial" not in entry["automation"]
+
+
+def _mstr_scan_job():
+    return {
+        "site": {"adapter": "asap_portal", "base_url": "https://portal.example.test",
+                 "auth_url": "https://portal.example.test/login"},
+        "discovery": {"scope": ["Mobile"], "report_paths": []},
+    }
+
+
+def test_discover_catalog_prefers_the_microstrategy_path(monkeypatch):
+    entry = {"discovery_key": "Mobile > Regional FOTA > Regional FOTA", "name": "Regional FOTA",
+             "filters": [], "automation": {"scan_method": "microstrategy_api"}}
+    folder = {"folder_id": "LEAF1", "path": ["Mobile", "Regional FOTA", "Regional FOTA"],
+              "objects": [{"id": "R1"}]}
+    monkeypatch.setattr(flow_worker, "_asap_goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        flow_worker, "_mstr_discover_catalog",
+        lambda _page, _site: {"api_base": "https://x/lib/api", "mode": "portal_session",
+                              "reports": {}, "folders": [folder]},
+    )
+    monkeypatch.setattr(
+        flow_worker, "_mstr_full_report_entry",
+        lambda _page, _catalog, _folder, _site: entry,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_discover_menu_reports",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("the UI menu crawl must not run")),
+    )
+    events = []
+
+    reports, timings, complete = flow_worker.discover_asap_catalog(
+        object(), _mstr_scan_job(), lambda _s, progress: events.append(progress), Path("."),
+    )
+
+    assert reports == [entry]
+    assert complete is True
+    assert timings[-1]["phase"] == "total"
+    assert any(item.get("stage") == "microstrategy_discovery" for item in events)
+
+
+def test_microstrategy_scan_falls_back_to_ui_for_one_failed_report(monkeypatch):
+    ui_entry = {"discovery_key": "Mobile > Regional FOTA > Regional FOTA",
+                "name": "Regional FOTA", "filters": [], "automation": {}}
+    folder = {"folder_id": "LEAF1", "path": ["Mobile", "Regional FOTA", "Regional FOTA"],
+              "objects": [{"id": "R1"}]}
+    monkeypatch.setattr(flow_worker, "_asap_goto", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        flow_worker, "_mstr_discover_catalog",
+        lambda _page, _site: {"api_base": "https://x/lib/api", "mode": "portal_session",
+                              "reports": {}, "folders": [folder]},
+    )
+    monkeypatch.setattr(
+        flow_worker, "_mstr_full_report_entry",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("HTTP 500")),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_ui_inspect_report",
+        lambda _page, _site, _path, _dir, _timings: ui_entry,
+    )
+    events = []
+
+    reports, _timings, complete = flow_worker.discover_asap_catalog(
+        object(), _mstr_scan_job(), lambda _s, progress: events.append(progress), Path("."),
+    )
+
+    assert reports == [ui_entry]
+    assert complete is True
+    fallback = next(item for item in events if item.get("stage") == "ui_fallback")
+    assert "HTTP 500" in fallback["message"]

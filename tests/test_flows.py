@@ -2809,3 +2809,78 @@ def test_microstrategy_partial_discovery_merges_over_ui_scan(flow_db):
         if item["filter_key"] == "region"
     )
     assert region["enabled"] and not region["stale"]
+
+
+def test_microstrategy_scan_enriches_filters_without_breaking_identities(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    now = flows._iso(flows._now())
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [_discovered_mena_report()], now)
+
+    api_entry = _discovered_mena_report(
+        ready_text="Export Wizard (Detail)",
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "report_tab": "Export Wizard (Detail)",
+            "export_views": [
+                {"label": "Export Wizard (Detail)", "filter_keys": ["region"]},
+                {"label": "Export Wizard (Global/Region)", "filter_keys": ["region", "channel"]},
+            ],
+            "scan_method": "microstrategy_api",
+            "microstrategy": {"folder_id": "LEAF1"},
+        },
+        filters=[
+            # Same filter, matched by label with a different key/control type:
+            # identity must survive, options must refresh.
+            flows.DiscoveredFilter(
+                filter_key="region_api", label="Region", control_label="Region",
+                control_type="multi_select", options=["Global", "North", "EU"],
+                required=False, position=0,
+            ),
+            # A filter the UI never revealed: appended as new.
+            flows.DiscoveredFilter(
+                filter_key="channel", label="Channel", control_label="Channel",
+                control_type="multi_select", options=["Open", "Carrier"],
+                required=False, position=1,
+            ),
+        ],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [api_entry], now)
+
+    reports = flows.catalog()["reports"]
+    assert len(reports) == 1
+    report = reports[0]
+    assert report["automation"]["export_views"][1]["label"] == "Export Wizard (Global/Region)"
+    region = next(item for item in report["filters"] if item["label"] == "Region")
+    assert region["filter_key"] == "region"          # identity preserved
+    assert region["control_type"] == "select"        # identity preserved
+    assert region["options"] == ["Global", "North", "EU"]  # options refreshed
+    assert region["required"] is False               # required refreshed
+    channel = next(item for item in report["filters"] if item["filter_key"] == "channel")
+    assert channel["options"] == ["Open", "Carrier"]
+    assert not channel["stale"] and channel["enabled"]
+
+
+def test_microstrategy_scan_matches_reports_across_menu_depth_differences(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    now = flows._iso(flows._now())
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [_discovered_mena_report()], now)
+
+    deeper = _discovered_mena_report(
+        discovery_key="Mobile > Installed Base Group > Installed Base (MENA)",
+        automation={
+            "category_path": ["Mobile", "Installed Base Group", "Installed Base (MENA)"],
+            "export_views": [], "scan_method": "microstrategy_api",
+        },
+        filters=[],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [deeper], now)
+
+    reports = flows.catalog()["reports"]
+    assert len(reports) == 1
+    # The rescan updated the same report and its filters stayed enabled.
+    region = next(item for item in reports[0]["filters"] if item["filter_key"] == "region")
+    assert region["enabled"] and not region["stale"]
