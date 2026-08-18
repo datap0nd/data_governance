@@ -2069,7 +2069,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=55' in index
+    assert '/static/app.js?v=56' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
@@ -2884,3 +2884,45 @@ def test_microstrategy_scan_matches_reports_across_menu_depth_differences(flow_d
     # The rescan updated the same report and its filters stayed enabled.
     region = next(item for item in reports[0]["filters"] if item["filter_key"] == "region")
     assert region["enabled"] and not region["stale"]
+
+
+def test_ai_logs_report_contains_run_timelines_and_instructions(flow_db):
+    from app.routers import ai_logs as ai_logs_router
+
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="ai-log-worker", display_name="AI log worker", capabilities={},
+    ))
+    flows.claim_run("ai-log-worker")
+    flows.update_run(
+        "ai-log-worker", queued["id"],
+        flows.WorkerProgress(
+            status="running",
+            progress={"stage": "report_execution", "message": "Running export 1 of 3."},
+        ),
+    )
+    flows.update_run(
+        "ai-log-worker", queued["id"],
+        flows.WorkerProgress(
+            status="failed",
+            progress={"stage": "file_export", "message": "Export stalled"},
+            error="The Edge download did not produce a stable finished file within 600 seconds.",
+            traceback="Traceback (most recent call last):\n  boom",
+        ),
+    )
+
+    text = ai_logs_router.ai_logs(hours=24)
+
+    assert "METRONOME AI DIAGNOSTIC LOG" in text
+    assert "YOUR TASK" in text
+    assert "=== FLOW RUNS" in text
+    assert f"run #{queued['id']}" in text
+    assert "report_execution" in text
+    assert "stable finished file" in text
+    assert "traceback (tail)" in text
+    assert "=== WORKERS" in text and "ai-log-worker" in text
+    assert "=== EVENT LOG" in text
+    assert "=== APP PROCESS LOG" in text

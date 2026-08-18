@@ -10438,6 +10438,57 @@ function bindDataImportPage() {
 
 // ── Router ──
 
+// ── AI Logs Page ──
+async function renderAiLogs() {
+    return `
+        <div class="page-header"><div><h1>AI Logs</h1><p class="subtitle">AI-friendly diagnostic dump of everything since the app started. Generate, copy into an external AI assistant that can browse the portal, then paste its analysis back to the assistant maintaining Metronome — a feedback loop between the external analyst and the internal builder.</p></div></div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;gap:6px;align-items:center">Window
+                <select id="ai-logs-window">
+                    <option value="start">Since app start</option>
+                    <option value="24">Last 24 hours</option>
+                    <option value="168">Last 7 days</option>
+                </select>
+            </label>
+            <button class="btn-primary" id="ai-logs-generate">Generate</button>
+            <button class="btn-secondary" id="ai-logs-copy" disabled>Copy to clipboard</button>
+            <span id="ai-logs-meta" class="subtitle"></span>
+        </div>
+        <textarea id="ai-logs-text" readonly spellcheck="false" wrap="off" style="width:100%;min-height:62vh;margin-top:12px;font-family:ui-monospace,Consolas,monospace;font-size:0.72rem;line-height:1.35;white-space:pre;overflow:auto;background:var(--bg-panel,var(--bg));color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px" placeholder="Click Generate to build the diagnostic report."></textarea>`;
+}
+
+function bindAiLogsPage() {
+    const generate = $("#ai-logs-generate");
+    const copy = $("#ai-logs-copy");
+    const text = $("#ai-logs-text");
+    const meta = $("#ai-logs-meta");
+    generate?.addEventListener("click", async () => {
+        generate.disabled = true;
+        meta.textContent = "Building...";
+        try {
+            const window_ = $("#ai-logs-window").value;
+            const response = await fetch(`/api/ai-logs${window_ === "start" ? "" : `?hours=${window_}`}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            text.value = await response.text();
+            copy.disabled = false;
+            meta.textContent = `${Math.max(1, Math.round(text.value.length / 1024))} KB — generated ${new Date().toLocaleTimeString()}`;
+        } catch (err) {
+            meta.textContent = "Failed: " + err.message;
+        } finally {
+            generate.disabled = false;
+        }
+    });
+    copy?.addEventListener("click", async () => {
+        try {
+            await navigator.clipboard.writeText(text.value);
+        } catch (_) {
+            text.select();
+            document.execCommand("copy");
+        }
+        toast("AI logs copied — paste them into your external AI");
+    });
+}
+
 const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
@@ -10457,6 +10508,7 @@ const pages = {
     dataimport: renderDataImport,
     flows: renderFlows,
     eventlog: renderEventLog,
+    ailogs: renderAiLogs,
     faq: renderFaq,
     refreshschedule: renderRefreshSchedule,
     premiumviewers: renderPremiumViewers,
@@ -10598,6 +10650,7 @@ async function navigate(page) {
         if (page === "dataimport") bindDataImportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
+        if (page === "ailogs") bindAiLogsPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
