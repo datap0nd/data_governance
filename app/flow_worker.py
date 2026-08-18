@@ -2315,166 +2315,258 @@ def _asap_activate_export_view(
 
 
 # --- MicroStrategy REST discovery -------------------------------------------
-# ASAP renders MicroStrategy reports inside its portal shell. When the
-# deployment also exposes the MicroStrategy Library REST API, the scanner can
-# read the report inventory and prompt definitions directly instead of - or in
-# addition to - driving the portal UI. The menu crawl stays authoritative for
-# navigation (category paths drive runtime automation); the API supplies the
-# report and filter definitions the UI could not be coaxed into showing.
+# ASAP is a Samsung portal wrapped around MicroStrategy Web. The protocol
+# below is grounded in HAR captures of the live deployment (see
+# docs/asap-microstrategy-discovery.md): the REST API lives under the portal's
+# custom /lib context path, authentication is trusted-SSO only (no password
+# login mode exists), and the signed-in portal page hands the working REST
+# session over in inline _SESSION / _COMMON_INFO script constants. The
+# scanner lifts that session from the already-authenticated browser, walks
+# the portal's own menu tree through menuInfo.do, resolves folder shortcuts
+# to executable reports, and reads prompt definitions from instance-scoped
+# REST endpoints. The visual menu crawl stays authoritative for navigation.
 
-MSTR_SEARCH_PAGE_SIZE = 200
-MSTR_MAX_REPORTS = 2000
+MSTR_PAGE_SIZE = 200
 MSTR_MAX_PROMPT_OPTIONS = 1000
+MSTR_MAX_FOLDER_LISTINGS = 300
+MSTR_REPORT_TYPE = 3
+MSTR_SHORTCUT_TYPE = 18
+MSTR_NAME_PREFIX_RE = re.compile(r"^[A-Za-z]?\d+(?:_\d+)*\.")
 
 
-def _mstr_candidate_api_roots(page: Page, site: dict) -> list[str]:
-    """Derive likely Library REST roots from the live portal and site URLs."""
-    urls: list[str] = []
+def _mstr_extract_js_object(html_text: str, variable: str) -> dict | None:
+    """Brace-match one inline `const NAME = {...}` object out of portal HTML."""
+    match = re.search(rf"(?:const|var|let)\s+{re.escape(variable)}\s*=\s*(\{{)", html_text)
+    if not match:
+        return None
+    start = match.start(1)
+    depth = 0
+    for index in range(start, len(html_text)):
+        char = html_text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(html_text[start:index + 1])
+                except ValueError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _mstr_session_context(page: Page) -> dict | None:
+    """Read the portal's embedded MicroStrategy session handoff.
+
+    The signed-in portal defines _COMMON_INFO (project id, context paths,
+    main menu root) and _SESSION (the live REST token) as inline script
+    constants. _SESSION is a credential bundle: use only the fields needed
+    here and never log or persist it.
+    """
+    common = session = None
     try:
-        urls.extend(frame.url for frame in page.frames)
+        frames = list(page.frames)
     except Exception:
-        pass
-    urls.extend([site.get("base_url") or "", site.get("auth_url") or ""])
-    candidates: list[str] = []
-    seen = set()
-    for url in urls:
-        if not str(url).lower().startswith(("http://", "https://")):
-            continue
-        parts = urlsplit(url)
-        origin = f"{parts.scheme}://{parts.netloc}"
-        segments = [segment for segment in parts.path.split("/") if segment]
-        options = []
-        if segments:
-            options.append(f"{origin}/{segments[0]}Library/api")
-            options.append(f"{origin}/{segments[0]}/api")
-        options.append(f"{origin}/MicroStrategyLibrary/api")
-        for candidate in options:
-            if candidate not in seen:
-                seen.add(candidate)
-                candidates.append(candidate)
-    return candidates
+        frames = []
+    for frame in frames:
+        try:
+            data = frame.evaluate(
+                "() => (window._COMMON_INFO && window._SESSION)"
+                " ? {common: window._COMMON_INFO, session: window._SESSION} : null"
+            )
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("common") and data.get("session"):
+            common, session = data["common"], data["session"]
+            break
+    if common is None or session is None:
+        try:
+            html_text = page.content()
+        except Exception:
+            return None
+        common = _mstr_extract_js_object(html_text, "_COMMON_INFO")
+        session = _mstr_extract_js_object(html_text, "_SESSION")
+    if not common or not session:
+        return None
+    token = session.get("X_MSTR_AUTHTOKEN")
+    project_id = common.get("MSTR_PROJECT_ID")
+    if not token or not project_id:
+        return None
+    parts = urlsplit(page.url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    lib_path = str(common.get("MSTR_CUSTOM_LIB_CONTEXT_PATH") or "/lib").rstrip("/")
+    web_path = str(common.get("MSTR_CUSTOM_WEB_CONTEXT_PATH") or "/mstr").rstrip("/")
+    return {
+        "api_base": f"{origin}{lib_path}/api",
+        "web_base": f"{origin}{web_path}",
+        "token": token,
+        # MSTRWEB_AUTH_TOKEN_ENC is the legacy servlet token. The key without
+        # the _ENC suffix holds a username, not a token - do not swap them.
+        "legacy_token": session.get("MSTRWEB_AUTH_TOKEN_ENC"),
+        "project_id": project_id,
+        "project_name": common.get("MSTR_PROJECT_NAME"),
+        "main_menu_id": common.get("MSTR_MAIN_MENU_ID"),
+    }
 
 
-def _mstr_request(page: Page, method: str, url: str, *, token: str | None = None,
-                  project_id: str | None = None, payload: dict | None = None):
-    """Call the REST API through the browser context so its cookies apply."""
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["X-MSTR-AuthToken"] = token
-    if project_id:
-        headers["X-MSTR-ProjectID"] = project_id
+def _mstr_request(page: Page, method: str, url: str, *, context: dict | None = None,
+                  form: dict | None = None, payload: dict | None = None):
+    """Call MicroStrategy through the browser context so its cookies apply."""
+    headers = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
+    if context:
+        headers["X-MSTR-AuthToken"] = context["token"]
+        headers["X-MSTR-ProjectID"] = context["project_id"]
     kwargs: dict[str, Any] = {"headers": headers, "timeout": 20_000}
+    if form is not None:
+        kwargs["form"] = form
     if payload is not None:
         kwargs["data"] = payload
     return getattr(page.request, method)(url, **kwargs)
 
 
-def _mstr_open_session(page: Page, api_root: str, credentials: dict | None) -> dict | None:
-    """Authenticate against one candidate REST root.
+def _mstr_clean_menu_name(name) -> str:
+    """Menu nodes carry ordering prefixes ('02.Mobile') the visual menu hides."""
+    return _clean_text(re.sub(r"^\d+\.", "", _clean_text(str(name or ""))))
 
-    The signed-in portal session is preferred: its cookies already carry a
-    MicroStrategy session when ASAP fronts the same Library deployment. The
-    stored ASAP desktop credential is the fallback, tried in LDAP then
-    standard login mode.
+
+def _mstr_report_display_name(name) -> str:
+    """'P002_050.Regional FOTA^Export Wizard (Sub)' -> 'Regional FOTA'."""
+    cleaned = MSTR_NAME_PREFIX_RE.sub("", _clean_text(str(name or "")))
+    return _clean_text(cleaned.split("^")[0])
+
+
+def _mstr_match_key(name) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).strip()
+
+
+def _mstr_menu_folders(page: Page, context: dict) -> list[dict]:
+    """Walk the portal's own navigation tree through menuInfo.do.
+
+    Menu roots are role-dependent, so the walk always starts from this
+    session's MSTR_MAIN_MENU_ID instead of any hard-coded folder. The
+    endpoint takes the legacy token (not the REST token) as a form field.
     """
-    try:
-        response = _mstr_request(page, "get", f"{api_root}/sessions/userInfo")
-        if response.ok:
-            return {"token": None, "mode": "browser_session"}
-    except Exception:
-        return None
-    if not credentials:
-        return None
-    for login_mode in (16, 1):
+    if not context.get("legacy_token") or not context.get("main_menu_id"):
+        return []
+
+    def fetch(folder_id: str, depth: int):
         try:
-            response = _mstr_request(page, "post", f"{api_root}/auth/login", payload={
-                "username": credentials["username"], "password": credentials["password"],
-                "loginMode": login_mode, "applicationType": 35,
-            })
-            token = response.headers.get("x-mstr-authtoken")
-            if response.ok and token:
-                return {"token": token, "mode": f"login_mode_{login_mode}"}
+            response = _mstr_request(
+                page, "post", f"{context['web_base']}/menuInfo.do?folderId={folder_id}",
+                form={"authToken": context["legacy_token"], "depth": str(depth)},
+            )
+            return response.json() if response.ok else None
         except Exception:
-            continue
-    return None
+            return None
+
+    def children_of(node: dict) -> list[dict]:
+        # The tree uses both 'children' and 'child' keys depending on level.
+        children = node.get("children") or node.get("child") or []
+        return [child for child in children if isinstance(child, dict)]
+
+    folders: list[dict] = []
+
+    def walk(node: dict, path: list[str]):
+        name = _mstr_clean_menu_name(node.get("name"))
+        node_path = [*path, name] if name else list(path)
+        children = children_of(node)
+        if children:
+            for child in children:
+                walk(child, node_path)
+        elif node.get("id"):
+            folders.append({"id": node["id"], "path": node_path})
+
+    root = fetch(context["main_menu_id"], 1)
+    if not isinstance(root, dict):
+        return []
+    for top in children_of(root):
+        subtree = fetch(top["id"], 2) if top.get("id") else None
+        walk(subtree if isinstance(subtree, dict) else top, [])
+    return folders
 
 
-def _mstr_search_reports(page: Page, api_root: str, token: str | None, project_id: str) -> list[dict]:
-    """Page through every report object the API exposes for one project."""
-    found: list[dict] = []
-    offset = 0
-    while len(found) < MSTR_MAX_REPORTS:
-        response = _mstr_request(
-            page, "get",
-            f"{api_root}/searches/results?type=3&getAncestors=true"
-            f"&offset={offset}&limit={MSTR_SEARCH_PAGE_SIZE}",
-            token=token, project_id=project_id,
-        )
-        if not response.ok:
+def _mstr_folder_entry(entry, menu_path: list[str]) -> dict | None:
+    """Resolve one folder listing entry to an executable report record.
+
+    Folder listings return type-18 shortcuts whose executable object is
+    targetInfo.id - the shortcut id itself is not executable. Documents and
+    dossiers (type 55) are skipped: only report export is proven on ASAP.
+    """
+    if not isinstance(entry, dict):
+        return None
+    name = _clean_text(str(entry.get("name") or ""))
+    entry_type = entry.get("type")
+    target = entry.get("targetInfo") or {}
+    if entry_type == MSTR_SHORTCUT_TYPE and target.get("id"):
+        report_id, report_type = target["id"], target.get("type")
+    else:
+        report_id, report_type = entry.get("id"), entry_type
+    if report_type != MSTR_REPORT_TYPE or not report_id or not name:
+        return None
+    display_name = _mstr_report_display_name(name)
+    match_keys = {
+        key for key in (
+            _mstr_match_key(name), _mstr_match_key(display_name),
+            _mstr_match_key(menu_path[-1] if menu_path else ""),
+        ) if key
+    }
+    return {
+        "id": report_id, "name": name, "display_name": display_name,
+        "shortcut_id": entry.get("id") if entry_type == MSTR_SHORTCUT_TYPE else None,
+        "menu_path": menu_path, "match_keys": match_keys,
+    }
+
+
+def _mstr_discover_catalog(page: Page, site: dict) -> dict | None:
+    """Inventory ASAP's reports through the MicroStrategy REST API.
+
+    Rides the signed-in portal session; returns None when the portal page
+    does not expose the MicroStrategy handoff, which sends the scan back to
+    the pure UI path.
+    """
+    context = _mstr_session_context(page)
+    if not context:
+        return None
+    catalog: dict[str, Any] = {**context, "mode": "portal_session", "reports": {}}
+    listings = 0
+    for folder in _mstr_menu_folders(page, context):
+        if listings >= MSTR_MAX_FOLDER_LISTINGS:
             break
-        data = response.json() or {}
-        items = data.get("result") if isinstance(data, dict) else data
-        items = items or []
-        for item in items:
-            name = _clean_text(str((item or {}).get("name") or ""))
-            if not name or not item.get("id"):
-                continue
-            ancestors = [
-                _clean_text(str((ancestor or {}).get("name") or ""))
-                for ancestor in item.get("ancestors") or []
-            ]
-            found.append({
-                "id": item["id"], "name": name, "match_key": name.casefold(),
-                "project_id": project_id,
-                "folder_path": [part for part in ancestors if part],
-            })
-        total = data.get("totalItems") if isinstance(data, dict) else None
-        offset += MSTR_SEARCH_PAGE_SIZE
-        if not items or (isinstance(total, int) and offset >= total):
-            break
-    return found
-
-
-def _mstr_discover_catalog(page: Page, site: dict, credentials: dict | None) -> dict | None:
-    """Locate the MicroStrategy REST API behind ASAP and inventory its reports."""
-    for api_root in _mstr_candidate_api_roots(page, site):
-        session = _mstr_open_session(page, api_root, credentials)
-        if not session:
-            continue
-        token = session.get("token")
+        listings += 1
         try:
-            response = _mstr_request(page, "get", f"{api_root}/projects", token=token)
+            response = _mstr_request(
+                page, "get",
+                f"{context['api_base']}/folders/{folder['id']}?type=3,55,18&hidden=false",
+                context=context,
+            )
             if not response.ok:
                 continue
-            projects = response.json() or []
+            entries = response.json() or []
         except Exception:
             continue
-        reports: dict[str, dict] = {}
-        for project in projects:
-            project_id = (project or {}).get("id")
-            if not project_id:
+        for entry in entries if isinstance(entries, list) else []:
+            record = _mstr_folder_entry(entry, folder["path"])
+            if record is None:
                 continue
-            try:
-                for item in _mstr_search_reports(page, api_root, token, project_id):
-                    reports.setdefault(item["match_key"], item)
-            except Exception:
-                continue
-        return {"api_root": api_root, "mode": session["mode"], "token": token, "reports": reports}
-    return None
+            for key in record["match_keys"]:
+                catalog["reports"].setdefault(key, record)
+    return catalog
 
 
 def _mstr_match_report(catalog: dict | None, path: list[str]) -> dict | None:
     if not catalog or not path:
         return None
-    return catalog.get("reports", {}).get(_clean_text(path[-1]).casefold())
+    return catalog.get("reports", {}).get(_mstr_match_key(path[-1]))
 
 
 def _mstr_prompt_filter(prompt: dict, position: int) -> dict:
     """Map one MicroStrategy prompt definition to an ASAP filter definition.
 
     ASAP renders MicroStrategy prompts, so prompt titles line up with the
-    labels the portal shows. Element-list prompts become multi-selects; a
-    title mentioning a week keeps the portal's dedicated week control.
+    labels the portal shows. Element and object prompts become multi-selects
+    (an empty selection means unfiltered on this platform); a title
+    mentioning a week keeps the portal's dedicated week control.
     """
     title = _clean_text(str(prompt.get("title") or prompt.get("name") or f"Prompt {position + 1}"))
     prompt_type = str(prompt.get("type") or "").upper()
@@ -2484,30 +2576,80 @@ def _mstr_prompt_filter(prompt: dict, position: int) -> dict:
         control_type = "multi_select"
     else:
         control_type = "text"
-    options: list[str] = []
-    for element in prompt.get("elements") or []:
-        name = _clean_text(str((element or {}).get("name") or ""))
-        if name and name not in options:
-            options.append(name)
-        if len(options) >= MSTR_MAX_PROMPT_OPTIONS:
-            break
+    options = list(prompt.get("members") or [])[:MSTR_MAX_PROMPT_OPTIONS]
     return {
         "filter_key": _slug_key(title, f"prompt_{position + 1}"),
         "label": title, "control_label": title, "control_type": control_type,
         "options": options, "required": bool(prompt.get("required")),
         "position": position,
         "automation": {"microstrategy": {
-            "prompt_key": prompt.get("key"), "prompt_type": prompt_type,
+            "prompt_id": prompt.get("id"), "prompt_key": prompt.get("key"),
+            "prompt_name": prompt.get("name"), "prompt_type": prompt_type,
+            "options_truncated": bool(prompt.get("members_truncated")),
         }},
     }
 
 
+def _mstr_prompt_members(page: Page, catalog: dict, report_id: str,
+                         instance_id: str, prompt: dict) -> tuple[list[str], bool]:
+    """Page one prompt's members until a short page.
+
+    The member endpoints return no total count and no continuation token:
+    the only terminator is a page shorter than the limit. A run that stops
+    on a full page is therefore truncated, never complete - the flag is
+    recorded so a truncated list is never treated as authoritative.
+    """
+    kind = "elements" if str(prompt.get("type") or "").upper() == "ELEMENTS" else "objects"
+    # The member path takes the prompt *key* ('{id}@0@10'); the bare id 404s.
+    url = (
+        f"{catalog['api_base']}/reports/{report_id}/instances/{instance_id}"
+        f"/prompts/{prompt['key']}/{kind}"
+    )
+    names: list[str] = []
+    offset = 0
+    # Bound on the raw offset, not the deduplicated name count: a server
+    # answering every offset with the same full page would otherwise loop
+    # forever without ever growing the list.
+    while offset < MSTR_MAX_PROMPT_OPTIONS:
+        response = _mstr_request(
+            page, "get", f"{url}?offset={offset}&limit={MSTR_PAGE_SIZE}", context=catalog,
+        )
+        if not response.ok:
+            return names, True
+        data = response.json() or {}
+        page_items = data.get(kind) if isinstance(data, dict) else data
+        page_items = page_items or []
+        for item in page_items:
+            name = _clean_text(str((item or {}).get("name") or ""))
+            if name and name not in names:
+                names.append(name)
+        if len(page_items) < MSTR_PAGE_SIZE:
+            return names, False
+        offset += MSTR_PAGE_SIZE
+    return names, True
+
+
 def _mstr_report_filters(page: Page, catalog: dict, report: dict) -> list[dict]:
-    """Fetch one report's prompts and their element options through the API."""
-    api_root, token = catalog["api_root"], catalog.get("token")
+    """Fetch one report's prompt definitions through the REST API.
+
+    Prompts are instance-scoped: a fresh execution instance is created
+    first ({} body), then its prompt list and member values are read.
+    """
+    api_base = catalog["api_base"]
     response = _mstr_request(
-        page, "get", f"{api_root}/reports/{report['id']}/prompts",
-        token=token, project_id=report["project_id"],
+        page, "post", f"{api_base}/reports/{report['id']}/instances",
+        context=catalog, payload={},
+    )
+    if not response.ok:
+        raise RuntimeError(
+            f"MicroStrategy instance creation failed with HTTP {response.status} for {report['name']}."
+        )
+    instance_id = (response.json() or {}).get("instanceId")
+    if not instance_id:
+        raise RuntimeError(f"MicroStrategy returned no instanceId for {report['name']}.")
+    response = _mstr_request(
+        page, "get", f"{api_base}/reports/{report['id']}/instances/{instance_id}/prompts",
+        context=catalog,
     )
     if not response.ok:
         raise RuntimeError(
@@ -2519,20 +2661,16 @@ def _mstr_report_filters(page: Page, catalog: dict, report: dict) -> list[dict]:
         if not isinstance(prompt, dict):
             continue
         prompt = dict(prompt)
-        key = prompt.get("key")
-        if key and str(prompt.get("type") or "").upper() in {"ELEMENTS", "OBJECTS"}:
+        if prompt.get("key") and str(prompt.get("type") or "").upper() in {"ELEMENTS", "OBJECTS"}:
             try:
-                elements = _mstr_request(
-                    page, "get",
-                    f"{api_root}/reports/{report['id']}/prompts/{key}/elements"
-                    f"?offset=0&limit={MSTR_MAX_PROMPT_OPTIONS}",
-                    token=token, project_id=report["project_id"],
+                members, truncated = _mstr_prompt_members(
+                    page, catalog, report["id"], instance_id, prompt,
                 )
-                if elements.ok:
-                    data = elements.json()
-                    prompt["elements"] = data.get("elements") if isinstance(data, dict) else data
+                prompt["members"] = members
+                prompt["members_truncated"] = truncated
             except Exception:
-                pass
+                prompt["members"] = []
+                prompt["members_truncated"] = True
         filters.append(_mstr_prompt_filter(prompt, position))
     return filters
 
@@ -2543,7 +2681,7 @@ def _mstr_report_entry(page: Page, catalog: dict, report: dict, path: list[str],
     The entry deliberately omits export-view automation - only the portal UI
     can reveal Export Wizard tabs - and carries automation.partial so the
     server merges it over any richer definition from an earlier UI scan
-    instead of replacing it.
+    instead of replacing it. Tokens never enter this persisted structure.
     """
     filters = _mstr_report_filters(page, catalog, report)
     return {
@@ -2553,9 +2691,11 @@ def _mstr_report_entry(page: Page, catalog: dict, report: dict, path: list[str],
         "automation": {
             "category_path": path, "partial": True,
             "microstrategy": {
-                "report_id": report["id"], "project_id": report["project_id"],
-                "report_name": report["name"], "folder_path": report.get("folder_path") or [],
-                "api_root": catalog["api_root"], "session_mode": catalog["mode"],
+                "report_id": report["id"], "report_name": report["name"],
+                "display_name": report.get("display_name"),
+                "shortcut_id": report.get("shortcut_id"),
+                "menu_path": report.get("menu_path") or [],
+                "api_base": catalog["api_base"], "session_mode": catalog["mode"],
             },
         },
         "filters": filters,
@@ -2577,20 +2717,18 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     mstr_catalog = None
     with timings.measure("microstrategy_discovery"):
         try:
-            credentials = load_asap_credentials()
-        except Exception:
-            credentials = None
-        try:
-            mstr_catalog = _mstr_discover_catalog(page, site, credentials)
+            mstr_catalog = _mstr_discover_catalog(page, site)
         except Exception:
             mstr_catalog = None
     report_progress("running", {
         "stage": "microstrategy_discovery",
         "message": (
-            f"MicroStrategy REST API found at {mstr_catalog['api_root']} "
-            f"({mstr_catalog['mode']}); {len(mstr_catalog['reports'])} report(s) indexed."
+            f"MicroStrategy REST session found at {mstr_catalog['api_base']} "
+            f"({mstr_catalog['mode']}); {len(mstr_catalog['reports'])} report "
+            f"entr{'y' if len(mstr_catalog['reports']) == 1 else 'ies'} indexed "
+            f"from the portal menu tree."
             if mstr_catalog else
-            "No MicroStrategy REST API reachable behind ASAP; scanning through the portal UI only."
+            "The portal did not expose a MicroStrategy REST session; scanning through the portal UI only."
         ),
     })
     reports = []
@@ -2665,9 +2803,10 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             matched = _mstr_match_report(mstr_catalog, path)
             if matched:
                 automation["microstrategy"] = {
-                    "report_id": matched["id"], "project_id": matched["project_id"],
-                    "report_name": matched["name"],
-                    "folder_path": matched.get("folder_path") or [],
+                    "report_id": matched["id"], "report_name": matched["name"],
+                    "display_name": matched.get("display_name"),
+                    "shortcut_id": matched.get("shortcut_id"),
+                    "menu_path": matched.get("menu_path") or [],
                 }
             reports.append({
                 "discovery_key": discovery_key, "name": path[-1],

@@ -1,3 +1,5 @@
+import json
+
 from pathlib import Path
 
 import pytest
@@ -1015,13 +1017,12 @@ def test_execute_job_appends_into_the_callers_artifact_list(tmp_path):
     assert artifacts is shared
 
 
-# --- MicroStrategy REST discovery ---
+# --- MicroStrategy REST discovery (protocol per docs/asap-microstrategy-discovery.md) ---
 
 class _MstrResponse:
-    def __init__(self, status=200, payload=None, headers=None):
+    def __init__(self, status=200, payload=None):
         self.status = status
         self._payload = payload
-        self.headers = headers or {}
 
     @property
     def ok(self):
@@ -1036,90 +1037,162 @@ class _MstrRequestContext:
         self.routes = routes
         self.calls = []
 
-    def _match(self, method, url):
-        self.calls.append((method, url))
+    def _match(self, method, url, kwargs):
+        self.calls.append((method, url, kwargs))
         for route_method, fragment, response in self.routes:
             if route_method == method and fragment in url:
                 return response
         return _MstrResponse(404)
 
-    def get(self, url, **_kwargs):
-        return self._match("get", url)
+    def get(self, url, **kwargs):
+        return self._match("get", url, kwargs)
 
-    def post(self, url, **_kwargs):
-        return self._match("post", url)
-
-
-class _MstrFrame:
-    def __init__(self, url):
-        self.url = url
+    def post(self, url, **kwargs):
+        return self._match("post", url, kwargs)
 
 
 class _MstrPage:
-    def __init__(self, routes, frame_urls=()):
-        self.request = _MstrRequestContext(routes)
-        self.frames = [_MstrFrame(url) for url in frame_urls]
+    def __init__(self, routes=(), html="", url="https://asap.example.test/portal/main"):
+        self.request = _MstrRequestContext(list(routes))
+        self._html = html
+        self.url = url
+        self.frames = []
+
+    def content(self):
+        return self._html
 
 
-def test_mstr_candidate_roots_derive_from_embedded_frames_and_site():
-    page = _MstrPage([], frame_urls=[
-        "https://portal.example.test/MicroStrategy/servlet/mstrWeb?evt=3010",
-        "about:blank",
+_PORTAL_HANDOFF_HTML = """
+<html><head><script>
+const _COMMON_INFO = {"MSTR_PROJECT_NAME": "ASAP", "MSTR_PROJECT_ID": "PROJ1",
+  "MSTR_MAIN_MENU_ID": "MENU-ROOT", "MSTR_SERVER_HOSTNAME": "iserver01",
+  "MSTR_CUSTOM_LIB_CONTEXT_PATH": "/lib", "MSTR_CUSTOM_WEB_CONTEXT_PATH": "/mstr",
+  "MSTR_STANDARD_LIB_CONTEXT_PATH": "/MicroStrategyLibrary"};
+const _SESSION = {"SSO_ID": "someone", "X_MSTR_AUTHTOKEN": "resttoken26chars",
+  "MSTRWEB_AUTH_TOKEN": "someone", "MSTRWEB_AUTH_TOKEN_ENC": "legacyhex64",
+  "JWT": {"accessToken": "Bearer x", "body": {"sub": "someone"}}};
+</script></head><body></body></html>
+"""
+
+
+def test_mstr_session_context_reads_the_portal_handoff_constants():
+    page = _MstrPage(html=_PORTAL_HANDOFF_HTML)
+    context = flow_worker._mstr_session_context(page)
+
+    assert context["api_base"] == "https://asap.example.test/lib/api"
+    assert context["web_base"] == "https://asap.example.test/mstr"
+    assert context["token"] == "resttoken26chars"
+    # MSTRWEB_AUTH_TOKEN without _ENC is a username, never the legacy token.
+    assert context["legacy_token"] == "legacyhex64"
+    assert context["project_id"] == "PROJ1"
+    assert context["main_menu_id"] == "MENU-ROOT"
+
+
+def test_mstr_session_context_requires_the_handoff():
+    assert flow_worker._mstr_session_context(_MstrPage(html="<html></html>")) is None
+
+
+def test_mstr_report_names_strip_code_prefix_and_export_suffix():
+    name = "P002_050.Regional FOTA^Export Wizard (Sell-out Sub)"
+    assert flow_worker._mstr_report_display_name(name) == "Regional FOTA"
+    assert flow_worker._mstr_report_display_name("R032_090.Installed Base MENA^Export Wizard (Detail)") \
+        == "Installed Base MENA"
+    assert flow_worker._mstr_match_key("Installed Base (MENA)") == "installed base mena"
+
+
+def test_mstr_menu_walk_and_folder_listing_build_the_report_index():
+    menu_root = _MstrResponse(200, {
+        "id": "MENU-ROOT", "name": "root",
+        "children": [{"id": "TOP1", "name": "02.Mobile"}],
+    })
+    top_subtree = _MstrResponse(200, {
+        "id": "TOP1", "name": "02.Mobile",
+        "children": [{
+            "id": "MID1", "name": "02.Regional FOTA",
+            "child": [{"id": "LEAF1", "name": "01.Regional FOTA"}],
+        }],
+    })
+    folder_listing = _MstrResponse(200, [
+        {  # type-18 shortcut: the executable object is targetInfo.id
+            "id": "SHORTCUT1", "name": "P002_050.Regional FOTA^Export Wizard (Sell-out Sub)",
+            "type": 18, "subtype": 4608,
+            "targetInfo": {"id": "REPORT1", "type": 3, "subtype": 768},
+        },
+        {  # documents are skipped: export is only proven for reports
+            "id": "DOC1", "name": "Some Dossier", "type": 18,
+            "targetInfo": {"id": "DOSSIER1", "type": 55},
+        },
     ])
-    site = {"base_url": "https://portal.example.test", "auth_url": None}
-    roots = flow_worker._mstr_candidate_api_roots(page, site)
-    assert "https://portal.example.test/MicroStrategyLibrary/api" in roots
-    assert "https://portal.example.test/MicroStrategy/api" in roots
-    assert len(roots) == len(set(roots))
+    page = _MstrPage(routes=[
+        ("post", "menuInfo.do?folderId=MENU-ROOT", menu_root),
+        ("post", "menuInfo.do?folderId=TOP1", top_subtree),
+        ("get", "/lib/api/folders/LEAF1", folder_listing),
+    ], html=_PORTAL_HANDOFF_HTML)
+
+    catalog = flow_worker._mstr_discover_catalog(page, {})
+
+    matched = flow_worker._mstr_match_report(catalog, ["Mobile", "Regional FOTA", "Regional FOTA"])
+    assert matched["id"] == "REPORT1"
+    assert matched["shortcut_id"] == "SHORTCUT1"
+    assert matched["menu_path"] == ["Mobile", "Regional FOTA", "Regional FOTA"]
+    assert flow_worker._mstr_match_report(catalog, ["Mobile", "Some Dossier"]) is None
+    menu_call = next(call for call in page.request.calls if "menuInfo.do" in call[1])
+    assert menu_call[2]["form"]["authToken"] == "legacyhex64"
 
 
-def test_mstr_prompt_filter_maps_prompt_types_to_asap_controls():
-    elements = flow_worker._mstr_prompt_filter({
-        "key": "K1", "title": "Data Configuration", "type": "ELEMENTS",
-        "required": True,
-        "elements": [{"name": "MENA - Global"}, {"name": "Global - CIS"}, {"name": ""}],
-    }, 0)
-    assert elements["control_type"] == "multi_select"
-    assert elements["options"] == ["MENA - Global", "Global - CIS"]
-    assert elements["required"] is True
-    assert elements["filter_key"] == "data_configuration"
-    assert elements["automation"]["microstrategy"]["prompt_key"] == "K1"
+def test_mstr_prompt_members_terminate_only_on_a_short_page(monkeypatch):
+    monkeypatch.setattr(flow_worker, "MSTR_PAGE_SIZE", 2)
+    monkeypatch.setattr(flow_worker, "MSTR_MAX_PROMPT_OPTIONS", 10)
+    catalog = {"api_base": "https://x/lib/api", "token": "t", "project_id": "p"}
+    prompt = {"key": "PROMPT1@0@10", "type": "ELEMENTS"}
+    pages = {
+        "offset=0": _MstrResponse(200, {"elements": [{"name": "A"}, {"name": "B"}]}),
+        "offset=2": _MstrResponse(200, {"elements": [{"name": "C"}]}),
+    }
+    page = _MstrPage(routes=[("get", fragment, response) for fragment, response in pages.items()])
 
-    week = flow_worker._mstr_prompt_filter(
-        {"title": "Sell-out Week", "type": "ELEMENTS"}, 1,
-    )
-    assert week["control_type"] == "week"
+    names, truncated = flow_worker._mstr_prompt_members(page, catalog, "R1", "I1", prompt)
 
-    value = flow_worker._mstr_prompt_filter({"title": "Comment", "type": "VALUE"}, 2)
-    assert value["control_type"] == "text"
+    assert names == ["A", "B", "C"]
+    assert truncated is False
+    # The member path must use the prompt key ({id}@0@10); the bare id 404s.
+    assert all("PROMPT1@0@10/elements" in call[1] for call in page.request.calls)
+
+    # A run that stops on a full page is truncated, never complete.
+    monkeypatch.setattr(flow_worker, "MSTR_MAX_PROMPT_OPTIONS", 4)
+    always_full = _MstrResponse(200, {"elements": [{"name": "X1"}, {"name": "X2"}]})
+    full_page = _MstrPage(routes=[("get", "/elements", always_full)])
+    names, truncated = flow_worker._mstr_prompt_members(full_page, catalog, "R1", "I1", prompt)
+    assert truncated is True
 
 
-def test_mstr_discovery_rides_the_signed_in_browser_session():
+def test_mstr_report_filters_use_instance_scoped_prompt_endpoints():
+    catalog = {"api_base": "https://x/lib/api", "token": "t", "project_id": "p"}
     routes = [
-        ("get", "/MicroStrategyLibrary/api/sessions/userInfo", _MstrResponse(200, {"id": "u1"})),
-        ("get", "/MicroStrategyLibrary/api/projects", _MstrResponse(200, [{"id": "PROJ1"}])),
-        ("get", "/MicroStrategyLibrary/api/searches/results", _MstrResponse(200, {
-            "result": [{
-                "id": "R1", "name": "Installed Base (MENA)",
-                "ancestors": [{"name": "Shared Reports"}, {"name": "Installed Base"}],
-            }],
-            "totalItems": 1,
-        })),
+        ("post", "/lib/api/reports/REPORT1/instances",
+         _MstrResponse(200, {"id": "REPORT1", "status": 2, "instanceId": "INST1"})),
+        # Specific member routes must precede the generic prompt-list fragment.
+        ("get", "/instances/INST1/prompts/ITEMKEY@0@10/elements",
+         _MstrResponse(200, {"elements": [{"name": "Item A"}, {"name": "Item B"}]})),
+        ("get", "/instances/INST1/prompts", _MstrResponse(200, [
+            {"id": "WK1", "key": "WEEKKEY@0@10", "name": "P002.Week_EW (From)",
+             "title": "Week", "type": "VALUE", "required": False},
+            {"id": "IT1", "key": "ITEMKEY@0@10", "name": "P002_050.item",
+             "title": "item", "type": "ELEMENTS", "required": False},
+        ])),
     ]
-    page = _MstrPage(routes, frame_urls=[
-        "https://portal.example.test/MicroStrategy/servlet/mstrWeb",
-    ])
-    catalog = flow_worker._mstr_discover_catalog(
-        page, {"base_url": "https://portal.example.test"}, None,
+    page = _MstrPage(routes=routes)
+
+    filters = flow_worker._mstr_report_filters(
+        page, catalog, {"id": "REPORT1", "name": "Regional FOTA"},
     )
-    assert catalog["mode"] == "browser_session"
-    assert "installed base (mena)" in catalog["reports"]
-    matched = flow_worker._mstr_match_report(
-        catalog, ["Mobile", "Installed Base", "Installed Base (MENA)"],
-    )
-    assert matched["id"] == "R1"
-    assert matched["folder_path"] == ["Shared Reports", "Installed Base"]
-    assert flow_worker._mstr_match_report(catalog, ["Mobile", "Unknown"]) is None
+
+    week, item = filters
+    assert week["control_type"] == "week"
+    assert week["automation"]["microstrategy"]["prompt_key"] == "WEEKKEY@0@10"
+    assert item["control_type"] == "multi_select"
+    assert item["options"] == ["Item A", "Item B"]
+    assert item["automation"]["microstrategy"]["options_truncated"] is False
 
 
 def test_mstr_report_entry_is_marked_partial_and_keeps_the_menu_path(monkeypatch):
@@ -1129,17 +1202,20 @@ def test_mstr_report_entry_is_marked_partial_and_keeps_the_menu_path(monkeypatch
             flow_worker._mstr_prompt_filter({"title": "Region", "type": "ELEMENTS"}, 0),
         ],
     )
-    catalog = {"api_root": "https://x/MicroStrategyLibrary/api", "mode": "browser_session",
-               "token": None, "reports": {}}
-    report = {"id": "R1", "project_id": "PROJ1", "name": "Installed Base (MENA)",
-              "folder_path": ["Shared Reports"]}
-    path = ["Mobile", "Installed Base", "Installed Base (MENA)"]
+    catalog = {"api_base": "https://x/lib/api", "mode": "portal_session",
+               "token": "secret", "project_id": "p", "reports": {}}
+    report = {"id": "REPORT1", "name": "P002_050.Regional FOTA^Export Wizard (Sub)",
+              "display_name": "Regional FOTA", "shortcut_id": "SHORTCUT1",
+              "menu_path": ["Mobile", "Regional FOTA"]}
+    path = ["Mobile", "Regional FOTA", "Regional FOTA"]
 
     entry = flow_worker._mstr_report_entry(object(), catalog, report, path, {"base_url": "https://portal"})
 
-    assert entry["discovery_key"] == "Mobile > Installed Base > Installed Base (MENA)"
     assert entry["automation"]["partial"] is True
     assert entry["automation"]["category_path"] == path
-    assert entry["automation"]["microstrategy"]["report_id"] == "R1"
+    assert entry["automation"]["microstrategy"]["report_id"] == "REPORT1"
+    assert entry["automation"]["microstrategy"]["shortcut_id"] == "SHORTCUT1"
     assert "export_views" not in entry["automation"]
+    # Tokens must never enter the persisted catalog entry.
+    assert "secret" not in json.dumps(entry)
     assert entry["filters"][0]["label"] == "Region"
