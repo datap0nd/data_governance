@@ -23,7 +23,6 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 from playwright.sync_api import Error as PlaywrightError
@@ -780,10 +779,7 @@ def _asap_run_report(page: Page) -> Frame:
     """Click RUN in the live report frame and wait for the rendered rows."""
     _asap_wait_for_loading_clear(page)
     run_frame = _asap_frame(page)
-    run = _asap_run_control(run_frame)
-    if run is None:
-        raise RuntimeError("Could not find visible control: RUN")
-    run.click()
+    _click_named(run_frame, "RUN")
     page.wait_for_timeout(1_000)
     frame = _asap_wait_for_results(page)
     return frame
@@ -1428,16 +1424,8 @@ def _asap_table_control_score(
 
 
 def _asap_run_control(root: Page | Frame):
-    """Return ASAP's on-screen RUN control across all its renderings.
-
-    The portal keeps one hidden RUN button per loaded report tab in the DOM
-    (button.asap-aside-run-btn - a dozen of them on multi-tab reports) and
-    only the active tab's button is visible. Trusting the first match can
-    therefore land on a hidden control, so every candidate list is scanned
-    for its first visible element instead.
-    """
+    """Return ASAP's RUN control across button, input, and text renderings."""
     for build_locator in (
-        lambda: root.locator("button.asap-aside-run-btn"),
         lambda: root.get_by_role("button", name=re.compile(r"^RUN$", re.I)),
         lambda: root.locator(
             "input[type='button'][value='RUN' i]:visible,"
@@ -1447,10 +1435,8 @@ def _asap_run_control(root: Page | Frame):
     ):
         try:
             locator = build_locator()
-            for index in range(locator.count()):
-                item = locator.nth(index)
-                if item.is_visible():
-                    return item
+            if locator.count() and locator.first.is_visible():
+                return locator.first
         except Exception:
             continue
     return None
@@ -2327,657 +2313,6 @@ def _asap_activate_export_view(
     return active_frame, label
 
 
-# --- MicroStrategy REST discovery -------------------------------------------
-# ASAP is a Samsung portal wrapped around MicroStrategy Web. The protocol
-# below is grounded in HAR captures of the live deployment (see
-# docs/asap-microstrategy-discovery.md): the REST API lives under the portal's
-# custom /lib context path, authentication is trusted-SSO only (no password
-# login mode exists), and the signed-in portal page hands the working REST
-# session over in inline _SESSION / _COMMON_INFO script constants. The
-# scanner lifts that session from the already-authenticated browser, walks
-# the portal's own menu tree through menuInfo.do, resolves folder shortcuts
-# to executable reports, and reads prompt definitions from instance-scoped
-# REST endpoints. The visual menu crawl stays authoritative for navigation.
-
-MSTR_PAGE_SIZE = 200
-MSTR_MAX_PROMPT_OPTIONS = 1000
-MSTR_MAX_FOLDER_LISTINGS = 300
-MSTR_REPORT_TYPE = 3
-MSTR_SHORTCUT_TYPE = 18
-MSTR_NAME_PREFIX_RE = re.compile(r"^[A-Za-z]?\d+(?:_\d+)*\.")
-
-
-def _mstr_extract_js_object(html_text: str, variable: str) -> dict | None:
-    """Brace-match one inline `const NAME = {...}` object out of portal HTML."""
-    match = re.search(rf"(?:const|var|let)\s+{re.escape(variable)}\s*=\s*(\{{)", html_text)
-    if not match:
-        return None
-    start = match.start(1)
-    depth = 0
-    for index in range(start, len(html_text)):
-        char = html_text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    parsed = json.loads(html_text[start:index + 1])
-                except ValueError:
-                    return None
-                return parsed if isinstance(parsed, dict) else None
-    return None
-
-
-def _mstr_session_context(page: Page) -> dict | None:
-    """Read the portal's embedded MicroStrategy session handoff.
-
-    The signed-in portal defines _COMMON_INFO (project id, context paths,
-    main menu root) and _SESSION (the live REST token) as inline script
-    constants. _SESSION is a credential bundle: use only the fields needed
-    here and never log or persist it.
-    """
-    common = session = None
-    try:
-        frames = list(page.frames)
-    except Exception:
-        frames = []
-    for frame in frames:
-        try:
-            data = frame.evaluate(
-                "() => (window._COMMON_INFO && window._SESSION)"
-                " ? {common: window._COMMON_INFO, session: window._SESSION} : null"
-            )
-        except Exception:
-            data = None
-        if isinstance(data, dict) and data.get("common") and data.get("session"):
-            common, session = data["common"], data["session"]
-            break
-    if common is None or session is None:
-        try:
-            html_text = page.content()
-        except Exception:
-            return None
-        common = _mstr_extract_js_object(html_text, "_COMMON_INFO")
-        session = _mstr_extract_js_object(html_text, "_SESSION")
-    if not common or not session:
-        return None
-    token = session.get("X_MSTR_AUTHTOKEN")
-    project_id = common.get("MSTR_PROJECT_ID")
-    if not token or not project_id:
-        return None
-    parts = urlsplit(page.url)
-    origin = f"{parts.scheme}://{parts.netloc}"
-    lib_path = str(common.get("MSTR_CUSTOM_LIB_CONTEXT_PATH") or "/lib").rstrip("/")
-    web_path = str(common.get("MSTR_CUSTOM_WEB_CONTEXT_PATH") or "/mstr").rstrip("/")
-    return {
-        "api_base": f"{origin}{lib_path}/api",
-        "web_base": f"{origin}{web_path}",
-        "token": token,
-        # MSTRWEB_AUTH_TOKEN_ENC is the legacy servlet token. The key without
-        # the _ENC suffix holds a username, not a token - do not swap them.
-        "legacy_token": session.get("MSTRWEB_AUTH_TOKEN_ENC"),
-        "project_id": project_id,
-        "project_name": common.get("MSTR_PROJECT_NAME"),
-        "main_menu_id": common.get("MSTR_MAIN_MENU_ID"),
-    }
-
-
-def _mstr_request(page: Page, method: str, url: str, *, context: dict | None = None,
-                  form: dict | None = None, payload: dict | None = None):
-    """Call MicroStrategy through the browser context so its cookies apply."""
-    headers = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
-    if context:
-        headers["X-MSTR-AuthToken"] = context["token"]
-        headers["X-MSTR-ProjectID"] = context["project_id"]
-    kwargs: dict[str, Any] = {"headers": headers, "timeout": 20_000}
-    if form is not None:
-        kwargs["form"] = form
-    if payload is not None:
-        kwargs["data"] = payload
-    return getattr(page.request, method)(url, **kwargs)
-
-
-def _mstr_clean_menu_name(name) -> str:
-    """Menu nodes carry ordering prefixes ('02.Mobile') the visual menu hides."""
-    return _clean_text(re.sub(r"^\d+\.", "", _clean_text(str(name or ""))))
-
-
-def _mstr_report_display_name(name) -> str:
-    """'P002_050.Regional FOTA^Export Wizard (Sub)' -> 'Regional FOTA'."""
-    cleaned = MSTR_NAME_PREFIX_RE.sub("", _clean_text(str(name or "")))
-    return _clean_text(cleaned.split("^")[0])
-
-
-def _mstr_view_label(name) -> str:
-    """'P002_050.Regional FOTA^Export Wizard (Sub)' -> 'Export Wizard (Sub)'.
-
-    Each export view of a portal report page is its own MicroStrategy report
-    object; the portal renders the part after '^' as the visible tab label.
-    """
-    cleaned = _clean_text(str(name or ""))
-    if "^" in cleaned:
-        label = _clean_text(cleaned.split("^", 1)[1])
-        if label:
-            return label
-    return _mstr_report_display_name(cleaned)
-
-
-def _mstr_match_key(name) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).strip()
-
-
-def _mstr_menu_folders(page: Page, context: dict) -> list[dict]:
-    """Walk the portal's own navigation tree through menuInfo.do.
-
-    Menu roots are role-dependent, so the walk always starts from this
-    session's MSTR_MAIN_MENU_ID instead of any hard-coded folder. The
-    endpoint takes the legacy token (not the REST token) as a form field.
-    """
-    if not context.get("legacy_token") or not context.get("main_menu_id"):
-        return []
-
-    def fetch(folder_id: str, depth: int):
-        try:
-            response = _mstr_request(
-                page, "post", f"{context['web_base']}/menuInfo.do?folderId={folder_id}",
-                form={"authToken": context["legacy_token"], "depth": str(depth)},
-            )
-            return response.json() if response.ok else None
-        except Exception:
-            return None
-
-    def children_of(node: dict) -> list[dict]:
-        # The tree uses both 'children' and 'child' keys depending on level.
-        children = node.get("children") or node.get("child") or []
-        return [child for child in children if isinstance(child, dict)]
-
-    folders: list[dict] = []
-
-    def walk(node: dict, path: list[str]):
-        name = _mstr_clean_menu_name(node.get("name"))
-        node_path = [*path, name] if name else list(path)
-        children = children_of(node)
-        if children:
-            for child in children:
-                walk(child, node_path)
-        elif node.get("id"):
-            folders.append({"id": node["id"], "path": node_path})
-
-    root = fetch(context["main_menu_id"], 1)
-    if not isinstance(root, dict):
-        return []
-    for top in children_of(root):
-        subtree = fetch(top["id"], 2) if top.get("id") else None
-        walk(subtree if isinstance(subtree, dict) else top, [])
-    return folders
-
-
-def _mstr_folder_entry(entry, menu_path: list[str]) -> dict | None:
-    """Resolve one folder listing entry to an executable report record.
-
-    Folder listings return type-18 shortcuts whose executable object is
-    targetInfo.id - the shortcut id itself is not executable. Documents and
-    dossiers (type 55) are skipped: only report export is proven on ASAP.
-    """
-    if not isinstance(entry, dict):
-        return None
-    name = _clean_text(str(entry.get("name") or ""))
-    entry_type = entry.get("type")
-    target = entry.get("targetInfo") or {}
-    if entry_type == MSTR_SHORTCUT_TYPE and target.get("id"):
-        report_id, report_type = target["id"], target.get("type")
-    else:
-        report_id, report_type = entry.get("id"), entry_type
-    if report_type != MSTR_REPORT_TYPE or not report_id or not name:
-        return None
-    display_name = _mstr_report_display_name(name)
-    match_keys = {
-        key for key in (
-            _mstr_match_key(name), _mstr_match_key(display_name),
-            _mstr_match_key(menu_path[-1] if menu_path else ""),
-        ) if key
-    }
-    return {
-        "id": report_id, "name": name, "display_name": display_name,
-        "shortcut_id": entry.get("id") if entry_type == MSTR_SHORTCUT_TYPE else None,
-        "menu_path": menu_path, "match_keys": match_keys,
-    }
-
-
-def _mstr_discover_catalog(page: Page, site: dict) -> dict | None:
-    """Inventory ASAP's reports through the MicroStrategy REST API.
-
-    Rides the signed-in portal session; returns None when the portal page
-    does not expose the MicroStrategy handoff, which sends the scan back to
-    the pure UI path.
-    """
-    context = _mstr_session_context(page)
-    if not context:
-        return None
-    catalog: dict[str, Any] = {**context, "mode": "portal_session", "reports": {}, "folders": []}
-    listings = 0
-    for folder in _mstr_menu_folders(page, context):
-        if listings >= MSTR_MAX_FOLDER_LISTINGS:
-            break
-        listings += 1
-        try:
-            response = _mstr_request(
-                page, "get",
-                f"{context['api_base']}/folders/{folder['id']}?type=3,55,18&hidden=false",
-                context=context,
-            )
-            if not response.ok:
-                continue
-            entries = response.json() or []
-        except Exception:
-            continue
-        records = []
-        for entry in entries if isinstance(entries, list) else []:
-            record = _mstr_folder_entry(entry, folder["path"])
-            if record is None:
-                continue
-            record["view_label"] = _mstr_view_label(record["name"])
-            records.append(record)
-            for key in record["match_keys"]:
-                catalog["reports"].setdefault(key, record)
-        if records:
-            catalog["folders"].append({
-                "folder_id": folder["id"], "path": folder["path"], "objects": records,
-            })
-    return catalog
-
-
-def _mstr_folder_for_path(catalog: dict | None, path: list[str]) -> dict | None:
-    """Match one requested menu path to an indexed MicroStrategy folder."""
-    if not catalog or not path:
-        return None
-    wanted = [_mstr_match_key(part) for part in path]
-    for folder in catalog.get("folders") or []:
-        if [_mstr_match_key(part) for part in folder["path"]] == wanted:
-            return folder
-    # Menu-tree nesting can differ from the visual menu by one level. A leaf
-    # match is accepted only when it is unambiguous across the whole catalog.
-    leaf_matches = [
-        folder for folder in catalog.get("folders") or []
-        if folder["path"] and _mstr_match_key(folder["path"][-1]) == wanted[-1]
-    ]
-    return leaf_matches[0] if len(leaf_matches) == 1 else None
-
-
-def _mstr_match_report(catalog: dict | None, path: list[str]) -> dict | None:
-    if not catalog or not path:
-        return None
-    return catalog.get("reports", {}).get(_mstr_match_key(path[-1]))
-
-
-def _mstr_prompt_filter(prompt: dict, position: int) -> dict:
-    """Map one MicroStrategy prompt definition to an ASAP filter definition.
-
-    ASAP renders MicroStrategy prompts, so prompt titles line up with the
-    labels the portal shows. Element and object prompts become multi-selects
-    (an empty selection means unfiltered on this platform); a title
-    mentioning a week keeps the portal's dedicated week control.
-    """
-    title = _clean_text(str(prompt.get("title") or prompt.get("name") or f"Prompt {position + 1}"))
-    prompt_type = str(prompt.get("type") or "").upper()
-    if "week" in title.casefold():
-        control_type = "week"
-    elif prompt_type in {"ELEMENTS", "OBJECTS"}:
-        control_type = "multi_select"
-    else:
-        control_type = "text"
-    options = list(prompt.get("members") or [])[:MSTR_MAX_PROMPT_OPTIONS]
-    return {
-        "filter_key": _slug_key(title, f"prompt_{position + 1}"),
-        "label": title, "control_label": title, "control_type": control_type,
-        "options": options, "required": bool(prompt.get("required")),
-        "position": position,
-        "automation": {"microstrategy": {
-            "prompt_id": prompt.get("id"), "prompt_key": prompt.get("key"),
-            "prompt_name": prompt.get("name"), "prompt_type": prompt_type,
-            "options_truncated": bool(prompt.get("members_truncated")),
-        }},
-    }
-
-
-def _mstr_prompt_members(page: Page, catalog: dict, report_id: str,
-                         instance_id: str, prompt: dict) -> tuple[list[str], bool]:
-    """Page one prompt's members until a short page.
-
-    The member endpoints return no total count and no continuation token:
-    the only terminator is a page shorter than the limit. A run that stops
-    on a full page is therefore truncated, never complete - the flag is
-    recorded so a truncated list is never treated as authoritative.
-    """
-    kind = "elements" if str(prompt.get("type") or "").upper() == "ELEMENTS" else "objects"
-    # The member path takes the prompt *key* ('{id}@0@10'); the bare id 404s.
-    url = (
-        f"{catalog['api_base']}/reports/{report_id}/instances/{instance_id}"
-        f"/prompts/{prompt['key']}/{kind}"
-    )
-    names: list[str] = []
-    offset = 0
-    # Bound on the raw offset, not the deduplicated name count: a server
-    # answering every offset with the same full page would otherwise loop
-    # forever without ever growing the list.
-    while offset < MSTR_MAX_PROMPT_OPTIONS:
-        response = _mstr_request(
-            page, "get", f"{url}?offset={offset}&limit={MSTR_PAGE_SIZE}", context=catalog,
-        )
-        if not response.ok:
-            return names, True
-        data = response.json() or {}
-        page_items = data.get(kind) if isinstance(data, dict) else data
-        page_items = page_items or []
-        for item in page_items:
-            name = _clean_text(str((item or {}).get("name") or ""))
-            if name and name not in names:
-                names.append(name)
-        if len(page_items) < MSTR_PAGE_SIZE:
-            return names, False
-        offset += MSTR_PAGE_SIZE
-    return names, True
-
-
-def _mstr_report_filters(page: Page, catalog: dict, report: dict) -> list[dict]:
-    """Fetch one report's prompt definitions through the REST API.
-
-    Prompts are instance-scoped: a fresh execution instance is created
-    first ({} body), then its prompt list and member values are read.
-    """
-    api_base = catalog["api_base"]
-    response = _mstr_request(
-        page, "post", f"{api_base}/reports/{report['id']}/instances",
-        context=catalog, payload={},
-    )
-    if not response.ok:
-        raise RuntimeError(
-            f"MicroStrategy instance creation failed with HTTP {response.status} for {report['name']}."
-        )
-    instance_id = (response.json() or {}).get("instanceId")
-    if not instance_id:
-        raise RuntimeError(f"MicroStrategy returned no instanceId for {report['name']}.")
-    response = _mstr_request(
-        page, "get", f"{api_base}/reports/{report['id']}/instances/{instance_id}/prompts",
-        context=catalog,
-    )
-    if not response.ok:
-        raise RuntimeError(
-            f"MicroStrategy prompts request failed with HTTP {response.status} for {report['name']}."
-        )
-    prompts = response.json() or []
-    filters = []
-    for position, prompt in enumerate(prompts):
-        if not isinstance(prompt, dict):
-            continue
-        prompt = dict(prompt)
-        if prompt.get("key") and str(prompt.get("type") or "").upper() in {"ELEMENTS", "OBJECTS"}:
-            try:
-                members, truncated = _mstr_prompt_members(
-                    page, catalog, report["id"], instance_id, prompt,
-                )
-                prompt["members"] = members
-                prompt["members_truncated"] = truncated
-            except Exception:
-                prompt["members"] = []
-                prompt["members_truncated"] = True
-        filters.append(_mstr_prompt_filter(prompt, position))
-    _mstr_disambiguate_filters(filters)
-    return filters
-
-
-def _mstr_disambiguate_filters(filters: list[dict]) -> None:
-    """Give duplicate prompt titles distinct labels and keys.
-
-    Range prompts share a title ('Week' twice) while their internal names
-    carry the distinguishing part ('P002.Week_EW (From)' / '(To)'). Fold
-    that parenthetical into the label so both filters survive as separate
-    definitions; fall back to an index when even the names collide.
-    """
-    groups: dict[str, list[dict]] = {}
-    for definition in filters:
-        groups.setdefault(definition["filter_key"], []).append(definition)
-    for group in groups.values():
-        if len(group) < 2:
-            continue
-        for definition in group:
-            prompt_name = str(
-                (definition.get("automation") or {}).get("microstrategy", {}).get("prompt_name") or ""
-            )
-            suffix = re.search(r"\(([^)]+)\)\s*$", prompt_name)
-            if suffix:
-                definition["label"] = f"{definition['label']} ({suffix.group(1)})"
-                definition["control_label"] = definition["label"]
-                definition["filter_key"] = _slug_key(definition["label"], definition["filter_key"])
-    seen: set[str] = set()
-    for index, definition in enumerate(filters):
-        if definition["filter_key"] in seen:
-            definition["filter_key"] = _slug_key(
-                f"{definition['label']} {index + 1}", f"prompt_{index + 1}",
-            )
-        seen.add(definition["filter_key"])
-
-
-def _mstr_full_report_entry(page: Page, catalog: dict, folder: dict, site: dict) -> dict:
-    """Build one complete catalog entry from the REST API alone.
-
-    Every object in the menu folder is one export view of the portal report
-    page; the '^' suffix of its name is the visible tab label. Filters are
-    the union of every view's prompts, with per-view filter keys recorded
-    exactly like the UI scan records them. The entry is complete - export
-    views included - so it does not carry the partial flag; the server still
-    merges its filters over UI-discovered identities.
-    """
-    filters: list[dict] = []
-    export_views: list[dict] = []
-    for record in folder["objects"]:
-        view_filters = _mstr_report_filters(page, catalog, record)
-        view_keys = []
-        for definition in view_filters:
-            view_keys.append(definition["filter_key"])
-            existing = next(
-                (item for item in filters if item["filter_key"] == definition["filter_key"]), None,
-            )
-            if existing is None:
-                filters.append(definition)
-            else:
-                existing["options"] = list(dict.fromkeys([
-                    *existing.get("options", []), *definition.get("options", []),
-                ]))[:MSTR_MAX_PROMPT_OPTIONS]
-        export_views.append({"label": record["view_label"], "filter_keys": view_keys})
-    unique_views, seen_labels = [], set()
-    for view in export_views:
-        label_key = view["label"].casefold()
-        if label_key not in seen_labels:
-            seen_labels.add(label_key)
-            unique_views.append(view)
-    for position, definition in enumerate(filters):
-        definition["position"] = position
-    path = folder["path"]
-    ready_text = unique_views[0]["label"] if unique_views else None
-    return {
-        "discovery_key": " > ".join(path), "name": path[-1],
-        "report_url": site.get("base_url") or site.get("auth_url"),
-        "ready_text": ready_text, "download_text": "Export CSV",
-        "automation": {
-            "category_path": path, "report_tab": ready_text,
-            "report_title": path[-1], "export_text": ready_text,
-            "export_views": unique_views,
-            "scan_method": "microstrategy_api",
-            "microstrategy": {
-                "folder_id": folder["folder_id"], "api_base": catalog["api_base"],
-                "objects": [
-                    {
-                        "report_id": record["id"], "name": record["name"],
-                        "view_label": record["view_label"],
-                        "shortcut_id": record.get("shortcut_id"),
-                    }
-                    for record in folder["objects"]
-                ],
-            },
-        },
-        "filters": filters,
-    }
-
-
-def _mstr_report_entry(page: Page, catalog: dict, report: dict, path: list[str], site: dict) -> dict:
-    """Build a catalog entry from the API alone, marked partial.
-
-    The entry deliberately omits export-view automation - only the portal UI
-    can reveal Export Wizard tabs - and carries automation.partial so the
-    server merges it over any richer definition from an earlier UI scan
-    instead of replacing it. Tokens never enter this persisted structure.
-    """
-    filters = _mstr_report_filters(page, catalog, report)
-    return {
-        "discovery_key": " > ".join(path), "name": path[-1],
-        "report_url": site.get("base_url") or site.get("auth_url"),
-        "ready_text": None, "download_text": "Export CSV",
-        "automation": {
-            "category_path": path, "partial": True,
-            "microstrategy": {
-                "report_id": report["id"], "report_name": report["name"],
-                "display_name": report.get("display_name"),
-                "shortcut_id": report.get("shortcut_id"),
-                "menu_path": report.get("menu_path") or [],
-                "api_base": catalog["api_base"], "session_mode": catalog["mode"],
-            },
-        },
-        "filters": filters,
-    }
-
-
-def _asap_ui_inspect_report(page: Page, site: dict, path: list[str], profile_dir: Path,
-                            timings: _Timings) -> dict:
-    """Inspect one report through the rendered portal UI (the legacy path)."""
-    lightweight_job = {
-        "site": site,
-        "report": {
-            "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
-            "ready_text": None, "automation": {"category_path": path},
-        },
-    }
-    with timings.measure("report_navigation"):
-        frame = _asap_open_report(page, lightweight_job, profile_dir)
-        export_view_labels = [
-            label for label, _control in _asap_export_view_candidates(page, frame)
-        ]
-    filters = []
-    export_views = []
-    ready_text = export_view_labels[0] if export_view_labels else None
-    report_title = path[-1]
-    with timings.measure("filter_inspection"):
-        labels_to_scan = export_view_labels or [None]
-        for view_index, export_view_label in enumerate(labels_to_scan):
-            if view_index:
-                frame = _asap_open_report(page, lightweight_job, profile_dir)
-            active_frame, selected_label = _asap_activate_export_view(
-                page, frame, export_view_label,
-            )
-            discovered = _asap_discover_filters(active_frame)
-            view_filter_keys = []
-            for definition in discovered:
-                view_filter_keys.append(definition["filter_key"])
-                existing = next(
-                    (item for item in filters if item["filter_key"] == definition["filter_key"]),
-                    None,
-                )
-                if existing is None:
-                    filters.append(definition)
-                else:
-                    existing["options"] = list(dict.fromkeys([
-                        *existing.get("options", []), *definition.get("options", []),
-                    ]))
-            if selected_label:
-                export_views.append({
-                    "label": selected_label, "filter_keys": view_filter_keys,
-                })
-            if view_index == 0:
-                report_title = active_frame.locator("title").text_content() or path[-1]
-    for position, definition in enumerate(filters):
-        definition["position"] = position
-    return {
-        "discovery_key": " > ".join(path), "name": path[-1],
-        "report_url": site.get("base_url") or site.get("auth_url"),
-        "ready_text": ready_text, "download_text": "Export CSV",
-        "automation": {
-            "category_path": path, "report_tab": ready_text,
-            "report_title": report_title, "export_text": ready_text,
-            "export_views": export_views,
-        },
-        "filters": filters,
-    }
-
-
-def _discover_catalog_via_microstrategy(
-    page: Page, site: dict, catalog: dict, target_paths: list[list[str]],
-    report_progress, profile_dir: Path, timings: _Timings, deadline: float,
-) -> tuple[list[dict], list[dict], bool]:
-    """MicroStrategy-first scan: read every report through the REST API.
-
-    The menu tree supplies the navigable structure and each folder's report
-    objects supply the export views and prompt definitions - no report is
-    opened in the UI unless the API fails for it, in which case that one
-    report falls back to the rendered-portal inspection.
-    """
-    if target_paths:
-        selected = [(path, _mstr_folder_for_path(catalog, path)) for path in target_paths]
-    else:
-        selected = [(folder["path"], folder) for folder in catalog.get("folders") or []]
-    reports: list[dict] = []
-    failures: list[str] = []
-    complete = not target_paths
-    for index, (path, folder) in enumerate(selected, start=1):
-        if time.monotonic() >= deadline:
-            complete = False
-            report_progress("running", {
-                "stage": "time_budget_reached",
-                "message": "The scan budget was reached. Keeping partial discoveries without marking unseen entries stale.",
-                "report_index": index, "report_count": len(selected),
-            })
-            break
-        report_progress("running", {
-            "stage": "filter_inspection",
-            "message": f"Reading report {index} of {len(selected)} through the MicroStrategy REST API.",
-            "current_report": path[-1], "report_index": index, "report_count": len(selected),
-        })
-        entry = None
-        api_error: Exception | None = None
-        if folder is not None:
-            try:
-                with timings.measure("filter_inspection"):
-                    entry = _mstr_full_report_entry(page, catalog, folder, site)
-            except Exception as exc:
-                api_error = exc
-        if entry is None:
-            # The API could not serve this report - true it up through the UI.
-            report_progress("running", {
-                "stage": "ui_fallback",
-                "message": (
-                    f"Report {path[-1]} is being inspected through the portal UI because "
-                    f"the MicroStrategy REST API could not serve it"
-                    + (f": {api_error}" if api_error else " (no matching menu folder).")
-                ),
-                "report_index": index, "report_count": len(selected),
-            })
-            try:
-                entry = _asap_ui_inspect_report(page, site, path, profile_dir, timings)
-            except Exception as exc:
-                complete = False
-                failures.append(f"{' > '.join(path)}: {api_error or exc}")
-                timings.items.append({
-                    "phase": "report_inspection", "duration_ms": 0, "status": "failed",
-                    "metadata": {"path": path, "error": str(api_error or exc)},
-                })
-                _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
-                continue
-        reports.append(entry)
-    if target_paths and not reports and failures:
-        raise RuntimeError("ASAP targeted catalog scan failed. " + " | ".join(failures))
-    return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
-
-
 def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: Path) -> tuple[list[dict], list[dict], bool]:
     timings = _Timings()
     deadline = time.monotonic() + 60 * int(job["discovery"].get("max_duration_minutes") or 90)
@@ -2986,27 +2321,6 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     with timings.measure("navigation"):
         _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
     target_paths = [path for path in job["discovery"].get("report_paths", []) if len(path) >= 2]
-    mstr_catalog = None
-    with timings.measure("microstrategy_discovery"):
-        try:
-            mstr_catalog = _mstr_discover_catalog(page, site)
-        except Exception:
-            mstr_catalog = None
-    report_progress("running", {
-        "stage": "microstrategy_discovery",
-        "message": (
-            f"MicroStrategy REST session found at {mstr_catalog['api_base']} "
-            f"({mstr_catalog['mode']}); {len(mstr_catalog.get('folders') or [])} report "
-            f"folder(s) indexed from the portal menu tree."
-            if mstr_catalog else
-            "The portal did not expose a MicroStrategy REST session; scanning through the portal UI only."
-        ),
-    })
-    if mstr_catalog and mstr_catalog.get("folders"):
-        return _discover_catalog_via_microstrategy(
-            page, site, mstr_catalog, target_paths, report_progress,
-            profile_dir, timings, deadline,
-        )
     with timings.measure("report_discovery"):
         paths = target_paths or _asap_discover_menu_reports(
             page, job["discovery"].get("scope") or ["Mobile"]
@@ -3027,40 +2341,72 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             "stage": "filter_inspection", "message": f"Inspecting report {index} of {len(paths)}.",
             "current_report": path[-1], "report_index": index, "report_count": len(paths),
         })
+        lightweight_job = {
+            "site": site,
+            "report": {
+                "name": path[-1], "url": site.get("base_url") or site.get("auth_url"),
+                "ready_text": None, "automation": {"category_path": path},
+            },
+        }
         try:
-            reports.append(_asap_ui_inspect_report(page, site, path, profile_dir, timings))
+            with timings.measure("report_navigation"):
+                frame = _asap_open_report(page, lightweight_job, profile_dir)
+                export_view_labels = [
+                    label for label, _control in _asap_export_view_candidates(page, frame)
+                ]
+            filters = []
+            export_views = []
+            ready_text = export_view_labels[0] if export_view_labels else None
+            report_title = path[-1]
+            with timings.measure("filter_inspection"):
+                labels_to_scan = export_view_labels or [None]
+                for view_index, export_view_label in enumerate(labels_to_scan):
+                    if view_index:
+                        frame = _asap_open_report(page, lightweight_job, profile_dir)
+                    active_frame, selected_label = _asap_activate_export_view(
+                        page, frame, export_view_label,
+                    )
+                    discovered = _asap_discover_filters(active_frame)
+                    view_filter_keys = []
+                    for definition in discovered:
+                        view_filter_keys.append(definition["filter_key"])
+                        existing = next(
+                            (item for item in filters if item["filter_key"] == definition["filter_key"]),
+                            None,
+                        )
+                        if existing is None:
+                            filters.append(definition)
+                        else:
+                            existing["options"] = list(dict.fromkeys([
+                                *existing.get("options", []), *definition.get("options", []),
+                            ]))
+                    if selected_label:
+                        export_views.append({
+                            "label": selected_label, "filter_keys": view_filter_keys,
+                        })
+                    if view_index == 0:
+                        report_title = active_frame.locator("title").text_content() or path[-1]
+            for position, definition in enumerate(filters):
+                definition["position"] = position
+            discovery_key = " > ".join(path)
+            reports.append({
+                "discovery_key": discovery_key, "name": path[-1],
+                "report_url": site.get("base_url") or site.get("auth_url"),
+                "ready_text": ready_text, "download_text": "Export CSV",
+                "automation": {
+                    "category_path": path, "report_tab": ready_text,
+                    "report_title": report_title, "export_text": ready_text,
+                    "export_views": export_views,
+                },
+                "filters": filters,
+            })
         except Exception as exc:
-            # The portal UI would not reveal this report. When MicroStrategy
-            # knows it, read its prompt definitions through the REST API so
-            # the scan keeps the report instead of failing it.
-            recovered = None
-            matched = _mstr_match_report(mstr_catalog, path)
-            if matched is not None:
-                try:
-                    recovered = _mstr_report_entry(page, mstr_catalog, matched, path, site)
-                except Exception:
-                    recovered = None
-            if recovered is not None:
-                reports.append(recovered)
-                report_progress("running", {
-                    "stage": "microstrategy_fallback",
-                    "message": (
-                        f"Report {path[-1]} was inspected through the MicroStrategy "
-                        f"REST API because the portal UI failed: {exc}"
-                    ),
-                    "report_index": index, "report_count": len(paths),
-                })
-                timings.items.append({
-                    "phase": "report_inspection", "duration_ms": 0, "status": "recovered",
-                    "metadata": {"path": path, "method": "microstrategy_api", "error": str(exc)},
-                })
-            else:
-                complete = False
-                failures.append(f"{' > '.join(path)}: {exc}")
-                timings.items.append({
-                    "phase": "report_inspection", "duration_ms": 0, "status": "failed",
-                    "metadata": {"path": path, "error": str(exc)},
-                })
+            complete = False
+            failures.append(f"{' > '.join(path)}: {exc}")
+            timings.items.append({
+                "phase": "report_inspection", "duration_ms": 0, "status": "failed",
+                "metadata": {"path": path, "error": str(exc)},
+            })
             _asap_goto(page, site.get("auth_url") or site.get("base_url"), profile_dir)
     if target_paths and not reports and failures:
         raise RuntimeError("ASAP targeted catalog scan failed. " + " | ".join(failures))
@@ -3691,9 +3037,7 @@ def execute_job(
             }
             with timings.measure("configuration", report_id=job["report"].get("id")):
                 _asap_apply_configuration(frame, view_job, period)
-            # RUN detection scans all rendered buttons: only the active tab's
-            # RUN is visible among the hidden per-tab copies in the DOM.
-            if _asap_run_control(frame) is not None:
+            if _has_named_control(frame, "RUN"):
                 report_progress(
                     "running",
                     {
