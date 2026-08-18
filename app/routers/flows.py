@@ -2257,10 +2257,15 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             return {"run_id": run_id, "status": row["status"], "ignored": True}
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
+        # Artifacts only ever accumulate within a run. A report without any -
+        # typically the final failed post after an exception unwound the
+        # worker's download loop - must not erase files earlier progress
+        # already recorded: Resume depends on that record.
+        stored_artifacts = body.artifacts or _loads(row["artifact_json"], [])
         db.execute(
             """UPDATE flow_runs SET status=?, progress_json=?, artifact_json=?, error=?,
                started_at=COALESCE(started_at, ?), finished_at=?, heartbeat_at=? WHERE id=?""",
-            (body.status, _json(body.progress), _json(body.artifacts), body.error,
+            (body.status, _json(body.progress), _json(stored_artifacts), body.error,
              started, finished, now, run_id),
         )
         db.execute(
@@ -2314,7 +2319,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                     (run_id, _period_key_text(item.get("period_key")), str(item.get("file_path") or ""),
                      str(item.get("filename") or ""), item.get("file_size"), item.get("checksum"),
                      item.get("row_count"), str(item.get("status") or "saved"), now)
-                    for item in body.artifacts if item.get("file_path") and item.get("filename")
+                    for item in stored_artifacts if item.get("file_path") and item.get("filename")
                 ],
             )
             _sync_flow_failure_actions(db, now)

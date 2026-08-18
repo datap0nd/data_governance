@@ -2972,7 +2972,11 @@ def _export_task_with_retry(page: Page, run_task, on_retry):
 def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
+    artifacts: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict]]:
+    # The caller may own the artifact list. Files are appended in place, so
+    # everything saved before a mid-bundle failure stays visible to the
+    # caller's failure report - the record Resume later relies on.
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
@@ -2989,7 +2993,8 @@ def execute_job(
         {"period": period, "export_view": export_view}
         for export_view in export_views for period in periods
     ]
-    artifacts = []
+    if artifacts is None:
+        artifacts = []
 
     def _download_task(index: int, task: dict) -> dict:
         period = task["period"]
@@ -3278,8 +3283,12 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             artifacts, timings,
                         )
                     else:
+                        # Share the artifact list so a mid-bundle failure still
+                        # reports every file saved before the error - the final
+                        # failed progress post below sends this same list.
                         artifacts, timings = execute_job(
                             page, run["job"], progress, profile_dir, download_staging_dir,
+                            artifacts=artifacts,
                         )
                         sql_artifacts = artifacts
                     if not sql_only and run["job"].get("transformation", {}).get("enabled"):

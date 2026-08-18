@@ -984,3 +984,32 @@ def test_export_task_key_matches_completed_entries_across_json_roundtrip():
     })
     assert task_key in completed
     assert flow_worker._export_task_key("Global", ["2026-W30", "2026-W31"]) not in completed
+
+
+def test_execute_job_appends_into_the_callers_artifact_list(tmp_path):
+    shared = []
+    job = {
+        "site": {"adapter": "web_export"},
+        "report": {
+            "name": "Weekly", "url": "https://reports.example.test/weekly",
+            "ready_text": None, "open_export_text": None,
+            "download_text": "Download CSV", "export_views": [],
+        },
+        "downloads": {
+            "target_folder": str(tmp_path),
+            "periods": [["2026-W30"]],
+            "filename_template": "weekly_{week}.csv",
+            "file_format": "csv",
+        },
+        "resume": {"from_run_id": 9, "completed": [
+            {"export_view": None, "period_key": ["2026-W30"]},
+        ]},
+    }
+
+    artifacts, _timings = flow_worker.execute_job(
+        object(), job, lambda *_args: None, tmp_path, artifacts=shared,
+    )
+
+    # In-place semantics: a failure that unwinds execute_job leaves every
+    # already-saved file visible in the caller's list for the failed report.
+    assert artifacts is shared

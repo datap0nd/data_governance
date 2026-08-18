@@ -2069,7 +2069,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=54' in index
+    assert '/static/app.js?v=55' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
@@ -2687,3 +2687,49 @@ def test_resume_rejects_active_runs_and_runs_without_saved_progress(flow_db):
     with pytest.raises(HTTPException) as excinfo:
         flows.resume_run(retry["id"], _request())
     assert excinfo.value.status_code == 409
+
+
+def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
+    """The worker's final failed post carries no artifacts when the download
+    loop unwound on an exception. Files recorded by earlier progress posts
+    must survive so the run stays resumable."""
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="wipe-worker", display_name="Wipe worker", capabilities={},
+    ))
+    flows.claim_run("wipe-worker")
+    flows.update_run(
+        "wipe-worker", queued["id"],
+        flows.WorkerProgress(
+            status="running",
+            progress={"stage": "file_export", "message": "Export 2 of 3"},
+            artifacts=[{
+                "period_key": ["2026-W30"], "export_view": None, "status": "saved",
+                "file_path": r"C:\Reports\Downloads\weekly_2026-W30.csv",
+                "filename": "weekly_2026-W30.csv",
+            }],
+        ),
+    )
+    flows.update_run(
+        "wipe-worker", queued["id"],
+        flows.WorkerProgress(status="failed", error="menu item was not visible"),
+    )
+
+    detail = flows.get_run(queued["id"])
+    assert detail["status"] == "failed"
+    assert [item["filename"] for item in detail["artifacts"]] == ["weekly_2026-W30.csv"]
+    assert [item["filename"] for item in detail["files"]] == ["weekly_2026-W30.csv"]
+
+    resumed = flows.resume_run(queued["id"], _request())
+    assert resumed["skipped_files"] == 1
+    assert resumed["job"]["resume"]["completed"] == [
+        {"export_view": None, "period_key": ["2026-W30"]},
+    ]
+
+
+def test_worker_shares_the_artifact_list_with_its_failure_report():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert "artifacts=artifacts,\n                        )\n                        sql_artifacts = artifacts" in source
