@@ -1354,6 +1354,83 @@ def retry_run_sql(run_id: int, request: Request):
     }
 
 
+@router.post("/runs/{run_id}/resume")
+def resume_run(run_id: int, request: Request):
+    """Queue a fresh run that skips every file the source run already saved.
+
+    The new run rebuilds the job from the flow's current configuration, so a
+    'latest available' period range can legitimately grow. Skipping matches on
+    each file's export view + period identity; anything unmatched downloads
+    normally. Resuming a run that was itself a resume carries the earlier
+    completed files forward, so chained resumes keep narrowing the remainder.
+    """
+    now = _iso(_now())
+    with get_db() as db:
+        source = db.execute(
+            """SELECT r.*, f.name AS flow_name FROM flow_runs r
+               JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+            (run_id,),
+        ).fetchone()
+        if not source:
+            raise HTTPException(404, "Source flow run not found.")
+        if source["status"] not in {"failed", "cancelled"}:
+            raise HTTPException(409, "Only a failed or cancelled run can be resumed.")
+        active = db.execute(
+            """SELECT id FROM flow_runs WHERE flow_id=?
+               AND status IN ('queued','claimed','running') LIMIT 1""",
+            (source["flow_id"],),
+        ).fetchone()
+        if active:
+            raise HTTPException(409, "This flow already has an active run.")
+        source_job = _loads(source["job_json"], {})
+        carried = (source_job.get("resume") or {}).get("completed") or []
+        saved = [
+            {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
+            for item in _loads(source["artifact_json"], [])
+            if item.get("status") == "saved" and item.get("file_path")
+        ]
+        completed, seen = [], set()
+        for item in [*carried, *saved]:
+            entry = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
+            key = _json(entry)
+            if key not in seen:
+                seen.add(key)
+                completed.append(entry)
+        if not completed:
+            raise HTTPException(
+                409, "No file finished in that run. Use Run to start the flow from the beginning.",
+            )
+        job = _build_job(db, source["flow_id"])
+        job["resume"] = {"from_run_id": run_id, "completed": completed}
+        cursor = db.execute(
+            """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
+               VALUES (?, 'resume', 'queued', ?, ?, ?)""",
+            (source["flow_id"], get_actor(request), _json(job), now),
+        )
+        new_run_id = cursor.lastrowid
+        log_event(
+            db, "flow", source["flow_id"], source["flow_name"], "run_resumed",
+            f"run_id={new_run_id}; resumes run #{run_id}; skips {len(completed)} saved file(s)",
+            get_actor(request),
+        )
+    worker = launch_local_worker(job["execution"]["browser_mode"])
+    if worker.get("status") == "error":
+        with get_db() as db:
+            db.execute(
+                "UPDATE flow_runs SET progress_json=? WHERE id=?",
+                (_json({"stage": "waiting_for_bi_desktop", "message": worker.get("message")}), new_run_id),
+            )
+    return {
+        "id": new_run_id,
+        "flow_id": source["flow_id"],
+        "status": "queued",
+        "job": job,
+        "worker": worker,
+        "resumes_run_id": run_id,
+        "skipped_files": len(completed),
+    }
+
+
 @router.get("/workers")
 def list_workers():
     cutoff = _iso(_now() - timedelta(seconds=90))

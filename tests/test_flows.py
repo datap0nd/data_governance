@@ -2603,3 +2603,87 @@ def test_worker_loss_and_restart_failures_email_the_flow_owner(flow_db, monkeypa
     ))
     assert len(sent) == 2
     assert f"run #{retry['id']}" in sent[1][0][0]["subject"]
+
+
+# --- Resume from the last successful file ---
+
+def _fail_run_with_saved_files(worker_id, run_id, weeks, error="boom"):
+    flows.update_run(
+        worker_id, run_id,
+        flows.WorkerProgress(
+            status="failed", error=error,
+            artifacts=[
+                {
+                    "period_key": [week], "export_view": None, "status": "saved",
+                    "file_path": rf"C:\Reports\Downloads\weekly_{week}.csv",
+                    "filename": f"weekly_{week}.csv",
+                }
+                for week in weeks
+            ],
+        ),
+    )
+
+
+def test_resume_queues_a_run_that_skips_saved_files(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["periods"] == [["2026-W30"], ["2026-W31"], ["2026-W32"]]
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="resume-worker", display_name="Resume worker", capabilities={},
+    ))
+    flows.claim_run("resume-worker")
+    _fail_run_with_saved_files("resume-worker", queued["id"], ["2026-W30"])
+
+    resumed = flows.resume_run(queued["id"], _request())
+    assert resumed["resumes_run_id"] == queued["id"]
+    assert resumed["skipped_files"] == 1
+    assert resumed["job"]["resume"] == {
+        "from_run_id": queued["id"],
+        "completed": [{"export_view": None, "period_key": ["2026-W30"]}],
+    }
+    assert flows.get_run(resumed["id"])["trigger_type"] == "resume"
+
+    # Resuming a failed resume carries the earlier files forward.
+    flows.claim_run("resume-worker")
+    _fail_run_with_saved_files("resume-worker", resumed["id"], ["2026-W31"])
+    chained = flows.resume_run(resumed["id"], _request())
+    assert chained["skipped_files"] == 2
+    assert [item["period_key"] for item in chained["job"]["resume"]["completed"]] == [
+        ["2026-W30"], ["2026-W31"],
+    ]
+
+
+def test_resume_rejects_active_runs_and_runs_without_saved_progress(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="strict-worker", display_name="Strict worker", capabilities={},
+    ))
+    flows.claim_run("strict-worker")
+
+    with pytest.raises(HTTPException) as excinfo:
+        flows.resume_run(queued["id"], _request())
+    assert excinfo.value.status_code == 409
+    assert "failed or cancelled" in excinfo.value.detail
+
+    flows.update_run(
+        "strict-worker", queued["id"], flows.WorkerProgress(status="failed", error="boom"),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        flows.resume_run(queued["id"], _request())
+    assert excinfo.value.status_code == 409
+    assert "No file finished" in excinfo.value.detail
+
+    # A completed run is not resumable either.
+    retry = flows.queue_run(saved["id"], _request())
+    flows.claim_run("strict-worker")
+    flows.update_run(
+        "strict-worker", retry["id"], flows.WorkerProgress(status="succeeded"),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        flows.resume_run(retry["id"], _request())
+    assert excinfo.value.status_code == 409

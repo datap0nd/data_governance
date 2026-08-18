@@ -940,3 +940,47 @@ def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, t
     assert [item["bundle_index"] for item in artifacts] == [1, 2]
     for artifact, label in zip(artifacts, activated):
         assert label in Path(artifact["file_path"]).read_text(encoding="utf-8-sig")
+
+
+def test_execute_job_skips_files_already_saved_by_the_resumed_run(tmp_path):
+    events = []
+    job = {
+        "site": {"adapter": "web_export"},
+        "report": {
+            "name": "Weekly", "url": "https://reports.example.test/weekly",
+            "ready_text": None, "open_export_text": None,
+            "download_text": "Download CSV", "export_views": [],
+        },
+        "downloads": {
+            "target_folder": str(tmp_path),
+            "periods": [["2026-W30"], ["2026-W31"]],
+            "filename_template": "weekly_{week}.csv",
+            "file_format": "csv",
+        },
+        "resume": {"from_run_id": 41, "completed": [
+            {"export_view": None, "period_key": ["2026-W30"]},
+            {"export_view": None, "period_key": ["2026-W31"]},
+        ]},
+    }
+
+    artifacts, timings = flow_worker.execute_job(
+        object(), job,
+        lambda _status, progress, _artifacts=None: events.append(progress),
+        tmp_path,
+    )
+
+    assert artifacts == []
+    skips = [item for item in events if item.get("stage") == "resume_skip"]
+    assert len(skips) == 2
+    assert "run #41" in skips[0]["message"]
+    assert skips[0]["item_index"] == 1 and skips[1]["item_index"] == 2
+    assert timings[-1]["phase"] == "total"
+
+
+def test_export_task_key_matches_completed_entries_across_json_roundtrip():
+    task_key = flow_worker._export_task_key(None, ["2026-W30", "2026-W31"])
+    completed = flow_worker._resume_completed_keys({
+        "resume": {"completed": [{"export_view": None, "period_key": ["2026-W30", "2026-W31"]}]},
+    })
+    assert task_key in completed
+    assert flow_worker._export_task_key("Global", ["2026-W30", "2026-W31"]) not in completed

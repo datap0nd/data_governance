@@ -2933,6 +2933,20 @@ def _has_named_control(page: Page | Frame, text: str) -> bool:
     return False
 
 
+def _export_task_key(export_view, period) -> str:
+    """Stable identity of one export file within a bundle."""
+    return json.dumps({"export_view": export_view, "period_key": period}, sort_keys=True)
+
+
+def _resume_completed_keys(job: dict) -> set[str]:
+    """Files a resumed run must skip because a prior run already saved them."""
+    completed = (job.get("resume") or {}).get("completed") or []
+    return {
+        _export_task_key(item.get("export_view"), item.get("period_key"))
+        for item in completed if isinstance(item, dict)
+    }
+
+
 def _export_task_with_retry(page: Page, run_task, on_retry):
     """Restart one export file from scratch after any mid-file failure.
 
@@ -3096,7 +3110,25 @@ def execute_job(
             **metadata,
         }
 
+    completed_keys = _resume_completed_keys(job)
+    resumed_run_id = (job.get("resume") or {}).get("from_run_id")
     for index, task in enumerate(tasks, start=1):
+        if _export_task_key(task["export_view"], task["period"]) in completed_keys:
+            report_progress(
+                "running",
+                {
+                    "stage": "resume_skip",
+                    "message": (
+                        f"Export {index} of {len(tasks)} was already saved by "
+                        f"run #{resumed_run_id}; skipping."
+                    ),
+                    "period": task["period"], "export_view": task["export_view"],
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+            continue
+
         def _task_retry(attempt: int, exc: Exception, *, index=index, task=task):
             report_progress(
                 "running",
