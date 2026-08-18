@@ -299,6 +299,46 @@ def test_asap_run_report_raises_after_second_empty_rendering(monkeypatch):
     assert len(attempts) == 2
 
 
+def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
+    attempts = []
+
+    def run_task():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("ASAP report menu item was not visible: installed base (MENA)")
+        if len(attempts) == 2:
+            raise RuntimeError(
+                "The Edge download did not produce a stable finished file "
+                "within 600 seconds in the local staging folder."
+            )
+        return {"status": "saved"}
+
+    retries = []
+    page = _WaitPage()
+    result = flow_worker._export_task_with_retry(
+        page, run_task, lambda attempt, exc: retries.append((attempt, str(exc))),
+    )
+
+    assert result == {"status": "saved"}
+    assert len(attempts) == 3
+    assert [attempt for attempt, _ in retries] == [1, 2]
+    assert "menu item was not visible" in retries[0][1]
+    assert "stable finished file" in retries[1][1]
+    assert page.waits == [5_000, 5_000]
+
+
+def test_export_task_retry_raises_the_original_error_after_three_attempts():
+    attempts = []
+
+    def run_task():
+        attempts.append(1)
+        raise RuntimeError("Target folder permissions changed mid-run.")
+
+    with pytest.raises(RuntimeError, match="permissions changed"):
+        flow_worker._export_task_with_retry(_WaitPage(), run_task, lambda *_args: None)
+    assert len(attempts) == flow_worker.EXPORT_TASK_ATTEMPTS == 3
+
+
 def test_asap_table_control_score_accepts_only_compact_top_right_controls():
     table = {"x": 100, "y": 200, "width": 800, "height": 500}
 

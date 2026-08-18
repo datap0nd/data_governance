@@ -1576,6 +1576,13 @@ def test_asap_execution_uses_rendered_ui_not_internal_response_url():
     assert '"button.report-export"' not in source
 
 
+def test_every_export_file_is_retried_individually_before_the_run_fails():
+    source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    assert "EXPORT_TASK_ATTEMPTS = 3" in source
+    assert "artifacts.append(_export_task_with_retry(" in source
+    assert '"stage": "export_retry"' in source
+
+
 def test_database_schema_has_no_flow_delete_policy(flow_db):
     with database.get_db() as db:
         job_columns = {row[1] for row in db.execute("PRAGMA table_info(flows)").fetchall()}

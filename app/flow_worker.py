@@ -47,6 +47,7 @@ ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
 ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
+EXPORT_TASK_ATTEMPTS = 3
 ASAP_EMPTY_RESULT_DETAIL = (
     "The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
 )
@@ -2932,6 +2933,28 @@ def _has_named_control(page: Page | Frame, text: str) -> bool:
     return False
 
 
+def _export_task_with_retry(page: Page, run_task, on_retry):
+    """Restart one export file from scratch after any mid-file failure.
+
+    A bundle of many files must never lose its finished downloads to one
+    transient portal hiccup on a later file - a menu item that briefly fails
+    to render, or an Edge download that never stabilizes in staging. Each
+    attempt restarts the file at report navigation, so the portal is reopened
+    in a known state. Files that were already saved are untouched, and a
+    partially copied output is never overwritten: the retried download stores
+    under the next free suffixed filename.
+    """
+    for attempt in range(1, EXPORT_TASK_ATTEMPTS + 1):
+        try:
+            return run_task()
+        except Exception as exc:
+            if attempt == EXPORT_TASK_ATTEMPTS:
+                raise
+            on_retry(attempt, exc)
+            page.wait_for_timeout(5_000)
+    raise AssertionError("unreachable")
+
+
 def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
@@ -2953,7 +2976,8 @@ def execute_job(
         for export_view in export_views for period in periods
     ]
     artifacts = []
-    for index, task in enumerate(tasks, start=1):
+
+    def _download_task(index: int, task: dict) -> dict:
         period = task["period"]
         export_view = task["export_view"]
         with timings.measure("navigation", report_id=job["report"].get("id")):
@@ -3063,14 +3087,35 @@ def execute_job(
                     **_csv_metadata(output), **normalization, **lineage,
                     "file_path": str(output), "filename": output.name,
                 }
-        artifacts.append({
+        return {
             "period_key": period,
             "export_view": export_view,
             "bundle_index": index,
             "bundle_count": len(tasks),
             "status": "saved",
             **metadata,
-        })
+        }
+
+    for index, task in enumerate(tasks, start=1):
+        def _task_retry(attempt: int, exc: Exception, *, index=index, task=task):
+            report_progress(
+                "running",
+                {
+                    "stage": "export_retry",
+                    "message": (
+                        f"Export {index} of {len(tasks)} failed on attempt "
+                        f"{attempt} of {EXPORT_TASK_ATTEMPTS}; restarting this file "
+                        f"from report navigation. {exc}"
+                    ),
+                    "period": task["period"], "export_view": task["export_view"],
+                    "item_index": index, "item_count": len(tasks), "attempt": attempt,
+                },
+                artifacts,
+            )
+
+        artifacts.append(_export_task_with_retry(
+            page, lambda index=index, task=task: _download_task(index, task), _task_retry,
+        ))
     return artifacts, timings.finish(item_count=len(artifacts))
 
 
