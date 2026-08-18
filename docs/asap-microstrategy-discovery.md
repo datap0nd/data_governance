@@ -80,6 +80,49 @@ standard `/MicroStrategyLibrary`. Both paths are named in the portal's
 - `limit=200` is the only observed page size. **[PROVEN]** Larger limits
   are **[UNPROVEN]**.
 
+## Portal DOM anatomy (corroborated by a second, DOM-level analysis)
+
+A separate Playwright/CDP analysis of the live portal corroborated the
+scanner's assumptions and supplied concrete selectors:
+
+- Content iframe: `iframe#content-frame` (already the scanner's
+  `ASAP_FRAME_SELECTOR`); main navigation in `#header-nav`.
+- Loading overlay: `#loading-spinner-container` (already handled).
+- Report tabs (export views): `.tabs__item.asap-fn-btn`, `.active` marks
+  the current one.
+- RUN button: `button.asap-aside-run-btn` — **one hidden copy per loaded
+  report tab stays in the DOM (a dozen on multi-tab reports); only the
+  active tab's is visible.** Any first-match click can land on a hidden
+  button. `_asap_run_control` therefore scans every candidate for the
+  first *visible* element, with this class as the primary selector.
+- Native `<select>` option values encode the element id the REST API
+  uses: `h<DisplayName>;<AttributeGUID>` (matches the element-id format
+  in the REST captures).
+- Breadcrumb: `.asap-navigation-left .asap-nav-item`.
+- Top-level menu folders carry `NN.` ordering prefixes ("02.Mobile")
+  that the visual menu hides — the reason for `_mstr_clean_menu_name`.
+
+A full menu-tree snapshot with folder ids exists (2026-08). Folder ids
+are **role-dependent per user** - treat any snapshot as a validation
+checklist, never as ids to hard-code; the scanner always discovers from
+the session's `MSTR_MAIN_MENU_ID`.
+
+### Conflicts between the two analyses
+
+Where the DOM-level analysis disagrees with the HAR captures, **the HAR
+evidence wins** - it is hash-verified wire traffic:
+
+- Prompt-answer payload: the HAR shows `PUT …/prompts/answers` takes
+  `{"prompts": [{"id", "key", "name", "type", "answers"}]}` with every
+  prompt included. The DOM-level analysis describes an
+  `{"answers": [{"promptId", …}]}` shape that was never observed on the
+  wire; assume it is generic-MicroStrategy folklore until proven here.
+- The DOM analysis suggests dossier grid data is fetchable as JSON via
+  `GET /lib/api/dossiers/{id}/instances/{iid}?resultFlag=3…`
+  **[UNPROVEN]** - not in any capture, but standard for this
+  MicroStrategy version and worth probing: it would give clean JSON rows
+  for dossier-type (non-Export-Wizard) reports without any DOM work.
+
 ## Beyond discovery (not implemented here)
 
 Execution and native CSV export run on the legacy `/mstr` servlet: event

@@ -353,35 +353,61 @@ def test_asap_table_control_score_accepts_only_compact_top_right_controls():
     assert flow_worker._asap_table_control_score(table, full_overlay) is None
 
 
+class _RunItem:
+    def __init__(self, visible):
+        self.visible = visible
+
+    def is_visible(self):
+        return self.visible
+
+
+class _RunLocator:
+    def __init__(self, items):
+        self.items = items
+
+    def count(self):
+        return len(self.items)
+
+    def nth(self, index):
+        return self.items[index]
+
+
 def test_asap_run_control_accepts_input_value_rendering():
-    class Locator:
-        def __init__(self, visible):
-            self.visible = visible
-
-        @property
-        def first(self):
-            return self
-
-        def count(self):
-            return int(self.visible)
-
-        def is_visible(self):
-            return self.visible
-
-    input_run = Locator(True)
+    input_run = _RunItem(True)
 
     class Root:
         def get_by_role(self, _role, **_kwargs):
-            return Locator(False)
+            return _RunLocator([_RunItem(False)])
 
         def locator(self, selector):
+            if "asap-aside-run-btn" in selector:
+                return _RunLocator([])
             assert "input[type='button'][value='RUN' i]" in selector
-            return input_run
+            return _RunLocator([input_run])
 
         def get_by_text(self, _text, **_kwargs):
             raise AssertionError("the visible RUN input should be accepted before text fallback")
 
     assert flow_worker._asap_run_control(Root()) is input_run
+
+
+def test_asap_run_control_skips_hidden_per_tab_buttons():
+    """ASAP keeps one hidden RUN button per loaded report tab; only the
+    active tab's button is visible and it is rarely the first match."""
+    visible_run = _RunItem(True)
+
+    class Root:
+        def locator(self, selector):
+            assert "asap-aside-run-btn" in selector
+            return _RunLocator([_RunItem(False), _RunItem(False), visible_run, _RunItem(False)])
+
+        def get_by_role(self, _role, **_kwargs):
+            raise AssertionError("the portal button class should match before role lookup")
+
+        def get_by_text(self, _text, **_kwargs):
+            raise AssertionError("unexpected text fallback")
+
+    assert flow_worker._asap_run_control(Root()) is visible_run
 
 
 def test_asap_export_action_accepts_input_value_rendering():

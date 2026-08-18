@@ -780,7 +780,10 @@ def _asap_run_report(page: Page) -> Frame:
     """Click RUN in the live report frame and wait for the rendered rows."""
     _asap_wait_for_loading_clear(page)
     run_frame = _asap_frame(page)
-    _click_named(run_frame, "RUN")
+    run = _asap_run_control(run_frame)
+    if run is None:
+        raise RuntimeError("Could not find visible control: RUN")
+    run.click()
     page.wait_for_timeout(1_000)
     frame = _asap_wait_for_results(page)
     return frame
@@ -1425,8 +1428,16 @@ def _asap_table_control_score(
 
 
 def _asap_run_control(root: Page | Frame):
-    """Return ASAP's RUN control across button, input, and text renderings."""
+    """Return ASAP's on-screen RUN control across all its renderings.
+
+    The portal keeps one hidden RUN button per loaded report tab in the DOM
+    (button.asap-aside-run-btn - a dozen of them on multi-tab reports) and
+    only the active tab's button is visible. Trusting the first match can
+    therefore land on a hidden control, so every candidate list is scanned
+    for its first visible element instead.
+    """
     for build_locator in (
+        lambda: root.locator("button.asap-aside-run-btn"),
         lambda: root.get_by_role("button", name=re.compile(r"^RUN$", re.I)),
         lambda: root.locator(
             "input[type='button'][value='RUN' i]:visible,"
@@ -1436,8 +1447,10 @@ def _asap_run_control(root: Page | Frame):
     ):
         try:
             locator = build_locator()
-            if locator.count() and locator.first.is_visible():
-                return locator.first
+            for index in range(locator.count()):
+                item = locator.nth(index)
+                if item.is_visible():
+                    return item
         except Exception:
             continue
     return None
@@ -3477,7 +3490,9 @@ def execute_job(
             }
             with timings.measure("configuration", report_id=job["report"].get("id")):
                 _asap_apply_configuration(frame, view_job, period)
-            if _has_named_control(frame, "RUN"):
+            # RUN detection scans all rendered buttons: only the active tab's
+            # RUN is visible among the hidden per-tab copies in the DOM.
+            if _asap_run_control(frame) is not None:
                 report_progress(
                     "running",
                     {
