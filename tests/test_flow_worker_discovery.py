@@ -1171,3 +1171,79 @@ def test_empty_discovery_reports_diagnostics_instead_of_passing_silently(monkeyp
     # Inactive report tabs keep hidden selects in the DOM; the snapshot must
     # exclude fully hidden containers while keeping Select2's hidden owners.
     assert "if (!selfVisible && !select2Visible && !parentVisible) return;" in source
+
+
+def test_mega_menu_groups_come_from_styled_headers_not_first_links():
+    """The Advanced menu titles its columns with styled text (SCM Insights,
+    Outreach, AI Insights), not anchors. The first report link of a column
+    must never be promoted to group ('Advanced > Z8 Command Center > M
+    Tracker' was wrong: Z8 Command Center is itself a report)."""
+    root = _record("Advanced", 700, 90)
+    before = [root]
+    after = [
+        root,
+        _record("Gross ASP Monitoring", 125, 475, href="javascript:open('gasp')"),
+        _record("Stretch Achievement", 125, 519, href="javascript:open('stretch')"),
+        _record("Sales Tracker", 125, 563, href="javascript:open('sales')"),
+        _record("Sales Leadtime", 125, 607, href="javascript:open('leadtime')"),
+        _record("Price Sensing", 125, 651, href="javascript:open('price')"),
+        _record("Outreach Market", 660, 475, href="javascript:open('outreach')"),
+        _record("Z8 Command Center", 1190, 475, href="javascript:open('z8')"),
+        _record("M Tracker", 1190, 519, href="javascript:open('mt')"),
+        _record("RV Tracker", 1190, 563, href="javascript:open('rv')"),
+        _record("TP Monitoring", 1190, 607, href="javascript:open('tp')"),
+        _record("WOS Monitoring", 1190, 651, href="javascript:open('wos')"),
+    ]
+    headers = [
+        {"text": "SCM Insights", "x": 125, "y": 417},
+        {"text": "Outreach", "x": 660, "y": 417},
+        {"text": "AI Insights", "x": 1190, "y": 417},
+    ]
+
+    paths = _menu_report_paths(root, before, after, headers)
+
+    assert ["Advanced", "SCM Insights", "Gross ASP Monitoring"] in paths
+    assert ["Advanced", "SCM Insights", "Price Sensing"] in paths
+    assert ["Advanced", "Outreach", "Outreach Market"] in paths
+    assert ["Advanced", "AI Insights", "Z8 Command Center"] in paths
+    assert ["Advanced", "AI Insights", "M Tracker"] in paths
+    assert ["Advanced", "AI Insights", "WOS Monitoring"] in paths
+    # The old failure mode: first link swallowed its siblings as children.
+    assert not any(path[1] == "Z8 Command Center" for path in paths)
+    assert not any(path[1] == "Gross ASP Monitoring" for path in paths)
+    assert len(paths) == 11
+
+
+def test_clickable_first_links_without_headers_stay_flat_reports():
+    """If the header snapshot sees nothing, a column whose first item is a
+    real link must yield flat report paths - wrong grouping is worse than a
+    two-level path, and runtime navigation only needs root + leaf."""
+    root = _record("Advanced", 700, 90)
+    after = [
+        root,
+        _record("Z8 Command Center", 1190, 475, href="javascript:open('z8')"),
+        _record("M Tracker", 1190, 519, href="javascript:open('mt')"),
+    ]
+
+    paths = _menu_report_paths(root, [root], after)
+
+    assert paths == [
+        ["Advanced", "Z8 Command Center"],
+        ["Advanced", "M Tracker"],
+    ]
+
+
+def test_inert_hrefs_do_not_make_a_link_clickable():
+    assert flow_worker._menu_link_target({"href": "#", "onclick": ""}) == ""
+    assert flow_worker._menu_link_target({"href": "javascript:void(0)", "onclick": ""}) == ""
+    assert flow_worker._menu_link_target({"href": "javascript:open('x')", "onclick": ""}) != ""
+
+
+def test_revealed_menu_headers_diff_by_text_and_position():
+    before = [{"text": "Filters", "x": 10, "y": 10}]
+    after = [
+        {"text": "Filters", "x": 10, "y": 10},
+        {"text": "AI Insights", "x": 1190, "y": 417},
+    ]
+    revealed = flow_worker._revealed_menu_headers(before, after)
+    assert revealed == [{"text": "AI Insights", "x": 1190, "y": 417}]

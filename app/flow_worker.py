@@ -1929,7 +1929,63 @@ def _navigation_roots(records: list[dict]) -> list[dict]:
     ]
 
 
-def _menu_report_paths(root: dict, before: list[dict], after: list[dict]) -> list[list[str]]:
+ASAP_MENU_HEADER_SNAPSHOT_JS = """
+() => {
+    const results = [];
+    document.querySelectorAll("h1,h2,h3,h4,h5,h6,strong,b,label,span,p,div").forEach(el => {
+        if (!el || el.offsetWidth <= 0 || el.offsetHeight <= 0) return;
+        if (el.closest("a,button,[role=button],[role=menuitem],[onclick]")) return;
+        if (el.querySelector("a,button,select,input")) return;
+        const text = (el.innerText || "").trim();
+        if (!text || text.length > 50 || text.includes("\\n")) return;
+        const box = el.getBoundingClientRect();
+        results.push({ text: text, x: box.x, y: box.y });
+    });
+    return results;
+}
+"""
+
+
+def _visible_menu_header_records(page: Page) -> list[dict]:
+    """Snapshot short non-link text elements that can title a menu column.
+
+    Mega-menu group headers ('SCM Insights', 'AI Insights') are styled text,
+    not anchors, so the anchor snapshot never sees them. Without them the
+    first report link of a column gets promoted to group and swallows its
+    siblings as children.
+    """
+    try:
+        records = page.evaluate(ASAP_MENU_HEADER_SNAPSHOT_JS) or []
+    except Exception:
+        return []
+    return [
+        record for record in records
+        if isinstance(record, dict) and _clean_text(record.get("text"))
+    ]
+
+
+def _revealed_menu_headers(before: list[dict], after: list[dict]) -> list[dict]:
+    seen = {
+        (item["text"].casefold(), round(item["x"]), round(item["y"])) for item in before
+    }
+    return [
+        item for item in after
+        if (item["text"].casefold(), round(item["x"]), round(item["y"])) not in seen
+    ]
+
+
+def _menu_link_target(item: dict) -> str:
+    """The link's navigation payload, with inert hrefs treated as none."""
+    href = (item.get("href") or "").strip()
+    if href.casefold() in {"#", "javascript:void(0)", "javascript:void(0);", "javascript:;"}:
+        href = ""
+    return (href + (item.get("onclick") or "").strip()).casefold()
+
+
+def _menu_report_paths(
+    root: dict, before: list[dict], after: list[dict],
+    headers: list[dict] | None = None,
+) -> list[list[str]]:
     """Convert links revealed by one mega-menu into category/report paths."""
     before_keys = {
         (item["text"].casefold(), item["href"], item["onclick"], round(item["box"]["x"]), round(item["box"]["y"]))
@@ -1951,19 +2007,35 @@ def _menu_report_paths(root: dict, before: list[dict], after: list[dict]) -> lis
         ) <= 70), None)
         (target if target is not None else columns.append([]) or columns[-1]).append(item)
 
+    header_records = [
+        item for item in headers or []
+        if _clean_text(item.get("text")).casefold() != root["text"].casefold()
+    ]
     paths = []
     for column in columns:
         column.sort(key=lambda item: (item["box"]["y"], item["box"]["x"]))
         first = column[0]
-        first_target = (first["href"] + first["onclick"]).casefold()
-        has_heading = len(column) > 1 and "report" not in first_target
-        group = first["text"] if has_heading else None
-        for item in column[1:] if has_heading else column:
-            target = (item["href"] + item["onclick"]).casefold()
-            # The new ASAP UI no longer consistently includes "report" in the
-            # target. Links revealed beneath a column heading are report leaves.
-            if not has_heading and "report" not in target:
-                continue
+        column_x = sum(entry["box"]["x"] for entry in column) / len(column)
+        # A styled text header directly above the column names the group.
+        above = [
+            item for item in header_records
+            if abs(item["x"] - column_x) <= 70 and 0 < first["box"]["y"] - item["y"] <= 160
+        ]
+        header = max(above, key=lambda item: item["y"]) if above else None
+        first_target = _menu_link_target(first)
+        if header is not None:
+            group = _clean_text(header["text"])
+            leaves = [item for item in column if _menu_link_target(item)] or column
+        elif len(column) > 1 and not first_target:
+            # Legacy menus repeat the group as a non-clickable anchor above
+            # its links. A clickable first item is a report, never a group -
+            # promoting it would swallow its siblings as children.
+            group = first["text"]
+            leaves = column[1:]
+        else:
+            group = None
+            leaves = [item for item in column if _menu_link_target(item)]
+        for item in leaves:
             path = [root["text"], group, item["text"]] if group else [root["text"], item["text"]]
             if path not in paths:
                 paths.append(path)
@@ -1997,15 +2069,20 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         if root is None:
             continue
         before = _visible_anchor_records(page)
+        before_headers = _visible_menu_header_records(page)
         root["link"].click(timeout=15_000)
         after = before
+        revealed_headers: list[dict] = []
         stable_signature: tuple[tuple[str, ...], ...] | None = None
         stable_polls = 0
         reveal_deadline = time.monotonic() + 10
         while time.monotonic() < reveal_deadline:
             page.wait_for_timeout(200)
             after = _visible_anchor_records(page)
-            revealed_paths = _menu_report_paths(root, before, after)
+            revealed_headers = _revealed_menu_headers(
+                before_headers, _visible_menu_header_records(page),
+            )
+            revealed_paths = _menu_report_paths(root, before, after, revealed_headers)
             signature = tuple(tuple(path) for path in revealed_paths)
             if signature and signature == stable_signature:
                 stable_polls += 1
@@ -2017,7 +2094,7 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             # remains unchanged for roughly one second before cataloguing it.
             if signature and stable_polls >= 5:
                 break
-        for path in _menu_report_paths(root, before, after):
+        for path in _menu_report_paths(root, before, after, revealed_headers):
             if path not in paths:
                 paths.append(path)
         # Close the menu before measuring the next root. Clicking the active
