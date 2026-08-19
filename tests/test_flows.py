@@ -2131,9 +2131,12 @@ def test_asap_duplicate_filter_discovery_merges_partial_and_complete_options():
 
 def test_asap_filter_discovery_reads_hidden_native_selects():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert 'frame.locator("select").all()' in source
-    assert 'frame.locator("select:visible").all()' not in source
-    assert 'control.locator("option").all_text_contents()' in source
+    # The select sweep runs inside the DOM so Select2's hidden owning selects
+    # are read with their full option lists; only selects whose entire
+    # container is hidden (other report tabs) are excluded.
+    assert 'document.querySelectorAll("select")' in source
+    assert 'frame.locator("select:visible")' not in source
+    assert "Array.from(select.options)" in source
     assert "wait_for_popup_options(control)" in source
     assert "time.monotonic() - stable_since >= 1.5" in source
     assert ".select2-results__option:visible" in source

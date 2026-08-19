@@ -2059,8 +2059,121 @@ def _asap_owned_popup_roots(frame: Frame, control) -> list:
     ]
 
 
-def _asap_discover_filters(frame: Frame) -> list[dict]:
+ASAP_SELECT_SNAPSHOT_JS = """
+() => {
+    const isVisible = (el) => !!el && el.offsetWidth > 0 && el.offsetHeight > 0;
+    const cleanLabel = (text) => {
+        const line = String(text || "").trim().split("\\n")[0].trim();
+        return line.length > 0 && line.length <= 80 ? line : "";
+    };
+    const results = [];
+    document.querySelectorAll("select").forEach((select, index) => {
+        const sibling = select.nextElementSibling;
+        const select2 = sibling && String(sibling.className || "").toLowerCase().includes("select2")
+            ? sibling : null;
+        const selfVisible = isVisible(select);
+        const select2Visible = isVisible(select2);
+        const parentVisible = isVisible(select.parentElement);
+        // Select2 deliberately hides its owning select, so activity is judged
+        // by the rendered widget or the immediate container. A select whose
+        // whole container is hidden belongs to another loaded report tab.
+        if (!selfVisible && !select2Visible && !parentVisible) return;
+        let label = "";
+        let source = "";
+        if (select.id) {
+            const forLabel = document.querySelector('label[for="' + CSS.escape(select.id) + '"]');
+            const text = forLabel ? cleanLabel(forLabel.innerText) : "";
+            if (text) { label = text; source = "label_for"; }
+        }
+        if (!label) {
+            const aria = cleanLabel(select.getAttribute("aria-label"));
+            if (aria) { label = aria; source = "aria_label"; }
+        }
+        if (!label) {
+            const holder = select.closest(".field,.side-field,.side-search,.filter-item,.form-group,li,td,div");
+            if (holder) {
+                const title = holder.querySelector("label,legend,span.title,span.label,p,h1,h2,h3,h4,h5,h6");
+                const text = title ? cleanLabel(title.innerText) : "";
+                if (text) { label = text; source = "container"; }
+            }
+        }
+        if (!label) {
+            let previous = select.previousElementSibling;
+            while (previous && !label) {
+                if (["LABEL", "SPAN", "DIV", "P", "H1", "H2", "H3", "H4", "H5", "H6"].includes(previous.tagName)) {
+                    const text = cleanLabel(previous.innerText);
+                    if (text) { label = text; source = "sibling"; }
+                }
+                previous = previous.previousElementSibling;
+            }
+        }
+        results.push({
+            index: index,
+            id: select.id || "",
+            name: select.getAttribute("name") || "",
+            label: label,
+            label_source: source,
+            multiple: !!select.multiple,
+            select2: !!select2,
+            visible: selfVisible || select2Visible,
+            options: Array.from(select.options).map(option => String(option.text || "").trim()).filter(Boolean),
+        });
+    });
+    return results;
+}
+"""
+
+
+def _asap_filter_frames(frame: Frame) -> list[Frame]:
+    """The active report frame first, then every other live frame.
+
+    Some ASAP reports render their prompt sidebar in the outer portal shell
+    or in a nested MicroStrategy frame rather than in the frame that shows
+    the grid. A single-frame scan silently misses every filter of such a
+    report, so the select sweep covers all of them.
+    """
+    frames = [frame]
+    try:
+        for candidate in frame.page.frames:
+            if candidate not in frames and not candidate.is_detached():
+                frames.append(candidate)
+    except Exception:
+        pass
+    return frames
+
+
+def _asap_native_select_records(frame: Frame, diagnostics: dict | None = None) -> list[dict]:
+    """Snapshot every active <select> across the report's frames."""
+    records: list[dict] = []
+    seen = set()
+    frames_scanned = 0
+    for root in _asap_filter_frames(frame):
+        try:
+            found = root.evaluate(ASAP_SELECT_SNAPSHOT_JS) or []
+        except Exception:
+            continue
+        frames_scanned += 1
+        for record in found:
+            if not isinstance(record, dict):
+                continue
+            identity = (
+                record.get("id"), record.get("name"), record.get("label"),
+                tuple(record.get("options") or []),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            records.append(record)
+    if diagnostics is not None:
+        diagnostics["frames_scanned"] = frames_scanned
+        diagnostics["selects_seen"] = len(records)
+    return records
+
+
+def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> list[dict]:
     definitions = []
+    if diagnostics is None:
+        diagnostics = {}
 
     def add_definition(
         label: str, control_type: str, options: list[str], automation: dict | None = None,
@@ -2088,7 +2201,9 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
                 for line in lines
             )
-            if len(lines) >= 3 and (has_marker or not require_search_marker):
+            # Two lines are a label plus a single member: a legitimate short
+            # member list (a one-value dimension) must not be dropped.
+            if len(lines) >= 2 and (has_marker or not require_search_marker):
                 return lines[1:500]
         return []
 
@@ -2116,23 +2231,21 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             frame.page.wait_for_timeout(250)
         return collected
     # Native controls are preferred because they expose complete option lists
-    # without opening the control or changing report state. Select2 deliberately
-    # hides its owning select, so restricting this scan to :visible drops values
-    # that were not rendered in the popup snapshot.
-    for control in frame.locator("select").all():
+    # without opening the control or changing report state. Select2
+    # deliberately hides its owning select, and ASAP rarely wires labels
+    # through label[for]/aria - they live in the surrounding field container
+    # or a preceding sibling - so the snapshot resolves labels in the DOM and
+    # a real prompt is NEVER dropped for want of one: a select with options
+    # but no label gets a stable synthesized name instead, because runtime
+    # selection locates native selects by their options, not their label.
+    unlabeled = 0
+    label_sources: dict[str, int] = {}
+    for record in _asap_native_select_records(frame, diagnostics):
         options = list(dict.fromkeys(
-            _clean_text(value) for value in control.locator("option").all_text_contents()
-            if _clean_text(value)
+            _clean_text(value) for value in record.get("options") or [] if _clean_text(value)
         ))
-        control_id = control.get_attribute("id") or ""
-        label = ""
-        if control_id:
-            label_locator = frame.locator(f'label[for="{control_id}"]')
-            if label_locator.count():
-                label = re.sub(r"\s+", " ", label_locator.first.inner_text()).strip()
-        if not label:
-            aria = control.get_attribute("aria-label") or control.get_attribute("name") or ""
-            label = re.sub(r"\s+", " ", aria).strip()
+        label = _clean_text(record.get("label"))
+        source = record.get("label_source") or ""
         # ASAP's Select2 Data Configuration owner has no accessible name. Its
         # three-part region choices identify the prompt without hardcoding any
         # actual region value into the repository.
@@ -2141,9 +2254,27 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             for value in options
         ):
             label = options[0]
+            source = "three_part_options"
         if not label:
+            label = _clean_text(record.get("id")) or _clean_text(record.get("name"))
+            source = "select_attribute" if label else source
+        if not label and options:
+            unlabeled += 1
+            label = f"Filter {record.get('index', len(definitions)) + 1}"
+            source = "synthesized"
+        if not label:
+            unlabeled += 1
             continue
-        add_definition(label, "select", options)
+        label_sources[source or "unknown"] = label_sources.get(source or "unknown", 0) + 1
+        control_type = "multi_select" if record.get("multiple") else "select"
+        add_definition(label, control_type, options, automation={
+            "select_id": record.get("id") or None,
+            "select_name": record.get("name") or None,
+            "label_source": source or None,
+            "select2": bool(record.get("select2")),
+        })
+    diagnostics["selects_unlabeled"] = unlabeled
+    diagnostics["label_sources"] = label_sources
 
     # New ASAP renders some selects as asynchronous Select2 comboboxes. Open
     # them long enough for the remote results to settle, then restore the page
@@ -2244,6 +2375,7 @@ def _asap_discover_filters(frame: Frame) -> list[dict]:
             continue
         control_type = "week" if "week" in normalized else "multi_select"
         add_definition(label, control_type, options)
+    diagnostics["definitions"] = len(definitions)
     return definitions
 
 
@@ -2356,6 +2488,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                 ]
             filters = []
             export_views = []
+            view_diagnostics = {}
             ready_text = export_view_labels[0] if export_view_labels else None
             report_title = path[-1]
             with timings.measure("filter_inspection"):
@@ -2366,7 +2499,9 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                     active_frame, selected_label = _asap_activate_export_view(
                         page, frame, export_view_label,
                     )
-                    discovered = _asap_discover_filters(active_frame)
+                    diagnostics: dict = {}
+                    discovered = _asap_discover_filters(active_frame, diagnostics)
+                    view_diagnostics[selected_label or export_view_label or "default"] = diagnostics
                     view_filter_keys = []
                     for definition in discovered:
                         view_filter_keys.append(definition["filter_key"])
@@ -2380,6 +2515,19 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                             existing["options"] = list(dict.fromkeys([
                                 *existing.get("options", []), *definition.get("options", []),
                             ]))
+                    if not discovered:
+                        # An empty result is a discovery defect until proven
+                        # otherwise - surface it in the scan log with enough
+                        # detail to diagnose instead of passing silently.
+                        report_progress("running", {
+                            "stage": "filter_inspection_empty",
+                            "message": (
+                                f"No filters were discovered for {path[-1]}"
+                                + (f" ({selected_label})" if selected_label else "")
+                                + f". Diagnostics: {diagnostics}"
+                            ),
+                            "report_index": index, "report_count": len(paths),
+                        })
                     if selected_label:
                         export_views.append({
                             "label": selected_label, "filter_keys": view_filter_keys,
@@ -2397,6 +2545,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                     "category_path": path, "report_tab": ready_text,
                     "report_title": report_title, "export_text": ready_text,
                     "export_views": export_views,
+                    "discovery_diagnostics": view_diagnostics,
                 },
                 "filters": filters,
             })

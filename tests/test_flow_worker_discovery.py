@@ -1013,3 +1013,131 @@ def test_execute_job_appends_into_the_callers_artifact_list(tmp_path):
     # In-place semantics: a failure that unwinds execute_job leaves every
     # already-saved file visible in the caller's list for the failed report.
     assert artifacts is shared
+
+
+# --- Filter discovery: native select snapshot ---
+
+class _FilterLocator:
+    def all(self):
+        return []
+
+    def all_inner_texts(self):
+        return []
+
+    def count(self):
+        return 0
+
+
+class _FilterFramePage:
+    def __init__(self, frames):
+        self.frames = frames
+
+
+class _FilterFrame:
+    def __init__(self, records):
+        self._records = records
+        self.page = _FilterFramePage([])
+
+    def evaluate(self, _script):
+        return self._records
+
+    def locator(self, _selector):
+        return _FilterLocator()
+
+    def get_by_text(self, *_args, **_kwargs):
+        return _FilterLocator()
+
+    def is_detached(self):
+        return False
+
+
+def _discover(records, monkeypatch):
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+    diagnostics = {}
+    definitions = flow_worker._asap_discover_filters(_FilterFrame(records), diagnostics)
+    return definitions, diagnostics
+
+
+def test_select_snapshot_resolves_container_labels_and_multiplicity(monkeypatch):
+    definitions, diagnostics = _discover([
+        {"index": 0, "id": "dimSel", "name": "", "label": "Dimension",
+         "label_source": "container", "multiple": True, "select2": True, "visible": True,
+         "options": ["Sell-out Region", "Sell-out Subsidiary", "Country"]},
+        {"index": 1, "id": "", "name": "", "label": "Channel Type",
+         "label_source": "sibling", "multiple": False, "select2": False, "visible": True,
+         "options": ["Open", "Carrier"]},
+    ], monkeypatch)
+
+    dimension = next(item for item in definitions if item["label"] == "Dimension")
+    assert dimension["control_type"] == "multi_select"
+    assert dimension["options"] == ["Sell-out Region", "Sell-out Subsidiary", "Country"]
+    assert dimension["automation"]["label_source"] == "container"
+    assert dimension["automation"]["select2"] is True
+    channel = next(item for item in definitions if item["label"] == "Channel Type")
+    assert channel["control_type"] == "select"
+    assert diagnostics["selects_seen"] == 2
+    assert diagnostics["selects_unlabeled"] == 0
+    assert diagnostics["definitions"] == 2
+
+
+def test_unlabeled_selects_are_never_dropped(monkeypatch):
+    definitions, diagnostics = _discover([
+        # No label anywhere but an id: the id names the filter.
+        {"index": 0, "id": "yearSelect", "name": "", "label": "", "label_source": "",
+         "multiple": False, "select2": False, "visible": True, "options": ["2025", "2026"]},
+        # Nothing at all: a stable synthesized name keeps the options.
+        {"index": 3, "id": "", "name": "", "label": "", "label_source": "",
+         "multiple": False, "select2": True, "visible": True, "options": ["A", "B"]},
+    ], monkeypatch)
+
+    year = next(item for item in definitions if item["label"] == "yearSelect")
+    assert year["options"] == ["2025", "2026"]
+    assert year["automation"]["label_source"] == "select_attribute"
+    synthesized = next(item for item in definitions if item["label"] == "Filter 4")
+    assert synthesized["options"] == ["A", "B"]
+    assert synthesized["automation"]["label_source"] == "synthesized"
+    assert diagnostics["selects_unlabeled"] == 1
+
+
+def test_three_part_options_still_identify_data_configuration(monkeypatch):
+    definitions, _diagnostics = _discover([
+        {"index": 0, "id": "", "name": "", "label": "", "label_source": "",
+         "multiple": False, "select2": True, "visible": True,
+         "options": ["MENA - Global - Global", "Global - Global - CIS"]},
+    ], monkeypatch)
+
+    assert definitions[0]["label"] == "Data Configuration"
+    assert definitions[0]["options"] == ["MENA - Global - Global", "Global - Global - CIS"]
+
+
+def test_select_snapshot_sweeps_every_frame_and_dedupes(monkeypatch):
+    record = {"index": 0, "id": "s1", "name": "", "label": "Region",
+              "label_source": "container", "multiple": False, "select2": False,
+              "visible": True, "options": ["Global"]}
+    extra = {"index": 1, "id": "s2", "name": "", "label": "Channel",
+             "label_source": "container", "multiple": False, "select2": False,
+             "visible": True, "options": ["Open"]}
+    inner = _FilterFrame([record, extra])
+    outer = _FilterFrame([record])
+    outer.page = _FilterFramePage([outer, inner])
+
+    diagnostics = {}
+    records = flow_worker._asap_native_select_records(outer, diagnostics)
+
+    assert [item["id"] for item in records] == ["s1", "s2"]
+    assert diagnostics["frames_scanned"] == 2
+    assert diagnostics["selects_seen"] == 2
+
+
+def test_empty_discovery_reports_diagnostics_instead_of_passing_silently(monkeypatch):
+    definitions, diagnostics = _discover([], monkeypatch)
+    assert definitions == []
+    assert diagnostics["selects_seen"] == 0
+    assert diagnostics["definitions"] == 0
+
+    source = Path(flow_worker.__file__).read_text()
+    assert '"stage": "filter_inspection_empty"' in source
+    assert '"discovery_diagnostics": view_diagnostics' in source
+    # Inactive report tabs keep hidden selects in the DOM; the snapshot must
+    # exclude fully hidden containers while keeping Select2's hidden owners.
+    assert "if (!selfVisible && !select2Visible && !parentVisible) return;" in source
