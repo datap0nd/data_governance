@@ -2090,11 +2090,18 @@ ASAP_SELECT_SNAPSHOT_JS = """
             if (aria) { label = aria; source = "aria_label"; }
         }
         if (!label) {
-            const holder = select.closest(".field,.side-field,.side-search,.filter-item,.form-group,li,td,div");
-            if (holder) {
-                const title = holder.querySelector("label,legend,span.title,span.label,p,h1,h2,h3,h4,h5,h6");
-                const text = title ? cleanLabel(title.innerText) : "";
-                if (text) { label = text; source = "container"; }
+            // Walk a few ancestors for a field title, but only accept a
+            // container that holds exactly this one select: a shared section
+            // title would name several filters identically, and identical
+            // labels merge into one definition with mixed option lists.
+            let holder = select.parentElement;
+            for (let depth = 0; holder && depth < 4 && !label; depth += 1) {
+                if (holder.querySelectorAll("select").length === 1) {
+                    const title = holder.querySelector("label,legend,span.title,span.label,p,h1,h2,h3,h4,h5,h6");
+                    const text = title ? cleanLabel(title.innerText) : "";
+                    if (text) { label = text; source = "container"; }
+                }
+                holder = holder.parentElement;
             }
         }
         if (!label) {
@@ -2163,6 +2170,7 @@ def _asap_native_select_records(frame: Frame, diagnostics: dict | None = None) -
             if identity in seen:
                 continue
             seen.add(identity)
+            record["frame_index"] = frames_scanned - 1
             records.append(record)
     if diagnostics is not None:
         diagnostics["frames_scanned"] = frames_scanned
@@ -2180,7 +2188,15 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
     ):
         _merge_asap_filter_definition(definitions, label, control_type, options)
         if automation:
-            key = _slug_key(label, f"filter_{len(definitions)}")
+            # The merge normalizes labels (unnamed three-part selects become
+            # Data Configuration), so the lookup key must be derived the same
+            # way or automation for renamed filters silently vanishes.
+            cleaned = _clean_text(label).rstrip(":")
+            raw_options = list(dict.fromkeys(
+                _clean_text(value) for value in options if _clean_text(value)
+            ))
+            normalized = _normalize_asap_filter_label(cleaned, control_type, raw_options)
+            key = _slug_key(normalized, f"filter_{len(definitions)}")
             definition = next(
                 (item for item in definitions if item["filter_key"] == key), None,
             )
@@ -2190,6 +2206,7 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
     def nearest_list_values(label_locator, *, require_search_marker: bool = False) -> list[str]:
         """Read the smallest visible MicroStrategy control containing a label."""
         ancestor = label_locator
+        short_fallback: list[str] = []
         for _ in range(7):
             ancestor = ancestor.locator("xpath=parent::*")
             if not ancestor.count():
@@ -2201,11 +2218,15 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
                 "type to search" in line.casefold() or re.search(r"\(\d+\s+values?\)", line, re.I)
                 for line in lines
             )
-            # Two lines are a label plus a single member: a legitimate short
-            # member list (a one-value dimension) must not be dropped.
-            if len(lines) >= 2 and (has_marker or not require_search_marker):
-                return lines[1:500]
-        return []
+            if has_marker or not require_search_marker:
+                if len(lines) >= 3:
+                    return lines[1:500]
+                # Two lines are a label plus a single member. Keep climbing in
+                # case a wider ancestor holds the full member list, but retain
+                # this as a fallback so a legitimate one-value list survives.
+                if len(lines) == 2 and not short_fallback:
+                    short_fallback = lines[1:]
+        return short_fallback
 
     def wait_for_popup_options(control, timeout_ms: int = 5_000) -> list[str]:
         """Collect leaf options from the active asynchronous popup."""
@@ -2260,7 +2281,12 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
             source = "select_attribute" if label else source
         if not label and options:
             unlabeled += 1
-            label = f"Filter {record.get('index', len(definitions)) + 1}"
+            # The name is qualified by frame so two unlabeled selects at the
+            # same index in different frames never share a label - identical
+            # labels would merge into one definition with mixed options.
+            frame_index = record.get("frame_index") or 0
+            position = record.get("index", len(definitions)) + 1
+            label = f"Filter {position}" if not frame_index else f"Filter {frame_index + 1}.{position}"
             source = "synthesized"
         if not label:
             unlabeled += 1

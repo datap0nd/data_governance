@@ -1108,6 +1108,36 @@ def test_three_part_options_still_identify_data_configuration(monkeypatch):
 
     assert definitions[0]["label"] == "Data Configuration"
     assert definitions[0]["options"] == ["MENA - Global - Global", "Global - Global - CIS"]
+    # Automation must survive the merge's label normalization: the lookup key
+    # is derived from the normalized label, not the raw one.
+    assert definitions[0]["automation"]["select2"] is True
+    assert definitions[0]["automation"]["label_source"] == "three_part_options"
+
+
+def test_synthesized_labels_are_frame_qualified_to_avoid_merging(monkeypatch):
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+    unlabeled = {"index": 0, "id": "", "name": "", "label": "", "label_source": "",
+                 "multiple": False, "select2": False, "visible": True}
+    outer = _FilterFrame([{**unlabeled, "options": ["A", "B"]}])
+    inner = _FilterFrame([{**unlabeled, "options": ["C", "D"]}])
+    outer.page = _FilterFramePage([outer, inner])
+
+    diagnostics = {}
+    definitions = flow_worker._asap_discover_filters(outer, diagnostics)
+
+    labels = sorted(item["label"] for item in definitions)
+    assert labels == ["Filter 1", "Filter 2.1"]
+    first = next(item for item in definitions if item["label"] == "Filter 1")
+    second = next(item for item in definitions if item["label"] == "Filter 2.1")
+    assert first["options"] == ["A", "B"]
+    assert second["options"] == ["C", "D"]
+
+
+def test_container_labels_require_a_single_select_container():
+    source = Path(flow_worker.__file__).read_text()
+    # A shared section title would name several filters identically and merge
+    # their option lists into one definition.
+    assert 'querySelectorAll("select").length === 1' in source
 
 
 def test_select_snapshot_sweeps_every_frame_and_dedupes(monkeypatch):
