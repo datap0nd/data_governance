@@ -805,3 +805,78 @@ def test_a_gear_candidate_named_save_is_never_tried():
     with pytest.raises(RuntimeError):
         flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
     assert not any("save" in item.casefold() for item in page.clicks)
+
+
+# ── Not signed in ──
+
+
+class FakeLoginPage(FakeGscmPage):
+    """The Samsung SSO form, exactly as the live scan reported it."""
+
+    def _screen(self):
+        return [
+            _label("Single Sign On Login", 465, 236, element_id=""),
+            _label("Please enter your password.", 465, 266, element_id="loginMessage"),
+            _label("Login", 465, 409, element_id="submitButton"),
+            _label("AD SSO", 415, 575, element_id="contact"),
+            _label("Change Password", 581, 692, element_id=""),
+        ]
+
+    def _icon_records(self):
+        return []
+
+    def evaluate(self, script, argument=None):
+        if "getElementById(id)" in script:
+            return False  # the Nexacro client never loads behind the form
+        return super().evaluate(script, argument)
+
+
+def test_the_sso_form_is_reported_as_not_signed_in():
+    page = FakeLoginPage()
+    assert flow_gscm.on_login_page(page) is True
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.wait_for_component(page, "mainframe.VFrameSet", timeout_ms=30_000)
+    message = str(excinfo.value)
+    assert "not signed in" in message
+    # ASAP succeeding in the same worker is the confusing part; say so.
+    assert "separate portals" in message
+    assert "--authenticate-adapter" in message
+
+
+def test_a_signed_in_portal_is_not_mistaken_for_the_login_form():
+    assert flow_gscm.on_login_page(FakeGscmPage()) is False
+
+
+def test_the_login_check_does_not_wait_out_the_full_budget():
+    # The old message arrived after three minutes of polling for a client that
+    # cannot load while a sign-in form owns the page.
+    page = FakeLoginPage()
+    waits = []
+    page.wait_for_timeout = waits.append
+    with pytest.raises(RuntimeError):
+        flow_gscm.wait_for_component(page, "mainframe.VFrameSet", timeout_ms=180_000)
+    assert sum(waits) < 30_000
+
+
+def test_setup_registers_gscm_before_reading_the_sign_in_list(tmp_path):
+    """The ordering bug that skipped GSCM's one-time sign-in during setup.
+
+    setup.ps1 reads the site list to decide which portals to bootstrap, but the
+    row is created by the migrations, which used to run only when the service
+    started - after that read.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    database_path = tmp_path / "fresh.db"
+    subprocess.run(
+        [sys.executable, str(root / "tools" / "apply_migrations.py"), str(database_path)],
+        check=True, capture_output=True,
+    )
+    listed = subprocess.run(
+        [sys.executable, str(root / "tools" / "get_flow_auth_url.py"), str(database_path)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "gscm_portal\thttps://mdscm.sec.samsung.net/nexa/index.html" in listed

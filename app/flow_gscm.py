@@ -107,6 +107,15 @@ MAX_INVENTORY_ITEMS = 120
 
 DOWNLOAD_TEXT = "Excel download"
 
+#: Samsung SSO's sign-in page. The automation profile holds one session per
+#: portal, so ASAP can be signed in while GSCM is not - which is exactly what a
+#: bare "the client did not render" message fails to convey.
+LOGIN_PAGE_MARKERS = (
+    "single sign on login", "please enter your password", "ad sso",
+    "change password", "sign in", "log in",
+)
+LOGIN_PAGE_ELEMENT_IDS = ("submitbutton", "loginmessage", "userid", "password")
+
 _UNSAFE_NAME_RE = re.compile(r"[\x00-\x1f]+")
 
 
@@ -498,6 +507,30 @@ def open_portal(page, url: str, *, timeout_ms: int = PORTAL_READY_TIMEOUT_MS) ->
     clear_screen(page)
 
 
+def on_login_page(page) -> bool:
+    """True when the browser is parked on the SSO sign-in form."""
+    labels = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
+    if sum(1 for marker in LOGIN_PAGE_MARKERS if marker in labels) >= 2:
+        return True
+    identifiers = {
+        str(record.get("id") or "").casefold()
+        for _root, record in [*visible_text(page), *icon_controls(page)]
+    }
+    return sum(1 for marker in LOGIN_PAGE_ELEMENT_IDS if marker in identifiers) >= 2
+
+
+def _not_signed_in_error() -> RuntimeError:
+    return RuntimeError(
+        "GSCM is not signed in: the automation browser is on the Samsung SSO "
+        "login page. ASAP and GSCM are separate portals with separate sessions, "
+        "so an ASAP scan can succeed while this one cannot. Sign the profile in "
+        "to GSCM once, in a visible window, with:  python app\\flow_worker.py "
+        "--profile-dir <profile> --authenticate-url "
+        "https://mdscm.sec.samsung.net/nexa/index.html --authenticate-adapter "
+        "gscm_portal   - or re-run setup.ps1, which now bootstraps every portal."
+    )
+
+
 def wait_for_component(page, component_id: str, *, timeout_ms: int) -> None:
     """Wait for one Nexacro component to exist in any frame.
 
@@ -505,14 +538,23 @@ def wait_for_component(page, component_id: str, *, timeout_ms: int) -> None:
     proves nothing about the application being up.
     """
     deadline = time.monotonic() + timeout_ms / 1000
+    checked_login = False
     while time.monotonic() < deadline:
         if _evaluate_everywhere(page, "(id) => !!document.getElementById(id)", component_id):
             return
+        if not checked_login:
+            # Give SSO a moment to redirect before judging, then stop waiting
+            # three minutes for a client that will never load behind a form.
+            page.wait_for_timeout(5_000)
+            checked_login = True
+            if on_login_page(page):
+                raise _not_signed_in_error()
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    if on_login_page(page):
+        raise _not_signed_in_error()
     raise RuntimeError(
         f"GSCM did not render its Nexacro client within {timeout_ms // 1000} seconds. "
-        f"Component not found: {component_id}. Sign in to GSCM in the automation "
-        f"browser profile, then retry. On screen: {screen_inventory(page)}"
+        f"Component not found: {component_id}. On screen: {screen_inventory(page)}"
     )
 
 

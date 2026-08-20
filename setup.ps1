@@ -406,6 +406,15 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 # without user interaction. Otherwise the worker reports a clear UI action.
 $FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
 if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
+    # Create any portal the new code registers before reading the site list.
+    # Migrations otherwise run when the service starts, which is after this
+    # point, so a newly shipped portal would be missing here and its one-time
+    # sign-in silently skipped.
+    $MigrateScript = "$CodeDir\tools\apply_migrations.py"
+    if (Test-Path $MigrateScript) {
+        try { & $PyExe $MigrateScript $DbPath | Out-Null }
+        catch { Write-Host "  WARNING: could not apply migrations before sign-in: $_" -ForegroundColor Yellow }
+    }
     $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
     if (Test-Path $AuthUrlScript) {
         # One line per portal: "adapter<TAB>url". ASAP and GSCM are separate
