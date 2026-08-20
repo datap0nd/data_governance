@@ -49,6 +49,18 @@ users, so reading it finds nothing even for someone with hundreds of bookmarks.
 An earlier version of this adapter did exactly that and reported "no bookmarks
 found" - a true statement about the wrong panel.
 
+## What the adapter never clicks
+
+The Favorite dialog puts **Save**, **Unselect**, and a per-row **pin** toggle
+next to the controls the scan needs. This adapter reads and runs reports; it
+never edits what the user has stored. `FORBIDDEN_CLICK_WORDS` is checked
+against both the visible label and the component id of every candidate before
+any click, in all three paths - label clicks, id-hint clicks, and the tree
+sweep - and a label on that list raises rather than clicking. Tests assert that
+a full scan and a full run touch neither Save, Unselect, nor a pin.
+
+The tree sweep clicks folder rows only, never report rows.
+
 ## Why this adapter matches on text and geometry, not on ids
 
 Every id here would have to be guessed. Instead:
@@ -91,6 +103,21 @@ The workbook is preserved as downloaded; the normalized CSV next to it is what
 the SQL handoff inserts. That is the same contract ASAP's XLSX exports use, so
 `sql_mode`, `sql_database/schema/table`, and the transformation script hook all
 behave identically for GSCM.
+
+## Reaching every row
+
+Two things hide bookmarks, and the scan handles both:
+
+* **The grid virtualizes.** Only rows in view exist in the DOM, so the sweep
+  pages the tree down and re-reads until nothing new appears. Because a row's
+  parents scroll out of view, the open folder stack is carried from one
+  screenful to the next - rebuilding it from the visible rows alone would file
+  a row under the wrong folder, or under none.
+* **Folders start collapsed.** A collapsed folder looks exactly like a report
+  to an indentation test. The real signal is on screen: a report row carries
+  the open and pin icons to the right of its label, and a folder row does not.
+  Rows without those icons are clicked to expand, and the sweep repeats until
+  no new rows appear.
 
 ## Bookmark identity
 
@@ -183,7 +210,7 @@ instead of the API.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Scan fails: "Setting > Favorite dialog did not open" | The gear was not found by id shape | Read the `On screen:` inventory in the scan log and add the real id to `SETTING_BUTTON_HINTS` |
+| Scan fails: "Setting > Favorite dialog did not open" | Neither the id hints nor the top-bar position found the gear | The `ICON CONTROLS:` section of the `On screen:` inventory lists every text-less control with its id; add the right one to `SETTING_BUTTON_HINTS` |
 | Scan fails: "none of its tabs listed a bookmark" | The tree did not render, or the scope dropdown points at an empty business | Read the `On screen:` inventory; check the `MX` dropdown |
 | Scan fails: "GSCM did not render its Nexacro client" | The profile has no GSCM session | Re-run the auth bootstrap; try headed mode |
 | Run fails naming the available bookmarks | The bookmark was renamed or deleted in GSCM | Rescan the GSCM catalog, then repoint the flow |

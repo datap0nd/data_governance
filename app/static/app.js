@@ -9481,11 +9481,35 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         </div>`;
 }
 
+/** The folder a report sits in, and its own name, from the discovery path.
+ *  GSCM catalogues hundreds of bookmarks under Public > MDM > Channel Site >
+ *  ..., so a flat list of full paths is unreadable. */
+function _flowReportGroup(report) {
+    const path = report.automation?.category_path || [];
+    if (path.length > 1) {
+        return { folder: path.slice(0, -1).join(" › "), leaf: path[path.length - 1] };
+    }
+    return { folder: "", leaf: report.name };
+}
+
 function _flowReportOptions(catalog, siteId, selected) {
     const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
-    return reports.length
-        ? reports.map(report => `<option value="${report.id}" ${String(report.id) === String(selected) ? "selected" : ""}>${esc(report.name)}</option>`).join("")
-        : '<option value="">Add or discover a report for this website first</option>';
+    if (!reports.length) return '<option value="">Add or discover a report for this website first</option>';
+    const groups = new Map();
+    for (const report of reports) {
+        const { folder, leaf } = _flowReportGroup(report);
+        if (!groups.has(folder)) groups.set(folder, []);
+        groups.get(folder).push({ report, leaf });
+    }
+    const option = ({ report, leaf }) => `<option value="${report.id}" ${String(report.id) === String(selected) ? "selected" : ""}>${esc(leaf)}</option>`;
+    return [...groups.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([folder, items]) => {
+            items.sort((a, b) => a.leaf.localeCompare(b.leaf));
+            return folder
+                ? `<optgroup label="${esc(folder)}">${items.map(option).join("")}</optgroup>`
+                : items.map(option).join("");
+        }).join("");
 }
 
 function _flowFilterControl(definition, value) {
@@ -9754,6 +9778,34 @@ function _flowTimingSummary(timings) {
     return phases.length ? phases.map(item => `${esc(item.phase.replaceAll("_", " "))}: ${_flowDuration(item.duration_ms)}`).join(" · ") : "No phase timing yet";
 }
 
+/** The discovered reports as the folder tree the portal itself shows.
+ *
+ *  A GSCM scan catalogues every bookmark under Public > MDM > Channel Site >
+ *  ..., which is hundreds of rows. Grouping only by the first path segment
+ *  would put all of them in one "Public" pile, so each level of the path
+ *  becomes its own collapsible group, deepest folders holding the reports.
+ *  While a filter is active every group is open, so matches are visible
+ *  without hunting through collapsed folders. */
+function _flowCatalogTreeHtml(reports, reportRow, openTopics, filter = "", depth = 0, prefix = "") {
+    const leaves = [];
+    const groups = new Map();
+    for (const report of reports) {
+        const path = report.automation?.category_path || [];
+        const segment = path[depth];
+        // The last path segment is the report itself, not a folder.
+        if (!segment || depth >= path.length - 1) { leaves.push(report); continue; }
+        if (!groups.has(segment)) groups.set(segment, []);
+        groups.get(segment).push(report);
+    }
+    const folders = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([segment, items]) => {
+        const key = prefix ? `${prefix} › ${segment}` : segment;
+        const stale = items.filter(report => report.stale).length;
+        const open = filter || openTopics.has(key) ? "open" : "";
+        return `<details class="flow-catalog-group" data-topic="${esc(key)}" ${open}><summary><strong>${esc(segment)}</strong> · ${items.length} report${items.length === 1 ? "" : "s"}${stale ? ` · ${stale} stale` : ""}</summary><div class="flow-catalog-list">${_flowCatalogTreeHtml(items, reportRow, openTopics, filter, depth + 1, key)}</div></details>`;
+    }).join("");
+    return folders + (leaves.length ? leaves.map(reportRow).join("") : "");
+}
+
 /** Scan controls for one website. ASAP offers a cheap names-only pass because
  *  a full menu walk opens every report; GSCM's bookmark sweep is one screen. */
 function _flowSiteScanButtons(site, busy) {
@@ -9796,17 +9848,14 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
             : `${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters · ${_flowExportViewLabels(report).length} export view(s)${report.automation?.download_links?.length ? ` · ${report.automation.download_links.length} download link(s)` : ""}`;
         return `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${esc(detail)}</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span><button class="btn-sm flow-scan-report" data-id="${report.id}" ${scanBusy ? "disabled" : ""}>Refresh</button></div>`;
     };
-    const groups = new Map();
-    for (const report of catalog.reports) {
-        const topic = (report.automation?.category_path || [])[0] || "Other";
-        if (!groups.has(topic)) groups.set(topic, []);
-        groups.get(topic).push(report);
-    }
+    const filter = (window._flowsState?.catalogFilter || "").trim().toLowerCase();
+    const visibleReports = filter
+        ? catalog.reports.filter(report =>
+            report.name.toLowerCase().includes(filter)
+            || (report.automation?.category_path || []).join(" ").toLowerCase().includes(filter))
+        : catalog.reports;
     const openTopics = window._flowsState?.openCatalogTopics || new Set();
-    const groupedReports = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([topic, reports]) => {
-        const stale = reports.filter(report => report.stale).length;
-        return `<details class="flow-catalog-group" data-topic="${esc(topic)}" ${openTopics.has(topic) ? "open" : ""}><summary><strong>${esc(topic)}</strong> · ${reports.length} report${reports.length === 1 ? "" : "s"}${stale ? ` · ${stale} stale` : ""}</summary><div class="flow-catalog-list">${reports.map(reportRow).join("")}</div></details>`;
-    }).join("");
+    const groupedReports = _flowCatalogTreeHtml(visibleReports, reportRow, openTopics, filter);
     const latestScan = scans[0];
     const scanEvents = window._flowsState?.scanEvents || [];
     const logEntries = scanEvents.map(event => `<div>${esc((event.created_at || "").slice(11, 19))} [${esc(event.stage || event.status)}] ${esc(event.message || "")}</div>`).join("");
@@ -9821,8 +9870,10 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
                 <div class="flow-panel-head" style="margin-top:16px"><div><h2>Scan log</h2><p>${latestScan ? `Scan #${latestScan.id} · ${esc(latestScan.status)}${scanBusy ? " · updating every 5s" : ""}` : "No scans yet."}</p></div></div>
                 <div id="flow-scan-log" style="font-family:ui-monospace,Consolas,monospace;font-size:0.72rem;line-height:1.45;max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;word-break:break-word">${logEntries || '<span style="color:var(--text-dim)">Scan progress events appear here while a scan runs.</span>'}</div>
             </section>
-            <section><div class="flow-panel-head"><div><h2>Discovered reports</h2><p>Catalog from successful scans, grouped by portal menu.</p></div></div>
-                ${catalog.reports.length ? groupedReports : '<p class="flow-inline-empty">No reports discovered yet.</p>'}
+            <section><div class="flow-panel-head"><div><h2>Discovered reports</h2><p>Catalog from successful scans, in the portal's own folder structure.</p></div><input id="flow-catalog-filter" type="search" placeholder="Filter ${catalog.reports.length} report(s)..." value="${esc(window._flowsState?.catalogFilter || "")}" style="min-width:220px"></div>
+                ${!catalog.reports.length ? '<p class="flow-inline-empty">No reports discovered yet.</p>'
+                    : !visibleReports.length ? '<p class="flow-inline-empty">No report matches that filter.</p>'
+                    : groupedReports}
             </section>
         </div>`;
 }
@@ -9995,6 +10046,16 @@ function _bindFlowWorkspace() {
         catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; }
     });
     document.querySelectorAll(".flow-scan-site-quick").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan?mode=partial`); toast("Quick scan queued - report names and menu paths only"); await navigate("flows"); } catch (err) { toast("Quick scan not queued: " + err.message); button.disabled = false; } });
+    const catalogFilter = $("#flow-catalog-filter");
+    if (catalogFilter) {
+        catalogFilter.addEventListener("input", event => {
+            state.catalogFilter = event.target.value;
+            const caret = event.target.selectionStart;
+            _flowShowView("catalog");
+            const refocused = $("#flow-catalog-filter");
+            if (refocused) { refocused.focus(); refocused.setSelectionRange(caret, caret); }
+        });
+    }
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); _flowShowView("list"); toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });

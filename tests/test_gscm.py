@@ -61,6 +61,27 @@ PRIVATE_TREE = [
 ]
 CUSTOM_TREE = []
 
+#: A report row shows an open icon and a pin icon on its right; a folder row
+#: shows neither. That is how the adapter tells them apart.
+LEAF_NAMES = {
+    "MENA_Actual_sales", "MX B2B Actual Sales", "B2B BO Fcst V2",
+    "Biz_trip_GSCM", "Weekly PSI", "CS_IRAN", "CS_SEEG",
+}
+
+
+def _icons_for(rows):
+    """Left glyph on every row; the open and pin pair only on report rows."""
+    icons = []
+    for row in rows:
+        icons.append({
+            "id": f"{row['id']}.glyph", "x": row["x"] - 18, "y": row["y"], "w": 14, "h": 14,
+        })
+        if row["text"] not in LEAF_NAMES:
+            continue
+        icons.append({"id": f"{row['id']}.open", "x": 1290, "y": row["y"], "w": 14, "h": 14})
+        icons.append({"id": f"{row['id']}.pin", "x": 1322, "y": row["y"], "w": 14, "h": 14})
+    return icons
+
 DIALOG_CHROME = [
     _label("Favorite", 600, 500),
     _label("Layout", 600, 600),
@@ -102,7 +123,15 @@ class FakeGscmPage:
 
     def __init__(self, *, trees=None, dialog_open=False, gear=True,
                  url="https://mdscm.sec.samsung.net/nexa/index.html",
-                 always_busy=False, busy_polls=0, popup_ids=()):
+                 always_busy=False, busy_polls=0, popup_ids=(),
+                 hidden_rows=None, gear_id=None, scroll_rows=None):
+        # hidden_rows: {folder name: [rows revealed when that folder is clicked]}
+        self.hidden_rows = dict(hidden_rows or {})
+        # scroll_rows: rows that only exist once the tree has been paged down.
+        self.scroll_rows = list(scroll_rows or [])
+        self.scrolled = set()
+        self.gear_id = gear_id or GEAR_ID
+        self.revealed = {}
         self.trees = trees if trees is not None else {
             "Private": PRIVATE_TREE, "Public": PUBLIC_TREE, "Custom": CUSTOM_TREE,
         }
@@ -118,7 +147,7 @@ class FakeGscmPage:
         self.wait_window_hidden = 0
         self.components = {"mainframe.VFrameSet", EXCEL_BUTTON}
         if gear:
-            self.components.add(GEAR_ID)
+            self.components.add(self.gear_id)
 
     # -- state the adapter drives --
 
@@ -128,21 +157,33 @@ class FakeGscmPage:
             (item for item in self._screen() if item["id"] == element_id), None,
         )
         text = (record or {}).get("text", "")
-        if element_id == GEAR_ID or text == "Setting":
+        if element_id == self.gear_id or text == "Setting":
             self.dialog_open = True
         elif text in self.trees:
             self.tab = text
         elif text == "Close":
             self.dialog_open = False
+        elif text in self.hidden_rows:
+            revealed = self.revealed.setdefault(self.tab, [])
+            for row in self.hidden_rows.pop(text):
+                if row not in revealed:
+                    revealed.append(row)
+
+    def _rows(self):
+        # Rows revealed by expanding a folder, and rows below the fold, belong
+        # to the tab they were found in - switching tabs shows a different set.
+        base = self.trees.get(self.tab, [])
+        if not base:
+            return []
+        rows = [*base, *self.revealed.get(self.tab, [])]
+        if self.tab in self.scrolled:
+            rows = [*rows, *self.scroll_rows]
+        return rows
 
     def _screen(self):
         if not self.dialog_open:
-            items = []
-            if self.gear:
-                items.append({"id": GEAR_ID, "text": "\u2699", "x": 1700, "y": 300, "w": 20, "h": 20})
-            items.append(_label("Favorite", 1480, 447))  # the empty home widget
-            return items
-        return [*DIALOG_CHROME, *self.trees.get(self.tab, [])]
+            return [_label("Favorite", 1480, 447)]  # the empty home widget
+        return [*DIALOG_CHROME, *self._rows()]
 
     # -- Playwright surface --
 
@@ -156,6 +197,14 @@ class FakeGscmPage:
 
     def wait_for_timeout(self, _ms):
         return None
+
+    def _icon_records(self):
+        if not self.dialog_open:
+            return (
+                [{"id": self.gear_id, "x": 1699, "y": 14, "w": 20, "h": 20}]
+                if self.gear else []
+            )
+        return _icons_for(self._rows())
 
     def locator(self, selector):
         if selector.startswith("[id='"):
@@ -184,6 +233,13 @@ class FakeGscmPage:
             return False
         if "childHasSameText" in script:
             return list(self._screen())
+        if "textContent || \'\').trim()) continue" in script or "out.push({\n            id: element.id," in script:
+            return self._icon_records()
+        if "scrollHeight - element.clientHeight" in script:
+            if self.scroll_rows and self.trees.get(self.tab) and self.tab not in self.scrolled:
+                self.scrolled.add(self.tab)
+                return {"moved": True, "top": 100, "max": 400}
+            return {"moved": False, "top": 0, "max": 0}
         if "lowered.includes('popup')" in script:
             return list(self.popup_ids)
         if "hints.some" in script:
@@ -616,3 +672,133 @@ def test_a_gscm_flow_cannot_claim_to_download_csv(flow_db):
         ), _request())
     assert excinfo.value.status_code == 400
     assert "Excel" in excinfo.value.detail
+
+
+# ── The live-portal failures ──
+
+
+def test_the_setting_gear_is_found_by_position_when_no_id_hint_matches():
+    # The live portal's gear id matched none of the hints, and the scan failed
+    # with "Setting > Favorite dialog did not open". It has no text either, so
+    # position in the top bar is the only remaining signal.
+    page = FakeGscmPage(gear_id="mainframe.VFrameSet.TopFrame.form.div_main.form.btn_env")
+    _reports, _complete = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )
+    assert page.dialog_open is True
+    assert "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_env" in page.clicks
+
+
+def test_the_inventory_reports_icon_only_controls():
+    # A text-only inventory could not show the gear, which is exactly the
+    # control the failure needed to reveal.
+    page = FakeGscmPage(gear_id="mainframe.VFrameSet.TopFrame.form.div_main.form.btn_env")
+    inventory = flow_gscm.screen_inventory(page)
+    assert "ICON CONTROLS:" in inventory
+    assert "btn_env" in inventory
+
+
+def test_a_collapsed_folder_is_expanded_so_its_reports_are_catalogued():
+    # Your Public tree shows SCM collapsed next to MDM expanded. A scan that
+    # reads only what is rendered would silently miss everything under SCM.
+    tree = [
+        _label("MDM", ROOT_X, 560),
+        _label("Channel Site", FOLDER_X, 584),
+    ]
+    hidden = {"Channel Site": [
+        _label("CS_IRAN", LEAF_X, 608),
+        _label("CS_SEEG", LEAF_X, 630),
+    ]}
+    page = FakeGscmPage(
+        trees={"Private": [], "Public": tree, "Custom": []}, hidden_rows=hidden,
+    )
+    reports = flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])[0]
+    names = {item["name"] for item in reports}
+    assert names == {"CS_IRAN", "CS_SEEG"}
+    assert all(
+        item["automation"]["favorite_folder_path"] == ["MDM", "Channel Site"]
+        for item in reports
+    )
+
+
+def test_rows_below_the_fold_are_reached_by_scrolling():
+    # The tree has a scrollbar and Nexacro grids virtualize: only the rows in
+    # view exist in the DOM.
+    page = FakeGscmPage(
+        trees={"Private": [], "Public": [
+            _label("MDM", ROOT_X, 560),
+            _label("Channel Site", FOLDER_X, 584),
+            _label("CS_IRAN", LEAF_X, 608),
+        ], "Custom": []},
+        scroll_rows=[_label("CS_SEEG", LEAF_X, 900)],
+    )
+    reports = flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])[0]
+    assert {"CS_IRAN", "CS_SEEG"} == {item["name"] for item in reports}
+
+
+def test_report_rows_are_told_from_folders_by_their_action_icons():
+    # Only a report row carries the open and pin icons. Indentation alone
+    # cannot see a folder that is currently collapsed.
+    page = FakeGscmPage()
+    flow_gscm.open_favorites_dialog(page)
+    flow_gscm.select_scope_tab(page, "Public")
+    entries = flow_gscm.read_favorite_tree(page)
+    by_name = {entry["name"]: entry for entry in entries}
+    assert by_name["MENA_Actual_sales"]["has_actions"] is True
+    assert by_name["Actual Sales"]["has_actions"] is False
+    assert by_name["SCM"]["has_actions"] is False
+
+
+def test_expansion_never_clicks_a_report_row():
+    # Selecting a report is harmless, but the tree sweep should still only
+    # touch folders: fewer clicks, and nothing near the per-row pin control.
+    page = FakeGscmPage()
+    flow_gscm.open_favorites_dialog(page)
+    flow_gscm.select_scope_tab(page, "Public")
+    flow_gscm.collect_favorite_tree(page)
+    clicked = set(page.clicks)
+    leaf_ids = {
+        row["id"] for row in PUBLIC_TREE if row["text"] in LEAF_NAMES
+    }
+    assert not (clicked & leaf_ids)
+
+
+# ── Nothing this adapter clicks may change stored data ──
+
+
+@pytest.mark.parametrize("label", ["Save", "Unselect", "Delete", "Apply", "Remove"])
+def test_destructive_labels_are_refused_outright(label):
+    page = FakeGscmPage(dialog_open=True)
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.click_label(page, [label])
+    assert "Refusing to click" in str(excinfo.value)
+
+
+def test_a_save_control_is_never_a_candidate_for_a_label_click():
+    page = FakeGscmPage(dialog_open=True)
+    flow_gscm.click_label(page, ["Public"])
+    save_id = next(row["id"] for row in DIALOG_CHROME if row["text"] == "Save")
+    assert save_id not in page.clicks
+
+
+def test_a_full_scan_never_touches_save_unselect_or_a_pin():
+    page = FakeGscmPage()
+    flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
+    forbidden = {row["id"] for row in DIALOG_CHROME if row["text"] in {"Save", "Unselect"}}
+    assert not (set(page.clicks) & forbidden)
+    assert not any(item.endswith(".pin") for item in page.clicks)
+
+
+def test_a_run_never_touches_save_unselect_or_a_pin():
+    page = FakeGscmPage()
+    flow_gscm.open_bookmark(page, _run_job())
+    forbidden = {row["id"] for row in DIALOG_CHROME if row["text"] in {"Save", "Unselect"}}
+    assert not (set(page.clicks) & forbidden)
+    assert not any(item.endswith(".pin") for item in page.clicks)
+
+
+def test_a_gear_candidate_named_save_is_never_tried():
+    page = FakeGscmPage(gear_id="mainframe.VFrameSet.TopFrame.form.div_main.form.btn_save_all")
+    with pytest.raises(RuntimeError):
+        flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
+    assert not any("save" in item.casefold() for item in page.clicks)

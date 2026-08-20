@@ -59,7 +59,28 @@ GO_LABELS = ("Go >>", "Go»", "Go »", "Go")
 CLOSE_LABELS = ("Close",)
 #: The dialog is opened by a gear icon with no text, so it is the one control
 #: that must be found by id shape.
-SETTING_BUTTON_HINTS = ("btn_setting", "btn_set", "btn_config", "setting", "config")
+SETTING_BUTTON_HINTS = (
+    "btn_setting", "btn_set", "btn_config", "btn_env", "btn_setup", "btn_pref",
+    "btn_option", "btn_opt", "btn_gear", "btn_my", "btn_user", "setting",
+    "config", "gear", "preference",
+)
+#: The gear carries no text, so when no id hint matches it is looked for by
+#: position instead: a control in the top frame, on the right of the business
+#: pills (All / MX / DA / ...), which sit at the far right of that bar.
+TOP_BAR_MAX_Y = 60
+TOP_BAR_MIN_X = 1_000
+MAX_GEAR_TRIES = 8
+#: Controls this adapter must never click, matched against both the visible
+#: label and the component id. GSCM's Favorite dialog sits next to Save,
+#: Unselect, and a pin toggle on every row: the scan reads and runs reports, it
+#: never edits what the user has stored. A hint that would reach one of these
+#: is dropped rather than tried.
+FORBIDDEN_CLICK_WORDS = (
+    "save", "delete", "remove", "del_", "drop", "clear", "reset", "unselect",
+    "apply", "submit", "confirm", "ok_", "btn_ok", "pin", "unpin", "share",
+    "new", "add", "edit", "modify", "update", "upload", "import", "export_all",
+)
+
 #: Rows that are chrome, not bookmarks.
 TREE_NOISE = {
     "alphabet", "latest", "unselect", "select", "save", "close", "go", "go >>",
@@ -80,6 +101,8 @@ TAB_SETTLE_MS = 2_500
 #: Two rows are on the same tree level when their left edges are within this
 #: many pixels. Nexacro indents one level by roughly 12-16px.
 INDENT_TOLERANCE_PX = 6
+#: A row's action icons sit on the same line as its label.
+ROW_ICON_TOLERANCE_PX = 10
 MAX_INVENTORY_ITEMS = 120
 
 DOWNLOAD_TEXT = "Excel download"
@@ -135,6 +158,48 @@ _VISIBLE_TEXT_JS = """() => {
         if (out.length >= 4000) break;
     }
     return out;
+}"""
+
+#: Visible controls that carry no text at all. The Setting gear is one of
+#: these, which is why a text-only inventory could not report it and left the
+#: adapter guessing at its id.
+_ICON_CONTROLS_JS = """() => {
+    const out = [];
+    for (const element of document.querySelectorAll('[id]')) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.width > 80 || rect.height > 80) continue;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        if ((element.textContent || '').trim()) continue;
+        out.push({
+            id: element.id,
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height),
+        });
+        if (out.length >= 400) break;
+    }
+    return out;
+}"""
+
+#: Nexacro grids virtualize: only the rows in view exist in the DOM. Paging the
+#: tallest scrollable container is how the rest are reached.
+_SCROLL_TREE_JS = """() => {
+    let best = null;
+    let bestOverflow = 0;
+    for (const element of document.querySelectorAll('*')) {
+        const overflow = element.scrollHeight - element.clientHeight;
+        if (overflow <= 8) continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 120 || rect.height < 80) continue;
+        if (overflow > bestOverflow) { bestOverflow = overflow; best = element; }
+    }
+    if (!best) return null;
+    const before = best.scrollTop;
+    best.scrollTop = Math.min(best.scrollHeight, before + Math.max(60, best.clientHeight - 40));
+    return { moved: best.scrollTop !== before, top: best.scrollTop, max: bestOverflow };
 }"""
 
 _POPUP_CLOSERS_JS = """() => {
@@ -201,12 +266,23 @@ def visible_text(page) -> list[tuple[Any, dict]]:
     return items
 
 
+def icon_controls(page) -> list[tuple[Any, dict]]:
+    """Visible controls with no text, such as the Setting gear."""
+    items = []
+    for root, records in _evaluate_everywhere(page, _ICON_CONTROLS_JS):
+        for record in records:
+            items.append((root, record))
+    return items
+
+
 def screen_inventory(page, *, keyword: str | None = None) -> str:
     """A compact dump of what is actually on screen, for failure messages.
 
     Selector work against an undocumented Nexacro screen is guesswork until
     something reports the real ids. Every failure in this module carries this
-    so one test run is enough to write the exact selector.
+    so one test run is enough to write the exact selector - which is why it
+    reports icon-only controls too: the first version listed labelled elements
+    only, and the control it most needed to reveal has no label.
     """
     lines = []
     for _root, record in visible_text(page):
@@ -218,6 +294,13 @@ def screen_inventory(page, *, keyword: str | None = None) -> str:
         if len(lines) >= MAX_INVENTORY_ITEMS:
             lines.append("... (truncated)")
             break
+    icons = [
+        f"[icon] @({record.get('x')},{record.get('y')}) id={record.get('id')}"
+        for _root, record in icon_controls(page)
+        if not keyword
+    ]
+    if icons:
+        lines.append("ICON CONTROLS: " + " | ".join(icons[:MAX_INVENTORY_ITEMS]))
     return " | ".join(lines) or "nothing visible"
 
 
@@ -281,6 +364,15 @@ def _normalize_label(value: Any) -> str:
     return re.sub(r"[\s»>]+", " ", str(value or "")).strip().casefold()
 
 
+def is_forbidden(*values) -> bool:
+    """True when any of ``values`` names a control we must never click."""
+    for value in values:
+        lowered = str(value or "").casefold()
+        if any(word in lowered for word in FORBIDDEN_CLICK_WORDS):
+            return True
+    return False
+
+
 def find_by_label(page, labels) -> list[tuple[Any, dict]]:
     """Visible elements whose whole text is one of ``labels``.
 
@@ -291,6 +383,7 @@ def find_by_label(page, labels) -> list[tuple[Any, dict]]:
     matches = [
         (root, record) for root, record in visible_text(page)
         if _normalize_label(record.get("text")) in wanted
+        and not is_forbidden(record.get("id"))
     ]
     matches.sort(key=lambda item: item[1].get("w", 0) * item[1].get("h", 0))
     return matches
@@ -298,6 +391,8 @@ def find_by_label(page, labels) -> list[tuple[Any, dict]]:
 
 def click_label(page, labels, *, timeout_ms: int = 30_000) -> dict | None:
     """Click the tightest visible control carrying one of ``labels``."""
+    if is_forbidden(*labels):
+        raise RuntimeError(f"Refusing to click a control named {labels!r} in GSCM.")
     clear_screen(page)
     for root, record in find_by_label(page, labels):
         try:
@@ -321,6 +416,7 @@ def click_by_id_hint(page, hints, *, timeout_ms: int = 30_000) -> dict | None:
         for record in records:
             candidates.append((root, record))
     # A toolbar gear sits at the top of the screen; prefer the topmost match.
+    candidates = [item for item in candidates if not is_forbidden(item[1].get("id"))]
     candidates.sort(key=lambda item: (item[1].get("y", 0), -item[1].get("x", 0)))
     for root, record in candidates:
         try:
@@ -437,24 +533,81 @@ def open_favorites_dialog(page, report_progress=None) -> None:
 
     if report_progress:
         report_progress("Opening GSCM Setting > Favorite.")
-    if click_by_id_hint(page, SETTING_BUTTON_HINTS) is None:
-        # Some builds expose a labelled entry point instead of a bare gear.
-        click_label(page, ["Setting", "Settings"])
-    page.wait_for_timeout(TAB_SETTLE_MS)
-    click_label(page, [FAVORITE_PANEL_LABEL])
-    page.wait_for_timeout(TAB_SETTLE_MS)
-    clear_screen(page)
-
-    deadline = time.monotonic() + DIALOG_READY_TIMEOUT_MS / 1000
-    while time.monotonic() < deadline:
-        if favorites_dialog_open(page):
-            return
-        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    if _open_setting(page) and _reach_favorite_panel(page):
+        return
     raise RuntimeError(
         "GSCM's Setting > Favorite dialog did not open, so its bookmark tabs "
         "(Private, Public, Custom) were never reachable. On screen: "
         + screen_inventory(page)
     )
+
+
+def _reach_favorite_panel(page) -> bool:
+    """Select the Favorite panel and confirm its scope tabs rendered."""
+    click_label(page, [FAVORITE_PANEL_LABEL])
+    page.wait_for_timeout(TAB_SETTLE_MS)
+    clear_screen(page)
+    deadline = time.monotonic() + DIALOG_READY_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        if favorites_dialog_open(page):
+            return True
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    return False
+
+
+def _open_setting(page) -> bool:
+    """Open the Setting dialog, whose gear carries no text.
+
+    Try the id shapes first. When none matches - which is what happened
+    against the live portal - fall back to position: the gear sits in the top
+    bar to the right of the business pills. Candidates are tried right to left
+    and each is checked, so a wrong guess costs one harmless icon click rather
+    than a failed scan. Nothing on the forbidden list is ever a candidate.
+    """
+    if click_by_id_hint(page, SETTING_BUTTON_HINTS) is not None:
+        page.wait_for_timeout(TAB_SETTLE_MS)
+        if _setting_dialog_open(page):
+            return True
+    if click_label(page, ["Setting", "Settings"]) is not None:
+        page.wait_for_timeout(TAB_SETTLE_MS)
+        if _setting_dialog_open(page):
+            return True
+
+    candidates = [
+        (root, record) for root, record in icon_controls(page)
+        if record.get("y", 0) <= TOP_BAR_MAX_Y
+        and record.get("x", 0) >= TOP_BAR_MIN_X
+        and not is_forbidden(record.get("id"))
+    ]
+    candidates.sort(key=lambda item: -item[1].get("x", 0))
+    for root, record in candidates[:MAX_GEAR_TRIES]:
+        try:
+            root.locator(f"[id='{_css_escape(record['id'])}']").first.click(
+                force=True, timeout=15_000,
+            )
+        except Exception:
+            continue
+        page.wait_for_timeout(TAB_SETTLE_MS)
+        if _setting_dialog_open(page):
+            return True
+        _dismiss_stray_panel(page)
+    return False
+
+
+def _setting_dialog_open(page) -> bool:
+    """The Setting dialog is up when its left rail is on screen."""
+    visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
+    rail = {"favorite", "layout", "dashboard", "installation"}
+    return len(rail & visible) >= 2 or favorites_dialog_open(page)
+
+
+def _dismiss_stray_panel(page) -> None:
+    """Close whatever a wrong icon opened, without touching stored data."""
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    clear_screen(page)
 
 
 def select_scope_tab(page, tab: str) -> bool:
@@ -466,13 +619,18 @@ def select_scope_tab(page, tab: str) -> bool:
     return True
 
 
-def read_favorite_tree(page) -> list[dict]:
+def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[dict]:
     """Rebuild the folder tree currently shown in the Favorite panel.
 
     The tree is a Nexacro grid with no semantic nesting in the DOM: depth is
     expressed purely as horizontal indentation. Rows are therefore ordered by
     their vertical position and nested by comparing left edges, which is how
     the screen itself communicates the hierarchy.
+
+    ``seed`` carries the folder stack that was open at the top of the view.
+    Once the tree has been scrolled, a row's parents are off-screen, and
+    rebuilding the stack from the visible rows alone would file it under the
+    wrong folder - or under none.
     """
     rows = []
     for root, record in visible_text(page):
@@ -485,15 +643,20 @@ def read_favorite_tree(page) -> list[dict]:
             "name": name,
             "x": record.get("x", 0),
             "y": record.get("y", 0),
+            "w": record.get("w", 0),
         })
     if not rows:
         return []
+    # A report row carries its own action icons (open, pin) on the right; a
+    # folder row does not. That is a far better leaf test than "the next row is
+    # indented", which cannot see a folder that is currently collapsed.
+    icons = [record for _root, record in icon_controls(page)]
 
     # The tree occupies the densest vertical band on screen. Keep the rows that
     # share a left-edge family with the majority, so page chrome elsewhere in
     # the dialog does not become a phantom folder.
     rows.sort(key=lambda row: (row["y"], row["x"]))
-    stack: list[tuple[int, str]] = []
+    stack: list[tuple[int, str]] = list(seed or [])
     entries = []
     for row in rows:
         while stack and row["x"] <= stack[-1][0] + INDENT_TOLERANCE_PX:
@@ -504,14 +667,124 @@ def read_favorite_tree(page) -> list[dict]:
             "folder_path": folder_path,
             "element_id": row["id"],
             "indent": row["x"],
+            "y": row["y"],
             "root": row["root"],
+            "has_actions": _row_has_actions(row, icons),
+            "icons_seen": bool(icons),
+            "stack": [*stack, (row["x"], row["name"])],
         })
         stack.append((row["x"], row["name"]))
     return entries
 
 
+def scroll_tree(page) -> bool:
+    """Page the favorites tree down one screen. True when it actually moved."""
+    for _root, value in _evaluate_everywhere(page, _SCROLL_TREE_JS):
+        if isinstance(value, dict) and value.get("moved"):
+            return True
+    return False
+
+
+def collect_favorite_tree(page, report_progress=None, *, max_passes: int = 40) -> list[dict]:
+    """Every row in the current tab, scrolling and expanding as needed.
+
+    Two things hide rows. The grid virtualizes, so only what is in view exists
+    in the DOM; and folders start collapsed, so their children are not rendered
+    at all. This scrolls to the bottom collecting rows, then clicks the rows
+    that might be collapsed folders and repeats until nothing new appears.
+
+    Clicking a tree row only selects or expands it - the report itself opens on
+    ``Go >>`` - so an unnecessary click costs nothing.
+    """
+    collected: dict[tuple, dict] = {}
+    seed: list[tuple[int, str]] = []
+
+    def absorb(*, carry: bool = False) -> int:
+        """Read the visible rows once.
+
+        ``carry`` continues the previous screenful's folder stack, which is
+        only correct while scrolling down through one continuous pass. A read
+        that starts again from the top of the tree must not carry it, or every
+        row is filed one level deeper than it belongs and reappears as a
+        duplicate entry.
+        """
+        nonlocal seed
+        added = 0
+        entries = read_favorite_tree(page, seed if carry else None)
+        for entry in entries:
+            key = (tuple(entry["folder_path"]), entry["name"].casefold())
+            if key not in collected:
+                collected[key] = entry
+                added += 1
+        seed = list(entries[-1]["stack"]) if entries else []
+        return added
+
+    absorb()
+    for _pass in range(max_passes):
+        if not scroll_tree(page):
+            break
+        page.wait_for_timeout(400)
+        absorb(carry=True)
+
+    expanded: set[tuple] = set()
+    for _round in range(max_passes):
+        folders = {
+            (tuple(entry["folder_path"]), entry["name"].casefold())
+            for entry in _folder_entries(list(collected.values()))
+        }
+        candidates = [
+            entry for key, entry in collected.items()
+            if key in folders and key not in expanded
+            and not is_forbidden(entry.get("element_id"))
+        ]
+        if not candidates:
+            break
+        opened_any = False
+        for entry in candidates:
+            key = (tuple(entry["folder_path"]), entry["name"].casefold())
+            expanded.add(key)
+            try:
+                _click_entry(page, entry)
+            except Exception:
+                continue
+            page.wait_for_timeout(250)
+            if absorb():
+                opened_any = True
+        if not opened_any:
+            break
+        if report_progress:
+            report_progress(f"Expanded the tree to {len(collected)} row(s).")
+
+    return sorted(collected.values(), key=lambda entry: (entry["folder_path"], entry["y"]))
+
+
+def _row_has_actions(row: dict, icons: list[dict]) -> bool:
+    """Whether this row shows the per-report action icons on its right.
+
+    Every row carries an icon on its *left* - a folder or a document glyph -
+    so only an icon past the label's right edge counts. That is the open and
+    pin pair, which GSCM renders for reports and not for folders.
+    """
+    row_y = row.get("y", 0)
+    row_right = row.get("x", 0) + row.get("w", 0)
+    return any(
+        abs(icon.get("y", 0) - row_y) <= ROW_ICON_TOLERANCE_PX
+        and icon.get("x", 0) > row_right
+        for icon in icons
+    )
+
+
 def _leaf_entries(entries: list[dict]) -> list[dict]:
-    """Rows that no deeper row nests under: the reports, not the folders."""
+    """The report rows, excluding the folders that contain them.
+
+    Prefer the action icons each report row carries. Fall back to indentation
+    when no icons were reported at all, so the reconstruction still works on a
+    screen that renders its actions differently.
+    """
+    if any(entry.get("icons_seen") for entry in entries):
+        # The screen renders row icons, so their absence is meaningful: this
+        # row is a folder, even when it is collapsed and looks like a leaf.
+        return [entry for entry in entries if entry.get("has_actions")]
     leaves = []
     for index, entry in enumerate(entries):
         following = entries[index + 1] if index + 1 < len(entries) else None
@@ -519,6 +792,12 @@ def _leaf_entries(entries: list[dict]) -> list[dict]:
             continue  # a folder: the next row is indented under it
         leaves.append(entry)
     return leaves
+
+
+def _folder_entries(entries: list[dict]) -> list[dict]:
+    """Rows that are folders, and so may hide children until expanded."""
+    leaves = {id(entry) for entry in _leaf_entries(entries)}
+    return [entry for entry in entries if id(entry) not in leaves]
 
 
 # ── Discovery ──
@@ -573,7 +852,9 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
                 "message": f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
             })
             continue
-        leaves = _leaf_entries(read_favorite_tree(page))
+        leaves = _leaf_entries(collect_favorite_tree(page, lambda message: report_progress(
+            "running", {"stage": "report_discovery", "message": f"{tab}: {message}"},
+        )))
         added = 0
         for entry in leaves:
             key = (tab, tuple(entry["folder_path"]), entry["name"].casefold())
@@ -681,7 +962,7 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
     distinguishes them. Matching on name alone would silently download a
     different report than the flow was built for.
     """
-    leaves = _leaf_entries(read_favorite_tree(page))
+    leaves = _leaf_entries(collect_favorite_tree(page))
     by_name = [item for item in leaves if item["name"].casefold() == name.casefold()]
     if not by_name:
         available = ", ".join(sorted({item["name"] for item in leaves})[:30]) or "none"
