@@ -1828,6 +1828,28 @@ def list_scans(site_id: int | None = None, limit: int = Query(default=50, ge=1, 
         return result
 
 
+@router.get("/scans/{scan_id}/events")
+def list_scan_events(scan_id: int, after_id: int = Query(default=0, ge=0),
+                     limit: int = Query(default=400, ge=1, le=1000)):
+    """The scan's progress log, oldest first, for the live catalog log window."""
+    with get_db() as db:
+        scan = db.execute(
+            "SELECT id, status FROM flow_catalog_scans WHERE id=?", (scan_id,)
+        ).fetchone()
+        if not scan:
+            raise HTTPException(404, "Scan not found.")
+        rows = db.execute(
+            """SELECT id, status, stage, message, created_at FROM flow_scan_events
+               WHERE scan_id=? AND id>? ORDER BY id LIMIT ?""",
+            (scan_id, after_id, limit),
+        ).fetchall()
+    return {
+        "scan_id": scan_id,
+        "scan_status": scan["status"],
+        "events": [dict(row) for row in rows],
+    }
+
+
 @router.post("/sites/{site_id}/scan")
 def queue_catalog_scan(site_id: int, request: Request):
     with get_db() as db:
@@ -2210,6 +2232,14 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
             raise HTTPException(404, "Scan is not assigned to this worker.")
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
+        db.execute(
+            """INSERT INTO flow_scan_events (scan_id, status, stage, message, details_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id, body.status, body.progress.get("stage"),
+                body.progress.get("message"), _json(body.progress), now,
+            ),
+        )
         result = _apply_discovery(
             db, row["site_id"], body.reports, now, complete=body.complete,
         ) if body.status == "succeeded" else {}

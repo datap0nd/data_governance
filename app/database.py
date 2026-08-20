@@ -579,6 +579,16 @@ CREATE TABLE IF NOT EXISTS flow_catalog_scans (
     heartbeat_at    DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS flow_scan_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         INTEGER NOT NULL REFERENCES flow_catalog_scans(id),
+    status          TEXT NOT NULL,
+    stage           TEXT,
+    message         TEXT,
+    details_json    TEXT NOT NULL DEFAULT '{}',
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS flow_sql_catalog (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     database_name   TEXT NOT NULL,
@@ -605,6 +615,7 @@ CREATE INDEX IF NOT EXISTS idx_flow_runs_queue ON flow_runs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_run_files_run ON flow_run_files(run_id);
 CREATE INDEX IF NOT EXISTS idx_flow_run_events_run ON flow_run_events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_flow_scan_events_scan ON flow_scan_events(scan_id, id);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_queue ON flow_catalog_scans(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_catalog_scans_site ON flow_catalog_scans(site_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_flow_sql_catalog_names ON flow_sql_catalog(database_name, schema_name, table_name, stale);
@@ -1101,6 +1112,17 @@ MIGRATIONS = [
          )""",
     # Flow ownership and failure notification routing
     "ALTER TABLE flows ADD COLUMN owner_person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
+    # Live catalog-scan log: one row per worker progress post
+    """CREATE TABLE IF NOT EXISTS flow_scan_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scan_id INTEGER NOT NULL REFERENCES flow_catalog_scans(id),
+        status TEXT NOT NULL,
+        stage TEXT,
+        message TEXT,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_scan_events_scan ON flow_scan_events(scan_id, id)",
 ]
 
 

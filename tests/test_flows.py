@@ -2069,7 +2069,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=55' in index
+    assert '/static/app.js?v=56' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
@@ -2736,3 +2736,54 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
 def test_worker_shares_the_artifact_list_with_its_failure_report():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
     assert "artifacts=artifacts,\n                        )\n                        sql_artifacts = artifacts" in source
+
+
+def test_scan_progress_posts_build_a_live_event_log(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="scan-log-worker", display_name="Scan log worker",
+        capabilities={"adapters": ["asap_portal"]},
+    ))
+    with database.get_db() as db:
+        scan_id = flows._queue_scan(db, dict(
+            db.execute("SELECT * FROM flow_sites WHERE id=?", (site["id"],)).fetchone()
+        ), "manual", "Analyst")
+        db.execute(
+            "UPDATE flow_catalog_scans SET worker_id=?, status='claimed' WHERE id=?",
+            ("scan-log-worker", scan_id),
+        )
+
+    flows.update_scan("scan-log-worker", scan_id, flows.ScanProgress(
+        status="running",
+        progress={"stage": "filter_inspection", "message": "Inspecting report 1 of 3."},
+        complete=False,
+    ))
+    flows.update_scan("scan-log-worker", scan_id, flows.ScanProgress(
+        status="running",
+        progress={"stage": "html_dashboard_links", "message": "Dash: 2 download link(s) found."},
+        complete=False,
+    ))
+
+    log = flows.list_scan_events(scan_id, after_id=0, limit=400)
+    assert log["scan_id"] == scan_id
+    stages = [event["stage"] for event in log["events"]]
+    assert stages == ["filter_inspection", "html_dashboard_links"]
+    assert "Inspecting report 1 of 3." in log["events"][0]["message"]
+
+    # Incremental polling from the last seen id returns only new events.
+    tail = flows.list_scan_events(scan_id, after_id=log["events"][0]["id"], limit=400)
+    assert [event["stage"] for event in tail["events"]] == ["html_dashboard_links"]
+
+    with pytest.raises(HTTPException) as excinfo:
+        flows.list_scan_events(99999, after_id=0, limit=400)
+    assert excinfo.value.status_code == 404
+
+
+def test_catalog_ui_groups_reports_and_drops_manual_add():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert "flow-add-report" not in source
+    assert "_flowReportDialog" not in source
+    assert 'class="flow-catalog-group"' in source
+    assert "openCatalogTopics" in source
+    assert 'id="flow-scan-log"' in source
+    assert "scans/${scans[0].id}/events" in source
