@@ -35,14 +35,18 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
+    from app import flow_gscm
     from app.flow_credentials import load_asap_credentials
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
+    import flow_gscm
     from flow_credentials import load_asap_credentials
 
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
+GSCM_PORTAL_ADAPTER = flow_gscm.GSCM_PORTAL_ADAPTER
 AUTH_MARKER = ".asap_authenticated"
+GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
@@ -3455,6 +3459,7 @@ def execute_job(
     timings = _Timings()
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
+    is_gscm = job["site"].get("adapter") == GSCM_PORTAL_ADAPTER
     ready_text = job["report"].get("ready_text")
     open_export = job["report"].get("open_export_text")
 
@@ -3487,7 +3492,17 @@ def execute_job(
         export_view = task["export_view"]
         download_link = task.get("download_link")
         with timings.measure("navigation", report_id=job["report"].get("id")):
-            if is_asap:
+            if is_gscm:
+                # A GSCM bookmark already carries its filters, period, and
+                # dimensions. Opening it is the whole configuration step.
+                frame = None
+                flow_gscm.open_bookmark(page, job, report_progress=lambda message: report_progress(
+                    "running",
+                    {"stage": "opening_report", "message": message,
+                     "item_index": index, "item_count": len(tasks)},
+                    artifacts,
+                ))
+            elif is_asap:
                 frame = _asap_open_report(page, job, profile_dir)
                 if download_link:
                     # Dashboard reports have no export-view tabs to activate.
@@ -3509,17 +3524,36 @@ def execute_job(
                     )
                 if open_export:
                     _click_named(page, open_export)
-        report_progress(
-            "running",
-            {
-                "stage": "configuring",
-                "message": f"Configuring export {index} of {len(tasks)}: {export_view or job['report']['name']}.",
-                "period": period, "export_view": export_view,
-                "item_index": index, "item_count": len(tasks),
-            },
-            artifacts,
-        )
-        if is_asap:
+        if not is_gscm:
+            # A GSCM bookmark has nothing left to configure: its filters were
+            # saved inside GSCM and applied when the bookmark opened.
+            report_progress(
+                "running",
+                {
+                    "stage": "configuring",
+                    "message": f"Configuring export {index} of {len(tasks)}: {export_view or job['report']['name']}.",
+                    "period": period, "export_view": export_view,
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+        if is_gscm:
+            report_progress(
+                "running",
+                {
+                    "stage": "file_export",
+                    "message": f"Exporting the GSCM bookmark to Excel: {job['report']['name']}.",
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+            with timings.measure("file_export", report_id=job["report"].get("id")):
+                staging = download_staging_dir or profile_dir / "downloads"
+                files_before = _download_staging_snapshot(staging)
+                flow_gscm.trigger_excel_export(page, job)
+                staged_file = _wait_for_staged_download(staging, files_before)
+                export_pages = []
+        elif is_asap:
             view_job = {
                 **job,
                 "report": {
@@ -3592,7 +3626,7 @@ def execute_job(
             # Do not query or close that vanished page object: Edge can leave
             # it half-detached and any later Playwright call can block forever.
             # The next period reopens the report in the surviving main page.
-            if is_asap:
+            if is_asap or is_gscm:
                 metadata = _store_completed_download(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
@@ -3663,7 +3697,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False},
         }
         for attempt in range(60):
             try:
@@ -3713,7 +3747,20 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         })
 
                     try:
-                        reports, timings, complete = discover_asap_catalog(page, scan["job"], scan_progress, profile_dir)
+                        scan_job = scan["job"]
+                        if scan_job.get("site", {}).get("adapter") == GSCM_PORTAL_ADAPTER:
+                            reports, complete = flow_gscm.discover_catalog(
+                                page, scan_job, scan_progress,
+                            )
+                            timings = [{
+                                "phase": "report_discovery",
+                                "duration_ms": round((time.perf_counter() - scan_started) * 1000),
+                                "item_count": len(reports), "status": "succeeded",
+                            }]
+                        else:
+                            reports, timings, complete = discover_asap_catalog(
+                                page, scan_job, scan_progress, profile_dir,
+                            )
                         scan_progress(
                             "succeeded",
                             {"stage": "complete", "message": f"Discovered {len(reports)} report(s)."},
@@ -3942,8 +3989,24 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             context.close()
 
 
-def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 10):
-    """Create the automation profile's SSO session in a visible Edge window."""
+def _adapter_for_auth_url(auth_url: str) -> str:
+    """Pick the portal adapter from the bootstrap URL when none was given."""
+    host = re.sub(r"^https?://([^/]+).*$", r"\1", str(auth_url or "")).casefold()
+    if "mdscm.sec.samsung.net" in host:
+        return GSCM_PORTAL_ADAPTER
+    return ASAP_PORTAL_ADAPTER
+
+
+def authenticate_site(profile_dir: Path, auth_url: str, timeout_minutes: int = 10,
+                      adapter: str | None = None):
+    """Create the automation profile's SSO session in a visible Edge window.
+
+    Both portals sit behind the same Samsung SSO, but they prove they are up in
+    completely different ways: ASAP renders navigation anchors, GSCM compiles a
+    Nexacro component tree that contains no anchors at all.
+    """
+    adapter = (adapter or "").strip() or _adapter_for_auth_url(auth_url)
+    label = "GSCM" if adapter == GSCM_PORTAL_ADAPTER else "ASAP"
     with _exclusive_worker_lock(profile_dir) as acquired:
         if not acquired:
             raise RuntimeError("The Flows worker is still using the automation browser profile.")
@@ -3955,23 +4018,43 @@ def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
                 accept_downloads=True,
             )
             page = context.pages[0] if context.pages else context.new_page()
-            _asap_goto(page, auth_url, profile_dir)
-            print("Complete ASAP sign-in in the browser window if prompted.", flush=True)
-            roots = _wait_for_navigation_roots(page, timeout_minutes * 60_000)
-            if not roots:
-                current_url = page.url
-                title = _clean_text(page.title())
-                context.close()
-                raise RuntimeError(
-                    f"ASAP authentication did not complete within {timeout_minutes} minutes "
-                    f"(URL: {current_url}, title: {title})."
-                )
-            (profile_dir / AUTH_MARKER).write_text(json.dumps({
+            print(f"Complete {label} sign-in in the browser window if prompted.", flush=True)
+            if adapter == GSCM_PORTAL_ADAPTER:
+                try:
+                    flow_gscm.open_portal(
+                        page, auth_url, timeout_ms=timeout_minutes * 60_000,
+                    )
+                except Exception as exc:
+                    current_url = page.url
+                    context.close()
+                    raise RuntimeError(
+                        f"GSCM authentication did not complete within {timeout_minutes} "
+                        f"minutes (URL: {current_url}). {exc}"
+                    ) from exc
+                marker = GSCM_AUTH_MARKER
+            else:
+                _asap_goto(page, auth_url, profile_dir)
+                roots = _wait_for_navigation_roots(page, timeout_minutes * 60_000)
+                if not roots:
+                    current_url = page.url
+                    title = _clean_text(page.title())
+                    context.close()
+                    raise RuntimeError(
+                        f"ASAP authentication did not complete within {timeout_minutes} minutes "
+                        f"(URL: {current_url}, title: {title})."
+                    )
+                marker = AUTH_MARKER
+            (profile_dir / marker).write_text(json.dumps({
                 "authenticated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "host": re.sub(r"^https?://([^/]+).*$", r"\1", page.url),
             }), encoding="utf-8")
-            print("ASAP automation browser authenticated.", flush=True)
+            print(f"{label} automation browser authenticated.", flush=True)
             context.close()
+
+
+def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 10):
+    """Backwards-compatible entry point for the ASAP-only bootstrap."""
+    authenticate_site(profile_dir, auth_url, timeout_minutes, ASAP_PORTAL_ADAPTER)
 
 
 def main():
@@ -3981,14 +4064,19 @@ def main():
     parser.add_argument("--name", default=os.environ.get("METRONOME_FLOW_WORKER_NAME", socket.gethostname()))
     parser.add_argument("--profile-dir", default=os.environ.get("METRONOME_FLOW_PROFILE", str(Path.home() / ".metronome-flow-browser")))
     parser.add_argument("--headed", action="store_true", help="Show the browser. Recommended for initial SSO setup.")
-    parser.add_argument("--authenticate-url", help="Open a one-time visible ASAP SSO bootstrap and exit.")
+    parser.add_argument("--authenticate-url", help="Open a one-time visible portal SSO bootstrap and exit.")
+    parser.add_argument("--authenticate-adapter", default=None,
+                        help="Portal adapter for the bootstrap. Inferred from the URL when omitted.")
     parser.add_argument("--authentication-timeout-minutes", type=int, default=10)
     parser.add_argument("--once", action="store_true", help="Claim at most one run, then exit.")
     parser.add_argument("--idle-exit-seconds", type=int, default=0, help="Exit after this many idle seconds.")
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
     if args.authenticate_url:
-        authenticate_asap(profile_dir, args.authenticate_url, args.authentication_timeout_minutes)
+        authenticate_site(
+            profile_dir, args.authenticate_url, args.authentication_timeout_minutes,
+            args.authenticate_adapter,
+        )
         return
     with _exclusive_worker_lock(profile_dir) as acquired:
         if not acquired:

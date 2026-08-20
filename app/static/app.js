@@ -9101,6 +9101,10 @@ const FAQ_ITEMS = [
         a: "Under Tools, Full Export generates a structured text dump of all platform data (sources, reports, scripts, tasks, lineage) with section checkboxes. Includes a diagnostic report and optional Python source code export."
     },
     {
+        q: "How do GSCM flows work?",
+        a: "GSCM is a separate portal from ASAP. You configure a report inside GSCM and save it as a bookmark on its home screen; Flows > Catalog > GSCM > Scan bookmarks then catalogues every bookmark you saved. A GSCM flow points at one bookmark and has no filters or period to set here - the bookmark already holds them. Each run opens the bookmark, exports GSCM's Excel workbook, normalizes it to CSV, and hands it to SQL like any other flow."
+    },
+    {
         q: "What is the AI Assistant?",
         a: "The AI chat (bottom-right button) lets you ask questions about your data ecosystem - risks, source health, specific reports, or general governance questions. It uses live data from the database to give contextual answers."
     },
@@ -9432,16 +9436,16 @@ function _flowEmptyState(catalog) {
     const action = !hasSites
         ? '<button class="btn-primary" id="flow-add-site-empty">Add website</button>'
         : !hasReports
-            ? '<button class="btn-primary" id="flow-scan-empty">Scan ASAP</button>'
+            ? '<button class="btn-primary" id="flow-scan-empty">Scan the catalog</button>'
             : '<button class="btn-primary" id="flow-create-empty">Create flow</button>';
     const copy = !hasSites
         ? "Start with the website whose authenticated browser will download reports."
         : !hasReports
-            ? "The website is ready. Scan ASAP to discover reports and their available filters."
+            ? "The website is ready. Scan it to discover its reports - ASAP menus, or the bookmarks saved on GSCM's home screen."
             : "The catalog is ready. Create a flow and choose its filters, files, and schedule.";
     return `
         <div class="flow-empty">
-            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Discover ASAP reports" : "Build the first download flow"}</h2>
+            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Discover portal reports" : "Build the first download flow"}</h2>
             <p>${copy} Configuration stays in this machine's SQLite database.</p>
             <div class="flow-empty-actions">${action}</div>
         </div>`;
@@ -9606,6 +9610,16 @@ function _flowOwnerSummary(owner) {
     return owner.email ? `${esc(owner.name)} · ${esc(owner.email)}` : `${esc(owner.name)} · no email mapped`;
 }
 
+const FLOW_GSCM_ADAPTER = "gscm_portal";
+
+/** GSCM bookmarks carry their own filters, period, and dimensions inside GSCM,
+ *  so a GSCM flow is "open the bookmark, export, load" with nothing to
+ *  configure here. ASAP is the opposite: every prompt is driven from Metronome. */
+function _flowSiteIsGscm(catalog, siteId) {
+    const site = catalog.sites.find(item => String(item.id) === String(siteId));
+    return site?.adapter === FLOW_GSCM_ADAPTER;
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
@@ -9624,54 +9638,58 @@ function _flowBuilderHtml(catalog, existing = null) {
     const sqlSchemas = [...new Set(sqlCatalog.targets.filter(item => item.database === selectedDatabase).map(item => item.schema))];
     const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
     const sqlTables = sqlCatalog.targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
-    const hasWeekFilter = _flowHasWeekFilter(report);
+    const isGscm = _flowSiteIsGscm(catalog, siteId);
+    const hasWeekFilter = !isGscm && _flowHasWeekFilter(report);
     const periodStrategy = hasWeekFilter ? (existing?.period_strategy || "latest") : "none";
-    const fileFormat = existing?.file_format || "xlsx";
+    // GSCM exports through its Nexacro toolbar, which only emits .xlsx.
+    const fileFormat = isGscm ? "xlsx" : (existing?.file_format || "xlsx");
     const people = window._flowsState?.people || [];
     const owner = people.find(person => person.id === existing?.owner_person_id);
     const exportViewCount = _flowExportViewLabels(report).length;
     const downloadLinkCount = _flowDownloadLinkLabels(report).length;
     const isDashboard = downloadLinkCount > 0 && exportViewCount === 0;
-    const defaultFilename = exportViewCount > 1 || downloadLinkCount > 1 || !hasWeekFilter
-        ? `{flow}_{export}.${fileFormat}`
-        : `{flow}_{start_period}_{end_period}.${fileFormat}`;
+    const defaultFilename = isGscm
+        ? `{flow}_{date}.${fileFormat}`
+        : (exportViewCount > 1 || downloadLinkCount > 1 || !hasWeekFilter
+            ? `{flow}_{export}.${fileFormat}`
+            : `{flow}_{start_period}_{end_period}.${fileFormat}`);
     return `
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
-                <form id="flow-builder-form" data-id="${existing?.id || ""}">
+                <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}">
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Source and report</h2><p>Choose an enabled catalog report and its configured filters.</p></div>
+                        <div class="flow-section-head"><h2>Source and report</h2><p>${isGscm ? "Choose a GSCM bookmark. It already holds the filters you saved in GSCM." : "Choose an enabled catalog report and its configured filters."}</p></div>
                         <div class="flow-form-grid">
                             <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Weekly report download"></label>
                             <label><span>Website</span><select id="flow-site" required>${sites.length ? sites.map(site => `<option value="${site.id}" ${String(site.id) === String(siteId) ? "selected" : ""}>${esc(site.name)}</option>`).join("") : '<option value="">Add a website first</option>'}</select></label>
-                            <label class="flow-span-2"><span>Report</span><div class="flow-file-control"><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select><button type="button" class="btn-secondary" id="flow-scan-report-now">Scan report</button></div><small id="flow-report-scan-status">Scan this report to discover its filters and options without running a full catalog scan.</small></label>
+                            <label class="flow-span-2"><span>${isGscm ? "Bookmark" : "Report"}</span><div class="flow-file-control"><select id="flow-report" required>${_flowReportOptions(catalog, siteId, reportId)}</select><button type="button" class="btn-secondary" id="flow-scan-report-now">${isGscm ? "Rescan bookmark" : "Scan report"}</button></div><small id="flow-report-scan-status">${isGscm ? "Rescan to confirm this bookmark is still on the GSCM home screen." : "Scan this report to discover its filters and options without running a full catalog scan."}</small></label>
                         </div>
                     </div>
-                    <div class="flow-form-section" id="flow-report-filters">
-                        <div class="flow-section-head"><h2>Report filters</h2><p>Every value below was discovered from ASAP. Rescan the catalog when the portal changes.</p></div>
+                    <div class="flow-form-section" id="flow-report-filters" ${isGscm ? "hidden" : ""}>
+                        <div class="flow-section-head"><h2>Report filters</h2><p>Every value below was discovered from the website. Rescan the catalog when the portal changes.</p></div>
                         <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && filter.control_type !== "week").map(definition => `
                             <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
                     </div>
-                    <div class="flow-form-section" id="flow-export-views-section" ${isDashboard ? "hidden" : ""}>
+                    <div class="flow-form-section" id="flow-export-views-section" ${isDashboard || isGscm ? "hidden" : ""}>
                         <div class="flow-section-head"><h2>Export views</h2><p>One run downloads every checked view, validates the full bundle, and sends all files to one SQL transaction.</p></div>
                         <div class="flow-form-grid" id="flow-export-views">${_flowExportViewsHtml(report, existing?.export_views)}</div>
                     </div>
-                    <div class="flow-form-section" id="flow-download-links-section" ${isDashboard ? "" : "hidden"}>
+                    <div class="flow-form-section" id="flow-download-links-section" ${isDashboard && !isGscm ? "" : "hidden"}>
                         <div class="flow-section-head"><h2>Download links</h2><p>This report is an embedded HTML dashboard with no Export Wizard. One run clicks every checked download link and saves each file.</p></div>
                         <div class="flow-form-grid" id="flow-download-links">${_flowDownloadLinksHtml(report, existing?.download_links)}</div>
                     </div>
                     <div class="flow-form-section">
-                        <div class="flow-section-head"><h2>Download behavior</h2><p>Download through the latest ASAP week, use a fixed range, or advance through rolling windows.</p></div>
+                        <div class="flow-section-head"><h2>Download behavior</h2><p>${isGscm ? "One run opens the bookmark, exports GSCM's Excel workbook, and normalizes it for SQL." : "Download through the latest ASAP week, use a fixed range, or advance through rolling windows."}</p></div>
                         <div class="flow-form-grid">
-                            <label><span>Period</span><select id="flow-period-strategy"><option value="none" ${periodStrategy === "none" ? "selected" : ""}>No period selection</option><option value="latest" ${periodStrategy === "latest" ? "selected" : ""}>Start to latest available</option><option value="fixed" ${periodStrategy === "fixed" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${periodStrategy === "rolling" ? "selected" : ""}>Rolling X-week window</option></select><small id="flow-period-help">${hasWeekFilter ? "Latest available comes from ASAP discovery." : "This report has no Sell-out Week prompt."}</small></label>
-                            <label><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
-                            <label><span>Download type</span><select id="flow-file-format"><option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option><option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV (.csv)</option></select><small>Excel originals are preserved and normalized to CSV for SQL.</small></label>
+                            <label ${isGscm ? "hidden" : ""}><span>Period</span><select id="flow-period-strategy"><option value="none" ${periodStrategy === "none" ? "selected" : ""}>No period selection</option><option value="latest" ${periodStrategy === "latest" ? "selected" : ""}>Start to latest available</option><option value="fixed" ${periodStrategy === "fixed" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${periodStrategy === "rolling" ? "selected" : ""}>Rolling X-week window</option></select><small id="flow-period-help">${hasWeekFilter ? "Latest available comes from ASAP discovery." : "This report has no Sell-out Week prompt."}</small></label>
+                            <label ${isGscm ? "hidden" : ""}><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
+                            <label><span>Download type</span><select id="flow-file-format" ${isGscm ? "disabled" : ""}><option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option>${isGscm ? "" : `<option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV (.csv)</option>`}</select><small>${isGscm ? "GSCM's toolbar export only emits Excel. The original workbook is kept and normalized to CSV for SQL." : "Excel originals are preserved and normalized to CSV for SQL."}</small></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
                             <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine.</small></label>
-                            <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>Use {export} when downloading multiple views. Tokens: {flow}, {report}, {export}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
+                            <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>${isGscm ? "One bookmark saves one file per run." : "Use {export} when downloading multiple views."} Tokens: {flow}, {report}, {export}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
                         </div>
                     </div>
                     <div class="flow-form-section">
@@ -9730,6 +9748,17 @@ function _flowTimingSummary(timings) {
     return phases.length ? phases.map(item => `${esc(item.phase.replaceAll("_", " "))}: ${_flowDuration(item.duration_ms)}`).join(" · ") : "No phase timing yet";
 }
 
+/** Scan controls for one website. ASAP offers a cheap names-only pass because
+ *  a full menu walk opens every report; GSCM's bookmark sweep is one screen. */
+function _flowSiteScanButtons(site, busy) {
+    const disabled = busy ? "disabled" : "";
+    if (site.adapter === FLOW_GSCM_ADAPTER) {
+        return `<button class="btn-sm flow-scan-site" data-id="${site.id}" title="Read the bookmarks saved on the GSCM home screen" ${disabled}>Scan bookmarks</button>`;
+    }
+    if (site.supports_discovery === false) return "";
+    return `<button class="btn-sm flow-scan-site-quick" data-id="${site.id}" title="Catalog report names and menu paths only - fast, no filters" ${disabled}>Quick scan</button><button class="btn-sm flow-scan-site" data-id="${site.id}" title="Open every report and discover all filters and options" ${disabled}>Full scan</button>`;
+}
+
 function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
     const latestBySite = new Map();
     scans.forEach(scan => { if (!latestBySite.has(scan.site_id)) latestBySite.set(scan.site_id, scan); });
@@ -9752,7 +9781,15 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
         return `${_flowStatusBadge(scan.status)}<small>${esc(waiting)}</small><small>${esc(timing || "No phase timing yet")}</small>${scan.error ? `<small class="flow-error">${esc(scan.error)}</small>` : ""}`;
     };
     const scanBusy = scans.some(scan => activeStatuses.has(scan.status));
-    const reportRow = report => `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters · ${_flowExportViewLabels(report).length} export view(s)${report.automation?.download_links?.length ? ` · ${report.automation.download_links.length} download link(s)` : ""}</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span><button class="btn-sm flow-scan-report" data-id="${report.id}" ${scanBusy ? "disabled" : ""}>Refresh</button></div>`;
+    const reportRow = report => {
+        // A GSCM bookmark has no Metronome-side prompts to count: GSCM stores
+        // the filters, so describing it by "0 discovered filters" would read
+        // as a broken scan rather than as the design.
+        const detail = report.automation?.kind === "gscm_favorite"
+            ? "GSCM bookmark · filters saved in GSCM"
+            : `${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters · ${_flowExportViewLabels(report).length} export view(s)${report.automation?.download_links?.length ? ` · ${report.automation.download_links.length} download link(s)` : ""}`;
+        return `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${esc(detail)}</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span><button class="btn-sm flow-scan-report" data-id="${report.id}" ${scanBusy ? "disabled" : ""}>Refresh</button></div>`;
+    };
     const groups = new Map();
     for (const report of catalog.reports) {
         const topic = (report.automation?.category_path || [])[0] || "Other";
@@ -9769,12 +9806,12 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
     const logEntries = scanEvents.map(event => `<div>${esc((event.created_at || "").slice(11, 19))} [${esc(event.stage || event.status)}] ${esc(event.message || "")}</div>`).join("");
     return `
         <div class="flow-discovery-summary">
-            <div><h2>ASAP discovery</h2><p>Metronome scans visible ASAP menus, reports, filters, and options. Missing entries are marked stale, never deleted.</p></div>
+            <div><h2>Portal discovery</h2><p>Metronome scans ASAP's visible menus, reports, filters, and options, and GSCM's saved home-screen bookmarks. Missing entries are marked stale, never deleted.</p></div>
             <dl><div><dt>Estimated full scan</dt><dd>${_flowDuration(scanEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd>${esc(scanEstimate?.source || "No history")}</dd></div><div><dt>Worker</dt><dd>${esc(workerMessage)}</dd></div></dl>
         </div>
         <div class="flow-catalog-grid">
             <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication, discovery scope, and weekly scan schedule.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
-                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scanMonitor(scan)}</span><span class="flow-row-actions"><button class="btn-sm flow-scan-site-quick" data-id="${site.id}" title="Catalog report names and menu paths only - fast, no filters" ${scan && activeStatuses.has(scan.status) ? "disabled" : ""}>Quick scan</button><button class="btn-sm flow-scan-site" data-id="${site.id}" title="Open every report and discover all filters and options" ${scan && activeStatuses.has(scan.status) ? "disabled" : ""}>Full scan</button></span></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
+                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scanMonitor(scan)}</span><span class="flow-row-actions">${_flowSiteScanButtons(site, scan && activeStatuses.has(scan.status))}</span></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
                 <div class="flow-panel-head" style="margin-top:16px"><div><h2>Scan log</h2><p>${latestScan ? `Scan #${latestScan.id} · ${esc(latestScan.status)}${scanBusy ? " · updating every 5s" : ""}` : "No scans yet."}</p></div></div>
                 <div id="flow-scan-log" style="font-family:ui-monospace,Consolas,monospace;font-size:0.72rem;line-height:1.45;max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;word-break:break-word">${logEntries || '<span style="color:var(--text-dim)">Scan progress events appear here while a scan runs.</span>'}</div>
             </section>
@@ -9876,9 +9913,16 @@ function _flowSiteDialog(site = null) {
     const restoreFocus = document.activeElement;
     const overlay = document.createElement("div");
     overlay.className = "task-modal-overlay";
-    overlay.innerHTML = `<div class="task-modal flow-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-site-title"><h2 id="flow-site-title">${site ? "Edit" : "Add"} website</h2><form id="flow-site-form"><label>Website type<select id="flow-site-adapter"><option value="asap_portal" ${site?.adapter === "asap_portal" ? "selected" : ""}>ASAP</option><option value="web_export" ${site?.adapter !== "asap_portal" ? "selected" : ""}>Other report portal</option></select></label><label>Name<input id="flow-site-name" required value="${esc(site?.name || "")}" placeholder="ASAP"></label><label>Portal URL<input id="flow-site-auth" type="url" value="${esc(site?.auth_url || "")}" placeholder="https://portal.example.com/login"></label><label>Base URL<input id="flow-site-base" type="url" value="${esc(site?.base_url || "")}"></label><div class="flow-dialog-rule"></div><h3>Automatic sign-in</h3><p class="flow-dialog-help">${site?.credentials_configured ? "An encrypted BI-desktop credential is configured. Leave these blank to keep it." : "Store the ASAP credential once. Windows encrypts it for this BI-desktop account; Metronome never returns it or stores it in GitHub."}</p><label>ASAP user ID<input id="flow-site-username" autocomplete="off" value=""></label><label>ASAP password<input id="flow-site-password" type="password" autocomplete="new-password" value=""></label><div class="flow-dialog-rule"></div><h3>Automatic discovery</h3><p class="flow-dialog-help">A weekly BI-desktop scan detects every visible ASAP menu, report, filter, and option. Missing entries are marked stale, never deleted.</p><div class="flow-form-grid"><label>Weekend day<select id="flow-site-scan-day">${_FLOW_WEEKDAYS.map(day => `<option value="${day}" ${day === (site?.discovery_weekday || "saturday") ? "selected" : ""}>${day[0].toUpperCase() + day.slice(1)}</option>`).join("")}</select></label><label>Scan time<input id="flow-site-scan-time" type="time" value="${esc(site?.discovery_time || "06:00")}"></label></div><label class="flow-check"><input id="flow-site-discovery" type="checkbox" ${site?.discovery_enabled !== false ? "checked" : ""}><span>Run discovery weekly</span></label><label class="flow-check"><input id="flow-site-enabled" type="checkbox" ${site?.enabled !== false ? "checked" : ""}><span>Website enabled</span></label><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save website</button></div></form></div>`;
+    overlay.innerHTML = `<div class="task-modal flow-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-site-title"><h2 id="flow-site-title">${site ? "Edit" : "Add"} website</h2><form id="flow-site-form"><label>Website type<select id="flow-site-adapter"><option value="asap_portal" ${site?.adapter === "asap_portal" ? "selected" : ""}>ASAP</option><option value="gscm_portal" ${site?.adapter === "gscm_portal" ? "selected" : ""}>GSCM</option><option value="web_export" ${!["asap_portal", "gscm_portal"].includes(site?.adapter) ? "selected" : ""}>Other report portal</option></select></label><label>Name<input id="flow-site-name" required value="${esc(site?.name || "")}" placeholder="ASAP"></label><label>Portal URL<input id="flow-site-auth" type="url" value="${esc(site?.auth_url || "")}" placeholder="https://portal.example.com/login"></label><label>Base URL<input id="flow-site-base" type="url" value="${esc(site?.base_url || "")}"></label><div id="flow-site-credentials" ${site?.adapter === "gscm_portal" ? "hidden" : ""}><div class="flow-dialog-rule"></div><h3>Automatic sign-in</h3><p class="flow-dialog-help">${site?.credentials_configured ? "An encrypted BI-desktop credential is configured. Leave these blank to keep it." : "Store the ASAP credential once. Windows encrypts it for this BI-desktop account; Metronome never returns it or stores it in GitHub."}</p><label>ASAP user ID<input id="flow-site-username" autocomplete="off" value=""></label><label>ASAP password<input id="flow-site-password" type="password" autocomplete="new-password" value=""></label></div><p id="flow-site-sso-help" class="flow-dialog-help" ${site?.adapter === "gscm_portal" ? "" : "hidden"}>GSCM has no stored credential. Its session lives in the automation browser profile: rerun setup.ps1, or the worker's --authenticate-url bootstrap, and complete Samsung SSO once in the visible window.</p><div class="flow-dialog-rule"></div><h3>Automatic discovery</h3><p class="flow-dialog-help">${site?.adapter === "gscm_portal" ? "A weekly BI-desktop scan reads the bookmarks saved on the GSCM home screen. Missing bookmarks are marked stale, never deleted." : "A weekly BI-desktop scan detects every visible ASAP menu, report, filter, and option. Missing entries are marked stale, never deleted."}</p><div class="flow-form-grid"><label>Weekend day<select id="flow-site-scan-day">${_FLOW_WEEKDAYS.map(day => `<option value="${day}" ${day === (site?.discovery_weekday || "saturday") ? "selected" : ""}>${day[0].toUpperCase() + day.slice(1)}</option>`).join("")}</select></label><label>Scan time<input id="flow-site-scan-time" type="time" value="${esc(site?.discovery_time || "06:00")}"></label></div><label class="flow-check"><input id="flow-site-discovery" type="checkbox" ${site?.discovery_enabled !== false ? "checked" : ""}><span>Run discovery weekly</span></label><label class="flow-check"><input id="flow-site-enabled" type="checkbox" ${site?.enabled !== false ? "checked" : ""}><span>Website enabled</span></label><div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary flow-dialog-cancel">Cancel</button><button type="submit" class="btn-primary">Save website</button></div></form></div>`;
     document.body.appendChild(overlay);
     const close = _flowBindDialog(overlay, restoreFocus);
+    overlay.querySelector("#flow-site-adapter").addEventListener("change", event => {
+        // GSCM signs in through the automation browser profile, so it has no
+        // credential fields to show.
+        const gscm = event.target.value === "gscm_portal";
+        overlay.querySelector("#flow-site-credentials").hidden = gscm;
+        overlay.querySelector("#flow-site-sso-help").hidden = !gscm;
+    });
     overlay.querySelector("form").onsubmit = async event => {
         event.preventDefault();
         const submit = event.currentTarget.querySelector('button[type="submit"]');
@@ -9890,7 +9934,9 @@ function _flowSiteDialog(site = null) {
             const saved = await (site ? apiPut(`/api/flows/sites/${site.id}`, body) : apiPostJson("/api/flows/sites", body));
             const username = $("#flow-site-username").value;
             const password = $("#flow-site-password").value;
-            if (username || password) {
+            // Only ASAP stores a credential locally; GSCM signs in through the
+            // browser profile, so there is nothing to post for it.
+            if (body.adapter === "asap_portal" && (username || password)) {
                 if (!username || !password) throw new Error("Enter both the ASAP user ID and password.");
                 await apiPostJson(`/api/flows/sites/${saved.id}/credentials`, { username, password });
             }
@@ -9918,7 +9964,7 @@ function _flowCollectBuilder() {
 function _bindFlowWorkspace() {
     const state = window._flowsState;
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
-    $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("ASAP discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
+    $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("builder"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
     // Discovered-report groups: remember which topics the user opened so the
@@ -9933,7 +9979,15 @@ function _bindFlowWorkspace() {
     const scanLog = $("#flow-scan-log");
     if (scanLog) scanLog.scrollTop = scanLog.scrollHeight;
     document.querySelectorAll(".flow-edit-site").forEach(button => button.onclick = () => _flowSiteDialog(state.catalog.sites.find(site => site.id === Number(button.dataset.id))));
-    document.querySelectorAll(".flow-scan-site").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan?mode=full`); toast("Full ASAP discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-scan-site").forEach(button => button.onclick = async () => {
+        button.disabled = true;
+        const site = state.catalog.sites.find(item => String(item.id) === String(button.dataset.id));
+        const queued = site?.adapter === FLOW_GSCM_ADAPTER
+            ? "GSCM bookmark scan queued"
+            : "Full ASAP discovery queued";
+        try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan?mode=full`); toast(queued); await navigate("flows"); }
+        catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; }
+    });
     document.querySelectorAll(".flow-scan-site-quick").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan?mode=partial`); toast("Quick scan queued - report names and menu paths only"); await navigate("flows"); } catch (err) { toast("Quick scan not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
@@ -10000,7 +10054,30 @@ function _bindFlowWorkspace() {
             button.textContent = original;
         }
     });
-    $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
+    $("#flow-site")?.addEventListener("change", event => {
+        // ASAP and GSCM are different websites with different forms: GSCM hides
+        // filters, export views, and the period controls entirely. Swapping the
+        // report list alone would leave the wrong sections on screen.
+        const form = $("#flow-builder-form");
+        const previous = _flowSiteIsGscm(state.catalog, form?.dataset.siteId || "");
+        const next = _flowSiteIsGscm(state.catalog, event.target.value);
+        if (previous !== next) {
+            const draft = _flowCollectBuilder();
+            _flowShowView("builder", {
+                ...draft,
+                id: Number(form?.dataset.id) || null,
+                site_id: Number(event.target.value),
+                report_id: null,
+                selections: {},
+                export_views: [],
+                download_links: [],
+            });
+            return;
+        }
+        const reportSelect = $("#flow-report");
+        reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null);
+        reportSelect.dispatchEvent(new Event("change"));
+    });
     $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; _flowSyncExportSections(report); const hasWeek = _flowHasWeekFilter(report); const period = $("#flow-period-strategy"); if (period) { period.value = hasWeek ? "latest" : "none"; period.dispatchEvent(new Event("change")); } const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";

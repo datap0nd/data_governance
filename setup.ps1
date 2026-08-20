@@ -408,10 +408,18 @@ $FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
 if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
     $AuthUrlScript = "$CodeDir\tools\get_flow_auth_url.py"
     if (Test-Path $AuthUrlScript) {
-        $FlowAuthUrl = (& $PyExe $AuthUrlScript $DbPath).Trim()
-        if ($FlowAuthUrl) {
-            Write-Host "Authenticating the Flows automation browser..." -ForegroundColor Yellow
-            Write-Host "  Complete ASAP sign-in in the Edge window if prompted." -ForegroundColor DarkGray
+        # One line per portal: "adapter<TAB>url". ASAP and GSCM are separate
+        # websites and each needs its own sign-in against this profile.
+        $FlowAuthTargets = @(& $PyExe $AuthUrlScript $DbPath) | Where-Object { $_ -and $_.Trim() }
+        foreach ($FlowAuthTarget in $FlowAuthTargets) {
+            $Parts = $FlowAuthTarget.Trim() -split "`t", 2
+            if ($Parts.Count -ne 2) { continue }
+            $FlowAuthAdapter = $Parts[0].Trim()
+            $FlowAuthUrl = $Parts[1].Trim()
+            if (-not $FlowAuthUrl) { continue }
+            $PortalLabel = if ($FlowAuthAdapter -eq "gscm_portal") { "GSCM" } else { "ASAP" }
+            Write-Host "Authenticating the Flows automation browser for $PortalLabel..." -ForegroundColor Yellow
+            Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray
             try {
                 # The embedded Python runtime runs in isolated mode and can
                 # ignore PYTHONPATH for ``-m app...``. The worker script
@@ -419,14 +427,15 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
                 & $PyExe "$CodeDir\app\flow_worker.py" `
                     --profile-dir $FlowProfile `
                     --authenticate-url $FlowAuthUrl `
+                    --authenticate-adapter $FlowAuthAdapter `
                     --authentication-timeout-minutes 10
                 if ($LASTEXITCODE -ne 0) {
                     throw "authentication helper exited with code $LASTEXITCODE"
                 }
-                Write-Host "  Flows automation browser authenticated." -ForegroundColor Green
+                Write-Host "  Flows automation browser authenticated for $PortalLabel." -ForegroundColor Green
             } catch {
-                Write-Host "  WARNING: ASAP automation authentication was not completed: $_" -ForegroundColor Yellow
-                Write-Host "  Discovery and downloads will wait until setup is rerun and sign-in completes." -ForegroundColor Yellow
+                Write-Host "  WARNING: $PortalLabel automation authentication was not completed: $_" -ForegroundColor Yellow
+                Write-Host "  Discovery and downloads for $PortalLabel will wait until setup is rerun and sign-in completes." -ForegroundColor Yellow
             }
         }
     }

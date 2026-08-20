@@ -1126,6 +1126,28 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_flow_scan_events_scan ON flow_scan_events(scan_id, id)",
     # HTML-dashboard flows select download links instead of export views
     "ALTER TABLE flows ADD COLUMN download_links_json TEXT NOT NULL DEFAULT '[]'",
+    # GSCM is a second, independent portal: its own site, its own data, and a
+    # Nexacro client that shares nothing structural with ASAP. Register it so
+    # the bookmark scan and GSCM flows work without hand-editing an internal
+    # adapter field. Discovery stays off until the automation browser profile
+    # has a GSCM session.
+    """UPDATE flow_sites SET adapter='gscm_portal'
+       WHERE adapter='web_export'
+         AND (lower(trim(name))='gscm'
+              OR lower(COALESCE(auth_url, '')) LIKE '%mdscm.sec.samsung.net%'
+              OR lower(COALESCE(base_url, '')) LIKE '%mdscm.sec.samsung.net%')""",
+    """INSERT INTO flow_sites
+           (name, adapter, base_url, auth_url, discovery_enabled, discovery_scope_json,
+            enabled, created_at, updated_at)
+       SELECT 'GSCM', 'gscm_portal', 'https://mdscm.sec.samsung.net/',
+              'https://mdscm.sec.samsung.net/nexa/index.html', 0, '["Favorites"]',
+              1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       WHERE NOT EXISTS (
+           SELECT 1 FROM flow_sites
+           WHERE adapter='gscm_portal'
+              OR lower(trim(name))='gscm'
+              OR lower(COALESCE(base_url, '')) LIKE '%mdscm.sec.samsung.net%'
+       )""",
 ]
 
 

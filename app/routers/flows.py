@@ -43,6 +43,12 @@ WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
 ASAP_PORTAL_ADAPTER = "asap_portal"
+GSCM_PORTAL_ADAPTER = "gscm_portal"
+# Portals Metronome can inventory on its own. Each one is a separate website
+# with its own structure: ASAP is catalogued by walking its report menus, GSCM
+# by reading the bookmarks the user saved on its home screen.
+DISCOVERY_ADAPTERS = {ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER}
+DISCOVERY_LABELS = {ASAP_PORTAL_ADAPTER: "reports", GSCM_PORTAL_ADAPTER: "bookmarks"}
 WEEK_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>0[1-9]|[1-4]\d|5[0-3])$")
 FILENAME_TOKEN_RE = re.compile(r"\{(flow|report|export|week|start_period|end_period|year|week_number|index|date)\}")
 SAFE_NAME_RE = re.compile(r"^[^<>:\"/\\|?*\x00-\x1f]+$")
@@ -913,12 +919,17 @@ def _validate_sql_target(db, body: FlowWrite):
 
 def _validate_flow_selections(db, body: FlowWrite):
     report = db.execute(
-        """SELECT site_id, automation_json FROM flow_reports
-           WHERE id = ? AND enabled = 1 AND stale = 0""",
+        """SELECT r.site_id, r.automation_json, s.adapter FROM flow_reports r
+           JOIN flow_sites s ON s.id = r.site_id
+           WHERE r.id = ? AND r.enabled = 1 AND r.stale = 0""",
         (body.report_id,),
     ).fetchone()
     if not report or report["site_id"] != body.site_id:
         raise HTTPException(400, "Choose an enabled report from the selected website.")
+    if report["adapter"] == GSCM_PORTAL_ADAPTER and body.file_format != "xlsx":
+        # GSCM's Nexacro toolbar only emits a workbook. Treating that file as a
+        # CSV would hand SQL a binary blob renamed .csv.
+        raise HTTPException(400, "GSCM exports an Excel workbook. Choose the Excel download type.")
     rows = db.execute(
         "SELECT * FROM flow_report_filters WHERE report_id = ? AND enabled = 1 ORDER BY position, id",
         (body.report_id,),
@@ -1098,6 +1109,9 @@ def catalog():
         site["credentials_configured"] = (
             asap_credential_status()["configured"] if site["adapter"] == ASAP_PORTAL_ADAPTER else False
         )
+        site["supports_discovery"] = site["adapter"] in DISCOVERY_ADAPTERS
+        site["supports_partial_scan"] = site["adapter"] == ASAP_PORTAL_ADAPTER
+        site["discovery_noun"] = DISCOVERY_LABELS.get(site["adapter"], "reports")
     for report in reports:
         report["enabled"] = bool(report["enabled"])
         report["stale"] = bool(report.get("stale"))
@@ -1919,10 +1933,14 @@ def queue_catalog_scan(site_id: int, request: Request, mode: str = Query(default
         site = db.execute("SELECT * FROM flow_sites WHERE id=? AND enabled=1", (site_id,)).fetchone()
         if not site:
             raise HTTPException(404, "Website not found.")
-        if site["adapter"] != ASAP_PORTAL_ADAPTER:
-            raise HTTPException(400, "Automatic discovery is currently available for ASAP only.")
+        if site["adapter"] not in DISCOVERY_ADAPTERS:
+            raise HTTPException(400, "This website does not support automatic discovery.")
         if mode not in SCAN_MODES:
             raise HTTPException(400, f"Scan mode must be one of: {', '.join(sorted(SCAN_MODES))}.")
+        if site["adapter"] == GSCM_PORTAL_ADAPTER:
+            # Reading GSCM's home-screen favorites is already a seconds-long
+            # sweep, so it has no cheaper "names only" mode to fall back to.
+            mode = "full"
         scan_id = _queue_scan(db, site, "manual", get_actor(request), mode=mode)
         log_event(db, "flow_site", site_id, site["name"], "scan_queued",
                   f"scan_id={scan_id}; mode={mode}", get_actor(request))
@@ -1941,12 +1959,12 @@ def queue_report_scan(report_id: int, request: Request):
             raise HTTPException(404, "Report not found.")
         category_path = _loads(report["automation_json"], {}).get("category_path", [])
         if not category_path:
-            raise HTTPException(400, "Report does not define an ASAP menu path.")
+            raise HTTPException(400, "Report does not define a discovery path on its website.")
         site = db.execute(
             "SELECT * FROM flow_sites WHERE id=? AND enabled=1", (report["site_id"],)
         ).fetchone()
-        if not site or site["adapter"] != ASAP_PORTAL_ADAPTER:
-            raise HTTPException(400, "Targeted discovery is currently available for ASAP only.")
+        if not site or site["adapter"] not in DISCOVERY_ADAPTERS:
+            raise HTTPException(400, "This website does not support targeted discovery.")
         scan_id = _queue_scan(db, site, "report", get_actor(request), report)
         log_event(
             db, "flow_report", report_id, report["name"], "scan_queued",
@@ -1962,9 +1980,10 @@ def queue_due_catalog_scans() -> dict:
     queued = []
     with get_db() as db:
         sites = db.execute(
-            """SELECT * FROM flow_sites WHERE enabled=1 AND discovery_enabled=1
-               AND adapter=? AND (next_scan_at IS NULL OR next_scan_at <= ?) ORDER BY id""",
-            (ASAP_PORTAL_ADAPTER, _iso(now)),
+            f"""SELECT * FROM flow_sites WHERE enabled=1 AND discovery_enabled=1
+               AND adapter IN ({', '.join('?' * len(DISCOVERY_ADAPTERS))})
+               AND (next_scan_at IS NULL OR next_scan_at <= ?) ORDER BY id""",
+            (*sorted(DISCOVERY_ADAPTERS), _iso(now)),
         ).fetchall()
         for site in sites:
             scan_id = _queue_scan(db, site, "scheduled", "scheduler")

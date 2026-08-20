@@ -229,11 +229,11 @@ class LineageDepthTests(unittest.TestCase):
             )
             db.execute(
                 """INSERT INTO flow_sites (id, name, adapter, base_url)
-                   VALUES (1, 'Portal', 'web_export', 'https://example.test')"""
+                   VALUES (90, 'Portal', 'web_export', 'https://example.test')"""
             )
             db.execute(
                 """INSERT INTO flow_reports (id, site_id, name, report_url)
-                   VALUES (1, 1, 'FOTA export', 'https://example.test/fota')"""
+                   VALUES (1, 90, 'FOTA export', 'https://example.test/fota')"""
             )
             db.execute(
                 """INSERT INTO flows
@@ -241,10 +241,10 @@ class LineageDepthTests(unittest.TestCase):
                     sql_handoff_enabled, sql_database, sql_schema, sql_table,
                     last_run_at, last_success_at, last_status)
                    VALUES
-                   (1, 'FOTA', 1, 1, '/tmp', 'fota.csv', 1, 'postgres',
+                   (1, 'FOTA', 90, 1, '/tmp', 'fota.csv', 1, 'postgres',
                     'BI_REPORTING', 'ASAP_FOTA_OUTPUT',
                     '2026-08-15T11:00:00', '2026-08-15T11:00:00', 'succeeded'),
-                   (2, 'Unrelated', 1, 1, '/tmp', 'other.csv', 1, 'postgres',
+                   (2, 'Unrelated', 90, 1, '/tmp', 'other.csv', 1, 'postgres',
                     'other_schema', 'other_table', NULL, NULL, NULL)"""
             )
 

@@ -22,16 +22,16 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
         )
         db.execute(
             """INSERT INTO flow_sites (id, name, adapter, base_url)
-               VALUES (1, 'Portal', 'web_export', 'https://example.test')"""
+               VALUES (90, 'Portal', 'web_export', 'https://example.test')"""
         )
         db.execute(
             """INSERT INTO flow_reports (id, site_id, name, report_url)
-               VALUES (1, 1, 'Export', 'https://example.test/export')"""
+               VALUES (1, 90, 'Export', 'https://example.test/export')"""
         )
         db.execute(
             """INSERT INTO flows
                (id, name, site_id, report_id, target_folder, filename_template)
-               VALUES (1, 'Target Flow', 1, 1, '/tmp', 'target.csv')"""
+               VALUES (1, 'Target Flow', 90, 1, '/tmp', 'target.csv')"""
         )
         db.executemany(
             """INSERT INTO actions
