@@ -692,7 +692,7 @@ class FlowWrite(BaseModel):
         if self.sql_handoff_enabled:
             self.sql_mode = (self.sql_mode or "").strip().casefold()
             if self.sql_mode not in SQL_MODES:
-                raise ValueError("SQL write mode must be append or managed snapshot refresh.")
+                raise ValueError("SQL write mode must be append rows or replace all rows.")
             for field_name in ("sql_database", "sql_schema", "sql_table"):
                 value = (getattr(self, field_name) or "").strip()
                 if not value:

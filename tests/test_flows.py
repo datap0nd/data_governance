@@ -2069,19 +2069,35 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=58' in index
+    assert '/static/app.js?v=59' in index
 
 
-def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
+def test_flow_builder_names_the_write_modes_in_plain_language():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
-    assert "Managed snapshot refresh" in source
+    assert ">Append rows</option>" in source
+    assert ">Replace all rows</option>" in source
     assert 'id="flow-sql-table" list="flow-sql-table-options"' in source
-    assert "Snapshot refresh creates a missing table" in source
-    assert "Recreate and replace" not in source
+    # The mode truncates and reloads; it never drops the table, so the
+    # wording must not promise or imply that it does.
+    assert "Replace all rows deletes every row in the table" in source
+    assert "The table itself is kept" in source
+    assert "Managed snapshot" not in source
+    assert "drop" not in source.casefold().split("flow-sql-mode")[1][:1200]
 
     log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
-    assert "This will refresh the managed snapshot" in log_source
+    assert "This will replace all rows in" in log_source
+    assert "managed snapshot" not in log_source.casefold()
     assert "drop and recreate" not in log_source
+
+
+def test_flow_builder_can_replicate_an_existing_flow():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'id="flow-replicate-source"' in source
+    assert 'id="flow-replicate-apply"' in source
+    # A replicated draft is a new flow: no id, no schedule armed, its own
+    # name, and the form still creates instead of updating.
+    assert "id: null, name: \"\", enabled: false, _replicated_from: sourceId," in source
+    assert 'existing?.id ? "Save changes" : "Create flow"' in source
     log_html = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.html").read_text()
     assert '/static/flow_run_log.js?v=2' in log_html
 

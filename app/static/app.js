@@ -9657,6 +9657,12 @@ function _flowBuilderHtml(catalog, existing = null) {
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
                 <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}">
+                    ${existing?.id ? "" : `<div class="flow-form-section" id="flow-replicate-section">
+                        <div class="flow-section-head"><h2>Start from an existing flow</h2><p>Copy every setting from a flow you already built, then change only what differs. Nothing is copied until you choose one.</p></div>
+                        <div class="flow-form-grid">
+                            <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
+                        </div>
+                    </div>`}
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Source and report</h2><p>${isGscm ? "Choose a GSCM bookmark. It already holds the filters you saved in GSCM." : "Choose an enabled catalog report and its configured filters."}</p></div>
                         <div class="flow-form-grid">
@@ -9716,20 +9722,20 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
                             <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert downloaded file into SQL after download</span></label>
                             <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
-                                <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Managed snapshot refresh</option></select><small>Snapshot refresh creates a missing table, or preserves an existing table while replacing all rows. New CSV columns are added as nullable TEXT; older target columns remain. The SQL account needs USAGE and CREATE on the schema, and ownership of an existing target.</small></label>
+                                <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select><small>Replace all rows deletes every row in the table and loads the file from this run instead. The table itself is kept, with its grants, indexes, and constraints; a table that does not exist yet is created. New CSV columns are added as nullable TEXT and older target columns remain. The SQL account needs USAGE and CREATE on the schema, and ownership of an existing target.</small></label>
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
-                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append requires an existing table. Managed snapshot may create this name in the selected schema.</small></label>
+                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema.</small></label>
                             </div>
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
                         </div>
                     </div>
-                    <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing ? "Save changes" : "Create flow"}</button></div>
+                    <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
                 </form>
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Managed snapshot" : "Append") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Never</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Replace all rows" : "Append rows") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -9996,6 +10002,29 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
+    $("#flow-replicate-apply")?.addEventListener("click", () => {
+        const sourceId = Number($("#flow-replicate-source")?.value);
+        if (!sourceId) { toast("Choose a flow to replicate"); return; }
+        const source = (state.flows || []).find(item => item.id === sourceId);
+        if (!source) { toast("That flow is no longer available"); return; }
+        // Copy everything except identity: the new flow needs its own name,
+        // and it starts paused so a copied schedule cannot fire before it has
+        // been reviewed. The SQL table is kept - changing it is usually the
+        // only edit - but the name is deliberately left for the user.
+        const copy = {
+            ...source,
+            id: null, name: "", enabled: false, _replicated_from: sourceId,
+            last_run_at: null, last_status: null, last_error: null, last_success_at: null,
+        };
+        _flowShowView("builder", copy);
+        const status = $("#flow-replicate-status");
+        const picker = $("#flow-replicate-source");
+        if (picker) picker.value = String(sourceId);
+        if (status) status.textContent = `Copied from ${source.name}. Give this flow a name, then change what differs.`;
+        const nameInput = $("#flow-name");
+        if (nameInput) { nameInput.value = `${source.name} copy`; nameInput.focus(); nameInput.select(); }
+        toast(`Settings copied from ${source.name}`);
+    });
     // Scan just the report being configured: the fast path to filters when
     // the catalog was built by a quick scan, or when the report changed.
     $("#flow-scan-report-now")?.addEventListener("click", async event => {
@@ -10165,7 +10194,7 @@ function _bindFlowWorkspace() {
         const fields = $("#flow-sql-fields");
         const summary = $("#flow-sql-summary");
         if (fields) fields.hidden = !enabled;
-        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Managed snapshot" : "Append") : "Disabled";
+        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Replace all rows" : "Append rows") : "Disabled";
     };
     const repopulateSql = () => {
         const targets = state.sqlCatalog.targets || [];

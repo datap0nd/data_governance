@@ -32,7 +32,7 @@ function render(run) {
     if (retryButton) retryButton.onclick = async () => {
         const target = `${sql.database}.${sql.schema}.${sql.table}`;
         const consequence = sql.mode === "replace"
-            ? `This will refresh the managed snapshot at ${target} from the saved CSV using run #${run.id}. A missing target will be created. An existing target will keep its grants, indexes, constraints, triggers, and older columns while all rows are replaced in one transaction.`
+            ? `This will replace all rows in ${target} from the saved CSV using run #${run.id}. A missing target will be created. An existing target will keep its grants, indexes, constraints, triggers, and older columns while all rows are replaced in one transaction.`
             : `This will append to ${target} using the saved CSV from run #${run.id}. If a previous append committed, this can duplicate rows.`;
         if (!window.confirm(`${consequence}\n\nASAP will not open and no file will be downloaded. Continue?`)) return;
         retryButton.disabled = true;

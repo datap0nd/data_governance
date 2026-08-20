@@ -276,7 +276,7 @@ def _emit(progress: SqlProgress | None, stage: str, message: str, started: float
 def load_artifacts(
     artifacts: list[dict], target: dict, progress: SqlProgress | None = None,
 ) -> dict:
-    """Append to a target or atomically create/refresh a managed snapshot."""
+    """Append to a target, or atomically replace all of its rows."""
     from sqlalchemy import text
 
     started = time.perf_counter()
@@ -406,17 +406,17 @@ def load_artifacts(
             missing = sorted(required - set(destination_columns))
             if missing:
                 raise RuntimeError(
-                    f"Managed snapshot cannot preserve required target column(s) absent from CSV: "
+                    f"Replacing all rows cannot preserve required target column(s) absent from CSV: "
                     f"{', '.join(missing)}"
                 )
             schema_action = "refresh" if existing_columns else "create"
             _emit(
                 progress, "sql_target_validation",
                 (
-                    f"Target {target_name} exists; managed snapshot will preserve it, "
+                    f"Target {target_name} exists; its rows will be replaced and the table preserved, "
                     f"add {len(columns_added)} column(s), and replace all rows."
                     if existing_columns else
-                    f"Target {target_name} does not exist; managed snapshot will create it "
+                    f"Target {target_name} does not exist; it will be created "
                     f"with {len(replacement_columns)} TEXT column(s)."
                 ),
                 started, status="completed", target=target_name,
@@ -469,9 +469,9 @@ def load_artifacts(
             _emit(
                 progress, "sql_replace",
                 (
-                    f"Promoting the staged snapshot to new target {target_name}."
+                    f"Creating {target_name} from the staged rows."
                     if not existing_columns else
-                    f"Refreshing {target_name} from the staged snapshot while preserving its object."
+                    f"Replacing all rows in {target_name} while preserving the table itself."
                 ),
                 started, status="started", target=target_name,
                 timeout_seconds=SQL_LOCK_TIMEOUT_SECONDS, schema_action=schema_action,
@@ -502,9 +502,9 @@ def load_artifacts(
             _emit(
                 progress, "sql_replace",
                 (
-                    f"Created {target_name} from the staged snapshot."
+                    f"Created {target_name} from the staged rows."
                     if target_created else
-                    f"Refreshed {target_name}; existing object, grants, indexes, and constraints remain."
+                    f"Replaced all rows in {target_name}; the table, grants, indexes, and constraints remain."
                 ),
                 started, status="completed", target=target_name,
                 schema_action=schema_action, rows=rows_written,
