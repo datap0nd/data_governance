@@ -1345,7 +1345,10 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
         lambda *_a: (_ for _ in ()).throw(AssertionError("dashboards have no export views")),
     )
 
-    def fake_link_download(_page, label, staging):
+    def fake_link_download(_page, label, staging, job=None):
+        # The job is threaded through so the run can match on the catalogued
+        # href when the label alone cannot find the control.
+        assert job is not None
         clicked.append(label)
         staged = Path(staging) / f"{label}.csv"
         staged.parent.mkdir(parents=True, exist_ok=True)
@@ -1393,3 +1396,114 @@ def test_dashboard_link_download_falls_back_to_an_intermediate_page():
     assert "_download_staging_snapshot(staging_dir)" in source
     assert 'context.on("page", _track_page)' in source
     assert "popup_control.click(timeout=30_000)" in source
+
+
+# --- Resolving a dashboard download control at run time ---
+
+
+class _DashboardLocator:
+    def __init__(self, matches, visible=True):
+        self.matches = matches
+        self.visible = visible
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return len(self.matches)
+
+    def nth(self, index):
+        return _DashboardLocator([self.matches[index]], self.visible)
+
+    def is_visible(self):
+        return self.visible and bool(self.matches)
+
+
+class _DashboardFrame:
+    """A frame whose only usable handle on a control is the marker script.
+
+    This is the shape that broke in production: the portal's role and text
+    queries find nothing, because the control's label lives in an attribute
+    rather than in rendered text.
+    """
+
+    def __init__(self, marked="Download Main Data (xlsx)", inventory=(), appears_after=0):
+        self.marked = marked
+        self.inventory = list(inventory)
+        self.appears_after = appears_after
+        self.evaluations = 0
+
+    def get_by_role(self, *_args, **_kwargs):
+        return _DashboardLocator([])
+
+    def get_by_text(self, *_args, **_kwargs):
+        return _DashboardLocator([])
+
+    def evaluate(self, script, argument=None):
+        if "data-metronome-dl" in script:
+            self.evaluations += 1
+            if self.evaluations <= self.appears_after:
+                return None
+            return self.marked
+        if "out.push(text.slice" in script:
+            return list(self.inventory)
+        raise AssertionError("unexpected script")
+
+    def locator(self, selector):
+        assert selector == "[data-metronome-dl='1']"
+        return _DashboardLocator(["control"])
+
+
+class _DashboardPage:
+    def __init__(self, frame):
+        self.main_frame = frame
+        self.frames = [frame]
+        self.waits = 0
+
+    def wait_for_timeout(self, _ms):
+        self.waits += 1
+
+
+def test_dashboard_link_is_found_by_marker_when_text_queries_cannot_match():
+    page = _DashboardPage(_DashboardFrame())
+    control = flow_worker._asap_dashboard_link_locator(
+        page, "Download Main Data (xlsx)", "", timeout_seconds=1,
+    )
+    assert control is not None
+
+
+def test_dashboard_link_lookup_waits_for_a_late_rendering_dashboard():
+    # The control appears a beat after the frame reports loaded. A single
+    # immediate pass is what produced "download link was not visible".
+    frame = _DashboardFrame(appears_after=2)
+    page = _DashboardPage(frame)
+    control = flow_worker._asap_dashboard_link_locator(
+        page, "Download Main Data (xlsx)", "", timeout_seconds=30,
+    )
+    assert control is not None
+    assert page.waits >= 1
+
+
+def test_dashboard_link_failure_lists_the_controls_that_were_visible():
+    frame = _DashboardFrame(marked=None, inventory=["Download Detail", "Print"])
+    page = _DashboardPage(frame)
+    assert flow_worker._asap_dashboard_link_locator(
+        page, "Download Main Data (xlsx)", "", timeout_seconds=0,
+    ) is None
+    assert "'Download Detail'" in flow_worker._asap_dashboard_link_inventory(page)
+
+
+def test_catalogued_href_is_available_to_the_run():
+    job = {"report": {"automation": {"download_links": [
+        {"label": "Download Main Data (xlsx)", "href": "/rs/export?id=7"},
+        {"label": "Download Detail", "href": "/rs/detail.csv"},
+    ]}}}
+    assert flow_worker._asap_dashboard_link_href(job, "Download Main Data (xlsx)") == "/rs/export?id=7"
+    assert flow_worker._asap_dashboard_link_href(job, "Missing") == ""
+    assert flow_worker._asap_dashboard_link_href(None, "Download Detail") == ""
+
+
+def test_dashboard_download_passes_the_job_so_href_matching_can_work():
+    source = Path(flow_worker.__file__).read_text()
+    assert "_asap_download_dashboard_link(\n                        page, download_link, staging, job,\n                    )" in source

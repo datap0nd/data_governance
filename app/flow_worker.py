@@ -62,6 +62,9 @@ ASAP_MAX_FILTER_LABEL = 200
 ASAP_MAX_REPORT_FILTERS = 200
 ASAP_MAX_ERROR_CHARS = 10_000
 ASAP_MAX_DOWNLOAD_LINKS = 50
+# An embedded dashboard renders after its frame reports loaded, so its
+# download controls appear later than the report navigation completes.
+ASAP_DASHBOARD_LINK_TIMEOUT_SECONDS = 120
 ASAP_EMPTY_RESULT_DETAIL = (
     "The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
 )
@@ -1806,27 +1809,133 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             candidate.remove_listener("download", capture_download)
 
 
-def _asap_dashboard_link_locator(page: Page, label: str):
-    """Resolve one catalogued dashboard download control across every frame."""
-    roots = list(dict.fromkeys([page.main_frame, *page.frames]))
-    for root in roots:
-        for build_locator in (
-            lambda: root.get_by_role("link", name=label, exact=True),
-            lambda: root.get_by_role("button", name=label, exact=True),
-            lambda: root.get_by_text(label, exact=True),
-        ):
-            try:
-                locator = build_locator()
-                for index in range(locator.count()):
-                    item = locator.nth(index)
-                    if item.is_visible():
+ASAP_DASHBOARD_LINK_MARK_JS = """
+([label, href, mode]) => {
+    const norm = s => (s || "").replace(/\\s+/g, " ").trim();
+    const target = norm(label).toLowerCase();
+    document.querySelectorAll("[data-metronome-dl]").forEach(
+        el => el.removeAttribute("data-metronome-dl"));
+    let best = null;
+    for (const el of document.querySelectorAll("a,button,[role=button],[onclick]")) {
+        if (!el || el.offsetWidth <= 0 || el.offsetHeight <= 0) continue;
+        const text = norm(el.innerText || el.getAttribute("title")
+            || el.getAttribute("aria-label") || "").toLowerCase();
+        const elHref = el.getAttribute("href") || "";
+        if (href && elHref && elHref === href) { best = el; break; }
+        if (mode === "exact" && text === target) { best = el; break; }
+        if (mode === "contains" && target && (text.includes(target) || target.includes(text)) && text) {
+            best = best || el;
+        }
+    }
+    if (!best) return null;
+    best.setAttribute("data-metronome-dl", "1");
+    return norm(best.innerText || best.getAttribute("title")
+        || best.getAttribute("aria-label") || "") || "(unnamed control)";
+}
+"""
+
+ASAP_DASHBOARD_LINK_INVENTORY_JS = """
+() => {
+    const norm = s => (s || "").replace(/\\s+/g, " ").trim();
+    const out = [];
+    for (const el of document.querySelectorAll("a,button,[role=button],[onclick]")) {
+        if (!el || el.offsetWidth <= 0 || el.offsetHeight <= 0) continue;
+        const text = norm(el.innerText || el.getAttribute("title")
+            || el.getAttribute("aria-label") || "");
+        if (!text) continue;
+        out.push(text.slice(0, 80));
+        if (out.length >= 60) break;
+    }
+    return out;
+}
+"""
+
+
+def _asap_dashboard_link_href(job: dict | None, label: str) -> str:
+    """The href the scan catalogued for this label, if it recorded one.
+
+    Matching on href is exact where matching on text is not: the label stored
+    in the catalog may have come from a title or aria-label attribute rather
+    than from rendered text, in which case no text query can ever find it.
+    """
+    records = ((job or {}).get("report", {}).get("automation") or {}).get("download_links") or []
+    for record in records:
+        if isinstance(record, dict) and _clean_text(record.get("label")) == _clean_text(label):
+            return str(record.get("href") or "")
+    return ""
+
+
+def _asap_dashboard_link_inventory(page: Page) -> str:
+    """Every visible clickable control, for a failure the user can act on."""
+    seen: list[str] = []
+    for root in list(dict.fromkeys([page.main_frame, *page.frames])):
+        try:
+            for text in root.evaluate(ASAP_DASHBOARD_LINK_INVENTORY_JS) or []:
+                if text not in seen:
+                    seen.append(text)
+        except Exception:
+            continue
+    return ", ".join(repr(item) for item in seen[:40]) or "none"
+
+
+def _asap_dashboard_link_locator(
+    page: Page, label: str, href: str = "",
+    timeout_seconds: int = ASAP_DASHBOARD_LINK_TIMEOUT_SECONDS,
+):
+    """Resolve one catalogued dashboard download control across every frame.
+
+    An embedded dashboard renders after its frame reports loaded, so a single
+    immediate pass fails on a control that appears a second later. Poll until
+    the deadline, and widen the match on each pass:
+
+    1. Playwright's role and text queries, which are precise when the label is
+       the control's rendered text.
+    2. The catalogued href, which identifies the control even when its label
+       came from a ``title`` or ``aria-label`` and no text query can match it.
+    3. Case-insensitive whole-label, then either side containing the other -
+       enough to survive a portal that re-cases or decorates its own labels.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        roots = list(dict.fromkeys([page.main_frame, *page.frames]))
+        for root in roots:
+            for build_locator in (
+                lambda: root.get_by_role("link", name=label, exact=True),
+                lambda: root.get_by_role("button", name=label, exact=True),
+                lambda: root.get_by_text(label, exact=True),
+            ):
+                try:
+                    locator = build_locator()
+                    for index in range(locator.count()):
+                        item = locator.nth(index)
+                        if item.is_visible():
+                            return item
+                except Exception:
+                    continue
+        for mode in ("exact", "contains"):
+            for root in roots:
+                try:
+                    matched = root.evaluate(
+                        ASAP_DASHBOARD_LINK_MARK_JS, [label, href, mode],
+                    )
+                except Exception:
+                    continue
+                if not matched:
+                    continue
+                item = root.locator("[data-metronome-dl='1']").first
+                try:
+                    if item.count() and item.is_visible():
                         return item
-            except Exception:
-                continue
-    return None
+                except Exception:
+                    continue
+        if time.monotonic() >= deadline:
+            return None
+        page.wait_for_timeout(1_000)
 
 
-def _asap_download_dashboard_link(page: Page, label: str, staging_dir: Path) -> Path:
+def _asap_download_dashboard_link(
+    page: Page, label: str, staging_dir: Path, job: dict | None = None,
+) -> Path:
     """Click one HTML-dashboard download link and capture the resulting file.
 
     Some dashboards download in place; others open a popup or a new tab that
@@ -1837,9 +1946,14 @@ def _asap_download_dashboard_link(page: Page, label: str, staging_dir: Path) -> 
     transfer that is still running.
     """
     staging_dir.mkdir(parents=True, exist_ok=True)
-    control = _asap_dashboard_link_locator(page, label)
+    href = _asap_dashboard_link_href(job, label)
+    control = _asap_dashboard_link_locator(page, label, href)
     if control is None:
-        raise RuntimeError(f"ASAP dashboard download link was not visible: {label}")
+        raise RuntimeError(
+            f"ASAP dashboard download link was not visible: {label}. "
+            f"Visible controls on the dashboard: {_asap_dashboard_link_inventory(page)}. "
+            "Rescan this report if the dashboard renamed its download links."
+        )
     files_before = _download_staging_snapshot(staging_dir)
     opened: list = []
 
@@ -1870,7 +1984,9 @@ def _asap_download_dashboard_link(page: Page, label: str, staging_dir: Path) -> 
                     if popup.is_closed():
                         continue
                     popup.wait_for_load_state("domcontentloaded", timeout=15_000)
-                    popup_control = _asap_dashboard_link_locator(popup, label) or next(
+                    popup_control = _asap_dashboard_link_locator(
+                        popup, label, href, timeout_seconds=15,
+                    ) or next(
                         (
                             candidate for candidate in [
                                 _asap_export_action(popup),
@@ -3670,7 +3786,9 @@ def execute_job(
             with timings.measure("file_export", report_id=job["report"].get("id")):
                 staging = download_staging_dir or profile_dir / "downloads"
                 if download_link:
-                    staged_file = _asap_download_dashboard_link(page, download_link, staging)
+                    staged_file = _asap_download_dashboard_link(
+                        page, download_link, staging, job,
+                    )
                     export_pages = []
                 else:
                     staged_file, export_pages = _asap_download_with_retry(
