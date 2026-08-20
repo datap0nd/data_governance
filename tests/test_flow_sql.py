@@ -1005,3 +1005,74 @@ def test_failed_excel_normalization_never_leaves_a_truncated_csv(tmp_path):
     assert not normalized.exists()
     # The worker never deletes, so the partial conversion stays as evidence.
     assert (tmp_path / ".bundle_normalized.csv.partial").is_file()
+
+
+# --- The portal decides the format, not the flow's setting ---
+
+
+def test_a_workbook_from_a_csv_configured_flow_is_read_as_a_workbook(tmp_path):
+    # A dashboard link named "(xlsx)" on a flow set to CSV produced a run that
+    # failed deep inside PostgreSQL with a mojibake column name: latin-1
+    # accepts every byte, so the zip decoded into garbage and was written back
+    # out as a "CSV".
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.bin"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Subsidiary", "Model", "Units"])
+    sheet.append(["SEEG", "S24", 120])
+    workbook.save(source)
+
+    metadata = flow_worker._store_completed_download(
+        source, tmp_path / "MTracker_subs.csv", file_format="csv",
+    )
+
+    assert metadata["detected_format"] == "xlsx"
+    assert metadata["columns"] == ["Subsidiary", "Model", "Units"]
+    # The workbook keeps a workbook's name; SQL reads the normalized CSV.
+    assert Path(metadata["original_file_path"]).name == "MTracker_subs.xlsx"
+    assert Path(metadata["file_path"]).name.endswith("_normalized.csv")
+
+
+def test_an_html_page_is_refused_instead_of_being_loaded_as_data(tmp_path):
+    source = tmp_path / "download.csv"
+    source.write_bytes(b"<!DOCTYPE html><html><body>Session expired</body></html>")
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._store_completed_download(source, tmp_path / "out.csv")
+    assert "HTML page" in str(excinfo.value)
+
+
+def test_a_legacy_xls_is_refused_with_its_real_type(tmp_path):
+    source = tmp_path / "download.csv"
+    source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._store_completed_download(source, tmp_path / "out.csv")
+    assert "looks like xls" in str(excinfo.value)
+
+
+def test_a_real_csv_is_still_normalized_untouched(tmp_path):
+    source = tmp_path / "download.csv"
+    source.write_text("Subsidiary,Units\nSEEG,120\n", encoding="utf-8")
+    metadata = flow_worker._store_completed_download(source, tmp_path / "out.csv")
+    assert metadata["detected_format"] == "csv"
+    assert metadata["columns"] == ["Subsidiary", "Units"]
+
+
+def test_a_utf16_csv_is_text_not_binary(tmp_path):
+    # UTF-16 exports are full of NUL bytes; the binary guard must not reject
+    # them, because ASAP genuinely emits them.
+    source = tmp_path / "download.csv"
+    source.write_bytes("Region,Units\nMENA,7\n".encode("utf-16"))
+    metadata = flow_worker._store_completed_download(source, tmp_path / "out.csv")
+    assert metadata["detected_format"] == "csv"
+    assert metadata["source_encoding"] == "utf-16"
+    assert metadata["columns"] == ["Region", "Units"]
+
+
+def test_the_csv_normalizer_refuses_binary_outright(tmp_path):
+    source = tmp_path / "download.csv"
+    source.write_bytes(b"PK\x03\x04" + b"\x00" * 64)
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._normalize_csv(source)
+    assert "Refusing to read" in str(excinfo.value)

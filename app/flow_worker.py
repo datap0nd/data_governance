@@ -3023,6 +3023,11 @@ def _normalize_csv(path: Path) -> dict:
     """Remove ASAP's title/blank preamble while preserving a standard CSV."""
     decoded = None
     encoding_used = None
+    detected = _detect_download_format(path)
+    if detected != "csv":
+        raise RuntimeError(
+            f"Refusing to read {path.name} as CSV: it looks like {detected}."
+        )
     raw = path.read_bytes()
     encodings = ["utf-8-sig"]
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw[:512]:
@@ -3511,6 +3516,41 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
+#: What a downloaded file actually is, read from its first bytes. A portal
+#: labels a link, and the flow declares a download type, but neither is
+#: evidence: an "(xlsx)" dashboard link can emit HTML, and a CSV-configured
+#: flow can receive a workbook.
+DOWNLOAD_SIGNATURES = (
+    (b"PK\x03\x04", "xlsx"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "xls"),
+    (b"%PDF-", "pdf"),
+)
+HTML_PREFIXES = (b"<!doctype html", b"<html", b"<?xml", b"<table", b"<meta")
+
+
+def _detect_download_format(path: Path) -> str:
+    """Identify a downloaded file from its content, not from its name.
+
+    Decoding is not a safety net here: ``latin-1`` accepts every byte, so a
+    workbook handed to the CSV path decodes into mojibake, gets written back
+    out as a "CSV", and only fails much later inside PostgreSQL with a garbled
+    column name. Refuse it at the door instead.
+    """
+    with path.open("rb") as handle:
+        head = handle.read(1024)
+    if not head:
+        raise RuntimeError(f"The downloaded file is empty: {path.name}")
+    for signature, kind in DOWNLOAD_SIGNATURES:
+        if head.startswith(signature):
+            return kind
+    stripped = head.lstrip().lower()
+    if stripped.startswith(HTML_PREFIXES):
+        return "html"
+    if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "binary"
+    return "csv"
+
+
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
     requested_period: Any = None,
@@ -3524,6 +3564,26 @@ def _store_completed_download(
     """
     local_path = Path(local_path)
     file_format = str(file_format or "csv").casefold()
+    detected = _detect_download_format(local_path)
+    if detected in {"xls", "pdf", "binary"}:
+        raise RuntimeError(
+            f"The download is not a CSV or an Excel workbook: {local_path.name} "
+            f"looks like {detected}. Check what this report's download link "
+            "actually produces."
+        )
+    if detected == "html":
+        raise RuntimeError(
+            f"The download is an HTML page, not data: {local_path.name}. The "
+            "portal most likely returned an error or a login page instead of "
+            "the export."
+        )
+    if detected != file_format:
+        # The portal decides the format, not the flow's setting. Follow the
+        # file and correct the saved name so a workbook never lands as .csv.
+        file_format = detected
+        expected_suffix = f".{detected}"
+        if output.suffix.casefold() != expected_suffix:
+            output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
     if file_format == "xlsx":
         original_size = local_path.stat().st_size
         if original_size <= 0:
@@ -3547,6 +3607,7 @@ def _store_completed_download(
             "original_file_path": str(output),
             "original_filename": output.name,
             "original_file_size": original_size,
+            "detected_format": detected,
         }
     if file_format != "csv":
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
@@ -3556,7 +3617,10 @@ def _store_completed_download(
         shutil.copyfileobj(source, destination, length=1024 * 1024)
     if output.stat().st_size != metadata["file_size"]:
         raise RuntimeError(f"Downloaded CSV was not copied completely to {output}.")
-    return {**metadata, "file_path": str(output), "filename": output.name}
+    return {
+        **metadata, "file_path": str(output), "filename": output.name,
+        "detected_format": detected,
+    }
 
 
 def _asap_filters_for_export_view(job: dict, export_view: str | None) -> list[dict]:
