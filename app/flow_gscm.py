@@ -257,13 +257,26 @@ def _evaluate_everywhere(page, script, argument=None) -> list[tuple[Any, Any]]:
     return results
 
 
+def _dedupe(items: list[tuple[Any, dict]]) -> list[tuple[Any, dict]]:
+    """The page and its main frame report the same elements twice."""
+    seen: set[tuple] = set()
+    unique = []
+    for root, record in items:
+        key = (record.get("id"), record.get("text"), record.get("x"), record.get("y"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((root, record))
+    return unique
+
+
 def visible_text(page) -> list[tuple[Any, dict]]:
     """Every visible label on screen, paired with the root that renders it."""
     items = []
     for root, records in _evaluate_everywhere(page, _VISIBLE_TEXT_JS):
         for record in records:
             items.append((root, record))
-    return items
+    return _dedupe(items)
 
 
 def icon_controls(page) -> list[tuple[Any, dict]]:
@@ -272,7 +285,34 @@ def icon_controls(page) -> list[tuple[Any, dict]]:
     for root, records in _evaluate_everywhere(page, _ICON_CONTROLS_JS):
         for record in records:
             items.append((root, record))
-    return items
+    return _dedupe(items)
+
+
+def top_bar_report(page) -> str:
+    """A short, screenshot-sized dump of the bar that holds the Setting gear.
+
+    The full inventory runs to a hundred lines and gets truncated on screen
+    before reaching the part that matters. When the gear is what went missing,
+    report the gear's neighbourhood and nothing else.
+    """
+    icons = [
+        (record.get("id"), record.get("x"), record.get("y"))
+        for _root, record in icon_controls(page)
+        if record.get("y", 0) <= TOP_BAR_MAX_Y
+    ]
+    icons.sort(key=lambda item: -(item[1] or 0))
+    labels = [
+        (record.get("text"), record.get("x"))
+        for _root, record in visible_text(page)
+        if record.get("y", 0) <= TOP_BAR_MAX_Y and len(record.get("text") or "") < 30
+    ]
+    labels.sort(key=lambda item: -(item[1] or 0))
+    icon_text = " | ".join(f"{identifier} @({x},{y})" for identifier, x, y in icons[:30]) or "NONE FOUND"
+    label_text = " | ".join(f"{text!r}@{x}" for text, x in labels[:15]) or "none"
+    return (
+        f"Top-bar icon controls ({len(icons)}): {icon_text}. "
+        f"Top-bar labels: {label_text}."
+    )
 
 
 def screen_inventory(page, *, keyword: str | None = None) -> str:
@@ -537,8 +577,9 @@ def open_favorites_dialog(page, report_progress=None) -> None:
         return
     raise RuntimeError(
         "GSCM's Setting > Favorite dialog did not open, so its bookmark tabs "
-        "(Private, Public, Custom) were never reachable. On screen: "
-        + screen_inventory(page)
+        "(Private, Public, Custom) were never reachable. The gear that opens it "
+        "carries no text, so it is found by id shape or by position in the top "
+        "bar - neither worked here. " + top_bar_report(page)
     )
 
 
@@ -573,13 +614,18 @@ def _open_setting(page) -> bool:
         if _setting_dialog_open(page):
             return True
 
+    # Right to left across the whole bar: the gear sits past the business
+    # pills, but their width varies with the signed-in user's brands, so an
+    # absolute cut-off would miss it on some accounts. Ordering by x is what
+    # matters; the cut-off only decides where to start.
     candidates = [
         (root, record) for root, record in icon_controls(page)
         if record.get("y", 0) <= TOP_BAR_MAX_Y
-        and record.get("x", 0) >= TOP_BAR_MIN_X
         and not is_forbidden(record.get("id"))
     ]
-    candidates.sort(key=lambda item: -item[1].get("x", 0))
+    candidates.sort(key=lambda item: (
+        0 if item[1].get("x", 0) >= TOP_BAR_MIN_X else 1, -item[1].get("x", 0),
+    ))
     for root, record in candidates[:MAX_GEAR_TRIES]:
         try:
             root.locator(f"[id='{_css_escape(record['id'])}']").first.click(

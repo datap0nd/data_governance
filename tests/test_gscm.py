@@ -362,7 +362,10 @@ def test_an_unreachable_dialog_reports_what_was_on_screen(monkeypatch):
         flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
     message = str(excinfo.value)
     assert "Setting > Favorite" in message
-    assert "On screen:" in message
+    # The report must name the gear's neighbourhood, not dump the whole screen:
+    # a hundred-line inventory is truncated before reaching what matters.
+    assert "Top-bar icon controls" in message
+    assert "Top-bar labels" in message
 
 
 def test_empty_tabs_report_the_screen_rather_than_an_empty_catalog():
