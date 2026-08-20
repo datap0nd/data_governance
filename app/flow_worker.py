@@ -1797,6 +1797,94 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             candidate.remove_listener("download", capture_download)
 
 
+def _asap_dashboard_link_locator(page: Page, label: str):
+    """Resolve one catalogued dashboard download control across every frame."""
+    roots = list(dict.fromkeys([page.main_frame, *page.frames]))
+    for root in roots:
+        for build_locator in (
+            lambda: root.get_by_role("link", name=label, exact=True),
+            lambda: root.get_by_role("button", name=label, exact=True),
+            lambda: root.get_by_text(label, exact=True),
+        ):
+            try:
+                locator = build_locator()
+                for index in range(locator.count()):
+                    item = locator.nth(index)
+                    if item.is_visible():
+                        return item
+            except Exception:
+                continue
+    return None
+
+
+def _asap_download_dashboard_link(page: Page, label: str, staging_dir: Path) -> Path:
+    """Click one HTML-dashboard download link and capture the resulting file.
+
+    Some dashboards download in place; others open a popup or a new tab that
+    emits the file, and a few use an intermediate page with its own download
+    control. Watching the staging folder captures all of them, because Edge
+    writes every download there no matter which page started it. Popups are
+    closed only after the file is stable, so closing can never abort a
+    transfer that is still running.
+    """
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    control = _asap_dashboard_link_locator(page, label)
+    if control is None:
+        raise RuntimeError(f"ASAP dashboard download link was not visible: {label}")
+    files_before = _download_staging_snapshot(staging_dir)
+    opened: list = []
+
+    def _track_page(popup):
+        opened.append(popup)
+
+    context = page.context
+    context.on("page", _track_page)
+    try:
+        control.click(timeout=30_000)
+        page.wait_for_timeout(1_000)
+        try:
+            return _wait_for_staged_download(
+                staging_dir, files_before, start_timeout_seconds=20,
+            )
+        except RuntimeError:
+            # No file appeared. When the click opened an intermediate page,
+            # its own download control is the real trigger.
+            popup_control = None
+            for popup in opened:
+                try:
+                    if popup.is_closed():
+                        continue
+                    popup.wait_for_load_state("domcontentloaded", timeout=15_000)
+                    popup_control = _asap_dashboard_link_locator(popup, label) or next(
+                        (
+                            candidate for candidate in [
+                                _asap_export_action(popup),
+                                popup.get_by_role("link", name=re.compile(r"download", re.I)).first,
+                            ] if candidate is not None and candidate.count() and candidate.is_visible()
+                        ),
+                        None,
+                    )
+                except Exception:
+                    popup_control = None
+                if popup_control is not None:
+                    break
+            if popup_control is None:
+                raise
+            popup_control.click(timeout=30_000)
+            return _wait_for_staged_download(staging_dir, files_before)
+    finally:
+        try:
+            context.remove_listener("page", _track_page)
+        except Exception:
+            pass
+        for popup in opened:
+            try:
+                if not popup.is_closed():
+                    popup.close()
+            except Exception:
+                pass
+
+
 def _asap_download_with_retry(
     page: Page, frame: Frame, job: dict, staging_dir: Path,
 ):
@@ -3375,26 +3463,43 @@ def execute_job(
         raise RuntimeError(f"Target folder does not exist: {target}")
 
     periods = job["downloads"].get("periods") or [None]
-    export_views = job.get("report", {}).get("export_views") or [None]
-    tasks = [
-        {"period": period, "export_view": export_view}
-        for export_view in export_views for period in periods
-    ]
+    # An HTML dashboard has no Export Wizard: its data leaves through the
+    # download links the scanner catalogued, and each selected link is one
+    # file of the bundle exactly like an export view is.
+    dashboard_links = list(job.get("report", {}).get("download_links") or [])
+    is_dashboard = is_asap and bool(dashboard_links)
+    if is_dashboard:
+        tasks = [
+            {"period": period, "export_view": link, "download_link": link}
+            for link in dashboard_links for period in periods
+        ]
+    else:
+        export_views = job.get("report", {}).get("export_views") or [None]
+        tasks = [
+            {"period": period, "export_view": export_view, "download_link": None}
+            for export_view in export_views for period in periods
+        ]
     if artifacts is None:
         artifacts = []
 
     def _download_task(index: int, task: dict) -> dict:
         period = task["period"]
         export_view = task["export_view"]
+        download_link = task.get("download_link")
         with timings.measure("navigation", report_id=job["report"].get("id")):
             if is_asap:
                 frame = _asap_open_report(page, job, profile_dir)
-                frame, selected_view = _asap_activate_export_view(page, frame, export_view)
-                if export_view and selected_view != export_view:
-                    raise RuntimeError(
-                        f"ASAP activated the wrong export view. Requested: {export_view}. "
-                        f"Activated: {selected_view}."
-                    )
+                if download_link:
+                    # Dashboard reports have no export-view tabs to activate.
+                    _asap_wait_for_loading_clear(page)
+                    frame = _asap_frame(page)
+                else:
+                    frame, selected_view = _asap_activate_export_view(page, frame, export_view)
+                    if export_view and selected_view != export_view:
+                        raise RuntimeError(
+                            f"ASAP activated the wrong export view. Requested: {export_view}. "
+                            f"Activated: {selected_view}."
+                        )
             else:
                 page.goto(job["report"]["url"], wait_until="domcontentloaded", timeout=120_000)
                 frame = None
@@ -3454,15 +3559,24 @@ def execute_job(
                 "running",
                 {
                     "stage": "file_export",
-                    "message": f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(tasks)}: {export_view or job['report']['name']}.",
+                    "message": (
+                    f"Downloading {index} of {len(tasks)} from the dashboard: {download_link}."
+                    if download_link else
+                    f"Exporting {job['downloads'].get('file_format', 'csv').upper()} {index} of {len(tasks)}: {export_view or job['report']['name']}."
+                ),
                     "period": period, "export_view": export_view,
                 },
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
-                staged_file, export_pages = _asap_download_with_retry(
-                    page, frame, job, download_staging_dir or profile_dir / "downloads",
-                )
+                staging = download_staging_dir or profile_dir / "downloads"
+                if download_link:
+                    staged_file = _asap_download_dashboard_link(page, download_link, staging)
+                    export_pages = []
+                else:
+                    staged_file, export_pages = _asap_download_with_retry(
+                        page, frame, job, staging,
+                    )
         else:
             _apply_configuration(page, job, period)
             with page.expect_download(timeout=180_000) as pending:

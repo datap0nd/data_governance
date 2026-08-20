@@ -457,6 +457,7 @@ CREATE TABLE IF NOT EXISTS flows (
     site_id             INTEGER NOT NULL REFERENCES flow_sites(id),
     report_id           INTEGER NOT NULL REFERENCES flow_reports(id),
     export_views_json   TEXT NOT NULL DEFAULT '[]',
+    download_links_json TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
     selections_json     TEXT NOT NULL DEFAULT '{}',
     download_mode       TEXT NOT NULL DEFAULT 'single',
@@ -1123,6 +1124,8 @@ MIGRATIONS = [
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flow_scan_events_scan ON flow_scan_events(scan_id, id)",
+    # HTML-dashboard flows select download links instead of export views
+    "ALTER TABLE flows ADD COLUMN download_links_json TEXT NOT NULL DEFAULT '[]'",
 ]
 
 

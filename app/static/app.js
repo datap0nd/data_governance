@@ -9465,6 +9465,31 @@ function _flowExportViewsHtml(report, selected = null) {
         : '<p class="flow-inline-empty">No export view was discovered. Refresh this report before creating a flow.</p>';
 }
 
+function _flowDownloadLinkLabels(report) {
+    return [...new Set((report?.automation?.download_links || [])
+        .map(link => String(link?.label || "").trim()).filter(Boolean))];
+}
+
+function _flowDownloadLinksHtml(report, selected = null) {
+    const labels = _flowDownloadLinkLabels(report);
+    const chosen = new Set(selected?.length ? selected.map(String) : labels);
+    return labels.length
+        ? labels.map(label => `<label class="flow-check"><input type="checkbox" data-flow-download-link value="${esc(label)}" ${chosen.has(label) ? "checked" : ""}><span>${esc(label)}</span></label>`).join("")
+        : '<p class="flow-inline-empty">No download links were discovered. Scan this report first.</p>';
+}
+
+function _flowSyncExportSections(report, selected = {}) {
+    const dashboard = _flowDownloadLinkLabels(report).length > 0 && _flowExportViewLabels(report).length === 0;
+    const exportViews = $("#flow-export-views");
+    const downloadLinks = $("#flow-download-links");
+    if (exportViews) exportViews.innerHTML = _flowExportViewsHtml(report, selected.export_views);
+    if (downloadLinks) downloadLinks.innerHTML = _flowDownloadLinksHtml(report, selected.download_links);
+    const exportSection = $("#flow-export-views-section");
+    const downloadSection = $("#flow-download-links-section");
+    if (exportSection) exportSection.hidden = dashboard;
+    if (downloadSection) downloadSection.hidden = !dashboard;
+}
+
 function _flowHasWeekFilter(report) {
     return Boolean((report?.filters || []).find(filter => filter.control_type === "week" && filter.enabled && !filter.stale));
 }
@@ -9510,7 +9535,9 @@ function _flowBuilderHtml(catalog, existing = null) {
     const people = window._flowsState?.people || [];
     const owner = people.find(person => person.id === existing?.owner_person_id);
     const exportViewCount = _flowExportViewLabels(report).length;
-    const defaultFilename = exportViewCount > 1 || !hasWeekFilter
+    const downloadLinkCount = _flowDownloadLinkLabels(report).length;
+    const isDashboard = downloadLinkCount > 0 && exportViewCount === 0;
+    const defaultFilename = exportViewCount > 1 || downloadLinkCount > 1 || !hasWeekFilter
         ? `{flow}_{export}.${fileFormat}`
         : `{flow}_{start_period}_{end_period}.${fileFormat}`;
     return `
@@ -9530,9 +9557,13 @@ function _flowBuilderHtml(catalog, existing = null) {
                         <div class="flow-form-grid">${report && report.filters.filter(filter => filter.enabled && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && filter.control_type !== "week").map(definition => `
                             <label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, selections[definition.filter_key])}</label>`).join("") : '<p class="flow-inline-empty">This report has no configured filters.</p>'}</div>
                     </div>
-                    <div class="flow-form-section" id="flow-export-views-section">
+                    <div class="flow-form-section" id="flow-export-views-section" ${isDashboard ? "hidden" : ""}>
                         <div class="flow-section-head"><h2>Export views</h2><p>One run downloads every checked view, validates the full bundle, and sends all files to one SQL transaction.</p></div>
                         <div class="flow-form-grid" id="flow-export-views">${_flowExportViewsHtml(report, existing?.export_views)}</div>
+                    </div>
+                    <div class="flow-form-section" id="flow-download-links-section" ${isDashboard ? "" : "hidden"}>
+                        <div class="flow-section-head"><h2>Download links</h2><p>This report is an embedded HTML dashboard with no Export Wizard. One run clicks every checked download link and saves each file.</p></div>
+                        <div class="flow-form-grid" id="flow-download-links">${_flowDownloadLinksHtml(report, existing?.download_links)}</div>
                     </div>
                     <div class="flow-form-section">
                         <div class="flow-section-head"><h2>Download behavior</h2><p>Download through the latest ASAP week, use a fixed range, or advance through rolling windows.</p></div>
@@ -9786,7 +9817,7 @@ function _flowCollectBuilder() {
     const sqlEnabled = $("#flow-sql-enabled")?.checked || false;
     const existing = window._flowsState?.flows?.find(flow => flow.id === Number($("#flow-builder-form")?.dataset.id));
     const flowEnabled = scheduleType === "manual" ? false : (existing?.enabled || false);
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null, file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value, start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null), end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null, transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null, owner_person_id: Number($("#flow-owner")?.value) || null };
+    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value), download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null, file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value, start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null), end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null, transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null, owner_person_id: Number($("#flow-owner")?.value) || null };
 }
 
 function _bindFlowWorkspace() {
@@ -9858,13 +9889,13 @@ function _bindFlowWorkspace() {
                     ? editable.map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, previous[definition.filter_key] ?? null)}</label>`).join("")
                     : '<p class="flow-inline-empty">This report has no configurable filters.</p>';
             }
-            const exportViews = $("#flow-export-views");
-            if (exportViews) exportViews.innerHTML = _flowExportViewsHtml(report);
+            _flowSyncExportSections(report);
             const start = $("#flow-start-week");
             const end = $("#flow-end-week");
             if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, start.value || "")}`;
             if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, end.value || "")}`;
-            if (status) status.textContent = `Scanned: ${active.length} filter(s), ${_flowExportViewLabels(report).length} export view(s) discovered.`;
+            const links = _flowDownloadLinkLabels(report).length;
+            if (status) status.textContent = `Scanned: ${active.length} filter(s), ${_flowExportViewLabels(report).length} export view(s)${links ? `, ${links} download link(s)` : ""} discovered.`;
             toast("Report scanned");
         } catch (err) {
             if (status) status.textContent = "Scan failed: " + err.message;
@@ -9875,7 +9906,7 @@ function _bindFlowWorkspace() {
         }
     });
     $("#flow-site")?.addEventListener("change", event => { const reportSelect = $("#flow-report"); reportSelect.innerHTML = _flowReportOptions(state.catalog, event.target.value, null); reportSelect.dispatchEvent(new Event("change")); });
-    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; const exportViews = $("#flow-export-views"); if (exportViews) exportViews.innerHTML = _flowExportViewsHtml(report); const hasWeek = _flowHasWeekFilter(report); const period = $("#flow-period-strategy"); if (period) { period.value = hasWeek ? "latest" : "none"; period.dispatchEvent(new Event("change")); } const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
+    $("#flow-report")?.addEventListener("change", async event => { const report = state.catalog.reports.find(item => String(item.id) === event.target.value); const section = $("#flow-report-filters"); if (!section) return; section.querySelector(".flow-form-grid").innerHTML = report && report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").length ? report.filters.filter(filter => filter.enabled && !filter.stale && filter.control_type !== "week").map(definition => `<label><span>${esc(definition.label)}${definition.required ? " *" : ""}</span>${_flowFilterControl(definition, null)}</label>`).join("") : '<p class="flow-inline-empty">This discovered report has no additional configurable filters.</p>'; _flowSyncExportSections(report); const hasWeek = _flowHasWeekFilter(report); const period = $("#flow-period-strategy"); if (period) { period.value = hasWeek ? "latest" : "none"; period.dispatchEvent(new Event("change")); } const start = $("#flow-start-week"); const end = $("#flow-end-week"); if (start) start.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (end) end.innerHTML = `<option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, "")}`; if (report) { try { const estimates = await api(`/api/flows/estimates?site_id=${report.site_id}&report_id=${report.id}`); $("#flow-download-estimate").textContent = _flowDuration(estimates.flow_download.estimated_ms); $("#flow-download-estimate-source").textContent = estimates.flow_download.source; } catch (_) {} } });
     $("#flow-browser-mode")?.addEventListener("change", event => {
         const headed = event.target.value === "headed";
         $("#flow-browser-mode-help").textContent = headed

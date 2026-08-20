@@ -1325,3 +1325,65 @@ def test_progress_posters_truncate_error_fields():
     source = Path(flow_worker.__file__).read_text()
     assert source.count("error[:ASAP_MAX_ERROR_CHARS] if error else error") == 2
     assert "traceback_text[:100_000]" in source
+
+
+def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatch):
+    clicked = []
+    monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_a: object())
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
+    monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_a: None)
+    monkeypatch.setattr(flow_worker, "_has_named_control", lambda _root, _text: False)
+    monkeypatch.setattr(
+        flow_worker, "_asap_activate_export_view",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("dashboards have no export views")),
+    )
+
+    def fake_link_download(_page, label, staging):
+        clicked.append(label)
+        staged = Path(staging) / f"{label}.csv"
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_text("a,b\n1,2\n")
+        return staged
+
+    monkeypatch.setattr(flow_worker, "_asap_download_dashboard_link", fake_link_download)
+    monkeypatch.setattr(
+        flow_worker, "_store_completed_download",
+        lambda staged, output, **_kw: {"file_path": str(output), "filename": output.name},
+    )
+
+    job = {
+        "site": {"adapter": "asap_portal"},
+        "flow": {"name": "Digital shelf pull"},
+        "report": {
+            "name": "Digital Shelf", "url": "https://portal.example.test",
+            "ready_text": None, "open_export_text": None, "download_text": "Download CSV",
+            "export_views": [], "download_links": ["Download CSV", "Download raw data"],
+            "automation": {"category_path": ["Online", "Digital Shelf", "Digital Shelf"]},
+        },
+        "downloads": {
+            "target_folder": str(tmp_path), "periods": [None],
+            "filename_template": "shelf_{export}.csv", "file_format": "csv",
+        },
+    }
+    events = []
+
+    artifacts, _timings = flow_worker.execute_job(
+        _WaitPage(), job, lambda _s, progress, _a=None: events.append(progress),
+        tmp_path, tmp_path / "staging",
+    )
+
+    assert clicked == ["Download CSV", "Download raw data"]
+    assert [item["export_view"] for item in artifacts] == ["Download CSV", "Download raw data"]
+    assert all(item["status"] == "saved" for item in artifacts)
+    assert any("from the dashboard" in (item.get("message") or "") for item in events)
+
+
+def test_dashboard_link_download_falls_back_to_an_intermediate_page():
+    source = Path(flow_worker.__file__).read_text()
+    assert "_asap_download_dashboard_link" in source
+    # The staging watch catches popup-emitted downloads; popups are closed
+    # only after the file is stable so a transfer is never aborted.
+    assert "_download_staging_snapshot(staging_dir)" in source
+    assert 'context.on("page", _track_page)' in source
+    assert "popup_control.click(timeout=30_000)" in source

@@ -575,6 +575,7 @@ class FlowWrite(BaseModel):
     site_id: int
     report_id: int
     export_views: list[str] = Field(default_factory=list, max_length=20)
+    download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
     selections: dict[str, Any] = Field(default_factory=dict)
     download_mode: str = "single"
@@ -605,6 +606,9 @@ class FlowWrite(BaseModel):
         self.target_folder = self.target_folder.strip()
         self.export_views = list(dict.fromkeys(
             str(value).strip() for value in self.export_views if str(value).strip()
+        ))
+        self.download_links = list(dict.fromkeys(
+            str(value).strip() for value in self.download_links if str(value).strip()
         ))
         self.file_format = self.file_format.strip().casefold()
         if self.file_format not in FILE_FORMATS:
@@ -659,6 +663,10 @@ class FlowWrite(BaseModel):
             token in self.filename_template for token in ("{export}", "{index}")
         ):
             raise ValueError("Multiple export views require an export or index token in the filename template.")
+        if len(self.download_links) > 1 and not any(
+            token in self.filename_template for token in ("{export}", "{index}")
+        ):
+            raise ValueError("Multiple download links require an export or index token in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         if self.schedule_type != "monthly":
             self.schedule_day = None
@@ -846,6 +854,7 @@ def _flow_out(db, flow_id: int) -> dict:
     result["transform_enabled"] = bool(result.get("transform_enabled"))
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
+    result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     if result["download_mode"] == "one_per_week":
         result["download_mode"] = "one_per_period"
@@ -990,6 +999,7 @@ def _build_job(db, flow_id: int) -> dict:
             "ready_text": report["ready_text"], "open_export_text": report["open_export_text"],
             "download_text": report["download_text"], "automation": report["automation"],
             "filters": report["filters"], "export_views": flow.get("export_views") or [],
+            "download_links": flow.get("download_links") or [],
         },
         "selections": flow["selections"],
         "downloads": {
@@ -1580,12 +1590,12 @@ def create_flow(body: FlowWrite, request: Request):
             _validate_owner(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
-                   (name, site_id, report_id, export_views_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
+                   (name, site_id, report_id, export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
                     transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (body.name, body.site_id, body.report_id, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
@@ -1643,12 +1653,12 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         _validate_sql_target(db, body)
         _validate_owner(db, body)
         cursor = db.execute(
-            """UPDATE flows SET name=?, site_id=?, report_id=?, export_views_json=?, enabled=?, selections_json=?,
+            """UPDATE flows SET name=?, site_id=?, report_id=?, export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, owner_person_id=?, updated_at=? WHERE id=?""",
-            (body.name, body.site_id, body.report_id, _json(body.export_views), body.enabled, _json(body.selections),
+            (body.name, body.site_id, body.report_id, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,

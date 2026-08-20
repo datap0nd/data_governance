@@ -2069,7 +2069,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=57' in index
+    assert '/static/app.js?v=58' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
@@ -2931,3 +2931,69 @@ def test_builder_exposes_a_targeted_report_scan_and_quick_scan():
     assert "/api/flows/reports/${reportId}/scan" in source
     assert "flow-scan-site-quick" in source
     assert "scan?mode=partial" in source and "scan?mode=full" in source
+
+
+def _dashboard_report(site_id):
+    """A discovered HTML dashboard: download links, no export views."""
+    return flows.DiscoveredReport(
+        discovery_key="Online > Digital Shelf > Digital Shelf",
+        name="Digital Shelf",
+        report_url="https://portal.example.test",
+        download_text="Download CSV",
+        automation={
+            "category_path": ["Online", "Digital Shelf", "Digital Shelf"],
+            "kind": "html_dashboard",
+            "download_links": [
+                {"label": "Download CSV", "href": "/files/shelf.csv", "download_attr": False},
+                {"label": "Download raw data", "href": "", "download_attr": True},
+            ],
+        },
+        filters=[],
+    )
+
+
+def test_dashboard_flow_persists_links_and_puts_them_in_the_job(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [_dashboard_report(site["id"])],
+                               flows._iso(flows._now()))
+    report = flows.catalog()["reports"][0]
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], name="Digital shelf pull",
+            selections={}, export_views=[],
+            download_links=["Download CSV", "Download raw data"],
+            period_strategy="none", start_week=None, end_week=None,
+            download_mode="single", window_weeks=None,
+            filename_template="{flow}_{export}.csv", schedule_type="manual",
+            schedule_days=[],
+        ),
+        _request(),
+    )
+    assert saved["download_links"] == ["Download CSV", "Download raw data"]
+
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["report"]["download_links"] == ["Download CSV", "Download raw data"]
+    assert queued["job"]["report"]["export_views"] == []
+
+    reloaded = next(item for item in flows.list_flows() if item["id"] == saved["id"])
+    assert reloaded["download_links"] == ["Download CSV", "Download raw data"]
+
+
+def test_multiple_download_links_require_a_unique_filename_token():
+    with pytest.raises(ValueError, match="download links require"):
+        flows.FlowWrite(
+            name="Dash", site_id=1, report_id=1,
+            download_links=["A", "B"], selections={},
+            period_strategy="none", download_mode="single", file_format="csv",
+            target_folder=r"C:\Reports", filename_template="dash.csv",
+        )
+
+
+def test_dashboard_builder_section_replaces_export_views():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'id="flow-download-links-section"' in source
+    assert "data-flow-download-link" in source
+    assert "download_links: [...document.querySelectorAll" in source
+    assert "_flowSyncExportSections" in source
