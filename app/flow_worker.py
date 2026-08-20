@@ -48,6 +48,15 @@ ASAP_LOADING_OVERLAY_SELECTOR = (
 )
 ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
 EXPORT_TASK_ATTEMPTS = 3
+# Server-side scan payload limits (DiscoveredFilter / DiscoveredReport /
+# ScanProgress in app.routers.flows). A single oversized field rejects the
+# whole progress post with an opaque 422, so the worker caps everything it
+# sends below those limits.
+ASAP_MAX_FILTER_OPTIONS = 1_000
+ASAP_MAX_FILTER_LABEL = 200
+ASAP_MAX_REPORT_FILTERS = 200
+ASAP_MAX_ERROR_CHARS = 10_000
+ASAP_MAX_DOWNLOAD_LINKS = 50
 ASAP_EMPTY_RESULT_DETAIL = (
     "The loading overlay cleared, but neither a Data rows marker nor a populated raw table appeared."
 )
@@ -157,6 +166,14 @@ def _api(client: httpx.Client, method: str, path: str, body: dict | None = None)
                 exc.response is not None and exc.response.status_code >= 500
             )
             if not retryable or attempt == 5:
+                # A 4xx body names the exact field the server rejected.
+                # Without it a validation failure surfaces as an opaque
+                # "422 Unprocessable Content" with no way to diagnose.
+                detail = ""
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                    detail = _clean_text(exc.response.text)[:500]
+                if detail:
+                    raise RuntimeError(f"{exc} Server detail: {detail}") from exc
                 raise
             time.sleep(attempt)
     raise RuntimeError("Local API request failed after retries.") from last_error
@@ -1859,11 +1876,15 @@ def _merge_asap_filter_definition(
     # displayed selected value. Otherwise a two-option popup becomes a
     # one-option list and can no longer be recognized as Data Configuration.
     label = _normalize_asap_filter_label(label, control_type, raw_options)
+    # The catalog API rejects the whole scan payload when one filter exceeds
+    # its field limits, so both the label and the option list are capped at
+    # the single point every discovery strategy funnels through.
+    label = label[:ASAP_MAX_FILTER_LABEL]
     options = [
-        value for value in raw_options
+        value[:ASAP_MAX_FILTER_LABEL * 2] for value in raw_options
         if value and value != label and not re.fullmatch(r"\(all\)(?:\s*\(\d+\s+values?\))?", value, re.I)
         and "type to search" not in value.casefold()
-    ]
+    ][:ASAP_MAX_FILTER_OPTIONS]
     if not label or not options:
         return
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
@@ -2255,6 +2276,61 @@ def _asap_native_select_records(frame: Frame, diagnostics: dict | None = None) -
     return records
 
 
+ASAP_DOWNLOAD_LINK_SNAPSHOT_JS = """
+() => {
+    const results = [];
+    document.querySelectorAll("a,button,[role=button]").forEach(el => {
+        if (!el || el.offsetWidth <= 0 || el.offsetHeight <= 0) return;
+        const text = (el.innerText || el.getAttribute("title") || el.getAttribute("aria-label") || "").trim();
+        const href = el.getAttribute("href") || "";
+        const hasDownloadAttr = el.getAttribute("download") !== null;
+        const fileHref = /\\.(csv|xlsx|xls|zip|txt|pdf)([?#]|$)/i.test(href);
+        if (!hasDownloadAttr && !fileHref && !/download/i.test(text)) return;
+        if (text.length > 120) return;
+        results.push({
+            label: text || "Download",
+            href: href.slice(0, 2000),
+            download_attr: hasDownloadAttr,
+        });
+    });
+    return results;
+}
+"""
+
+
+def _asap_discover_download_links(frame: Frame) -> list[dict]:
+    """Catalog download hyperlinks inside embedded HTML dashboards.
+
+    Some ASAP panes embed plain HTML dashboards instead of MicroStrategy
+    prompt reports; their data leaves through download hyperlinks rather
+    than the Export Wizard. Sweep every live frame for visible controls that
+    carry a download attribute, a file-typed href, or download wording.
+    """
+    links: list[dict] = []
+    seen = set()
+    for root in _asap_filter_frames(frame):
+        try:
+            found = root.evaluate(ASAP_DOWNLOAD_LINK_SNAPSHOT_JS) or []
+        except Exception:
+            continue
+        for record in found:
+            if not isinstance(record, dict):
+                continue
+            label = _clean_text(record.get("label"))[:120]
+            href = str(record.get("href") or "")[:2000]
+            identity = (label.casefold(), href)
+            if not label or identity in seen:
+                continue
+            seen.add(identity)
+            links.append({
+                "label": label, "href": href,
+                "download_attr": bool(record.get("download_attr")),
+            })
+            if len(links) >= ASAP_MAX_DOWNLOAD_LINKS:
+                return links
+    return links
+
+
 def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> list[dict]:
     definitions = []
     if diagnostics is None:
@@ -2592,6 +2668,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             filters = []
             export_views = []
             view_diagnostics = {}
+            download_links: list[dict] = []
             ready_text = export_view_labels[0] if export_view_labels else None
             report_title = path[-1]
             with timings.measure("filter_inspection"):
@@ -2604,6 +2681,11 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                     )
                     diagnostics: dict = {}
                     discovered = _asap_discover_filters(active_frame, diagnostics)
+                    if view_index == 0:
+                        # Embedded HTML dashboards expose their data through
+                        # download hyperlinks instead of the Export Wizard.
+                        download_links = _asap_discover_download_links(active_frame)
+                        diagnostics["download_links"] = len(download_links)
                     view_diagnostics[selected_label or export_view_label or "default"] = diagnostics
                     view_filter_keys = []
                     for definition in discovered:
@@ -2618,7 +2700,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                             existing["options"] = list(dict.fromkeys([
                                 *existing.get("options", []), *definition.get("options", []),
                             ]))
-                    if not discovered:
+                    if not discovered and not download_links:
                         # An empty result is a discovery defect until proven
                         # otherwise - surface it in the scan log with enough
                         # detail to diagnose instead of passing silently.
@@ -2637,19 +2719,40 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                         })
                     if view_index == 0:
                         report_title = active_frame.locator("title").text_content() or path[-1]
+            if len(filters) > ASAP_MAX_REPORT_FILTERS:
+                view_diagnostics["report"] = {
+                    "filters_truncated": len(filters) - ASAP_MAX_REPORT_FILTERS,
+                }
+                filters = filters[:ASAP_MAX_REPORT_FILTERS]
             for position, definition in enumerate(filters):
                 definition["position"] = position
+            automation = {
+                "category_path": path, "report_tab": ready_text,
+                "report_title": report_title, "export_text": ready_text,
+                "export_views": export_views,
+                "discovery_diagnostics": view_diagnostics,
+            }
+            if download_links:
+                automation["download_links"] = download_links
+                if not export_views:
+                    automation["kind"] = "html_dashboard"
+                report_progress("running", {
+                    "stage": "html_dashboard_links",
+                    "message": (
+                        f"{path[-1]}: {len(download_links)} download link(s) found in the "
+                        f"embedded dashboard: "
+                        + ", ".join(link["label"] for link in download_links[:5])
+                        + ("..." if len(download_links) > 5 else "")
+                    ),
+                    "report_index": index, "report_count": len(paths),
+                })
             discovery_key = " > ".join(path)
             reports.append({
                 "discovery_key": discovery_key, "name": path[-1],
                 "report_url": site.get("base_url") or site.get("auth_url"),
-                "ready_text": ready_text, "download_text": "Export CSV",
-                "automation": {
-                    "category_path": path, "report_tab": ready_text,
-                    "report_title": report_title, "export_text": ready_text,
-                    "export_views": export_views,
-                    "discovery_diagnostics": view_diagnostics,
-                },
+                "ready_text": ready_text,
+                "download_text": download_links[0]["label"] if download_links and not export_views else "Export CSV",
+                "automation": automation,
                 "filters": filters,
             })
         except Exception as exc:
@@ -3458,7 +3561,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                       complete: bool = True):
                         _api(client, "POST", f"/api/flows/worker/{worker_id}/scans/{scan_id}/progress", {
                             "status": status, "progress": detail, "reports": reports or [],
-                            "timings": timings or [], "error": error, "complete": complete,
+                            "timings": timings or [],
+                            "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
+                            "complete": complete,
                         })
 
                     try:
@@ -3490,7 +3595,9 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                              traceback_text: str | None = None):
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
                         "status": status, "progress": detail, "artifacts": artifacts or [],
-                        "timings": timings or [], "error": error, "traceback": traceback_text,
+                        "timings": timings or [],
+                        "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
+                        "traceback": traceback_text[:100_000] if traceback_text else traceback_text,
                     })
 
                 heartbeat_stop = threading.Event()

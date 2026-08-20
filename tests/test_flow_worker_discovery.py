@@ -1247,3 +1247,80 @@ def test_revealed_menu_headers_diff_by_text_and_position():
     ]
     revealed = flow_worker._revealed_menu_headers(before, after)
     assert revealed == [{"text": "AI Insights", "x": 1190, "y": 417}]
+
+
+# --- HTML dashboard download links + scan payload caps ---
+
+def test_download_links_are_swept_across_frames_and_deduped():
+    outer = _FilterFrame([
+        {"label": "Download CSV", "href": "/files/report.csv", "download_attr": False},
+        {"label": "Open Help", "href": "/help", "download_attr": False},  # matched by JS only
+    ])
+    inner = _FilterFrame([
+        {"label": "Download CSV", "href": "/files/report.csv", "download_attr": False},
+        {"label": "Download raw data", "href": "", "download_attr": True},
+    ])
+    outer.page = _FilterFramePage([outer, inner])
+
+    links = flow_worker._asap_discover_download_links(outer)
+
+    labels = [item["label"] for item in links]
+    assert labels.count("Download CSV") == 1
+    assert "Download raw data" in labels
+    raw = next(item for item in links if item["label"] == "Download raw data")
+    assert raw["download_attr"] is True
+
+
+def test_download_link_snapshot_targets_download_semantics():
+    source = Path(flow_worker.__file__).read_text()
+    assert "csv|xlsx|xls|zip|txt|pdf" in source
+    assert '"kind"] = "html_dashboard"' in source
+    assert '"stage": "html_dashboard_links"' in source
+    # A dashboard with download links but no prompts is not a discovery
+    # failure, so the empty-filters warning must account for the links.
+    assert "if not discovered and not download_links:" in source
+
+
+def test_filter_definitions_are_capped_below_server_scan_limits():
+    from app.flow_worker import _merge_asap_filter_definition
+    from app.routers import flows
+
+    definitions = []
+    _merge_asap_filter_definition(
+        definitions, "X" * 300, "multi_select", [f"Option {i}" for i in range(2500)],
+    )
+    definition = definitions[0]
+    assert len(definition["label"]) == flow_worker.ASAP_MAX_FILTER_LABEL
+    assert len(definition["options"]) == flow_worker.ASAP_MAX_FILTER_OPTIONS
+
+    # The capped definition must validate against the server's scan model -
+    # one oversized field rejects the whole progress post with a 422.
+    flows.DiscoveredFilter(
+        filter_key=definition["filter_key"], label=definition["label"],
+        control_label=definition["control_label"], control_type=definition["control_type"],
+        options=definition["options"], required=False, position=0,
+    )
+    flows.ScanProgress(status="failed", error="x" * flow_worker.ASAP_MAX_ERROR_CHARS)
+    assert flow_worker.ASAP_MAX_REPORT_FILTERS == 200  # DiscoveredReport.filters max_length
+
+
+def test_api_errors_carry_the_server_validation_detail():
+    import httpx
+
+    class Client:
+        def request(self, method, path, json=None, timeout=None):
+            return httpx.Response(
+                422,
+                request=httpx.Request("POST", "http://localhost" + path),
+                json={"detail": [{"loc": ["body", "reports", 0, "filters", 3, "options"],
+                                  "msg": "List should have at most 2000 items"}]},
+            )
+
+    with pytest.raises(RuntimeError, match="at most 2000 items"):
+        flow_worker._api(Client(), "POST", "/api/flows/worker/w/scans/47/progress", {})
+
+
+def test_progress_posters_truncate_error_fields():
+    source = Path(flow_worker.__file__).read_text()
+    assert source.count("error[:ASAP_MAX_ERROR_CHARS] if error else error") == 2
+    assert "traceback_text[:100_000]" in source
