@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -938,8 +939,13 @@ def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, t
     assert len(artifacts) == 2
     assert [item["export_view"] for item in artifacts] == activated
     assert [item["bundle_index"] for item in artifacts] == [1, 2]
-    for artifact, label in zip(artifacts, activated):
-        assert label in Path(artifact["file_path"]).read_text(encoding="utf-8-sig")
+    # Each export view lands in its own file, named after the view. The file
+    # itself carries only the portal's own columns - Metronome adds none.
+    paths = [Path(artifact["file_path"]) for artifact in artifacts]
+    assert len({path.name for path in paths}) == 2
+    for path, label in zip(paths, activated):
+        assert re.sub(r"\W+", "_", label).strip("_").casefold() in path.stem.casefold()
+        assert "Metronome" not in path.read_text(encoding="utf-8-sig")
 
 
 def test_execute_job_skips_files_already_saved_by_the_resumed_run(tmp_path):

@@ -50,7 +50,8 @@ GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
-ASAP_REPORT_RESULT_TIMEOUT_MS = 10 * 60 * 1_000
+# A wide report over a long period can render for a long time. Wait it out.
+ASAP_REPORT_RESULT_TIMEOUT_MS = 30 * 60 * 1_000
 EXPORT_TASK_ATTEMPTS = 3
 # Server-side scan payload limits (DiscoveredFilter / DiscoveredReport /
 # ScanProgress in app.routers.flows). A single oversized field rejects the
@@ -1310,9 +1311,13 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
             )
 
 
-DOWNLOAD_START_TIMEOUT_SECONDS = 60
-DOWNLOAD_STALL_TIMEOUT_SECONDS = 90
-DOWNLOAD_MAX_TIMEOUT_SECONDS = 10 * 60
+# Download budgets are backstops for a browser that will never produce a file,
+# not an opinion about how fast a portal should be. A multi-million-row export
+# can sit for many minutes while the server builds the workbook before the
+# first byte ever reaches the staging folder.
+DOWNLOAD_START_TIMEOUT_SECONDS = 15 * 60
+DOWNLOAD_STALL_TIMEOUT_SECONDS = 10 * 60
+DOWNLOAD_MAX_TIMEOUT_SECONDS = 60 * 60
 
 
 def _download_file_state(path: Path) -> tuple[int, int]:
@@ -1847,8 +1852,14 @@ def _asap_download_dashboard_link(page: Page, label: str, staging_dir: Path) -> 
         control.click(timeout=30_000)
         page.wait_for_timeout(1_000)
         try:
+            # A popup means the click probably opened an intermediate page
+            # whose own control is the real trigger, so probe briefly and go
+            # look. With no popup the click either started a download or never
+            # will, and a large export can sit for many minutes while the
+            # server builds it - wait the full budget rather than giving up.
             return _wait_for_staged_download(
-                staging_dir, files_before, start_timeout_seconds=20,
+                staging_dir, files_before,
+                start_timeout_seconds=20 if opened else DOWNLOAD_START_TIMEOUT_SECONDS,
             )
         except RuntimeError:
             # No file appeared. When the click opened an intermediate page,
@@ -2982,10 +2993,21 @@ def _validated_requested_weeks(period: Any) -> list[str]:
     return weeks
 
 
+#: Header cells whose value names a descriptor column rather than a dimension.
+XLSX_DESCRIPTOR_LABELS = frozenset({"weekly", "metric", "metrics"})
+
+
+def _xlsx_descriptor_indexes(header: list[str]) -> list[int]:
+    return [
+        index for index, value in enumerate(header)
+        if str(value).strip().casefold() in XLSX_DESCRIPTOR_LABELS
+    ]
+
+
 def _xlsx_expand_multi_week_metric_header(
-    requested_weeks: list[str], header: list[str], data_rows: list[list[Any]],
-    worksheet_title: str,
-) -> tuple[list[str], list[str], str | None]:
+    requested_weeks: list[str], header: list[str], max_data_width: int,
+    descriptor_labels: dict[int, set[str]], worksheet_title: str,
+) -> tuple[list[str], list[str], str | None, int | None]:
     """Recover ASAP's multi-level week headings without guessing column count.
 
     In the live flat Excel matrix, the lower header row ends in ``Metrics``.
@@ -2994,9 +3016,15 @@ def _xlsx_expand_multi_week_metric_header(
     header width and silently truncated every later week. Metronome passes the
     complete in-memory period list that it set and read back in ASAP, so the
     physical value-column count must prove a one-to-one mapping to that list.
+
+    The sheet's rows are described by ``max_data_width`` and the distinct
+    normalized values seen under each descriptor column, never by the rows
+    themselves: a multi-million-row export must not be held in memory to
+    decide a header. The returned fourth element is the column index the
+    caller must drop from every data row, or ``None``.
     """
     if len(requested_weeks) < 2:
-        return header, [], None
+        return header, [], None, None
 
     # The current Regional FOTA export can also arrive with a fully expanded
     # header: ``Weekly, 202630, 202631``. ``Weekly`` is not a dimension in the
@@ -3017,45 +3045,32 @@ def _xlsx_expand_multi_week_metric_header(
                 f"on sheet {worksheet_title!r}. Requested weeks: {requested_weeks}; explicit "
                 f"week columns: {explicit_weeks}."
             )
-        descriptor_indexes = [
-            index for index, value in enumerate(header)
-            if str(value).strip().casefold() in {"weekly", "metric", "metrics"}
-        ]
+        descriptor_indexes = _xlsx_descriptor_indexes(header)
         if len(descriptor_indexes) == 1:
             descriptor_index = descriptor_indexes[0]
-            descriptor_labels = {
-                re.sub(r"\W+", "_", str(row[descriptor_index]).strip()).strip("_").casefold()
-                for row in data_rows
-                if len(row) > descriptor_index and str(row[descriptor_index]).strip()
-            }
+            labels = descriptor_labels.get(descriptor_index, set())
             recognized_descriptor = (
-                next(iter(descriptor_labels))
-                if len(descriptor_labels) == 1 and descriptor_labels <= {"sell_out", "fota"}
+                next(iter(labels))
+                if len(labels) == 1 and labels <= {"sell_out", "fota"}
                 else None
             )
             if recognized_descriptor:
-                for row in data_rows:
-                    if len(row) > descriptor_index:
-                        row.pop(descriptor_index)
                 return (
                     [value for index, value in enumerate(header) if index != descriptor_index],
                     explicit_weeks,
                     recognized_descriptor,
+                    descriptor_index,
                 )
-        return header, [], None
+        return header, [], None, None
 
     metric_indexes = [
         index for index, value in enumerate(header)
         if str(value).strip().casefold() in {"metric", "metrics"}
     ]
     if len(metric_indexes) != 1 or metric_indexes[0] != len(header) - 1:
-        return header, [], None
+        return header, [], None, None
     metric_index = metric_indexes[0]
-    max_data_width = max((len(row) for row in data_rows), default=0)
-    metric_labels = {
-        re.sub(r"\W+", "_", str(row[metric_index]).strip()).strip("_").casefold()
-        for row in data_rows if len(row) > metric_index and str(row[metric_index]).strip()
-    }
+    metric_labels = descriptor_labels.get(metric_index, set())
     recognized_metric_label = (
         next(iter(metric_labels))
         if len(metric_labels) == 1 and metric_labels <= {"sell_out", "fota"}
@@ -3072,13 +3087,15 @@ def _xlsx_expand_multi_week_metric_header(
                 f"week columns: {len(requested_weeks)}; observed numeric week columns: "
                 f"{actual_values}."
             )
-        for row in data_rows:
-            if len(row) > metric_index:
-                row.pop(metric_index)
-        return [*header[:metric_index], *requested_weeks], requested_weeks, recognized_metric_label
+        return (
+            [*header[:metric_index], *requested_weeks],
+            requested_weeks,
+            recognized_metric_label,
+            metric_index,
+        )
     expected_width = metric_index + len(requested_weeks)
     if max_data_width == expected_width:
-        return [*header[:metric_index], *requested_weeks], requested_weeks, None
+        return [*header[:metric_index], *requested_weeks], requested_weeks, None, None
     if max_data_width <= len(header):
         raise RuntimeError(
             "Downloaded multi-week Excel matrix exposes one Metrics column but no distinct "
@@ -3093,8 +3110,110 @@ def _xlsx_expand_multi_week_metric_header(
     )
 
 
+def _xlsx_rows(worksheet):
+    """Yield one populated, right-trimmed row at a time.
+
+    Streaming matters: a Regional export can carry millions of rows, and
+    holding them as Python lists costs roughly a kilobyte each.
+    """
+    for raw_row in worksheet.iter_rows(values_only=True):
+        values = [_excel_cell_value(value) for value in raw_row]
+        while values and str(values[-1]).strip() == "":
+            values.pop()
+        if values:
+            yield values
+
+
+def _xlsx_header_index(preview: list[list[Any]]) -> int | None:
+    """Pick the row that defines this sheet's columns."""
+    header_candidates = []
+    for index, row in enumerate(preview):
+        populated = sum(bool(str(value).strip()) for value in row)
+        if populated < 2:
+            continue
+        candidate_names = [
+            re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
+            or f"col_{column_index}"
+            for column_index, value in enumerate(row)
+        ]
+        # Dense data rows can be wider than the actual Excel header.
+        # Repeated dimension values make those rows invalid column
+        # definitions, so never let them outrank a unique header row.
+        if len(candidate_names) != len(set(candidate_names)):
+            continue
+        # Weekly exports expose their value column as a compact YYYYWW
+        # label. Prefer a candidate containing that strong header
+        # signal before falling back to density. Otherwise a wide data
+        # row whose values happen to be unique can still win.
+        has_year_week_header = any(
+            re.fullmatch(r"20\d{2}(?:0[1-9]|[1-4]\d|5[0-3])", str(value).strip())
+            for value in row
+        )
+        header_label_hits = len(set(candidate_names) & XLSX_HEADER_LABEL_HINTS)
+        header_candidates.append(
+            (header_label_hits, has_year_week_header, populated, len(row), -index, index)
+        )
+    return max(header_candidates)[-1] if header_candidates else None
+
+
+def _xlsx_sheet_plan(worksheet, requested_weeks: list[str]) -> dict | None:
+    """Resolve one sheet's header and row transform in two streaming passes.
+
+    Pass one buffers only the first rows, enough to find the header, then
+    measures the rest of the sheet: its widest row and the distinct values
+    under each descriptor column. Pass two (the caller's) rewrites rows
+    straight to the CSV. Neither pass keeps the sheet in memory.
+    """
+    preview = []
+    for row in _xlsx_rows(worksheet):
+        preview.append(row)
+        if len(preview) >= 50:
+            break
+    if not preview:
+        return None
+    header_index = _xlsx_header_index(preview)
+    if header_index is None:
+        return None
+    header = [str(value).strip() for value in preview[header_index]]
+    if len(header) < 2:
+        return None
+
+    descriptor_indexes = _xlsx_descriptor_indexes(header)
+    descriptor_labels: dict[int, set[str]] = {index: set() for index in descriptor_indexes}
+    max_data_width = 0
+    if len(requested_weeks) >= 2:
+        # Only a multi-week export has a header to reconstruct, and only that
+        # reconstruction needs to see the whole sheet. Every other workbook -
+        # single-week ASAP, GSCM, anything without a period - converts in one
+        # pass, which is what keeps a multi-million-row export affordable.
+        for index, row in enumerate(_xlsx_rows(worksheet)):
+            if index <= header_index:
+                continue
+            max_data_width = max(max_data_width, len(row))
+            for descriptor_index in descriptor_indexes:
+                if len(row) > descriptor_index and str(row[descriptor_index]).strip():
+                    descriptor_labels[descriptor_index].add(
+                        re.sub(r"\W+", "_", str(row[descriptor_index]).strip()).strip("_").casefold()
+                    )
+
+    header, week_columns, metric_label, drop_index = _xlsx_expand_multi_week_metric_header(
+        requested_weeks, header, max_data_width, descriptor_labels, worksheet.title,
+    )
+    return {
+        "header": header,
+        "header_index": header_index,
+        "drop_index": drop_index,
+        "week_columns": week_columns,
+        "metric_label": metric_label,
+    }
+
+
 def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -> dict:
-    """Convert populated workbook sheets into one normalized UTF-8 CSV."""
+    """Convert populated workbook sheets into one normalized UTF-8 CSV.
+
+    Rows are streamed from the workbook straight to the CSV writer, so a
+    multi-million-row export costs a constant amount of memory.
+    """
     try:
         from openpyxl import load_workbook
     except ImportError as exc:
@@ -3105,73 +3224,38 @@ def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -
         raise RuntimeError(f"Downloaded Excel workbook could not be opened: {source.name}") from exc
     common_header: list[str] | None = None
     common_normalized: list[str] | None = None
-    output_rows: list[list[Any]] = []
     source_sheets = []
     recovered_week_columns: list[str] = []
     removed_metric_label: str | None = None
     preamble_rows_removed = 0
+    rows_written = 0
+    # Stream into a partial file beside the target and rename it only once the
+    # whole workbook has converted, so a failure can never leave a truncated
+    # CSV where a complete one belongs. The worker never deletes, so a failed
+    # conversion leaves its partial behind as evidence.
+    partial = output.with_name(f".{output.name}.partial")
+    handle = partial.open("x", encoding="utf-8-sig", newline="")
     try:
+        writer = csv.writer(handle, lineterminator="\n")
         for worksheet in workbook.worksheets:
-            rows = []
-            for raw_row in worksheet.iter_rows(values_only=True):
-                values = [_excel_cell_value(value) for value in raw_row]
-                while values and str(values[-1]).strip() == "":
-                    values.pop()
-                if values:
-                    rows.append(values)
-            if not rows:
+            plan = _xlsx_sheet_plan(worksheet, requested_weeks)
+            if plan is None:
                 continue
-            header_candidates = []
-            for index, row in enumerate(rows[:50]):
-                populated = sum(bool(str(value).strip()) for value in row)
-                if populated < 2:
-                    continue
-                candidate_names = [
-                    re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
-                    or f"col_{column_index}"
-                    for column_index, value in enumerate(row)
-                ]
-                # Dense data rows can be wider than the actual Excel header.
-                # Repeated dimension values make those rows invalid column
-                # definitions, so never let them outrank a unique header row.
-                if len(candidate_names) != len(set(candidate_names)):
-                    continue
-                # Weekly exports expose their value column as a compact YYYYWW
-                # label. Prefer a candidate containing that strong header
-                # signal before falling back to density. Otherwise a wide data
-                # row whose values happen to be unique can still win.
-                has_year_week_header = any(
-                    re.fullmatch(r"20\d{2}(?:0[1-9]|[1-4]\d|5[0-3])", str(value).strip())
-                    for value in row
-                )
-                header_label_hits = len(set(candidate_names) & XLSX_HEADER_LABEL_HINTS)
-                header_candidates.append(
-                    (header_label_hits, has_year_week_header, populated, len(row), -index, index)
-                )
-            header_index = max(header_candidates)[-1] if header_candidates else None
-            if header_index is None:
-                continue
-            header = [str(value).strip() for value in rows[header_index]]
-            if len(header) < 2:
-                continue
-            data_rows = rows[header_index + 1:]
-            header, sheet_week_columns, sheet_metric_label = _xlsx_expand_multi_week_metric_header(
-                requested_weeks, header, data_rows, worksheet.title,
-            )
-            if sheet_metric_label:
-                if removed_metric_label and removed_metric_label != sheet_metric_label:
+            header = plan["header"]
+            if plan["metric_label"]:
+                if removed_metric_label and removed_metric_label != plan["metric_label"]:
                     raise RuntimeError(
                         "Downloaded Excel workbook exposed different metric labels across "
-                        f"populated sheets: {removed_metric_label!r} and {sheet_metric_label!r}."
+                        f"populated sheets: {removed_metric_label!r} and {plan['metric_label']!r}."
                     )
-                removed_metric_label = sheet_metric_label
-            if sheet_week_columns:
-                if recovered_week_columns and recovered_week_columns != sheet_week_columns:
+                removed_metric_label = plan["metric_label"]
+            if plan["week_columns"]:
+                if recovered_week_columns and recovered_week_columns != plan["week_columns"]:
                     raise RuntimeError(
                         "Downloaded Excel workbook resolved different multi-week columns across "
-                        f"its populated sheets: {recovered_week_columns} and {sheet_week_columns}."
+                        f"its populated sheets: {recovered_week_columns} and {plan['week_columns']}."
                     )
-                recovered_week_columns = sheet_week_columns
+                recovered_week_columns = plan["week_columns"]
             normalized = [
                 re.sub(r"\W+", "_", value).strip("_").casefold() or f"col_{index}"
                 for index, value in enumerate(header)
@@ -3179,34 +3263,41 @@ def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -
             if common_header is None:
                 common_header = header
                 common_normalized = normalized
+                writer.writerow(common_header)
             elif normalized != common_normalized:
                 raise RuntimeError(
                     "Downloaded Excel workbook has populated sheets with different columns: "
                     f"{', '.join(source_sheets)} and {worksheet.title}."
                 )
             width = len(common_header)
-            for row_number, row in enumerate(data_rows, start=header_index + 2):
+            drop_index = plan["drop_index"]
+            header_index = plan["header_index"]
+            for index, row in enumerate(_xlsx_rows(worksheet)):
+                if index <= header_index:
+                    continue
+                if drop_index is not None and len(row) > drop_index:
+                    row.pop(drop_index)
                 if len(row) > width and any(
                     str(value).strip() for value in row[width:]
                 ):
                     raise RuntimeError(
                         "Downloaded Excel row contains populated cells beyond the resolved header "
-                        f"on sheet {worksheet.title!r}, row {row_number}. Header width: {width}; "
+                        f"on sheet {worksheet.title!r}, row {index + 1}. Header width: {width}; "
                         f"row width: {len(row)}. Refusing to discard data."
                     )
                 values = list(row[:width]) + [""] * max(0, width - len(row))
                 if any(str(value).strip() for value in values):
-                    output_rows.append(values)
+                    writer.writerow(values)
+                    rows_written += 1
             source_sheets.append(worksheet.title)
             preamble_rows_removed += header_index
     finally:
         workbook.close()
-    if common_header is None or not output_rows:
+        if not handle.closed:
+            handle.close()
+    if common_header is None or not rows_written:
         raise RuntimeError("Downloaded Excel workbook did not contain a usable table with data rows.")
-    with output.open("x", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(common_header)
-        writer.writerows(output_rows)
+    partial.replace(output)
     return {
         "preamble_rows_removed": preamble_rows_removed,
         "source_encoding": "xlsx",
@@ -3216,33 +3307,6 @@ def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -
         "recovered_week_columns": recovered_week_columns,
         "removed_metric_label": removed_metric_label,
     }
-
-
-def _add_export_view_column(path: Path, export_view: str | None) -> dict:
-    """Add durable source lineage to every artifact in a multi-export bundle."""
-    if not export_view:
-        return {}
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
-    if not rows:
-        raise RuntimeError(f"Normalized artifact is empty: {path.name}")
-    lineage_name = "Metronome Export View"
-    normalized = {
-        re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
-        for value in rows[0]
-    }
-    if "metronome_export_view" in normalized:
-        raise RuntimeError(
-            f"Downloaded artifact already contains the reserved column {lineage_name}."
-        )
-    temporary = path.with_name(f".{path.name}.lineage.tmp")
-    with temporary.open("x", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow([*rows[0], lineage_name])
-        for row in rows[1:]:
-            writer.writerow([*row, export_view])
-    temporary.replace(path)
-    return {"lineage_column": lineage_name, "export_view": export_view}
 
 
 def _script_command(script_path: Path, input_path: Path, output_path: Path) -> list[str]:
@@ -3312,7 +3376,10 @@ def _csv_metadata(path: Path) -> dict:
     file_size = path.stat().st_size
     if file_size <= 0:
         raise RuntimeError("The downloaded CSV is empty.")
-    prefix = path.read_bytes()[:512].lstrip().lower()
+    with path.open("rb") as handle:
+        # Sniff the head only. Reading the whole file to inspect 512 bytes
+        # costs a second full-size copy in memory on a large export.
+        prefix = handle.read(512).lstrip().lower()
     if prefix.startswith(b"<!doctype html") or prefix.startswith(b"<html"):
         raise RuntimeError("The download contains an HTML page instead of CSV data.")
     digest = hashlib.sha256()
@@ -3330,7 +3397,7 @@ def _csv_metadata(path: Path) -> dict:
 
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
-    export_view: str | None = None, requested_period: Any = None,
+    requested_period: Any = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -3356,8 +3423,7 @@ def _store_completed_download(
         normalization = _normalize_xlsx(
             output, normalized_output, requested_weeks=requested_weeks,
         )
-        lineage = _add_export_view_column(normalized_output, export_view)
-        metadata = {**_csv_metadata(normalized_output), **normalization, **lineage}
+        metadata = {**_csv_metadata(normalized_output), **normalization}
         return {
             **metadata,
             "file_path": str(normalized_output),
@@ -3369,8 +3435,7 @@ def _store_completed_download(
     if file_format != "csv":
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
     normalization = _normalize_csv(local_path)
-    lineage = _add_export_view_column(local_path, export_view)
-    metadata = {**_csv_metadata(local_path), **normalization, **lineage}
+    metadata = {**_csv_metadata(local_path), **normalization}
     with local_path.open("rb") as source, output.open("xb") as destination:
         shutil.copyfileobj(source, destination, length=1024 * 1024)
     if output.stat().st_size != metadata["file_size"]:
@@ -3613,7 +3678,7 @@ def execute_job(
                     )
         else:
             _apply_configuration(page, job, period)
-            with page.expect_download(timeout=180_000) as pending:
+            with page.expect_download(timeout=DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000) as pending:
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
             export_pages = []
@@ -3630,15 +3695,13 @@ def execute_job(
                 metadata = _store_completed_download(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
-                    export_view=export_view,
                     requested_period=period,
                 )
             else:
                 download.save_as(output)
                 normalization = _normalize_csv(output)
-                lineage = _add_export_view_column(output, export_view)
                 metadata = {
-                    **_csv_metadata(output), **normalization, **lineage,
+                    **_csv_metadata(output), **normalization,
                     "file_path": str(output), "filename": output.name,
                 }
         return {

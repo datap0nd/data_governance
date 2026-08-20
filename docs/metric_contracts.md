@@ -24,8 +24,10 @@
   Weekly/Daily Category control selects report frequency. It is not the exported
   business dimension that is also named `Category`; live SQL values for that
   dimension include `Domestic`, `Non-domestic`, and `Unknown (Incl. Wi...)`.
-  The transform preserves the exported business dimension and removes the
-  operational `Metronome Export View` lineage column before SQL.
+  The transform preserves the exported business dimension. Metronome no longer
+  appends a `Metronome Export View` lineage column, so nothing operational
+  needs removing before SQL; a transform that still drops that column is a
+  no-op against current downloads.
 - Geolocation: For each unique valid `Latitude`/`Longitude` pair, the external
   transform uses the offline `reverse_geocoder` GeoNames index. It adds
   `Country` from the returned ISO alpha-2 code, `City` from `name`, `District`

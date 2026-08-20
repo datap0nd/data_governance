@@ -55,7 +55,7 @@ def test_asap_csv_normalization_detects_semicolon_delimiter(tmp_path):
     ]
 
 
-def test_excel_download_is_preserved_and_normalized_with_export_lineage(tmp_path):
+def test_excel_download_is_preserved_and_normalized_to_csv(tmp_path):
     from openpyxl import Workbook
 
     source = tmp_path / "browser-download.xlsx"
@@ -70,17 +70,16 @@ def test_excel_download_is_preserved_and_normalized_with_export_lineage(tmp_path
 
     output = tmp_path / "bundle_global.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Global/Region)",
+        source, output, file_format="xlsx",
     )
 
     normalized = Path(metadata["file_path"])
     assert output.is_file()
     assert metadata["original_file_path"] == str(output)
-    assert metadata["export_view"] == "Export Wizard (Global/Region)"
     assert metadata["row_count"] == 1
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Market,Units,Metronome Export View",
-        "Global,12,Export Wizard (Global/Region)",
+        "Market,Units",
+        "Global,12",
     ]
 
 
@@ -100,7 +99,7 @@ def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
         requested_period=["2025-W20"],
     )
 
@@ -110,8 +109,8 @@ def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
         "Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Sell-out Region,Sell-out Subsidiary,Weekly,202520,Metronome Export View",
-        "Middle East,SEEG,FOTA,123,Export Wizard (Sell-out Sub)",
+        "Sell-out Region,Sell-out Subsidiary,Weekly,202520",
+        "Middle East,SEEG,FOTA,123",
     ]
 
 
@@ -132,7 +131,7 @@ def test_excel_normalization_refuses_to_truncate_wider_data_row(tmp_path):
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
     with pytest.raises(RuntimeError, match="Refusing to discard data"):
         flow_worker._store_completed_download(
-            source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+            source, output, file_format="xlsx",
         )
 
 
@@ -152,7 +151,7 @@ def test_excel_normalization_recovers_live_multi_week_metric_columns(tmp_path):
 
     output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
         requested_period=["2026-W30", "2026-W31"],
     )
 
@@ -163,8 +162,8 @@ def test_excel_normalization_recovers_live_multi_week_metric_columns(tmp_path):
         "Sell-out Region", "Sell-out Subsidiary", "202630", "202631",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Sell-out Region,Sell-out Subsidiary,202630,202631,Metronome Export View",
-        "Middle East,SEEG,300,310,Export Wizard (Sell-out Sub)",
+        "Sell-out Region,Sell-out Subsidiary,202630,202631",
+        "Middle East,SEEG,300,310",
     ]
 
 
@@ -186,7 +185,7 @@ def test_excel_normalization_removes_live_weekly_sell_out_descriptor(tmp_path):
 
     output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
         requested_period=["2026-W30", "2026-W31"],
     )
 
@@ -197,8 +196,8 @@ def test_excel_normalization_removes_live_weekly_sell_out_descriptor(tmp_path):
         "Sell-out Region", "Sell-out Subsidiary", "202630", "202631",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Sell-out Region,Sell-out Subsidiary,202630,202631,Metronome Export View",
-        "Middle East,SEEG,300,310,Export Wizard (Sell-out Sub)",
+        "Sell-out Region,Sell-out Subsidiary,202630,202631",
+        "Middle East,SEEG,300,310",
     ]
 
 
@@ -219,7 +218,7 @@ def test_excel_normalization_rejects_metric_label_plus_one_value_for_two_weeks(t
     output = tmp_path / "ASAP_Fota_2026-W30_2026-W31.xlsx"
     with pytest.raises(RuntimeError, match="expected numeric week columns: 2.*observed.*1"):
         flow_worker._store_completed_download(
-            source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+            source, output, file_format="xlsx",
             requested_period=["2026-W30", "2026-W31"],
         )
 
@@ -244,7 +243,7 @@ def test_excel_normalization_uses_complete_requested_period_not_filename_endpoin
     output = tmp_path / "ASAP_Fota_2026-W22_2026-W26.xlsx"
     requested = [f"2026-W{week:02d}" for week in range(22, 27)]
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
         requested_period=requested,
     )
 
@@ -273,7 +272,7 @@ def test_excel_normalization_prefers_year_week_header(tmp_path):
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
     )
 
     normalized = Path(metadata["file_path"])
@@ -282,8 +281,8 @@ def test_excel_normalization_prefers_year_week_header(tmp_path):
         "Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        "Sell-out Region,Sell-out Subsidiary,Weekly,202520,Metronome Export View",
-        "Middle East,SEEG,FOTA,123,Export Wizard (Sell-out Sub)",
+        "Sell-out Region,Sell-out Subsidiary,Weekly,202520",
+        "Middle East,SEEG,FOTA,123",
     ]
 
 
@@ -305,7 +304,7 @@ def test_excel_normalization_prefers_dimension_labels_when_week_heading_is_not_c
 
     output = tmp_path / "ASAP_Fota__2025-W20.xlsx"
     metadata = flow_worker._store_completed_download(
-        source, output, file_format="xlsx", export_view="Export Wizard (Sell-out Sub)",
+        source, output, file_format="xlsx",
     )
 
     normalized = Path(metadata["file_path"])
@@ -314,16 +313,16 @@ def test_excel_normalization_prefers_dimension_labels_when_week_heading_is_not_c
         "Sell-out Region", "Sell-out Subsidiary", "Country Code", "Week 20, 2025",
     ]
     assert normalized.read_text(encoding="utf-8-sig").splitlines() == [
-        'Sell-out Region,Sell-out Subsidiary,Country Code,"Week 20, 2025",Metronome Export View',
-        "Middle East,SEEG,AE,123,Export Wizard (Sell-out Sub)",
+        'Sell-out Region,Sell-out Subsidiary,Country Code,"Week 20, 2025"',
+        "Middle East,SEEG,AE,123",
     ]
 
 
 def test_managed_snapshot_unions_different_bundle_columns_by_name(tmp_path, monkeypatch):
     global_path = tmp_path / "global.csv"
     country_path = tmp_path / "countries.csv"
-    global_path.write_text("region,units,metronome_export_view\nGlobal,10,Global\n", encoding="utf-8")
-    country_path.write_text("country,vendor,metronome_export_view\nAE,Vendor A,Countries\n", encoding="utf-8")
+    global_path.write_text("region,units,bundle_scope\nGlobal,10,Global\n", encoding="utf-8")
+    country_path.write_text("country,vendor,bundle_scope\nAE,Vendor A,Countries\n", encoding="utf-8")
     executed = []
     copied = []
     transaction = SimpleNamespace(
@@ -366,11 +365,11 @@ def test_managed_snapshot_unions_different_bundle_columns_by_name(tmp_path, monk
 
     create = next(item for item in executed if item.startswith('CREATE TABLE "reporting"'))
     assert all(f'"{column}" TEXT' in create for column in (
-        "region", "units", "metronome_export_view", "country", "vendor",
+        "region", "units", "bundle_scope", "country", "vendor",
     ))
     assert 'COPY "reporting"."_metronome_stage_' in copied[0][0]
-    assert '("region", "units", "metronome_export_view")' in copied[0][0]
-    assert '("country", "vendor", "metronome_export_view")' in copied[1][0]
+    assert '("region", "units", "bundle_scope")' in copied[0][0]
+    assert '("country", "vendor", "bundle_scope")' in copied[1][0]
     assert result["files_loaded"] == 2
     assert result["rows_written"] == 2
     assert result["target_created"] is True
@@ -640,8 +639,11 @@ def test_sql_managed_snapshot_preserves_existing_table_and_commits(tmp_path, mon
     assert result["target"] == "db.Reporting Area.Import First and Second Activation"
     assert executed.count("commit") == 1
     assert "rollback" not in executed
-    assert "SET LOCAL lock_timeout = '30s'" in executed
-    assert "SET LOCAL statement_timeout = '120s'" in executed
+    # The load is bounded only so a wedged session cannot hold a transaction
+    # open forever. A slow database is allowed to be slow.
+    assert f"SET LOCAL lock_timeout = '{flow_sql.SQL_LOCK_TIMEOUT_SECONDS}s'" in executed
+    assert f"SET LOCAL statement_timeout = '{flow_sql.SQL_STATEMENT_TIMEOUT_SECONDS}s'" in executed
+    assert flow_sql.SQL_STATEMENT_TIMEOUT_SECONDS >= 30 * 60
     staging_create = next(
         item for item in executed
         if item.startswith('CREATE TABLE "Reporting Area"."_metronome_stage_')
@@ -950,3 +952,56 @@ def test_sql_copy_error_is_clean_and_rollback_is_logged(tmp_path, monkeypatch):
     assert rolled_back == [True]
     assert events[-1]["stage"] == "sql_failed"
     assert events[-1]["sql_stage"] == "copy"
+
+
+def test_excel_normalization_merges_populated_sheets_in_one_streamed_pass(tmp_path):
+    # Rows go straight from the workbook to the CSV writer, so a workbook whose
+    # rows are split across sheets - which is how an export larger than Excel's
+    # 1,048,576-row sheet limit has to arrive - still lands as one table.
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    first = workbook.active
+    first.title = "Part 1"
+    first.append(["Market", "Units"])
+    first.append(["Global", 1])
+    second = workbook.create_sheet("Part 2")
+    second.append(["Market", "Units"])
+    second.append(["Korea", 2])
+    workbook.save(source)
+
+    output = tmp_path / "bundle.xlsx"
+    metadata = flow_worker._store_completed_download(source, output, file_format="xlsx")
+
+    assert metadata["source_sheets"] == ["Part 1", "Part 2"]
+    assert metadata["row_count"] == 2
+    assert Path(metadata["file_path"]).read_text(encoding="utf-8-sig").splitlines() == [
+        "Market,Units", "Global,1", "Korea,2",
+    ]
+
+
+def test_failed_excel_normalization_never_leaves_a_truncated_csv(tmp_path):
+    # Streaming means rows reach disk before the workbook is fully validated.
+    # The complete file must only ever appear at the target name.
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Regional FOTA"])
+    sheet.append(["Week filter", "2025-W20"])
+    sheet.append([])
+    sheet.append(["Sell-out Region", "Sell-out Subsidiary", "Weekly", "202520"])
+    sheet.append(["Middle East", "SEEG", "FOTA", 123])
+    sheet.append(["Middle East", "SEEG", "FOTA", 123, "Middle East", "SEEG"])
+    workbook.save(source)
+
+    normalized = tmp_path / "bundle_normalized.csv"
+    with pytest.raises(RuntimeError, match="Refusing to discard data"):
+        flow_worker._normalize_xlsx(source, normalized, requested_weeks=[])
+
+    assert not normalized.exists()
+    # The worker never deletes, so the partial conversion stays as evidence.
+    assert (tmp_path / ".bundle_normalized.csv.partial").is_file()

@@ -21,9 +21,17 @@ from app.config import (
     UPLOAD_PGUSER,
 )
 
-SQL_CONNECT_TIMEOUT_SECONDS = 10
-SQL_LOCK_TIMEOUT_SECONDS = 30
-SQL_STATEMENT_TIMEOUT_SECONDS = 120
+# These are runaway backstops, not performance budgets. A load is allowed to
+# take as long as the database needs on a slow day; the limits exist only so a
+# wedged connection, an unreachable host, or a lock nobody will ever release
+# cannot leave a transaction open forever.
+SQL_CONNECT_TIMEOUT_SECONDS = 60
+# How long to wait for another session's lock on the target table. Unbounded
+# would let one long-running reader pin an open Metronome transaction all day.
+SQL_LOCK_TIMEOUT_SECONDS = 10 * 60
+# Per-statement ceiling. A multi-million-row COPY, and the TRUNCATE plus
+# INSERT ... SELECT a managed snapshot runs after it, each get the full budget.
+SQL_STATEMENT_TIMEOUT_SECONDS = 30 * 60
 SqlProgress = Callable[[dict], None]
 
 
