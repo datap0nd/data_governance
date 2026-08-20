@@ -15,7 +15,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.config import DB_PATH
 from app.database import get_db
@@ -35,6 +35,7 @@ PERIOD_STRATEGIES = {"none", "latest", "fixed", "rolling"}
 FILE_FORMATS = {"csv", "xlsx"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
+SCAN_MODES = {"full", "partial"}
 BROWSER_MODES = {"headless", "headed"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
 RUN_STALE_TIMEOUT_SECONDS = 600
@@ -707,15 +708,31 @@ class FlowEnabledWrite(BaseModel):
     enabled: bool
 
 
+MAX_DISCOVERED_OPTIONS = 5000
+
+
 class DiscoveredFilter(BaseModel):
     filter_key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     label: str = Field(min_length=1, max_length=200)
     control_label: str = Field(min_length=1, max_length=300)
     control_type: str
-    options: list[str] = Field(default_factory=list, max_length=2000)
+    options: list[str] = Field(default_factory=list, max_length=MAX_DISCOVERED_OPTIONS)
     automation: dict[str, Any] = Field(default_factory=dict)
     required: bool = False
     position: int = Field(default=0, ge=0, le=1000)
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def cap_options(cls, value):
+        """Keep a huge member list instead of failing the whole scan.
+
+        A prompt with thousands of members (country or item lists) is a
+        legitimate discovery. Truncating it costs a few tail options; failing
+        validation costs the entire scan, which then has to be run again.
+        """
+        if isinstance(value, list) and len(value) > MAX_DISCOVERED_OPTIONS:
+            return value[:MAX_DISCOVERED_OPTIONS]
+        return value
 
     @field_validator("control_type")
     @classmethod
@@ -742,6 +759,40 @@ class ScanProgress(BaseModel):
     timings: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
     complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
+    skipped_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def keep_valid_reports(cls, data):
+        """Drop only the reports that fail validation, never the whole scan.
+
+        A scan is expensive - up to 90 minutes of browser work - so one
+        malformed report must not reject the post and force a full rerun.
+        Offending reports are recorded in skipped_reports so the scan log
+        names them and the rest of the catalog still lands.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("reports"), list):
+            return data
+        kept, skipped = [], []
+        for item in data["reports"]:
+            if isinstance(item, DiscoveredReport):
+                kept.append(item)
+                continue
+            try:
+                kept.append(DiscoveredReport.model_validate(item))
+            except ValidationError as exc:
+                name = str((item or {}).get("discovery_key") or (item or {}).get("name") or "unnamed report") \
+                    if isinstance(item, dict) else "unnamed report"
+                first = exc.errors()[0] if exc.errors() else {}
+                where = ".".join(str(part) for part in first.get("loc", ()))
+                skipped.append({
+                    "report": name[:300],
+                    "error": f"{where}: {first.get('msg', 'invalid report')}"[:300],
+                })
+        if not skipped:
+            return data
+        existing = data.get("skipped_reports") or []
+        return {**data, "reports": kept, "skipped_reports": [*existing, *skipped]}
 
 
 def _filter_row(row) -> dict:
@@ -1775,7 +1826,8 @@ def _scan_out(row) -> dict:
     return result
 
 
-def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=None) -> int:
+def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=None,
+                mode: str = "full") -> int:
     active = db.execute(
         "SELECT id FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
         (site["id"],),
@@ -1791,6 +1843,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         },
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
+            "mode": mode if mode in SCAN_MODES else "full",
             "report_paths": [
                 _loads(report["automation_json"], {}).get("category_path", [])
             ] if report else [],
@@ -1851,17 +1904,20 @@ def list_scan_events(scan_id: int, after_id: int = Query(default=0, ge=0),
 
 
 @router.post("/sites/{site_id}/scan")
-def queue_catalog_scan(site_id: int, request: Request):
+def queue_catalog_scan(site_id: int, request: Request, mode: str = Query(default="full")):
     with get_db() as db:
         site = db.execute("SELECT * FROM flow_sites WHERE id=? AND enabled=1", (site_id,)).fetchone()
         if not site:
             raise HTTPException(404, "Website not found.")
         if site["adapter"] != ASAP_PORTAL_ADAPTER:
             raise HTTPException(400, "Automatic discovery is currently available for ASAP only.")
-        scan_id = _queue_scan(db, site, "manual", get_actor(request))
-        log_event(db, "flow_site", site_id, site["name"], "scan_queued", f"scan_id={scan_id}", get_actor(request))
+        if mode not in SCAN_MODES:
+            raise HTTPException(400, f"Scan mode must be one of: {', '.join(sorted(SCAN_MODES))}.")
+        scan_id = _queue_scan(db, site, "manual", get_actor(request), mode=mode)
+        log_event(db, "flow_site", site_id, site["name"], "scan_queued",
+                  f"scan_id={scan_id}; mode={mode}", get_actor(request))
     worker = launch_local_worker()
-    return {"id": scan_id, "site_id": site_id, "status": "queued", "worker": worker}
+    return {"id": scan_id, "site_id": site_id, "status": "queued", "mode": mode, "worker": worker}
 
 
 @router.post("/reports/{report_id}/scan")
@@ -1945,13 +2001,27 @@ def _apply_discovery(
                     break
         if existing:
             report_id = existing["id"]
+            automation = dict(item.automation)
+            ready_text = item.ready_text
+            download_text = item.download_text
+            if automation.get("scan_mode") == "partial":
+                # Merge over what a full scan already knows: export views,
+                # report tab, and download text can only come from opening
+                # the report, and flows depend on them.
+                stored = db.execute(
+                    "SELECT ready_text, download_text, automation_json FROM flow_reports WHERE id=?",
+                    (report_id,),
+                ).fetchone()
+                automation = {**_loads(stored["automation_json"], {}), **automation}
+                ready_text = item.ready_text or stored["ready_text"]
+                download_text = stored["download_text"] or item.download_text
             db.execute(
                 """UPDATE flow_reports SET name=?, report_url=?, ready_text=?, download_text=?,
                    automation_json=?, discovery_key=?, source_kind='discovered', last_seen_at=?,
                    stale=0, enabled=1, updated_at=?
                    WHERE id=?""",
-                (catalog_name, item.report_url, item.ready_text, item.download_text,
-                 _json(item.automation), item.discovery_key, seen_at, seen_at, report_id),
+                (catalog_name, item.report_url, ready_text, download_text,
+                 _json(automation), item.discovery_key, seen_at, seen_at, report_id),
             )
         else:
             cursor = db.execute(
@@ -1964,6 +2034,11 @@ def _apply_discovery(
             )
             report_id = cursor.lastrowid
         report_ids.append(report_id)
+        # A partial scan only inventories names and menu paths, so it knows
+        # nothing about filters. Leave existing definitions untouched instead
+        # of retiring every filter a full scan discovered.
+        if item.automation.get("scan_mode") == "partial":
+            continue
         # A targeted refresh is authoritative for the report it inspected,
         # even though it is intentionally not authoritative for the rest of
         # the site catalog. Mark prior discovered definitions stale before
@@ -2243,6 +2318,21 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
         result = _apply_discovery(
             db, row["site_id"], body.reports, now, complete=body.complete,
         ) if body.status == "succeeded" else {}
+        if body.skipped_reports:
+            result = {**result, "skipped_reports": body.skipped_reports}
+            db.execute(
+                """INSERT INTO flow_scan_events (scan_id, status, stage, message, details_json, created_at)
+                   VALUES (?, ?, 'reports_skipped', ?, ?, ?)""",
+                (
+                    scan_id, body.status,
+                    f"{len(body.skipped_reports)} report(s) were rejected by validation and skipped: "
+                    + "; ".join(
+                        f"{item.get('report')} ({item.get('error')})"
+                        for item in body.skipped_reports[:5]
+                    ),
+                    _json({"skipped_reports": body.skipped_reports}), now,
+                ),
+            )
         _store_timings(
             db, body.timings, operation_type="catalog_scan", site_id=row["site_id"], scan_id=scan_id,
         )

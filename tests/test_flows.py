@@ -2069,7 +2069,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=56' in index
+    assert '/static/app.js?v=57' in index
 
 
 def test_flow_builder_exposes_managed_snapshot_and_new_table_name():
@@ -2787,3 +2787,147 @@ def test_catalog_ui_groups_reports_and_drops_manual_add():
     assert "openCatalogTopics" in source
     assert 'id="flow-scan-log"' in source
     assert "scans/${scans[0].id}/events" in source
+
+
+def test_oversized_option_lists_are_capped_not_rejected():
+    """A prompt with thousands of members must not 422 the whole scan."""
+    body = flows.ScanProgress(
+        status="succeeded",
+        reports=[{
+            "discovery_key": "Mobile > Big > Big", "name": "Big",
+            "report_url": "https://portal.example.test",
+            "automation": {"category_path": ["Mobile", "Big", "Big"]},
+            "filters": [
+                {
+                    "filter_key": "item", "label": "Item", "control_label": "Item",
+                    "control_type": "multi_select",
+                    # The size that used to 422 the whole scan now lands intact.
+                    "options": [f"Item {index}" for index in range(2837)],
+                },
+                {
+                    "filter_key": "country", "label": "Country", "control_label": "Country",
+                    "control_type": "multi_select",
+                    "options": [f"Country {index}" for index in range(flows.MAX_DISCOVERED_OPTIONS + 900)],
+                },
+            ],
+        }],
+    )
+    assert len(body.reports[0].filters[0].options) == 2837
+    assert len(body.reports[0].filters[1].options) == flows.MAX_DISCOVERED_OPTIONS
+    assert body.skipped_reports == []
+
+
+def test_invalid_reports_are_skipped_so_the_scan_still_lands(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="skip-worker", display_name="Skip worker", capabilities={},
+    ))
+    with database.get_db() as db:
+        scan_id = flows._queue_scan(db, dict(
+            db.execute("SELECT * FROM flow_sites WHERE id=?", (site["id"],)).fetchone()
+        ), "manual", "Analyst")
+        db.execute(
+            "UPDATE flow_catalog_scans SET worker_id=?, status='claimed' WHERE id=?",
+            ("skip-worker", scan_id),
+        )
+
+    body = flows.ScanProgress(
+        status="succeeded",
+        reports=[
+            {  # valid
+                "discovery_key": "Mobile > Good > Good", "name": "Good",
+                "report_url": "https://portal.example.test",
+                "automation": {"category_path": ["Mobile", "Good", "Good"]},
+                "filters": [],
+            },
+            {  # invalid: control_type is not supported
+                "discovery_key": "Mobile > Bad > Bad", "name": "Bad",
+                "report_url": "https://portal.example.test",
+                "automation": {"category_path": ["Mobile", "Bad", "Bad"]},
+                "filters": [{
+                    "filter_key": "x", "label": "X", "control_label": "X",
+                    "control_type": "wormhole", "options": ["a"],
+                }],
+            },
+        ],
+    )
+    assert [report.name for report in body.reports] == ["Good"]
+    assert len(body.skipped_reports) == 1
+    assert "Bad" in body.skipped_reports[0]["report"]
+
+    result = flows.update_scan("skip-worker", scan_id, body)
+
+    assert result["result"]["report_count"] == 1
+    assert result["result"]["skipped_reports"][0]["report"].endswith("Bad")
+    names = [report["name"] for report in flows.catalog()["reports"]]
+    assert names == ["Mobile > Good > Good"]
+    log = flows.list_scan_events(scan_id, after_id=0, limit=400)
+    assert any(event["stage"] == "reports_skipped" for event in log["events"])
+
+
+def _full_scan_mena_report():
+    return flows.DiscoveredReport(
+        discovery_key="Mobile > Installed Base > Installed Base (MENA)",
+        name="Installed Base (MENA)",
+        report_url="https://portal.example.test",
+        ready_text="Export Wizard (Detail)",
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "report_tab": "Export Wizard (Detail)",
+            "export_views": [{"label": "Export Wizard (Detail)", "filter_keys": ["region"]}],
+        },
+        filters=[flows.DiscoveredFilter(
+            filter_key="region", label="Region", control_label="Region",
+            control_type="select", options=["Global"], required=True, position=0,
+        )],
+    )
+
+
+def test_partial_scan_keeps_filters_discovered_by_a_full_scan(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    now = flows._iso(flows._now())
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [_full_scan_mena_report()], now)
+
+    partial = flows.DiscoveredReport(
+        discovery_key="Mobile > Installed Base > Installed Base (MENA)",
+        name="Installed Base (MENA)",
+        report_url="https://portal.example.test",
+        automation={
+            "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+            "scan_mode": "partial",
+        },
+        filters=[],
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [partial], now)
+
+    report = flows.catalog()["reports"][0]
+    region = next(item for item in report["filters"] if item["filter_key"] == "region")
+    assert region["enabled"] and not region["stale"]
+    assert region["options"] == ["Global"]
+    # Export views and ready text only a full scan can see must survive.
+    assert report["automation"]["export_views"][0]["label"] == "Export Wizard (Detail)"
+    assert report["ready_text"] == "Export Wizard (Detail)"
+
+
+def test_scan_mode_is_validated_and_reaches_the_queued_job(flow_db, monkeypatch):
+    site = flows.create_site(_asap_site(), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda *_a, **_k: {"status": "starting"})
+
+    queued = flows.queue_catalog_scan(site["id"], _request(), mode="partial")
+    assert queued["mode"] == "partial"
+    scan = next(item for item in flows.list_scans(site_id=None, limit=50) if item["id"] == queued["id"])
+    assert scan["job"]["discovery"]["mode"] == "partial"
+
+    with pytest.raises(HTTPException) as excinfo:
+        flows.queue_catalog_scan(site["id"], _request(), mode="turbo")
+    assert excinfo.value.status_code == 400
+
+
+def test_builder_exposes_a_targeted_report_scan_and_quick_scan():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'id="flow-scan-report-now"' in source
+    assert "/api/flows/reports/${reportId}/scan" in source
+    assert "flow-scan-site-quick" in source
+    assert "scan?mode=partial" in source and "scan?mode=full" in source

@@ -52,7 +52,7 @@ EXPORT_TASK_ATTEMPTS = 3
 # ScanProgress in app.routers.flows). A single oversized field rejects the
 # whole progress post with an opaque 422, so the worker caps everything it
 # sends below those limits.
-ASAP_MAX_FILTER_OPTIONS = 1_000
+ASAP_MAX_FILTER_OPTIONS = 3_000
 ASAP_MAX_FILTER_LABEL = 200
 ASAP_MAX_REPORT_FILTERS = 200
 ASAP_MAX_ERROR_CHARS = 10_000
@@ -1890,7 +1890,11 @@ def _merge_asap_filter_definition(
     key = _slug_key(label, f"filter_{len(definitions) + 1}")
     existing = next((item for item in definitions if item["filter_key"] == key), None)
     if existing is not None:
-        existing["options"] = list(dict.fromkeys([*existing["options"], *options]))
+        # Unions must honor the cap too: capping only the first discovery let
+        # merged lists grow past the server limit and 422 the whole scan.
+        existing["options"] = list(dict.fromkeys(
+            [*existing["options"], *options]
+        ))[:ASAP_MAX_FILTER_OPTIONS]
         return
     definitions.append({
         "filter_key": key, "label": label, "control_label": label,
@@ -2636,6 +2640,34 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
         paths = target_paths or _asap_discover_menu_reports(
             page, job["discovery"].get("scope") or ["Mobile"]
         )
+    if job["discovery"].get("mode") == "partial" and not target_paths:
+        # A partial scan inventories the menu only: names and paths, without
+        # opening a single report. It is the fast way to see what exists;
+        # filters come from a targeted scan of the one report being
+        # configured. Entries are marked so the catalog merges them over
+        # what a full scan already discovered instead of replacing it.
+        report_progress("running", {
+            "stage": "partial_scan",
+            "message": (
+                f"Partial scan: cataloguing {len(paths)} report(s) from the portal menu "
+                f"without opening them. Use Scan report in the flow builder for filters."
+            ),
+        })
+        partial_reports = [
+            {
+                "discovery_key": " > ".join(path), "name": path[-1],
+                "report_url": site.get("base_url") or site.get("auth_url"),
+                "ready_text": None, "download_text": "Export CSV",
+                "automation": {"category_path": path, "scan_mode": "partial"},
+                "filters": [],
+            }
+            for path in paths
+        ]
+        return (
+            partial_reports,
+            timings.finish(item_count=len(partial_reports), status="succeeded"),
+            True,
+        )
     reports = []
     failures = []
     complete = not target_paths
@@ -2699,7 +2731,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                         else:
                             existing["options"] = list(dict.fromkeys([
                                 *existing.get("options", []), *definition.get("options", []),
-                            ]))
+                            ]))[:ASAP_MAX_FILTER_OPTIONS]
                     if not discovered and not download_links:
                         # An empty result is a discovery defect until proven
                         # otherwise - surface it in the scan log with enough

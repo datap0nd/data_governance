@@ -1287,7 +1287,8 @@ def test_filter_definitions_are_capped_below_server_scan_limits():
 
     definitions = []
     _merge_asap_filter_definition(
-        definitions, "X" * 300, "multi_select", [f"Option {i}" for i in range(2500)],
+        definitions, "X" * 300, "multi_select",
+        [f"Option {i}" for i in range(flow_worker.ASAP_MAX_FILTER_OPTIONS + 500)],
     )
     definition = definitions[0]
     assert len(definition["label"]) == flow_worker.ASAP_MAX_FILTER_LABEL
