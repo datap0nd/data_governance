@@ -502,14 +502,14 @@ def _summary_section(title: str, summary: dict) -> tuple[str, str]:
 
 
 def _build_person_schedule_email(person: dict, content_types: list[str]) -> tuple[str, str, str]:
-    from app.routers.email import _load_alert_summaries
+    from app.routers.email import ALERT_SUBJECT_PREFIX, _load_alert_summaries
 
     owner_name = person["name"]
     alert_summary = _pick_owner_summary(_load_alert_summaries({owner_name}), owner_name)
     if not alert_summary:
         raise RuntimeError("No active alerts are available for this BI profile.")
     return (
-        alert_summary.get("subject") or f"Active alerts - {owner_name}",
+        alert_summary.get("subject") or f"{ALERT_SUBJECT_PREFIX} - {owner_name}",
         alert_summary.get("body_html") or "",
         alert_summary.get("body_text") or "",
     )

@@ -40,7 +40,9 @@ def test_alert_email_is_a_single_actionable_table_with_degradation_evidence():
 
     summary = _build_alert_summary({"name": "Owner One", "email": "owner@example.test"}, alerts)
 
-    assert summary["subject"].startswith("2 active alerts need attention")
+    assert summary["subject"].startswith("Metronome alerts - ")
+    assert "2 active alerts need attention" in summary["subject"]
+    assert "Owner One" in summary["subject"]
     assert "WHAT TO DO FIRST" not in summary["body_text"]
     assert "What to do first" not in summary["body_html"]
     assert "All active alerts" not in summary["body_html"]

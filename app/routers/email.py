@@ -28,6 +28,10 @@ router = APIRouter(prefix="/api/email", tags=["email"])
 OUTLOOK_SCRIPT = BASE_DIR / "tools" / "outlook_task_email.ps1"
 TASK_NAME = "DG_Outlook_Task_Email"
 
+# Every scheduled alert email leads with the product name so it is recognisable
+# in a crowded inbox and filterable by rule.
+ALERT_SUBJECT_PREFIX = "Metronome alerts"
+
 TASK_STATUS_LABELS = {
     "backlog": "Backlog",
     "todo": "To Do",
@@ -517,7 +521,10 @@ def _artifact_cell_html(alert: dict) -> str:
 def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
     today = datetime.now(timezone.utc).strftime("%d %b %Y")
     owner_name = owner["name"]
-    subject = f"{len(alerts)} active alert{'s' if len(alerts) != 1 else ''} need attention - {owner_name} - {today}"
+    subject = (
+        f"{ALERT_SUBJECT_PREFIX} - {len(alerts)} active alert{'s' if len(alerts) != 1 else ''}"
+        f" need attention - {owner_name} - {today}"
+    )
     ranked = sorted(
         alerts,
         key=lambda alert: (
