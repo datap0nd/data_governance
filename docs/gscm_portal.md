@@ -12,36 +12,59 @@ Excel→CSV normalization, and the SQL handoff.
 | | ASAP | GSCM |
 |---|---|---|
 | Client | HTML in an iframe | TOBESOFT Nexacro (`Nexacro17`/`21`) |
-| Discovery unit | Report menu tree | Bookmarks on the home screen |
+| Discovery unit | Report menu tree | Bookmarks in the Setting dialog |
 | Where filters live | Metronome, per report | Inside GSCM, saved into the bookmark |
-| Period selection | Sell-out Week prompts | None — the bookmark holds it |
+| Period selection | Sell-out Week prompts | None - the bookmark holds it |
 | Export | Export Wizard, CSV or XLSX | One MDI toolbar button, XLSX only |
-| Files per run | One per export view × period | One |
+| Files per run | One per export view x period | One |
 
-Nothing in GSCM is a link, a table, or a form control. Every element is a
-Nexacro component whose DOM `id` is its absolute path in the component tree:
+## Where the bookmarks actually are
+
+Not on the home screen. GSCM keeps them in a modal:
 
 ```
-mainframe.VFrameSet.MdiFrame.form.div_frameButton.form.btn_exceldown
+Top nav gear -> Setting
+  |
+  +- Favorite          <- left rail (Layout / Dashboard / Installation below it)
+       |
+       +- [MX v]  ( Private | Public | Custom )      <- scope dropdown + tabs
+       |
+       +- SCM                                        <- folder tree
+       |    +- Actual Sales
+       |    |    +- MENA_Actual_sales                <- a bookmark
+       |    |    +- MX B2B Actual Sales
+       |    +- B2B Biz Plan
+       |         +- B2B BO Fcst V2
+       |
+       +- [ Go >> ] [ Save ] [ Close ]
 ```
 
-Three facts follow, and they shape `app/flow_gscm.py`:
+Select a row, press **Go >>**, and GSCM opens that report with its saved
+configuration applied. The scan reads all three tabs and catalogues every leaf
+row, tagged with the tab and folder path it came from.
 
-1. **Bookmarks are the catalog.** A GSCM user configures a report inside GSCM —
-   filters, period, dimensions — and saves it as a favorite on the home
-   screen. That is the unit worth automating, so the scan reads the favorites
-   list rather than walking a sitemap. A discovered GSCM report therefore
-   declares **no Metronome filters**; asking the user to re-pick them here
-   would be asking twice.
-2. **Ids are matched by shape, not by literal.** The documented favorites path
-   contains a layout-dependent segment (`div_section4_MOBILE`). Every lookup
-   matches the stable trailing component name (`stc_userreportname`,
-   `btn_exceldown`) and only falls back to the full literal path.
-3. **The framework fights automation.** Nexacro parks a full-screen wait
-   overlay (`mainframe.waitwindow`, z-index 2,000,000) over the page and floats
-   un-anchored popup cards above everything. Both swallow clicks and both
-   outlive the work that raised them, so every interaction clears them first
-   and clicks with `force=True`.
+The home screen has its own "Favorite" widget, but it lists only the entries a
+user has *pinned* (the pin icon on each row, then Save). It is empty for most
+users, so reading it finds nothing even for someone with hundreds of bookmarks.
+An earlier version of this adapter did exactly that and reported "no bookmarks
+found" - a true statement about the wrong panel.
+
+## Why this adapter matches on text and geometry, not on ids
+
+Every id here would have to be guessed. Instead:
+
+* **Controls are clicked by their visible label** - `Favorite`, `Public`,
+  `Go >>`. These survive a Nexacro layout change that would break an absolute
+  component path. The one exception is the Setting gear, which has no text and
+  is found by id shape (`btn_setting`, `btn_config`, ...).
+* **The tree is rebuilt from indentation.** The rows carry no DOM nesting;
+  depth is expressed purely as horizontal offset, which is also how the screen
+  communicates it to a human. A row with a more-indented row beneath it is a
+  folder; everything else is a bookmark.
+* **Every failure prints what was on screen.** `screen_inventory()` dumps the
+  visible labels with their ids and positions into the error and the scan log,
+  so one failed run is enough to write an exact selector instead of guessing
+  again.
 
 ## Run lifecycle
 
@@ -52,10 +75,11 @@ POST /api/flows/sites/{id}/scan         POST /api/flows/{id}/run
   ↓ flow_catalog_scans row                ↓ flow_runs row
 worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
-  open portal, clear overlay              double-click the favorite card
-  read stc_userreportname labels          wait for the wait overlay to settle
-  ↓ POST .../scans/{id}/progress          ↓ flow_gscm.trigger_excel_export
-flow_reports rows, one per bookmark       click btn_exceldown
+  open Setting > Favorite                 open Setting > Favorite, pick the tab
+  read Private/Public/Custom trees        select the row, press Go >>
+  ↓ POST .../scans/{id}/progress          wait for the overlay to settle
+flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
+                                          click btn_exceldown
                                           ↓ staged download monitor
                                         _store_completed_download (xlsx)
                                           ↓ keeps the workbook, writes a
@@ -70,23 +94,27 @@ behave identically for GSCM.
 
 ## Bookmark identity
 
-A bookmark is stored with both its container id and its name:
+A bookmark is stored with the tab, folder path, and name that locate it again:
 
 ```json
 {
   "kind": "gscm_favorite",
-  "category_path": ["Favorites", "Biz_trip_GSCM"],
-  "favorite_id": "mainframe.VFrameSet.HomeFrame...div_list.form.div_data01",
-  "favorite_name": "Biz_trip_GSCM",
+  "category_path": ["Public", "SCM", "Actual Sales", "MENA_Actual_sales"],
+  "favorite_tab": "Public",
+  "favorite_name": "MENA_Actual_sales",
+  "favorite_folder_path": ["SCM", "Actual Sales"],
   "excel_btn_id": "mainframe.VFrameSet.MdiFrame.form.div_frameButton.form.btn_exceldown"
 }
 ```
 
-GSCM renumbers `div_dataNN` when the user reorders their favorites, so a stored
-id can silently start pointing at a different report. At run time the **name
-wins**: the adapter re-reads the list and resolves the card by name, falling
-back to the id. If neither matches, the run fails naming the bookmarks that
-*are* on the screen, rather than exporting the wrong report.
+The **folder path is what disambiguates** a repeated name - the same report is
+often filed under several folders, and matching on the name alone would
+download a different report than the flow was built for. Two rows sharing a
+name still get two catalog entries (`Weekly PSI`, `Weekly PSI (2)`), because
+`flow_reports` is keyed by (site, name) and would otherwise collapse them.
+
+Element ids are recorded but never trusted across runs: Nexacro regenerates
+them as the tree scrolls and re-renders.
 
 ## Authentication
 
@@ -155,7 +183,8 @@ instead of the API.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Scan fails: "No GSCM bookmarks were found" | The profile is signed in as a different user, or no favorites are saved | Save a favorite in GSCM; re-run the auth bootstrap for `gscm_portal` |
+| Scan fails: "Setting > Favorite dialog did not open" | The gear was not found by id shape | Read the `On screen:` inventory in the scan log and add the real id to `SETTING_BUTTON_HINTS` |
+| Scan fails: "none of its tabs listed a bookmark" | The tree did not render, or the scope dropdown points at an empty business | Read the `On screen:` inventory; check the `MX` dropdown |
 | Scan fails: "GSCM did not render its Nexacro client" | The profile has no GSCM session | Re-run the auth bootstrap; try headed mode |
 | Run fails naming the available bookmarks | The bookmark was renamed or deleted in GSCM | Rescan the GSCM catalog, then repoint the flow |
 | Run fails: "Excel export button was not found" | The bookmark opened a screen with no grid export | Open the bookmark by hand and confirm the toolbar offers Excel |
@@ -165,7 +194,7 @@ instead of the API.
 
 | File | Role |
 |---|---|
-| `app/flow_gscm.py` | The whole adapter: overlay/popup handling, favorites reading, bookmark opening, Excel trigger |
+| `app/flow_gscm.py` | The whole adapter: overlay/popup handling, Setting dialog navigation, tree reconstruction, Go >>, Excel trigger, screen inventory |
 | `app/flow_worker.py` | Dispatches scans and runs to the adapter; per-portal auth bootstrap |
 | `app/routers/flows.py` | `GSCM_PORTAL_ADAPTER`, discovery gating, GSCM-specific flow validation |
 | `app/database.py` | Registers the GSCM site and upgrades a pre-existing one |
