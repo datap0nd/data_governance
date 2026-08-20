@@ -3881,7 +3881,8 @@ button.btn-danger-outline:hover {
     position: relative; overflow-x: auto; padding: 0.5rem 0 1rem;
 }
 .lin-grid {
-    display: grid; gap: 2rem; min-width: 700px;
+    /* The column gap doubles as the routing gutter for the SVG edges. */
+    display: grid; gap: 2rem; column-gap: 2.75rem; min-width: 700px;
     align-items: start; position: relative; z-index: 1;
 }
 .lin-col { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; transition: opacity 0.3s ease; }
@@ -4121,16 +4122,14 @@ button.btn-danger-outline:hover {
     pointer-events: none; overflow: visible;
 }
 .lin-edge {
-    fill: none; stroke: var(--border); stroke-width: 1.2; opacity: 0.18;
-    transition: all 0.2s;
+    fill: none; stroke: var(--border); stroke-width: 1.2; opacity: 0.45;
+    stroke-linecap: round; stroke-linejoin: round;
+    transition: stroke 0.2s ease, stroke-width 0.2s ease, opacity 0.2s ease;
 }
 .lin-edge-hl {
-    stroke: var(--accent); stroke-width: 2; opacity: 0.7;
-    stroke-dasharray: 6 3;
-    animation: lin-flow 1s linear infinite;
+    stroke: var(--accent); stroke-width: 1.6; opacity: 0.9;
 }
-.lin-edge-dim { opacity: 0; }
-@keyframes lin-flow { to { stroke-dashoffset: -9; } }
+#lin-arrow path { fill: var(--accent); }
 
 /* Highlight / collapse */
 [data-lin-id].lin-highlighted {
@@ -5241,6 +5240,7 @@ button.btn-danger-outline:hover {
     :root:not(.light) .stat-card.stat-card-clickable:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
     :root:not(.light) .fc-col:hover .fc-ico { box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
     :root:not(.light) .fc-tip { box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+    :root:not(.light) .lin-edge:not(.lin-edge-hl) { stroke: var(--border-light); opacity: 0.7; }
     :root:not(.light) .table-wrapper::after { background: linear-gradient(to right, transparent, rgba(0,0,0,0.15)); }
     :root:not(.light) .shimmer::after { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent); }
     :root:not(.light) .ai-chat-overlay { background: rgba(0,0,0,0.4); }
@@ -5257,6 +5257,7 @@ button.btn-danger-outline:hover {
 :root.dark .stat-card.stat-card-clickable:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
 :root.dark .fc-col:hover .fc-ico { box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
 :root.dark .fc-tip { box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+:root.dark .lin-edge:not(.lin-edge-hl) { stroke: var(--border-light); opacity: 0.7; }
 :root.dark .table-wrapper::after { background: linear-gradient(to right, transparent, rgba(0,0,0,0.15)); }
 :root.dark .shimmer::after { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent); }
 :root.dark .ai-chat-overlay { background: rgba(0,0,0,0.4); }

@@ -8109,6 +8109,7 @@ function _lineageSourceLayers(data, directSourceIds) {
 
 function _renderLineageDiagram(data) {
     const container = document.getElementById("lineage-container");
+    window._linHL = null;
     if (window._lineageBindTimer) {
         clearTimeout(window._lineageBindTimer);
         window._lineageBindTimer = null;
@@ -8587,30 +8588,129 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     window._linSvgEdges = svgEdges;
 }
 
+// Edge routing constants. Edges leave a card on the right, run flat until the
+// gap in front of the target column, drop to the target row inside that gap,
+// then run flat into the card. Straight runs hide behind the opaque cards, so
+// only the short vertical hops are visible in the gutters.
+const LIN_EDGE_RADIUS = 8;    // corner rounding on the two elbows
+const LIN_EDGE_STUB = 8;      // keep channels clear of the column edges
+const LIN_EDGE_LANE_GAP = 6;  // vertical clearance before two runs share a lane
+const LIN_EDGE_LANE_MIN = 4;  // narrowest usable spacing between channels
+const LIN_EDGE_ARROW = '<defs><marker id="lin-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1,1.2 L7,4 L1,6.8 Z"/></marker></defs>';
+
+/** Vertical attach point: the card header, so edges aim at the title rather
+ *  than at the middle of a long expanded body. */
+function _linAnchorY(el, rect) {
+    const hdr = el.querySelector(":scope > .lin-card-hdr");
+    if (hdr) {
+        const hr = hdr.getBoundingClientRect();
+        if (hr.height > 2) return hr.top + hr.height / 2;
+    }
+    return rect.top + rect.height / 2;
+}
+
+function _linRound(n) { return Math.round(n * 10) / 10; }
+
+/** Orthogonal path with rounded elbows, falling back to a curve when the two
+ *  cards are too close (or the target sits left of the source) to route. */
+function _linEdgePath(e) {
+    const x1 = _linRound(e.x1), y1 = _linRound(e.y1);
+    const x2 = _linRound(e.x2), y2 = _linRound(e.y2);
+    if (Math.abs(y2 - y1) < 1.5) return `M${x1},${y1} L${x2},${y2}`;
+    if (e.xc == null || x2 - x1 < 4 * LIN_EDGE_RADIUS) {
+        const mid = _linRound((x1 + x2) / 2);
+        return `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`;
+    }
+    const xc = _linRound(Math.min(Math.max(e.xc, x1 + LIN_EDGE_RADIUS), x2 - LIN_EDGE_RADIUS));
+    const r = _linRound(Math.min(LIN_EDGE_RADIUS, Math.abs(y2 - y1) / 2, xc - x1, x2 - xc));
+    const dir = y2 > y1 ? 1 : -1;
+    return `M${x1},${y1} L${_linRound(xc - r)},${y1}`
+        + ` Q${xc},${y1} ${xc},${_linRound(y1 + dir * r)}`
+        + ` L${xc},${_linRound(y2 - dir * r)}`
+        + ` Q${xc},${y2} ${_linRound(xc + r)},${y2} L${x2},${y2}`;
+}
+
+/** Give every vertical run in a gutter its own channel: greedily pack the runs
+ *  into lanes (runs that do not overlap vertically reuse a lane), then spread
+ *  the lanes evenly across the gap. */
+function _linAssignChannels(group, gutterLeft, gutterRight) {
+    const laneEnd = [];
+    group.sort((a, b) => Math.min(a.y1, a.y2) - Math.min(b.y1, b.y2));
+    for (const e of group) {
+        const top = Math.min(e.y1, e.y2), bottom = Math.max(e.y1, e.y2);
+        let lane = laneEnd.findIndex(end => end + LIN_EDGE_LANE_GAP < top);
+        if (lane === -1) { lane = laneEnd.length; laneEnd.push(bottom); }
+        else laneEnd[lane] = bottom;
+        e.lane = lane;
+    }
+    const band = gutterRight - gutterLeft - LIN_EDGE_STUB * 2;
+    if (band <= LIN_EDGE_LANE_MIN) {
+        for (const e of group) e.xc = (gutterLeft + gutterRight) / 2;
+        return;
+    }
+    // Never let channels crowd below the minimum spacing; reuse them instead.
+    const slots = Math.max(1, Math.min(laneEnd.length, Math.floor(band / LIN_EDGE_LANE_MIN)));
+    for (const e of group) {
+        e.xc = gutterLeft + LIN_EDGE_STUB + band * ((e.lane % slots) + 1) / (slots + 1);
+    }
+}
+
 function _drawLinEdges() {
     const svg = document.getElementById("lin-svg");
     const wrap = document.getElementById("lin-wrap");
     if (!svg || !wrap) return;
     const wr = wrap.getBoundingClientRect();
-    svg.innerHTML = "";
+    const ox = wrap.scrollLeft - wr.left, oy = wrap.scrollTop - wr.top;
+    svg.innerHTML = LIN_EDGE_ARROW;
     svg.setAttribute("width", wrap.scrollWidth);
     svg.setAttribute("height", wrap.scrollHeight);
+
+    // Column bounds define the routing gutters.
+    const colEls = [...wrap.querySelectorAll(".lin-col")].filter(c => c.offsetParent !== null);
+    const colIndex = new Map();
+    const colBounds = colEls.map((c, i) => {
+        colIndex.set(c, i);
+        const r = c.getBoundingClientRect();
+        return { left: r.left + ox, right: r.right + ox };
+    });
+
+    const highlighted = window._linHL || null;
+    const edges = [];
     for (const e of (window._linSvgEdges || [])) {
+        // While a lineage is traced, everything off the path is collapsed to
+        // zero height - drawing those edges only adds invisible clutter.
+        if (highlighted && !(highlighted.has(e.from) && highlighted.has(e.to))) continue;
         const fromEl = wrap.querySelector(`[data-lin-id="${CSS.escape(e.from)}"]`);
         const toEl = wrap.querySelector(`[data-lin-id="${CSS.escape(e.to)}"]`);
         if (!fromEl || !toEl) continue;
         const fc = fromEl.closest(".lin-col"), tc = toEl.closest(".lin-col");
         if (!fc || !tc || fc.offsetParent === null || tc.offsetParent === null) continue;
         const fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
-        if (fr.width === 0 || tr.width === 0) continue;
-        const x1 = fr.right - wr.left + wrap.scrollLeft;
-        const y1 = fr.top + fr.height / 2 - wr.top + wrap.scrollTop;
-        const x2 = tr.left - wr.left + wrap.scrollLeft;
-        const y2 = tr.top + tr.height / 2 - wr.top + wrap.scrollTop;
-        const midX = (x1 + x2) / 2;
+        if (fr.width < 2 || tr.width < 2 || fr.height < 2 || tr.height < 2) continue;
+        edges.push({
+            from: e.from, to: e.to, hl: !!highlighted,
+            x1: fr.right + ox, y1: _linAnchorY(fromEl, fr) + oy,
+            x2: tr.left + ox, y2: _linAnchorY(toEl, tr) + oy,
+            ci: colIndex.get(fc), cj: colIndex.get(tc),
+        });
+    }
+
+    const byGutter = new Map();
+    for (const e of edges) {
+        if (!(e.cj > e.ci)) continue; // same or backward column: curve instead
+        if (!byGutter.has(e.cj)) byGutter.set(e.cj, []);
+        byGutter.get(e.cj).push(e);
+    }
+    for (const [cj, group] of byGutter) {
+        const left = cj > 0 ? colBounds[cj - 1].right : colBounds[cj].left - 24;
+        _linAssignChannels(group, left, colBounds[cj].left);
+    }
+
+    for (const e of edges) {
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`);
-        path.setAttribute("class", "lin-edge");
+        path.setAttribute("d", _linEdgePath(e));
+        path.setAttribute("class", e.hl ? "lin-edge lin-edge-hl" : "lin-edge");
+        if (e.hl) path.setAttribute("marker-end", "url(#lin-arrow)");
         path.dataset.from = e.from; path.dataset.to = e.to;
         svg.appendChild(path);
     }
@@ -8691,6 +8791,7 @@ function _bindLinInteractions() {
             if (id.startsWith("script-")) _showLineageScriptDetail(id.replace("script-", ""));
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
             const connected = _traceLinLineage(id);
+            window._linHL = connected;
             // Hide SVG immediately so stale edges don't show during transition
             const svg = document.getElementById("lin-svg");
             if (svg) svg.style.opacity = "0";
@@ -8713,12 +8814,6 @@ function _bindLinInteractions() {
                 _drawLinEdges();
                 // Fade SVG back in
                 if (svg) { svg.style.transition = "opacity 0.2s ease"; svg.style.opacity = "1"; }
-                // Apply edge styles after redraw
-                wrap.querySelectorAll(".lin-edge").forEach(edge => {
-                    const hit = connected.has(edge.dataset.from) && connected.has(edge.dataset.to);
-                    edge.classList.toggle("lin-edge-hl", hit);
-                    edge.classList.toggle("lin-edge-dim", !hit);
-                });
             }, 380);
         });
     });
@@ -8759,9 +8854,9 @@ function _resetLinHL() {
     // Hide SVG during layout shift
     const svg = document.getElementById("lin-svg");
     if (svg) svg.style.opacity = "0";
+    window._linHL = null;
     wrap.querySelectorAll("[data-lin-id]").forEach(n => n.classList.remove("lin-highlighted", "lin-dimmed"));
     wrap.querySelectorAll(".lin-col").forEach(col => col.classList.remove("lin-col-empty"));
-    wrap.querySelectorAll(".lin-edge").forEach(e => e.classList.remove("lin-edge-hl", "lin-edge-dim"));
     // Redraw edges after expand transition finishes
     setTimeout(() => {
         _drawLinEdges();
