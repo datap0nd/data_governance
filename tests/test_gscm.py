@@ -880,3 +880,82 @@ def test_setup_registers_gscm_before_reading_the_sign_in_list(tmp_path):
         check=True, capture_output=True, text=True,
     ).stdout
     assert "gscm_portal\thttps://mdscm.sec.samsung.net/nexa/index.html" in listed
+
+
+# ── The real top bar ──
+#
+# Read off the live portal's failure report. The gear is btn_setting @(1224,12);
+# btn_user sits further right, and scrollbar arrows outnumber the real buttons.
+
+LIVE_TOP_BAR_ICONS = [
+    {"id": "mainframe.VFrameSet.HomeFrame.form.div_main.form.vscrollbar.decbutton", "x": 1357, "y": 49},
+    {"id": "mainframe.VFrameSet.HomeFrame.form.div_main.form.vscrollbar.decbutton:icontext", "x": 1357, "y": 49},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.vscrollbar.decbutton", "x": 1345, "y": 1},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.vscrollbar.decbutton:icontext", "x": 1345, "y": 1},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.sta_confidential", "x": 1283, "y": 13},
+    {"id": "mainframe.VFrameSet.TopFrame.form.pdv_logout.form.vscrollbar.decbutton", "x": 1281, "y": 36},
+    {"id": "mainframe.VFrameSet.HomeFrame.form.vscrollbar.decbutton", "x": 1275, "y": 43},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_user", "x": 1250, "y": 12},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting", "x": 1224, "y": 12},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_scmLang", "x": 1197, "y": 12},
+    {"id": "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_notice", "x": 1169, "y": 12},
+]
+LIVE_GEAR_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
+LIVE_USER_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_user"
+
+
+class LiveTopBarPage(FakeGscmPage):
+    """The portal's real top bar, where the gear is not the rightmost icon."""
+
+    def __init__(self, **kwargs):
+        super().__init__(gear_id=LIVE_GEAR_ID, **kwargs)
+        self.components.update(item["id"] for item in LIVE_TOP_BAR_ICONS)
+
+    def _icon_records(self):
+        if self.dialog_open:
+            return _icons_for(self._rows())
+        return [{**item, "w": 20, "h": 20} for item in LIVE_TOP_BAR_ICONS]
+
+
+def test_the_live_gear_is_found_and_the_profile_icon_is_not_clicked():
+    page = LiveTopBarPage()
+    flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
+    assert LIVE_GEAR_ID in page.clicks
+    # btn_user sits further right than the gear. Ranking candidates by screen
+    # position opened a profile popover and reported the gear missing.
+    assert LIVE_USER_ID not in page.clicks
+
+
+def test_scrollbar_arrows_never_crowd_out_a_real_control():
+    # Eight of the eleven text-less controls in the top bar are scrollbar
+    # arrows and static decoration, which pushed the gear past the try limit.
+    page = LiveTopBarPage()
+    chrome = [
+        item for _root, item in flow_gscm.icon_controls(page, include_chrome=False)
+    ]
+    identifiers = {item["id"] for item in chrome}
+    assert LIVE_GEAR_ID in identifiers
+    assert not any("scrollbar" in item for item in identifiers)
+    assert not any(item.endswith(":icontext") for item in identifiers)
+
+
+def test_id_hints_are_ranked_by_specificity_not_by_position():
+    assert flow_gscm._hint_rank(LIVE_GEAR_ID, flow_gscm.SETTING_BUTTON_HINTS) == 0
+    # btn_user must not be reachable through any Setting hint at all.
+    assert flow_gscm._hint_rank(LIVE_USER_ID, flow_gscm.SETTING_BUTTON_HINTS) == len(
+        flow_gscm.SETTING_BUTTON_HINTS
+    )
+
+
+def test_a_renamed_gear_still_falls_back_to_position():
+    renamed = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_zzz"
+    page = LiveTopBarPage()
+    page.components.discard(LIVE_GEAR_ID)
+    page.components.add(renamed)
+    page.gear_id = renamed
+    page._icon_records = lambda: (
+        _icons_for(page._rows()) if page.dialog_open else
+        [{"id": renamed, "x": 1224, "y": 12, "w": 20, "h": 20}]
+    )
+    flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
+    assert renamed in page.clicks

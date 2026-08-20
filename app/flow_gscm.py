@@ -57,19 +57,29 @@ FAVORITE_PANEL_LABEL = "Favorite"
 SCOPE_TABS = ("Private", "Public", "Custom")
 GO_LABELS = ("Go >>", "Go»", "Go »", "Go")
 CLOSE_LABELS = ("Close",)
-#: The dialog is opened by a gear icon with no text, so it is the one control
-#: that must be found by id shape.
+#: The gear that opens Setting, read off the live portal. Tried first and
+#: exactly; the hints below only matter if GSCM renames it.
+SETTING_BUTTON_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
+#: Ordered most specific first. Order is what makes this safe: the top bar also
+#: holds btn_user and btn_notice, and a generic hint that matched one of those
+#: first would open a profile popover instead of Setting.
 SETTING_BUTTON_HINTS = (
-    "btn_setting", "btn_set", "btn_config", "btn_env", "btn_setup", "btn_pref",
-    "btn_option", "btn_opt", "btn_gear", "btn_my", "btn_user", "setting",
-    "config", "gear", "preference",
+    "btn_setting", "btn_config", "btn_setup", "btn_env", "btn_pref",
+    "btn_option", "btn_gear", "setting", "config", "gear", "preference",
 )
 #: The gear carries no text, so when no id hint matches it is looked for by
 #: position instead: a control in the top frame, on the right of the business
 #: pills (All / MX / DA / ...), which sit at the far right of that bar.
 TOP_BAR_MAX_Y = 60
 TOP_BAR_MIN_X = 1_000
-MAX_GEAR_TRIES = 8
+MAX_GEAR_TRIES = 20
+#: Framework furniture that is visible, text-less, and in the top bar, but is
+#: never a control worth clicking. Scrollbar arrows alone outnumbered the real
+#: buttons and crowded the gear off the end of the candidate list.
+ICON_CHROME_MARKERS = (
+    "scrollbar", "decbutton", "incbutton", "trackbar", "thumb",
+    ":icontext", "sta_", "static", "_line", "shadow", "border",
+)
 #: Controls this adapter must never click, matched against both the visible
 #: label and the component id. GSCM's Favorite dialog sits next to Save,
 #: Unselect, and a pin toggle on every row: the scan reads and runs reports, it
@@ -288,11 +298,22 @@ def visible_text(page) -> list[tuple[Any, dict]]:
     return _dedupe(items)
 
 
-def icon_controls(page) -> list[tuple[Any, dict]]:
-    """Visible controls with no text, such as the Setting gear."""
+def _is_icon_chrome(element_id: str) -> bool:
+    lowered = str(element_id or "").casefold()
+    return any(marker in lowered for marker in ICON_CHROME_MARKERS)
+
+
+def icon_controls(page, *, include_chrome: bool = True) -> list[tuple[Any, dict]]:
+    """Visible controls with no text, such as the Setting gear.
+
+    ``include_chrome=False`` drops scrollbar arrows and static decoration,
+    which are text-less and in the top bar but never worth clicking.
+    """
     items = []
     for root, records in _evaluate_everywhere(page, _ICON_CONTROLS_JS):
         for record in records:
+            if not include_chrome and _is_icon_chrome(record.get("id")):
+                continue
             items.append((root, record))
     return _dedupe(items)
 
@@ -457,16 +478,33 @@ def click_label(page, labels, *, timeout_ms: int = 30_000) -> dict | None:
     return None
 
 
+def _hint_rank(element_id: str, hints) -> int:
+    lowered = str(element_id or "").casefold()
+    for index, hint in enumerate(hints):
+        if hint in lowered:
+            return index
+    return len(hints)
+
+
 def click_by_id_hint(page, hints, *, timeout_ms: int = 30_000) -> dict | None:
-    """Click an icon-only control located by the shape of its component id."""
+    """Click an icon-only control located by the shape of its component id.
+
+    Ranked by which hint matched before anything else. Sorting these by screen
+    position instead let a later, vaguer hint win on geometry: the top bar's
+    profile icon sits further right than the gear, so the search opened a user
+    popover and reported the gear missing.
+    """
+    hints = list(hints)
     clear_screen(page)
     candidates = []
-    for root, records in _evaluate_everywhere(page, _ID_MATCH_JS, list(hints)):
+    for root, records in _evaluate_everywhere(page, _ID_MATCH_JS, hints):
         for record in records:
             candidates.append((root, record))
     # A toolbar gear sits at the top of the screen; prefer the topmost match.
     candidates = [item for item in candidates if not is_forbidden(item[1].get("id"))]
-    candidates.sort(key=lambda item: (item[1].get("y", 0), -item[1].get("x", 0)))
+    candidates.sort(key=lambda item: (
+        _hint_rank(item[1].get("id"), hints), item[1].get("y", 0), -item[1].get("x", 0),
+    ))
     for root, record in candidates:
         try:
             root.locator(f"[id='{_css_escape(record['id'])}']").first.click(
@@ -647,6 +685,17 @@ def _open_setting(page) -> bool:
     and each is checked, so a wrong guess costs one harmless icon click rather
     than a failed scan. Nothing on the forbidden list is ever a candidate.
     """
+    for root in _roots(page):
+        try:
+            gear = root.locator(f"[id='{_css_escape(SETTING_BUTTON_ID)}']").first
+            if not gear.count():
+                continue
+            gear.click(force=True, timeout=15_000)
+        except Exception:
+            continue
+        page.wait_for_timeout(TAB_SETTLE_MS)
+        if _setting_dialog_open(page):
+            return True
     if click_by_id_hint(page, SETTING_BUTTON_HINTS) is not None:
         page.wait_for_timeout(TAB_SETTLE_MS)
         if _setting_dialog_open(page):
@@ -661,7 +710,7 @@ def _open_setting(page) -> bool:
     # absolute cut-off would miss it on some accounts. Ordering by x is what
     # matters; the cut-off only decides where to start.
     candidates = [
-        (root, record) for root, record in icon_controls(page)
+        (root, record) for root, record in icon_controls(page, include_chrome=False)
         if record.get("y", 0) <= TOP_BAR_MAX_Y
         and not is_forbidden(record.get("id"))
     ]
