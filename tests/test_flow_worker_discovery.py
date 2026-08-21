@@ -155,7 +155,7 @@ def test_blank_menu_branch_is_recovered_from_the_live_portal_menu_tree(monkeypat
     monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
     monkeypatch.setattr(
         flow_worker, "_asap_portal_menu_paths",
-        lambda _page: [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]],
+        lambda _page, _diagnostics=None: [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]],
     )
     moments = iter([0, 20, 30, 50])
     monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(moments))
@@ -186,7 +186,7 @@ def test_portal_menu_tree_is_captured_before_any_header_click(monkeypatch):
     monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
     monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
 
-    def portal_paths(_page):
+    def portal_paths(_page, _diagnostics=None):
         assert events == []
         events.append("portal-tree")
         return [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]]
@@ -284,7 +284,7 @@ def test_portal_session_is_read_from_frame_local_script_constants():
 def test_portal_menu_tree_preserves_top_name_when_subtree_is_a_wrapper(monkeypatch):
     monkeypatch.setattr(
         flow_worker, "_asap_portal_session",
-        lambda _page: {
+        lambda _page, _diagnostics=None: {
             "web_base": "https://asap.example/mstr",
             "legacy_token": "live-token",
             "main_menu_id": "role-root",

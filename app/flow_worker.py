@@ -2414,14 +2414,22 @@ def _asap_extract_js_object(html_text: str, variable: str) -> dict | None:
     return None
 
 
-def _asap_portal_session(page: Page) -> dict | None:
+def _asap_portal_session(page: Page, diagnostics: dict | None = None) -> dict | None:
     """Read only the session fields needed for the portal's own menu tree."""
+    diagnostics = diagnostics if diagnostics is not None else {}
     common = session = None
     try:
         frames = list(page.frames)
     except Exception:
         frames = []
-    for frame in frames:
+    diagnostics["frame_count"] = len(frames)
+    diagnostics["frames"] = []
+    for frame_index, frame in enumerate(frames):
+        frame_detail: dict[str, Any] = {"index": frame_index}
+        try:
+            frame_detail["url"] = str(frame.url)[:300]
+        except Exception:
+            pass
         try:
             data = frame.evaluate(
                 "() => {"
@@ -2430,37 +2438,63 @@ def _asap_portal_session(page: Page) -> dict | None:
                 " return common && session ? {common, session} : null;"
                 "}"
             )
-        except Exception:
+        except Exception as exc:
             data = None
+            frame_detail["evaluate_error"] = type(exc).__name__
+        frame_detail["evaluate_session"] = bool(
+            isinstance(data, dict) and data.get("common") and data.get("session")
+        )
         if isinstance(data, dict) and data.get("common") and data.get("session"):
             common, session = data["common"], data["session"]
+            frame_detail["source"] = "evaluate"
+            diagnostics["frames"].append(frame_detail)
+            diagnostics["session_source"] = f"frame_{frame_index}_evaluate"
             break
         try:
             frame_html = frame.content()
-        except Exception:
+        except Exception as exc:
+            frame_detail["content_error"] = type(exc).__name__
+            diagnostics["frames"].append(frame_detail)
             continue
+        frame_detail["content_common_marker"] = "_COMMON_INFO" in frame_html
+        frame_detail["content_session_marker"] = "_SESSION" in frame_html
         frame_common = _asap_extract_js_object(frame_html, "_COMMON_INFO")
         frame_session = _asap_extract_js_object(frame_html, "_SESSION")
         if frame_common and frame_session:
             common, session = frame_common, frame_session
+            frame_detail["source"] = "content"
+            diagnostics["frames"].append(frame_detail)
+            diagnostics["session_source"] = f"frame_{frame_index}_content"
             break
+        diagnostics["frames"].append(frame_detail)
     if common is None or session is None:
         try:
             html_text = page.content()
-        except Exception:
+        except Exception as exc:
+            diagnostics["page_content_error"] = type(exc).__name__
             return None
+        diagnostics["page_common_marker"] = "_COMMON_INFO" in html_text
+        diagnostics["page_session_marker"] = "_SESSION" in html_text
         common = _asap_extract_js_object(html_text, "_COMMON_INFO")
         session = _asap_extract_js_object(html_text, "_SESSION")
+        if common and session:
+            diagnostics["session_source"] = "page_content"
     if not common or not session:
+        diagnostics["session_result"] = "objects_missing"
         return None
     legacy_token = session.get("MSTRWEB_AUTH_TOKEN_ENC")
     menu_id = common.get("MSTR_MAIN_MENU_ID")
+    diagnostics["has_legacy_token"] = bool(legacy_token)
+    diagnostics["has_main_menu_id"] = bool(menu_id)
     if not legacy_token or not menu_id:
+        diagnostics["session_result"] = "required_fields_missing"
         return None
     parts = urlsplit(page.url)
     if not parts.scheme or not parts.netloc:
+        diagnostics["session_result"] = "page_url_invalid"
         return None
     web_path = str(common.get("MSTR_CUSTOM_WEB_CONTEXT_PATH") or "/mstr").rstrip("/")
+    diagnostics["session_result"] = "available"
     return {
         "web_base": f"{parts.scheme}://{parts.netloc}{web_path}",
         "legacy_token": legacy_token,
@@ -2472,14 +2506,15 @@ def _asap_clean_portal_menu_name(value: Any) -> str:
     return _clean_text(re.sub(r"^\d+\.", "", _clean_text(str(value or ""))))
 
 
-def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
+def _asap_portal_menu_paths(page: Page, diagnostics: dict | None = None) -> list[list[str]]:
     """Walk the role-specific menu tree used by the visible ASAP header.
 
     This is a live browser-session fallback for branches whose mega-menu is
     blank. It never reads the retained Metronome catalog and never persists
     the session token embedded by the portal.
     """
-    context = _asap_portal_session(page)
+    diagnostics = diagnostics if diagnostics is not None else {}
+    context = _asap_portal_session(page, diagnostics)
     if not context:
         return []
 
@@ -2492,8 +2527,17 @@ def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
                 timeout=20_000,
             )
             value = response.json() if response.ok else None
-        except Exception:
+        except Exception as exc:
+            diagnostics.setdefault("fetch_errors", []).append({
+                "folder": "root" if folder_id == str(context["main_menu_id"]) else "branch",
+                "error": type(exc).__name__,
+            })
             return None
+        if not response.ok:
+            diagnostics.setdefault("fetch_statuses", []).append({
+                "folder": "root" if folder_id == str(context["main_menu_id"]) else "branch",
+                "status": getattr(response, "status", None),
+            })
         return value if isinstance(value, dict) else None
 
     def children(node: dict) -> list[dict]:
@@ -2514,8 +2558,12 @@ def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
 
     root = fetch(str(context["main_menu_id"]), 1)
     if not root:
+        diagnostics["menu_result"] = "root_fetch_failed"
         return []
-    for top in children(root):
+    top_nodes = children(root)
+    diagnostics["top_node_count"] = len(top_nodes)
+    diagnostics["top_names"] = [_asap_clean_portal_menu_name(top.get("name")) for top in top_nodes]
+    for top in top_nodes:
         subtree = fetch(str(top.get("id")), 2) if top.get("id") else None
         top_name = _asap_clean_portal_menu_name(top.get("name"))
         subtree_name = _asap_clean_portal_menu_name((subtree or {}).get("name"))
@@ -2523,6 +2571,8 @@ def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
             walk(subtree, [top_name])
         else:
             walk(subtree or top, [])
+    diagnostics["menu_result"] = "paths_found" if paths else "no_leaf_paths"
+    diagnostics["path_count"] = len(paths)
     return paths
 
 
@@ -2540,7 +2590,8 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
     # Capture the role-specific portal tree while the signed-in landing page
     # still owns the MicroStrategy session handoff. Clicking a blank branch can
     # replace the document with a report route that no longer exposes it.
-    portal_paths = _asap_portal_menu_paths(page)
+    portal_diagnostics: dict[str, Any] = {}
+    portal_paths = _asap_portal_menu_paths(page, portal_diagnostics)
     root_names = list(dict.fromkeys(root["text"] for root in roots))
     paths: list[list[str]] = []
     missing_roots: list[str] = []
@@ -2629,7 +2680,8 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
     if missing_roots:
         portal_root_names = sorted({path[0] for path in portal_paths if path})
         fallback_detail = (
-            "Portal-session menu fallback returned no paths."
+            "Portal-session menu fallback returned no paths: "
+            + json.dumps(portal_diagnostics, ensure_ascii=True, separators=(",", ":")) + "."
             if not portal_root_names else
             "Portal-session menu fallback roots: " + ", ".join(portal_root_names) + "."
         )
