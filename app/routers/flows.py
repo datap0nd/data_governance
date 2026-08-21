@@ -2104,10 +2104,60 @@ def queue_due_catalog_scans() -> dict:
     return {"queued": queued, "count": len(queued), "worker": worker}
 
 
+def _reset_gscm_discovery_snapshot(db, site_id: int) -> dict:
+    """Remove the prior unreferenced GSCM bookmark snapshot.
+
+    A bookmark referenced by an existing Flow cannot be deleted without
+    breaking that Flow's foreign key. Those rows remain available as stale,
+    disabled tombstones if the new snapshot no longer contains them. Historical
+    timing rows are retained but detached from disposable report ids.
+    """
+    rows = db.execute(
+        """SELECT r.id,
+                  EXISTS(SELECT 1 FROM flows f WHERE f.report_id=r.id) AS referenced
+           FROM flow_reports r
+           WHERE r.site_id=? AND r.source_kind='discovered'""",
+        (site_id,),
+    ).fetchall()
+    disposable = [row["id"] for row in rows if not row["referenced"]]
+    preserved = sum(1 for row in rows if row["referenced"])
+    if disposable:
+        placeholders = ", ".join("?" for _item in disposable)
+        db.execute(
+            f"UPDATE flow_operation_timings SET report_id=NULL WHERE report_id IN ({placeholders})",
+            disposable,
+        )
+        db.execute(
+            f"DELETE FROM flow_report_filters WHERE report_id IN ({placeholders})",
+            disposable,
+        )
+        db.execute(
+            f"DELETE FROM flow_reports WHERE id IN ({placeholders})",
+            disposable,
+        )
+    return {
+        "reset_report_count": len(disposable),
+        "preserved_referenced_report_count": preserved,
+    }
+
+
 def _apply_discovery(
     db, site_id: int, reports: list[DiscoveredReport], seen_at: str, *, complete: bool = True,
 ) -> dict:
     keys = {item.discovery_key for item in reports}
+    reset_result = {}
+    site = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
+    is_gscm_snapshot = bool(site and site["adapter"] == GSCM_PORTAL_ADAPTER and complete)
+    if is_gscm_snapshot and not reports:
+        return {
+            "report_count": 0, "filter_count": 0, "discovery_keys": [],
+            "complete": False, "ignored_empty_snapshot": True,
+        }
+    if is_gscm_snapshot:
+        # Apply an authoritative GSCM bookmark snapshot only after the worker
+        # has successfully returned a non-empty result. A failed or empty scan
+        # must never erase the last usable catalog.
+        reset_result = _reset_gscm_discovery_snapshot(db, site_id)
     if complete:
         db.execute(
             "UPDATE flow_reports SET stale=1, enabled=0, updated_at=? WHERE site_id=? AND source_kind='discovered'",
@@ -2204,7 +2254,7 @@ def _apply_discovery(
             filter_count += 1
     return {
         "report_count": len(report_ids), "filter_count": filter_count,
-        "discovery_keys": sorted(keys), "complete": complete,
+        "discovery_keys": sorted(keys), "complete": complete, **reset_result,
     }
 
 
@@ -2443,6 +2493,9 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
             raise HTTPException(404, "Scan is not assigned to this worker.")
         if row["status"] in RUN_TERMINAL:
             return {"scan_id": scan_id, "status": row["status"], "ignored": True}
+        site_adapter = db.execute(
+            "SELECT adapter FROM flow_sites WHERE id=?", (row["site_id"],),
+        ).fetchone()
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
         db.execute(
@@ -2453,9 +2506,23 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
                 body.progress.get("message"), _json(body.progress), now,
             ),
         )
-        result = _apply_discovery(
-            db, row["site_id"], body.reports, now, complete=body.complete,
-        ) if body.status == "succeeded" else {}
+        if (
+            body.status == "succeeded"
+            and site_adapter
+            and site_adapter["adapter"] == GSCM_PORTAL_ADAPTER
+            and body.skipped_reports
+        ):
+            # A rejected bookmark means the payload is not an authoritative
+            # snapshot. Keep the last good GSCM catalog intact rather than
+            # replacing it with a silently incomplete list.
+            result = {
+                "report_count": 0, "filter_count": 0, "discovery_keys": [],
+                "complete": False, "ignored_incomplete_snapshot": True,
+            }
+        else:
+            result = _apply_discovery(
+                db, row["site_id"], body.reports, now, complete=body.complete,
+            ) if body.status == "succeeded" else {}
         if body.skipped_reports:
             result = {**result, "skipped_reports": body.skipped_reports}
             db.execute(

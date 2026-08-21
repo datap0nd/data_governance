@@ -162,6 +162,20 @@ name still get two catalog entries (`Weekly PSI`, `Weekly PSI (2)`), because
 only by the fallback and are never trusted across runs because Nexacro recycles
 them as the tree scrolls and re-renders.
 
+## Scan replacement behavior
+
+Every successful, non-empty GSCM scan is an authoritative snapshot. Before the
+new bookmark list is applied, Metronome removes the prior scan's unreferenced
+discovered bookmark rows and their discovered filters. Current bookmarks are
+then inserted from the new snapshot instead of accumulating across scans.
+
+A missing bookmark that is still referenced by an existing Flow cannot be
+deleted without breaking that Flow. It remains internally as a stale, disabled
+tombstone until the Flow is repointed or removed. Failed, cancelled, empty, or
+validation-incomplete scans do not replace the last good snapshot. Historical
+operation timings are preserved, but their link to a deleted bookmark row is
+cleared.
+
 ## Authentication
 
 GSCM sits behind Samsung SSO with Knox MFA, the same as ASAP. Metronome

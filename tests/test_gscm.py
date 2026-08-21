@@ -690,6 +690,24 @@ def _discover_into_catalog(site_id):
     return scan_id
 
 
+def _gscm_discovered(name, bookmark_id):
+    return flows.DiscoveredReport(
+        discovery_key=f"Public > SCM > Actual Sales > {name}",
+        name=name,
+        report_url="https://mdscm.sec.samsung.net/nexa/index.html",
+        download_text="Excel download",
+        automation={
+            "kind": "gscm_favorite",
+            "category_path": ["Public", "SCM", "Actual Sales", name],
+            "favorite_tab": "Public",
+            "favorite_name": name,
+            "favorite_folder_path": ["SCM", "Actual Sales"],
+            "favorite_bookmark_id": bookmark_id,
+        },
+        filters=[],
+    )
+
+
 def _catalogued(site_id, suffix):
     return next(
         report for report in flows.catalog()["reports"]
@@ -705,6 +723,143 @@ def test_discovered_bookmarks_become_catalog_reports(flow_db):
     assert bookmark["name"] == "Public > SCM > Actual Sales > MENA_Actual_sales"
     assert bookmark["automation"]["favorite_tab"] == "Public"
     assert bookmark["filters"] == []
+
+
+def test_each_gscm_scan_replaces_the_previous_unreferenced_snapshot(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    bookmark = _gscm_discovered("Current bookmark", "RC_1")
+    with database.get_db() as db:
+        first = flows._apply_discovery(
+            db, site["id"], [bookmark], "2026-08-21T10:00:00",
+        )
+        first_id = db.execute(
+            "SELECT id FROM flow_reports WHERE site_id=?", (site["id"],),
+        ).fetchone()["id"]
+        flows._store_timings(
+            db, [{"phase": "report_discovery", "duration_ms": 50}],
+            operation_type="catalog_scan", site_id=site["id"], report_id=first_id,
+        )
+
+        second = flows._apply_discovery(
+            db, site["id"], [bookmark], "2026-08-21T11:00:00",
+        )
+        current = db.execute(
+            "SELECT id, enabled, stale FROM flow_reports WHERE site_id=?", (site["id"],),
+        ).fetchall()
+        timing_report_id = db.execute(
+            "SELECT report_id FROM flow_operation_timings WHERE site_id=?", (site["id"],),
+        ).fetchone()["report_id"]
+
+    assert first["reset_report_count"] == 0
+    assert second["reset_report_count"] == 1
+    assert len(current) == 1
+    assert current[0]["id"] != first_id
+    assert (current[0]["enabled"], current[0]["stale"]) == (1, 0)
+    assert timing_report_id is None
+
+
+def test_gscm_snapshot_preserves_only_missing_bookmarks_used_by_flows(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    disposable = _gscm_discovered("Old unreferenced bookmark", "RC_OLD")
+    referenced = _gscm_discovered("Old referenced bookmark", "RC_USED")
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [disposable, referenced], "2026-08-21T10:00:00",
+        )
+        referenced_id = db.execute(
+            "SELECT id FROM flow_reports WHERE discovery_key=?", (referenced.discovery_key,),
+        ).fetchone()["id"]
+
+    flows.create_flow(flows.FlowWrite(
+        name="Existing GSCM flow",
+        site_id=site["id"],
+        report_id=referenced_id,
+        period_strategy="none",
+        file_format="xlsx",
+        target_folder="C:\\Reports",
+        filename_template="{flow}.xlsx",
+    ), _request())
+
+    replacement = _gscm_discovered("New bookmark", "RC_NEW")
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [replacement], "2026-08-21T11:00:00",
+        )
+        rows = db.execute(
+            "SELECT id, discovery_key, enabled, stale FROM flow_reports WHERE site_id=? ORDER BY id",
+            (site["id"],),
+        ).fetchall()
+
+    assert result["reset_report_count"] == 1
+    assert result["preserved_referenced_report_count"] == 1
+    assert len(rows) == 2
+    tombstone = next(row for row in rows if row["id"] == referenced_id)
+    active = next(row for row in rows if row["discovery_key"] == replacement.discovery_key)
+    assert (tombstone["enabled"], tombstone["stale"]) == (0, 1)
+    assert (active["enabled"], active["stale"]) == (1, 0)
+    assert all(row["discovery_key"] != disposable.discovery_key for row in rows)
+
+
+def test_an_empty_gscm_snapshot_cannot_erase_the_last_good_catalog(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    bookmark = _gscm_discovered("Last good bookmark", "RC_GOOD")
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [bookmark], "2026-08-21T10:00:00",
+        )
+        result = flows._apply_discovery(
+            db, site["id"], [], "2026-08-21T11:00:00",
+        )
+        row = db.execute(
+            "SELECT enabled, stale FROM flow_reports WHERE site_id=?", (site["id"],),
+        ).fetchone()
+
+    assert result["ignored_empty_snapshot"] is True
+    assert result["complete"] is False
+    assert (row["enabled"], row["stale"]) == (1, 0)
+
+
+def test_a_gscm_snapshot_with_rejected_bookmarks_keeps_the_last_good_catalog(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    existing = _gscm_discovered("Last complete bookmark", "RC_GOOD")
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [existing], "2026-08-21T10:00:00",
+        )
+        site_row = dict(db.execute(
+            "SELECT * FROM flow_sites WHERE id=?", (site["id"],),
+        ).fetchone())
+        scan_id = flows._queue_scan(db, site_row, "manual", "Analyst")
+        db.execute(
+            "UPDATE flow_catalog_scans SET worker_id='gscm-worker', status='claimed' WHERE id=?",
+            (scan_id,),
+        )
+
+    replacement = _gscm_discovered("Incomplete replacement", "RC_NEW")
+    body = flows.ScanProgress(status="succeeded", reports=[
+        replacement.model_dump(),
+        {
+            "discovery_key": "Public > Invalid", "name": "Invalid",
+            "report_url": "https://mdscm.sec.samsung.net/nexa/index.html",
+            "automation": {},
+            "filters": [{
+                "filter_key": "bad", "label": "Bad", "control_label": "Bad",
+                "control_type": "unsupported", "options": ["x"],
+            }],
+        },
+    ])
+    response = flows.update_scan("gscm-worker", scan_id, body)
+    with database.get_db() as db:
+        rows = db.execute(
+            "SELECT discovery_key, enabled, stale FROM flow_reports WHERE site_id=?",
+            (site["id"],),
+        ).fetchall()
+
+    assert response["result"]["ignored_incomplete_snapshot"] is True
+    assert len(response["result"]["skipped_reports"]) == 1
+    assert [(row["discovery_key"], row["enabled"], row["stale"]) for row in rows] == [
+        (existing.discovery_key, 1, 0),
+    ]
 
 
 def test_a_gscm_flow_downloads_one_file_with_no_period_selection(flow_db):
