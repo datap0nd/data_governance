@@ -1441,22 +1441,31 @@ def excel_button_id(automation: dict | None = None) -> str:
     return configured or FALLBACK_EXCEL_BUTTON_ID
 
 
-def trigger_excel_export(page, job: dict) -> None:
-    """Click the MDI toolbar's Excel button for the active work frame."""
+def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
+    """Wait for and click the active work frame's Excel toolbar button.
+
+    Some bookmarks return the home shell to an idle state before the MDI work
+    frame has finished mounting. Waiting only for the global busy overlay can
+    therefore race the toolbar and falsely report that the bookmark cannot
+    export.
+    """
     automation = (job.get("report") or {}).get("automation") or {}
     clear_screen(page)
-    for root in _roots(page):
-        for selector in (
-            f"[id='{_css_escape(excel_button_id(automation))}']",
-            f"[id*='{EXCEL_BUTTON_COMPONENT}']",
-        ):
-            try:
-                button = root.locator(selector).first
-                if button.count():
-                    button.click(force=True, timeout=60_000)
-                    return
-            except Exception:
-                continue
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        for root in _roots(page):
+            for selector in (
+                f"[id='{_css_escape(excel_button_id(automation))}']",
+                f"[id*='{EXCEL_BUTTON_COMPONENT}']",
+            ):
+                try:
+                    button = root.locator(selector).first
+                    if button.count():
+                        button.click(force=True, timeout=60_000)
+                        return
+                except Exception:
+                    continue
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
     raise RuntimeError(
         "GSCM's Excel export button was not found on the toolbar. The bookmark "
         "may have opened a screen that cannot export. On screen: "

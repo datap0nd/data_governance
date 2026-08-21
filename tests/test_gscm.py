@@ -651,7 +651,7 @@ def test_missing_excel_button_reports_the_screen():
     page = FakeGscmPage()
     page.components.discard(EXCEL_BUTTON)
     with pytest.raises(RuntimeError) as excinfo:
-        flow_gscm.trigger_excel_export(page, _run_job())
+        flow_gscm.trigger_excel_export(page, _run_job(), timeout_ms=1)
     assert "On screen:" in str(excinfo.value)
 
 
