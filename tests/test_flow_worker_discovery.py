@@ -713,6 +713,59 @@ def test_export_task_retry_reports_every_distinct_attempt_error():
     assert "Attempt 2: bookmark list was temporarily empty" in message
 
 
+def test_export_task_does_not_reopen_report_after_edge_completed_download():
+    attempts = []
+
+    def run_task(attempt):
+        attempts.append(attempt)
+        raise flow_worker._CompletedDownloadProcessingError(
+            "Edge completed the workbook; local processing failed"
+        )
+
+    with pytest.raises(
+        flow_worker._CompletedDownloadProcessingError,
+        match="Edge completed the workbook",
+    ):
+        flow_worker._export_task_with_retry(
+            _WaitPage(), run_task, lambda *_args: None, max_attempts=2,
+        )
+
+    assert attempts == [1]
+
+
+def test_edge_native_download_event_is_the_completion_authority(tmp_path):
+    completed = tmp_path / "edge-download.xlsx"
+    completed.write_bytes(b"PK\x03\x04workbook")
+
+    class Download:
+        def failure(self):
+            return None
+
+        def path(self):
+            return str(completed)
+
+    class Pending:
+        value = Download()
+
+    class ExpectDownload:
+        def __enter__(self):
+            return Pending()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Page:
+        def expect_download(self, *, timeout):
+            assert timeout == flow_worker.DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000
+            return ExpectDownload()
+
+    triggered = []
+    result = flow_worker._edge_completed_download(Page(), lambda: triggered.append(True))
+
+    assert result == completed
+    assert triggered == [True]
+
+
 def test_gscm_load_buffers_are_one_minute_then_two_minutes():
     assert flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
     assert flow_worker.GSCM_INITIAL_LOAD_BUFFER_MS == 60_000

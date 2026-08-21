@@ -90,6 +90,10 @@ XLSX_HEADER_LABEL_HINTS = frozenset({
 REQUESTED_WEEK = re.compile(r"^(20\d{2})-W(\d{2})$", re.IGNORECASE)
 
 
+class _CompletedDownloadProcessingError(RuntimeError):
+    """A native browser download finished, so report navigation must not retry."""
+
+
 @contextmanager
 def _exclusive_worker_lock(profile_dir: Path):
     """Prevent the service and login task from running duplicate workers."""
@@ -1504,6 +1508,38 @@ def _wait_for_staged_download(
         f"The Edge download did not produce a stable finished file within {timeout_seconds} "
         f"seconds in the local staging folder: {staging_dir}. Observed: {observed_summary}"
     )
+
+
+def _edge_completed_download(page: Page, trigger_download) -> Path:
+    """Use Edge's native download lifecycle as the completion authority."""
+    try:
+        with page.expect_download(
+            timeout=DOWNLOAD_MAX_TIMEOUT_SECONDS * 1_000,
+        ) as pending:
+            trigger_download()
+        download = pending.value
+    except PlaywrightTimeoutError as exc:
+        raise RuntimeError(
+            "Edge did not emit its native download event after the GSCM Excel action."
+        ) from exc
+    # ``failure`` waits for Edge's terminal download state. ``path`` then
+    # returns the browser-managed completed file, not a guessed directory
+    # candidate based on timestamps.
+    failure = download.failure()
+    if failure:
+        raise RuntimeError(f"Edge reported that the GSCM download failed: {failure}")
+    completed_path = download.path()
+    if not completed_path:
+        raise RuntimeError(
+            "Edge reported a completed GSCM download but returned no completed file path."
+        )
+    completed = Path(completed_path)
+    if not completed.is_file() or completed.stat().st_size <= 0:
+        raise RuntimeError(
+            "Edge reported a completed GSCM download, but its completed file is missing or empty: "
+            f"{completed}"
+        )
+    return completed
 
 
 def _asap_table_control_score(
@@ -4140,6 +4176,8 @@ def _export_task_with_retry(
             return run_task(attempt)
         except Exception as exc:
             failures.append((attempt, exc))
+            if isinstance(exc, _CompletedDownloadProcessingError):
+                raise
             if attempt == max_attempts:
                 if len(failures) > 1 and any(
                     str(error) != str(failures[0][1]) for _number, error in failures[1:]
@@ -4276,10 +4314,9 @@ def execute_job(
                 artifacts,
             )
             with timings.measure("file_export", report_id=job["report"].get("id")):
-                staging = download_staging_dir or profile_dir / "downloads"
-                files_before = _download_staging_snapshot(staging)
-                flow_gscm.trigger_excel_export(page, job)
-                staged_file = _wait_for_staged_download(staging, files_before)
+                staged_file = _edge_completed_download(
+                    page, lambda: flow_gscm.trigger_excel_export(page, job),
+                )
                 export_pages = []
         elif is_asap:
             view_job = {
@@ -4357,16 +4394,24 @@ def execute_job(
             # it half-detached and any later Playwright call can block forever.
             # The next period reopens the report in the surviving main page.
             if is_asap or is_gscm:
-                metadata = _store_completed_download(
-                    staged_file, output,
-                    file_format=job["downloads"].get("file_format") or "csv",
-                    requested_period=period,
-                    allow_raw_xlsx_fallback=(
-                        is_gscm
-                        and not job.get("transformation", {}).get("enabled")
-                        and not job.get("sql_handoff", {}).get("enabled")
-                    ),
-                )
+                try:
+                    metadata = _store_completed_download(
+                        staged_file, output,
+                        file_format=job["downloads"].get("file_format") or "csv",
+                        requested_period=period,
+                        allow_raw_xlsx_fallback=(
+                            is_gscm
+                            and not job.get("transformation", {}).get("enabled")
+                            and not job.get("sql_handoff", {}).get("enabled")
+                        ),
+                    )
+                except Exception as exc:
+                    if is_gscm:
+                        raise _CompletedDownloadProcessingError(
+                            "Edge completed the GSCM workbook download, but local processing "
+                            f"failed. GSCM will not be reopened: {exc}"
+                        ) from exc
+                    raise
             else:
                 download.save_as(output)
                 normalization = _normalize_csv(output)
