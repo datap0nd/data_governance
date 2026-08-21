@@ -165,6 +165,8 @@ class FakeGscmPage:
             self.tab = text
         elif text == "Close":
             self.dialog_open = False
+        elif text == "Go >>" or element_id == flow_gscm.GO_BUTTON_ID:
+            self.dialog_open = False
         elif text in self.hidden_rows:
             revealed = self.revealed.setdefault(self.tab, [])
             for row in self.hidden_rows.pop(text):
@@ -633,6 +635,36 @@ def test_resolve_entry_expands_only_the_catalogued_folder_path(monkeypatch):
         page, target["name"], target["folder_path"], "Public",
     ) == target
     assert expanded == {"SCM", "Sell-in Biz Plan"}
+
+
+def test_resolve_entry_retries_the_exact_path_after_virtual_grid_misses(monkeypatch):
+    page = FakeGscmPage(dialog_open=True)
+    target = {
+        "name": "SIBP_CI_Series_ASP_Global",
+        "folder_path": ["SCM", "Sell-in Biz Plan"],
+        "is_folder": False,
+    }
+    attempts = 0
+    reselections = []
+
+    def find(_page, name, parents, **_kwargs):
+        nonlocal attempts
+        if name == target["name"] and parents == target["folder_path"]:
+            attempts += 1
+            return target if attempts == 3 else None
+        return None
+
+    monkeypatch.setattr(flow_gscm, "_find_tree_entry", find)
+    monkeypatch.setattr(flow_gscm, "_reveal_tree_path", lambda *_args: False)
+    monkeypatch.setattr(
+        flow_gscm, "select_scope_tab",
+        lambda _page, tab: reselections.append(tab) or True,
+    )
+
+    assert flow_gscm._resolve_entry(
+        page, target["name"], target["folder_path"], "Public",
+    ) == target
+    assert reselections == ["Public", "Public"]
 
 
 def test_a_deleted_bookmark_names_what_is_still_listed():

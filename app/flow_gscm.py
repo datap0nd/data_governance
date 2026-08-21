@@ -1479,10 +1479,16 @@ def _click_go_button(page) -> bool:
             if not button.count():
                 continue
             button.click(force=True, timeout=30_000)
-            return True
+            page.wait_for_timeout(1_000)
+            if not favorites_dialog_open(page):
+                return True
         except Exception:
             continue
-    return click_label(page, GO_LABELS) is not None
+    clicked = click_label(page, GO_LABELS)
+    if clicked is None:
+        return False
+    page.wait_for_timeout(1_000)
+    return not favorites_dialog_open(page)
 
 
 def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
@@ -1493,13 +1499,20 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
     different report than the flow was built for.
     """
     if folder_path:
-        exact = _find_tree_entry(page, name, folder_path)
-        if exact and exact.get("is_folder") is not True:
-            return exact
-        if _reveal_tree_path(page, folder_path, name):
+        for attempt in range(3):
+            if attempt:
+                # Re-selecting the scope resets Nexacro's virtual grid after a
+                # pass that ended with recycled rows or a retained scroll
+                # position. The catalog identity is stable, so retry the exact
+                # path before falling back to a full tree inventory.
+                select_scope_tab(page, tab)
             exact = _find_tree_entry(page, name, folder_path)
             if exact and exact.get("is_folder") is not True:
                 return exact
+            if _reveal_tree_path(page, folder_path, name):
+                exact = _find_tree_entry(page, name, folder_path)
+                if exact and exact.get("is_folder") is not True:
+                    return exact
 
     leaves = _leaf_entries(collect_favorite_tree(page))
     by_name = [item for item in leaves if item["name"].casefold() == name.casefold()]
