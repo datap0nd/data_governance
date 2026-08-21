@@ -131,6 +131,7 @@ MAX_INVENTORY_ITEMS = 120
 # the surrounding HTML element never changes from its viewport height.
 FAVORITE_GRID_ID_SUFFIX = "Setting1.form.div_favorite.form.grd_bookmark"
 FAVORITE_SCROLL_PAGE_STEPS = 8
+FAVORITE_SCROLL_RESET_PASSES = 40
 
 DOWNLOAD_TEXT = "Excel download"
 
@@ -1059,7 +1060,41 @@ def scroll_tree(page) -> bool:
 
 
 def reset_tree(page) -> bool:
-    """Return the virtualized Favorite grid to its first visible row."""
+    """Return the virtualized Favorite grid to its first visible row.
+
+    Do not trust ``Control+Home`` alone. After one export attempt the live
+    Nexacro component can retain its internal row position while the HTML grid
+    accepts keyboard focus, making the next retry start near the bottom. Walk
+    the native decrement button upward until a full page produces no rendered
+    row change, which proves that the first row has been reached.
+    """
+    found_native_scrollbar = False
+    for root in _roots(page):
+        try:
+            decrement = root.locator(
+                f"[id*='{FAVORITE_GRID_ID_SUFFIX}.vscrollbar.decbutton:icontext']"
+            ).first
+            if not decrement.count():
+                decrement = root.locator(
+                    f"[id*='{FAVORITE_GRID_ID_SUFFIX}.vscrollbar.decbutton']"
+                ).first
+            if not decrement.count():
+                continue
+            found_native_scrollbar = True
+            previous = _tree_row_signature(page)
+            for _pass in range(FAVORITE_SCROLL_RESET_PASSES):
+                for _step in range(FAVORITE_SCROLL_PAGE_STEPS):
+                    decrement.click(force=True, timeout=15_000)
+                    page.wait_for_timeout(20)
+                page.wait_for_timeout(200)
+                current = _tree_row_signature(page)
+                if current == previous:
+                    return True
+                previous = current
+        except Exception:
+            continue
+    if found_native_scrollbar:
+        return False
     for root in _roots(page):
         try:
             grid = root.locator(f"[id$='{FAVORITE_GRID_ID_SUFFIX}']").first

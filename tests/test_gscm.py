@@ -1076,6 +1076,37 @@ def test_virtual_grid_uses_its_native_increment_button_before_fallbacks():
     assert "CS_SEEG" in {entry["name"] for entry in flow_gscm.read_favorite_tree(page)}
 
 
+def test_virtual_grid_reset_proves_the_native_scrollbar_reached_the_top():
+    class NativeScrollbarPage(FakeGscmPage):
+        def __init__(self):
+            super().__init__(
+                dialog_open=True,
+                trees={"Private": [], "Public": [
+                    _label("SCM", ROOT_X, 560),
+                    _label("Actual Sales", FOLDER_X, 584),
+                    _label("CS_IRAN", LEAF_X, 608),
+                ], "Custom": []},
+                scroll_rows=[_label("CS_SEEG", LEAF_X, 900)],
+            )
+            self.decrement_id = (
+                "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form."
+                "grd_bookmark.vscrollbar.decbutton:icontext"
+            )
+            self.components.add(self.decrement_id)
+            self.scrolled.add("Public")
+
+        def on_click(self, element_id):
+            super().on_click(element_id)
+            if element_id == self.decrement_id:
+                self.scrolled.discard(self.tab)
+
+    page = NativeScrollbarPage()
+
+    assert flow_gscm.reset_tree(page) is True
+    assert page.clicks.count(page.decrement_id) == 2 * flow_gscm.FAVORITE_SCROLL_PAGE_STEPS
+    assert "CS_SEEG" not in {entry["name"] for entry in flow_gscm.read_favorite_tree(page)}
+
+
 def test_report_rows_are_told_from_folders_by_the_tree_expand_control():
     # Folder rows expose a visible treeitembutton. Nexacro keeps the same
     # control hidden on bookmark leaves, including leaves at the end of a tree.
