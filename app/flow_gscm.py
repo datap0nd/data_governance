@@ -15,14 +15,13 @@ is opened by selecting its row and pressing ``Go >>``. The home screen's own
 Favorite widget shows only the entries a user has *pinned*, which is usually
 empty - reading it finds nothing even for a user with hundreds of bookmarks.
 
-**Why this module matches on text and geometry, not on ids.** Every id here
-would have to be guessed from a screenshot. Instead the navigation clicks
-controls by their visible label (``Favorite``, ``Public``, ``Go``) and rebuilds
-the folder tree from the on-screen indentation of each row, which survives a
-Nexacro layout change that would break an absolute component path. When a step
-still cannot find what it needs, it raises with an inventory of what *was* on
-screen (see :func:`screen_inventory`) so the next fix is informed by the real
-DOM rather than another guess.
+**Where discovery gets its data.** The loaded Nexacro application exposes the
+``gds_bookmark`` dataset that backs the Favorite dialog. Discovery reads that
+dataset directly, preserving bookmark ids, scope, category, and name without
+depending on virtualized DOM rows. A DOM fallback remains for deployments that
+do not expose the application dataset, but it is scoped strictly to the
+Setting dialog's ``grd_bookmark`` grid. Navigation and opening a selected
+bookmark still use the rendered controls.
 
 **The framework fights automation.** Nexacro parks a full-screen wait overlay
 over the page and floats un-anchored popup cards above everything else. Both
@@ -98,6 +97,19 @@ TREE_NOISE = {
     *(item.casefold() for item in SCOPE_TABS),
 }
 
+#: Nexacro's bookmark dataset stores the top-level module as a short scope
+#: code. Preserve unknown codes rather than inventing a module name.
+BOOKMARK_SCOPE_NAMES = {
+    "AS": "SCM",
+    "MT": "MDM",
+}
+
+BOOKMARK_DATASET_COLUMNS = (
+    "userreportid", "userid", "originuserid", "userreportname",
+    "menuscope", "gbm", "menuid", "menuname", "menugroupid",
+    "menugroupname", "scope", "publicscope", "publicscopevalue",
+)
+
 PORTAL_READY_TIMEOUT_MS = 180_000
 DIALOG_READY_TIMEOUT_MS = 60_000
 BOOKMARK_SETTLE_TIMEOUT_MS = 300_000
@@ -111,8 +123,6 @@ TAB_SETTLE_MS = 2_500
 #: Two rows are on the same tree level when their left edges are within this
 #: many pixels. Nexacro indents one level by roughly 12-16px.
 INDENT_TOLERANCE_PX = 6
-#: A row's action icons sit on the same line as its label.
-ROW_ICON_TOLERANCE_PX = 10
 MAX_INVENTORY_ITEMS = 120
 
 DOWNLOAD_TEXT = "Excel download"
@@ -179,6 +189,70 @@ _VISIBLE_TEXT_JS = """() => {
     return out;
 }"""
 
+#: Read the in-memory source of truth behind the Favorite dialog. Returning
+#: ``null`` means this Nexacro root does not expose the dataset. An available
+#: but empty dataset is returned explicitly so callers can distinguish it from
+#: an unsupported runtime.
+_BOOKMARK_DATASET_JS = """(columns) => {
+    if (typeof nexacro === 'undefined' || !nexacro
+            || typeof nexacro.getApplication !== 'function') return null;
+    const app = nexacro.getApplication();
+    const ds = app && app.gds_bookmark;
+    if (!ds || typeof ds.getRowCount !== 'function'
+            || typeof ds.getColumn !== 'function') return null;
+    const rows = [];
+    for (let rowIndex = 0; rowIndex < ds.getRowCount(); rowIndex++) {
+        const row = {};
+        for (const column of columns) row[column] = ds.getColumn(rowIndex, column);
+        rows.push(row);
+    }
+    return {available: true, rows};
+}"""
+
+#: DOM fallback for older or differently packaged Nexacro deployments. This
+#: deliberately starts at the Setting popup grid. A global ``textContent``
+#: sweep can concatenate the top navigation labels into a phantom bookmark.
+_FAVORITE_TREE_ROWS_JS = r"""() => {
+    const grids = Array.from(document.querySelectorAll('[id]')).filter(element => {
+        const id = element.id || '';
+        return id.endsWith('Setting1.form.div_favorite.form.grd_bookmark');
+    });
+    const out = [];
+    for (const grid of grids) {
+        for (const row of grid.querySelectorAll('[id*=".body.gridrow_"]')) {
+            if (!/\.body\.gridrow_\d+$/.test(row.id || '')) continue;
+            const label = Array.from(row.querySelectorAll('[id]')).find(element =>
+                (element.id || '').toLowerCase().includes('treeitemtext'));
+            if (!label) continue;
+            const labelRect = label.getBoundingClientRect();
+            const rowRect = row.getBoundingClientRect();
+            const style = window.getComputedStyle(label);
+            if (labelRect.width <= 0 || labelRect.height <= 0
+                    || style.visibility === 'hidden' || style.display === 'none') continue;
+            const button = Array.from(row.querySelectorAll('[id]')).find(element =>
+                (element.id || '').toLowerCase().includes('treeitembutton'));
+            let isFolder = false;
+            if (button) {
+                const buttonStyle = window.getComputedStyle(button);
+                const buttonRect = button.getBoundingClientRect();
+                isFolder = buttonStyle.visibility !== 'hidden'
+                    && buttonStyle.display !== 'none'
+                    && buttonRect.width > 0 && buttonRect.height > 0;
+            }
+            out.push({
+                id: row.id || label.id || '',
+                text: (label.textContent || '').trim(),
+                x: Math.round(labelRect.left),
+                y: Math.round(rowRect.top),
+                w: Math.round(labelRect.width),
+                h: Math.round(rowRect.height),
+                is_folder: isFolder,
+            });
+        }
+    }
+    return out;
+}"""
+
 #: Visible controls that carry no text at all. The Setting gear is one of
 #: these, which is why a text-only inventory could not report it and left the
 #: adapter guessing at its id.
@@ -206,9 +280,12 @@ _ICON_CONTROLS_JS = """() => {
 #: Nexacro grids virtualize: only the rows in view exist in the DOM. Paging the
 #: tallest scrollable container is how the rest are reached.
 _SCROLL_TREE_JS = """() => {
+    const grid = Array.from(document.querySelectorAll('[id]')).find(element =>
+        (element.id || '').endsWith('Setting1.form.div_favorite.form.grd_bookmark'));
+    if (!grid) return null;
     let best = null;
     let bestOverflow = 0;
-    for (const element of document.querySelectorAll('*')) {
+    for (const element of [grid, ...grid.querySelectorAll('*')]) {
         const overflow = element.scrollHeight - element.clientHeight;
         if (overflow <= 8) continue;
         const rect = element.getBoundingClientRect();
@@ -296,6 +373,80 @@ def visible_text(page) -> list[tuple[Any, dict]]:
         for record in records:
             items.append((root, record))
     return _dedupe(items)
+
+
+def favorite_tree_rows(page) -> list[tuple[Any, dict]]:
+    """Visible Favorite rows from the Setting popup grid only."""
+    items = []
+    for root, records in _evaluate_everywhere(page, _FAVORITE_TREE_ROWS_JS):
+        for record in records:
+            items.append((root, record))
+    return _dedupe(items)
+
+
+def bookmark_dataset_rows(page) -> list[dict] | None:
+    """Return ``gds_bookmark`` rows, or ``None`` when it is unavailable.
+
+    Frames can expose the same application dataset more than once. The first
+    available copy is authoritative because each copy represents the same
+    Nexacro application, not another bookmark scope.
+    """
+    available_empty = False
+    for root in _roots(page):
+        try:
+            value = root.evaluate(_BOOKMARK_DATASET_JS, list(BOOKMARK_DATASET_COLUMNS))
+        except Exception:
+            continue
+        if isinstance(value, dict) and value.get("available") is True:
+            rows = value.get("rows")
+            cleaned = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+            if cleaned:
+                return cleaned
+            available_empty = True
+    return [] if available_empty else None
+
+
+def _scope_tab(value: Any) -> str:
+    normalized = _clean_name(value).casefold()
+    for tab in SCOPE_TABS:
+        if normalized == tab.casefold():
+            return tab
+    return _clean_name(value).title() or "Public"
+
+
+def _append_distinct(parts: list[str], value: Any) -> None:
+    cleaned = _clean_name(value)
+    if cleaned and (not parts or parts[-1].casefold() != cleaned.casefold()):
+        parts.append(cleaned)
+
+
+def bookmark_dataset_entries(page) -> list[dict] | None:
+    """Convert the active Nexacro bookmark dataset into catalog tree leaves."""
+    rows = bookmark_dataset_rows(page)
+    if rows is None:
+        return None
+    entries = []
+    for row in rows:
+        name = _clean_name(row.get("userreportname"))
+        if not name or _normalize_label(name) in TREE_NOISE:
+            continue
+        scope = _clean_name(row.get("scope"))
+        folder_path: list[str] = []
+        _append_distinct(folder_path, BOOKMARK_SCOPE_NAMES.get(scope.upper(), scope))
+        _append_distinct(folder_path, row.get("menugroupname"))
+        _append_distinct(folder_path, row.get("menuname"))
+        entries.append({
+            "name": name,
+            "folder_path": folder_path,
+            "tab": _scope_tab(row.get("publicscope")),
+            "bookmark_id": _clean_name(row.get("userreportid")),
+            "menu_id": _clean_name(row.get("menuid")),
+            "scope": scope,
+            "owner_id": _clean_name(row.get("userid")),
+            "origin_owner_id": _clean_name(row.get("originuserid")),
+            "source": "gds_bookmark",
+        })
+    return entries
 
 
 def _is_icon_chrome(element_id: str) -> bool:
@@ -757,7 +908,7 @@ def select_scope_tab(page, tab: str) -> bool:
 
 
 def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[dict]:
-    """Rebuild the folder tree currently shown in the Favorite panel.
+    """Rebuild the visible rows in the Setting popup's Favorite grid.
 
     The tree is a Nexacro grid with no semantic nesting in the DOM: depth is
     expressed purely as horizontal indentation. Rows are therefore ordered by
@@ -770,7 +921,7 @@ def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[
     wrong folder - or under none.
     """
     rows = []
-    for root, record in visible_text(page):
+    for root, record in favorite_tree_rows(page):
         name = _clean_name(record.get("text"))
         if not name or _normalize_label(name) in TREE_NOISE:
             continue
@@ -781,17 +932,11 @@ def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[
             "x": record.get("x", 0),
             "y": record.get("y", 0),
             "w": record.get("w", 0),
+            "is_folder": record.get("is_folder"),
         })
     if not rows:
         return []
-    # A report row carries its own action icons (open, pin) on the right; a
-    # folder row does not. That is a far better leaf test than "the next row is
-    # indented", which cannot see a folder that is currently collapsed.
-    icons = [record for _root, record in icon_controls(page)]
 
-    # The tree occupies the densest vertical band on screen. Keep the rows that
-    # share a left-edge family with the majority, so page chrome elsewhere in
-    # the dialog does not become a phantom folder.
     rows.sort(key=lambda row: (row["y"], row["x"]))
     stack: list[tuple[int, str]] = list(seed or [])
     entries = []
@@ -806,8 +951,7 @@ def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[
             "indent": row["x"],
             "y": row["y"],
             "root": row["root"],
-            "has_actions": _row_has_actions(row, icons),
-            "icons_seen": bool(icons),
+            "is_folder": row.get("is_folder"),
             "stack": [*stack, (row["x"], row["name"])],
         })
         stack.append((row["x"], row["name"]))
@@ -827,8 +971,9 @@ def collect_favorite_tree(page, report_progress=None, *, max_passes: int = 40) -
 
     Two things hide rows. The grid virtualizes, so only what is in view exists
     in the DOM; and folders start collapsed, so their children are not rendered
-    at all. This scrolls to the bottom collecting rows, then clicks the rows
-    that might be collapsed folders and repeats until nothing new appears.
+    at all. This scrolls to the bottom collecting rows, then clicks rows whose
+    visible ``treeitembutton`` identifies them as folders and repeats until
+    nothing new appears.
 
     Clicking a tree row only selects or expands it - the report itself opens on
     ``Go >>`` - so an unnecessary click costs nothing.
@@ -895,33 +1040,15 @@ def collect_favorite_tree(page, report_progress=None, *, max_passes: int = 40) -
     return sorted(collected.values(), key=lambda entry: (entry["folder_path"], entry["y"]))
 
 
-def _row_has_actions(row: dict, icons: list[dict]) -> bool:
-    """Whether this row shows the per-report action icons on its right.
-
-    Every row carries an icon on its *left* - a folder or a document glyph -
-    so only an icon past the label's right edge counts. That is the open and
-    pin pair, which GSCM renders for reports and not for folders.
-    """
-    row_y = row.get("y", 0)
-    row_right = row.get("x", 0) + row.get("w", 0)
-    return any(
-        abs(icon.get("y", 0) - row_y) <= ROW_ICON_TOLERANCE_PX
-        and icon.get("x", 0) > row_right
-        for icon in icons
-    )
-
-
 def _leaf_entries(entries: list[dict]) -> list[dict]:
     """The report rows, excluding the folders that contain them.
 
-    Prefer the action icons each report row carries. Fall back to indentation
-    when no icons were reported at all, so the reconstruction still works on a
-    screen that renders its actions differently.
+    Nexacro renders a visible ``treeitembutton`` for a folder and hides that
+    control for a bookmark leaf. Fall back to indentation only when a runtime
+    does not expose that control state.
     """
-    if any(entry.get("icons_seen") for entry in entries):
-        # The screen renders row icons, so their absence is meaningful: this
-        # row is a folder, even when it is collapsed and looks like a leaf.
-        return [entry for entry in entries if entry.get("has_actions")]
+    if any(entry.get("is_folder") is not None for entry in entries):
+        return [entry for entry in entries if entry.get("is_folder") is False]
     leaves = []
     for index, entry in enumerate(entries):
         following = entries[index + 1] if index + 1 < len(entries) else None
@@ -962,6 +1089,11 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
             "favorite_name": name,
             "favorite_folder_path": list(entry.get("folder_path", [])),
             "favorite_element_id": entry.get("element_id") or None,
+            "favorite_bookmark_id": entry.get("bookmark_id") or None,
+            "favorite_menu_id": entry.get("menu_id") or None,
+            "favorite_scope": entry.get("scope") or None,
+            "favorite_owner_id": entry.get("owner_id") or None,
+            "favorite_origin_owner_id": entry.get("origin_owner_id") or None,
             "excel_btn_id": FALLBACK_EXCEL_BUTTON_ID,
         },
         "filters": [],
@@ -969,7 +1101,7 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
 
 
 def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool]:
-    """Catalog GSCM's bookmarks across the Private, Public, and Custom tabs."""
+    """Catalog GSCM bookmarks from memory, with a scoped DOM fallback."""
     url = portal_url(job)
     report_progress("running", {
         "stage": "navigation",
@@ -980,31 +1112,61 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         "running", {"stage": "navigation", "message": message},
     ))
 
+    dataset_entries = bookmark_dataset_entries(page)
     entries: list[dict] = []
     seen: set[tuple] = set()
-    for tab in SCOPE_TABS:
-        if not select_scope_tab(page, tab):
-            report_progress("running", {
-                "stage": "report_discovery",
-                "message": f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
-            })
-            continue
-        leaves = _leaf_entries(collect_favorite_tree(page, lambda message: report_progress(
-            "running", {"stage": "report_discovery", "message": f"{tab}: {message}"},
-        )))
-        added = 0
-        for entry in leaves:
-            key = (tab, tuple(entry["folder_path"]), entry["name"].casefold())
+    if dataset_entries:
+        for entry in dataset_entries:
+            identity = entry.get("bookmark_id") or (
+                entry["tab"], tuple(entry["folder_path"]), entry["name"].casefold(),
+            )
+            key = ("dataset", identity)
             if key in seen:
                 continue
             seen.add(key)
-            entries.append({**entry, "tab": tab})
-            added += 1
+            entries.append(entry)
         report_progress("running", {
             "stage": "report_discovery",
-            "message": f"{tab}: {added} bookmark(s).",
-            "item_count": added,
+            "message": (
+                f"Read {len(entries)} bookmark(s) from GSCM's in-memory "
+                "gds_bookmark dataset."
+            ),
+            "item_count": len(entries),
         })
+    else:
+        fallback_reason = (
+            "was empty" if dataset_entries == [] else "was not exposed by this Nexacro runtime"
+        )
+        report_progress("running", {
+            "stage": "report_discovery",
+            "message": (
+                f"GSCM's gds_bookmark dataset {fallback_reason}; reading only "
+                "the Setting Favorite grid as a fallback."
+            ),
+        })
+        for tab in SCOPE_TABS:
+            if not select_scope_tab(page, tab):
+                report_progress("running", {
+                    "stage": "report_discovery",
+                    "message": f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
+                })
+                continue
+            leaves = _leaf_entries(collect_favorite_tree(page, lambda message: report_progress(
+                "running", {"stage": "report_discovery", "message": f"{tab}: {message}"},
+            )))
+            added = 0
+            for entry in leaves:
+                key = (tab, tuple(entry["folder_path"]), entry["name"].casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append({**entry, "tab": tab})
+                added += 1
+            report_progress("running", {
+                "stage": "report_discovery",
+                "message": f"{tab}: {added} bookmark(s).",
+                "item_count": added,
+            })
 
     if not entries:
         raise RuntimeError(

@@ -2,69 +2,67 @@
 
 ## Current Objective
 
-Stop ASAP HTML-dashboard flows from remaining in File Export for 30 to 40
-minutes after Edge has already completed the selected download.
+Replace GSCM bookmark discovery's global DOM scan with the complete in-memory
+Nexacro bookmark dataset and retain a strictly scoped DOM fallback.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `47f6ca5`
+- Latest base commit: `6d4c6d0`
 - Public repo: no, private
-- Delivery target: scoped fix committed and pushed to `origin/main`
-- Preserve unrelated working-tree changes in `app/flow_gscm.py`; they belong to
-  another active task and are not part of this fix.
+- Delivery target: commit and push the scoped GSCM change to `origin/main`
 
 ## Decisions Made
 
-- Keep the 15-minute pre-response budget for genuinely slow dashboard exports.
-- Subscribe to Edge download events on every existing portal page and every
-  popup opened after the dashboard click, matching the established ASAP Export
-  Wizard strategy.
-- Pump Playwright events while waiting so delayed popup and download callbacks
-  are dispatched instead of being starved by a folder-only `time.sleep` loop.
-- Once Edge emits its native download event, require the local staging file to
-  appear within 60 seconds. A missing browser-to-staging handoff should fail
-  promptly instead of consuming the 15-minute budget on each task retry.
-- Retain folder detection as a fallback for downloads that create a local file
-  without exposing a Playwright download event.
+- Open Setting > Favorite so GSCM loads its application-level `gds_bookmark`
+  dataset, then read that dataset through the existing worker page. CDP attach
+  is not required.
+- Reconstruct bookmark identity from `userreportid`, tab from `publicscope`,
+  module from `scope`, category path from `menugroupname` and `menuname`, and
+  leaf name from `userreportname`.
+- Map only evidenced scope codes (`AS` to `SCM`, `MT` to `MDM`) and preserve an
+  unknown code rather than inventing a module label.
+- If the dataset is missing or empty, inspect only the Setting popup's
+  `grd_bookmark`. Never collect tree labels from the global page.
+- In the DOM fallback, use the visible `treeitembutton` as the folder signal.
+  Nexacro hides that control on bookmark leaves.
+- Keep runtime bookmark opening on the existing visible-row path. This change
+  improves catalog discovery; it does not guess an unsupported direct report
+  execution API.
 
 ## Files Changed
 
-- `app/flow_worker.py`: event-aware HTML-dashboard download start and popup
-  detection, future-page listeners, prompt post-event staging failure.
-- `tests/test_flow_worker_discovery.py`: regression coverage for Edge events,
-  staging-only completion, intermediate popups, and listener cleanup.
+- `app/flow_gscm.py`: dataset-first discovery, stable bookmark metadata, and
+  grid-scoped DOM fallback.
+- `tests/test_gscm.py`: supplied private/public bookmark identities, hierarchy,
+  dataset preference, and concatenated-navigation regression coverage.
+- `docs/gscm_portal.md`: document the dataset schema and fallback behavior.
 - `docs/agent_handoff.md`: this handoff.
 
 ## Commands And Checks
 
-- Production read-only evidence: runs 181 and 182 both reached File Export
-  within seconds, stayed there for about 40 minutes, recorded no file or phase
-  timing, and ended only when the user stopped them.
-- `/tmp/dg-flow-tests/bin/python -m pytest -q`: 397 passed.
-- `/tmp/dg-flow-tests/bin/python -m compileall -q app`: passed.
-- `node --check app/static/app.js`: passed.
-- `node tests/test_flow_catalog_tree.mjs`: passed.
-- `node tests/test_lineage_display.mjs`: passed.
-- `node tests/test_lineage_edges.mjs`: passed.
-- `node tests/test_lineage_layers.mjs`: passed.
+- `python -m pytest tests/test_gscm.py -q`: 59 passed.
+- `python -m pytest -q`: 402 passed.
+- `python -m compileall -q app`: passed.
+- Browser-side dataset and grid scripts parsed with Node.js.
 - `git diff --check`: passed.
-- Not run: a new production HTML-dashboard flow. Starting a download and SQL
-  replacement is a production mutation and was not authorized during the
-  read-only diagnostic.
+- Not run: a live GSCM catalog scan. This checkout has no authenticated GSCM
+  browser session attached to the test process.
 
 ## Open Questions
 
-- The exact native Edge event and staging filename from the affected dashboard
-  cannot be proven until one updated production run is explicitly authorized.
-- If Edge reports the event but no local staging file appears within 60 seconds,
-  the updated run will now fail with that specific handoff error rather than
-  hang through repeated long waits.
+- Confirm the live application exposes all expected bookmarks in
+  `gds_bookmark` after Setting > Favorite opens, including any Custom records.
+- Confirm every live `scope` code that should display a friendly module name;
+  unknown values intentionally remain as their source code.
+- The previously delivered ASAP dashboard download change still needs one
+  explicitly authorized production flow run for end-to-end validation.
 
 ## Next Step
 
-After the scoped commit is present on `origin/main` and installed on the BI
-desktop, explicitly authorize one affected HTML-dashboard flow run. Verify the
-complete path: control discovery, Edge event, stable local staging file, saved
-artifact, workbook normalization, SQL handoff, and successful run completion.
+On the authenticated BI desktop, install the delivered commit and run one GSCM
+catalog scan. Verify the reported dataset row count, the three evidenced
+bookmark ids and paths, Private/Public separation, Custom handling if present,
+and absence of any concatenated top-navigation bookmark before accepting the
+scanner as live-verified.

@@ -40,8 +40,10 @@ Top nav gear -> Setting
 ```
 
 Select a row, press **Go >>**, and GSCM opens that report with its saved
-configuration applied. The scan reads all three tabs and catalogues every leaf
-row, tagged with the tab and folder path it came from.
+configuration applied. Opening this dialog loads the application-level
+`gds_bookmark` dataset. The scan reads that dataset directly and catalogues
+every record with its tab, folder path, bookmark id, menu id, scope, and owner
+metadata.
 
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
@@ -61,22 +63,34 @@ a full scan and a full run touch neither Save, Unselect, nor a pin.
 
 The tree sweep clicks folder rows only, never report rows.
 
-## Why this adapter matches on text and geometry, not on ids
+## Why discovery reads Nexacro memory
 
-Every id here would have to be guessed. Instead:
+The Favorite grid is virtualized. Its fixed `gridrow_0` through `gridrow_8`
+slots are recycled as the user scrolls, so a DOM-only scan cannot treat row ids
+or coordinates as bookmark identity. The loaded Nexacro application already
+holds the complete source dataset:
 
-* **Controls are clicked by their visible label** - `Favorite`, `Public`,
-  `Go >>`. These survive a Nexacro layout change that would break an absolute
-  component path. The one exception is the Setting gear, which has no text and
-  is found by id shape (`btn_setting`, `btn_config`, ...).
-* **The tree is rebuilt from indentation.** The rows carry no DOM nesting;
-  depth is expressed purely as horizontal offset, which is also how the screen
-  communicates it to a human. A row with a more-indented row beneath it is a
-  folder; everything else is a bookmark.
-* **Every failure prints what was on screen.** `screen_inventory()` dumps the
-  visible labels with their ids and positions into the error and the scan log,
-  so one failed run is enough to write an exact selector instead of guessing
-  again.
+```javascript
+const ds = nexacro.getApplication().gds_bookmark;
+```
+
+`userreportid` is the stable bookmark identity, `publicscope` identifies the
+Private/Public/Custom tab, `scope` identifies the module, `menugroupname` and
+`menuname` reconstruct the category path, and `userreportname` is the leaf.
+This avoids scrolling, expansion, geometry, and concatenated ancestor text.
+
+If a deployment does not expose `gds_bookmark`, the fallback is deliberately
+restricted to `TopFrame.Setting1.form.div_favorite.form.grd_bookmark`. It reads
+only `GridRowControl` labels in that grid and treats a visible
+`treeitembutton` as the folder signal. It never queries the whole page. This
+scope matters because reading the global TopFrame container's `textContent`
+concatenates labels such as `Biz Info`, `AX`, `SCM`, and `Channel` into one
+false bookmark.
+
+Controls are still clicked by visible label when opening a bookmark. The
+Setting gear is the exception because it has no text and is found by id shape
+(`btn_setting`, `btn_config`, ...). Every failure includes a compact screen
+inventory so a changed control can be diagnosed from evidence.
 
 ## Run lifecycle
 
@@ -88,7 +102,7 @@ POST /api/flows/sites/{id}/scan         POST /api/flows/{id}/run
 worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
   open Setting > Favorite                 open Setting > Favorite, pick the tab
-  read Private/Public/Custom trees        select the row, press Go >>
+  read gds_bookmark in memory             select the row, press Go >>
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
 flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
                                           click btn_exceldown
@@ -104,9 +118,10 @@ the SQL handoff inserts. That is the same contract ASAP's XLSX exports use, so
 `sql_mode`, `sql_database/schema/table`, and the transformation script hook all
 behave identically for GSCM.
 
-## Reaching every row
+## Scoped DOM fallback
 
-Two things hide bookmarks, and the scan handles both:
+The memory dataset is the normal discovery path. The fallback handles the two
+ways the rendered grid hides bookmarks:
 
 * **The grid virtualizes.** Only rows in view exist in the DOM, so the sweep
   pages the tree down and re-reads until nothing new appears. Because a row's
@@ -114,10 +129,10 @@ Two things hide bookmarks, and the scan handles both:
   screenful to the next - rebuilding it from the visible rows alone would file
   a row under the wrong folder, or under none.
 * **Folders start collapsed.** A collapsed folder looks exactly like a report
-  to an indentation test. The real signal is on screen: a report row carries
-  the open and pin icons to the right of its label, and a folder row does not.
-  Rows without those icons are clicked to expand, and the sweep repeats until
-  no new rows appear.
+  to an indentation-only test. The real signal is the row's
+  `treeitembutton`: it is visible for folders and hidden for bookmark leaves.
+  Folder rows are clicked to expand, and the sweep repeats until no new rows
+  appear.
 
 ## Bookmark identity
 
@@ -130,6 +145,9 @@ A bookmark is stored with the tab, folder path, and name that locate it again:
   "favorite_tab": "Public",
   "favorite_name": "MENA_Actual_sales",
   "favorite_folder_path": ["SCM", "Actual Sales"],
+  "favorite_bookmark_id": "RC_123456",
+  "favorite_menu_id": "AS470",
+  "favorite_scope": "AS",
   "excel_btn_id": "mainframe.VFrameSet.MdiFrame.form.div_frameButton.form.btn_exceldown"
 }
 ```
@@ -140,7 +158,8 @@ download a different report than the flow was built for. Two rows sharing a
 name still get two catalog entries (`Weekly PSI`, `Weekly PSI (2)`), because
 `flow_reports` is keyed by (site, name) and would otherwise collapse them.
 
-Element ids are recorded but never trusted across runs: Nexacro regenerates
+`favorite_bookmark_id` is stable dataset identity. DOM element ids are recorded
+only by the fallback and are never trusted across runs because Nexacro recycles
 them as the tree scrolls and re-renders.
 
 ## Authentication

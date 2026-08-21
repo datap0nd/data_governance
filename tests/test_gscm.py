@@ -124,7 +124,8 @@ class FakeGscmPage:
     def __init__(self, *, trees=None, dialog_open=False, gear=True,
                  url="https://mdscm.sec.samsung.net/nexa/index.html",
                  always_busy=False, busy_polls=0, popup_ids=(),
-                 hidden_rows=None, gear_id=None, scroll_rows=None):
+                 hidden_rows=None, gear_id=None, scroll_rows=None,
+                 dataset_rows=None):
         # hidden_rows: {folder name: [rows revealed when that folder is clicked]}
         self.hidden_rows = dict(hidden_rows or {})
         # scroll_rows: rows that only exist once the tree has been paged down.
@@ -141,6 +142,7 @@ class FakeGscmPage:
         self.always_busy = always_busy
         self.busy_polls = busy_polls
         self.popup_ids = list(popup_ids)
+        self.dataset_rows = dataset_rows
         self.tab = "Public"
         self.clicks = []
         self.navigations = []
@@ -221,6 +223,10 @@ class FakeGscmPage:
         return FakeLocator(self, selector, matches)
 
     def evaluate(self, script, argument=None):
+        if "app.gds_bookmark" in script:
+            if self.dataset_rows is None:
+                return None
+            return {"available": True, "rows": list(self.dataset_rows)}
         if "overlay.style.display = 'none'" in script:
             self.wait_window_hidden += 1
             return True
@@ -233,6 +239,11 @@ class FakeGscmPage:
             return False
         if "childHasSameText" in script:
             return list(self._screen())
+        if "is_folder: isFolder" in script:
+            return [
+                {**row, "is_folder": row["text"] not in LEAF_NAMES}
+                for row in self._rows()
+            ]
         if "textContent || \'\').trim()) continue" in script or "out.push({\n            id: element.id," in script:
             return self._icon_records()
         if "scrollHeight - element.clientHeight" in script:
@@ -300,6 +311,85 @@ def test_every_scope_tab_is_read_and_tagged():
     assert tabs == {"Private", "Public"}  # Custom is empty in the fixture
     private = next(item for item in reports if item["name"] == "Biz_trip_GSCM")
     assert private["automation"]["favorite_tab"] == "Private"
+
+
+DATASET_BOOKMARKS = [
+    {
+        "userreportid": "RC_994973", "userid": "john.doe",
+        "originuserid": "john.doe", "userreportname": "Biz_Trip_Account_Portion",
+        "menuscope": "MP", "gbm": "MOBILE", "menuid": "AS470",
+        "menuname": "Sell-in Biz Plan", "menugroupid": "AS313",
+        "menugroupname": "Sell-in Biz Plan", "scope": "AS",
+        "publicscope": "PRIVATE", "publicscopevalue": "",
+    },
+    {
+        "userreportid": "RC_1000937", "userid": "external.user",
+        "originuserid": "external.user", "userreportname": "MX B2B FFF8 Actual Sales",
+        "menuscope": "MP", "gbm": "MOBILE", "menuid": "AS470",
+        "menuname": "Actual Sales", "menugroupid": "AS313",
+        "menugroupname": "Actual Sales", "scope": "AS",
+        "publicscope": "PUBLIC", "publicscopevalue": "",
+    },
+    {
+        "userreportid": "RC_811969", "userid": "external.user",
+        "originuserid": "external.user", "userreportname": "Asia_Actual_sales",
+        "menuscope": "MP", "gbm": "MOBILE", "menuid": "AS470",
+        "menuname": "Actual Sales", "menugroupid": "AS313",
+        "menugroupname": "Actual Sales", "scope": "AS",
+        "publicscope": "PUBLIC", "publicscopevalue": "",
+    },
+]
+
+
+def test_discovery_prefers_the_complete_nexacro_bookmark_dataset():
+    page = FakeGscmPage(dataset_rows=DATASET_BOOKMARKS)
+    events, progress = _collect_progress()
+
+    reports, complete = flow_gscm.discover_catalog(page, _scan_job(), progress)
+
+    assert complete is True
+    assert [report["name"] for report in reports] == [
+        "Biz_Trip_Account_Portion", "MX B2B FFF8 Actual Sales", "Asia_Actual_sales",
+    ]
+    assert not page.scrolled
+    assert any("gds_bookmark" in detail["message"] for _status, detail in events)
+
+
+@pytest.mark.parametrize(
+    ("name", "tab", "bookmark_id", "folder_path"),
+    [
+        ("Biz_Trip_Account_Portion", "Private", "RC_994973", ["SCM", "Sell-in Biz Plan"]),
+        ("MX B2B FFF8 Actual Sales", "Public", "RC_1000937", ["SCM", "Actual Sales"]),
+        ("Asia_Actual_sales", "Public", "RC_811969", ["SCM", "Actual Sales"]),
+    ],
+)
+def test_dataset_rows_reconstruct_stable_bookmark_identity(
+    name, tab, bookmark_id, folder_path,
+):
+    reports = flow_gscm.discover_catalog(
+        FakeGscmPage(dataset_rows=DATASET_BOOKMARKS),
+        _scan_job(), _collect_progress()[1],
+    )[0]
+    report = next(item for item in reports if item["name"] == name)
+
+    assert report["automation"]["favorite_tab"] == tab
+    assert report["automation"]["favorite_folder_path"] == folder_path
+    assert report["automation"]["favorite_bookmark_id"] == bookmark_id
+    assert report["automation"]["favorite_menu_id"] == "AS470"
+
+
+def test_dataset_discovery_cannot_catalogue_concatenated_global_navigation():
+    corrupt_navigation = _label(
+        "Biz InfoAXSCMChannelPromotionMDMSupplyNews RoomAdmin", 0, 0,
+        element_id="mainframe.VFrameSet.TopFrame.form.nexacontainer",
+    )
+    page = FakeGscmPage(dataset_rows=DATASET_BOOKMARKS)
+    original_screen = page._screen
+    page._screen = lambda: [corrupt_navigation, *original_screen()]
+
+    reports = flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])[0]
+
+    assert all("Biz InfoAXSCM" not in report["name"] for report in reports)
 
 
 def test_folder_nesting_comes_from_indentation():
@@ -739,17 +829,17 @@ def test_rows_below_the_fold_are_reached_by_scrolling():
     assert {"CS_IRAN", "CS_SEEG"} == {item["name"] for item in reports}
 
 
-def test_report_rows_are_told_from_folders_by_their_action_icons():
-    # Only a report row carries the open and pin icons. Indentation alone
-    # cannot see a folder that is currently collapsed.
+def test_report_rows_are_told_from_folders_by_the_tree_expand_control():
+    # Folder rows expose a visible treeitembutton. Nexacro keeps the same
+    # control hidden on bookmark leaves, including leaves at the end of a tree.
     page = FakeGscmPage()
     flow_gscm.open_favorites_dialog(page)
     flow_gscm.select_scope_tab(page, "Public")
     entries = flow_gscm.read_favorite_tree(page)
     by_name = {entry["name"]: entry for entry in entries}
-    assert by_name["MENA_Actual_sales"]["has_actions"] is True
-    assert by_name["Actual Sales"]["has_actions"] is False
-    assert by_name["SCM"]["has_actions"] is False
+    assert by_name["MENA_Actual_sales"]["is_folder"] is False
+    assert by_name["Actual Sales"]["is_folder"] is True
+    assert by_name["SCM"]["is_folder"] is True
 
 
 def test_expansion_never_clicks_a_report_row():
