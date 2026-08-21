@@ -2,63 +2,77 @@
 
 ## Current Objective
 
-Live-validate catalog discovery in Citrix: make ASAP Quick scan discover the
-Retail branch including `Flagship Experience`, make GSCM bookmark discovery
-work reliably as an authoritative fresh snapshot, then find and download
-`SIBP ASP Global` through the application.
+Finish the last live ASAP acceptance check in Citrix. The GSCM clean catalog
+scan and `SIBP_CI_Series_ASP_Global` workbook download have passed end to end.
+ASAP already discovers the active Retail `Flagship Experience` report, but the
+newest build still needs one final report-specific scan to verify that its
+filter titles are `Period`, `Dimension`, and `Measure`, with neither the
+generated hexadecimal label nor the current value `202623` displayed.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `4d5fd04` (`Replace GSCM bookmark snapshots on scan`)
-- Public repo: no, private
-- Delivery target: commit and push the live discovery fixes to `origin/main`
-- Preserve untracked `governance.db-shm` and `governance.db-wal`
+- Delivered code commit: `b7c66ed` (`Normalize generated ASAP period labels`)
+- `HEAD` and `origin/main` were both `b7c66edba0bad38a9b0253899bff5c7f0f86a571`
+  before this handoff update.
+- The repo is private.
+- Preserve untracked `governance.db-shm` and `governance.db-wal`.
+
+## Delivered Changes
+
+- `2da8cb6`: wait 60 seconds after GSCM report launch, retry the full flow once
+  with a 120-second wait, then fail normally.
+- `4de81b7`: preserve the native GSCM XLSX when optional CSV normalization
+  fails and transformation and SQL output are disabled.
+- `5b7b35b`: use Edge's native download event, validate download completion,
+  and prevent any post-download processing error from reopening GSCM or
+  re-checking the Public bookmark tab.
+- `2d27fc5`: discover ASAP Period and Measure controls and normalize structural
+  report-filter labels.
+- `b7c66ed`: recognize generated labels formed from multiple hexadecimal runs
+  joined by underscores.
+- Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
+  retaining stale rows from an older scan.
 
 ## Live Citrix Evidence
 
-- ASAP Quick scan completed successfully but still catalogued exactly 80
-  reports. Retail remained `16 reports - 16 stale`, proving the branch was not
-  rediscovered.
-- GSCM Scan bookmarks failed before discovery because Setting > Favorite did
-  not open. The current build's Setting gear could not be found by the known
-  id or position strategy.
-- Before that failed scan, the catalog displayed 261 GSCM reports with large
-  stale Private/Public residues. Commit `4d5fd04` already makes the next
-  successful non-empty scan replace that residue with the current snapshot.
-
-## Decisions And Changes
-
-- `app/flow_gscm.py`: read the application-level `gds_bookmark` immediately
-  after portal load. Open Setting > Favorite only when the dataset is absent
-  or empty. This removes the unnecessary dependency on the fragile gear for
-  bookmark discovery while retaining the dialog fallback.
-- `app/flow_worker.py`: record semantic button metadata, accept enabled
-  button/menuitem controls without inline href/onclick as reports, support
-  both click and hover menu revelation, and fail closed if any detected
-  top-level branch reveals no reports. An incomplete scan must not mark unseen
-  reports stale.
-- `tests/test_gscm.py`: assert dataset-first discovery never opens the dialog
-  or clicks the gear.
-- `tests/test_flow_worker_discovery.py`: cover semantic report buttons,
-  disabled controls, hover fallback, and incomplete Retail discovery.
-- `docs/gscm_portal.md`: document dataset-first discovery and dialog fallback.
+- ASAP catalog scan: 97 reports total. Retail had 37 catalog rows, including
+  21 active and 16 stale. The active report is
+  `Retail > Experience > Flagship Experience`.
+- GSCM clean bookmark scan: 261 current bookmarks discovered from
+  `gds_bookmark`; the stale Private/Public residue was removed.
+- Exact bookmark discovered at
+  `Public > SCM > Sell-in Biz Plan > SIBP_CI_Series_ASP_Global`.
+- GSCM run 200 succeeded in 2m17s and reported `Saved 1 XLSX export(s).` The
+  navigation phase took 2m15s and Edge-native file export took 1s.
+- Windows Downloads visibly contained
+  `GSCM_SIBP_ASP_Global_export (3).xlsx`, 61 KB, created at 4:27 PM.
+- On the preceding ASAP report-specific scan, `Measure` was discovered and
+  `202623` was absent, but the generated underscore-separated hexadecimal
+  label remained. That exact remaining defect is fixed by `b7c66ed`.
+- Build `20260821-165304`, containing `b7c66ed`, was installed on the BI
+  desktop. The setup restart disconnected the inner RDP session. Reconnection
+  reached the expected `CORP\\meto.mx` credential prompt, but Windows rejected
+  the saved RDP credential. Do not retry automatically after this authentication
+  error.
 
 ## Verification
 
-- Focused discovery tests: 131 passed.
-- `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements requirements-local.txt pytest -q`:
-  411 passed.
-- `python3.11 -m compileall -q app`: passed.
-- `git diff --check`: passed.
-- Still required: install the delivered commit in Citrix and repeat both live
-  scans. Local tests do not satisfy live acceptance.
+- Full local test suite: 435 passed.
+- `HEAD` matched `origin/main` before this documentation update.
+- GSCM end-to-end acceptance: passed.
+- ASAP active Retail report discovery: passed.
+- ASAP final filter-label acceptance on build `20260821-165304`: blocked only
+  by the rejected RDP credential. This is not complete and no completion Gmail
+  has been sent.
 
 ## Next Step
 
-Commit and push the scoped changes to `main`, verify `origin/main` contains the
-exact commit, obtain exact Citrix update authorization if an installation is
-needed, then run ASAP Quick scan and GSCM Scan bookmarks again. Verify Retail
-and `Flagship Experience`, then locate and download `SIBP ASP Global` and
-validate the artifact through Metronome run history without File Explorer.
+After the inner BI desktop is accessible again, open the installed Metronome
+build, select ASAP `Flagship Experience`, and run `Scan report`. Verify the
+form shows `Period`, `Dimension`, and `Measure`; browser Find should return
+zero matches for `202623` and for the hexadecimal prefix `7D4E`. Cancel the
+unsaved flow. If all rows pass, update this handoff, commit and push it to
+`main`, verify `origin/main`, mark the active goal complete, and send the
+promised Gmail result to the authenticated user.
