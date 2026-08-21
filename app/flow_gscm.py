@@ -56,6 +56,9 @@ FAVORITE_PANEL_LABEL = "Favorite"
 SCOPE_TABS = ("Private", "Public", "Custom")
 GO_LABELS = ("Go >>", "Go»", "Go »", "Go")
 CLOSE_LABELS = ("Close",)
+GO_BUTTON_ID = (
+    "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_go"
+)
 #: The gear that opens Setting, read off the live portal. Tried first and
 #: exactly; the hints below only matter if GSCM renames it.
 SETTING_BUTTON_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
@@ -1451,7 +1454,7 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
     if report_progress:
         report_progress(f"Opening GSCM bookmark {' > '.join([*folder_path, name])}.")
     _click_entry(page, entry)
-    if click_label(page, GO_LABELS) is None:
+    if not _click_go_button(page):
         raise RuntimeError(
             "GSCM's Go button was not on screen after selecting the bookmark. "
             "On screen: " + screen_inventory(page)
@@ -1459,6 +1462,27 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
     wait_for_calculation(page, report_progress=report_progress)
     clear_screen(page)
     return entry.get("element_id") or name
+
+
+def _click_go_button(page) -> bool:
+    """Activate the Favorite dialog's native Go button.
+
+    The live Nexacro build renders the ``Go >>`` caption in a child text node.
+    Clicking that node can leave the selected row highlighted without firing
+    the Button component. Prefer the stable component id so the report work
+    frame actually opens, then retain the caption lookup for older builds.
+    """
+    clear_screen(page)
+    for root in _roots(page):
+        try:
+            button = root.locator(f"[id='{_css_escape(GO_BUTTON_ID)}']").first
+            if not button.count():
+                continue
+            button.click(force=True, timeout=30_000)
+            return True
+        except Exception:
+            continue
+    return click_label(page, GO_LABELS) is not None
 
 
 def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:

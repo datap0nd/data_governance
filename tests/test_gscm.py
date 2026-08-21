@@ -566,6 +566,18 @@ def test_opening_a_bookmark_selects_its_row_then_presses_go():
     assert texts.index("MENA_Actual_sales") < texts.index("Go >>")
 
 
+def test_opening_a_bookmark_prefers_the_native_nexacro_go_button():
+    page = FakeGscmPage()
+    page.components.add(flow_gscm.GO_BUTTON_ID)
+
+    flow_gscm.open_bookmark(page, _run_job())
+
+    assert flow_gscm.GO_BUTTON_ID in page.clicks
+    target_id = next(row["id"] for row in PUBLIC_TREE if row["text"] == "MENA_Actual_sales")
+    assert page.clicks.index(target_id) < page.clicks.index(flow_gscm.GO_BUTTON_ID)
+    assert "Go >>" not in _clicked_texts(page)
+
+
 def test_opening_a_bookmark_selects_the_tab_it_was_catalogued_under():
     page = FakeGscmPage()
     flow_gscm.open_bookmark(page, _run_job(name="Biz_trip_GSCM", folder=(), tab="Private"))
