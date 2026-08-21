@@ -299,6 +299,25 @@ _SCROLL_TREE_JS = """() => {
     return { moved: best.scrollTop !== before, top: best.scrollTop, max: bestOverflow };
 }"""
 
+_RESET_TREE_JS = """() => {
+    const grid = Array.from(document.querySelectorAll('[id]')).find(element =>
+        (element.id || '').endsWith('Setting1.form.div_favorite.form.grd_bookmark'));
+    if (!grid) return null;
+    let best = null;
+    let bestOverflow = 0;
+    for (const element of [grid, ...grid.querySelectorAll('*')]) {
+        const overflow = element.scrollHeight - element.clientHeight;
+        if (overflow <= 8) continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 120 || rect.height < 80) continue;
+        if (overflow > bestOverflow) { bestOverflow = overflow; best = element; }
+    }
+    if (!best) return {available: true, moved: false};
+    const before = best.scrollTop;
+    best.scrollTop = 0;
+    return {available: true, moved: before !== 0};
+}"""
+
 _POPUP_CLOSERS_JS = """() => {
     const ids = [];
     for (const element of document.querySelectorAll("[id]")) {
@@ -979,6 +998,63 @@ def scroll_tree(page) -> bool:
     return False
 
 
+def reset_tree(page) -> bool:
+    """Return the virtualized Favorite grid to its first visible row."""
+    for _root, value in _evaluate_everywhere(page, _RESET_TREE_JS):
+        if isinstance(value, dict) and value.get("available"):
+            return True
+    return False
+
+
+def _find_tree_entry(
+    page, name: str, folder_path: list[str], *, max_passes: int = 40,
+) -> dict | None:
+    """Find one exact tree row while it is still rendered and clickable."""
+    reset_tree(page)
+    seed: list[tuple[int, str]] = []
+    expected_path = [part.casefold() for part in folder_path]
+    for page_index in range(max_passes):
+        entries = read_favorite_tree(page, seed if page_index else None)
+        for entry in entries:
+            if entry["name"].casefold() != name.casefold():
+                continue
+            if [part.casefold() for part in entry["folder_path"]] == expected_path:
+                return entry
+        seed = list(entries[-1]["stack"]) if entries else seed
+        if not scroll_tree(page):
+            break
+        page.wait_for_timeout(250)
+    return None
+
+
+def _reveal_tree_path(page, folder_path: list[str], leaf_name: str) -> bool:
+    """Expand only the catalogued folders needed to reveal one bookmark.
+
+    Nexacro virtualizes the grid, so element ids collected on an earlier page
+    can point at a different row after scrolling. Each folder is therefore
+    found again immediately before it is clicked.
+    """
+    parents: list[str] = []
+    for index, folder_name in enumerate(folder_path):
+        folder = _find_tree_entry(page, folder_name, parents)
+        if not folder:
+            return False
+        wanted_name = folder_path[index + 1] if index + 1 < len(folder_path) else leaf_name
+        wanted_path = [*parents, folder_name]
+        if _find_tree_entry(page, wanted_name, wanted_path):
+            parents.append(folder_name)
+            continue
+        folder = _find_tree_entry(page, folder_name, parents)
+        if not folder:
+            return False
+        _click_entry(page, folder)
+        page.wait_for_timeout(TAB_SETTLE_MS)
+        if not _find_tree_entry(page, wanted_name, wanted_path):
+            return False
+        parents.append(folder_name)
+    return bool(_find_tree_entry(page, leaf_name, folder_path))
+
+
 def collect_favorite_tree(page, report_progress=None, *, max_passes: int = 40) -> list[dict]:
     """Every row in the current tab, scrolling and expanding as needed.
 
@@ -1278,6 +1354,15 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
     distinguishes them. Matching on name alone would silently download a
     different report than the flow was built for.
     """
+    if folder_path:
+        exact = _find_tree_entry(page, name, folder_path)
+        if exact and exact.get("is_folder") is not True:
+            return exact
+        if _reveal_tree_path(page, folder_path, name):
+            exact = _find_tree_entry(page, name, folder_path)
+            if exact and exact.get("is_folder") is not True:
+                return exact
+
     leaves = _leaf_entries(collect_favorite_tree(page))
     by_name = [item for item in leaves if item["name"].casefold() == name.casefold()]
     if not by_name:

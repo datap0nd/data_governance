@@ -588,6 +588,41 @@ def test_the_folder_path_disambiguates_a_repeated_report_name():
     assert "row.asia.weekly" not in page.clicks
 
 
+def test_resolve_entry_expands_only_the_catalogued_folder_path(monkeypatch):
+    page = FakeGscmPage()
+    expanded = set()
+    folders = {
+        ((), "SCM"): {"name": "SCM", "folder_path": [], "is_folder": True},
+        (("SCM",), "Sell-in Biz Plan"): {
+            "name": "Sell-in Biz Plan", "folder_path": ["SCM"], "is_folder": True,
+        },
+    }
+    target = {
+        "name": "SIBP_CI_Series_ASP_Global",
+        "folder_path": ["SCM", "Sell-in Biz Plan"],
+        "is_folder": False,
+    }
+
+    def find(_page, name, parents, **_kwargs):
+        key = (tuple(parents), name)
+        if key == (("SCM",), "Sell-in Biz Plan") and "SCM" not in expanded:
+            return None
+        if key == (("SCM", "Sell-in Biz Plan"), target["name"]):
+            return target if "Sell-in Biz Plan" in expanded else None
+        return folders.get(key)
+
+    monkeypatch.setattr(flow_gscm, "_find_tree_entry", find)
+    monkeypatch.setattr(
+        flow_gscm, "_click_entry", lambda _page, entry: expanded.add(entry["name"]),
+    )
+    monkeypatch.setattr(flow_gscm, "collect_favorite_tree", lambda _page: [])
+
+    assert flow_gscm._resolve_entry(
+        page, target["name"], target["folder_path"], "Public",
+    ) == target
+    assert expanded == {"SCM", "Sell-in Biz Plan"}
+
+
 def test_a_deleted_bookmark_names_what_is_still_listed():
     page = FakeGscmPage()
     with pytest.raises(RuntimeError) as excinfo:
