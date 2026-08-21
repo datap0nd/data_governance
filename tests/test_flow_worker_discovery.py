@@ -139,6 +139,88 @@ def test_menu_discovery_fails_closed_when_one_root_reveals_no_reports(monkeypatc
     assert "hover" in events
 
 
+def test_blank_menu_branch_is_recovered_from_the_live_portal_menu_tree(monkeypatch):
+    class Link:
+        def click(self, **_kwargs):
+            pass
+
+        def hover(self, **_kwargs):
+            pass
+
+    root = _record("Retail", 600, 90)
+    root["link"] = Link()
+    monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(
+        flow_worker, "_asap_portal_menu_paths",
+        lambda _page: [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]],
+    )
+    moments = iter([0, 20, 30, 50])
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(moments))
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    assert flow_worker._asap_discover_menu_reports(Page(), []) == [
+        ["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"],
+    ]
+
+
+def test_portal_menu_tree_uses_role_specific_root_and_strips_ordering_prefixes():
+    common = {
+        "MSTR_MAIN_MENU_ID": "role-root",
+        "MSTR_CUSTOM_WEB_CONTEXT_PATH": "/mstr",
+    }
+    session = {"MSTRWEB_AUTH_TOKEN_ENC": "live-token"}
+    responses = {
+        "role-root": {
+            "children": [{"id": "retail", "name": "06.Retail"}],
+        },
+        "retail": {
+            "id": "retail", "name": "06.Retail", "children": [{
+                "id": "f8", "name": "01.F8 Experience (Launching Daily)",
+                "child": [{"id": "flagship", "name": "01.Flagship Experience"}],
+            }],
+        },
+    }
+    calls = []
+
+    class Response:
+        ok = True
+
+        def __init__(self, value):
+            self.value = value
+
+        def json(self):
+            return self.value
+
+    class Request:
+        def post(self, url, **kwargs):
+            folder_id = url.rsplit("=", 1)[-1]
+            calls.append((folder_id, kwargs["form"]["authToken"], kwargs["form"]["depth"]))
+            return Response(responses[folder_id])
+
+    class Frame:
+        def evaluate(self, _script):
+            return {"common": common, "session": session}
+
+    class Page:
+        url = "https://asap.example/portal/main"
+        frames = [Frame()]
+        request = Request()
+
+    assert flow_worker._asap_portal_menu_paths(Page()) == [
+        ["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"],
+    ]
+    assert calls == [
+        ("role-root", "live-token", "1"),
+        ("retail", "live-token", "2"),
+    ]
+
+
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
     states = [False, False, True]
     calls = []

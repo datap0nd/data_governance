@@ -112,6 +112,7 @@ BOOKMARK_DATASET_COLUMNS = (
 
 PORTAL_READY_TIMEOUT_MS = 180_000
 DIALOG_READY_TIMEOUT_MS = 60_000
+BOOKMARK_DATASET_READY_TIMEOUT_MS = 30_000
 BOOKMARK_SETTLE_TIMEOUT_MS = 300_000
 #: The wait overlay flickers between backend calls. Only treat the screen as
 #: idle once it has stayed hidden across this many consecutive polls.
@@ -447,6 +448,18 @@ def bookmark_dataset_entries(page) -> list[dict] | None:
             "source": "gds_bookmark",
         })
     return entries
+
+
+def wait_for_bookmark_dataset(page, timeout_ms: int = BOOKMARK_DATASET_READY_TIMEOUT_MS) -> list[dict] | None:
+    """Wait for Nexacro to populate gds_bookmark after the portal shell loads."""
+    last_value: list[dict] | None = None
+    poll_count = max(1, timeout_ms // IDLE_POLL_INTERVAL_MS)
+    for _poll in range(poll_count):
+        last_value = bookmark_dataset_entries(page)
+        if last_value:
+            return last_value
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    return last_value
 
 
 def _is_icon_chrome(element_id: str) -> bool:
@@ -1108,7 +1121,7 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         "message": "Opening the GSCM portal for bookmark discovery.",
     })
     open_portal(page, url)
-    dataset_entries = bookmark_dataset_entries(page)
+    dataset_entries = wait_for_bookmark_dataset(page)
     if not dataset_entries:
         # Most GSCM builds expose the application-level dataset as soon as the
         # portal loads. Only depend on the fragile Setting gear when this build

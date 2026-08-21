@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from playwright.sync_api import Error as PlaywrightError
@@ -2391,6 +2392,123 @@ def _menu_report_paths(
     return paths
 
 
+def _asap_extract_js_object(html_text: str, variable: str) -> dict | None:
+    """Brace-match one JSON object embedded by the signed-in ASAP portal."""
+    match = re.search(rf"(?:const|var|let)\s+{re.escape(variable)}\s*=\s*(\{{)", html_text)
+    if not match:
+        return None
+    start = match.start(1)
+    depth = 0
+    for index in range(start, len(html_text)):
+        char = html_text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    value = json.loads(html_text[start:index + 1])
+                except ValueError:
+                    return None
+                return value if isinstance(value, dict) else None
+    return None
+
+
+def _asap_portal_session(page: Page) -> dict | None:
+    """Read only the session fields needed for the portal's own menu tree."""
+    common = session = None
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = []
+    for frame in frames:
+        try:
+            data = frame.evaluate(
+                "() => (window._COMMON_INFO && window._SESSION)"
+                " ? {common: window._COMMON_INFO, session: window._SESSION} : null"
+            )
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("common") and data.get("session"):
+            common, session = data["common"], data["session"]
+            break
+    if common is None or session is None:
+        try:
+            html_text = page.content()
+        except Exception:
+            return None
+        common = _asap_extract_js_object(html_text, "_COMMON_INFO")
+        session = _asap_extract_js_object(html_text, "_SESSION")
+    if not common or not session:
+        return None
+    legacy_token = session.get("MSTRWEB_AUTH_TOKEN_ENC")
+    menu_id = common.get("MSTR_MAIN_MENU_ID")
+    if not legacy_token or not menu_id:
+        return None
+    parts = urlsplit(page.url)
+    if not parts.scheme or not parts.netloc:
+        return None
+    web_path = str(common.get("MSTR_CUSTOM_WEB_CONTEXT_PATH") or "/mstr").rstrip("/")
+    return {
+        "web_base": f"{parts.scheme}://{parts.netloc}{web_path}",
+        "legacy_token": legacy_token,
+        "main_menu_id": menu_id,
+    }
+
+
+def _asap_clean_portal_menu_name(value: Any) -> str:
+    return _clean_text(re.sub(r"^\d+\.", "", _clean_text(str(value or ""))))
+
+
+def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
+    """Walk the role-specific menu tree used by the visible ASAP header.
+
+    This is a live browser-session fallback for branches whose mega-menu is
+    blank. It never reads the retained Metronome catalog and never persists
+    the session token embedded by the portal.
+    """
+    context = _asap_portal_session(page)
+    if not context:
+        return []
+
+    def fetch(folder_id: str, depth: int) -> dict | None:
+        try:
+            response = page.request.post(
+                f"{context['web_base']}/menuInfo.do?folderId={folder_id}",
+                headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"},
+                form={"authToken": context["legacy_token"], "depth": str(depth)},
+                timeout=20_000,
+            )
+            value = response.json() if response.ok else None
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def children(node: dict) -> list[dict]:
+        values = node.get("children") or node.get("child") or []
+        return [value for value in values if isinstance(value, dict)]
+
+    paths: list[list[str]] = []
+
+    def walk(node: dict, parents: list[str]) -> None:
+        name = _asap_clean_portal_menu_name(node.get("name"))
+        path = [*parents, name] if name else list(parents)
+        descendants = children(node)
+        if descendants:
+            for descendant in descendants:
+                walk(descendant, path)
+        elif node.get("id") and len(path) >= 2 and path not in paths:
+            paths.append(path)
+
+    root = fetch(str(context["main_menu_id"]), 1)
+    if not root:
+        return []
+    for top in children(root):
+        subtree = fetch(str(top.get("id")), 2) if top.get("id") else None
+        walk(subtree or top, [])
+    return paths
+
+
 def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]:
     # Discovery is deliberately page-driven. The old implementation required a
     # configured label such as "Mobile", which made every navigation rename a
@@ -2470,6 +2588,24 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             page.wait_for_timeout(150)
         except Exception:
             pass
+    if missing_roots:
+        portal_paths = _asap_portal_menu_paths(page)
+        recovered_roots: set[str] = set()
+        for missing in missing_roots:
+            root_name = missing.split(" (", 1)[0]
+            recovered = [
+                path for path in portal_paths
+                if path and path[0].casefold() == root_name.casefold()
+            ]
+            if recovered:
+                recovered_roots.add(root_name.casefold())
+                for path in recovered:
+                    if path not in paths:
+                        paths.append(path)
+        missing_roots = [
+            missing for missing in missing_roots
+            if missing.split(" (", 1)[0].casefold() not in recovered_roots
+        ]
     if missing_roots:
         raise RuntimeError(
             "ASAP menu discovery was incomplete. Refusing to mark unseen reports stale. "

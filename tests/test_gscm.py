@@ -357,6 +357,31 @@ def test_discovery_prefers_the_complete_nexacro_bookmark_dataset():
     assert any("gds_bookmark" in detail["message"] for _status, detail in events)
 
 
+def test_discovery_waits_for_the_bookmark_dataset_to_finish_loading():
+    class DelayedDatasetPage(FakeGscmPage):
+        def __init__(self):
+            super().__init__(dataset_rows=DATASET_BOOKMARKS)
+            self.dataset_reads = 0
+
+        def evaluate(self, script, argument=None):
+            if "app.gds_bookmark" in script:
+                self.dataset_reads += 1
+                if self.dataset_reads < 4:
+                    return None
+            return super().evaluate(script, argument)
+
+    page = DelayedDatasetPage()
+    reports, complete = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )
+
+    assert complete is True
+    assert page.dataset_reads == 4
+    assert len(reports) == len(DATASET_BOOKMARKS)
+    assert page.dialog_open is False
+    assert GEAR_ID not in page.clicks
+
+
 @pytest.mark.parametrize(
     ("name", "tab", "bookmark_id", "folder_path"),
     [
