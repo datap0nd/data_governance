@@ -351,6 +351,8 @@ def test_discovery_prefers_the_complete_nexacro_bookmark_dataset():
     assert [report["name"] for report in reports] == [
         "Biz_Trip_Account_Portion", "MX B2B FFF8 Actual Sales", "Asia_Actual_sales",
     ]
+    assert page.dialog_open is False
+    assert GEAR_ID not in page.clicks
     assert not page.scrolled
     assert any("gds_bookmark" in detail["message"] for _status, detail in events)
 

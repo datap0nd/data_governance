@@ -1108,11 +1108,15 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         "message": "Opening the GSCM portal for bookmark discovery.",
     })
     open_portal(page, url)
-    open_favorites_dialog(page, lambda message: report_progress(
-        "running", {"stage": "navigation", "message": message},
-    ))
-
     dataset_entries = bookmark_dataset_entries(page)
+    if not dataset_entries:
+        # Most GSCM builds expose the application-level dataset as soon as the
+        # portal loads. Only depend on the fragile Setting gear when this build
+        # has not loaded the dataset yet.
+        open_favorites_dialog(page, lambda message: report_progress(
+            "running", {"stage": "navigation", "message": message},
+        ))
+        dataset_entries = bookmark_dataset_entries(page)
     entries: list[dict] = []
     seen: set[tuple] = set()
     if dataset_entries:
@@ -1170,8 +1174,8 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
 
     if not entries:
         raise RuntimeError(
-            "GSCM's Setting > Favorite dialog opened, but none of its tabs "
-            "(Private, Public, Custom) listed a bookmark. On screen: "
+            "GSCM exposed no bookmark rows in gds_bookmark or its Setting > "
+            "Favorite tabs (Private, Public, Custom). On screen: "
             + screen_inventory(page)
         )
 

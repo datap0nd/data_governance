@@ -40,10 +40,11 @@ Top nav gear -> Setting
 ```
 
 Select a row, press **Go >>**, and GSCM opens that report with its saved
-configuration applied. Opening this dialog loads the application-level
-`gds_bookmark` dataset. The scan reads that dataset directly and catalogues
-every record with its tab, folder path, bookmark id, menu id, scope, and owner
-metadata.
+configuration applied. In current GSCM builds the application-level
+`gds_bookmark` dataset is normally available as soon as the portal loads. The
+scan reads that dataset first and catalogues every record with its tab, folder
+path, bookmark id, menu id, scope, and owner metadata. It opens Setting >
+Favorite only as a fallback when the dataset has not loaded yet.
 
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
@@ -101,8 +102,8 @@ POST /api/flows/sites/{id}/scan         POST /api/flows/{id}/run
   ↓ flow_catalog_scans row                ↓ flow_runs row
 worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
-  open Setting > Favorite                 open Setting > Favorite, pick the tab
-  read gds_bookmark in memory             select the row, press Go >>
+  read gds_bookmark in memory             open Setting > Favorite, pick the tab
+  (open Favorite only if missing)         select the row, press Go >>
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
 flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
                                           click btn_exceldown

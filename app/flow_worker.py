@@ -2227,6 +2227,9 @@ def _visible_anchor_records(page: Page) -> list[dict]:
             "text": text,
             "href": link.get_attribute("href") or "",
             "onclick": link.get_attribute("onclick") or "",
+            "tag": (link.evaluate("element => element.tagName") or "").casefold(),
+            "role": (link.get_attribute("role") or "").casefold(),
+            "disabled": not link.is_enabled(),
             "box": box,
         })
     return records
@@ -2311,11 +2314,21 @@ def _revealed_menu_headers(before: list[dict], after: list[dict]) -> list[dict]:
 
 
 def _menu_link_target(item: dict) -> str:
-    """The link's navigation payload, with inert hrefs treated as none."""
+    """The link's navigation payload or semantic UI action marker."""
     href = (item.get("href") or "").strip()
     if href.casefold() in {"#", "javascript:void(0)", "javascript:void(0);", "javascript:;"}:
         href = ""
-    return (href + (item.get("onclick") or "").strip()).casefold()
+    target = (href + (item.get("onclick") or "").strip()).casefold()
+    if target:
+        return target
+    if not item.get("disabled") and (
+        str(item.get("tag") or "").casefold() == "button"
+        or str(item.get("role") or "").casefold() in {"button", "menuitem"}
+    ):
+        # Modern portal menus attach handlers with addEventListener or their
+        # component framework, leaving no inline onclick/href to inspect.
+        return "semantic-ui-action"
+    return ""
 
 
 def _menu_report_paths(
@@ -2391,6 +2404,7 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         )
     root_names = list(dict.fromkeys(root["text"] for root in roots))
     paths: list[list[str]] = []
+    missing_roots: list[str] = []
     for root_name in root_names:
         # The portal renders its navigation shell before removing the blocking
         # loading overlay. Playwright can therefore resolve a menu link while
@@ -2403,34 +2417,50 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         current_roots = _navigation_roots(_visible_anchor_records(page))
         root = next((item for item in current_roots if item["text"] == root_name), None)
         if root is None:
+            missing_roots.append(f"{root_name} (top-level control disappeared)")
             continue
         before = _visible_anchor_records(page)
         before_headers = _visible_menu_header_records(page)
         root["link"].click(timeout=15_000)
-        after = before
-        revealed_headers: list[dict] = []
-        stable_signature: tuple[tuple[str, ...], ...] | None = None
-        stable_polls = 0
-        reveal_deadline = time.monotonic() + 10
-        while time.monotonic() < reveal_deadline:
-            page.wait_for_timeout(200)
-            after = _visible_anchor_records(page)
-            revealed_headers = _revealed_menu_headers(
-                before_headers, _visible_menu_header_records(page),
-            )
-            revealed_paths = _menu_report_paths(root, before, after, revealed_headers)
-            signature = tuple(tuple(path) for path in revealed_paths)
-            if signature and signature == stable_signature:
-                stable_polls += 1
-            else:
-                stable_signature = signature
-                stable_polls = 0
-            # ASAP builds large mega-menus incrementally. The first non-empty
-            # snapshot can contain only a few columns, so wait until the menu
-            # remains unchanged for roughly one second before cataloguing it.
-            if signature and stable_polls >= 5:
-                break
-        for path in _menu_report_paths(root, before, after, revealed_headers):
+        def revealed_paths_after_interaction(timeout_seconds: int) -> list[list[str]]:
+            after = before
+            revealed_headers: list[dict] = []
+            stable_signature: tuple[tuple[str, ...], ...] | None = None
+            stable_polls = 0
+            reveal_deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < reveal_deadline:
+                page.wait_for_timeout(200)
+                after = _visible_anchor_records(page)
+                revealed_headers = _revealed_menu_headers(
+                    before_headers, _visible_menu_header_records(page),
+                )
+                revealed_paths = _menu_report_paths(root, before, after, revealed_headers)
+                signature = tuple(tuple(path) for path in revealed_paths)
+                if signature and signature == stable_signature:
+                    stable_polls += 1
+                else:
+                    stable_signature = signature
+                    stable_polls = 0
+                # ASAP builds large mega-menus incrementally. The first
+                # non-empty snapshot can contain only a few columns, so wait
+                # until it remains unchanged for roughly one second.
+                if signature and stable_polls >= 5:
+                    return revealed_paths
+            return _menu_report_paths(root, before, after, revealed_headers)
+
+        root_paths = revealed_paths_after_interaction(10)
+        if not root_paths:
+            # Some ASAP navigation builds reveal mega-menus on hover and use a
+            # click only for direct navigation. Support both without assuming
+            # one interaction model for every top-level branch.
+            try:
+                root["link"].hover(timeout=10_000)
+                root_paths = revealed_paths_after_interaction(5)
+            except Exception:
+                root_paths = []
+        if not root_paths:
+            missing_roots.append(f"{root_name} (no report controls revealed)")
+        for path in root_paths:
             if path not in paths:
                 paths.append(path)
         # Close the menu before measuring the next root. Clicking the active
@@ -2440,6 +2470,11 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             page.wait_for_timeout(150)
         except Exception:
             pass
+    if missing_roots:
+        raise RuntimeError(
+            "ASAP menu discovery was incomplete. Refusing to mark unseen reports stale. "
+            "Missing branches: " + "; ".join(missing_roots)
+        )
     if not paths:
         raise RuntimeError("ASAP navigation was detected, but no report links were revealed.")
     return paths

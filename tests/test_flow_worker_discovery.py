@@ -16,12 +16,15 @@ from app.flow_worker import (
 )
 
 
-def _record(text, x, y, *, href="", onclick=""):
+def _record(text, x, y, *, href="", onclick="", tag="a", role="", disabled=False):
     return {
         "link": object(),
         "text": text,
         "href": href,
         "onclick": onclick,
+        "tag": tag,
+        "role": role,
+        "disabled": disabled,
         "box": {"x": x, "y": y, "width": 70, "height": 24},
     }
 
@@ -106,6 +109,34 @@ def test_menu_discovery_waits_for_loading_overlay_before_click(monkeypatch):
         ["Mobile", "Regional FOTA", "Regional FOTA"],
     ]
     assert events[0:2] == ["wait", "click"]
+
+
+def test_menu_discovery_fails_closed_when_one_root_reveals_no_reports(monkeypatch):
+    events = []
+
+    class Link:
+        def click(self, **_kwargs):
+            events.append("click")
+
+        def hover(self, **_kwargs):
+            events.append("hover")
+
+    root = _record("Retail", 600, 90)
+    root["link"] = Link()
+    monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    moments = iter([0, 20, 30, 50])
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(moments))
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    with pytest.raises(RuntimeError, match="Retail.*no report controls revealed"):
+        flow_worker._asap_discover_menu_reports(Page(), [])
+    assert "hover" in events
 
 
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
@@ -1243,6 +1274,26 @@ def test_inert_hrefs_do_not_make_a_link_clickable():
     assert flow_worker._menu_link_target({"href": "#", "onclick": ""}) == ""
     assert flow_worker._menu_link_target({"href": "javascript:void(0)", "onclick": ""}) == ""
     assert flow_worker._menu_link_target({"href": "javascript:open('x')", "onclick": ""}) != ""
+
+
+def test_semantic_menu_buttons_are_actionable_without_inline_javascript():
+    root = _record("Retail", 600, 90)
+    after = [
+        root,
+        _record("Flagship Experience", 650, 180, tag="button"),
+        _record("Retail Analytics", 650, 215, role="menuitem"),
+    ]
+
+    assert _menu_report_paths(root, [root], after) == [
+        ["Retail", "Flagship Experience"],
+        ["Retail", "Retail Analytics"],
+    ]
+
+
+def test_disabled_semantic_menu_controls_are_not_reports():
+    assert flow_worker._menu_link_target({
+        "href": "", "onclick": "", "tag": "button", "role": "", "disabled": True,
+    }) == ""
 
 
 def test_revealed_menu_headers_diff_by_text_and_position():

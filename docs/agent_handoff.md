@@ -2,64 +2,63 @@
 
 ## Current Objective
 
-Make each successful GSCM bookmark scan replace the prior discovered bookmark
-snapshot instead of accumulating stale scan rows.
+Live-validate catalog discovery in Citrix: make ASAP Quick scan discover the
+Retail branch including `Flagship Experience`, make GSCM bookmark discovery
+work reliably as an authoritative fresh snapshot, then find and download
+`SIBP ASP Global` through the application.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `c83846b`
+- Latest base commit: `4d5fd04` (`Replace GSCM bookmark snapshots on scan`)
 - Public repo: no, private
-- Delivery target: commit and push the scoped GSCM snapshot change to
-  `origin/main`
+- Delivery target: commit and push the live discovery fixes to `origin/main`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
 
-## Decisions Made
+## Live Citrix Evidence
 
-- Treat every successful, complete, non-empty GSCM scan as an authoritative
-  bookmark snapshot.
-- Before applying that snapshot, delete prior unreferenced discovered GSCM
-  reports and their discovered filters. Current bookmarks are then inserted
-  from the new result rather than merged with old scan residue.
-- Preserve historical operation timing rows but clear their report reference
-  before deleting a disposable report.
-- A missing bookmark referenced by an existing Flow must remain as a stale,
-  disabled tombstone so the Flow's foreign key is not broken.
-- Failed, cancelled, empty, or validation-incomplete GSCM scans do not replace
-  the last good catalog.
-- Keep ASAP discovery behavior unchanged.
+- ASAP Quick scan completed successfully but still catalogued exactly 80
+  reports. Retail remained `16 reports - 16 stale`, proving the branch was not
+  rediscovered.
+- GSCM Scan bookmarks failed before discovery because Setting > Favorite did
+  not open. The current build's Setting gear could not be found by the known
+  id or position strategy.
+- Before that failed scan, the catalog displayed 261 GSCM reports with large
+  stale Private/Public residues. Commit `4d5fd04` already makes the next
+  successful non-empty scan replace that residue with the current snapshot.
 
-## Files Changed
+## Decisions And Changes
 
-- `app/routers/flows.py`: GSCM snapshot reset, referential-integrity guard, and
-  incomplete-snapshot protection.
-- `tests/test_gscm.py`: replacement, reference preservation, timing detachment,
-  empty-snapshot, and rejected-bookmark coverage.
-- `docs/gscm_portal.md`: document authoritative scan replacement behavior.
-- `docs/agent_handoff.md`: this handoff.
+- `app/flow_gscm.py`: read the application-level `gds_bookmark` immediately
+  after portal load. Open Setting > Favorite only when the dataset is absent
+  or empty. This removes the unnecessary dependency on the fragile gear for
+  bookmark discovery while retaining the dialog fallback.
+- `app/flow_worker.py`: record semantic button metadata, accept enabled
+  button/menuitem controls without inline href/onclick as reports, support
+  both click and hover menu revelation, and fail closed if any detected
+  top-level branch reveals no reports. An incomplete scan must not mark unseen
+  reports stale.
+- `tests/test_gscm.py`: assert dataset-first discovery never opens the dialog
+  or clicks the gear.
+- `tests/test_flow_worker_discovery.py`: cover semantic report buttons,
+  disabled controls, hover fallback, and incomplete Retail discovery.
+- `docs/gscm_portal.md`: document dataset-first discovery and dialog fallback.
 
-## Commands And Checks
+## Verification
 
-- `python -m pytest tests/test_gscm.py -q`: 63 passed.
-- `python -m pytest tests/test_flows.py -q`: 129 passed.
-- `python -m pytest -q`: 408 passed.
-- `python -m compileall -q app`: passed.
+- Focused discovery tests: 131 passed.
+- `PYTHONPATH=. uv run --python 3.11 --with pytest --with-requirements requirements-local.txt pytest -q`:
+  411 passed.
+- `python3.11 -m compileall -q app`: passed.
 - `git diff --check`: passed.
-- Not run: an authenticated live GSCM scan on the BI desktop.
-
-## Open Questions
-
-- Confirm a live second GSCM scan reports its reset count and leaves only the
-  current active bookmark snapshot plus any Flow-referenced stale tombstones.
-- The catalog scan cancellation change still needs one live Windows worker
-  validation.
-- The ASAP dashboard download change still needs one explicitly authorized
-  production Flow run for end-to-end validation.
+- Still required: install the delivered commit in Citrix and repeat both live
+  scans. Local tests do not satisfy live acceptance.
 
 ## Next Step
 
-After installing the delivered commit on the BI desktop, run two consecutive
-authenticated GSCM bookmark scans and compare active bookmark count and ids.
-Confirm the second scan contains no unreferenced residue from the first and
-that an existing GSCM Flow still resolves its bookmark.
+Commit and push the scoped changes to `main`, verify `origin/main` contains the
+exact commit, obtain exact Citrix update authorization if an installation is
+needed, then run ASAP Quick scan and GSCM Scan bookmarks again. Verify Retail
+and `Flagship Experience`, then locate and download `SIBP ASP Global` and
+validate the artifact through Metronome run history without File Explorer.
