@@ -949,6 +949,22 @@ def select_scope_tab(page, tab: str) -> bool:
     return True
 
 
+def wait_for_favorite_rows(page, *, timeout_ms: int = 15_000) -> bool:
+    """Wait for Nexacro to populate the selected Favorite scope.
+
+    The tab caption changes before the virtual bookmark grid finishes
+    rebinding. Treating that intermediate empty grid as the final catalog made
+    a real Public bookmark look deleted, especially on a retry immediately
+    after an export.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if favorite_tree_rows(page):
+            return True
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    return bool(favorite_tree_rows(page))
+
+
 def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[dict]:
     """Rebuild the visible rows in the Setting popup's Favorite grid.
 
@@ -1444,10 +1460,18 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
 
     open_portal(page, portal_url(job))
     open_favorites_dialog(page, report_progress)
-    if not select_scope_tab(page, tab):
+    for scope_attempt in range(3):
+        if not select_scope_tab(page, tab):
+            raise RuntimeError(
+                f"GSCM's {tab} bookmark tab was not on screen. On screen: "
+                + screen_inventory(page)
+            )
+        if wait_for_favorite_rows(page):
+            break
+    else:
         raise RuntimeError(
-            f"GSCM's {tab} bookmark tab was not on screen. On screen: "
-            + screen_inventory(page)
+            f"GSCM's {tab} bookmark tab stayed empty after three refreshes. "
+            "The portal did not finish rendering its bookmark grid."
         )
 
     entry = _resolve_entry(page, name, folder_path, tab)
@@ -1506,6 +1530,7 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
                 # position. The catalog identity is stable, so retry the exact
                 # path before falling back to a full tree inventory.
                 select_scope_tab(page, tab)
+                wait_for_favorite_rows(page)
             exact = _find_tree_entry(page, name, folder_path)
             if exact and exact.get("is_folder") is not True:
                 return exact

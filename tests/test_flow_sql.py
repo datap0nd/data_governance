@@ -83,6 +83,31 @@ def test_excel_download_is_preserved_and_normalized_to_csv(tmp_path):
     ]
 
 
+def test_gscm_raw_workbook_is_kept_when_optional_normalization_fails(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "browser-download.xlsx"
+    source.write_bytes(b"PK\x03\x04complete-gscm-workbook")
+    output = tmp_path / "GSCM_SIBP.xlsx"
+    monkeypatch.setattr(
+        flow_worker,
+        "_normalize_xlsx",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("Workbook contains no default style")
+        ),
+    )
+
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", allow_raw_xlsx_fallback=True,
+    )
+
+    assert output.read_bytes() == source.read_bytes()
+    assert metadata["file_path"] == str(output)
+    assert metadata["detected_format"] == "xlsx"
+    assert metadata["row_count"] is None
+    assert "default style" in metadata["normalization_error"]
+
+
 def test_excel_normalization_skips_multi_cell_filter_preamble(tmp_path):
     from openpyxl import Workbook
 

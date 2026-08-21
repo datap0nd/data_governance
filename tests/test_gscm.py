@@ -1164,6 +1164,14 @@ def test_report_rows_are_told_from_folders_by_the_tree_expand_control():
     assert by_name["SCM"]["is_folder"] is True
 
 
+def test_wait_for_favorite_rows_pumps_nexacro_until_grid_is_populated(monkeypatch):
+    page = FakeGscmPage()
+    checks = iter([[], [], [(page, {"text": "SCM"})]])
+    monkeypatch.setattr(flow_gscm, "favorite_tree_rows", lambda _page: next(checks))
+
+    assert flow_gscm.wait_for_favorite_rows(page, timeout_ms=10_000) is True
+
+
 def test_expansion_never_clicks_a_report_row():
     # Selecting a report is harmless, but the tree sweep should still only
     # touch folders: fewer clicks, and nothing near the per-row pin control.

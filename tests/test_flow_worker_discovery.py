@@ -696,6 +696,23 @@ def test_export_task_retry_raises_the_original_error_after_three_attempts():
     assert len(attempts) == flow_worker.EXPORT_TASK_ATTEMPTS == 3
 
 
+def test_export_task_retry_reports_every_distinct_attempt_error():
+    errors = iter([
+        RuntimeError("Workbook contains no default style"),
+        RuntimeError("bookmark list was temporarily empty"),
+    ])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._export_task_with_retry(
+            _WaitPage(), lambda _attempt: (_ for _ in ()).throw(next(errors)),
+            lambda *_args: None, max_attempts=2,
+        )
+
+    message = str(excinfo.value)
+    assert "Attempt 1: Workbook contains no default style" in message
+    assert "Attempt 2: bookmark list was temporarily empty" in message
+
+
 def test_gscm_load_buffers_are_one_minute_then_two_minutes():
     assert flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
     assert flow_worker.GSCM_INITIAL_LOAD_BUFFER_MS == 60_000

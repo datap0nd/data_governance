@@ -3975,6 +3975,7 @@ def _detect_download_format(path: Path) -> str:
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
     requested_period: Any = None,
+    allow_raw_xlsx_fallback: bool = False,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -4017,9 +4018,37 @@ def _store_completed_download(
             output.parent, f"{output.stem}_normalized.csv",
         )
         requested_weeks = _validated_requested_weeks(requested_period)
-        normalization = _normalize_xlsx(
-            output, normalized_output, requested_weeks=requested_weeks,
-        )
+        try:
+            normalization = _normalize_xlsx(
+                output, normalized_output, requested_weeks=requested_weeks,
+            )
+        except Exception as exc:
+            if not allow_raw_xlsx_fallback:
+                raise
+            # GSCM's native workbook is the requested deliverable. Some GSCM
+            # exports omit Excel's default style metadata or lay out their
+            # data as a formatted report rather than a rectangular table.
+            # openpyxl can warn or reject normalization even though Edge has
+            # already produced a complete, usable workbook. When neither a
+            # transformation nor SQL handoff needs a CSV, keep that verified
+            # XLSX as the successful artifact instead of throwing it away and
+            # retrying report navigation.
+            metadata = _csv_metadata(output)
+            return {
+                **metadata,
+                "file_path": str(output),
+                "filename": output.name,
+                "original_file_path": str(output),
+                "original_filename": output.name,
+                "original_file_size": original_size,
+                "detected_format": detected,
+                "source_encoding": "xlsx",
+                "source_delimiter": None,
+                "source_sheets": [],
+                "columns": [],
+                "row_count": None,
+                "normalization_error": str(exc),
+            }
         metadata = {**_csv_metadata(normalized_output), **normalization}
         return {
             **metadata,
@@ -4105,11 +4134,22 @@ def _export_task_with_retry(
     partially copied output is never overwritten: the retried download stores
     under the next free suffixed filename.
     """
+    failures: list[tuple[int, Exception]] = []
     for attempt in range(1, max_attempts + 1):
         try:
             return run_task(attempt)
         except Exception as exc:
+            failures.append((attempt, exc))
             if attempt == max_attempts:
+                if len(failures) > 1 and any(
+                    str(error) != str(failures[0][1]) for _number, error in failures[1:]
+                ):
+                    detail = " ".join(
+                        f"Attempt {number}: {error}" for number, error in failures
+                    )
+                    raise RuntimeError(
+                        f"Export failed after {max_attempts} attempts. {detail}"
+                    ) from exc
                 raise
             on_retry(attempt, exc)
             page.wait_for_timeout(5_000)
@@ -4321,6 +4361,11 @@ def execute_job(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
                     requested_period=period,
+                    allow_raw_xlsx_fallback=(
+                        is_gscm
+                        and not job.get("transformation", {}).get("enabled")
+                        and not job.get("sql_handoff", {}).get("enabled")
+                    ),
                 )
             else:
                 download.save_as(output)
