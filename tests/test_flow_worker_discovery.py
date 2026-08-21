@@ -169,6 +169,42 @@ def test_blank_menu_branch_is_recovered_from_the_live_portal_menu_tree(monkeypat
     ]
 
 
+def test_portal_menu_tree_is_captured_before_any_header_click(monkeypatch):
+    events = []
+
+    class Link:
+        def click(self, **_kwargs):
+            events.append("click")
+
+        def hover(self, **_kwargs):
+            events.append("hover")
+
+    root = _record("Retail", 600, 90)
+    root["link"] = Link()
+    monkeypatch.setattr(flow_worker, "_wait_for_navigation_roots", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_visible_anchor_records", lambda _page: [root])
+    monkeypatch.setattr(flow_worker, "_navigation_roots", lambda _records: [root])
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+
+    def portal_paths(_page):
+        assert events == []
+        events.append("portal-tree")
+        return [["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"]]
+
+    monkeypatch.setattr(flow_worker, "_asap_portal_menu_paths", portal_paths)
+    moments = iter([0, 20, 30, 50])
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(moments))
+
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    assert flow_worker._asap_discover_menu_reports(Page(), ["*"]) == [
+        ["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"],
+    ]
+    assert events[0] == "portal-tree"
+
+
 def test_portal_menu_tree_uses_role_specific_root_and_strips_ordering_prefixes():
     common = {
         "MSTR_MAIN_MENU_ID": "role-root",

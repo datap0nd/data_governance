@@ -2537,6 +2537,10 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             f"ASAP top-level navigation did not render within 120 seconds "
             f"(URL: {page.url}, title: {_clean_text(page.title())})."
         )
+    # Capture the role-specific portal tree while the signed-in landing page
+    # still owns the MicroStrategy session handoff. Clicking a blank branch can
+    # replace the document with a report route that no longer exposes it.
+    portal_paths = _asap_portal_menu_paths(page)
     root_names = list(dict.fromkeys(root["text"] for root in roots))
     paths: list[list[str]] = []
     missing_roots: list[str] = []
@@ -2606,7 +2610,6 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
         except Exception:
             pass
     if missing_roots:
-        portal_paths = _asap_portal_menu_paths(page)
         recovered_roots: set[str] = set()
         for missing in missing_roots:
             root_name = missing.split(" (", 1)[0]
@@ -2624,9 +2627,15 @@ def _asap_discover_menu_reports(page: Page, scope: list[str]) -> list[list[str]]
             if missing.split(" (", 1)[0].casefold() not in recovered_roots
         ]
     if missing_roots:
+        portal_root_names = sorted({path[0] for path in portal_paths if path})
+        fallback_detail = (
+            "Portal-session menu fallback returned no paths."
+            if not portal_root_names else
+            "Portal-session menu fallback roots: " + ", ".join(portal_root_names) + "."
+        )
         raise RuntimeError(
             "ASAP menu discovery was incomplete. Refusing to mark unseen reports stale. "
-            "Missing branches: " + "; ".join(missing_roots)
+            "Missing branches: " + "; ".join(missing_roots) + ". " + fallback_detail
         )
     if not paths:
         raise RuntimeError("ASAP navigation was detected, but no report links were revealed.")
