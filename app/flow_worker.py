@@ -3198,7 +3198,10 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
     if period_slider:
         definitions[:] = [
             definition for definition in definitions
-            if not re.fullmatch(r"(?:[0-9a-f]{24,}|20\d{4})", definition["label"], re.I)
+            if not re.fullmatch(
+                r"(?:[0-9a-f]{24,}(?:[_-][0-9a-f]{24,})*|20\d{4})",
+                definition["label"], re.I,
+            )
         ]
         for position, definition in enumerate(definitions):
             definition["position"] = position

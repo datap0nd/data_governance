@@ -1560,7 +1560,9 @@ def test_period_slider_replaces_generated_handle_titles(monkeypatch):
         lambda _frame: (["202623", "202624", "202625"], {"kind": "range_slider"}),
     )
     records = [
-        {"index": 0, "id": "", "name": "", "label": "7D4EBFE00EB4F6835F8D27DAD15D436C4",
+        {"index": 0, "id": "", "name": "", "label": (
+            "7D4EBFE00EB4F6835F8D27DAD15D436C4_1B9EE11C7B49DB0A67E429A149EE9322"
+        ),
          "label_source": "sibling", "multiple": False, "select2": False,
          "visible": True, "options": ["202623", "202625"]},
         {"index": 1, "id": "", "name": "", "label": "202623",
