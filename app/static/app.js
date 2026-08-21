@@ -9808,13 +9808,23 @@ function _flowCatalogTreeHtml(reports, reportRow, openTopics, filter = "", depth
 
 /** Scan controls for one website. ASAP offers a cheap names-only pass because
  *  a full menu walk opens every report; GSCM's bookmark sweep is one screen. */
-function _flowSiteScanButtons(site, busy) {
-    const disabled = busy ? "disabled" : "";
+function _flowSiteScanButtons(site, activeScan) {
+    if (activeScan) {
+        return `<button class="btn-sm btn-outline btn-danger-outline flow-stop-scan" data-id="${activeScan.id}" aria-label="Stop active scan of ${esc(site.name)}">Stop scan</button>`;
+    }
     if (site.adapter === FLOW_GSCM_ADAPTER) {
-        return `<button class="btn-sm flow-scan-site" data-id="${site.id}" title="Read the bookmarks saved on the GSCM home screen" ${disabled}>Scan bookmarks</button>`;
+        return `<button class="btn-sm flow-scan-site" data-id="${site.id}" title="Read the bookmarks saved on the GSCM home screen">Scan bookmarks</button>`;
     }
     if (site.supports_discovery === false) return "";
-    return `<button class="btn-sm flow-scan-site-quick" data-id="${site.id}" title="Catalog report names and menu paths only - fast, no filters" ${disabled}>Quick scan</button><button class="btn-sm flow-scan-site" data-id="${site.id}" title="Open every report and discover all filters and options" ${disabled}>Full scan</button>`;
+    return `<button class="btn-sm flow-scan-site-quick" data-id="${site.id}" title="Catalog report names and menu paths only - fast, no filters">Quick scan</button><button class="btn-sm flow-scan-site" data-id="${site.id}" title="Open every report and discover all filters and options">Full scan</button>`;
+}
+
+function _flowScanTargetsReport(scan, report) {
+    if (String(scan?.job?.target_report?.id || "") === String(report.id)) return true;
+    if (scan?.trigger_type !== "report") return false;
+    const reportPath = report.automation?.category_path || [];
+    return (scan.job?.discovery?.report_paths || []).some(path =>
+        JSON.stringify(path) === JSON.stringify(reportPath));
 }
 
 function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
@@ -9838,7 +9848,8 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
         const timing = total ? `Actual ${_flowDuration(total.duration_ms)} · ${_flowTimingSummary(scan.timings)}` : [elapsed, _flowTimingSummary(scan.timings)].filter(Boolean).join(" · ");
         return `${_flowStatusBadge(scan.status)}<small>${esc(waiting)}</small><small>${esc(timing || "No phase timing yet")}</small>${scan.error ? `<small class="flow-error">${esc(scan.error)}</small>` : ""}`;
     };
-    const scanBusy = scans.some(scan => activeStatuses.has(scan.status));
+    const activeScans = scans.filter(scan => activeStatuses.has(scan.status));
+    const scanBusy = activeScans.length > 0;
     const reportRow = report => {
         // A GSCM bookmark has no Metronome-side prompts to count: GSCM stores
         // the filters, so describing it by "0 discovered filters" would read
@@ -9846,7 +9857,11 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
         const detail = report.automation?.kind === "gscm_favorite"
             ? "GSCM bookmark · filters saved in GSCM"
             : `${report.filters.filter(filter => filter.enabled && !filter.stale).length} discovered filters · ${_flowExportViewLabels(report).length} export view(s)${report.automation?.download_links?.length ? ` · ${report.automation.download_links.length} download link(s)` : ""}`;
-        return `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${esc(detail)}</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span><button class="btn-sm flow-scan-report" data-id="${report.id}" ${scanBusy ? "disabled" : ""}>Refresh</button></div>`;
+        const activeScan = activeScans.find(scan => _flowScanTargetsReport(scan, report));
+        const action = activeScan
+            ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop-scan" data-id="${activeScan.id}" aria-label="Stop scan of ${esc(report.name)}">Stop scan</button>`
+            : `<button class="btn-sm flow-scan-report" data-id="${report.id}" ${scanBusy ? "disabled" : ""}>Refresh</button>`;
+        return `<div class="flow-catalog-row"><span><strong>${esc(report.name)}</strong><small>${esc(detail)}</small><small>${esc((report.automation?.category_path || []).join(" > "))}</small></span><span>${report.stale ? "Stale" : `Seen ${esc(timeAgo(report.last_seen_at))}`}</span>${action}</div>`;
     };
     const filter = (window._flowsState?.catalogFilter || "").trim().toLowerCase();
     const visibleReports = filter
@@ -9866,8 +9881,8 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
         </div>
         <div class="flow-catalog-grid">
             <section><div class="flow-panel-head"><div><h2>Websites</h2><p>Authentication, discovery scope, and weekly scan schedule.</p></div><button class="btn-secondary" id="flow-add-site">Add website</button></div>
-                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scanMonitor(scan)}</span><span class="flow-row-actions">${_flowSiteScanButtons(site, scan && activeStatuses.has(scan.status))}</span></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
-                <div class="flow-panel-head" style="margin-top:16px"><div><h2>Scan log</h2><p>${latestScan ? `Scan #${latestScan.id} · ${esc(latestScan.status)}${scanBusy ? " · updating every 5s" : ""}` : "No scans yet."}</p></div></div>
+                ${catalog.sites.length ? `<div class="flow-catalog-list">${catalog.sites.map(site => { const scan = latestBySite.get(site.id); const activeScan = scan && activeStatuses.has(scan.status) ? scan : null; return `<div class="flow-catalog-row"><button class="flow-catalog-main flow-edit-site" data-id="${site.id}"><span><strong>${esc(site.name)}</strong><small>${esc(site.auth_url || site.base_url || "No URL")}</small><small>${site.discovery_enabled ? `Weekly ${esc(site.discovery_weekday)} at ${esc(site.discovery_time)}` : "Automatic scan disabled"}</small></span></button><span>${scanMonitor(scan)}</span><span class="flow-row-actions">${_flowSiteScanButtons(site, activeScan)}</span></div>`; }).join("")}</div>` : '<p class="flow-inline-empty">No websites configured.</p>'}
+                <div class="flow-panel-head" style="margin-top:16px"><div><h2>Scan log</h2><p>${latestScan ? `Scan #${latestScan.id} · ${esc(latestScan.status)}${scanBusy ? " · updating every 5s" : ""}` : "No scans yet."}</p></div>${latestScan && activeStatuses.has(latestScan.status) ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop-scan" data-id="${latestScan.id}" aria-label="Stop scan ${latestScan.id}">Stop scan</button>` : ""}</div>
                 <div id="flow-scan-log" style="font-family:ui-monospace,Consolas,monospace;font-size:0.72rem;line-height:1.45;max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;word-break:break-word">${logEntries || '<span style="color:var(--text-dim)">Scan progress events appear here while a scan runs.</span>'}</div>
             </section>
             <section><div class="flow-panel-head"><div><h2>Discovered reports</h2><p>Catalog from successful scans, in the portal's own folder structure.</p></div><input id="flow-catalog-filter" type="search" placeholder="Filter ${catalog.reports.length} report(s)..." value="${esc(window._flowsState?.catalogFilter || "")}" style="min-width:220px"></div>
@@ -10046,6 +10061,28 @@ function _bindFlowWorkspace() {
         catch (err) { toast("Scan not queued: " + err.message); button.disabled = false; }
     });
     document.querySelectorAll(".flow-scan-site-quick").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/sites/${button.dataset.id}/scan?mode=partial`); toast("Quick scan queued - report names and menu paths only"); await navigate("flows"); } catch (err) { toast("Quick scan not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-stop-scan").forEach(button => button.onclick = async () => {
+        if (button.disabled) return;
+        button.disabled = true;
+        button.textContent = "Stopping...";
+        try {
+            const result = await apiPost(`/api/flows/scans/${button.dataset.id}/stop`);
+            toast(result.message || "Scan stopped");
+            const [catalog, scans, workers, estimates] = await Promise.all([
+                api("/api/flows/catalog"), api("/api/flows/scans"), api("/api/flows/workers"), api("/api/flows/estimates"),
+            ]);
+            let scanEvents = state.scanEvents || [];
+            if (scans[0]) {
+                try { scanEvents = (await api(`/api/flows/scans/${scans[0].id}/events`)).events || []; } catch (_) {}
+            }
+            Object.assign(state, { catalog, scans, workers, estimates, scanEvents });
+            _flowShowView("catalog");
+        } catch (err) {
+            toast("Scan not stopped: " + err.message);
+            button.disabled = false;
+            button.textContent = "Stop scan";
+        }
+    });
     const catalogFilter = $("#flow-catalog-filter");
     if (catalogFilter) {
         catalogFilter.addEventListener("input", event => {

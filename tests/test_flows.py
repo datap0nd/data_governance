@@ -2057,6 +2057,70 @@ def test_stop_cancels_assigned_headless_run(flow_db, monkeypatch):
     assert stopped == [("headless", 9876)]
 
 
+def test_stop_cancels_queued_catalog_scan_without_stopping_worker(flow_db, monkeypatch):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda *_a, **_k: {"status": "starting"})
+    queued = flows.queue_report_scan(report["id"], _request())
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped"},
+    )
+
+    result = flows.stop_scan(queued["id"], _request())
+
+    assert result["status"] == "cancelled"
+    assert result["worker"]["status"] == "not_needed"
+    assert stopped == []
+    scan = next(item for item in flows.list_scans(limit=50) if item["id"] == queued["id"])
+    assert scan["status"] == "cancelled"
+    assert scan["job"]["target_report"] == {"id": report["id"], "name": report["name"]}
+    assert flows.list_scan_events(queued["id"], after_id=0, limit=400)["events"][-1]["stage"] == "cancelled"
+
+
+def test_stop_cancels_running_catalog_scan_and_ignores_late_success(flow_db, monkeypatch):
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+    monkeypatch.setattr(flows, "launch_local_worker", lambda *_a, **_k: {"status": "starting"})
+    queued = flows.queue_report_scan(report["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="catalog-worker", display_name="Catalog worker",
+        capabilities={"headed": False, "process_id": 2468},
+    ))
+    claimed = flows.claim_run("catalog-worker")
+    assert claimed["scan"]["id"] == queued["id"]
+    flows.update_scan(
+        "catalog-worker", queued["id"],
+        flows.ScanProgress(
+            status="running", progress={"stage": "report_discovery", "message": "Scanning report."},
+            complete=False,
+        ),
+    )
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped", "process_id": pid},
+    )
+
+    result = flows.stop_scan(queued["id"], _request())
+    late = flows.update_scan(
+        "catalog-worker", queued["id"],
+        flows.ScanProgress(status="succeeded", reports=[], complete=True),
+    )
+
+    assert result["status"] == "cancelled"
+    assert stopped == [("headless", 2468)]
+    assert late == {"scan_id": queued["id"], "status": "cancelled", "ignored": True}
+    scan = next(item for item in flows.list_scans(limit=50) if item["id"] == queued["id"])
+    assert scan["status"] == "cancelled"
+    with database.get_db() as db:
+        worker = db.execute(
+            "SELECT status, current_scan_id FROM flow_workers WHERE worker_id='catalog-worker'"
+        ).fetchone()
+    assert dict(worker) == {"status": "offline", "current_scan_id": None}
+
+
 def test_asap_scraper_never_uses_control_modified_clicks():
     source = Path(flow_worker.__file__).read_text()
     assert 'modifiers=["Control"]' not in source
@@ -2069,7 +2133,7 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=59' in index
+    assert '/static/app.js?v=60' in index
 
 
 def test_flow_builder_names_the_write_modes_in_plain_language():
@@ -2947,6 +3011,9 @@ def test_builder_exposes_a_targeted_report_scan_and_quick_scan():
     assert "/api/flows/reports/${reportId}/scan" in source
     assert "flow-scan-site-quick" in source
     assert "scan?mode=partial" in source and "scan?mode=full" in source
+    assert 'class="btn-sm btn-outline btn-danger-outline flow-stop-scan"' in source
+    assert "/api/flows/scans/${button.dataset.id}/stop" in source
+    assert "_flowScanTargetsReport" in source
 
 
 def _dashboard_report(site_id):

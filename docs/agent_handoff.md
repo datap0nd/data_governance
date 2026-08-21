@@ -2,67 +2,70 @@
 
 ## Current Objective
 
-Replace GSCM bookmark discovery's global DOM scan with the complete in-memory
-Nexacro bookmark dataset and retain a strictly scoped DOM fallback.
+Allow a user to stop an active report catalog scan from the Flows Catalog UI
+and keep the cancelled state authoritative if the worker reports late progress.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `6d4c6d0`
+- Latest base commit: `edc4581`
 - Public repo: no, private
-- Delivery target: commit and push the scoped GSCM change to `origin/main`
+- Delivery target: commit and push the scoped cancellation change to `origin/main`
 
 ## Decisions Made
 
-- Open Setting > Favorite so GSCM loads its application-level `gds_bookmark`
-  dataset, then read that dataset through the existing worker page. CDP attach
-  is not required.
-- Reconstruct bookmark identity from `userreportid`, tab from `publicscope`,
-  module from `scope`, category path from `menugroupname` and `menuname`, and
-  leaf name from `userreportname`.
-- Map only evidenced scope codes (`AS` to `SCM`, `MT` to `MDM`) and preserve an
-  unknown code rather than inventing a module label.
-- If the dataset is missing or empty, inspect only the Setting popup's
-  `grd_bookmark`. Never collect tree labels from the global page.
-- In the DOM fallback, use the visible `treeitembutton` as the folder signal.
-  Nexacro hides that control on bookmark leaves.
-- Keep runtime bookmark opening on the existing visible-row path. This change
-  improves catalog discovery; it does not guess an unsupported direct report
-  execution API.
+- Show `Stop scan` in place of the targeted report's `Refresh` action while its
+  queued, claimed, or running scan is active. Also expose the same exact-scan
+  action on the website row and current scan log.
+- Store the target report id and name in new scan jobs. Keep a category-path
+  fallback so active scans queued before this change can still be identified.
+- Cancel only the selected scan. If it owns a registered worker, clear that
+  assignment, mark the worker offline, and stop its recorded process id.
+- Treat cancellation as terminal. Ignore late worker progress so a cancelled
+  scan cannot be changed back to succeeded or failed.
+- Reload Catalog state in place after stopping and preserve an actionable error
+  state if the stop request fails.
 
 ## Files Changed
 
-- `app/flow_gscm.py`: dataset-first discovery, stable bookmark metadata, and
-  grid-scoped DOM fallback.
-- `tests/test_gscm.py`: supplied private/public bookmark identities, hierarchy,
-  dataset preference, and concatenated-navigation regression coverage.
-- `docs/gscm_portal.md`: document the dataset schema and fallback behavior.
+- `app/routers/flows.py`: targeted scan metadata, cancellation endpoint,
+  assigned-worker shutdown, events, and late-update protection.
+- `app/static/app.js`: active-scan matching, accessible stop controls, and
+  in-place Catalog refresh after cancellation.
+- `app/static/index.html`: JavaScript cache version increment.
+- `tests/test_flows.py`: queued and running cancellation coverage plus UI source
+  assertions.
 - `docs/agent_handoff.md`: this handoff.
 
 ## Commands And Checks
 
-- `python -m pytest tests/test_gscm.py -q`: 59 passed.
-- `python -m pytest -q`: 402 passed.
+- `python -m pytest tests/test_flows.py -q`: 129 passed.
+- `python -m pytest -q`: 404 passed.
 - `python -m compileall -q app`: passed.
-- Browser-side dataset and grid scripts parsed with Node.js.
+- `node --check app/static/app.js`: passed.
+- `node tests/test_flow_catalog_tree.mjs`: passed.
 - `git diff --check`: passed.
-- Not run: a live GSCM catalog scan. This checkout has no authenticated GSCM
-  browser session attached to the test process.
+- Local browser QA: desktop and 390 px mobile Catalog DOM showed the website,
+  scan-log, and targeted-report stop controls; stopping changed the scan to
+  cancelled, restored `Refresh`, and appended the cancellation event.
+- Impeccable detector: ran once in degraded regex mode because optional parser
+  modules were unavailable; it reported four pre-existing side-border patterns
+  outside this change.
+- Not run: cancellation against a live Windows catalog worker. Exact process-id
+  shutdown and late-update rejection are covered by automated tests.
 
 ## Open Questions
 
-- Confirm the live application exposes all expected bookmarks in
-  `gds_bookmark` after Setting > Favorite opens, including any Custom records.
-- Confirm every live `scope` code that should display a friendly module name;
-  unknown values intentionally remain as their source code.
+- Confirm one live Windows report scan closes its assigned worker process and
+  leaves the Catalog row in the cancelled state.
+- The previously delivered GSCM bookmark scanner still needs its authenticated
+  live catalog validation.
 - The previously delivered ASAP dashboard download change still needs one
   explicitly authorized production flow run for end-to-end validation.
 
 ## Next Step
 
-On the authenticated BI desktop, install the delivered commit and run one GSCM
-catalog scan. Verify the reported dataset row count, the three evidenced
-bookmark ids and paths, Private/Public separation, Custom handling if present,
-and absence of any concatenated top-navigation bookmark before accepting the
-scanner as live-verified.
+On the BI desktop, start a single report refresh from Catalog, select
+`Stop scan`, and confirm both the browser process and Catalog activity stop before
+accepting the cancellation path as live-verified.

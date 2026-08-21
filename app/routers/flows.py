@@ -1872,6 +1872,10 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
                 _loads(report["automation_json"], {}).get("category_path", [])
             ] if report else [],
         },
+        "target_report": (
+            {"id": report["id"], "name": report["name"]}
+            if report else None
+        ),
     }
     cursor = db.execute(
         """INSERT INTO flow_catalog_scans
@@ -1925,6 +1929,109 @@ def list_scan_events(scan_id: int, after_id: int = Query(default=0, ge=0),
         "scan_status": scan["status"],
         "events": [dict(row) for row in rows],
     }
+
+
+@router.post("/scans/{scan_id}/stop")
+def stop_scan(scan_id: int, request: Request):
+    """Cancel one catalog scan and close its exact assigned worker process."""
+    now = _iso(_now())
+    process_id = None
+    stop_assigned_worker = False
+    worker_id = None
+    site_id = None
+    site_name = None
+    message = ""
+    with get_db() as db:
+        row = db.execute(
+            """SELECT c.*, s.name AS site_name, s.discovery_weekday, s.discovery_time
+               FROM flow_catalog_scans c
+               JOIN flow_sites s ON s.id=c.site_id
+               WHERE c.id=?""",
+            (scan_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Scan not found.")
+        if row["status"] in RUN_TERMINAL:
+            return {
+                "scan_id": scan_id,
+                "status": row["status"],
+                "message": f"Scan already finished with status {row['status']}.",
+                "worker": {"status": "not_needed"},
+            }
+        site_id = row["site_id"]
+        site_name = row["site_name"]
+        worker_id = row["worker_id"]
+        worker = None
+        if row["status"] in {"claimed", "running"} and worker_id:
+            worker = db.execute(
+                """SELECT capabilities_json FROM flow_workers
+                   WHERE worker_id=? AND current_scan_id=?""",
+                (worker_id, scan_id),
+            ).fetchone()
+        stop_assigned_worker = worker is not None
+        capabilities = _loads(worker["capabilities_json"], {}) if worker else {}
+        raw_pid = capabilities.get("process_id")
+        process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
+        message = (
+            "Stop requested by user for the assigned catalog worker."
+            if stop_assigned_worker
+            else "Cancelled by user before a catalog worker started this scan."
+        )
+        progress = {"stage": "cancelled", "message": message}
+        db.execute(
+            """UPDATE flow_catalog_scans
+               SET status='cancelled', progress_json=?, error=?, finished_at=?, heartbeat_at=?
+               WHERE id=? AND status IN ('queued','claimed','running')""",
+            (_json(progress), message, now, now, scan_id),
+        )
+        next_scan = _iso(_next_weekly_scan(row["discovery_weekday"], row["discovery_time"]))
+        db.execute(
+            """UPDATE flow_sites SET last_scan_at=?, last_scan_status='cancelled',
+               last_scan_error=?, next_scan_at=?, updated_at=? WHERE id=?""",
+            (now, message, next_scan, now, site_id),
+        )
+        if stop_assigned_worker:
+            db.execute(
+                """UPDATE flow_workers SET status='offline', current_scan_id=NULL,
+                   last_error=?, updated_at=?
+                   WHERE worker_id=? AND current_scan_id=?""",
+                (message, now, worker_id, scan_id),
+            )
+        log_event(
+            db, "flow_site", site_id, site_name, "scan_cancelled",
+            f"scan_id={scan_id}", get_actor(request),
+        )
+
+    stopped = (
+        stop_local_worker("headless", process_id)
+        if stop_assigned_worker
+        else {"status": "not_needed", "message": "The scan had not been assigned to a worker."}
+    )
+    if stop_assigned_worker:
+        message = (
+            "Scan stopped and its assigned catalog worker was closed."
+            if stopped.get("status") == "stopped"
+            else "Scan cancelled, but Windows could not confirm that the catalog worker closed: "
+                 f"{stopped.get('message') or stopped.get('status')}."
+        )
+    with get_db() as db:
+        progress = {"stage": "cancelled", "message": message}
+        db.execute(
+            """UPDATE flow_catalog_scans SET progress_json=?, error=?
+               WHERE id=? AND status='cancelled'""",
+            (_json(progress), message, scan_id),
+        )
+        db.execute(
+            """UPDATE flow_sites SET last_scan_error=?, updated_at=? WHERE id=?""",
+            (message, now, site_id),
+        )
+        db.execute(
+            """INSERT INTO flow_scan_events
+               (scan_id, status, stage, message, details_json, created_at)
+               VALUES (?, 'cancelled', 'cancelled', ?, ?, ?)""",
+            (scan_id, message, _json(progress), now),
+        )
+    return {"scan_id": scan_id, "status": "cancelled", "message": message, "worker": stopped}
 
 
 @router.post("/sites/{site_id}/scan")
@@ -2334,6 +2441,8 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
         ).fetchone()
         if not row:
             raise HTTPException(404, "Scan is not assigned to this worker.")
+        if row["status"] in RUN_TERMINAL:
+            return {"scan_id": scan_id, "status": row["status"], "ignored": True}
         started = row["started_at"] or (now if body.status == "running" else None)
         finished = now if body.status in RUN_TERMINAL else None
         db.execute(
