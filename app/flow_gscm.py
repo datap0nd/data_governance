@@ -991,19 +991,63 @@ def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[
 
 
 def scroll_tree(page) -> bool:
-    """Page the favorites tree down one screen. True when it actually moved."""
+    """Page the Favorite grid down, including Nexacro virtual scrollbars.
+
+    Setting ``scrollTop`` is sufficient in some builds. Others keep their
+    virtual row position inside the Nexacro Grid component and only react to
+    real keyboard input. Compare the rendered rows so a cosmetic DOM scroll
+    is never mistaken for actual paging.
+    """
+    before = _tree_row_signature(page)
+    for root in _roots(page):
+        try:
+            grid = root.locator(
+                "[id$='Setting1.form.div_favorite.form.grd_bookmark']"
+            ).first
+            if not grid.count():
+                continue
+            grid.click(force=True, timeout=15_000)
+            page.keyboard.press("PageDown")
+            page.wait_for_timeout(250)
+            if _tree_row_signature(page) != before:
+                return True
+        except Exception:
+            continue
     for _root, value in _evaluate_everywhere(page, _SCROLL_TREE_JS):
         if isinstance(value, dict) and value.get("moved"):
-            return True
+            page.wait_for_timeout(250)
+            if _tree_row_signature(page) != before:
+                return True
     return False
 
 
 def reset_tree(page) -> bool:
     """Return the virtualized Favorite grid to its first visible row."""
+    for root in _roots(page):
+        try:
+            grid = root.locator(
+                "[id$='Setting1.form.div_favorite.form.grd_bookmark']"
+            ).first
+            if not grid.count():
+                continue
+            grid.click(force=True, timeout=15_000)
+            page.keyboard.press("Control+Home")
+            page.wait_for_timeout(250)
+            return True
+        except Exception:
+            continue
     for _root, value in _evaluate_everywhere(page, _RESET_TREE_JS):
         if isinstance(value, dict) and value.get("available"):
             return True
     return False
+
+
+def _tree_row_signature(page) -> tuple[tuple[str, str, int], ...]:
+    """The rendered virtual rows, used to prove that paging changed data."""
+    return tuple(
+        (str(record.get("id") or ""), str(record.get("text") or ""), int(record.get("y") or 0))
+        for _root, record in favorite_tree_rows(page)
+    )
 
 
 def _find_tree_entry(
