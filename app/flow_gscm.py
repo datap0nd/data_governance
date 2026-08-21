@@ -126,6 +126,12 @@ TAB_SETTLE_MS = 2_500
 INDENT_TOLERANCE_PX = 6
 MAX_INVENTORY_ITEMS = 120
 
+# Nexacro keeps the Favorite grid's scroll position in its own component
+# state. The live grid exposes these controls even though ``scrollHeight`` on
+# the surrounding HTML element never changes from its viewport height.
+FAVORITE_GRID_ID_SUFFIX = "Setting1.form.div_favorite.form.grd_bookmark"
+FAVORITE_SCROLL_PAGE_STEPS = 8
+
 DOWNLOAD_TEXT = "Excel download"
 
 #: Samsung SSO's sign-in page. The automation profile holds one session per
@@ -993,22 +999,53 @@ def read_favorite_tree(page, seed: list[tuple[int, str]] | None = None) -> list[
 def scroll_tree(page) -> bool:
     """Page the Favorite grid down, including Nexacro virtual scrollbars.
 
-    Setting ``scrollTop`` is sufficient in some builds. Others keep their
-    virtual row position inside the Nexacro Grid component and only react to
-    real keyboard input. Compare the rendered rows so a cosmetic DOM scroll
-    is never mistaken for actual paging.
+    Setting ``scrollTop`` is sufficient in some builds. The production build
+    keeps its virtual row position inside the Nexacro Grid component, whose
+    own increment button is the reliable live control. Move eight rows per
+    pass so adjacent pages retain one rendered row of overlap. Keyboard and
+    DOM scrolling remain fallbacks for older builds. Compare rendered rows so
+    a cosmetic scroll is never mistaken for actual paging.
     """
     before = _tree_row_signature(page)
     for root in _roots(page):
         try:
-            grid = root.locator(
-                "[id$='Setting1.form.div_favorite.form.grd_bookmark']"
+            increment = root.locator(
+                f"[id*='{FAVORITE_GRID_ID_SUFFIX}.vscrollbar.incbutton:icontext']"
             ).first
+            if not increment.count():
+                increment = root.locator(
+                    f"[id*='{FAVORITE_GRID_ID_SUFFIX}.vscrollbar.incbutton']"
+                ).first
+            if not increment.count():
+                continue
+            for _step in range(FAVORITE_SCROLL_PAGE_STEPS):
+                increment.click(force=True, timeout=15_000)
+                page.wait_for_timeout(40)
+            page.wait_for_timeout(300)
+            if _tree_row_signature(page) != before:
+                return True
+        except Exception:
+            continue
+    for root in _roots(page):
+        try:
+            grid = root.locator(f"[id$='{FAVORITE_GRID_ID_SUFFIX}']").first
+            if not grid.count():
+                continue
+            grid.hover(timeout=15_000)
+            page.mouse.wheel(0, 720)
+            page.wait_for_timeout(300)
+            if _tree_row_signature(page) != before:
+                return True
+        except Exception:
+            continue
+    for root in _roots(page):
+        try:
+            grid = root.locator(f"[id$='{FAVORITE_GRID_ID_SUFFIX}']").first
             if not grid.count():
                 continue
             grid.click(force=True, timeout=15_000)
             page.keyboard.press("PageDown")
-            page.wait_for_timeout(250)
+            page.wait_for_timeout(300)
             if _tree_row_signature(page) != before:
                 return True
         except Exception:
@@ -1025,9 +1062,7 @@ def reset_tree(page) -> bool:
     """Return the virtualized Favorite grid to its first visible row."""
     for root in _roots(page):
         try:
-            grid = root.locator(
-                "[id$='Setting1.form.div_favorite.form.grd_bookmark']"
-            ).first
+            grid = root.locator(f"[id$='{FAVORITE_GRID_ID_SUFFIX}']").first
             if not grid.count():
                 continue
             grid.click(force=True, timeout=15_000)
