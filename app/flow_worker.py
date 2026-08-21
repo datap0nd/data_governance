@@ -54,6 +54,9 @@ ASAP_LOADING_OVERLAY_SELECTOR = (
 # A wide report over a long period can render for a long time. Wait it out.
 ASAP_REPORT_RESULT_TIMEOUT_MS = 30 * 60 * 1_000
 EXPORT_TASK_ATTEMPTS = 3
+GSCM_EXPORT_TASK_ATTEMPTS = 2
+GSCM_INITIAL_LOAD_BUFFER_MS = 60_000
+GSCM_RETRY_LOAD_BUFFER_MS = 120_000
 # Server-side scan payload limits (DiscoveredFilter / DiscoveredReport /
 # ScanProgress in app.routers.flows). A single oversized field rejects the
 # whole progress post with an opaque 422, so the worker caps everything it
@@ -4044,7 +4047,9 @@ def _resume_completed_keys(job: dict) -> set[str]:
     }
 
 
-def _export_task_with_retry(page: Page, run_task, on_retry):
+def _export_task_with_retry(
+    page: Page, run_task, on_retry, *, max_attempts: int = EXPORT_TASK_ATTEMPTS,
+):
     """Restart one export file from scratch after any mid-file failure.
 
     A bundle of many files must never lose its finished downloads to one
@@ -4055,11 +4060,11 @@ def _export_task_with_retry(page: Page, run_task, on_retry):
     partially copied output is never overwritten: the retried download stores
     under the next free suffixed filename.
     """
-    for attempt in range(1, EXPORT_TASK_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
-            return run_task()
+            return run_task(attempt)
         except Exception as exc:
-            if attempt == EXPORT_TASK_ATTEMPTS:
+            if attempt == max_attempts:
                 raise
             on_retry(attempt, exc)
             page.wait_for_timeout(5_000)
@@ -4105,7 +4110,7 @@ def execute_job(
     if artifacts is None:
         artifacts = []
 
-    def _download_task(index: int, task: dict) -> dict:
+    def _download_task(index: int, task: dict, attempt: int = 1) -> dict:
         period = task["period"]
         export_view = task["export_view"]
         download_link = task.get("download_link")
@@ -4120,6 +4125,26 @@ def execute_job(
                      "item_index": index, "item_count": len(tasks)},
                     artifacts,
                 ))
+                load_buffer_ms = (
+                    GSCM_INITIAL_LOAD_BUFFER_MS
+                    if attempt == 1 else GSCM_RETRY_LOAD_BUFFER_MS
+                )
+                report_progress(
+                    "running",
+                    {
+                        "stage": "report_execution",
+                        "message": (
+                            "Waiting "
+                            f"{load_buffer_ms // 1_000} seconds for the GSCM "
+                            "report data to finish loading before download."
+                        ),
+                        "item_index": index,
+                        "item_count": len(tasks),
+                        "attempt": attempt,
+                    },
+                    artifacts,
+                )
+                page.wait_for_timeout(load_buffer_ms)
             elif is_asap:
                 frame = _asap_open_report(page, job, profile_dir)
                 if download_link:
@@ -4287,6 +4312,8 @@ def execute_job(
             )
             continue
 
+        task_attempts = GSCM_EXPORT_TASK_ATTEMPTS if is_gscm else EXPORT_TASK_ATTEMPTS
+
         def _task_retry(attempt: int, exc: Exception, *, index=index, task=task):
             report_progress(
                 "running",
@@ -4294,7 +4321,7 @@ def execute_job(
                     "stage": "export_retry",
                     "message": (
                         f"Export {index} of {len(tasks)} failed on attempt "
-                        f"{attempt} of {EXPORT_TASK_ATTEMPTS}; restarting this file "
+                        f"{attempt} of {task_attempts}; restarting this file "
                         f"from report navigation. {exc}"
                     ),
                     "period": task["period"], "export_view": task["export_view"],
@@ -4304,7 +4331,10 @@ def execute_job(
             )
 
         artifacts.append(_export_task_with_retry(
-            page, lambda index=index, task=task: _download_task(index, task), _task_retry,
+            page,
+            lambda attempt, index=index, task=task: _download_task(index, task, attempt),
+            _task_retry,
+            max_attempts=task_attempts,
         ))
     return artifacts, timings.finish(item_count=len(artifacts))
 

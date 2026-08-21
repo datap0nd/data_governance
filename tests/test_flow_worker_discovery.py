@@ -652,8 +652,8 @@ def test_asap_run_report_raises_after_second_empty_rendering(monkeypatch):
 def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
     attempts = []
 
-    def run_task():
-        attempts.append(1)
+    def run_task(attempt):
+        attempts.append(attempt)
         if len(attempts) == 1:
             raise RuntimeError("ASAP report menu item was not visible: installed base (MENA)")
         if len(attempts) == 2:
@@ -670,7 +670,7 @@ def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
     )
 
     assert result == {"status": "saved"}
-    assert len(attempts) == 3
+    assert attempts == [1, 2, 3]
     assert [attempt for attempt, _ in retries] == [1, 2]
     assert "menu item was not visible" in retries[0][1]
     assert "stable finished file" in retries[1][1]
@@ -680,13 +680,19 @@ def test_export_task_retry_restarts_a_failed_file_and_keeps_its_result():
 def test_export_task_retry_raises_the_original_error_after_three_attempts():
     attempts = []
 
-    def run_task():
-        attempts.append(1)
+    def run_task(attempt):
+        attempts.append(attempt)
         raise RuntimeError("Target folder permissions changed mid-run.")
 
     with pytest.raises(RuntimeError, match="permissions changed"):
         flow_worker._export_task_with_retry(_WaitPage(), run_task, lambda *_args: None)
     assert len(attempts) == flow_worker.EXPORT_TASK_ATTEMPTS == 3
+
+
+def test_gscm_load_buffers_are_one_minute_then_two_minutes():
+    assert flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
+    assert flow_worker.GSCM_INITIAL_LOAD_BUFFER_MS == 60_000
+    assert flow_worker.GSCM_RETRY_LOAD_BUFFER_MS == 120_000
 
 
 def test_asap_table_control_score_accepts_only_compact_top_right_controls():
