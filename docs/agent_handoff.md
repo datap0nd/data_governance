@@ -9,9 +9,9 @@ and keep the cancelled state authoritative if the worker reports late progress.
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest base commit: `edc4581`
+- Latest feature commit: `f468a7c`
 - Public repo: no, private
-- Delivery target: commit and push the scoped cancellation change to `origin/main`
+- Push status: feature commit present on `origin/main`
 
 ## Decisions Made
 
