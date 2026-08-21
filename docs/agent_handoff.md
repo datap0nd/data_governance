@@ -2,19 +2,23 @@
 
 ## Current Objective
 
-Deploy and verify the Dashboard Alerts simplification and the ASAP detached-frame
-download recovery. Keep the paused production Flow paused until the user
-explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
+Collect the remote-PC owner's `nerp_remote_runner_connection.md`, then implement
+and live-verify NERP as a remote-script module in Flows. Keep the paused
+production Flow paused until the user explicitly resumes it, so the ASAP CSV 5
+fix still needs a future live Flow run.
 
 ## Repo State
 
 - Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Latest feature commit: `a746681` (`Simplify dashboard alerts and recover ASAP frames`)
+- Latest NERP documentation commit: `0db6b44` (`Document NERP remote runner contract`)
+- Latest prior feature commit: `a746681` (`Simplify dashboard alerts and recover ASAP frames`)
 - Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
-- Push status: code commit verified on `origin/main`
+- Push status: NERP documentation commit not yet pushed at handoff update time
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
+- Preserve unrelated local changes in `app/flow_worker.py` and
+  `tests/test_flow_worker_discovery.py`; they were not part of the NERP task.
 
 ## Decisions Made
 
@@ -39,6 +43,15 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 - A transient ASAP `Frame was detached` error retries once against the current
   report frame. If the final export already created a staged file, the worker
   recovers that file instead of issuing a duplicate export.
+- NERP is a separate remote-script module in Flows beside ASAP and GSCM, not a
+  website/report adapter and not a SQL transport.
+- NERP starts only allowlisted script IDs through an authenticated remote API.
+  It never submits arbitrary paths, Python source, or shell commands.
+- A launch acknowledgement is not success. Metronome needs a durable remote run
+  ID, incremental state and logs, idempotent start requests, and a terminal
+  `succeeded` state with exit code 0 before releasing the next pipeline step.
+- Existing finance SQL tables remain downstream pipeline inputs. Runner success
+  and optional SQL freshness validation are separate concerns.
 
 ## Files Changed
 
@@ -53,6 +66,9 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 - `app/static/app.js`, `app/static/style.css`: remove Dashboard Status and Open,
   neutralize Issue badges, widen the useful columns, and clarify alert wording.
 - `app/flow_worker.py`: recover or safely retry detached ASAP export frames.
+- `docs/nerp_remote_runner_handoff.md`: explain the existing Metronome Flow
+  model, minimum NERP runner contract, required connection handoff template,
+  security boundaries, and live acceptance evidence.
 - `tests/test_overview_removed.py`, `tests/test_flow_worker_discovery.py`:
   regression coverage for the Dashboard table and CSV frame replacement.
 - `tests/test_actions_dedupe.py`, `tests/test_pbi_fetch.py`,
@@ -90,6 +106,10 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
 - Live materialized-view validation: read-only PostgreSQL query returned 487,416
   rows and current week/month maxima. Exact relation modification time was not
   readable with the available database role.
+- `git diff --check`: passed for the NERP documentation change.
+- GitHub visibility check: `datap0nd/data_governance` is private.
+- NERP runtime or network tests: not run because this task only produced the
+  contract and no remote connection handoff is available yet.
 
 ## Open Questions
 
@@ -97,11 +117,16 @@ explicitly resumes it, so the CSV 5 fix still needs a future live Flow run.
   target tables are not yet present.
 - The available PostgreSQL role cannot independently read the materialized
   view's storage modification timestamp.
+- The remote runner's real base URL, authentication, endpoint shapes, status
+  vocabulary, retention, timeout behavior, and safe test scripts are unknown
+  until the remote-PC owner returns `nerp_remote_runner_connection.md`.
 - The ASAP CSV recovery is covered locally but has not been verified with a live
   multi-file production Flow because that Flow remains paused and no run was
   authorized in this task.
 
 ## Next Step
 
-On the next explicitly authorized production Flow run, verify that a multi-file
-ASAP export passes CSV 5 without a detached-frame failure or duplicate download.
+Send `docs/nerp_remote_runner_handoff.md` to the remote-PC owner and collect the
+completed `nerp_remote_runner_connection.md`; then implement the adapter against
+the documented real API and execute the full success/failure acceptance path
+from the Metronome host before enabling NERP schedules.
