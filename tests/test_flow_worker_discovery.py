@@ -414,6 +414,49 @@ def test_portal_menu_tree_unwraps_the_live_data_envelope(monkeypatch):
     ]
 
 
+def test_portal_menu_tree_accepts_success_error_code(monkeypatch):
+    monkeypatch.setattr(
+        flow_worker, "_asap_portal_session",
+        lambda _page, _diagnostics=None: {
+            "web_base": "https://asap.example/mstr",
+            "legacy_token": "live-token",
+            "main_menu_id": "role-root",
+        },
+    )
+
+    class Response:
+        ok = True
+
+        def __init__(self, value):
+            self.value = value
+
+        def json(self):
+            return self.value
+
+    class Request:
+        def post(self, url, **_kwargs):
+            folder_id = url.rsplit("=", 1)[-1]
+            if folder_id == "role-root":
+                return Response({
+                    "errorCode": "success", "message": "SUCCESS",
+                    "data": [{"id": "retail", "name": "06.Retail"}],
+                })
+            return Response({
+                "errorCode": "success", "message": "SUCCESS",
+                "data": {
+                    "id": "retail", "name": "06.Retail",
+                    "children": [{"id": "flagship", "name": "01.Flagship Experience"}],
+                },
+            })
+
+    class Page:
+        request = Request()
+
+    assert flow_worker._asap_portal_menu_paths(Page()) == [
+        ["Retail", "Flagship Experience"],
+    ]
+
+
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
     states = [False, False, True]
     calls = []

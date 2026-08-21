@@ -2540,7 +2540,7 @@ def _asap_portal_menu_paths(page: Page, diagnostics: dict | None = None) -> list
             })
         if isinstance(value, dict) and "data" in value:
             error_code = value.get("errorCode")
-            if error_code not in (None, 0, "0"):
+            if error_code not in (None, 0, "0") and str(error_code).casefold() != "success":
                 diagnostics.setdefault("menu_error_codes", []).append(str(error_code)[:100])
                 return None
             value = value.get("data")
