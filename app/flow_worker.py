@@ -2538,6 +2538,23 @@ def _asap_portal_menu_paths(page: Page, diagnostics: dict | None = None) -> list
                 "folder": "root" if folder_id == str(context["main_menu_id"]) else "branch",
                 "status": getattr(response, "status", None),
             })
+        if isinstance(value, dict) and "data" in value:
+            error_code = value.get("errorCode")
+            if error_code not in (None, 0, "0"):
+                diagnostics.setdefault("menu_error_codes", []).append(str(error_code)[:100])
+                return None
+            value = value.get("data")
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    diagnostics.setdefault("fetch_errors", []).append({
+                        "folder": "root" if folder_id == str(context["main_menu_id"]) else "branch",
+                        "error": "InvalidWrappedJson",
+                    })
+                    return None
+            if isinstance(value, list):
+                value = {"children": value}
         return value if isinstance(value, dict) else None
 
     def children(node: dict) -> list[dict]:
