@@ -15,10 +15,10 @@ fix still needs a future live Flow run.
 - Latest prior feature commit: `a746681` (`Simplify dashboard alerts and recover ASAP frames`)
 - Feature commit: `de1b362` (`Improve alert assets and enable report refresh discovery`)
 - Public repo: no, private
-- Push status: NERP documentation commit not yet pushed at handoff update time
+- Push status: NERP documentation commit verified on `origin/main`
 - Preserve untracked `governance.db-shm` and `governance.db-wal`
-- Preserve unrelated local changes in `app/flow_worker.py` and
-  `tests/test_flow_worker_discovery.py`; they were not part of the NERP task.
+- Preserve unrelated local changes in `app/flow_gscm.py`, `app/flow_worker.py`,
+  and `tests/test_flow_worker_discovery.py`; they were not part of the NERP task.
 
 ## Decisions Made
 
