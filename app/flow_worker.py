@@ -2560,7 +2560,22 @@ def _asap_portal_menu_paths(page: Page, diagnostics: dict | None = None) -> list
     if not root:
         diagnostics["menu_result"] = "root_fetch_failed"
         return []
+    diagnostics["root_keys"] = sorted(str(key) for key in root.keys())[:30]
     top_nodes = children(root)
+    if not top_nodes:
+        # Some portal builds interpret depth as the number of descendant
+        # levels below the requested node, returning only the root at depth 1.
+        # Retry the same role-specific root at depth 2 before giving up.
+        diagnostics["root_depth_retry"] = True
+        deeper_root = fetch(str(context["main_menu_id"]), 2)
+        if deeper_root:
+            diagnostics["depth_2_root_keys"] = sorted(
+                str(key) for key in deeper_root.keys()
+            )[:30]
+            deeper_nodes = children(deeper_root)
+            if deeper_nodes:
+                root = deeper_root
+                top_nodes = deeper_nodes
     diagnostics["top_node_count"] = len(top_nodes)
     diagnostics["top_names"] = [_asap_clean_portal_menu_name(top.get("name")) for top in top_nodes]
     for top in top_nodes:

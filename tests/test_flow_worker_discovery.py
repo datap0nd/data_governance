@@ -319,6 +319,54 @@ def test_portal_menu_tree_preserves_top_name_when_subtree_is_a_wrapper(monkeypat
     ]
 
 
+def test_portal_menu_root_retries_at_depth_two_when_depth_one_has_no_children(monkeypatch):
+    monkeypatch.setattr(
+        flow_worker, "_asap_portal_session",
+        lambda _page, _diagnostics=None: {
+            "web_base": "https://asap.example/mstr",
+            "legacy_token": "live-token",
+            "main_menu_id": "role-root",
+        },
+    )
+    calls = []
+
+    class Response:
+        ok = True
+
+        def __init__(self, value):
+            self.value = value
+
+        def json(self):
+            return self.value
+
+    class Request:
+        def post(self, url, **kwargs):
+            folder_id = url.rsplit("=", 1)[-1]
+            depth = kwargs["form"]["depth"]
+            calls.append((folder_id, depth))
+            if folder_id == "role-root" and depth == "1":
+                return Response({"id": "role-root", "name": "root"})
+            if folder_id == "role-root":
+                return Response({
+                    "id": "role-root", "name": "root",
+                    "children": [{"id": "retail", "name": "06.Retail"}],
+                })
+            return Response({
+                "id": "retail", "name": "06.Retail",
+                "children": [{"id": "flagship", "name": "01.Flagship Experience"}],
+            })
+
+    class Page:
+        request = Request()
+
+    diagnostics = {}
+    assert flow_worker._asap_portal_menu_paths(Page(), diagnostics) == [
+        ["Retail", "Flagship Experience"],
+    ]
+    assert calls[:2] == [("role-root", "1"), ("role-root", "2")]
+    assert diagnostics["root_depth_retry"] is True
+
+
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
     states = [False, False, True]
     calls = []
