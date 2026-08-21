@@ -49,6 +49,13 @@ def test_fota_discovery_includes_visual_category_member_list():
     assert '{"weekly", "daily"}' in source
 
 
+def test_flagship_discovery_includes_visual_measure_member_list():
+    source = Path(flow_worker.__file__).read_text()
+
+    assert 'add_definition("Measure", "multi_select", nearest_list_values(measure_label))' in source
+    assert '{"dimension", "category", "measure"}' in source
+
+
 def test_revealed_menu_columns_become_report_paths_without_target_hardcoding():
     root = _record("Mobile", 235, 90)
     before = [root, _record("Market", 160, 90)]
@@ -1473,6 +1480,29 @@ def test_three_part_options_still_identify_data_configuration(monkeypatch):
     # is derived from the normalized label, not the raw one.
     assert definitions[0]["automation"]["select2"] is True
     assert definitions[0]["automation"]["label_source"] == "three_part_options"
+
+
+def test_period_slider_replaces_generated_handle_titles(monkeypatch):
+    monkeypatch.setattr(flow_worker, "_asap_discover_week_slider", lambda _frame: None)
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_discover_period_slider",
+        lambda _frame: (["202623", "202624", "202625"], {"kind": "range_slider"}),
+    )
+    records = [
+        {"index": 0, "id": "", "name": "", "label": "7D4EBFE00EB4F6835F8D27DAD15D436C4",
+         "label_source": "sibling", "multiple": False, "select2": False,
+         "visible": True, "options": ["202623", "202625"]},
+        {"index": 1, "id": "", "name": "", "label": "202623",
+         "label_source": "sibling", "multiple": False, "select2": False,
+         "visible": True, "options": ["202623", "202625"]},
+    ]
+
+    definitions = flow_worker._asap_discover_filters(_FilterFrame(records), {})
+
+    assert [definition["label"] for definition in definitions] == ["Period"]
+    assert definitions[0]["options"] == ["202623", "202624", "202625"]
+    assert definitions[0]["automation"] == {"kind": "range_slider"}
 
 
 def test_synthesized_labels_are_frame_qualified_to_avoid_merging(monkeypatch):

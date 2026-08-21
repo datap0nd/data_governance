@@ -141,6 +141,43 @@ def test_asap_week_slider_discovery_expands_bounds_and_restores_handles(monkeypa
     assert values == ["202622", "202633"]
 
 
+def test_asap_period_slider_has_no_coupled_date_range(monkeypatch):
+    values = ["202623", "202634"]
+    bounds = [("202601", "202634"), ("202601", "202634")]
+
+    class Handle:
+        def __init__(self, index):
+            self.index = index
+
+        def get_attribute(self, name):
+            return values[self.index] if name == "aria-valuetext" else None
+
+        def inner_text(self):
+            return ""
+
+        def press(self, key):
+            if key == "Home":
+                values[self.index] = bounds[self.index][0]
+            elif key == "End":
+                values[self.index] = bounds[self.index][1]
+            else:
+                raw = values[self.index]
+                current = datetime.fromisocalendar(int(raw[:4]), int(raw[4:]), 1)
+                current += flow_worker.timedelta(days=7 if key == "ArrowRight" else -7)
+                year, week, _weekday = current.isocalendar()
+                values[self.index] = f"{year:04d}{week:02d}"
+
+    handles = [Handle(0), Handle(1)]
+    monkeypatch.setattr(flow_worker, "_asap_range_scope", lambda _frame, label: (object(), handles))
+
+    options, automation = flow_worker._asap_discover_period_slider(object())
+
+    assert options[0] == "202601"
+    assert options[-1] == "202634"
+    assert automation == {"kind": "range_slider"}
+    assert values == ["202623", "202634"]
+
+
 def test_asap_collapsed_range_advances_upper_handle_first(monkeypatch):
     values = ["202519", "202519"]
     events = []
@@ -244,6 +281,34 @@ def test_asap_manual_week_definition_infers_visible_range_slider(monkeypatch):
         ("Week", "202520", "202520", "week"),
         ("Date", "20250511", "20250517", "date"),
     ]
+
+
+def test_asap_period_range_does_not_drive_a_nonexistent_date_slider(monkeypatch):
+    ranges = []
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_set_range",
+        lambda _frame, label, start, end, kind: ranges.append((label, start, end, kind)),
+    )
+
+    flow_worker._asap_apply_configuration(
+        object(),
+        {
+            "selections": {},
+            "report": {
+                "filters": [{
+                    "filter_key": "period",
+                    "control_label": "Period",
+                    "control_type": "week",
+                    "options": ["202623", "202634"],
+                    "automation": {"kind": "range_slider"},
+                }],
+            },
+        },
+        ["2026-W23", "2026-W34"],
+    )
+
+    assert ranges == [("Period", "202623", "202634", "week")]
 
 
 def test_asap_week_retries_dropped_final_plain_click_with_unknown_unselected_state(monkeypatch):

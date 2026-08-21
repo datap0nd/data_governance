@@ -527,10 +527,12 @@ def _asap_week_options(start: str, end: str) -> list[str]:
     return values
 
 
-def _asap_discover_week_slider(frame: Frame) -> tuple[list[str], dict] | None:
-    """Read the complete Week range and restore the report's original handles."""
+def _asap_discover_labeled_week_slider(
+    frame: Frame, label: str, *, date_range_label: str | None = None,
+) -> tuple[list[str], dict] | None:
+    """Read a complete YYYYWW range and restore its original handles."""
     try:
-        scope, handles = _asap_range_scope(frame, "Week")
+        scope, handles = _asap_range_scope(frame, label)
     except RuntimeError:
         return None
     original = _asap_range_values(scope, handles, "week")
@@ -549,11 +551,26 @@ def _asap_discover_week_slider(frame: Frame) -> tuple[list[str], dict] | None:
         read_value=lambda: _asap_range_values(scope, handles, "week")[1],
     )
     if _asap_range_values(scope, handles, "week") != original:
-        raise RuntimeError("ASAP Week slider could not be restored after discovery.")
+        raise RuntimeError(f"ASAP {label} slider could not be restored after discovery.")
     options = _asap_week_options(minimum or "", maximum or "")
     if not options:
         return None
-    return options, {"kind": "range_slider", "date_range_label": "Date"}
+    automation = {"kind": "range_slider"}
+    if date_range_label:
+        automation["date_range_label"] = date_range_label
+    return options, automation
+
+
+def _asap_discover_week_slider(frame: Frame) -> tuple[list[str], dict] | None:
+    """Read the complete Week range and its coupled Date range behavior."""
+    return _asap_discover_labeled_week_slider(
+        frame, "Week", date_range_label="Date",
+    )
+
+
+def _asap_discover_period_slider(frame: Frame) -> tuple[list[str], dict] | None:
+    """Read reports whose visible range is titled Period rather than Week."""
+    return _asap_discover_labeled_week_slider(frame, "Period")
 
 
 def _asap_frame(page: Page) -> Frame:
@@ -1281,7 +1298,11 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
         values = value if isinstance(value, list) else [value]
         values = [_week_to_asap(str(item)) if definition["control_type"] == "week" else str(item) for item in values]
         automation = definition.get("automation") or {}
-        range_slider = definition["control_type"] == "week" and automation.get("kind") == "range_slider"
+        declared_range_slider = (
+            definition["control_type"] == "week"
+            and automation.get("kind") == "range_slider"
+        )
+        range_slider = declared_range_slider
         if definition["control_type"] == "week" and not range_slider:
             try:
                 _asap_range_scope(frame, definition["control_label"])
@@ -1292,15 +1313,18 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
                 pass
         if range_slider:
             _asap_set_range(frame, definition["control_label"], values[0], values[-1], "week")
-            start_date = _asap_week_dates(str(value[0] if isinstance(value, list) else value))[0]
-            end_date = _asap_week_dates(str(value[-1] if isinstance(value, list) else value))[1]
-            _asap_set_range(
-                frame, str(automation.get("date_range_label") or "Date"),
-                start_date, end_date, "date",
+            date_range_label = _clean_text(
+                automation.get("date_range_label")
+                if declared_range_slider else "Date"
             )
+            if date_range_label:
+                start_date = _asap_week_dates(str(value[0] if isinstance(value, list) else value))[0]
+                end_date = _asap_week_dates(str(value[-1] if isinstance(value, list) else value))[1]
+                _asap_set_range(frame, date_range_label, start_date, end_date, "date")
             continue
         visible_list_only = (
-            definition["control_label"].casefold().rstrip(":") in {"dimension", "category"}
+            definition["control_label"].casefold().rstrip(":")
+            in {"dimension", "category", "measure"}
             or definition["control_type"] == "week"
         )
         if visible_list_only:
@@ -3103,6 +3127,12 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
     for dimension_label in frame.get_by_text(re.compile(r"^dimension:?$", re.I)).all():
         add_definition("Dimension", "multi_select", nearest_list_values(dimension_label))
 
+    # Flagship Experience exposes Measure with the same visual-only member
+    # list as Dimension. It has no native select, ARIA options, or search/count
+    # marker, so it must be anchored by its visible portal title as well.
+    for measure_label in frame.get_by_text(re.compile(r"^measure:?$", re.I)).all():
+        add_definition("Measure", "multi_select", nearest_list_values(measure_label))
+
     # Regional FOTA renders Category as the same visual-only member list used
     # by Dimension. It has no search/count marker or native select, so the
     # generic discovery paths above cannot see it. Capture the two live report
@@ -3123,6 +3153,21 @@ def _asap_discover_filters(frame: Frame, diagnostics: dict | None = None) -> lis
     if week_slider:
         options, automation = week_slider
         add_definition("Week", "week", options, automation)
+
+    # Some reports title the same YYYYWW control Period. Its two slider
+    # handles also expose generated hex ids and their current value as hidden
+    # native-select labels. Remove those structural artifacts and retain the
+    # one portal-authored title shown to the user.
+    period_slider = _asap_discover_period_slider(frame)
+    if period_slider:
+        definitions[:] = [
+            definition for definition in definitions
+            if not re.fullmatch(r"(?:[0-9a-f]{24,}|20\d{4})", definition["label"], re.I)
+        ]
+        for position, definition in enumerate(definitions):
+            definition["position"] = position
+        options, automation = period_slider
+        add_definition("Period", "week", options, automation)
 
     # The Installed Base report exposes its week prompt as a searchable
     # MicroStrategy member list. Depending on render timing the count/search
