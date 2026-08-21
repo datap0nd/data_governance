@@ -2424,13 +2424,25 @@ def _asap_portal_session(page: Page) -> dict | None:
     for frame in frames:
         try:
             data = frame.evaluate(
-                "() => (window._COMMON_INFO && window._SESSION)"
-                " ? {common: window._COMMON_INFO, session: window._SESSION} : null"
+                "() => {"
+                " const common = typeof _COMMON_INFO !== 'undefined' ? _COMMON_INFO : window._COMMON_INFO;"
+                " const session = typeof _SESSION !== 'undefined' ? _SESSION : window._SESSION;"
+                " return common && session ? {common, session} : null;"
+                "}"
             )
         except Exception:
             data = None
         if isinstance(data, dict) and data.get("common") and data.get("session"):
             common, session = data["common"], data["session"]
+            break
+        try:
+            frame_html = frame.content()
+        except Exception:
+            continue
+        frame_common = _asap_extract_js_object(frame_html, "_COMMON_INFO")
+        frame_session = _asap_extract_js_object(frame_html, "_SESSION")
+        if frame_common and frame_session:
+            common, session = frame_common, frame_session
             break
     if common is None or session is None:
         try:
@@ -2505,7 +2517,12 @@ def _asap_portal_menu_paths(page: Page) -> list[list[str]]:
         return []
     for top in children(root):
         subtree = fetch(str(top.get("id")), 2) if top.get("id") else None
-        walk(subtree or top, [])
+        top_name = _asap_clean_portal_menu_name(top.get("name"))
+        subtree_name = _asap_clean_portal_menu_name((subtree or {}).get("name"))
+        if subtree and top_name and subtree_name.casefold() != top_name.casefold():
+            walk(subtree, [top_name])
+        else:
+            walk(subtree or top, [])
     return paths
 
 

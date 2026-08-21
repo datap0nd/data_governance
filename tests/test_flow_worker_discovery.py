@@ -221,6 +221,68 @@ def test_portal_menu_tree_uses_role_specific_root_and_strips_ordering_prefixes()
     ]
 
 
+def test_portal_session_is_read_from_frame_local_script_constants():
+    class Frame:
+        def evaluate(self, _script):
+            return None
+
+        def content(self):
+            return """
+                <script>
+                const _COMMON_INFO = {"MSTR_MAIN_MENU_ID":"role-root","MSTR_CUSTOM_WEB_CONTEXT_PATH":"/mstr"};
+                const _SESSION = {"MSTRWEB_AUTH_TOKEN_ENC":"live-token"};
+                </script>
+            """
+
+    class Page:
+        url = "https://asap.example/portal/main"
+        frames = [Frame()]
+
+    assert flow_worker._asap_portal_session(Page()) == {
+        "web_base": "https://asap.example/mstr",
+        "legacy_token": "live-token",
+        "main_menu_id": "role-root",
+    }
+
+
+def test_portal_menu_tree_preserves_top_name_when_subtree_is_a_wrapper(monkeypatch):
+    monkeypatch.setattr(
+        flow_worker, "_asap_portal_session",
+        lambda _page: {
+            "web_base": "https://asap.example/mstr",
+            "legacy_token": "live-token",
+            "main_menu_id": "role-root",
+        },
+    )
+    responses = {
+        "role-root": {"children": [{"id": "retail", "name": "06.Retail"}]},
+        "retail": {"children": [{
+            "id": "f8", "name": "01.F8 Experience (Launching Daily)",
+            "children": [{"id": "flagship", "name": "01.Flagship Experience"}],
+        }]},
+    }
+
+    class Response:
+        ok = True
+
+        def __init__(self, value):
+            self.value = value
+
+        def json(self):
+            return self.value
+
+    class Request:
+        def post(self, url, **_kwargs):
+            return Response(responses[url.rsplit("=", 1)[-1]])
+
+    class Page:
+        request = Request()
+
+    assert flow_worker._asap_portal_menu_paths(Page()) == [
+        ["Retail", "F8 Experience (Launching Daily)", "Flagship Experience"],
+    ]
+
+
 def test_asap_goto_waits_for_delayed_expired_session_redirect(monkeypatch, tmp_path):
     states = [False, False, True]
     calls = []
