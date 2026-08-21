@@ -1321,6 +1321,12 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
 DOWNLOAD_START_TIMEOUT_SECONDS = 15 * 60
 DOWNLOAD_STALL_TIMEOUT_SECONDS = 10 * 60
 DOWNLOAD_MAX_TIMEOUT_SECONDS = 60 * 60
+# Once Edge emits Playwright's native download event, the server has already
+# answered and the browser has accepted the transfer. The local staging file
+# should therefore appear promptly even for a very large export. Keeping the
+# 15-minute pre-response budget here would hide a broken browser-to-staging
+# handoff behind three long task retries.
+DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS = 60
 
 
 def _download_file_state(path: Path) -> tuple[int, int]:
@@ -1338,6 +1344,48 @@ def _download_staging_snapshot(staging_dir: Path) -> dict[Path, tuple[int, int]]
         except OSError:
             continue
     return snapshot
+
+
+def _download_staging_changed(
+    staging_dir: Path, files_before: dict[Path, tuple[int, int]],
+) -> bool:
+    current = _download_staging_snapshot(staging_dir)
+    return any(files_before.get(path) != state for path, state in current.items())
+
+
+def _asap_wait_for_dashboard_download_signal(
+    page: Page,
+    staging_dir: Path,
+    files_before: dict[Path, tuple[int, int]],
+    downloads: list,
+    opened: list,
+    *,
+    timeout_seconds: int = DOWNLOAD_START_TIMEOUT_SECONDS,
+    popup_grace_seconds: int | None = 20,
+) -> str:
+    """Pump Playwright while waiting for a dashboard download to start.
+
+    A plain ``time.sleep`` loop sees local files but does not dispatch a popup
+    or download event to Playwright's sync callbacks. HTML dashboards often
+    open their real download page a beat after the first click, so the old
+    folder-only wait could sit for 15 minutes even though Edge had already
+    completed the transfer or an intermediate popup was ready.
+    """
+    started = time.monotonic()
+    popup_seen_at = None
+    while time.monotonic() - started < timeout_seconds:
+        if _download_staging_changed(staging_dir, files_before):
+            return "staging"
+        if downloads:
+            return "download"
+        if opened and popup_grace_seconds is not None:
+            popup_seen_at = popup_seen_at or time.monotonic()
+            if time.monotonic() - popup_seen_at >= popup_grace_seconds:
+                return "popup"
+        # Unlike time.sleep, this keeps context ``page`` and ``download``
+        # callbacks flowing while Edge and the dashboard work independently.
+        page.wait_for_timeout(250)
+    return "timeout"
 
 
 def _asap_frame_was_detached(exc: Exception) -> bool:
@@ -1956,58 +2004,102 @@ def _asap_download_dashboard_link(
         )
     files_before = _download_staging_snapshot(staging_dir)
     opened: list = []
+    downloads: list = []
+    observed_pages: list = []
+
+    def _capture_download(download):
+        downloads.append(download)
+
+    def _observe_page(candidate):
+        if candidate in observed_pages:
+            return
+        observed_pages.append(candidate)
+        candidate.on("download", _capture_download)
 
     def _track_page(popup):
         opened.append(popup)
+        _observe_page(popup)
 
     context = page.context
     context.on("page", _track_page)
+    for candidate in list(context.pages):
+        _observe_page(candidate)
     try:
         control.click(timeout=30_000)
-        page.wait_for_timeout(1_000)
-        try:
-            # A popup means the click probably opened an intermediate page
-            # whose own control is the real trigger, so probe briefly and go
-            # look. With no popup the click either started a download or never
-            # will, and a large export can sit for many minutes while the
-            # server builds it - wait the full budget rather than giving up.
+        signal = _asap_wait_for_dashboard_download_signal(
+            page, staging_dir, files_before, downloads, opened,
+        )
+        if signal in {"staging", "download"}:
             return _wait_for_staged_download(
                 staging_dir, files_before,
-                start_timeout_seconds=20 if opened else DOWNLOAD_START_TIMEOUT_SECONDS,
+                start_timeout_seconds=(
+                    DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS
+                    if signal == "download" else DOWNLOAD_START_TIMEOUT_SECONDS
+                ),
             )
-        except RuntimeError:
-            # No file appeared. When the click opened an intermediate page,
-            # its own download control is the real trigger.
-            popup_control = None
-            for popup in opened:
-                try:
-                    if popup.is_closed():
-                        continue
-                    popup.wait_for_load_state("domcontentloaded", timeout=15_000)
-                    popup_control = _asap_dashboard_link_locator(
-                        popup, label, href, timeout_seconds=15,
-                    ) or next(
-                        (
-                            candidate for candidate in [
-                                _asap_export_action(popup),
-                                popup.get_by_role("link", name=re.compile(r"download", re.I)).first,
-                            ] if candidate is not None and candidate.count() and candidate.is_visible()
-                        ),
-                        None,
-                    )
-                except Exception:
-                    popup_control = None
-                if popup_control is not None:
-                    break
-            if popup_control is None:
-                raise
-            popup_control.click(timeout=30_000)
-            return _wait_for_staged_download(staging_dir, files_before)
+        if signal == "timeout":
+            raise RuntimeError(
+                "ASAP dashboard download did not emit an Edge download event, "
+                "open an intermediate page, or create a local staging file within "
+                f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
+            )
+
+        # No file or Edge download event followed the first click, but a popup
+        # remained open for the grace period. Its own control is the trigger.
+        popup_control = None
+        for popup in opened:
+            try:
+                if popup.is_closed():
+                    continue
+                popup.wait_for_load_state("domcontentloaded", timeout=15_000)
+                popup_control = _asap_dashboard_link_locator(
+                    popup, label, href, timeout_seconds=15,
+                ) or next(
+                    (
+                        candidate for candidate in [
+                            _asap_export_action(popup),
+                            popup.get_by_role("link", name=re.compile(r"download", re.I)).first,
+                        ] if candidate is not None and candidate.count() and candidate.is_visible()
+                    ),
+                    None,
+                )
+            except Exception:
+                popup_control = None
+            if popup_control is not None:
+                break
+        if popup_control is None:
+            raise RuntimeError(
+                "ASAP dashboard opened an intermediate page, but no download "
+                f"control was visible and no file started: {label}."
+            )
+        popup_control.click(timeout=30_000)
+        signal = _asap_wait_for_dashboard_download_signal(
+            page, staging_dir, files_before, downloads, opened,
+            popup_grace_seconds=None,
+        )
+        if signal == "timeout":
+            raise RuntimeError(
+                "ASAP dashboard intermediate page did not emit an Edge download "
+                "event or create a local staging file within "
+                f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
+            )
+        return _wait_for_staged_download(
+            staging_dir, files_before,
+            start_timeout_seconds=(
+                DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS
+                if signal == "download" else DOWNLOAD_START_TIMEOUT_SECONDS
+            ),
+        )
     finally:
         try:
             context.remove_listener("page", _track_page)
         except Exception:
             pass
+        for candidate in observed_pages:
+            try:
+                candidate.remove_listener("download", _capture_download)
+            except Exception:
+                pass
         for popup in opened:
             try:
                 if not popup.is_closed():

@@ -1395,7 +1395,62 @@ def test_dashboard_link_download_falls_back_to_an_intermediate_page():
     # only after the file is stable so a transfer is never aborted.
     assert "_download_staging_snapshot(staging_dir)" in source
     assert 'context.on("page", _track_page)' in source
+    assert 'candidate.on("download", _capture_download)' in source
+    assert 'candidate.remove_listener("download", _capture_download)' in source
+    assert "_asap_wait_for_dashboard_download_signal" in source
     assert "popup_control.click(timeout=30_000)" in source
+
+
+def test_dashboard_download_signal_pumps_playwright_until_edge_reports_start(tmp_path):
+    downloads = []
+
+    class Page:
+        waits = 0
+
+        def wait_for_timeout(self, milliseconds):
+            assert milliseconds == 250
+            self.waits += 1
+            downloads.append(object())
+
+    page = Page()
+    signal = flow_worker._asap_wait_for_dashboard_download_signal(
+        page, tmp_path, flow_worker._download_staging_snapshot(tmp_path),
+        downloads, [], timeout_seconds=1,
+    )
+
+    assert signal == "download"
+    assert page.waits == 1
+
+
+def test_dashboard_download_signal_detects_a_file_without_an_edge_event(tmp_path):
+    class Page:
+        waits = 0
+
+        def wait_for_timeout(self, _milliseconds):
+            self.waits += 1
+            (tmp_path / "finished.xlsx").write_bytes(b"PK\x03\x04data")
+
+    page = Page()
+    signal = flow_worker._asap_wait_for_dashboard_download_signal(
+        page, tmp_path, flow_worker._download_staging_snapshot(tmp_path),
+        [], [], timeout_seconds=1,
+    )
+
+    assert signal == "staging"
+    assert page.waits == 1
+
+
+def test_dashboard_download_signal_exposes_an_intermediate_popup(tmp_path):
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            raise AssertionError("a visible popup needs no extra wait when its grace is zero")
+
+    signal = flow_worker._asap_wait_for_dashboard_download_signal(
+        Page(), tmp_path, flow_worker._download_staging_snapshot(tmp_path),
+        [], [object()], timeout_seconds=1, popup_grace_seconds=0,
+    )
+
+    assert signal == "popup"
 
 
 # --- Resolving a dashboard download control at run time ---
