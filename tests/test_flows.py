@@ -1469,6 +1469,83 @@ def test_targeted_manual_report_scan_queues_explicit_path_and_is_promoted_by_dis
     assert reports[0]["discovery_key"] == "Mobile > Installed Base > Installed Base (MENA)"
 
 
+def _mtracker_discovery(group="Z8 Command Center"):
+    path = ["Advanced", group, "M Tracker"]
+    return flows.DiscoveredReport(
+        discovery_key=" > ".join(path),
+        name="M Tracker",
+        report_url="https://portal.example.test/portal/login/app",
+        automation={"category_path": path},
+        filters=[flows.DiscoveredFilter(
+            filter_key="region", label="Region", control_label="Region",
+            control_type="select", options=["Global"], position=0,
+        )],
+    )
+
+
+def test_asap_unique_report_relocation_preserves_saved_flow_reference(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [_mtracker_discovery()], "2026-08-12T10:00:00"
+        )
+        old_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+    saved = flows.create_flow(_flow(
+        site["id"], old_id, download_mode="single", period_strategy="none",
+        start_week=None, end_week=None,
+    ), _request())
+
+    corrected = _mtracker_discovery("AI Insights")
+    with database.get_db() as db:
+        flows._apply_discovery(db, site["id"], [corrected], "2026-08-19T10:00:00")
+        reports = db.execute(
+            "SELECT id, discovery_key, stale, enabled FROM flow_reports ORDER BY id"
+        ).fetchall()
+        flow = db.execute("SELECT report_id FROM flows WHERE id=?", (saved["id"],)).fetchone()
+
+    assert len(reports) == 1
+    assert reports[0]["id"] == old_id
+    assert reports[0]["discovery_key"] == corrected.discovery_key
+    assert (reports[0]["stale"], reports[0]["enabled"]) == (0, 1)
+    assert flow["report_id"] == old_id
+
+
+def test_asap_relocation_repairs_flow_when_corrected_catalog_row_already_exists(flow_db):
+    site = flows.create_site(_asap_site(), _request())
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [_mtracker_discovery()], "2026-08-12T10:00:00"
+        )
+        old_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+    saved = flows.create_flow(_flow(
+        site["id"], old_id, download_mode="single", period_strategy="none",
+        start_week=None, end_week=None,
+    ), _request())
+    corrected = _mtracker_discovery("AI Insights")
+    duplicate = flows.create_report(flows.ReportWrite(
+        site_id=site["id"], name="Advanced > AI Insights > M Tracker",
+        report_url=corrected.report_url, automation=corrected.automation,
+        filters=[flows.FilterWrite(
+            filter_key="region", label="Region", control_label="Region",
+            control_type="select", options=["Global"],
+        )],
+    ), _request())
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_reports SET source_kind='discovered', discovery_key=? WHERE id=?",
+            (corrected.discovery_key, duplicate["id"]),
+        )
+        flows._apply_discovery(db, site["id"], [corrected], "2026-08-19T10:00:00")
+        rows = db.execute(
+            "SELECT id, discovery_key, stale, enabled FROM flow_reports ORDER BY id"
+        ).fetchall()
+        flow = db.execute("SELECT report_id FROM flows WHERE id=?", (saved["id"],)).fetchone()
+
+    assert flow["report_id"] == duplicate["id"]
+    assert next(row for row in rows if row["id"] == duplicate["id"])["stale"] == 0
+    assert next(row for row in rows if row["id"] == old_id)["stale"] == 1
+
+
 def test_scan_estimate_uses_recorded_median(flow_db):
     site = flows.create_site(_asap_site(), _request())
     with database.get_db() as db:

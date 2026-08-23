@@ -242,7 +242,10 @@ def _copy_artifact(connection, artifact: dict, qualified: str) -> None:
     raw_connection = connection.connection
     cursor = raw_connection.cursor()
     try:
-        with artifact["path"].open("r", encoding="utf-8-sig", newline="") as stream:
+        # Universal-newline mode gives PostgreSQL the same LF-delimited COPY
+        # stream on Windows and Unix. The CSV parser still inspects the source
+        # with newline="" above, but COPY does not need to preserve CRLF bytes.
+        with artifact["path"].open("r", encoding="utf-8-sig", newline=None) as stream:
             cursor.copy_expert(statement, stream)
     finally:
         cursor.close()

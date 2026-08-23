@@ -2147,6 +2147,16 @@ def _apply_discovery(
     keys = {item.discovery_key for item in reports}
     reset_result = {}
     site = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
+    incoming_path_counts: dict[tuple[str, str], int] = {}
+    if site and site["adapter"] == ASAP_PORTAL_ADAPTER:
+        for item in reports:
+            path = [
+                str(part).strip() for part in item.automation.get("category_path", [])
+                if str(part).strip()
+            ]
+            if len(path) >= 2:
+                identity = (path[0].casefold(), path[-1].casefold())
+                incoming_path_counts[identity] = incoming_path_counts.get(identity, 0) + 1
     is_gscm_snapshot = bool(site and site["adapter"] == GSCM_PORTAL_ADAPTER and complete)
     if is_gscm_snapshot and not reports:
         return {
@@ -2175,6 +2185,52 @@ def _apply_discovery(
                AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
             (site_id, item.discovery_key, catalog_name),
         ).fetchone()
+        relocated = None
+        if site and site["adapter"] == ASAP_PORTAL_ADAPTER and len(category_path) >= 2:
+            identity = (
+                str(category_path[0]).strip().casefold(),
+                str(category_path[-1]).strip().casefold(),
+            )
+            if incoming_path_counts.get(identity) == 1:
+                candidates = []
+                for candidate in db.execute(
+                    """SELECT r.id, r.discovery_key, r.automation_json
+                       FROM flow_reports r
+                       WHERE r.site_id=? AND r.source_kind='discovered'
+                         AND r.discovery_key<>?
+                         AND EXISTS(SELECT 1 FROM flows f WHERE f.report_id=r.id)
+                       ORDER BY r.id""",
+                    (site_id, item.discovery_key),
+                ).fetchall():
+                    candidate_path = _loads(candidate["automation_json"], {}).get("category_path", [])
+                    candidate_path = [
+                        str(part).strip() for part in candidate_path if str(part).strip()
+                    ]
+                    if not candidate_path and candidate["discovery_key"]:
+                        candidate_path = [
+                            part.strip() for part in candidate["discovery_key"].split(" > ")
+                            if part.strip()
+                        ]
+                    if len(candidate_path) >= 2 and (
+                        candidate_path[0].casefold(), candidate_path[-1].casefold()
+                    ) == identity:
+                        candidates.append(candidate)
+                if len(candidates) == 1:
+                    relocated = candidates[0]
+        if relocated:
+            if existing and existing["id"] != relocated["id"]:
+                # A corrected menu path may already have produced a duplicate
+                # catalog row. Move saved flows to the current row instead of
+                # leaving them attached to the stale, non-navigable path.
+                db.execute(
+                    "UPDATE flows SET report_id=?, updated_at=? WHERE report_id=?",
+                    (existing["id"], seen_at, relocated["id"]),
+                )
+            elif not existing:
+                # Preserve the referenced report id when the corrected path is
+                # new. Uniqueness on root + leaf prevents merging same-named
+                # reports that legitimately live in different menu columns.
+                existing = relocated
         if not existing and category_path:
             for candidate in db.execute(
                 """SELECT id, automation_json FROM flow_reports
