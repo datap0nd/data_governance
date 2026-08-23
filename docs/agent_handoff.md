@@ -2,20 +2,20 @@
 
 ## Current Objective
 
-Finish the last live ASAP acceptance check in Citrix. The GSCM clean catalog
-scan and `SIBP_CI_Series_ASP_Global` workbook download have passed end to end.
-ASAP already discovers the active Retail `Flagship Experience` report, but the
-newest build still needs one final report-specific scan to verify that its
-filter titles are `Period`, `Dimension`, and `Measure`, with neither the
-generated hexadecimal label nor the current value `202623` displayed.
+Finish the live Flows acceptance work in Citrix. First, use the ASAP WiFi flow
+as the reference and compare the live Retail `Flagship Experience` report with
+a report-specific Metronome scan. Its filter titles must be `Period`,
+`Dimension`, and `Measure`, and the visible Measure list must match the portal.
+Then rerun the repaired M Tracker flows in headed mode, confirm no run exceeds
+30 minutes, and enable the GSCM bookmark flow's managed SQL insertion into the
+case-sensitive PostgreSQL target `bi_reporting."GSCM_Test"`. Validate that
+target through SELECT-only pgAdmin queries.
 
 ## Repo State
 
-- Path: `/Users/rafaelcunha/Documents/data_governance`
 - Branch: `main`
-- Delivered code commit: `b7c66ed` (`Normalize generated ASAP period labels`)
-- `HEAD` and `origin/main` were both `b7c66edba0bad38a9b0253899bff5c7f0f86a571`
-  before this handoff update.
+- Latest delivered behavior commit: `1c9bdab` (`Cover exact GSCM SQL target casing`)
+- `main` includes all behavior changes through `1c9bdab`.
 - The repo is private.
 - Preserve untracked `governance.db-shm` and `governance.db-wal`.
 
@@ -32,6 +32,13 @@ generated hexadecimal label nor the current value `202623` displayed.
   report-filter labels.
 - `b7c66ed`: recognize generated labels formed from multiple hexadecimal runs
   joined by underscores.
+- `806bd09`: repair saved ASAP flow references when a report moves between
+  portal menu groups, including an already-duplicated catalog state. This is
+  the M Tracker stale-path repair.
+- `2778c82`: impose a hard 30-minute flow-run limit, record `runtime_limit`,
+  and stop the exact assigned headed or headless worker after expiry.
+- `1c9bdab`: prove that the requested mixed-case PostgreSQL table name
+  `GSCM_Test` remains double-quoted instead of folding to `gscm_test`.
 - Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
   retaining stale rows from an older scan.
 
@@ -59,8 +66,8 @@ generated hexadecimal label nor the current value `202623` displayed.
 
 ## Verification
 
-- Full local test suite: 435 passed.
-- `HEAD` matched `origin/main` before this documentation update.
+- Full local test suite: 439 passed.
+- `main` includes the verified behavior commit `1c9bdab`.
 - GSCM end-to-end acceptance: passed.
 - ASAP active Retail report discovery: passed.
 - ASAP final filter-label acceptance on build `20260821-165304`: blocked only
@@ -69,10 +76,15 @@ generated hexadecimal label nor the current value `202623` displayed.
 
 ## Next Step
 
-After the inner BI desktop is accessible again, open the installed Metronome
-build, select ASAP `Flagship Experience`, and run `Scan report`. Verify the
-form shows `Period`, `Dimension`, and `Measure`; browser Find should return
-zero matches for `202623` and for the hexadecimal prefix `7D4E`. Cancel the
-unsaved flow. If all rows pass, update this handoff, commit and push it to
-`main`, verify `origin/main`, mark the active goal complete, and send the
-promised Gmail result to the authenticated user.
+The current WorkDev Chrome Remote Desktop session is available, but Edge has no
+known HyperVM Workdev portal entry. Do not use the visible Samsung VDI portal
+as a substitute. Once the trusted HyperVM entry is opened or supplied, connect
+to the inner BI desktop and install the latest build. Select ASAP `Flagship
+Experience`, run `Scan report`, and compare every Measure option with the live
+portal. Browser Find must return zero matches for `202623` and the hexadecimal
+prefix `7D4E`. Next, run and monitor the affected M Tracker flows headed. Only
+after ASAP and M Tracker pass, edit the existing GSCM bookmark flow to use
+Replace all rows with database/schema/table set to the deployed database,
+`bi_reporting`, and `GSCM_Test`; run it once and verify the exact quoted target
+with SELECT-only pgAdmin queries. Send the promised completion Gmail only after
+all live checks pass.
