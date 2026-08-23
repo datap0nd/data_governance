@@ -11,6 +11,7 @@ from app import flow_sql, flow_worker
     ("identifier", "quoted"),
     [
         ("reporting", '"reporting"'),
+        ("GSCM_Test", '"GSCM_Test"'),
         ("Import First and Second Activation", '"Import First and Second Activation"'),
         ('Team "Current" Imports', '"Team ""Current"" Imports"'),
         ('name"; DROP TABLE users; --', '"name""; DROP TABLE users; --"'),
