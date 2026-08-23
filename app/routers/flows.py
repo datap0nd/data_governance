@@ -39,6 +39,7 @@ SCAN_MODES = {"full", "partial"}
 BROWSER_MODES = {"headless", "headed"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
 RUN_STALE_TIMEOUT_SECONDS = 600
+FLOW_RUN_MAX_DURATION_SECONDS = 30 * 60
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
 RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
@@ -280,23 +281,38 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
     return outcome
 
 
-def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
-    """Fail work whose assigned browser stopped heartbeating."""
+def fail_stale_runs(
+    timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS,
+    max_duration_seconds: int = FLOW_RUN_MAX_DURATION_SECONDS,
+) -> dict:
+    """Fail lost workers and stop any flow that reaches its wall-clock cap."""
     now = _now()
     now_text = _iso(now)
     cutoff = _iso(now - timedelta(seconds=timeout_seconds))
+    duration_cutoff = _iso(now - timedelta(seconds=max_duration_seconds))
     failed = []
-    message = "The assigned browser worker stopped responding before the run finished."
+    expired_workers: list[tuple[str, int | None]] = []
     with get_db() as db:
         rows = db.execute(
-            """SELECT r.id, r.flow_id, r.worker_id
+            """SELECT r.id, r.flow_id, r.worker_id, r.job_json,
+                      w.capabilities_json,
+                      CASE WHEN COALESCE(r.started_at, r.claimed_at, r.created_at) <= ?
+                           THEN 1 ELSE 0 END AS duration_exceeded
                FROM flow_runs r
                LEFT JOIN flow_workers w ON w.worker_id=r.worker_id
                WHERE r.status IN ('claimed','running')
-                 AND COALESCE(w.last_seen_at, r.heartbeat_at, r.claimed_at) < ?""",
-            (cutoff,),
+                 AND (COALESCE(w.last_seen_at, r.heartbeat_at, r.claimed_at) < ?
+                      OR COALESCE(r.started_at, r.claimed_at, r.created_at) <= ?)""",
+            (duration_cutoff, cutoff, duration_cutoff),
         ).fetchall()
         for row in rows:
+            duration_exceeded = bool(row["duration_exceeded"])
+            message = (
+                f"The flow reached its {max_duration_seconds // 60}-minute maximum runtime "
+                "and its assigned browser worker was stopped."
+                if duration_exceeded else
+                "The assigned browser worker stopped responding before the run finished."
+            )
             db.execute(
                 """UPDATE flow_runs SET status='failed', error=?, finished_at=?, heartbeat_at=?
                    WHERE id=? AND status IN ('claimed','running')""",
@@ -305,8 +321,11 @@ def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
             db.execute(
                 """INSERT INTO flow_run_events
                    (run_id, status, stage, message, details_json, error, traceback, created_at)
-                   VALUES (?, 'failed', 'worker_lost', ?, '{}', ?, NULL, ?)""",
-                (row["id"], message, message, now_text),
+                   VALUES (?, 'failed', ?, ?, '{}', ?, NULL, ?)""",
+                (
+                    row["id"], "runtime_limit" if duration_exceeded else "worker_lost",
+                    message, message, now_text,
+                ),
             )
             db.execute(
                 """UPDATE flows SET last_run_at=?, last_status='failed', last_error=?, updated_at=?
@@ -319,8 +338,17 @@ def fail_stale_runs(timeout_seconds: int = RUN_STALE_TIMEOUT_SECONDS) -> dict:
                        last_error=?, updated_at=? WHERE worker_id=?""",
                     (message, now_text, row["worker_id"]),
                 )
+                if duration_exceeded:
+                    capabilities = _loads(row["capabilities_json"], {})
+                    raw_pid = capabilities.get("process_id")
+                    process_id = raw_pid if isinstance(raw_pid, int) and raw_pid > 0 else None
+                    job = _loads(row["job_json"], {})
+                    browser_mode = job.get("execution", {}).get("browser_mode", "headless")
+                    expired_workers.append((browser_mode, process_id))
             failed.append(row["id"])
         _sync_flow_failure_actions(db, now_text)
+    for browser_mode, process_id in expired_workers:
+        stop_local_worker(browser_mode, process_id)
     for run_id in failed:
         notify_flow_owner_of_failure(run_id)
     return {"failed_run_ids": failed, "count": len(failed)}

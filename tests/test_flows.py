@@ -2673,6 +2673,46 @@ def test_run_heartbeat_prevents_active_worker_from_being_reaped(flow_db, monkeyp
     assert flows.get_run(queued["id"])["status"] == "claimed"
 
 
+def test_flow_runtime_cap_fails_run_and_stops_exact_assigned_worker(flow_db, monkeypatch):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], browser_mode="headed"), _request()
+    )
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode: {"status": "starting"})
+    queued = flows.queue_run(saved["id"], _request())
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="Visible",
+        capabilities={"headed": True, "process_id": 4321},
+    ))
+    flows.claim_run("bi-desktop-headed")
+    monkeypatch.setattr(flows, "_now", lambda: datetime.fromisoformat("2026-08-13T10:31:00"))
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_runs SET started_at=?, heartbeat_at=? WHERE id=?",
+            ("2026-08-13T10:00:00", "2026-08-13T10:30:59", queued["id"]),
+        )
+        db.execute(
+            "UPDATE flow_workers SET last_seen_at=? WHERE worker_id=?",
+            ("2026-08-13T10:30:59", "bi-desktop-headed"),
+        )
+    stopped = []
+    monkeypatch.setattr(
+        flows, "stop_local_worker",
+        lambda mode, pid: stopped.append((mode, pid)) or {"status": "stopped"},
+    )
+
+    result = flows.fail_stale_runs(timeout_seconds=600, max_duration_seconds=30 * 60)
+
+    assert result == {"failed_run_ids": [queued["id"]], "count": 1}
+    assert stopped == [("headed", 4321)]
+    run = flows.get_run(queued["id"])
+    assert run["status"] == "failed"
+    assert "30-minute maximum runtime" in run["error"]
+    assert any(event["stage"] == "runtime_limit" for event in run["events"])
+    assert flows.list_flows()[0]["last_status"] == "failed"
+
+
 # --- Flow ownership and failure alerts ---
 
 def _person(name="Dana", role="BI", email="dana@example.test"):
