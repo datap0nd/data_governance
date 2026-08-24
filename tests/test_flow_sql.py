@@ -1,3 +1,5 @@
+import hashlib
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,11 +86,119 @@ def test_excel_download_is_preserved_and_normalized_to_csv(tmp_path):
     ]
 
 
+def test_raw_xlsx_passthrough_skips_unused_csv_normalization(
+    tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+    output = tmp_path / "MTracker.xlsx"
+    monkeypatch.setattr(
+        flow_worker,
+        "_normalize_xlsx",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a raw-only flow must not scan the saved workbook into CSV"
+        ),
+    )
+    monkeypatch.setattr(
+        flow_worker,
+        "_csv_metadata",
+        lambda *_args, **_kwargs: pytest.fail(
+            "raw XLSX metadata should be computed during its target copy"
+        ),
+    )
+
+    metadata = flow_worker._store_completed_download(
+        source, output, file_format="xlsx", require_normalized_csv=False,
+    )
+
+    assert output.read_bytes() == source.read_bytes()
+    assert metadata["file_path"] == str(output)
+    assert metadata["filename"] == output.name
+    assert metadata["detected_format"] == "xlsx"
+    assert metadata["row_count"] is None
+    assert metadata["file_size"] == output.stat().st_size
+    assert metadata["checksum"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert "normalization_error" not in metadata
+
+
+def test_raw_xlsx_passthrough_rejects_an_incomplete_zip_container(tmp_path):
+    source = tmp_path / "browser-download"
+    source.write_bytes(b"PK\x03\x04not-a-complete-workbook")
+    output = tmp_path / "MTracker.xlsx"
+
+    with pytest.raises(RuntimeError, match="complete XLSX ZIP container"):
+        flow_worker._store_completed_download(
+            source,
+            output,
+            file_format="xlsx",
+            require_normalized_csv=False,
+        )
+
+    assert not output.exists()
+
+
+def test_raw_xlsx_passthrough_rejects_a_corrupt_zip_member(tmp_path):
+    source = tmp_path / "browser-download"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as workbook:
+        workbook.writestr("[Content_Types].xml", b"content-types")
+        workbook.writestr("xl/workbook.xml", b"workbook")
+        workbook.writestr("xl/worksheets/sheet1.xml", b"uncorrupted-sheet-data")
+    damaged = bytearray(source.read_bytes())
+    marker = damaged.index(b"uncorrupted-sheet-data")
+    damaged[marker] ^= 0x01
+    source.write_bytes(damaged)
+    output = tmp_path / "MTracker.xlsx"
+
+    with pytest.raises(RuntimeError, match="corrupt XLSX member"):
+        flow_worker._store_completed_download(
+            source, output, file_format="xlsx", require_normalized_csv=False,
+        )
+
+    assert not output.exists()
+
+
+def test_raw_xlsx_exclusive_copy_preserves_an_existing_output(tmp_path):
+    from openpyxl import Workbook
+
+    source = tmp_path / "browser-download"
+    workbook = Workbook()
+    workbook.active.append(["Market", "Units"])
+    workbook.active.append(["Global", 12])
+    workbook.save(source)
+    output = tmp_path / "MTracker.xlsx"
+    output.write_bytes(b"user-owned-existing-workbook")
+
+    with pytest.raises(FileExistsError):
+        flow_worker._store_completed_download(
+            source, output, file_format="xlsx", require_normalized_csv=False,
+        )
+
+    assert output.read_bytes() == b"user-owned-existing-workbook"
+
+
+def test_completion_format_label_uses_the_detected_download_format():
+    assert flow_worker._completed_export_format_label(
+        [{"detected_format": "xlsx"}], "csv",
+    ) == "XLSX"
+
+
 def test_gscm_raw_workbook_is_kept_when_optional_normalization_fails(
     tmp_path, monkeypatch,
 ):
+    from openpyxl import Workbook
+
     source = tmp_path / "browser-download.xlsx"
-    source.write_bytes(b"PK\x03\x04complete-gscm-workbook")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
     output = tmp_path / "GSCM_SIBP.xlsx"
     monkeypatch.setattr(
         flow_worker,

@@ -1818,6 +1818,50 @@ def test_revealed_menu_headers_diff_by_text_and_position():
 
 # --- HTML dashboard download links + scan payload caps ---
 
+
+def _stub_dashboard_execution(monkeypatch):
+    monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
+    monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
+    monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_activate_export_view",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("dashboards have no export views")
+        ),
+    )
+
+
+def _mtracker_dashboard_job(
+    target: Path, *, transformation=False, sql=False, file_format="xlsx",
+):
+    return {
+        "site": {"adapter": "asap_portal"},
+        "flow": {"name": "M Tracker pull"},
+        "report": {
+            "id": 7,
+            "name": "M Tracker",
+            "url": "https://portal.example.test/mtracker",
+            "ready_text": None,
+            "open_export_text": None,
+            "download_text": "Download Main Data",
+            "filters": [],
+            "export_views": [],
+            "download_links": ["Download Main Data (xlsx)"],
+            "automation": {"kind": "html_dashboard", "download_links": []},
+        },
+        "downloads": {
+            "target_folder": str(target),
+            "periods": [None],
+            "filename_template": f"mtracker.{file_format}",
+            "file_format": file_format,
+        },
+        "transformation": {"enabled": transformation},
+        "sql_handoff": {"enabled": sql},
+    }
+
 def test_download_links_are_swept_across_frames_and_deduped():
     outer = _FilterFrame([
         {"label": "Download CSV", "href": "/files/report.csv", "download_attr": False},
@@ -1947,6 +1991,247 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
     assert [item["export_view"] for item in artifacts] == ["Download CSV", "Download raw data"]
     assert all(item["status"] == "saved" for item in artifacts)
     assert any("from the dashboard" in (item.get("message") or "") for item in events)
+
+
+def test_dashboard_xlsx_without_downstream_finishes_from_the_raw_workbook(
+    tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    source = staging / "8f4a2b8e-6c9d-4d69-9ea4-17ad9d2f33e1"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+    _stub_dashboard_execution(monkeypatch)
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_download_dashboard_link",
+        lambda *_args, **_kwargs: source,
+    )
+    monkeypatch.setattr(
+        flow_worker,
+        "_normalize_xlsx",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a dashboard with no transformation or SQL must not normalize XLSX"
+        ),
+    )
+    events = []
+
+    artifacts, _timings = flow_worker.execute_job(
+        _WaitPage(),
+        _mtracker_dashboard_job(target, file_format="csv"),
+        lambda _status, detail, _artifacts=None: events.append(detail),
+        tmp_path / "profile",
+        staging,
+    )
+
+    saved = target / "mtracker.xlsx"
+    assert saved.is_file()
+    assert artifacts[0]["file_path"] == str(saved)
+    assert artifacts[0]["filename"] == saved.name
+    assert artifacts[0]["detected_format"] == "xlsx"
+    assert artifacts[0]["row_count"] is None
+    assert not (target / "mtracker.csv").exists()
+    stages = [event["stage"] for event in events]
+    assert "file_transfer" in stages
+    assert "file_normalization" not in stages
+    assert "file_metadata" not in stages
+
+
+@pytest.mark.parametrize("downstream", ["transformation", "sql_handoff"])
+def test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing(
+    downstream, tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    source = staging / "1f73a67f-a23b-4e44-9511-5c112edb2370"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Raw data"
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+    _stub_dashboard_execution(monkeypatch)
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_download_dashboard_link",
+        lambda *_args, **_kwargs: source,
+    )
+    events = []
+    raw_seen_before_normalization = []
+    normalized_seen_before_metadata = []
+
+    def progress(_status, detail, _artifacts=None):
+        events.append(detail)
+        if detail["stage"] == "file_normalization":
+            raw_seen_before_normalization.append((target / "mtracker.xlsx").is_file())
+        if detail["stage"] == "file_metadata":
+            normalized_seen_before_metadata.append(
+                (target / "mtracker_normalized.csv").is_file()
+            )
+
+    job = _mtracker_dashboard_job(
+        target,
+        transformation=downstream == "transformation",
+        sql=downstream == "sql_handoff",
+    )
+    artifacts, _timings = flow_worker.execute_job(
+        _WaitPage(), job, progress, tmp_path / "profile", staging,
+    )
+
+    normalized = target / "mtracker_normalized.csv"
+    assert (target / "mtracker.xlsx").is_file()
+    assert normalized.is_file()
+    assert artifacts[0]["file_path"] == str(normalized)
+    assert artifacts[0]["row_count"] == 1
+    assert raw_seen_before_normalization == [True]
+    assert normalized_seen_before_metadata == [True]
+    stages = [event["stage"] for event in events]
+    assert stages.index("file_export") < stages.index("file_transfer")
+    assert stages.index("file_transfer") < stages.index("file_normalization")
+    assert stages.index("file_normalization") < stages.index("file_metadata")
+
+
+def test_asap_export_view_workbook_still_normalizes_without_downstream(
+    tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    source = staging / "regular-export"
+    workbook = Workbook()
+    workbook.active.append(["Market", "Units"])
+    workbook.active.append(["Global", 12])
+    workbook.save(source)
+    _stub_dashboard_execution(monkeypatch)
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_activate_export_view",
+        lambda _page, frame, label: (frame, label),
+    )
+    monkeypatch.setattr(
+        flow_worker,
+        "_asap_download_with_retry",
+        lambda *_args, **_kwargs: (source, []),
+    )
+    job = _mtracker_dashboard_job(target)
+    job["report"]["download_links"] = []
+    job["report"]["export_views"] = ["Export Wizard"]
+    job["report"]["automation"] = {
+        "export_views": [{"label": "Export Wizard", "filter_keys": []}],
+    }
+
+    artifacts, _timings = flow_worker.execute_job(
+        _WaitPage(), job, lambda *_args: None, tmp_path / "profile", staging,
+    )
+
+    assert (target / "mtracker.xlsx").is_file()
+    assert (target / "mtracker_normalized.csv").is_file()
+    assert artifacts[0]["file_path"] == str(target / "mtracker_normalized.csv")
+
+
+def test_dashboard_transfer_progress_failure_is_not_redownloaded(
+    tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    source = staging / "completed-browser-file"
+    workbook = Workbook()
+    workbook.active.append(["Market", "Units"])
+    workbook.active.append(["Global", 12])
+    workbook.save(source)
+    _stub_dashboard_execution(monkeypatch)
+    downloads = []
+
+    def download(*_args, **_kwargs):
+        downloads.append(1)
+        return source
+
+    monkeypatch.setattr(flow_worker, "_asap_download_dashboard_link", download)
+    events = []
+
+    def progress(_status, detail, _artifacts=None):
+        events.append(detail)
+        if detail["stage"] == "file_transfer":
+            raise RuntimeError("progress endpoint unavailable during transfer")
+
+    with pytest.raises(
+        flow_worker._CompletedDownloadProcessingError,
+        match="ASAP will not be reopened.*progress endpoint unavailable",
+    ):
+        flow_worker.execute_job(
+            _WaitPage(), _mtracker_dashboard_job(target), progress,
+            tmp_path / "profile", staging,
+        )
+
+    assert downloads == [1]
+    assert not (target / "mtracker.xlsx").exists()
+    assert not any(event["stage"] == "export_retry" for event in events)
+
+
+def test_dashboard_completed_download_processing_failure_is_not_redownloaded(
+    tmp_path, monkeypatch,
+):
+    from openpyxl import Workbook
+
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    source = staging / "completed-browser-file"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Market", "Units"])
+    sheet.append(["Global", 12])
+    workbook.save(source)
+    _stub_dashboard_execution(monkeypatch)
+    downloads = []
+
+    def download(*_args, **_kwargs):
+        downloads.append(1)
+        return source
+
+    monkeypatch.setattr(flow_worker, "_asap_download_dashboard_link", download)
+    events = []
+
+    def progress(_status, detail, _artifacts=None):
+        events.append(detail)
+        if detail["stage"] == "file_normalization":
+            raise RuntimeError("progress endpoint unavailable during normalization")
+
+    with pytest.raises(
+        flow_worker._CompletedDownloadProcessingError,
+        match="ASAP will not be reopened.*progress endpoint unavailable",
+    ):
+        flow_worker.execute_job(
+            _WaitPage(),
+            _mtracker_dashboard_job(target, sql=True),
+            progress,
+            tmp_path / "profile",
+            staging,
+        )
+
+    assert downloads == [1]
+    assert (target / "mtracker.xlsx").is_file()
+    assert not (target / "mtracker_normalized.csv").exists()
+    assert not any(event["stage"] == "export_retry" for event in events)
 
 
 def test_execute_job_stores_dashboard_csv_without_closing_download_popup(

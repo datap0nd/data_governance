@@ -19,10 +19,11 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -4026,6 +4027,83 @@ def _csv_metadata(path: Path) -> dict:
     return {"file_size": file_size, "checksum": digest.hexdigest(), "row_count": row_count}
 
 
+def _copy_with_checksum(source_path: Path, output: Path) -> dict:
+    """Exclusively copy one file while computing metadata in the same pass."""
+    digest = hashlib.sha256()
+    copied = 0
+    with source_path.open("rb") as source, output.open("xb") as destination:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            destination.write(chunk)
+            digest.update(chunk)
+            copied += len(chunk)
+    return {"file_size": copied, "checksum": digest.hexdigest()}
+
+
+def _raw_xlsx_metadata(
+    output: Path,
+    original_size: int,
+    checksum: str,
+    detected: str,
+    *,
+    normalization_error: str | None = None,
+) -> dict:
+    """Describe a verified raw workbook when no CSV artifact is required."""
+    metadata = {
+        "file_size": original_size,
+        "checksum": checksum,
+        "row_count": None,
+        "file_path": str(output),
+        "filename": output.name,
+        "original_file_path": str(output),
+        "original_filename": output.name,
+        "original_file_size": original_size,
+        "detected_format": detected,
+        "source_encoding": "xlsx",
+        "source_delimiter": None,
+        "source_sheets": [],
+        "columns": [],
+    }
+    if normalization_error is not None:
+        metadata["normalization_error"] = normalization_error
+    return metadata
+
+
+def _completed_export_format_label(artifacts: list[dict], configured: str) -> str:
+    """Describe what the portal actually delivered for the completion text."""
+    detected = {
+        str(artifact.get("detected_format") or "").strip().upper()
+        for artifact in artifacts
+        if str(artifact.get("detected_format") or "").strip()
+    }
+    return "/".join(sorted(detected)) or str(configured or "csv").upper()
+
+
+def _validate_xlsx_container(path: Path) -> None:
+    """Require a complete OOXML ZIP container before raw-XLSX success."""
+    missing: set[str] = set()
+    corrupt_member: str | None = None
+    try:
+        with zipfile.ZipFile(path) as workbook:
+            members = set(workbook.namelist())
+            missing = {"[Content_Types].xml", "xl/workbook.xml"} - members
+            if not missing:
+                corrupt_member = workbook.testzip()
+    except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"The downloaded Excel workbook is not a complete XLSX ZIP container: {path.name}"
+        ) from exc
+    if missing:
+        raise RuntimeError(
+            f"The downloaded Excel workbook is missing required XLSX content in {path.name}: "
+            f"{', '.join(sorted(missing))}"
+        )
+    if corrupt_member:
+        raise RuntimeError(
+            f"The downloaded Excel workbook contains a corrupt XLSX member in {path.name}: "
+            f"{corrupt_member}"
+        )
+
+
 #: What a downloaded file actually is, read from its first bytes. A portal
 #: labels a link, and the flow declares a download type, but neither is
 #: evidence: an "(xlsx)" dashboard link can emit HTML, and a CSV-configured
@@ -4065,6 +4143,8 @@ def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
     requested_period: Any = None,
     allow_raw_xlsx_fallback: bool = False,
+    require_normalized_csv: bool = True,
+    processing_progress: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
@@ -4099,14 +4179,27 @@ def _store_completed_download(
         original_size = local_path.stat().st_size
         if original_size <= 0:
             raise RuntimeError("The downloaded Excel workbook is empty.")
-        with local_path.open("rb") as source, output.open("xb") as destination:
-            shutil.copyfileobj(source, destination, length=1024 * 1024)
-        if output.stat().st_size != original_size:
+        if not require_normalized_csv:
+            # Edge's stable staging file is local and cheap to inspect. Check
+            # the entire OOXML container before creating anything in the
+            # configured (often network-backed) target folder.
+            _validate_xlsx_container(local_path)
+        copied = _copy_with_checksum(local_path, output)
+        if copied["file_size"] != original_size or output.stat().st_size != original_size:
             raise RuntimeError(f"Downloaded Excel workbook was not copied completely to {output}.")
+        if not require_normalized_csv:
+            return _raw_xlsx_metadata(
+                output, original_size, copied["checksum"], detected,
+            )
         normalized_output = _safe_output_path(
             output.parent, f"{output.stem}_normalized.csv",
         )
         requested_weeks = _validated_requested_weeks(requested_period)
+        if processing_progress is not None:
+            processing_progress(
+                "file_normalization",
+                f"Saved {output.name} to the target folder; preparing its normalized CSV.",
+            )
         try:
             normalization = _normalize_xlsx(
                 output, normalized_output, requested_weeks=requested_weeks,
@@ -4122,22 +4215,16 @@ def _store_completed_download(
             # transformation nor SQL handoff needs a CSV, keep that verified
             # XLSX as the successful artifact instead of throwing it away and
             # retrying report navigation.
-            metadata = _csv_metadata(output)
-            return {
-                **metadata,
-                "file_path": str(output),
-                "filename": output.name,
-                "original_file_path": str(output),
-                "original_filename": output.name,
-                "original_file_size": original_size,
-                "detected_format": detected,
-                "source_encoding": "xlsx",
-                "source_delimiter": None,
-                "source_sheets": [],
-                "columns": [],
-                "row_count": None,
-                "normalization_error": str(exc),
-            }
+            _validate_xlsx_container(local_path)
+            return _raw_xlsx_metadata(
+                output, original_size, copied["checksum"], detected,
+                normalization_error=str(exc),
+            )
+        if processing_progress is not None:
+            processing_progress(
+                "file_metadata",
+                f"Normalized {normalized_output.name}; calculating its checksum and row count.",
+            )
         metadata = {**_csv_metadata(normalized_output), **normalization}
         return {
             **metadata,
@@ -4270,8 +4357,22 @@ def execute_job(
     # An HTML dashboard has no Export Wizard: its data leaves through the
     # download links the scanner catalogued, and each selected link is one
     # file of the bundle exactly like an export view is.
-    dashboard_links = list(job.get("report", {}).get("download_links") or [])
+    report = job.get("report", {})
+    dashboard_links = list(report.get("download_links") or [])
     is_dashboard = is_asap and bool(dashboard_links)
+    # New scans identify embedded dashboards explicitly. The export-view
+    # fallback keeps flows saved before that marker was introduced working.
+    is_html_dashboard = is_dashboard and (
+        (report.get("automation") or {}).get("kind") == "html_dashboard"
+        or not report.get("export_views")
+    )
+    downstream_requires_csv = bool(
+        job.get("transformation", {}).get("enabled")
+        or job.get("sql_handoff", {}).get("enabled")
+    )
+    require_normalized_csv = not (
+        is_html_dashboard and not downstream_requires_csv
+    )
     if is_dashboard:
         tasks = [
             {"period": period, "export_view": link, "download_link": link}
@@ -4443,10 +4544,57 @@ def execute_job(
                 _click_named(page, job["report"]["download_text"])
             download = pending.value
             export_pages = []
-        filename = _render_filename(
-            job["downloads"]["filename_template"], job, period, index, export_view,
-        )
-        output = _safe_output_path(target, filename)
+        try:
+            filename = _render_filename(
+                job["downloads"]["filename_template"], job, period, index, export_view,
+            )
+            output = _safe_output_path(target, filename)
+        except Exception as exc:
+            if is_asap or is_gscm:
+                portal = "GSCM" if is_gscm else "ASAP"
+                raise _CompletedDownloadProcessingError(
+                    f"Edge completed the {portal} download, but preparing its target path "
+                    f"failed. {portal} will not be reopened: {exc}"
+                ) from exc
+            raise
+        if is_asap or is_gscm:
+            try:
+                report_progress(
+                    "running",
+                    {
+                        "stage": "file_transfer",
+                        "message": (
+                            f"Edge finished download {index} of {len(tasks)}; saving it "
+                            "to the configured target folder."
+                        ),
+                        "period": period,
+                        "export_view": export_view,
+                        "item_index": index,
+                        "item_count": len(tasks),
+                    },
+                    artifacts,
+                )
+            except Exception as exc:
+                portal = "GSCM" if is_gscm else "ASAP"
+                raise _CompletedDownloadProcessingError(
+                    f"Edge completed the {portal} download, but reporting the target-storage "
+                    f"stage failed. {portal} will not be reopened: {exc}"
+                ) from exc
+
+        def _processing_progress(stage: str, message: str):
+            report_progress(
+                "running",
+                {
+                    "stage": stage,
+                    "message": message,
+                    "period": period,
+                    "export_view": export_view,
+                    "item_index": index,
+                    "item_count": len(tasks),
+                },
+                artifacts,
+            )
+
         with timings.measure("file_transfer", report_id=job["report"].get("id")):
             # ASAP closes its own export wizard after emitting the download.
             # Do not query or close that vanished page object: Edge can leave
@@ -4460,15 +4608,21 @@ def execute_job(
                         requested_period=period,
                         allow_raw_xlsx_fallback=(
                             is_gscm
-                            and not job.get("transformation", {}).get("enabled")
-                            and not job.get("sql_handoff", {}).get("enabled")
+                            and not downstream_requires_csv
                         ),
+                        require_normalized_csv=require_normalized_csv,
+                        processing_progress=_processing_progress,
                     )
                 except Exception as exc:
                     if is_gscm:
                         raise _CompletedDownloadProcessingError(
                             "Edge completed the GSCM workbook download, but local processing "
                             f"failed. GSCM will not be reopened: {exc}"
+                        ) from exc
+                    if is_asap:
+                        raise _CompletedDownloadProcessingError(
+                            "Edge completed the ASAP download, but target storage or local "
+                            f"processing failed. ASAP will not be reopened: {exc}"
                         ) from exc
                     raise
             else:
@@ -4757,7 +4911,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 if sql_result is not None
                                 else f"Saved {len(sql_artifacts)} transformed CSV file(s) after {len(artifacts) - len(sql_artifacts)} download(s)."
                                 if run["job"].get("transformation", {}).get("enabled")
-                                else f"Saved {len(artifacts)} {str(run['job'].get('downloads', {}).get('file_format') or 'csv').upper()} export(s)."
+                                else f"Saved {len(artifacts)} {_completed_export_format_label(artifacts, run['job'].get('downloads', {}).get('file_format') or 'csv')} export(s)."
                             ),
                         },
                         artifacts, timings,
