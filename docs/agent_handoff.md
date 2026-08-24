@@ -2,7 +2,7 @@
 
 ## Current Objective
 
-Have the user install the build containing `82b2d7f`; do not access Citrix or
+Have the user install the build containing `72db70d`; do not access Citrix or
 the work PC. Then have the user rerun the affected M Tracker flow headed. The
 ASAP site-level Quick scan and M Tracker row refresh are needed only if the
 saved report still points to `Advanced > Z8 Command Center > M Tracker` rather
@@ -15,8 +15,8 @@ queries.
 ## Repo State
 
 - Branch: `main`
-- Latest delivered behavior commit: `82b2d7f` (`Finish M Tracker downloads from staged files`)
-- `main` includes all behavior changes through `82b2d7f`.
+- Latest delivered behavior commit: `72db70d` (`Let M Tracker finish target file storage`)
+- `main` includes all behavior changes through `72db70d`.
 - The repo is private.
 - Preserve untracked `governance.db-shm` and `governance.db-wal`.
 
@@ -49,6 +49,10 @@ queries.
   only proof that an HTML-dashboard download started; completion now comes from
   the stable worker-staging file, so a missing terminal browser event cannot
   strand the run in `download.failure()`. GSCM keeps its separate native path.
+- `72db70d`: do not synchronously query or close M Tracker's half-detached
+  download popup after staging completes. Return the staged file immediately so
+  the existing validated staging-to-target copy can save it in the configured
+  flow folder, matching regular ASAP's no-close implementation.
 - Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
   retaining stale rows from an older scan.
 
@@ -82,13 +86,18 @@ queries.
   but Edge never reported the terminal download state. Source review found the
   worker blocked in unbounded `download.failure()` after the start event. No
   Citrix access was used for this diagnosis or fix.
+- After installing the staging fix, the user confirmed that Edge still
+  downloaded correctly but the configured flow folder remained empty. The
+  remaining pre-store block was the helper's synchronous `popup.close()` in its
+  `finally`: Python executed that call before returning the staged path, so
+  `_store_completed_download` was never reached.
 
 ## Verification
 
-- Full local test suite after `82b2d7f`: 451 passed.
+- Full local test suite after `72db70d`: 452 passed.
 - Focused GSCM/HTML-dashboard suite: 161 passed.
-- `main` includes the verified behavior commit `82b2d7f`.
-- Previous GSCM run 200 passed, but post-`82b2d7f` live acceptance is pending
+- `main` includes the verified behavior commit `72db70d`.
+- Previous GSCM run 200 passed, but post-`72db70d` live acceptance is pending
   because the August 24 run exposed a newer activation/state failure.
 - ASAP active Retail report discovery: passed.
 - ASAP final filter-label acceptance on build `20260821-165304`: blocked only
