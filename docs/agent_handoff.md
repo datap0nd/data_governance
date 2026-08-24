@@ -2,20 +2,22 @@
 
 ## Current Objective
 
-Finish the live Flows acceptance work in Citrix. First, use the ASAP WiFi flow
-as the reference and compare the live Retail `Flagship Experience` report with
-a report-specific Metronome scan. Its filter titles must be `Period`,
-`Dimension`, and `Measure`, and the visible Measure list must match the portal.
-Then rerun the repaired M Tracker flows in headed mode, confirm no run exceeds
-30 minutes, and enable the GSCM bookmark flow's managed SQL insertion into the
-case-sensitive PostgreSQL target `bi_reporting."GSCM_Test"`. Validate that
-target through SELECT-only pgAdmin queries.
+Install the build containing `6b25d8d`, then finish live Flows acceptance in
+Citrix. Run an ASAP **site-level Quick scan first** so the M Tracker relocation
+repair can move saved flows from `Advanced > Z8 Command Center > M Tracker` to
+`Advanced > AI Insights > M Tracker`; refreshing the old report row first will
+reuse its stale path. After the site scan, refresh the repaired M Tracker row
+and run all affected M Tracker flows headed. Also rerun the GSCM bookmark flow
+that produced the August 24 Setting/Public errors. Only after both portals pass,
+enable the GSCM flow's managed SQL insertion into the case-sensitive PostgreSQL
+target `bi_reporting."GSCM_Test"` and validate it with SELECT-only pgAdmin
+queries.
 
 ## Repo State
 
 - Branch: `main`
-- Latest delivered behavior commit: `1c9bdab` (`Cover exact GSCM SQL target casing`)
-- `main` includes all behavior changes through `1c9bdab`.
+- Latest delivered behavior commit: `6b25d8d` (`Stabilize M Tracker and GSCM downloads`)
+- `main` includes all behavior changes through `6b25d8d`.
 - The repo is private.
 - Preserve untracked `governance.db-shm` and `governance.db-wal`.
 
@@ -39,6 +41,11 @@ target through SELECT-only pgAdmin queries.
   and stop the exact assigned headed or headless worker after expiry.
 - `1c9bdab`: prove that the requested mixed-case PostgreSQL table name
   `GSCM_Test` remains double-quoted instead of folding to `gscm_test`.
+- `6b25d8d`: make M Tracker/HTML dashboard downloads trust Edge's completed
+  native Download object (including popup races); promote Nexacro caption
+  children to their owning controls; fall back to native Nexacro click events;
+  perform a real scope rebind; deduplicate gear attempts; and reload the GSCM
+  portal component tree before export attempt two.
 - Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
   retaining stale rows from an older scan.
 
@@ -63,12 +70,19 @@ target through SELECT-only pgAdmin queries.
   reached the expected `CORP\\meto.mx` credential prompt, but Windows rejected
   the saved RDP credential. Do not retry automatically after this authentication
   error.
+- On August 24, the supplied Metronome run screen showed a current GSCM export
+  failing before download: one attempt left the Public bookmark grid empty and
+  the other could not open Setting > Favorite even though the live inventory
+  contained the exact `btn_setting` component. The same attachment contains no
+  M Tracker-specific expanded log; M Tracker's reported failure is separate.
 
 ## Verification
 
-- Full local test suite: 439 passed.
-- `main` includes the verified behavior commit `1c9bdab`.
-- GSCM end-to-end acceptance: passed.
+- Full local test suite after `6b25d8d`: 448 passed.
+- Focused GSCM/HTML-dashboard suite: 161 passed.
+- `main` includes the verified behavior commit `6b25d8d`.
+- Previous GSCM run 200 passed, but post-`6b25d8d` live acceptance is pending
+  because the August 24 run exposed a newer activation/state failure.
 - ASAP active Retail report discovery: passed.
 - ASAP final filter-label acceptance on build `20260821-165304`: blocked only
   by the rejected RDP credential. This is not complete and no completion Gmail
@@ -76,15 +90,16 @@ target through SELECT-only pgAdmin queries.
 
 ## Next Step
 
-The current WorkDev Chrome Remote Desktop session is available, but Edge has no
-known HyperVM Workdev portal entry. Do not use the visible Samsung VDI portal
-as a substitute. Once the trusted HyperVM entry is opened or supplied, connect
-to the inner BI desktop and install the latest build. Select ASAP `Flagship
-Experience`, run `Scan report`, and compare every Measure option with the live
-portal. Browser Find must return zero matches for `202623` and the hexadecimal
-prefix `7D4E`. Next, run and monitor the affected M Tracker flows headed. Only
-after ASAP and M Tracker pass, edit the existing GSCM bookmark flow to use
-Replace all rows with database/schema/table set to the deployed database,
-`bi_reporting`, and `GSCM_Test`; run it once and verify the exact quoted target
-with SELECT-only pgAdmin queries. Send the promised completion Gmail only after
-all live checks pass.
+The local Citrix workflow still has no known HyperVM Workdev entry in Edge; do
+not substitute the visible Samsung VDI portal. Once the trusted entry is opened
+or supplied, connect to the inner BI desktop and install the latest build. In
+Flows, run ASAP's site-level Quick scan, verify the active M Tracker catalog row
+is under `Advanced > AI Insights`, then refresh that repaired row and run the M
+Tracker flows headed. Rerun the affected GSCM bookmark flow headed and confirm
+Setting > Favorite, Public-grid binding, report launch, and native file
+completion. Also finish the `Flagship Experience` Measure comparison (`202623`
+and hexadecimal prefix `7D4E` must be absent). Only after ASAP, M Tracker, and
+GSCM pass, configure Replace all rows for the deployed database,
+`bi_reporting`, and `GSCM_Test`; run once and verify the exact quoted target with
+SELECT-only pgAdmin queries. Send the promised completion Gmail only after all
+live checks pass.
