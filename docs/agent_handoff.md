@@ -2,7 +2,7 @@
 
 ## Current Objective
 
-Have the user install the build containing `72db70d`; do not access Citrix or
+Have the user install the build containing `2143650`; do not access Citrix or
 the work PC. Then have the user rerun the affected M Tracker flow headed. The
 ASAP site-level Quick scan and M Tracker row refresh are needed only if the
 saved report still points to `Advanced > Z8 Command Center > M Tracker` rather
@@ -15,8 +15,8 @@ queries.
 ## Repo State
 
 - Branch: `main`
-- Latest delivered behavior commit: `72db70d` (`Let M Tracker finish target file storage`)
-- `main` includes all behavior changes through `72db70d`.
+- Latest delivered behavior commit: `2143650` (`Finish M Tracker dashboard workbook runs`)
+- `main` includes all behavior changes through `2143650`.
 - The repo is private.
 - Preserve untracked `governance.db-shm` and `governance.db-wal`.
 
@@ -53,6 +53,12 @@ queries.
   download popup after staging completes. Return the staged file immediately so
   the existing validated staging-to-target copy can save it in the configured
   flow folder, matching regular ASAP's no-close implementation.
+- `2143650`: finish download-only HTML-dashboard workbooks directly from the
+  locally validated XLSX instead of silently streaming the completed workbook
+  into an unused normalized CSV. The worker validates the XLSX ZIP members and
+  CRCs before target creation, checksums it while copying, reports the actual
+  detected format, retains normalization when transformation or SQL needs CSV,
+  and never reopens the portal after a post-download processing failure.
 - Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
   retaining stale rows from an older scan.
 
@@ -91,12 +97,17 @@ queries.
   remaining pre-store block was the helper's synchronous `popup.close()` in its
   `finally`: Python executed that call before returning the staged path, so
   `_store_completed_download` was never reached.
+- After installing the target-copy fix, the user confirmed that the workbook
+  appeared in the configured folder but the run remained at `Downloading 1 of
+  1 from the dashboard`. The remaining work was an unconditional, unreported
+  XLSX-to-CSV normalization and metadata scan after the raw target copy. No
+  downstream consumer needed that CSV for this download-only M Tracker flow.
 
 ## Verification
 
-- Full local test suite after `72db70d`: 452 passed.
-- Focused GSCM/HTML-dashboard suite: 161 passed.
-- `main` includes the verified behavior commit `72db70d`.
+- Full local test suite after `2143650`: 463 passed.
+- Focused file-processing and HTML-dashboard suite: 148 passed.
+- `main` includes the verified behavior commit `2143650`.
 - Previous GSCM run 200 passed, but post-`72db70d` live acceptance is pending
   because the August 24 run exposed a newer activation/state failure.
 - ASAP active Retail report discovery: passed.
