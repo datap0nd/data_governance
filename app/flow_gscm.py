@@ -353,6 +353,67 @@ _ID_MATCH_JS = """(hints) => {
     return ids;
 }"""
 
+_COMPONENT_VISIBLE_JS = """(fragments) => {
+    for (const element of document.querySelectorAll('[id]')) {
+        const id = element.id || '';
+        if (!fragments.some(fragment => id.includes(fragment))) continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        return true;
+    }
+    return false;
+}"""
+
+#: Fire the Nexacro component rather than only its rendered caption node.
+#:
+#: Nexacro paints captions in children such as ``btn_public:icontext``.  A DOM
+#: click on that child can highlight the control without dispatching the
+#: component's registered ``onclick`` handler.  Resolve the public component
+#: path from the application object and use Nexacro's own event entry point as
+#: a verified fallback.  This never guesses a component: callers must supply
+#: an id that was already observed on screen.
+_NATIVE_COMPONENT_CLICK_JS = """(elementId) => {
+    if (typeof nexacro === 'undefined' || !nexacro
+            || typeof nexacro.getApplication !== 'function') {
+        return {available: false, fired: false, reason: 'nexacro-unavailable'};
+    }
+    const componentId = String(elementId || '').split(':', 1)[0];
+    if (!componentId) return {available: false, fired: false, reason: 'empty-id'};
+    const app = nexacro.getApplication();
+    let component = app;
+    for (const part of componentId.split('.')) {
+        if (!part) continue;
+        if (component && component[part] != null) {
+            component = component[part];
+            continue;
+        }
+        if (component && component.components && component.components[part] != null) {
+            component = component.components[part];
+            continue;
+        }
+        return {available: false, fired: false, reason: `missing:${part}`};
+    }
+    if (!component || typeof component.on_fire_onclick !== 'function') {
+        return {available: !!component, fired: false, reason: 'onclick-unavailable'};
+    }
+    try {
+        component.on_fire_onclick(
+            'lbutton', false, false, false,
+            0, 0, 0, 0, 0, 0,
+            component, component,
+        );
+        return {available: true, fired: true, component_id: componentId};
+    } catch (error) {
+        return {
+            available: true,
+            fired: false,
+            reason: String(error && error.message ? error.message : error),
+        };
+    }
+}"""
+
 
 # ── Roots: the portal may render panels inside frames ──
 
@@ -381,6 +442,17 @@ def _evaluate_everywhere(page, script, argument=None) -> list[tuple[Any, Any]]:
         if value:
             results.append((root, value))
     return results
+
+
+def _component_visible(page, *fragments: str) -> bool:
+    """Whether any live root exposes a visible component path fragment."""
+    wanted = [str(fragment) for fragment in fragments if str(fragment)]
+    if not wanted:
+        return False
+    return any(
+        bool(value)
+        for _root, value in _evaluate_everywhere(page, _COMPONENT_VISIBLE_JS, wanted)
+    )
 
 
 def _dedupe(items: list[tuple[Any, dict]]) -> list[tuple[Any, dict]]:
@@ -618,6 +690,61 @@ def _css_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _component_element_ids(element_id: str | None) -> list[str]:
+    """Return the Nexacro component id before its rendered caption child.
+
+    Live controls commonly expose both ``btn_name`` and
+    ``btn_name:icontext``.  Playwright can successfully click the latter
+    without Nexacro firing the Button or Tab handler, so always try the parent
+    component first while retaining the observed child as a compatibility
+    fallback.
+    """
+    observed = str(element_id or "").strip()
+    if not observed:
+        return []
+    component = observed.split(":", 1)[0]
+    return list(dict.fromkeys([component, observed]))
+
+
+def _native_click(page, element_id: str | None) -> bool:
+    """Fire one already-observed Nexacro component through its own event API."""
+    component_ids = _component_element_ids(element_id)
+    if not component_ids:
+        return False
+    component_id = component_ids[0]
+    if is_forbidden(component_id):
+        return False
+    for root in _roots(page):
+        try:
+            result = root.evaluate(_NATIVE_COMPONENT_CLICK_JS, component_id)
+        except Exception:
+            continue
+        if isinstance(result, dict) and result.get("fired") is True:
+            return True
+    return False
+
+
+def _click_record(root, record: dict, *, timeout_ms: int) -> str | None:
+    """Click a visible record's owning component, then its caption fallback."""
+    for element_id in _component_element_ids(record.get("id")):
+        try:
+            root.locator(f"[id='{_css_escape(element_id)}']").first.click(
+                force=True, timeout=timeout_ms,
+            )
+            return element_id
+        except Exception:
+            continue
+    if record.get("text"):
+        try:
+            root.locator(f"text={record['text']}").first.click(
+                force=True, timeout=timeout_ms,
+            )
+            return str(record.get("id") or "") or None
+        except Exception:
+            pass
+    return None
+
+
 def _clean_name(value: Any) -> str:
     name = _UNSAFE_NAME_RE.sub(" ", str(value or "")).strip()
     return re.sub(r"\s+", " ", name)[:200]
@@ -652,22 +779,23 @@ def find_by_label(page, labels) -> list[tuple[Any, dict]]:
     return matches
 
 
-def click_label(page, labels, *, timeout_ms: int = 30_000) -> dict | None:
+def click_label(
+    page, labels, *, timeout_ms: int = 30_000, prefer_id_fragment: str | None = None,
+) -> dict | None:
     """Click the tightest visible control carrying one of ``labels``."""
     if is_forbidden(*labels):
         raise RuntimeError(f"Refusing to click a control named {labels!r} in GSCM.")
     clear_screen(page)
-    for root, record in find_by_label(page, labels):
-        try:
-            locator = (
-                root.locator(f"[id='{_css_escape(record['id'])}']").first
-                if record.get("id")
-                else root.locator(f"text={record['text']}").first
-            )
-            locator.click(force=True, timeout=timeout_ms)
-            return record
-        except Exception:
-            continue
+    matches = find_by_label(page, labels)
+    if prefer_id_fragment:
+        matches.sort(key=lambda item: (
+            0 if prefer_id_fragment in str(item[1].get("id") or "") else 1,
+            item[1].get("w", 0) * item[1].get("h", 0),
+        ))
+    for root, record in matches:
+        clicked_id = _click_record(root, record, timeout_ms=timeout_ms)
+        if clicked_id is not None:
+            return {**record, "clicked_id": clicked_id}
     return None
 
 
@@ -679,7 +807,9 @@ def _hint_rank(element_id: str, hints) -> int:
     return len(hints)
 
 
-def click_by_id_hint(page, hints, *, timeout_ms: int = 30_000) -> dict | None:
+def click_by_id_hint(
+    page, hints, *, timeout_ms: int = 30_000, exclude_ids: set[str] | None = None,
+) -> dict | None:
     """Click an icon-only control located by the shape of its component id.
 
     Ranked by which hint matched before anything else. Sorting these by screen
@@ -688,24 +818,30 @@ def click_by_id_hint(page, hints, *, timeout_ms: int = 30_000) -> dict | None:
     popover and reported the gear missing.
     """
     hints = list(hints)
+    excluded = {
+        component_id
+        for value in (exclude_ids or set())
+        for component_id in _component_element_ids(value)[:1]
+    }
     clear_screen(page)
     candidates = []
     for root, records in _evaluate_everywhere(page, _ID_MATCH_JS, hints):
         for record in records:
             candidates.append((root, record))
     # A toolbar gear sits at the top of the screen; prefer the topmost match.
-    candidates = [item for item in candidates if not is_forbidden(item[1].get("id"))]
+    candidates = [
+        item for item in candidates
+        if not is_forbidden(item[1].get("id"))
+        and _component_element_ids(item[1].get("id"))[:1] != []
+        and _component_element_ids(item[1].get("id"))[0] not in excluded
+    ]
     candidates.sort(key=lambda item: (
         _hint_rank(item[1].get("id"), hints), item[1].get("y", 0), -item[1].get("x", 0),
     ))
     for root, record in candidates:
-        try:
-            root.locator(f"[id='{_css_escape(record['id'])}']").first.click(
-                force=True, timeout=timeout_ms,
-            )
-            return record
-        except Exception:
-            continue
+        clicked_id = _click_record(root, record, timeout_ms=timeout_ms)
+        if clicked_id is not None:
+            return {**record, "clicked_id": clicked_id}
     return None
 
 
@@ -734,6 +870,19 @@ def open_portal(page, url: str, *, timeout_ms: int = PORTAL_READY_TIMEOUT_MS) ->
     host = _host(url)
     if not host or host not in _host(page.url or ""):
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    wait_for_component(page, "mainframe.VFrameSet", timeout_ms=timeout_ms)
+    clear_screen(page)
+
+
+def reload_portal(page, job: dict, *, timeout_ms: int = PORTAL_READY_TIMEOUT_MS) -> None:
+    """Force a fresh Nexacro component tree before retrying a failed export.
+
+    ``open_portal`` intentionally reuses a healthy same-host session.  That is
+    wrong after a failed bookmark activation: the stale Setting popup and its
+    empty virtual grid survive into the next worker attempt.  A real retry must
+    reload the shell while keeping the same authenticated browser profile.
+    """
+    page.goto(portal_url(job), wait_until="domcontentloaded", timeout=timeout_ms)
     wait_for_component(page, "mainframe.VFrameSet", timeout_ms=timeout_ms)
     clear_screen(page)
 
@@ -826,9 +975,21 @@ def wait_for_calculation(
 
 
 def favorites_dialog_open(page) -> bool:
-    """The dialog is up when its scope tabs are on screen."""
+    """The Favorite panel is up when its component or scope tabs are visible."""
+    if _component_visible(page, "TopFrame.Setting1.form.div_favorite"):
+        return True
     visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
     return any(_normalize_label(tab) in visible for tab in SCOPE_TABS)
+
+
+def _wait_for_dialog_state(page, predicate, *, timeout_ms: int) -> bool:
+    """Poll a Nexacro dialog predicate while dispatching its browser events."""
+    poll_count = max(1, timeout_ms // IDLE_POLL_INTERVAL_MS)
+    for _poll in range(poll_count):
+        if predicate(page):
+            return True
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    return bool(predicate(page))
 
 
 def open_favorites_dialog(page, report_progress=None) -> None:
@@ -839,10 +1000,7 @@ def open_favorites_dialog(page, report_progress=None) -> None:
     """
     clear_screen(page)
     if favorites_dialog_open(page):
-        click_label(page, [FAVORITE_PANEL_LABEL])
-        page.wait_for_timeout(TAB_SETTLE_MS)
-        if favorites_dialog_open(page):
-            return
+        return
 
     if report_progress:
         report_progress("Opening GSCM Setting > Favorite.")
@@ -858,14 +1016,49 @@ def open_favorites_dialog(page, report_progress=None) -> None:
 
 def _reach_favorite_panel(page) -> bool:
     """Select the Favorite panel and confirm its scope tabs rendered."""
-    click_label(page, [FAVORITE_PANEL_LABEL])
-    page.wait_for_timeout(TAB_SETTLE_MS)
+    record = click_label(
+        page, [FAVORITE_PANEL_LABEL], prefer_id_fragment="TopFrame.Setting1",
+    )
+    if record is None:
+        return False
     clear_screen(page)
-    deadline = time.monotonic() + DIALOG_READY_TIMEOUT_MS / 1000
-    while time.monotonic() < deadline:
-        if favorites_dialog_open(page):
-            return True
-        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    if _wait_for_dialog_state(
+        page, favorites_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+    ):
+        return True
+    # A Nexacro caption child can accept the browser click without firing the
+    # panel component.  Only after the full render budget expires do we invoke
+    # that exact observed component natively, avoiding a premature double-click.
+    if _native_click(page, record.get("clicked_id") or record.get("id")):
+        clear_screen(page)
+        return _wait_for_dialog_state(
+            page, favorites_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        )
+    return False
+
+
+def _activate_setting_record(
+    page, root, record: dict, tried_ids: set[str], *, ready_timeout_ms: int,
+) -> bool:
+    """Try one unique gear candidate and verify that Setting really opened."""
+    component_ids = _component_element_ids(record.get("id"))
+    if not component_ids:
+        return False
+    component_id = component_ids[0]
+    if component_id in tried_ids or is_forbidden(component_id):
+        return False
+    tried_ids.add(component_id)
+    clicked_id = _click_record(root, record, timeout_ms=15_000)
+    if clicked_id is None:
+        return False
+    if _wait_for_dialog_state(
+        page, _setting_dialog_open, timeout_ms=ready_timeout_ms,
+    ):
+        return True
+    if _native_click(page, clicked_id):
+        return _wait_for_dialog_state(
+            page, _setting_dialog_open, timeout_ms=ready_timeout_ms,
+        )
     return False
 
 
@@ -878,24 +1071,39 @@ def _open_setting(page) -> bool:
     and each is checked, so a wrong guess costs one harmless icon click rather
     than a failed scan. Nothing on the forbidden list is ever a candidate.
     """
+    tried_ids: set[str] = set()
     for root in _roots(page):
-        try:
-            gear = root.locator(f"[id='{_css_escape(SETTING_BUTTON_ID)}']").first
-            if not gear.count():
-                continue
-            gear.click(force=True, timeout=15_000)
-        except Exception:
-            continue
-        page.wait_for_timeout(TAB_SETTLE_MS)
-        if _setting_dialog_open(page):
+        if _activate_setting_record(
+            page, root, {"id": SETTING_BUTTON_ID}, tried_ids,
+            ready_timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        ):
             return True
-    if click_by_id_hint(page, SETTING_BUTTON_HINTS) is not None:
-        page.wait_for_timeout(TAB_SETTLE_MS)
-        if _setting_dialog_open(page):
+    hinted = click_by_id_hint(
+        page, SETTING_BUTTON_HINTS, exclude_ids=tried_ids,
+    )
+    if hinted is not None:
+        hinted_id = _component_element_ids(
+            hinted.get("clicked_id") or hinted.get("id"),
+        )[0]
+        tried_ids.add(hinted_id)
+        if _wait_for_dialog_state(
+            page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        ):
             return True
-    if click_label(page, ["Setting", "Settings"]) is not None:
-        page.wait_for_timeout(TAB_SETTLE_MS)
-        if _setting_dialog_open(page):
+        if _native_click(page, hinted_id) and _wait_for_dialog_state(
+            page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        ):
+            return True
+    labelled = click_label(page, ["Setting", "Settings"])
+    if labelled is not None:
+        labelled_id = labelled.get("clicked_id") or labelled.get("id")
+        if _wait_for_dialog_state(
+            page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        ):
+            return True
+        if _native_click(page, labelled_id) and _wait_for_dialog_state(
+            page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+        ):
             return True
 
     # Right to left across the whole bar: the gear sits past the business
@@ -911,14 +1119,13 @@ def _open_setting(page) -> bool:
         0 if item[1].get("x", 0) >= TOP_BAR_MIN_X else 1, -item[1].get("x", 0),
     ))
     for root, record in candidates[:MAX_GEAR_TRIES]:
-        try:
-            root.locator(f"[id='{_css_escape(record['id'])}']").first.click(
-                force=True, timeout=15_000,
-            )
-        except Exception:
+        if _component_element_ids(record.get("id"))[:1] and (
+            _component_element_ids(record.get("id"))[0] in tried_ids
+        ):
             continue
-        page.wait_for_timeout(TAB_SETTLE_MS)
-        if _setting_dialog_open(page):
+        if _activate_setting_record(
+            page, root, record, tried_ids, ready_timeout_ms=TAB_SETTLE_MS,
+        ):
             return True
         _dismiss_stray_panel(page)
     return False
@@ -926,6 +1133,8 @@ def _open_setting(page) -> bool:
 
 def _setting_dialog_open(page) -> bool:
     """The Setting dialog is up when its left rail is on screen."""
+    if _component_visible(page, "TopFrame.Setting1"):
+        return True
     visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
     rail = {"favorite", "layout", "dashboard", "installation"}
     return len(rail & visible) >= 2 or favorites_dialog_open(page)
@@ -940,13 +1149,38 @@ def _dismiss_stray_panel(page) -> None:
     clear_screen(page)
 
 
-def select_scope_tab(page, tab: str) -> bool:
-    """Switch the Favorite panel to one of Private / Public / Custom."""
-    if click_label(page, [tab]) is None:
+def select_scope_tab(page, tab: str, *, require_rows: bool = False) -> bool:
+    """Switch scope and optionally prove its virtual grid actually rebound."""
+    record = click_label(
+        page, [tab], prefer_id_fragment="TopFrame.Setting1",
+    )
+    if record is None:
         return False
     page.wait_for_timeout(TAB_SETTLE_MS)
     clear_screen(page)
-    return True
+    native_fired = False
+    if ":" in str(record.get("id") or ""):
+        # The observed label is a rendered child (``:text``/``:icontext``),
+        # which is precisely the live Nexacro shape that can swallow the DOM
+        # click. Re-firing its parent tab is idempotent and forces the rebind.
+        native_fired = _native_click(
+            page, record.get("clicked_id") or record.get("id"),
+        )
+        if native_fired:
+            page.wait_for_timeout(TAB_SETTLE_MS)
+            clear_screen(page)
+    if not require_rows or wait_for_favorite_rows(page):
+        return True
+    # The caption click itself is not proof that Nexacro dispatched the Tab
+    # component's event.  Fire the exact observed component natively, then
+    # require the target bookmark grid to populate before claiming success.
+    if native_fired or not _native_click(
+        page, record.get("clicked_id") or record.get("id"),
+    ):
+        return False
+    page.wait_for_timeout(TAB_SETTLE_MS)
+    clear_screen(page)
+    return wait_for_favorite_rows(page)
 
 
 def wait_for_favorite_rows(page, *, timeout_ms: int = 15_000) -> bool:
@@ -1461,17 +1695,26 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
     open_portal(page, portal_url(job))
     open_favorites_dialog(page, report_progress)
     for scope_attempt in range(3):
-        if not select_scope_tab(page, tab):
+        if not find_by_label(page, [tab]):
             raise RuntimeError(
                 f"GSCM's {tab} bookmark tab was not on screen. On screen: "
                 + screen_inventory(page)
             )
-        if wait_for_favorite_rows(page):
+        if select_scope_tab(page, tab, require_rows=True):
             break
+        # A real refresh changes scope before returning.  Re-clicking the same
+        # caption three times leaves Nexacro's empty binding untouched.
+        if scope_attempt < 2:
+            alternate = next(
+                (candidate for candidate in SCOPE_TABS if candidate.casefold() != tab.casefold()),
+                None,
+            )
+            if alternate:
+                select_scope_tab(page, alternate)
     else:
         raise RuntimeError(
-            f"GSCM's {tab} bookmark tab stayed empty after three refreshes. "
-            "The portal did not finish rendering its bookmark grid."
+            f"GSCM's {tab} bookmark tab stayed empty after three activation and "
+            "rebind attempts. The portal did not finish rendering its bookmark grid."
         )
 
     entry = _resolve_entry(page, name, folder_path, tab)

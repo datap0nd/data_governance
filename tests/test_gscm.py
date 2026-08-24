@@ -1043,6 +1043,98 @@ def test_the_setting_gear_is_found_by_position_when_no_id_hint_matches():
     assert "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_env" in page.clicks
 
 
+@pytest.mark.parametrize("suffix", [":text", ":icontext"])
+def test_nexacro_child_label_ids_promote_the_parent_component_first(suffix):
+    """Nexacro's visible child is not always the component that owns onclick.
+
+    The live failure inventory named ``btn_setting:icontext`` and similar label
+    children.  Clicking that HTML child can be a no-op; the adapter must try the
+    native Button component before the rendered child id.
+    """
+    parent = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
+
+    candidates = list(flow_gscm._component_element_ids(parent + suffix))
+
+    assert candidates
+    assert candidates[0] == parent
+
+
+class NativeOnlyControlPage(FakeGscmPage):
+    """Setting/Public DOM clicks are inert; native Nexacro clicks change state."""
+
+    PUBLIC_COMPONENT_ID = (
+        "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_public"
+    )
+    PUBLIC_LABEL_ID = PUBLIC_COMPONENT_ID + ":text"
+
+    def __init__(self, **kwargs):
+        super().__init__(gear_id=GEAR_ID, **kwargs)
+        self.native_clicks = []
+
+    def _screen(self):
+        rows = super()._screen()
+        return [
+            {**row, "id": self.PUBLIC_LABEL_ID}
+            if row.get("text") == "Public" else row
+            for row in rows
+        ]
+
+    def on_click(self, element_id):
+        if element_id in {GEAR_ID, self.PUBLIC_LABEL_ID, self.PUBLIC_COMPONENT_ID}:
+            # Playwright successfully clicked a rendered DOM node, but Nexacro
+            # did not dispatch the component's onclick handler.
+            self.clicks.append(element_id)
+            return
+        super().on_click(element_id)
+
+    @staticmethod
+    def _argument_ids(argument):
+        if isinstance(argument, str):
+            return [argument]
+        if isinstance(argument, dict):
+            return [str(value) for value in argument.values()]
+        if isinstance(argument, (list, tuple)):
+            return [str(value) for value in argument]
+        return []
+
+    def evaluate(self, script, argument=None):
+        candidates = self._argument_ids(argument)
+        if GEAR_ID in candidates:
+            self.native_clicks.append(GEAR_ID)
+            self.dialog_open = True
+            return {"available": True, "fired": True, "component_id": GEAR_ID}
+        if self.PUBLIC_COMPONENT_ID in candidates:
+            self.native_clicks.append(self.PUBLIC_COMPONENT_ID)
+            self.tab = "Public"
+            return {
+                "available": True,
+                "fired": True,
+                "component_id": self.PUBLIC_COMPONENT_ID,
+            }
+        return super().evaluate(script, argument)
+
+
+def test_setting_falls_back_to_native_nexacro_click_when_dom_click_is_a_noop():
+    page = NativeOnlyControlPage()
+
+    flow_gscm.open_favorites_dialog(page)
+
+    assert page.dialog_open is True
+    assert GEAR_ID in page.clicks  # the inert DOM click was attempted first
+    assert GEAR_ID in page.native_clicks
+
+
+def test_public_tab_falls_back_from_text_child_to_native_parent_component():
+    page = NativeOnlyControlPage(dialog_open=True)
+    page.tab = "Private"
+
+    assert flow_gscm.select_scope_tab(page, "Public") is True
+
+    assert page.tab == "Public"
+    assert page.PUBLIC_LABEL_ID in page.clicks
+    assert page.native_clicks[-1] == page.PUBLIC_COMPONENT_ID
+
+
 def test_the_inventory_reports_icon_only_controls():
     # A text-only inventory could not show the gear, which is exactly the
     # control the failure needed to reveal.

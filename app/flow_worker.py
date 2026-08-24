@@ -1353,14 +1353,6 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
 DOWNLOAD_START_TIMEOUT_SECONDS = 15 * 60
 DOWNLOAD_STALL_TIMEOUT_SECONDS = 10 * 60
 DOWNLOAD_MAX_TIMEOUT_SECONDS = 60 * 60
-# Once Edge emits Playwright's native download event, the server has already
-# answered and the browser has accepted the transfer. The local staging file
-# should therefore appear promptly even for a very large export. Keeping the
-# 15-minute pre-response budget here would hide a broken browser-to-staging
-# handoff behind three long task retries.
-DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS = 60
-
-
 def _download_file_state(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_mtime_ns, stat.st_size
@@ -1510,6 +1502,28 @@ def _wait_for_staged_download(
     )
 
 
+def _completed_edge_download(download, description: str) -> Path:
+    """Validate one native Edge Download and return its completed local path."""
+    # ``failure`` waits for Edge's terminal download state. ``path`` then
+    # returns the browser-managed completed file, not a guessed directory
+    # candidate based on timestamps.
+    failure = download.failure()
+    if failure:
+        raise RuntimeError(f"Edge reported that {description} failed: {failure}")
+    completed_path = download.path()
+    if not completed_path:
+        raise RuntimeError(
+            f"Edge reported that {description} completed but returned no local file path."
+        )
+    completed = Path(completed_path)
+    if not completed.is_file() or completed.stat().st_size <= 0:
+        raise RuntimeError(
+            f"Edge reported that {description} completed, but its local file is "
+            f"missing or empty: {completed}"
+        )
+    return completed
+
+
 def _edge_completed_download(page: Page, trigger_download) -> Path:
     """Use Edge's native download lifecycle as the completion authority."""
     try:
@@ -1522,24 +1536,7 @@ def _edge_completed_download(page: Page, trigger_download) -> Path:
         raise RuntimeError(
             "Edge did not emit its native download event after the GSCM Excel action."
         ) from exc
-    # ``failure`` waits for Edge's terminal download state. ``path`` then
-    # returns the browser-managed completed file, not a guessed directory
-    # candidate based on timestamps.
-    failure = download.failure()
-    if failure:
-        raise RuntimeError(f"Edge reported that the GSCM download failed: {failure}")
-    completed_path = download.path()
-    if not completed_path:
-        raise RuntimeError(
-            "Edge reported a completed GSCM download but returned no completed file path."
-        )
-    completed = Path(completed_path)
-    if not completed.is_file() or completed.stat().st_size <= 0:
-        raise RuntimeError(
-            "Edge reported a completed GSCM download, but its completed file is missing or empty: "
-            f"{completed}"
-        )
-    return completed
+    return _completed_edge_download(download, "the GSCM Excel download")
 
 
 def _asap_table_control_score(
@@ -2052,10 +2049,11 @@ def _asap_download_dashboard_link(
 
     Some dashboards download in place; others open a popup or a new tab that
     emits the file, and a few use an intermediate page with its own download
-    control. Watching the staging folder captures all of them, because Edge
-    writes every download there no matter which page started it. Popups are
-    closed only after the file is stable, so closing can never abort a
-    transfer that is still running.
+    control. A captured Edge Download object is the completion authority even
+    when the file never appears under the configured staging directory; the
+    directory monitor remains the fallback for portal builds that emit no
+    browser event. Popups are closed only after completion, so closing can
+    never abort a transfer that is still running.
     """
     staging_dir.mkdir(parents=True, exist_ok=True)
     href = _asap_dashboard_link_href(job, label)
@@ -2093,14 +2091,15 @@ def _asap_download_dashboard_link(
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
         )
-        if signal in {"staging", "download"}:
-            return _wait_for_staged_download(
-                staging_dir, files_before,
-                start_timeout_seconds=(
-                    DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS
-                    if signal == "download" else DOWNLOAD_START_TIMEOUT_SECONDS
-                ),
+        # The event object is authoritative even if the staging-folder poll won
+        # the same race. Edge may complete into its own temporary path without
+        # ever exposing the configured downloads directory to our monitor.
+        if downloads:
+            return _completed_edge_download(
+                downloads[0], f"ASAP dashboard download {label!r}",
             )
+        if signal == "staging":
+            return _wait_for_staged_download(staging_dir, files_before)
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard download did not emit an Edge download event, "
@@ -2131,6 +2130,16 @@ def _asap_download_dashboard_link(
                 popup_control = None
             if popup_control is not None:
                 break
+        # The popup may emit its file while we are waiting for its DOM to load.
+        # Re-check completion before declaring its control missing or clicking
+        # again, otherwise a successful transfer becomes a false failure (or a
+        # duplicate download).
+        if downloads:
+            return _completed_edge_download(
+                downloads[0], f"ASAP dashboard download {label!r}",
+            )
+        if _download_staging_changed(staging_dir, files_before):
+            return _wait_for_staged_download(staging_dir, files_before)
         if popup_control is None:
             raise RuntimeError(
                 "ASAP dashboard opened an intermediate page, but no download "
@@ -2147,13 +2156,11 @@ def _asap_download_dashboard_link(
                 "event or create a local staging file within "
                 f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
             )
-        return _wait_for_staged_download(
-            staging_dir, files_before,
-            start_timeout_seconds=(
-                DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS
-                if signal == "download" else DOWNLOAD_START_TIMEOUT_SECONDS
-            ),
-        )
+        if downloads:
+            return _completed_edge_download(
+                downloads[0], f"ASAP dashboard download {label!r}",
+            )
+        return _wait_for_staged_download(staging_dir, files_before)
     finally:
         try:
             context.remove_listener("page", _track_page)
@@ -4018,10 +4025,10 @@ def _store_completed_download(
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
 
-    Passing a UNC path to Playwright's ``download.save_as`` and asking for
-    ``download.path`` can both hang after Edge visibly finishes. Monitor a
-    known local download folder instead, then copy the complete file to the
-    final target in exclusive-create mode so nothing can be overwritten.
+    Never pass the final UNC path to Playwright's ``download.save_as``. The
+    caller first supplies a completed browser-local path (from Edge's native
+    Download object or the staging fallback); this function then copies it to
+    the final target in exclusive-create mode so nothing can be overwritten.
     """
     local_path = Path(local_path)
     file_format = str(file_format or "csv").casefold()
@@ -4245,6 +4252,12 @@ def execute_job(
                 # A GSCM bookmark already carries its filters, period, and
                 # dimensions. Opening it is the whole configuration step.
                 frame = None
+                if attempt > 1:
+                    # The first failure can leave Setting1 mounted with an
+                    # empty/stale virtual grid. A same-host ``open_portal``
+                    # deliberately reuses that tree, so make a retry real by
+                    # rebuilding Nexacro before opening the bookmark again.
+                    flow_gscm.reload_portal(page, job)
                 flow_gscm.open_bookmark(page, job, report_progress=lambda message: report_progress(
                     "running",
                     {"stage": "opening_report", "message": message,

@@ -88,10 +88,14 @@ scope matters because reading the global TopFrame container's `textContent`
 concatenates labels such as `Biz Info`, `AX`, `SCM`, and `Channel` into one
 false bookmark.
 
-Controls are still clicked by visible label when opening a bookmark. The
-Setting gear is the exception because it has no text and is found by id shape
-(`btn_setting`, `btn_config`, ...). Every failure includes a compact screen
-inventory so a changed control can be diagnosed from evidence.
+Controls are located by visible label when opening a bookmark, but Nexacro's
+rendered `:text` / `:icontext` child is promoted to its owning component before
+the click. If the DOM click does not fire the component handler, Metronome uses
+Nexacro's native `on_fire_onclick` entry point for that exact observed control.
+The Setting gear has no text and is found by id shape (`btn_setting`,
+`btn_config`, ...). A failed export retry reloads the portal shell so an empty
+or stale Favorite grid cannot leak into the next attempt. Every failure includes
+a compact screen inventory so a changed control can be diagnosed from evidence.
 
 ## Run lifecycle
 
@@ -107,7 +111,7 @@ worker claims the scan                  worker claims the run
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
 flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
                                           click btn_exceldown
-                                          ↓ staged download monitor
+                                          ↓ Edge native download completion
                                         _store_completed_download (xlsx)
                                           ↓ keeps the workbook, writes a
                                             normalized CSV beside it

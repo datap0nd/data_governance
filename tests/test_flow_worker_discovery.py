@@ -766,6 +766,42 @@ def test_edge_native_download_event_is_the_completion_authority(tmp_path):
     assert triggered == [True]
 
 
+def test_completed_edge_download_uses_the_native_path(tmp_path):
+    completed = tmp_path / "native-dashboard-download.xlsx"
+    completed.write_bytes(b"PK\x03\x04workbook")
+    calls = []
+
+    class Download:
+        def failure(self):
+            calls.append("failure")
+            return None
+
+        def path(self):
+            calls.append("path")
+            return str(completed)
+
+    result = flow_worker._completed_edge_download(
+        Download(), "ASAP M Tracker dashboard download",
+    )
+
+    assert result == completed
+    assert calls == ["failure", "path"]
+
+
+def test_completed_edge_download_reports_failure_without_using_a_staging_guess():
+    class Download:
+        def failure(self):
+            return "net::ERR_FAILED"
+
+        def path(self):
+            raise AssertionError("a failed Edge download has no valid local path")
+
+    with pytest.raises(RuntimeError, match=r"M Tracker.*net::ERR_FAILED"):
+        flow_worker._completed_edge_download(
+            Download(), "ASAP M Tracker dashboard download",
+        )
+
+
 def test_gscm_load_buffers_are_one_minute_then_two_minutes():
     assert flow_worker.GSCM_EXPORT_TASK_ATTEMPTS == 2
     assert flow_worker.GSCM_INITIAL_LOAD_BUFFER_MS == 60_000
@@ -1865,6 +1901,85 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
     assert any("from the dashboard" in (item.get("message") or "") for item in events)
 
 
+def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
+    tmp_path, monkeypatch,
+):
+    """A retry must discard the stale Nexacro dialog, not reuse its empty grid."""
+    staged = tmp_path / "gscm.xlsx"
+    staged.write_bytes(b"PK\x03\x04workbook")
+    order = []
+
+    class Page(_WaitPage):
+        stale_dialog = False
+
+    page = Page()
+
+    def open_bookmark(_page, _job, report_progress=None):
+        order.append("open")
+        if order.count("open") == 1:
+            _page.stale_dialog = True
+            raise RuntimeError(
+                "GSCM's Public bookmark tab stayed empty after three refreshes."
+            )
+        if _page.stale_dialog:
+            raise RuntimeError("GSCM's Setting > Favorite dialog did not open.")
+        return "bookmark-row"
+
+    def reload_portal(_page, _job):
+        order.append("reload")
+        _page.stale_dialog = False
+
+    def edge_download(_page, trigger):
+        trigger()
+        order.append("download")
+        return staged
+
+    monkeypatch.setattr(flow_worker.flow_gscm, "open_bookmark", open_bookmark)
+    monkeypatch.setattr(flow_worker.flow_gscm, "reload_portal", reload_portal)
+    monkeypatch.setattr(
+        flow_worker.flow_gscm, "trigger_excel_export",
+        lambda *_args, **_kwargs: order.append("export"),
+    )
+    monkeypatch.setattr(flow_worker, "_edge_completed_download", edge_download)
+    monkeypatch.setattr(
+        flow_worker, "_store_completed_download",
+        lambda _staged, output, **_kwargs: {
+            "file_path": str(output), "filename": output.name,
+        },
+    )
+    job = {
+        "site": {
+            "adapter": "gscm_portal",
+            "base_url": "https://mdscm.sec.samsung.net/",
+        },
+        "flow": {"name": "GSCM bookmark"},
+        "report": {
+            "id": 7,
+            "name": "Public > SCM > Saved report",
+            "url": "https://mdscm.sec.samsung.net/nexa/index.html",
+            "export_views": [],
+            "automation": {
+                "favorite_tab": "Public",
+                "favorite_name": "Saved report",
+                "favorite_folder_path": ["SCM"],
+            },
+        },
+        "downloads": {
+            "target_folder": str(tmp_path),
+            "periods": [None],
+            "filename_template": "gscm.xlsx",
+            "file_format": "xlsx",
+        },
+    }
+
+    artifacts, _timings = flow_worker.execute_job(
+        page, job, lambda *_args, **_kwargs: None, tmp_path, tmp_path / "staging",
+    )
+
+    assert order == ["open", "reload", "open", "export", "download"]
+    assert artifacts[0]["status"] == "saved"
+
+
 def test_dashboard_link_download_falls_back_to_an_intermediate_page():
     source = Path(flow_worker.__file__).read_text()
     assert "_asap_download_dashboard_link" in source
@@ -1928,6 +2043,198 @@ def test_dashboard_download_signal_exposes_an_intermediate_popup(tmp_path):
     )
 
     assert signal == "popup"
+
+
+def test_dashboard_prefers_captured_edge_download_even_if_staging_also_changed(
+    tmp_path, monkeypatch,
+):
+    """The Download object is authoritative when event and folder race."""
+    native_path = tmp_path / "edge-native.xlsx"
+    native_path.write_bytes(b"PK\x03\x04native")
+    captured_download = object()
+    completed_calls = []
+
+    class Control:
+        def click(self, **_kwargs):
+            pass
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Page:
+        def __init__(self):
+            self.context = Context()
+            self.context.pages.append(self)
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    page = Page()
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_dashboard_link_locator",
+        lambda *_args, **_kwargs: Control(),
+    )
+
+    def signal(_page, _staging, _before, downloads, _opened, **_kwargs):
+        downloads.append(captured_download)
+        # The real helper checks staging before callbacks, so both can become
+        # observable in the same poll and it can report "staging" here.
+        return "staging"
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_wait_for_dashboard_download_signal", signal,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_completed_edge_download",
+        lambda download, description: (
+            completed_calls.append((download, description)) or native_path
+        ),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_wait_for_staged_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("captured Edge downloads must not use the staging monitor")
+        ),
+    )
+
+    result = flow_worker._asap_download_dashboard_link(
+        page, "Download Main Data (xlsx)", tmp_path / "staging",
+        {"report": {"automation": {"download_links": []}}},
+    )
+
+    assert result == native_path
+    assert completed_calls[0][0] is captured_download
+    assert "Download Main Data" in completed_calls[0][1]
+    assert page.listeners == []
+    assert page.context.listeners == []
+
+
+def test_dashboard_accepts_download_emitted_while_inspecting_popup(
+    tmp_path, monkeypatch,
+):
+    """A late popup event must win before a second control is clicked."""
+    native_path = tmp_path / "popup-native.xlsx"
+    native_path.write_bytes(b"PK\x03\x04native")
+    captured_download = object()
+    completed = []
+
+    class EmptyLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class Popup:
+        def __init__(self):
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+        def is_closed(self):
+            return False
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            callback = next(
+                callback for event, callback in self.listeners if event == "download"
+            )
+            callback(captured_download)
+
+        def get_by_role(self, *_args, **_kwargs):
+            return EmptyLocator()
+
+    popup = Popup()
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Page:
+        def __init__(self):
+            self.context = Context()
+            self.context.pages.append(self)
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    page = Page()
+
+    class InitialControl:
+        clicks = 0
+
+        def click(self, **_kwargs):
+            self.clicks += 1
+            callback = next(
+                callback for event, callback in page.context.listeners if event == "page"
+            )
+            callback(popup)
+
+    control = InitialControl()
+    monkeypatch.setattr(
+        flow_worker, "_asap_dashboard_link_locator",
+        lambda target, *_args, **_kwargs: control if target is page else None,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_wait_for_dashboard_download_signal",
+        lambda _page, _staging, _before, _downloads, opened, **_kwargs: (
+            "popup" if opened else "timeout"
+        ),
+    )
+    monkeypatch.setattr(flow_worker, "_asap_export_action", lambda _popup: None)
+    monkeypatch.setattr(
+        flow_worker, "_completed_edge_download",
+        lambda download, description: (
+            completed.append((download, description)) or native_path
+        ),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_wait_for_staged_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the late native event is the completion authority")
+        ),
+    )
+
+    result = flow_worker._asap_download_dashboard_link(
+        page, "Download Main Data (xlsx)", tmp_path / "staging",
+        {"report": {"automation": {"download_links": []}}},
+    )
+
+    assert result == native_path
+    assert completed[0][0] is captured_download
+    assert control.clicks == 1
+    assert popup.listeners == []
 
 
 # --- Resolving a dashboard download control at run time ---
