@@ -1353,6 +1353,13 @@ def _asap_apply_configuration(frame: Frame, job: dict, period: str | list[str] |
 DOWNLOAD_START_TIMEOUT_SECONDS = 15 * 60
 DOWNLOAD_STALL_TIMEOUT_SECONDS = 10 * 60
 DOWNLOAD_MAX_TIMEOUT_SECONDS = 60 * 60
+# Once Edge emits its native download event, the browser has accepted the
+# transfer.  The worker-configured staging file must then appear promptly.  A
+# missing browser-to-staging handoff is an error, not a reason to block on the
+# Playwright Download object's terminal state for the full export budget.
+DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS = 60
+
+
 def _download_file_state(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_mtime_ns, stat.st_size
@@ -1522,6 +1529,38 @@ def _completed_edge_download(download, description: str) -> Path:
             f"missing or empty: {completed}"
         )
     return completed
+
+
+def _asap_dashboard_event_staged_download(
+    staging_dir: Path,
+    files_before: dict[Path, tuple[int, int]],
+    label: str,
+) -> Path:
+    """Finish a dashboard download through its worker staging directory.
+
+    The native Edge event proves only that the browser accepted the transfer.
+    Dashboard downloads are configured to land in ``staging_dir`` and all
+    downstream stability, normalization, and retry logic depends on that file.
+    Do not call ``Download.failure()`` or ``Download.path()`` here: either can
+    wait indefinitely for the remote dashboard response to reach a terminal
+    browser state.
+    """
+    try:
+        return _wait_for_staged_download(
+            staging_dir,
+            files_before,
+            start_timeout_seconds=DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as exc:
+        if "no new or updated file appeared" not in str(exc):
+            raise
+        raise RuntimeError(
+            "Edge emitted a native download-start event for ASAP dashboard "
+            f"link {label!r}, but no file reached the worker staging folder "
+            f"within {DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS} seconds: "
+            f"{staging_dir}. Check Edge's download-directory policy and the "
+            "worker staging-folder permissions."
+        ) from exc
 
 
 def _edge_completed_download(page: Page, trigger_download) -> Path:
@@ -2049,10 +2088,10 @@ def _asap_download_dashboard_link(
 
     Some dashboards download in place; others open a popup or a new tab that
     emits the file, and a few use an intermediate page with its own download
-    control. A captured Edge Download object is the completion authority even
-    when the file never appears under the configured staging directory; the
-    directory monitor remains the fallback for portal builds that emit no
-    browser event. Popups are closed only after completion, so closing can
+    control. A native Edge event is a download-start signal; completion still
+    comes from a stable file in the worker staging directory. Portal builds
+    that emit no browser event are handled by the same directory monitor.
+    Popups are closed only after the staged file is stable, so closing can
     never abort a transfer that is still running.
     """
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -2091,12 +2130,13 @@ def _asap_download_dashboard_link(
         signal = _asap_wait_for_dashboard_download_signal(
             page, staging_dir, files_before, downloads, opened,
         )
-        # The event object is authoritative even if the staging-folder poll won
-        # the same race. Edge may complete into its own temporary path without
-        # ever exposing the configured downloads directory to our monitor.
+        # A native event is authoritative proof that the transfer started, but
+        # dashboard completion comes from the stable worker staging file. This
+        # also wins a simultaneous event/folder race so the post-event handoff
+        # budget is consistently enforced.
         if downloads:
-            return _completed_edge_download(
-                downloads[0], f"ASAP dashboard download {label!r}",
+            return _asap_dashboard_event_staged_download(
+                staging_dir, files_before, label,
             )
         if signal == "staging":
             return _wait_for_staged_download(staging_dir, files_before)
@@ -2135,8 +2175,8 @@ def _asap_download_dashboard_link(
         # again, otherwise a successful transfer becomes a false failure (or a
         # duplicate download).
         if downloads:
-            return _completed_edge_download(
-                downloads[0], f"ASAP dashboard download {label!r}",
+            return _asap_dashboard_event_staged_download(
+                staging_dir, files_before, label,
             )
         if _download_staging_changed(staging_dir, files_before):
             return _wait_for_staged_download(staging_dir, files_before)
@@ -2150,15 +2190,17 @@ def _asap_download_dashboard_link(
             page, staging_dir, files_before, downloads, opened,
             popup_grace_seconds=None,
         )
+        if downloads:
+            return _asap_dashboard_event_staged_download(
+                staging_dir, files_before, label,
+            )
+        if _download_staging_changed(staging_dir, files_before):
+            return _wait_for_staged_download(staging_dir, files_before)
         if signal == "timeout":
             raise RuntimeError(
                 "ASAP dashboard intermediate page did not emit an Edge download "
                 "event or create a local staging file within "
                 f"{DOWNLOAD_START_TIMEOUT_SECONDS} seconds: {label}."
-            )
-        if downloads:
-            return _completed_edge_download(
-                downloads[0], f"ASAP dashboard download {label!r}",
             )
         return _wait_for_staged_download(staging_dir, files_before)
     finally:

@@ -766,8 +766,8 @@ def test_edge_native_download_event_is_the_completion_authority(tmp_path):
     assert triggered == [True]
 
 
-def test_completed_edge_download_uses_the_native_path(tmp_path):
-    completed = tmp_path / "native-dashboard-download.xlsx"
+def test_completed_edge_download_uses_the_native_path_for_gscm(tmp_path):
+    completed = tmp_path / "native-gscm-download.xlsx"
     completed.write_bytes(b"PK\x03\x04workbook")
     calls = []
 
@@ -781,14 +781,14 @@ def test_completed_edge_download_uses_the_native_path(tmp_path):
             return str(completed)
 
     result = flow_worker._completed_edge_download(
-        Download(), "ASAP M Tracker dashboard download",
+        Download(), "the GSCM Excel download",
     )
 
     assert result == completed
     assert calls == ["failure", "path"]
 
 
-def test_completed_edge_download_reports_failure_without_using_a_staging_guess():
+def test_completed_edge_download_reports_gscm_failure_without_a_staging_guess():
     class Download:
         def failure(self):
             return "net::ERR_FAILED"
@@ -796,10 +796,58 @@ def test_completed_edge_download_reports_failure_without_using_a_staging_guess()
         def path(self):
             raise AssertionError("a failed Edge download has no valid local path")
 
-    with pytest.raises(RuntimeError, match=r"M Tracker.*net::ERR_FAILED"):
+    with pytest.raises(RuntimeError, match=r"GSCM.*net::ERR_FAILED"):
         flow_worker._completed_edge_download(
-            Download(), "ASAP M Tracker dashboard download",
+            Download(), "the GSCM Excel download",
         )
+
+
+def test_dashboard_edge_event_uses_a_bounded_staging_handoff(tmp_path, monkeypatch):
+    staged = tmp_path / "dashboard.xlsx"
+    staged.write_bytes(b"PK\x03\x04staged")
+    before = flow_worker._download_staging_snapshot(tmp_path)
+    calls = []
+
+    def wait_for_staged(staging_dir, files_before, **kwargs):
+        calls.append((staging_dir, files_before, kwargs))
+        return staged
+
+    monkeypatch.setattr(flow_worker, "_wait_for_staged_download", wait_for_staged)
+
+    result = flow_worker._asap_dashboard_event_staged_download(
+        tmp_path, before, "Download Main Data (xlsx)",
+    )
+
+    assert result == staged
+    assert calls == [(
+        tmp_path,
+        before,
+        {"start_timeout_seconds": flow_worker.DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS},
+    )]
+    assert flow_worker.DOWNLOAD_EVENT_STAGING_TIMEOUT_SECONDS == 60
+
+
+def test_dashboard_edge_event_reports_a_missing_staging_handoff(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        flow_worker, "_wait_for_staged_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(
+            "ASAP started an Edge download, but no new or updated file appeared"
+        )),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._asap_dashboard_event_staged_download(
+            tmp_path, {}, "Download Main Data (xlsx)",
+        )
+
+    message = str(excinfo.value)
+    assert "native download-start event" in message
+    assert "Download Main Data (xlsx)" in message
+    assert "within 60 seconds" in message
+    assert str(tmp_path) in message
+    assert "permissions" in message
 
 
 def test_gscm_load_buffers_are_one_minute_then_two_minutes():
@@ -2045,14 +2093,14 @@ def test_dashboard_download_signal_exposes_an_intermediate_popup(tmp_path):
     assert signal == "popup"
 
 
-def test_dashboard_prefers_captured_edge_download_even_if_staging_also_changed(
+def test_dashboard_uses_staging_after_edge_event_even_if_folder_signal_won(
     tmp_path, monkeypatch,
 ):
-    """The Download object is authoritative when event and folder race."""
-    native_path = tmp_path / "edge-native.xlsx"
-    native_path.write_bytes(b"PK\x03\x04native")
+    """A native event starts the bounded staging handoff; it does not finish it."""
+    staged_path = tmp_path / "edge-staged.xlsx"
+    staged_path.write_bytes(b"PK\x03\x04staged")
     captured_download = object()
-    completed_calls = []
+    staged_calls = []
 
     class Control:
         def click(self, **_kwargs):
@@ -2098,15 +2146,15 @@ def test_dashboard_prefers_captured_edge_download_even_if_staging_also_changed(
         flow_worker, "_asap_wait_for_dashboard_download_signal", signal,
     )
     monkeypatch.setattr(
-        flow_worker, "_completed_edge_download",
-        lambda download, description: (
-            completed_calls.append((download, description)) or native_path
+        flow_worker, "_asap_dashboard_event_staged_download",
+        lambda staging, before, label: (
+            staged_calls.append((staging, before, label)) or staged_path
         ),
     )
     monkeypatch.setattr(
-        flow_worker, "_wait_for_staged_download",
+        flow_worker, "_completed_edge_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("captured Edge downloads must not use the staging monitor")
+            AssertionError("ASAP dashboards must not block on the Download object")
         ),
     )
 
@@ -2115,9 +2163,10 @@ def test_dashboard_prefers_captured_edge_download_even_if_staging_also_changed(
         {"report": {"automation": {"download_links": []}}},
     )
 
-    assert result == native_path
-    assert completed_calls[0][0] is captured_download
-    assert "Download Main Data" in completed_calls[0][1]
+    assert result == staged_path
+    assert len(staged_calls) == 1
+    assert staged_calls[0][0] == tmp_path / "staging"
+    assert staged_calls[0][2] == "Download Main Data (xlsx)"
     assert page.listeners == []
     assert page.context.listeners == []
 
@@ -2125,11 +2174,11 @@ def test_dashboard_prefers_captured_edge_download_even_if_staging_also_changed(
 def test_dashboard_accepts_download_emitted_while_inspecting_popup(
     tmp_path, monkeypatch,
 ):
-    """A late popup event must win before a second control is clicked."""
-    native_path = tmp_path / "popup-native.xlsx"
-    native_path.write_bytes(b"PK\x03\x04native")
+    """A late popup event starts staging before a second control is clicked."""
+    staged_path = tmp_path / "popup-staged.xlsx"
+    staged_path.write_bytes(b"PK\x03\x04staged")
     captured_download = object()
-    completed = []
+    staged_calls = []
 
     class EmptyLocator:
         @property
@@ -2214,15 +2263,15 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
     )
     monkeypatch.setattr(flow_worker, "_asap_export_action", lambda _popup: None)
     monkeypatch.setattr(
-        flow_worker, "_completed_edge_download",
-        lambda download, description: (
-            completed.append((download, description)) or native_path
+        flow_worker, "_asap_dashboard_event_staged_download",
+        lambda staging, before, label: (
+            staged_calls.append((staging, before, label)) or staged_path
         ),
     )
     monkeypatch.setattr(
-        flow_worker, "_wait_for_staged_download",
+        flow_worker, "_completed_edge_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("the late native event is the completion authority")
+            AssertionError("the late event must finish through staging")
         ),
     )
 
@@ -2231,9 +2280,130 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
         {"report": {"automation": {"download_links": []}}},
     )
 
-    assert result == native_path
-    assert completed[0][0] is captured_download
+    assert result == staged_path
+    assert len(staged_calls) == 1
+    assert staged_calls[0][2] == "Download Main Data (xlsx)"
     assert control.clicks == 1
+    assert popup.listeners == []
+
+
+def test_dashboard_accepts_download_emitted_at_second_click_timeout_boundary(
+    tmp_path, monkeypatch,
+):
+    """A final-poll event must win even when the signal reports timeout."""
+    staged_path = tmp_path / "second-click-staged.xlsx"
+    staged_path.write_bytes(b"PK\x03\x04staged")
+    captured_download = object()
+    staged_calls = []
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Page:
+        def __init__(self):
+            self.context = Context()
+            self.context.pages.append(self)
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Popup:
+        def __init__(self):
+            self.listeners = []
+            self.closed = False
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+        def is_closed(self):
+            return self.closed
+
+        def close(self):
+            self.closed = True
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            pass
+
+    page = Page()
+    popup = Popup()
+
+    class InitialControl:
+        clicks = 0
+
+        def click(self, **_kwargs):
+            self.clicks += 1
+            callback = next(
+                callback for event, callback in page.context.listeners if event == "page"
+            )
+            callback(popup)
+
+    class PopupControl:
+        clicks = 0
+
+        def click(self, **_kwargs):
+            self.clicks += 1
+
+    initial_control = InitialControl()
+    popup_control = PopupControl()
+    monkeypatch.setattr(
+        flow_worker, "_asap_dashboard_link_locator",
+        lambda target, *_args, **_kwargs: (
+            initial_control if target is page else popup_control
+        ),
+    )
+
+    signals = []
+
+    def signal(_page, _staging, _before, downloads, _opened, **_kwargs):
+        signals.append(1)
+        if len(signals) == 1:
+            return "popup"
+        downloads.append(captured_download)
+        return "timeout"
+
+    monkeypatch.setattr(
+        flow_worker, "_asap_wait_for_dashboard_download_signal", signal,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_dashboard_event_staged_download",
+        lambda staging, before, label: (
+            staged_calls.append((staging, before, label)) or staged_path
+        ),
+    )
+    monkeypatch.setattr(
+        flow_worker, "_completed_edge_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the second-click event must finish through staging")
+        ),
+    )
+
+    result = flow_worker._asap_download_dashboard_link(
+        page, "Download Main Data (xlsx)", tmp_path / "staging",
+        {"report": {"automation": {"download_links": []}}},
+    )
+
+    assert result == staged_path
+    assert len(signals) == 2
+    assert len(staged_calls) == 1
+    assert staged_calls[0][2] == "Download Main Data (xlsx)"
+    assert initial_control.clicks == 1
+    assert popup_control.clicks == 1
+    assert popup.closed is True
     assert popup.listeners == []
 
 
