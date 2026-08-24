@@ -1949,6 +1949,126 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
     assert any("from the dashboard" in (item.get("message") or "") for item in events)
 
 
+def test_execute_job_stores_dashboard_csv_without_closing_download_popup(
+    tmp_path, monkeypatch,
+):
+    """A half-detached popup must not block the real configured-folder copy."""
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+
+    class Context:
+        def __init__(self):
+            self.pages = []
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Page:
+        def __init__(self):
+            self.context = Context()
+            self.context.pages.append(self)
+            self.listeners = []
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+    class Popup:
+        def __init__(self):
+            self.listeners = []
+            self.is_closed_calls = 0
+            self.close_calls = 0
+
+        def on(self, event, callback):
+            self.listeners.append((event, callback))
+
+        def remove_listener(self, event, callback):
+            self.listeners.remove((event, callback))
+
+        def is_closed(self):
+            self.is_closed_calls += 1
+            return False
+
+        def close(self):
+            self.close_calls += 1
+            raise AssertionError("a half-detached download popup cannot be closed safely")
+
+    page = Page()
+    popup = Popup()
+
+    class Control:
+        clicks = 0
+
+        def click(self, **_kwargs):
+            self.clicks += 1
+            page_callback = next(
+                callback for event, callback in page.context.listeners if event == "page"
+            )
+            page_callback(popup)
+            # Playwright's ``allowAndName`` staging artifact is GUID-named and
+            # has no suggested-filename suffix after Edge finalizes it.
+            (staging / "8f4a2b8e-6c9d-4d69-9ea4-17ad9d2f33e1").write_text(
+                "a,b\n1,2\n", encoding="utf-8",
+            )
+
+    control = Control()
+    monkeypatch.setattr(flow_worker, "_asap_open_report", lambda *_args: object())
+    monkeypatch.setattr(flow_worker, "_asap_wait_for_loading_clear", lambda _page: None)
+    monkeypatch.setattr(flow_worker, "_asap_frame", lambda _page: object())
+    monkeypatch.setattr(flow_worker, "_asap_apply_configuration", lambda *_args: None)
+    monkeypatch.setattr(flow_worker, "_has_named_control", lambda *_args: False)
+    monkeypatch.setattr(
+        flow_worker, "_asap_dashboard_link_locator",
+        lambda *_args, **_kwargs: control,
+    )
+
+    job = {
+        "site": {"adapter": "asap_portal"},
+        "flow": {"name": "M Tracker pull"},
+        "report": {
+            "id": 7,
+            "name": "M Tracker",
+            "url": "https://portal.example.test/mtracker",
+            "ready_text": None,
+            "open_export_text": None,
+            "download_text": "Download Main Data",
+            "filters": [],
+            "export_views": [],
+            "download_links": ["Download Main Data (csv)"],
+            "automation": {"download_links": []},
+        },
+        "downloads": {
+            "target_folder": str(target),
+            "periods": [None],
+            "filename_template": "mtracker.csv",
+            "file_format": "csv",
+        },
+    }
+
+    artifacts, _timings = flow_worker.execute_job(
+        page, job, lambda *_args: None, tmp_path / "profile", staging,
+    )
+
+    saved = target / "mtracker.csv"
+    assert saved.is_file()
+    assert artifacts[0]["file_path"] == str(saved)
+    assert artifacts[0]["status"] == "saved"
+    assert control.clicks == 1
+    assert popup.is_closed_calls == 0
+    assert popup.close_calls == 0
+    assert popup.listeners == []
+    assert page.listeners == []
+    assert page.context.listeners == []
+
+
 def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
     tmp_path, monkeypatch,
 ):
@@ -2031,8 +2151,8 @@ def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
 def test_dashboard_link_download_falls_back_to_an_intermediate_page():
     source = Path(flow_worker.__file__).read_text()
     assert "_asap_download_dashboard_link" in source
-    # The staging watch catches popup-emitted downloads; popups are closed
-    # only after the file is stable so a transfer is never aborted.
+    # The staging watch catches popup-emitted downloads. Cleanup detaches its
+    # listeners without closing a half-detached page before target storage.
     assert "_download_staging_snapshot(staging_dir)" in source
     assert 'context.on("page", _track_page)' in source
     assert 'candidate.on("download", _capture_download)' in source
@@ -2194,6 +2314,8 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
     class Popup:
         def __init__(self):
             self.listeners = []
+            self.is_closed_calls = 0
+            self.close_calls = 0
 
         def on(self, event, callback):
             self.listeners.append((event, callback))
@@ -2202,7 +2324,12 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
             self.listeners.remove((event, callback))
 
         def is_closed(self):
+            self.is_closed_calls += 1
             return False
+
+        def close(self):
+            self.close_calls += 1
+            raise AssertionError("download popups must not be closed before target storage")
 
         def wait_for_load_state(self, *_args, **_kwargs):
             callback = next(
@@ -2284,6 +2411,10 @@ def test_dashboard_accepts_download_emitted_while_inspecting_popup(
     assert len(staged_calls) == 1
     assert staged_calls[0][2] == "Download Main Data (xlsx)"
     assert control.clicks == 1
+    # The popup is queried once while resolving its intermediate control, but
+    # must not be queried again or closed during post-download cleanup.
+    assert popup.is_closed_calls == 1
+    assert popup.close_calls == 0
     assert popup.listeners == []
 
 
@@ -2322,7 +2453,8 @@ def test_dashboard_accepts_download_emitted_at_second_click_timeout_boundary(
     class Popup:
         def __init__(self):
             self.listeners = []
-            self.closed = False
+            self.is_closed_calls = 0
+            self.close_calls = 0
 
         def on(self, event, callback):
             self.listeners.append((event, callback))
@@ -2331,10 +2463,12 @@ def test_dashboard_accepts_download_emitted_at_second_click_timeout_boundary(
             self.listeners.remove((event, callback))
 
         def is_closed(self):
-            return self.closed
+            self.is_closed_calls += 1
+            return False
 
         def close(self):
-            self.closed = True
+            self.close_calls += 1
+            raise AssertionError("download popups must not be closed before target storage")
 
         def wait_for_load_state(self, *_args, **_kwargs):
             pass
@@ -2403,7 +2537,10 @@ def test_dashboard_accepts_download_emitted_at_second_click_timeout_boundary(
     assert staged_calls[0][2] == "Download Main Data (xlsx)"
     assert initial_control.clicks == 1
     assert popup_control.clicks == 1
-    assert popup.closed is True
+    # The popup is queried once while resolving its intermediate control, but
+    # must not be queried again or closed during post-download cleanup.
+    assert popup.is_closed_calls == 1
+    assert popup.close_calls == 0
     assert popup.listeners == []
 
 

@@ -2091,8 +2091,11 @@ def _asap_download_dashboard_link(
     control. A native Edge event is a download-start signal; completion still
     comes from a stable file in the worker staging directory. Portal builds
     that emit no browser event are handled by the same directory monitor.
-    Popups are closed only after the staged file is stable, so closing can
-    never abort a transfer that is still running.
+    Download-page listeners are detached after the staged file is stable, but
+    popup pages are deliberately left alone. Edge can leave a download popup
+    half-detached while its native Download object is nonterminal, and a later
+    ``Page.close()`` has no timeout and can block before the caller copies the
+    staged file to the configured target folder.
     """
     staging_dir.mkdir(parents=True, exist_ok=True)
     href = _asap_dashboard_link_href(job, label)
@@ -2213,12 +2216,10 @@ def _asap_download_dashboard_link(
                 candidate.remove_listener("download", _capture_download)
             except Exception:
                 pass
-        for popup in opened:
-            try:
-                if not popup.is_closed():
-                    popup.close()
-            except Exception:
-                pass
+        # Do not query or close ``opened`` here. This function must return the
+        # staged path before any download-associated popup can strand the sync
+        # Playwright dispatcher. The persistent context owns eventual page
+        # cleanup, matching the regular ASAP export path's no-close behavior.
 
 
 def _asap_download_with_retry(
