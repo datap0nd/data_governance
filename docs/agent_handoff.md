@@ -2,12 +2,11 @@
 
 ## Current Objective
 
-Install the build containing `6b25d8d`, then finish live Flows acceptance in
-Citrix. Run an ASAP **site-level Quick scan first** so the M Tracker relocation
-repair can move saved flows from `Advanced > Z8 Command Center > M Tracker` to
-`Advanced > AI Insights > M Tracker`; refreshing the old report row first will
-reuse its stale path. After the site scan, refresh the repaired M Tracker row
-and run all affected M Tracker flows headed. Also rerun the GSCM bookmark flow
+Have the user install the build containing `82b2d7f`; do not access Citrix or
+the work PC. Then have the user rerun the affected M Tracker flow headed. The
+ASAP site-level Quick scan and M Tracker row refresh are needed only if the
+saved report still points to `Advanced > Z8 Command Center > M Tracker` rather
+than `Advanced > AI Insights > M Tracker`. Also rerun the GSCM bookmark flow
 that produced the August 24 Setting/Public errors. Only after both portals pass,
 enable the GSCM flow's managed SQL insertion into the case-sensitive PostgreSQL
 target `bi_reporting."GSCM_Test"` and validate it with SELECT-only pgAdmin
@@ -16,8 +15,8 @@ queries.
 ## Repo State
 
 - Branch: `main`
-- Latest delivered behavior commit: `6b25d8d` (`Stabilize M Tracker and GSCM downloads`)
-- `main` includes all behavior changes through `6b25d8d`.
+- Latest delivered behavior commit: `82b2d7f` (`Finish M Tracker downloads from staged files`)
+- `main` includes all behavior changes through `82b2d7f`.
 - The repo is private.
 - Preserve untracked `governance.db-shm` and `governance.db-wal`.
 
@@ -46,6 +45,10 @@ queries.
   children to their owning controls; fall back to native Nexacro click events;
   perform a real scope rebind; deduplicate gear attempts; and reload the GSCM
   portal component tree before export attempt two.
+- `82b2d7f`: correct the M Tracker portion of `6b25d8d`. Edge's native event is
+  only proof that an HTML-dashboard download started; completion now comes from
+  the stable worker-staging file, so a missing terminal browser event cannot
+  strand the run in `download.failure()`. GSCM keeps its separate native path.
 - Every GSCM bookmark scan replaces the previous bookmark snapshot instead of
   retaining stale rows from an older scan.
 
@@ -75,13 +78,17 @@ queries.
   the other could not open Setting > Favorite even though the live inventory
   contained the exact `btn_setting` component. The same attachment contains no
   M Tracker-specific expanded log; M Tracker's reported failure is separate.
+- After installing `6b25d8d`, the user confirmed that M Tracker wrote the file
+  but Edge never reported the terminal download state. Source review found the
+  worker blocked in unbounded `download.failure()` after the start event. No
+  Citrix access was used for this diagnosis or fix.
 
 ## Verification
 
-- Full local test suite after `6b25d8d`: 448 passed.
+- Full local test suite after `82b2d7f`: 451 passed.
 - Focused GSCM/HTML-dashboard suite: 161 passed.
-- `main` includes the verified behavior commit `6b25d8d`.
-- Previous GSCM run 200 passed, but post-`6b25d8d` live acceptance is pending
+- `main` includes the verified behavior commit `82b2d7f`.
+- Previous GSCM run 200 passed, but post-`82b2d7f` live acceptance is pending
   because the August 24 run exposed a newer activation/state failure.
 - ASAP active Retail report discovery: passed.
 - ASAP final filter-label acceptance on build `20260821-165304`: blocked only
@@ -90,16 +97,14 @@ queries.
 
 ## Next Step
 
-The local Citrix workflow still has no known HyperVM Workdev entry in Edge; do
-not substitute the visible Samsung VDI portal. Once the trusted entry is opened
-or supplied, connect to the inner BI desktop and install the latest build. In
-Flows, run ASAP's site-level Quick scan, verify the active M Tracker catalog row
-is under `Advanced > AI Insights`, then refresh that repaired row and run the M
-Tracker flows headed. Rerun the affected GSCM bookmark flow headed and confirm
-Setting > Favorite, Public-grid binding, report launch, and native file
-completion. Also finish the `Flagship Experience` Measure comparison (`202623`
-and hexadecimal prefix `7D4E` must be absent). Only after ASAP, M Tracker, and
-GSCM pass, configure Replace all rows for the deployed database,
-`bi_reporting`, and `GSCM_Test`; run once and verify the exact quoted target with
-SELECT-only pgAdmin queries. Send the promised completion Gmail only after all
-live checks pass.
+Do not use Citrix; the user will install and validate the latest build. Rerun
+the M Tracker flow headed. If its catalog row still has the old menu path, run
+ASAP's site-level Quick scan, verify the active row moved under
+`Advanced > AI Insights`, refresh that row, and retry. Rerun the affected GSCM
+bookmark flow headed and confirm Setting > Favorite, Public-grid binding,
+report launch, and native file completion. Also finish the `Flagship Experience`
+Measure comparison (`202623` and hexadecimal prefix `7D4E` must be absent).
+Only after ASAP, M Tracker, and GSCM pass, configure Replace all rows for the
+deployed database, `bi_reporting`, and `GSCM_Test`; run once and verify the
+exact quoted target with SELECT-only pgAdmin queries. Send the promised
+completion Gmail only after all live checks pass.
