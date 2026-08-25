@@ -4055,9 +4055,12 @@ def _verify_copied_file(
     stream's size and checksum.
     """
     observed = 0
-    for attempt in range(3):
+    attempts = 5
+    for attempt in range(attempts):
         if attempt:
-            time.sleep(0.5)
+            # Write-behind flushing on a congested share can take several
+            # seconds for a large workbook; back off instead of giving up.
+            time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
         digest = hashlib.sha256()
         observed = 0
         try:
@@ -4066,7 +4069,7 @@ def _verify_copied_file(
                     digest.update(chunk)
                     observed += len(chunk)
         except OSError:
-            if attempt == 2:
+            if attempt == attempts - 1:
                 raise
             continue
         if observed == expected_size and digest.hexdigest() == expected_checksum:
@@ -4224,7 +4227,10 @@ def _store_completed_download(
             _validate_xlsx_container(local_path)
         copied = _copy_with_checksum(local_path, output)
         if copied["file_size"] != original_size:
-            raise RuntimeError(f"Downloaded Excel workbook was not copied completely to {output}.")
+            raise RuntimeError(
+                f"The staged Excel workbook changed size while copying to {output}: "
+                f"streamed {copied['file_size']} of {original_size} bytes."
+            )
         _verify_copied_file(
             output, original_size, copied["checksum"], label="Downloaded Excel workbook",
         )
@@ -4282,7 +4288,10 @@ def _store_completed_download(
     metadata = {**_csv_metadata(local_path), **normalization}
     copied = _copy_with_checksum(local_path, output)
     if copied["file_size"] != metadata["file_size"]:
-        raise RuntimeError(f"Downloaded CSV was not copied completely to {output}.")
+        raise RuntimeError(
+            f"The staged CSV changed size while copying to {output}: "
+            f"streamed {copied['file_size']} of {metadata['file_size']} bytes."
+        )
     _verify_copied_file(
         output, metadata["file_size"], copied["checksum"], label="Downloaded CSV",
     )
@@ -4767,13 +4776,28 @@ def execute_job(
     return artifacts, timings.finish(item_count=len(artifacts))
 
 
+def _code_version() -> str:
+    """The deployment stamp setup.ps1 writes next to this code.
+
+    Every failed run raises the question of whether the desktop worker is
+    actually executing the code that was just deployed. Surfacing the stamp at
+    startup and in the registration answers it without a remote desktop trip.
+    """
+    try:
+        return (_CODE_DIR / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path, headed: bool,
                once: bool, idle_exit_seconds: int = 0):
+    code_version = _code_version()
+    print(f"Worker {worker_id} starting with code version {code_version}.", flush=True)
     with httpx.Client(base_url=server.rstrip("/"), headers={"User-Agent": "Metronome-Flow-Worker/1"}) as client:
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False, "code_version": code_version},
         }
         for attempt in range(60):
             try:
