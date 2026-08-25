@@ -17,6 +17,7 @@ or ANY other write/DDL operation. This is a strict, non-negotiable constraint.
 import csv
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,17 @@ FRESH_MAX_DAYS = 0
 
 # Source types that reference local/network files
 FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
+
+# Keep this many days of probe history. Probing every source on a schedule
+# grows source_probes into the largest table in the database, which slows the
+# freshness queries that sort it per source.
+SOURCE_PROBE_RETENTION_DAYS = 90
+
+# A drive-letter path under another user's Windows profile. Analysts register
+# reports whose connections point at their own Downloads/Desktop folders;
+# the server's service account can never see those, so probing them is noise
+# rather than a data-freshness signal.
+LOCAL_USER_PATH = re.compile(r"^[A-Za-z]:[\\/]Users[\\/](?!Public[\\/])[^\\/]+[\\/]", re.IGNORECASE)
 
 # PostgreSQL source types
 PG_SOURCE_TYPES = {"postgresql"}
@@ -317,9 +329,16 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
     p = _find_file(file_path)
     if not p:
         # File not accessible - mark as unknown (can't determine freshness)
+        if LOCAL_USER_PATH.match(file_path):
+            message = (
+                f"Not probeable from the server (local_user_path): {file_path} "
+                "is on an analyst's local profile"
+            )
+        else:
+            message = f"File not accessible: {file_path}"
         db.execute(
             "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-            (source_id, now, f"File not accessible: {file_path}"),
+            (source_id, now, message),
         )
         return "unknown"
 
@@ -424,6 +443,10 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
     """
     statuses = {"fresh": 0, "outdated": 0, "unknown": 0, "no_rule": 0}
     pg_conn = _get_pg_connection()
+    # track_commit_timestamp is a server-wide setting that is off by default.
+    # Once one probe reports it disabled, every other table on this server
+    # would fail the same way, so fall back to row-count-only probing.
+    commit_timestamps_available = True
 
     if pg_conn is None:
         for src in pg_sources:
@@ -435,6 +458,8 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
             short = src["name"].replace("\\", "/").split("/")[-1]
             log_lines.append(f"PG: {short} - unknown (no credentials)")
         return statuses
+
+    from psycopg2 import sql
 
     try:
         pg_cur = pg_conn.cursor()
@@ -458,14 +483,38 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
             previous_row_count = _latest_source_row_count(db, src["id"])
 
             try:
-                # READ-ONLY: get last write time via track_commit_timestamp
-                # Also grab row count from pg_stat for context
-                pg_cur.execute(
-                    f"""SELECT MAX(pg_xact_commit_timestamp(xmin)) AS last_write,
-                               COUNT(*) AS row_count
-                        FROM "{schema}"."{table}" """
+                # READ-ONLY: get last write time via track_commit_timestamp.
+                # Identifiers come from scanned report metadata, so they are
+                # composed with sql.Identifier rather than interpolated.
+                table_ref = sql.SQL("{}.{}").format(
+                    sql.Identifier(schema), sql.Identifier(table),
                 )
-                row = pg_cur.fetchone()
+                row = None
+                if commit_timestamps_available:
+                    try:
+                        pg_cur.execute(
+                            sql.SQL(
+                                "SELECT MAX(pg_xact_commit_timestamp(xmin)) AS last_write, "
+                                "COUNT(*) AS row_count FROM {}"
+                            ).format(table_ref)
+                        )
+                        row = pg_cur.fetchone()
+                    except Exception as e:
+                        if "track_commit_timestamp" not in str(e):
+                            raise
+                        commit_timestamps_available = False
+                        log_lines.append(
+                            "PG: track_commit_timestamp is disabled on the server; "
+                            "probing row counts only"
+                        )
+                if not commit_timestamps_available:
+                    # READ-ONLY fallback: no per-row commit timestamps, but the
+                    # row count still powers empty-source alerts and history.
+                    pg_cur.execute(
+                        sql.SQL("SELECT COUNT(*) AS row_count FROM {}").format(table_ref)
+                    )
+                    count_row = pg_cur.fetchone()
+                    row = None if count_row is None else (None, count_row[0])
 
                 if row is None:
                     db.execute(
@@ -496,7 +545,13 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                 else:
                     # Table exists but empty or no commit timestamps
                     status = "unknown"
-                    msg = f"No commit timestamps ({row_count:,} rows)"
+                    if commit_timestamps_available:
+                        msg = f"No commit timestamps ({row_count:,} rows)"
+                    else:
+                        msg = (
+                            "track_commit_timestamp disabled on server; "
+                            f"row count only ({row_count:,} rows)"
+                        )
                     db.execute(
                         "INSERT INTO source_probes (source_id, probed_at, row_count, status, message) VALUES (?, ?, ?, 'unknown', ?)",
                         (src["id"], now, row_count, msg),
@@ -568,6 +623,29 @@ def _create_action_and_alert(db, source_id: int, status: str, now: str,
             "INSERT INTO alerts (source_id, severity, message, assigned_to, created_at) VALUES (?, ?, ?, ?, ?)",
             (source_id, severity, msg, assigned, now),
         )
+
+
+def _prune_probe_history(db, now: str) -> int:
+    """Delete probe rows past retention without losing per-source context.
+
+    Each source keeps its most recent probe, plus its most recent probe with a
+    row count - that row backs the empty-source alert comparison even when the
+    source has been unreachable for longer than the retention window.
+    """
+    cutoff = (
+        datetime.fromisoformat(now) - timedelta(days=SOURCE_PROBE_RETENTION_DAYS)
+    ).isoformat()
+    cursor = db.execute(
+        """DELETE FROM source_probes
+           WHERE probed_at < ?
+             AND id NOT IN (SELECT MAX(id) FROM source_probes GROUP BY source_id)
+             AND id NOT IN (
+                 SELECT MAX(id) FROM source_probes
+                 WHERE row_count IS NOT NULL GROUP BY source_id
+             )""",
+        (cutoff,),
+    )
+    return cursor.rowcount
 
 
 def _dedupe_open_actions(db, now: str) -> int:
@@ -1094,6 +1172,13 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         deduped = _dedupe_open_actions(db, now)
         if deduped:
             log_lines.append(f"Deduped {deduped} duplicate open actions (same source, multiple rows)")
+
+        # 7. Retention: prune old probe history so freshness queries stay fast
+        pruned = _prune_probe_history(db, now)
+        if pruned:
+            log_lines.append(
+                f"Pruned {pruned} probe rows older than {SOURCE_PROBE_RETENTION_DAYS} days"
+            )
 
     log_text = "\n".join(log_lines) if log_lines else "No sources to probe."
     finished = datetime.now(timezone.utc).isoformat()

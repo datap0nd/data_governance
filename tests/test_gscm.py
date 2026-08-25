@@ -667,6 +667,28 @@ def test_resolve_entry_retries_the_exact_path_after_virtual_grid_misses(monkeypa
     assert reselections == ["Public", "Public"]
 
 
+def test_a_stalled_bookmark_grid_reloads_the_portal_before_the_final_attempt(monkeypatch):
+    # Flipping scope tabs cannot unstick a bookmark request that died in this
+    # client, so the last retry rebuilds the whole Nexacro component tree.
+    page = FakeGscmPage()
+    navigations_seen = []
+
+    def stalled_select(page_, tab, *, require_rows=False):
+        if require_rows:
+            navigations_seen.append(len(page_.navigations))
+            return False
+        return True
+
+    monkeypatch.setattr(flow_gscm, "select_scope_tab", stalled_select)
+
+    with pytest.raises(RuntimeError, match="stayed empty"):
+        flow_gscm.open_bookmark(page, _run_job())
+
+    assert len(navigations_seen) == 3
+    assert navigations_seen[0] == navigations_seen[1]
+    assert navigations_seen[2] == navigations_seen[1] + 1
+
+
 def test_a_deleted_bookmark_names_what_is_still_listed():
     page = FakeGscmPage()
     with pytest.raises(RuntimeError) as excinfo:

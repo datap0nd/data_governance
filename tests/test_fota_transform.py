@@ -206,6 +206,31 @@ def test_fota_transform_leaves_geography_blank_for_missing_coordinates(tmp_path)
     assert rows[1][MODULE.OUTPUT_DIMENSIONS.index("City")] == ""
 
 
+def test_fota_transform_treats_null_island_as_a_missing_coordinate(tmp_path, monkeypatch):
+    # Exports fill missing GPS data with (0, 0); geocoding that placeholder
+    # would file the row in the Gulf of Guinea.
+    source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
+    target = tmp_path / "result.csv"
+    values = dict(DIMENSION_VALUES, Latitude="0", Longitude="0.0")
+    _write_csv(source, [
+        [*MODULE.CONTRACTED_DIMENSIONS, "202520"],
+        [*[values[name] for name in MODULE.CONTRACTED_DIMENSIONS], "123"],
+    ])
+
+    def geocoder_must_not_run(coordinates):
+        assert not coordinates
+        return {}
+
+    monkeypatch.setattr(MODULE, "_reverse_geocode_coordinates", geocoder_must_not_run)
+
+    assert MODULE.transform(source, target, ["2025-W20"]) == 1
+
+    with target.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[1][MODULE.OUTPUT_DIMENSIONS.index("Country")] == ""
+    assert rows[1][MODULE.OUTPUT_DIMENSIONS.index("City")] == ""
+
+
 def test_fota_transform_rejects_week_mismatch_without_creating_output(tmp_path):
     source = tmp_path / "ASAP_Fota_2025-W20_normalized.csv"
     target = tmp_path / "result.csv"

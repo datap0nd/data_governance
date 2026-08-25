@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -4043,6 +4042,41 @@ def _copy_with_checksum(source_path: Path, output: Path) -> dict:
     return {"file_size": copied, "checksum": digest.hexdigest()}
 
 
+def _verify_copied_file(
+    output: Path, expected_size: int, expected_checksum: str, *, label: str,
+) -> None:
+    """Prove the target copy is complete without trusting ``stat`` at all.
+
+    The target folder usually lives on an SMB share, and Windows' SMB client
+    can serve stale directory metadata after the written handle closes - in
+    either direction: a short size for a complete copy, or the expected size
+    for a truncated one. Directory attributes are therefore never evidence.
+    Re-read the file and require the bytes on the share to match the copy
+    stream's size and checksum.
+    """
+    observed = 0
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.5)
+        digest = hashlib.sha256()
+        observed = 0
+        try:
+            with output.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    observed += len(chunk)
+        except OSError:
+            if attempt == 2:
+                raise
+            continue
+        if observed == expected_size and digest.hexdigest() == expected_checksum:
+            return
+    raise RuntimeError(
+        f"{label} was not copied completely to {output}: "
+        f"read {observed} of the expected {expected_size} bytes back."
+    )
+
+
 def _raw_xlsx_metadata(
     output: Path,
     original_size: int,
@@ -4189,8 +4223,11 @@ def _store_completed_download(
             # configured (often network-backed) target folder.
             _validate_xlsx_container(local_path)
         copied = _copy_with_checksum(local_path, output)
-        if copied["file_size"] != original_size or output.stat().st_size != original_size:
+        if copied["file_size"] != original_size:
             raise RuntimeError(f"Downloaded Excel workbook was not copied completely to {output}.")
+        _verify_copied_file(
+            output, original_size, copied["checksum"], label="Downloaded Excel workbook",
+        )
         if not require_normalized_csv:
             return _raw_xlsx_metadata(
                 output, original_size, copied["checksum"], detected,
@@ -4243,10 +4280,12 @@ def _store_completed_download(
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
     normalization = _normalize_csv(local_path)
     metadata = {**_csv_metadata(local_path), **normalization}
-    with local_path.open("rb") as source, output.open("xb") as destination:
-        shutil.copyfileobj(source, destination, length=1024 * 1024)
-    if output.stat().st_size != metadata["file_size"]:
+    copied = _copy_with_checksum(local_path, output)
+    if copied["file_size"] != metadata["file_size"]:
         raise RuntimeError(f"Downloaded CSV was not copied completely to {output}.")
+    _verify_copied_file(
+        output, metadata["file_size"], copied["checksum"], label="Downloaded CSV",
+    )
     return {
         **metadata, "file_path": str(output), "filename": output.name,
         "detected_format": detected,

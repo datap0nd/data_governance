@@ -188,6 +188,11 @@ def _coordinate(selected: list[str], header: list[str]) -> tuple[float, float] |
     latitude, longitude = parsed
     if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
         return None
+    if latitude == 0.0 and longitude == 0.0:
+        # (0, 0) is the export's placeholder for missing GPS data. Geocoding
+        # it would file those rows in the Gulf of Guinea instead of leaving
+        # their geography blank.
+        return None
     return latitude, longitude
 
 
