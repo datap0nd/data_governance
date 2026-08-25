@@ -107,4 +107,23 @@ assert.deepEqual(
     "cycle breaking should not pull an acyclic downstream source left",
 );
 
+const crossingReduced = context.buildLayers({
+    sources: [
+        { id: 1, name: "A direct" },
+        { id: 2, name: "B direct" },
+        { id: 10, name: "A upstream but belongs to B" },
+        { id: 11, name: "Z upstream but belongs to A" },
+    ],
+    source_deps: [
+        { source_id: 1, depends_on_id: 11 },
+        { source_id: 2, depends_on_id: 10 },
+    ],
+}, new Set([1, 2]));
+
+assert.deepEqual(
+    Array.from(crossingReduced.layers, layer => Array.from(layer, item => item.id)),
+    [[1, 2], [11, 10]],
+    "upstream cards should follow their connected parents instead of arbitrary alphabetical order",
+);
+
 console.log("lineage layer tests passed");

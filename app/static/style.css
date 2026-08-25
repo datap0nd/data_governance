@@ -3881,7 +3881,7 @@ button.btn-danger-outline:hover {
     position: relative; overflow-x: auto; padding: 0.5rem 0 1rem;
 }
 .lin-grid {
-    /* The column gap doubles as the routing gutter for the SVG edges. */
+    /* The column gap gives the SVG curves room to fan away from card ports. */
     display: grid; gap: 2rem; column-gap: 3.5rem; min-width: 700px;
     align-items: start; position: relative; z-index: 1;
 }
@@ -3920,6 +3920,23 @@ button.btn-danger-outline:hover {
     word-break: break-word;
     font-weight: 500;
     line-height: 1.25;
+}
+.lin-src .lin-card-hdr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 0.35rem;
+    row-gap: 0.25rem;
+}
+.lin-src .lin-status { grid-column: 1; }
+.lin-src .lin-status > span:last-child { display: none; }
+.lin-src .lin-card-lbl { grid-column: 2; }
+.lin-src .lin-mv-badge { grid-column: 3; }
+.lin-src .lin-dep-warn { grid-column: 4; }
+.lin-src .lin-refresh-action {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-self: start;
 }
 .lin-refresh-action {
     flex-shrink: 0;
@@ -3967,7 +3984,11 @@ button.btn-danger-outline:hover {
 .lin-chev {
     font-size: 0.5rem; color: var(--text-dim);
     transition: transform 0.2s; flex-shrink: 0; width: 0.7rem; text-align: center;
+    appearance: none; background: transparent; border: 0; border-radius: 3px;
+    padding: 0; margin: 0; line-height: 1.3; cursor: pointer;
+    font-family: inherit;
 }
+.lin-chev:hover { color: var(--accent); background: var(--accent-bg); }
 .lin-card.expanded > .lin-card-hdr .lin-chev,
 .lin-card.expanded > [data-lin-toggle] .lin-chev,
 .lin-subgroup.expanded > .lin-subgroup-hdr .lin-chev { transform: rotate(90deg); }
@@ -4122,13 +4143,20 @@ button.btn-danger-outline:hover {
     pointer-events: none; overflow: visible;
 }
 .lin-edge {
-    fill: none; stroke: var(--border); stroke-width: 1.2; opacity: 0.45;
+    fill: none; stroke: var(--text-dim); stroke-width: 1.15; opacity: 0.3;
     stroke-linecap: round; stroke-linejoin: round;
     transition: stroke 0.2s ease, stroke-width 0.2s ease, opacity 0.2s ease;
+    vector-effect: non-scaling-stroke;
+}
+.lin-edge-halo {
+    fill: none; stroke: var(--surface); stroke-width: 4.25; opacity: 0.96;
+    stroke-linecap: round; stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
 }
 .lin-edge-hl {
-    stroke: var(--accent); stroke-width: 1.6; opacity: 0.9;
+    stroke: var(--accent); stroke-width: 2; opacity: 1;
 }
+.lin-edge-halo-hl { stroke-width: 5.5; opacity: 1; }
 #lin-arrow path { fill: var(--accent); }
 
 /* Highlight / collapse */
@@ -5240,7 +5268,7 @@ button.btn-danger-outline:hover {
     :root:not(.light) .stat-card.stat-card-clickable:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
     :root:not(.light) .fc-col:hover .fc-ico { box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
     :root:not(.light) .fc-tip { box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
-    :root:not(.light) .lin-edge:not(.lin-edge-hl) { stroke: var(--border-light); opacity: 0.7; }
+    :root:not(.light) .lin-edge:not(.lin-edge-hl) { stroke: var(--text-dim); opacity: 0.32; }
     :root:not(.light) .table-wrapper::after { background: linear-gradient(to right, transparent, rgba(0,0,0,0.15)); }
     :root:not(.light) .shimmer::after { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent); }
     :root:not(.light) .ai-chat-overlay { background: rgba(0,0,0,0.4); }
@@ -5257,7 +5285,7 @@ button.btn-danger-outline:hover {
 :root.dark .stat-card.stat-card-clickable:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
 :root.dark .fc-col:hover .fc-ico { box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
 :root.dark .fc-tip { box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
-:root.dark .lin-edge:not(.lin-edge-hl) { stroke: var(--border-light); opacity: 0.7; }
+:root.dark .lin-edge:not(.lin-edge-hl) { stroke: var(--text-dim); opacity: 0.32; }
 :root.dark .table-wrapper::after { background: linear-gradient(to right, transparent, rgba(0,0,0,0.15)); }
 :root.dark .shimmer::after { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent); }
 :root.dark .ai-chat-overlay { background: rgba(0,0,0,0.4); }

@@ -120,10 +120,14 @@ const routed = [
     { from: "back", to: "behind", x1: 562, y1: 500, x2: 206, y2: 600, y1min: 490, y1max: 510, y2min: 590, y2max: 610, ci: 2, cj: 1 },
 ];
 context.routeEdges(routed, colBounds);
-assert.ok(routed[0].xc > colBounds[0].right && routed[0].xc < colBounds[1].left,
-    "A multi-column edge must drop in the first gutter after its source");
-assert.ok(routed[1].xc > colBounds[1].right && routed[1].xc < colBounds[2].left,
-    "An adjacent-column edge must stay in its sole gutter");
+for (const edge of routed.slice(0, 2)) {
+    assert.ok(edge.c1x > edge.x1 && edge.c1x <= edge.c2x && edge.c2x < edge.x2,
+        "Forward curve controls must stay ordered between their card endpoints");
+}
+assert.ok(routed[0].c1x - routed[0].x1 <= 96 && routed[0].x2 - routed[0].c2x <= 96,
+    "A multi-column curve must use bounded handles rather than one long shared rail");
+assert.ok(routed[1].c1x > colBounds[1].right && routed[1].c2x < colBounds[2].left,
+    "An adjacent-column curve must fan smoothly inside its sole gutter");
 assert.ok(routed[2].cx >= colBounds[1].right && routed[2].cx <= colBounds[2].left,
     "A same-column edge must loop through the gutter to its right");
 assert.ok(routed[3].bow >= Math.min(routed[3].x1, routed[3].x2) + 8
@@ -131,6 +135,8 @@ assert.ok(routed[3].bow >= Math.min(routed[3].x1, routed[3].x2) + 8
     "A backward edge's control point must stay between its endpoints");
 assert.ok(routed.slice(0, 2).every(e => e.cx == null && e.bow == null),
     "Forward edges must not receive curve routing controls");
+assert.ok(routed.slice(0, 2).every(e => e.xc == null),
+    "Live forward edges must not collapse into shared orthogonal channels");
 
 // ── Path shape ──
 
@@ -158,6 +164,14 @@ assert.match(tooClose, /^M10,50 C/, "Cards too close to route around must fall b
 
 const noChannel = context.edgePath({ x1: 10, y1: 50, x2: 400, y2: 300, xc: null });
 assert.match(noChannel, /^M10,50 C/, "Edges without a channel (same or backward column) must curve");
+
+const forwardCurve = context.edgePath(routed[1]);
+assert.equal(forwardCurve, "M356,100 C379.5,100 388.5,200 412,200",
+    "Forward edges must emit one smooth monotone cubic instead of shared elbow rails");
+const forwardXs = [...forwardCurve.matchAll(/(-?\d+(?:\.\d+)?),-?\d+(?:\.\d+)?/g)]
+    .map(match => Number(match[1]));
+assert.ok(forwardXs.every(x => x >= routed[1].x1 && x <= routed[1].x2),
+    "Forward curve points must stay horizontally between their cards");
 
 const sameColumnPath = context.edgePath(routed[2]);
 const sameColumnXs = [...sameColumnPath.matchAll(/(-?\d+(?:\.\d+)?),-?\d+(?:\.\d+)?/g)]
@@ -188,9 +202,12 @@ assert.equal(nonConflictingBack[1].lane, 0,
 
 const edgeBlock = style.match(/\.lin-edge\s*\{([^}]*)\}/)?.[1] || "";
 const hlBlock = style.match(/\.lin-edge-hl\s*\{([^}]*)\}/)?.[1] || "";
+const haloBlock = style.match(/\.lin-edge-halo\s*\{([^}]*)\}/)?.[1] || "";
 assert.doesNotMatch(edgeBlock, /animation/, "Resting edges must not animate");
 assert.doesNotMatch(hlBlock, /animation|stroke-dasharray/,
     "A traced lineage must read as solid lines, not marching ants");
+assert.match(haloBlock, /stroke-width:\s*4(?:\.\d+)?/,
+    "Edges need a surface-colored halo so crossings remain visually separable");
 assert.match(style, /\.lin-grid\s*\{[^}]*column-gap:/,
     "The grid must reserve a column gap wide enough to route edges through");
 assert.match(style, /#lin-arrow path\s*\{[^}]*fill:/, "Traced edges must carry a direction arrow");

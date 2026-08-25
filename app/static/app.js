@@ -8104,6 +8104,44 @@ function _lineageSourceLayers(data, directSourceIds) {
         if (layer) layer.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     }
 
+    // Reduce crossings with alternating barycentric sweeps. Alphabetical order
+    // is deterministic but visually arbitrary; positioning each upstream card
+    // near the average position of its connected cards produces much calmer
+    // fans without changing the column/depth assignment.
+    const parentsById = new Map();
+    for (const sourceId of reachableIds) {
+        for (const dependencyId of (depsBySource.get(sourceId) || [])) {
+            if (!reachableIds.has(dependencyId)) continue;
+            if (!parentsById.has(dependencyId)) parentsById.set(dependencyId, []);
+            parentsById.get(dependencyId).push(sourceId);
+        }
+    }
+    const reorderByNeighbors = (depth, neighborDepth, getNeighborIds) => {
+        const layer = layers[depth];
+        const neighbors = layers[neighborDepth];
+        if (!layer || layer.length < 2 || !neighbors?.length) return;
+        const positions = new Map(neighbors.map((item, index) => [item.id, index]));
+        const scored = layer.map((item, originalIndex) => {
+            const linked = getNeighborIds(item.id)
+                .filter(id => depthById.get(id) === neighborDepth && positions.has(id))
+                .map(id => positions.get(id));
+            const score = linked.length
+                ? linked.reduce((sum, value) => sum + value, 0) / linked.length
+                : Number.POSITIVE_INFINITY;
+            return { item, originalIndex, score };
+        });
+        scored.sort((a, b) => (a.score - b.score) || (a.originalIndex - b.originalIndex));
+        layers[depth] = scored.map(entry => entry.item);
+    };
+    for (let pass = 0; pass < 4; pass++) {
+        for (let depth = 1; depth < layers.length; depth++) {
+            reorderByNeighbors(depth, depth - 1, id => parentsById.get(id) || []);
+        }
+        for (let depth = layers.length - 2; depth >= 1; depth--) {
+            reorderByNeighbors(depth, depth + 1, id => depsBySource.get(id) || []);
+        }
+    }
+
     return { sourceMap, depthById, layers };
 }
 
@@ -8240,9 +8278,9 @@ function _renderLineageDiagram(data) {
                 const label = v.title || (v.fields.length > 0 ? v.fields.slice(0, 2).map(f => f.split(".").pop().replace(/_/g, " ")).join(", ") : "") || _visualTypeLabel(v.type);
                 vr += `<div class="lin-subrow" data-lin-id="${v.id}"><span class="lin-vtype">${_visualTypeLabel(v.type)}</span><span class="lin-subrow-label">${esc(label)}</span></div>`;
             }
-            typeH += `<div class="lin-subgroup"><div class="lin-subgroup-hdr" data-lin-toggle><span class="lin-chev">&#9654;</span><span>${cat}</span><span class="lin-cnt">${vs.length}</span></div><div class="lin-subgroup-body">${vr}</div></div>`;
+            typeH += `<div class="lin-subgroup"><div class="lin-subgroup-hdr"><button type="button" class="lin-chev" data-lin-toggle aria-label="Expand ${esc(cat)}">&#9654;</button><span>${cat}</span><span class="lin-cnt">${vs.length}</span></div><div class="lin-subgroup-body">${vr}</div></div>`;
         }
-        visH += `<div class="lin-card" data-lin-id="page-${pageName.replace(/"/g, "&quot;")}"><div class="lin-card-hdr" data-lin-toggle><span class="lin-chev">&#9654;</span><span class="lin-card-lbl">${esc(pageName)}</span><span class="lin-card-meta">${pCount}</span></div><div class="lin-card-body">${typeH}</div></div>`;
+        visH += `<div class="lin-card" data-lin-id="page-${pageName.replace(/"/g, "&quot;")}"><div class="lin-card-hdr"><button type="button" class="lin-chev" data-lin-toggle aria-label="Expand ${esc(pageName)}">&#9654;</button><span class="lin-card-lbl">${esc(pageName)}</span><span class="lin-card-meta">${pCount}</span></div><div class="lin-card-body">${typeH}</div></div>`;
     }
     colHtml.visuals = visH;
 
@@ -8259,7 +8297,7 @@ function _renderLineageDiagram(data) {
             }).join("");
             fH = `<div class="lin-card-body">${fRows}</div>`;
         }
-        tblH += `<div class="lin-card" data-lin-id="table-${t.name}"><div class="lin-card-hdr"${fields.length ? ' data-lin-toggle' : ''}>${fields.length ? '<span class="lin-chev">&#9654;</span>' : ''}<span class="lin-card-lbl">${esc(t.name)}</span>${fields.length ? `<span class="lin-card-meta">${fields.length} fields</span>` : ""}${noSrc}</div>${fH}</div>`;
+        tblH += `<div class="lin-card" data-lin-id="table-${t.name}"><div class="lin-card-hdr">${fields.length ? `<button type="button" class="lin-chev" data-lin-toggle aria-label="Expand ${esc(t.name)} fields">&#9654;</button>` : ''}<span class="lin-card-lbl">${esc(t.name)}</span>${fields.length ? `<span class="lin-card-meta">${fields.length} fields</span>` : ""}${noSrc}</div>${fH}</div>`;
     }
     colHtml.tables = tblH;
 
@@ -8365,7 +8403,7 @@ function _renderLineageDiagram(data) {
         }
     }
     const activeCols = columnDefs.filter(col => colHtml[col.key] || col.key === "visuals" || col.key === "tables");
-    const gridCols = activeCols.map(() => "minmax(150px, 1fr)").join(" ");
+    const gridCols = activeCols.map(() => "minmax(180px, 1fr)").join(" ");
     let gridH = "";
     for (const col of activeCols) {
         const empty = !colHtml[col.key];
@@ -8596,9 +8634,9 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     window._linSvgEdges = svgEdges;
 }
 
-// Edge routing constants. Forward edges drop in the first gutter after their
-// source, then run flat at their target port. Same-column edges loop through the
-// gutter on their right; backward edges use bounded curves between endpoints.
+// Edge routing constants. Forward edges use monotone curves between distributed
+// card ports, avoiding the shared vertical rails that made even sparse graphs
+// look tangled. Same-column edges loop right; backward edges stay bounded.
 const LIN_EDGE_RADIUS = 8;    // corner rounding on the two elbows
 const LIN_EDGE_STUB = 8;      // keep channels clear of the column edges
 const LIN_EDGE_LANE_GAP = 6;  // vertical clearance before two runs share a lane
@@ -8637,8 +8675,8 @@ function _linAnchorY(el, rect) { return _linAnchorBand(el, rect).y; }
 function _linRound(n) { return Math.round(n * 10) / 10; }
 function _linClamp(n, min, max) { return Math.min(Math.max(n, min), max); }
 
-/** Orthogonal path with rounded elbows, falling back to a curve when the two
- *  cards are too close (or the target sits left of the source) to route. */
+/** Emit a routed edge. The orthogonal branch remains available to the pure
+ *  channel-packing tests, while the live forward router uses smooth fan curves. */
 function _linEdgePath(e) {
     const x1 = _linRound(e.x1), y1 = _linRound(e.y1);
     const x2 = _linRound(e.x2), y2 = _linRound(e.y2);
@@ -8647,6 +8685,10 @@ function _linEdgePath(e) {
         return `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`;
     }
     if (Math.abs(y2 - y1) < 1.5) return `M${x1},${y1} L${x2},${y2}`;
+    if (e.c1x != null && e.c2x != null) {
+        const c1x = _linRound(e.c1x), c2x = _linRound(e.c2x);
+        return `M${x1},${y1} C${c1x},${y1} ${c2x},${y2} ${x2},${y2}`;
+    }
     if (e.xc == null || x2 - x1 < 4 * LIN_EDGE_RADIUS) {
         const mid = _linRound(e.bow == null ? (x1 + x2) / 2 : e.bow);
         return `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`;
@@ -8743,27 +8785,28 @@ function _linAssignCurveLanes(group) {
 function _linRouteEdges(edges, colBounds) {
     _linAssignPorts(edges);
 
-    const byGutter = new Map();
     const byCurvePair = new Map();
     for (const e of edges) {
         delete e.xc;
         delete e.cx;
         delete e.bow;
+        delete e.c1x;
+        delete e.c2x;
         delete e.lane;
         if (e.cj > e.ci) {
-            const gi = e.ci + 1;
-            if (!byGutter.has(gi)) byGutter.set(gi, []);
-            byGutter.get(gi).push(e);
+            const span = Math.max(0, e.x2 - e.x1);
+            const handle = _linClamp(
+                span * (e.cj === e.ci + 1 ? 0.42 : 0.24),
+                Math.min(18, span / 2),
+                Math.min(96, span / 2),
+            );
+            e.c1x = e.x1 + handle;
+            e.c2x = e.x2 - handle;
         } else {
             const key = `${e.ci}:${e.cj}`;
             if (!byCurvePair.has(key)) byCurvePair.set(key, []);
             byCurvePair.get(key).push(e);
         }
-    }
-
-    for (const [gi, group] of byGutter) {
-        if (!colBounds[gi - 1] || !colBounds[gi]) continue;
-        _linAssignChannels(group, colBounds[gi - 1].right, colBounds[gi].left);
     }
 
     for (const group of byCurvePair.values()) {
@@ -8840,6 +8883,11 @@ function _drawLinEdges() {
     _linRouteEdges(edges, colBounds);
 
     for (const e of edges) {
+        const halo = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        halo.setAttribute("d", _linEdgePath(e));
+        halo.setAttribute("class", e.hl ? "lin-edge-halo lin-edge-halo-hl" : "lin-edge-halo");
+        svg.appendChild(halo);
+
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
         path.setAttribute("d", _linEdgePath(e));
         path.setAttribute("class", e.hl ? "lin-edge lin-edge-hl" : "lin-edge");
