@@ -93,6 +93,19 @@ def _is_junction(path: Path) -> bool:
     return bool(probe()) if callable(probe) else False
 
 
+def _tombstone_gate_reason(tombstone: Path) -> str | None:
+    """Why the object at the tombstone path must not be removed, or None.
+
+    A tombstone can in principle be replaced between attempts, so the object
+    is re-checked without following links before anything recursive runs.
+    """
+    if tombstone.is_symlink() or _is_junction(tombstone):
+        return "the tombstone path is a symlink or junction"
+    if not tombstone.is_dir():
+        return "the tombstone path is not a folder"
+    return None
+
+
 def _gate_reason(target: Path, original: Path, source_run_id: int) -> str | None:
     """Why this operation's original path must not be touched, or None."""
     if original.parent != target:
@@ -138,12 +151,24 @@ def execute_ops(target: Path, ops: list[dict]) -> list[dict]:
             record("skipped", "the tombstone path is not a Metronome tombstone inside this target folder")
             continue
         try:
-            if not original.exists() and tombstone.exists():
+            original_present = original.exists() or original.is_symlink()
+            tombstone_present = tombstone.exists() or tombstone.is_symlink()
+            if original_present and tombstone_present:
+                record(
+                    "skipped",
+                    "both the folder and its tombstone exist - the state is ambiguous, nothing was deleted",
+                )
+                continue
+            if not original_present and tombstone_present:
                 # A previous attempt crashed between rename and delete.
+                reason = _tombstone_gate_reason(tombstone)
+                if reason:
+                    record("skipped", reason)
+                    continue
                 shutil.rmtree(tombstone)
                 record("deleted", "reconciled a tombstone left by an earlier attempt")
                 continue
-            if not original.exists() and not tombstone.exists():
+            if not original_present:
                 record("deleted", "an earlier attempt already removed the folder")
                 continue
             reason = _gate_reason(target, original, source_run_id)

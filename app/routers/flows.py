@@ -1516,22 +1516,30 @@ def resume_run(run_id: int, request: Request):
             if item.get("status") == "saved" and item.get("file_path")
         ]
         completed, seen = [], set()
+        had_saved = False
         for item in [*carried, *saved]:
             entry = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
             key = _json(entry)
-            if key not in seen:
-                seen.add(key)
-                # A file whose run folder was pruned (or is scheduled for
-                # removal) cannot be skipped as already saved - dropping its
-                # path here makes the resumed run download it again.
-                source_run = item.get("source_run_id")
-                if item.get("file_path") and not (
-                    isinstance(source_run, int) and _source_folder_unavailable(db, source_run)
-                ):
-                    entry["file_path"] = item.get("file_path")
-                    entry["source_run_id"] = source_run
-                completed.append(entry)
-        if not completed:
+            if key in seen:
+                continue
+            seen.add(key)
+            had_saved = True
+            source_run = item.get("source_run_id")
+            if item.get("file_path"):
+                if isinstance(source_run, int) and _source_folder_unavailable(db, source_run):
+                    # The saved file's run folder was pruned (or is scheduled
+                    # for removal). The export must download again, so it is
+                    # left out of the completed list entirely - an entry
+                    # without a path would read as legacy-complete and be
+                    # skipped by the worker.
+                    continue
+                entry["file_path"] = item.get("file_path")
+                entry["source_run_id"] = source_run
+            completed.append(entry)
+        # A source whose every saved file was pruned still resumes - with an
+        # empty completed list, so everything downloads again. Only a run
+        # that never finished a single file cannot be resumed.
+        if not had_saved:
             raise HTTPException(
                 409, "No file finished in that run. Use Run to start the flow from the beginning.",
             )
@@ -2862,6 +2870,11 @@ def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
         if row["status"] in RUN_TERMINAL:
             return {"run_id": run_id, "ops": [], "ignored": True}
         run_folder = str(Path(body.run_folder))
+        if row["run_folder"] and row["run_folder"] != run_folder:
+            raise HTTPException(
+                409,
+                f"Run #{run_id} already registered a different folder: {row['run_folder']}",
+            )
         db.execute(
             """UPDATE flow_runs SET run_folder=?, folder_key=?, folder_state='present',
                heartbeat_at=? WHERE id=?""",

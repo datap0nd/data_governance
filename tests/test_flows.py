@@ -3561,3 +3561,43 @@ def test_retention_module_is_the_only_deletion_site_and_gates_every_path():
         "shutil.rmtree(tombstone)", retention_source.index("original.rename(tombstone)")
     )
     assert "run_id=run_id, register_folder=register_folder" in worker_source
+
+
+def test_resume_omits_pruned_entries_and_resumes_an_all_pruned_source(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+
+    failed = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    flows.register_run_folder(
+        "retention-worker", failed["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, failed["id"])),
+    )
+    _fail_run_with_saved_files("retention-worker", failed["id"], ["2026-W30"])
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET folder_state='pruned' WHERE id=?", (failed["id"],))
+
+    # Every saved file's folder is gone: the resume still queues, with an
+    # empty completed list, so the worker downloads everything again. An
+    # entry stripped only of its path would read as legacy-complete instead.
+    resumed = flows.resume_run(failed["id"], _request())
+    assert resumed["skipped_files"] == 0
+    assert resumed["job"]["resume"] == {"from_run_id": failed["id"], "completed": []}
+
+
+def test_register_folder_is_idempotent_and_rejects_a_different_path(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+    for _ in range(3):
+        _complete_registered_run("retention-worker", saved["id"], target)
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    folder = flows.FolderRegister(run_folder=_retention_folder(target, queued["id"]))
+    first = flows.register_run_folder("retention-worker", queued["id"], folder)
+    again = flows.register_run_folder("retention-worker", queued["id"], folder)
+    assert [op["op_id"] for op in first["ops"]] == [op["op_id"] for op in again["ops"]]
+    with pytest.raises(HTTPException, match="already registered a different folder"):
+        flows.register_run_folder(
+            "retention-worker", queued["id"],
+            flows.FolderRegister(run_folder=f"{target}/somewhere-else"),
+        )

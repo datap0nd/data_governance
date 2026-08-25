@@ -4350,7 +4350,7 @@ def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
     artifacts: list[dict] | None = None,
-    *, run_id: int, register_folder=None,
+    *, run_id: int, register_folder,
 ) -> tuple[list[dict], list[dict]]:
     # The caller may own the artifact list. Files are appended in place, so
     # everything saved before a mid-bundle failure stays visible to the
@@ -4368,27 +4368,30 @@ def execute_job(
     run_folder = flow_retention.create_run_folder(
         target, run_id, job.get("flow", {}).get("id"),
     )
+    # Register before anything else can fail: an unregistered folder would
+    # never be considered for retention. Registration is idempotent, so a
+    # re-claimed run re-registering the same path just gets its outstanding
+    # cleanup operations back.
+    assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
     report_progress("running", {
         "stage": "run_folder",
         "message": f"Saving this run's files into {run_folder.name} inside {target}.",
     })
-    if register_folder is not None:
-        assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
-        if assigned:
-            results = flow_retention.execute_ops(target, assigned)
-            outcomes = "; ".join(
-                f"{Path(str(op.get('original_path') or '')).name or 'unknown'}: {result['outcome']}"
-                + (f" ({result['detail']})" if result.get("detail") else "")
-                for op, result in zip(assigned, results)
-            )
-            report_progress("running", {
-                "stage": "run_folder_retention",
-                "message": (
-                    f"Cleaning up old run folders (keeping the newest "
-                    f"{flow_retention.RUN_FOLDER_KEEP}): {outcomes}."
-                ),
-                "retention_results": results,
-            })
+    if assigned:
+        results = flow_retention.execute_ops(target, assigned)
+        outcomes = "; ".join(
+            f"{Path(str(op.get('original_path') or '')).name or 'unknown'}: {result['outcome']}"
+            + (f" ({result['detail']})" if result.get("detail") else "")
+            for op, result in zip(assigned, results)
+        )
+        report_progress("running", {
+            "stage": "run_folder_retention",
+            "message": (
+                f"Cleaning up old run folders (keeping the newest "
+                f"{flow_retention.RUN_FOLDER_KEEP}): {outcomes}."
+            ),
+            "retention_results": results,
+        })
     target = run_folder
 
     periods = job["downloads"].get("periods") or [None]
