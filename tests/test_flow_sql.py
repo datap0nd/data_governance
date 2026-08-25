@@ -128,7 +128,7 @@ def test_raw_xlsx_passthrough_skips_unused_csv_normalization(
 
 
 class _StaleStatPath:
-    """A saved file whose first ``stat`` sizes mimic a stale SMB cache."""
+    """A saved file whose ``stat`` sizes mimic a stale SMB cache."""
 
     def __init__(self, real: Path, stat_sizes):
         self._real = real
@@ -146,27 +146,47 @@ class _StaleStatPath:
         return str(self._real)
 
 
-def test_copy_verification_survives_a_stale_smb_size_report(tmp_path):
+def test_copy_verification_ignores_understated_stale_metadata(tmp_path):
     # Windows' SMB client can report a stale size right after the copied
     # handle closes. The bytes on the share are complete, so re-reading them
     # must count as proof instead of failing the whole flow run.
     output = tmp_path / "MTracker_subs.xlsx"
     payload = b"complete workbook bytes"
     output.write_bytes(payload)
-    stale = _StaleStatPath(output, [0])
+    stale = _StaleStatPath(output, [0, 0, 0])
 
     flow_worker._verify_copied_file(
         stale, len(payload), hashlib.sha256(payload).hexdigest(),
         label="Downloaded Excel workbook",
     )
 
-    assert not stale._stat_sizes
 
-
-def test_copy_verification_still_rejects_a_truncated_target(tmp_path, monkeypatch):
-    output = tmp_path / "MTracker_subs.xlsx"
-    output.write_bytes(b"short")
+def test_copy_verification_rejects_a_truncated_target_despite_matching_metadata(
+    tmp_path, monkeypatch,
+):
+    # The stale cache lies in the other direction too: directory attributes
+    # can report the expected size for a target that is actually short, so
+    # a matching stat must never stand in for re-reading the bytes.
     expected = b"the complete payload"
+    output = tmp_path / "MTracker_subs.xlsx"
+    output.write_bytes(expected[:5])
+    stale = _StaleStatPath(output, [len(expected)] * 3)
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        RuntimeError, match="Downloaded Excel workbook was not copied completely",
+    ):
+        flow_worker._verify_copied_file(
+            stale, len(expected), hashlib.sha256(expected).hexdigest(),
+            label="Downloaded Excel workbook",
+        )
+
+
+def test_copy_verification_rejects_same_size_corruption(tmp_path, monkeypatch):
+    expected = b"correct workbook bytes"
+    output = tmp_path / "MTracker_subs.xlsx"
+    output.write_bytes(b"corrupt workbook bytes")
+    assert output.stat().st_size == len(expected)
     monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(

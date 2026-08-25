@@ -4041,26 +4041,30 @@ def _copy_with_checksum(source_path: Path, output: Path) -> dict:
 def _verify_copied_file(
     output: Path, expected_size: int, expected_checksum: str, *, label: str,
 ) -> None:
-    """Prove the target copy is complete without trusting a single ``stat``.
+    """Prove the target copy is complete without trusting ``stat`` at all.
 
-    The target folder usually lives on an SMB share. Windows' SMB client can
-    serve stale directory metadata for a moment after the written handle is
-    closed, so one mismatched ``stat`` size is not evidence of a short copy.
-    Re-reading the file forces the client to fetch fresh attributes and
-    verifies the bytes that actually landed on the share.
+    The target folder usually lives on an SMB share, and Windows' SMB client
+    can serve stale directory metadata after the written handle closes - in
+    either direction: a short size for a complete copy, or the expected size
+    for a truncated one. Directory attributes are therefore never evidence.
+    Re-read the file and require the bytes on the share to match the copy
+    stream's size and checksum.
     """
-    observed = output.stat().st_size
-    if observed == expected_size:
-        return
+    observed = 0
     for attempt in range(3):
         if attempt:
             time.sleep(0.5)
         digest = hashlib.sha256()
         observed = 0
-        with output.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-                observed += len(chunk)
+        try:
+            with output.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    observed += len(chunk)
+        except OSError:
+            if attempt == 2:
+                raise
+            continue
         if observed == expected_size and digest.hexdigest() == expected_checksum:
             return
     raise RuntimeError(
