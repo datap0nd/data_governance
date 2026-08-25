@@ -1,7 +1,10 @@
 """Authenticated browser worker for Metronome Flows.
 
 Run this under the Windows user that is authorized for the configured website.
-The worker polls Metronome for jobs and never deletes or overwrites files.
+The worker polls Metronome for jobs and never overwrites files. Each run saves
+into its own run folder inside the flow's target folder; the only thing the
+worker ever removes is an old run folder the Metronome server explicitly
+assigned for cleanup (keeping the newest 3 per target folder).
 """
 
 from __future__ import annotations
@@ -37,10 +40,11 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
-    from app import flow_gscm
+    from app import flow_gscm, flow_retention
     from app.flow_credentials import load_asap_credentials
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
+    import flow_retention
     from flow_credentials import load_asap_credentials
 
 
@@ -4289,11 +4293,19 @@ def _export_task_key(export_view, period) -> str:
 
 
 def _resume_completed_keys(job: dict) -> set[str]:
-    """Files a resumed run must skip because a prior run already saved them."""
+    """Files a resumed run must skip because a prior run already saved them.
+
+    An entry that names its saved file is only honored while that file still
+    exists - a file removed by run-folder retention is downloaded again.
+    Entries without a path (queued before paths were carried) keep the old
+    always-skip behavior.
+    """
     completed = (job.get("resume") or {}).get("completed") or []
     return {
         _export_task_key(item.get("export_view"), item.get("period_key"))
-        for item in completed if isinstance(item, dict)
+        for item in completed
+        if isinstance(item, dict)
+        and (not item.get("file_path") or Path(str(item["file_path"])).is_file())
     }
 
 
@@ -4338,6 +4350,7 @@ def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
     artifacts: list[dict] | None = None,
+    *, run_id: int, register_folder=None,
 ) -> tuple[list[dict], list[dict]]:
     # The caller may own the artifact list. Files are appended in place, so
     # everything saved before a mid-bundle failure stays visible to the
@@ -4352,6 +4365,31 @@ def execute_job(
     target = Path(job["downloads"]["target_folder"])
     if not target.is_dir():
         raise RuntimeError(f"Target folder does not exist: {target}")
+    run_folder = flow_retention.create_run_folder(
+        target, run_id, job.get("flow", {}).get("id"),
+    )
+    report_progress("running", {
+        "stage": "run_folder",
+        "message": f"Saving this run's files into {run_folder.name} inside {target}.",
+    })
+    if register_folder is not None:
+        assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
+        if assigned:
+            results = flow_retention.execute_ops(target, assigned)
+            outcomes = "; ".join(
+                f"{Path(str(op.get('original_path') or '')).name or 'unknown'}: {result['outcome']}"
+                + (f" ({result['detail']})" if result.get("detail") else "")
+                for op, result in zip(assigned, results)
+            )
+            report_progress("running", {
+                "stage": "run_folder_retention",
+                "message": (
+                    f"Cleaning up old run folders (keeping the newest "
+                    f"{flow_retention.RUN_FOLDER_KEEP}): {outcomes}."
+                ),
+                "retention_results": results,
+            })
+    target = run_folder
 
     periods = job["downloads"].get("periods") or [None]
     # An HTML dashboard has no Export Wizard: its data leaves through the
@@ -4785,9 +4823,17 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
                         "status": status, "progress": detail, "artifacts": artifacts or [],
                         "timings": timings or [],
+                        "retention": (detail or {}).get("retention_results") or [],
                         "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
                         "traceback": traceback_text[:100_000] if traceback_text else traceback_text,
                     })
+
+                def register_folder(folder: str) -> dict:
+                    return _api(
+                        client, "POST",
+                        f"/api/flows/worker/{worker_id}/runs/{run_id}/register_folder",
+                        {"run_folder": folder},
+                    )
 
                 heartbeat_stop = threading.Event()
 
@@ -4837,6 +4883,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         artifacts, timings = execute_job(
                             page, run["job"], progress, profile_dir, download_staging_dir,
                             artifacts=artifacts,
+                            run_id=run_id, register_folder=register_folder,
                         )
                         sql_artifacts = artifacts
                     if not sql_only and run["job"].get("transformation", {}).get("enabled"):

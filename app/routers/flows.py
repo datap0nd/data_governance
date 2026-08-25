@@ -7,6 +7,7 @@ import copy
 import html
 import json
 import logging
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
+from app.flow_retention import tombstone_name as retention_tombstone_name
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
 )
@@ -201,7 +203,8 @@ def _flow_failure_message(context: dict) -> dict:
                   Open Metronome &gt; Flows &gt; Run history and use Expanded logs on
                   run #{run_id} to see every stage, timing, and the full error trail.
                   After fixing the cause, use Run to start a fresh download - reruns
-                  never delete or overwrite files that already exist.
+                  never overwrite files, and only the oldest run folders beyond the
+                  newest 3 are cleaned up.
                 </div>
               </td>
             </tr>
@@ -332,6 +335,7 @@ def fail_stale_runs(
                    WHERE id=?""",
                 (now_text, message, now_text, row["flow_id"]),
             )
+            _release_retention_ops(db, row["id"], now_text)
             if row["worker_id"]:
                 db.execute(
                     """UPDATE flow_workers SET status='offline', current_run_id=NULL,
@@ -742,8 +746,13 @@ class WorkerProgress(BaseModel):
     progress: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     timings: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    retention: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     error: str | None = Field(default=None, max_length=10000)
     traceback: str | None = Field(default=None, max_length=100000)
+
+
+class FolderRegister(BaseModel):
+    run_folder: str = Field(min_length=1, max_length=4000)
 
 
 class FlowEnabledWrite(BaseModel):
@@ -1408,6 +1417,12 @@ def retry_run_sql(run_id: int, request: Request):
                 409,
                 f"Saved SQL artifact is no longer available on the BI desktop: {', '.join(missing[:10])}",
             )
+        if _source_folder_unavailable(db, run_id):
+            raise HTTPException(
+                409,
+                "The saved files from this run were removed (or are being removed) by the "
+                f"keep-newest-{RETENTION_KEEP} run folder cleanup. Use Run to download them again.",
+            )
         active = db.execute(
             """SELECT id FROM flow_runs WHERE flow_id=?
                AND status IN ('queued','claimed','running') LIMIT 1""",
@@ -1435,6 +1450,11 @@ def retry_run_sql(run_id: int, request: Request):
             (source["flow_id"], get_actor(request), _json(job), now),
         )
         new_run_id = cursor.lastrowid
+        db.execute(
+            """INSERT OR IGNORE INTO flow_run_source_refs
+               (consumer_run_id, source_run_id, created_at) VALUES (?, ?, ?)""",
+            (new_run_id, run_id, now),
+        )
         log_event(
             db, "flow", source["flow_id"], source["flow_name"], "sql_retry_queued",
             f"source_run_id={run_id}; run_id={new_run_id}; files={len(artifacts)}",
@@ -1488,7 +1508,10 @@ def resume_run(run_id: int, request: Request):
         source_job = _loads(source["job_json"], {})
         carried = (source_job.get("resume") or {}).get("completed") or []
         saved = [
-            {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
+            {
+                "export_view": item.get("export_view"), "period_key": item.get("period_key"),
+                "file_path": item.get("file_path"), "source_run_id": run_id,
+            }
             for item in _loads(source["artifact_json"], [])
             if item.get("status") == "saved" and item.get("file_path")
         ]
@@ -1498,6 +1521,15 @@ def resume_run(run_id: int, request: Request):
             key = _json(entry)
             if key not in seen:
                 seen.add(key)
+                # A file whose run folder was pruned (or is scheduled for
+                # removal) cannot be skipped as already saved - dropping its
+                # path here makes the resumed run download it again.
+                source_run = item.get("source_run_id")
+                if item.get("file_path") and not (
+                    isinstance(source_run, int) and _source_folder_unavailable(db, source_run)
+                ):
+                    entry["file_path"] = item.get("file_path")
+                    entry["source_run_id"] = source_run
                 completed.append(entry)
         if not completed:
             raise HTTPException(
@@ -1509,6 +1541,15 @@ def resume_run(run_id: int, request: Request):
             """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                VALUES (?, 'resume', 'queued', ?, ?, ?)""",
             (source["flow_id"], get_actor(request), _json(job), now),
+        )
+        pinned = {run_id} | {
+            entry["source_run_id"] for entry in completed
+            if isinstance(entry.get("source_run_id"), int)
+        }
+        db.executemany(
+            """INSERT OR IGNORE INTO flow_run_source_refs
+               (consumer_run_id, source_run_id, created_at) VALUES (?, ?, ?)""",
+            [(cursor.lastrowid, source_id, now) for source_id in sorted(pinned)],
         )
         new_run_id = cursor.lastrowid
         log_event(
@@ -2653,6 +2694,183 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
     return {"scan_id": scan_id, "status": body.status, "result": result}
 
 
+RETENTION_KEEP = 3
+RETENTION_OP_PENDING = ("issued", "quarantined")
+
+
+def _folder_key(run_folder: str) -> str:
+    """Case-normalized parent path, so Windows/UNC spellings group together."""
+    return os.path.normcase(os.path.normpath(str(Path(run_folder).parent)))
+
+
+def _source_has_live_consumer(db, source_run_id: int) -> bool:
+    return db.execute(
+        """SELECT 1 FROM flow_run_source_refs sr
+           JOIN flow_runs c ON c.id = sr.consumer_run_id
+           WHERE sr.source_run_id=? AND c.status NOT IN ('succeeded','failed','cancelled')
+           LIMIT 1""",
+        (source_run_id,),
+    ).fetchone() is not None
+
+
+def _source_folder_unavailable(db, source_run_id: int) -> bool:
+    """True when the source run's folder is pruned or scheduled for removal."""
+    row = db.execute("SELECT folder_state FROM flow_runs WHERE id=?", (source_run_id,)).fetchone()
+    if row and row["folder_state"] == "pruned":
+        return True
+    return db.execute(
+        "SELECT 1 FROM flow_retention_ops WHERE source_run_id=? AND state IN ('issued','quarantined') LIMIT 1",
+        (source_run_id,),
+    ).fetchone() is not None
+
+
+def _release_retention_ops(db, assigned_run_id: int, now: str):
+    """Free unreported operations so a later run can pick them up."""
+    db.execute(
+        """UPDATE flow_retention_ops SET assigned_run_id=NULL, updated_at=?
+           WHERE assigned_run_id=? AND state IN ('issued','quarantined')""",
+        (now, assigned_run_id),
+    )
+
+
+def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[dict]:
+    """Pick the run folders this run should clean up, transactionally.
+
+    Runs inside the registration transaction, with the registering run's own
+    folder already counted: the newest RETENTION_KEEP recorded folders under
+    this target keep their place, non-terminal runs and pinned sources are
+    never candidates, and every deletion is pre-recorded as an operation with
+    its tombstone path before the worker hears about it.
+    """
+    # Re-offer operations whose assigned run died before reporting.
+    db.execute(
+        """UPDATE flow_retention_ops SET assigned_run_id=NULL, updated_at=?
+           WHERE state IN ('issued','quarantined') AND assigned_run_id IS NOT NULL
+             AND assigned_run_id IN (
+                 SELECT id FROM flow_runs WHERE status IN ('succeeded','failed','cancelled'))""",
+        (now,),
+    )
+    recorded = db.execute(
+        """SELECT id, status, run_folder FROM flow_runs
+           WHERE folder_key=? AND folder_state='present' ORDER BY id DESC""",
+        (folder_key,),
+    ).fetchall()
+    ops: list[dict] = []
+    for row in recorded[RETENTION_KEEP:]:
+        if row["status"] not in RUN_TERMINAL:
+            continue
+        if _source_has_live_consumer(db, row["id"]):
+            continue
+        pending = db.execute(
+            """SELECT id, original_path, tombstone_path, state FROM flow_retention_ops
+               WHERE source_run_id=? AND state IN ('issued','quarantined','abandoned')
+               ORDER BY id DESC LIMIT 1""",
+            (row["id"],),
+        ).fetchone()
+        if pending:
+            continue  # covered by an existing operation, or deliberately abandoned
+        cursor = db.execute(
+            """INSERT INTO flow_retention_ops
+               (source_run_id, original_path, tombstone_path, state, assigned_run_id, created_at, updated_at)
+               VALUES (?, ?, '', 'issued', ?, ?, ?)""",
+            (row["id"], row["run_folder"], run_id, now, now),
+        )
+        op_id = cursor.lastrowid
+        original = Path(row["run_folder"])
+        tombstone = str(original.parent / retention_tombstone_name(original.name, op_id))
+        db.execute(
+            "UPDATE flow_retention_ops SET tombstone_path=? WHERE id=?", (tombstone, op_id),
+        )
+    # Hand this run everything currently unassigned for its target: its own
+    # fresh operations plus retries released by earlier runs' failures.
+    unassigned = db.execute(
+        """SELECT o.id, o.source_run_id, o.original_path, o.tombstone_path, o.state
+           FROM flow_retention_ops o JOIN flow_runs src ON src.id = o.source_run_id
+           WHERE src.folder_key=? AND o.state IN ('issued','quarantined')
+             AND (o.assigned_run_id IS NULL OR o.assigned_run_id=?)""",
+        (folder_key, run_id),
+    ).fetchall()
+    for op in unassigned:
+        if _source_has_live_consumer(db, op["source_run_id"]):
+            continue
+        db.execute(
+            "UPDATE flow_retention_ops SET assigned_run_id=?, updated_at=? WHERE id=?",
+            (run_id, now, op["id"]),
+        )
+        ops.append({
+            "op_id": op["id"], "source_run_id": op["source_run_id"],
+            "original_path": op["original_path"], "tombstone_path": op["tombstone_path"],
+            "state": op["state"],
+        })
+    return ops
+
+
+def _apply_retention_results(db, run_id: int, results: list[dict], now: str):
+    for item in results:
+        op = db.execute(
+            "SELECT * FROM flow_retention_ops WHERE id=? AND assigned_run_id=?",
+            (item.get("op_id"), run_id),
+        ).fetchone()
+        if not op:
+            continue
+        outcome = item.get("outcome")
+        detail = str(item.get("detail") or "")[:2000] or None
+        if outcome == "deleted":
+            db.execute(
+                "UPDATE flow_retention_ops SET state='done', error=?, updated_at=? WHERE id=?",
+                (detail, now, op["id"]),
+            )
+            db.execute(
+                "UPDATE flow_runs SET folder_state='pruned', pruned_at=? WHERE id=?",
+                (now, op["source_run_id"]),
+            )
+        elif outcome == "quarantined":
+            db.execute(
+                "UPDATE flow_retention_ops SET state='quarantined', error=?, updated_at=? WHERE id=?",
+                (detail, now, op["id"]),
+            )
+        elif outcome == "skipped":
+            # The worker's safety gate refused the path; retrying cannot help,
+            # and the folder must stay untouched. Keep the reason on record.
+            db.execute(
+                "UPDATE flow_retention_ops SET state='abandoned', assigned_run_id=NULL, error=?, updated_at=? WHERE id=?",
+                (detail, now, op["id"]),
+            )
+        else:  # failed, or anything unrecognized: release for a later retry
+            db.execute(
+                "UPDATE flow_retention_ops SET assigned_run_id=NULL, error=?, updated_at=? WHERE id=?",
+                (detail, now, op["id"]),
+            )
+
+
+@router.post("/worker/{worker_id}/runs/{run_id}/register_folder")
+def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
+    """Record the folder a run created, and assign its retention work.
+
+    Registration and assignment share one transaction so the just-created
+    folder is always counted in the keep window - the newest RETENTION_KEEP
+    folders per target survive, and the worker receives only pre-recorded
+    operations against paths this server stored itself.
+    """
+    now = _iso(_now())
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM flow_runs WHERE id=? AND worker_id=?", (run_id, worker_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Run is not assigned to this worker.")
+        if row["status"] in RUN_TERMINAL:
+            return {"run_id": run_id, "ops": [], "ignored": True}
+        run_folder = str(Path(body.run_folder))
+        db.execute(
+            """UPDATE flow_runs SET run_folder=?, folder_key=?, folder_state='present',
+               heartbeat_at=? WHERE id=?""",
+            (run_folder, _folder_key(run_folder), now, run_id),
+        )
+        ops = _assign_retention_ops(db, run_id, _folder_key(run_folder), now)
+    return {"run_id": run_id, "ops": ops}
+
+
 @router.post("/worker/{worker_id}/runs/{run_id}/progress")
 def update_run(worker_id: str, run_id: int, body: WorkerProgress):
     if body.status not in RUN_STATUSES:
@@ -2707,7 +2925,10 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             db, body.timings, operation_type="flow_download", run_id=run_id,
             site_id=job.get("site", {}).get("id"), report_id=job.get("report", {}).get("id"),
         )
+        if body.retention:
+            _apply_retention_results(db, run_id, body.retention, now)
         if body.status in RUN_TERMINAL:
+            _release_retention_ops(db, run_id, now)
             downloads = job.get("downloads", {})
             if body.status == "succeeded" and downloads.get("period_strategy") == "rolling":
                 db.execute(

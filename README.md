@@ -118,7 +118,7 @@ GSCM bookmark runs activate Setting, Favorite, scope tabs, and Go through their 
 
 Automatic execution is controlled from the Flows list with an Active/Inactive switch. The builder stores a daily, weekly, or monthly day-of-month schedule but does not activate it. Months that do not contain the configured day are skipped. Run history provides an Expanded logs link for each run. New runs retain every progress event, phase timing, source export view, downloaded artifact, SQL target and mode, final error, and complete worker traceback in the local SQLite database.
 
-Flows can optionally run one local transformation script per downloaded CSV before SQL insertion. The script is selected through the flow builder and copied into the BI desktop's local, gitignored `flow_scripts` folder. Metronome calls it with `--input` and `--output`, requires one non-empty CSV result under the target folder's `script_results` subfolder, and passes only those transformed results to SQL. Original downloads are never deleted or overwritten. See [the transformation script contract](docs/flow_transformation_contract.md).
+Flows can optionally run one local transformation script per downloaded CSV before SQL insertion. The script is selected through the flow builder and copied into the BI desktop's local, gitignored `flow_scripts` folder. Metronome calls it with `--input` and `--output`, requires one non-empty CSV result under the run folder's `script_results` subfolder, and passes only those transformed results to SQL. Original downloads are never overwritten; they stay in their run folder and are removed only when that whole run folder ages out of the keep-newest-3 cleanup. See [the transformation script contract](docs/flow_transformation_contract.md).
 
 Every scan and download records total duration and phase timings. Scan phases include portal navigation, report discovery, report navigation, and filter inspection. Download phases include navigation, configuration, report execution, CSV export, file transfer, optional transformation, and optional SQL insertion. The UI estimates the next scan and download from the median of up to ten comparable successful operations; before history exists, it clearly labels a conservative fallback.
 
@@ -138,7 +138,7 @@ The setup script installs both worker modes. Rerun it after updating Metronome s
 
 Do not copy browser tokens or credentials between Windows accounts. Enterprise policy may still require the local worker to remain headed.
 
-The worker never deletes or overwrites existing files. Name collisions create a numbered filename. Optional SQL handoff can append to an existing target or perform the managed snapshot refresh described above.
+The worker never overwrites existing files - name collisions create a numbered filename. Each run downloads into its own `#<run>_<dd-mm-yyyy>` subfolder of the target folder, and only the newest 3 run folders are kept: the server assigns the cleanup of older run folders it recorded itself, and nothing else in the target folder is ever touched. Optional SQL handoff can append to an existing target or perform the managed snapshot refresh described above.
 
 ### Power BI email recurrences
 
