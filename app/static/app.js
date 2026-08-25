@@ -8373,6 +8373,14 @@ function _renderLineageDiagram(data) {
     }
 
     const stLabel = data.report.archived ? "archived" : (data.report.status || "unknown");
+    if (_linSettleTimer !== null) {
+        clearTimeout(_linSettleTimer);
+        _linSettleTimer = null;
+    }
+    if (_linTransitionFrame !== null) {
+        cancelAnimationFrame(_linTransitionFrame);
+        _linTransitionFrame = null;
+    }
     container.innerHTML = `
         <div class="lineage-report-header">
             <strong>${esc(data.report.name)}</strong>
@@ -8588,37 +8596,59 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     window._linSvgEdges = svgEdges;
 }
 
-// Edge routing constants. Edges leave a card on the right, run flat until the
-// gap in front of the target column, drop to the target row inside that gap,
-// then run flat into the card. Straight runs hide behind the opaque cards, so
-// only the short vertical hops are visible in the gutters.
+// Edge routing constants. Forward edges drop in the first gutter after their
+// source, then run flat at their target port. Same-column edges loop through the
+// gutter on their right; backward edges use bounded curves between endpoints.
 const LIN_EDGE_RADIUS = 8;    // corner rounding on the two elbows
 const LIN_EDGE_STUB = 8;      // keep channels clear of the column edges
 const LIN_EDGE_LANE_GAP = 6;  // vertical clearance before two runs share a lane
 const LIN_EDGE_LANE_MIN = 4;  // narrowest usable spacing between channels
+const LIN_EDGE_PORT_GAP = 6;  // preferred spacing between ports on one card
 const LIN_EDGE_ARROW = '<defs><marker id="lin-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M1,1.2 L7,4 L1,6.8 Z"/></marker></defs>';
 
-/** Vertical attach point: the card header, so edges aim at the title rather
- *  than at the middle of a long expanded body. */
-function _linAnchorY(el, rect) {
-    const hdr = el.querySelector(":scope > .lin-card-hdr");
-    if (hdr) {
-        const hr = hdr.getBoundingClientRect();
-        if (hr.height > 2) return hr.top + hr.height / 2;
-    }
-    return rect.top + rect.height / 2;
+let _linSettleTimer = null;
+let _linTransitionFrame = null;
+
+function _linScheduleRedraw() {
+    _drawLinEdges();
+    if (_linSettleTimer !== null) clearTimeout(_linSettleTimer);
+    _linSettleTimer = setTimeout(() => {
+        _linSettleTimer = null;
+        _drawLinEdges();
+    }, 380);
 }
 
+/** Vertical attach band: prefer the card header so edges aim at the title
+ *  rather than at the middle of a long expanded body. */
+function _linAnchorBand(el, rect) {
+    const hdr = el.querySelector(":scope > .lin-card-hdr");
+    let band = rect;
+    if (hdr) {
+        const hr = hdr.getBoundingClientRect();
+        if (hr.height > 2) band = hr;
+    }
+    const y = band.top + band.height / 2;
+    const inset = Math.min(3, band.height / 2);
+    return { y, top: band.top + inset, bottom: band.bottom - inset };
+}
+
+function _linAnchorY(el, rect) { return _linAnchorBand(el, rect).y; }
+
 function _linRound(n) { return Math.round(n * 10) / 10; }
+function _linClamp(n, min, max) { return Math.min(Math.max(n, min), max); }
 
 /** Orthogonal path with rounded elbows, falling back to a curve when the two
  *  cards are too close (or the target sits left of the source) to route. */
 function _linEdgePath(e) {
     const x1 = _linRound(e.x1), y1 = _linRound(e.y1);
     const x2 = _linRound(e.x2), y2 = _linRound(e.y2);
+    if (e.cx != null) {
+        const cx = _linRound(e.cx);
+        return `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`;
+    }
     if (Math.abs(y2 - y1) < 1.5) return `M${x1},${y1} L${x2},${y2}`;
     if (e.xc == null || x2 - x1 < 4 * LIN_EDGE_RADIUS) {
-        const mid = _linRound((x1 + x2) / 2);
+        const mid = _linRound(e.bow == null ? (x1 + x2) / 2 : e.bow);
         return `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`;
     }
     const xc = _linRound(Math.min(Math.max(e.xc, x1 + LIN_EDGE_RADIUS), x2 - LIN_EDGE_RADIUS));
@@ -8634,25 +8664,132 @@ function _linEdgePath(e) {
  *  into lanes (runs that do not overlap vertically reuse a lane), then spread
  *  the lanes evenly across the gap. */
 function _linAssignChannels(group, gutterLeft, gutterRight) {
+    const band = Math.max(0, gutterRight - gutterLeft - LIN_EDGE_STUB * 2);
+    const slots = Math.max(1, Math.floor(band / LIN_EDGE_LANE_MIN));
     const laneEnd = [];
     group.sort((a, b) => Math.min(a.y1, a.y2) - Math.min(b.y1, b.y2));
     for (const e of group) {
         const top = Math.min(e.y1, e.y2), bottom = Math.max(e.y1, e.y2);
         let lane = laneEnd.findIndex(end => end + LIN_EDGE_LANE_GAP < top);
-        if (lane === -1) { lane = laneEnd.length; laneEnd.push(bottom); }
-        else laneEnd[lane] = bottom;
+        if (lane === -1 && laneEnd.length < slots) {
+            lane = laneEnd.length;
+            laneEnd.push(bottom);
+        } else if (lane === -1) {
+            const firstFree = Math.min(...laneEnd);
+            lane = laneEnd.indexOf(firstFree);
+            laneEnd[lane] = Math.max(laneEnd[lane], bottom);
+        } else {
+            laneEnd[lane] = Math.max(laneEnd[lane], bottom);
+        }
         e.lane = lane;
     }
-    const band = gutterRight - gutterLeft - LIN_EDGE_STUB * 2;
     if (band <= LIN_EDGE_LANE_MIN) {
         for (const e of group) e.xc = (gutterLeft + gutterRight) / 2;
         return;
     }
-    // Never let channels crowd below the minimum spacing; reuse them instead.
-    const slots = Math.max(1, Math.min(laneEnd.length, Math.floor(band / LIN_EDGE_LANE_MIN)));
+    const used = laneEnd.length;
     for (const e of group) {
-        e.xc = gutterLeft + LIN_EDGE_STUB + band * ((e.lane % slots) + 1) / (slots + 1);
+        e.xc = gutterLeft + LIN_EDGE_STUB + band * (e.lane + 1) / (used + 1);
     }
+}
+
+/** Spread fan-in/fan-out edges across the available header band. */
+function _linAssignPorts(edges) {
+    function assign(key, port, minKey, maxKey, farPort, tieKey) {
+        const groups = new Map();
+        for (const e of edges) {
+            if (!groups.has(e[key])) groups.set(e[key], []);
+            groups.get(e[key]).push(e);
+        }
+        for (const group of groups.values()) {
+            if (group.length < 2) continue;
+            group.sort((a, b) => a[farPort] - b[farPort]
+                || String(a[tieKey]).localeCompare(String(b[tieKey])));
+            const center = group.reduce((sum, e) => sum + e[port], 0) / group.length;
+            const min = Math.max(...group.map(e => e[minKey]));
+            const max = Math.min(...group.map(e => e[maxKey]));
+            const room = Math.max(0, Math.min(center - min, max - center));
+            const step = Math.min(LIN_EDGE_PORT_GAP, 2 * room / (group.length - 1));
+            group.forEach((e, i) => {
+                const offset = (i - (group.length - 1) / 2) * step;
+                e[port] = _linClamp(center + offset, e[minKey], e[maxKey]);
+            });
+        }
+    }
+    assign("from", "y1", "y1min", "y1max", "y2", "to");
+    assign("to", "y2", "y2min", "y2max", "y1", "from");
+    return edges;
+}
+
+/** Pack vertically overlapping curves into conflict lanes. */
+function _linAssignCurveLanes(group) {
+    const laneEnd = [];
+    group.sort((a, b) => Math.min(a.y1, a.y2) - Math.min(b.y1, b.y2));
+    for (const e of group) {
+        const top = Math.min(e.y1, e.y2), bottom = Math.max(e.y1, e.y2);
+        let lane = laneEnd.findIndex(end => end + LIN_EDGE_LANE_GAP < top);
+        if (lane === -1) {
+            lane = laneEnd.length;
+            laneEnd.push(bottom);
+        } else {
+            laneEnd[lane] = Math.max(laneEnd[lane], bottom);
+        }
+        e.lane = lane;
+    }
+    return laneEnd.length;
+}
+
+/** Pure edge router. All inputs and column bounds use the SVG coordinate space. */
+function _linRouteEdges(edges, colBounds) {
+    _linAssignPorts(edges);
+
+    const byGutter = new Map();
+    const byCurvePair = new Map();
+    for (const e of edges) {
+        delete e.xc;
+        delete e.cx;
+        delete e.bow;
+        delete e.lane;
+        if (e.cj > e.ci) {
+            const gi = e.ci + 1;
+            if (!byGutter.has(gi)) byGutter.set(gi, []);
+            byGutter.get(gi).push(e);
+        } else {
+            const key = `${e.ci}:${e.cj}`;
+            if (!byCurvePair.has(key)) byCurvePair.set(key, []);
+            byCurvePair.get(key).push(e);
+        }
+    }
+
+    for (const [gi, group] of byGutter) {
+        if (!colBounds[gi - 1] || !colBounds[gi]) continue;
+        _linAssignChannels(group, colBounds[gi - 1].right, colBounds[gi].left);
+    }
+
+    for (const group of byCurvePair.values()) {
+        const lanes = _linAssignCurveLanes(group);
+        for (const e of group) {
+            if (e.ci === e.cj) {
+                const column = colBounds[e.ci];
+                if (!column) continue;
+                const gutterRight = colBounds[e.ci + 1]?.left ?? column.right + 24;
+                const gutterBand = Math.max(0, gutterRight - column.right);
+                const band = Math.max(0, gutterBand - LIN_EDGE_STUB * 2);
+                const spacing = Math.min(LIN_EDGE_LANE_MIN, band / (lanes + 1));
+                const minCx = column.right + LIN_EDGE_STUB;
+                const maxCx = Math.max(minCx, column.right + gutterBand - LIN_EDGE_STUB);
+                e.cx = _linClamp(minCx + e.lane * spacing, minCx, maxCx);
+            } else {
+                const minX = Math.min(e.x1, e.x2), maxX = Math.max(e.x1, e.x2);
+                const minBow = minX + LIN_EDGE_RADIUS, maxBow = maxX - LIN_EDGE_RADIUS;
+                const centered = (e.x1 + e.x2) / 2 + (e.lane - (lanes - 1) / 2) * 10;
+                e.bow = minBow <= maxBow
+                    ? _linClamp(centered, minBow, maxBow)
+                    : (e.x1 + e.x2) / 2;
+            }
+        }
+    }
+    return edges;
 }
 
 function _drawLinEdges() {
@@ -8687,24 +8824,20 @@ function _drawLinEdges() {
         if (!fc || !tc || fc.offsetParent === null || tc.offsetParent === null) continue;
         const fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
         if (fr.width < 2 || tr.width < 2 || fr.height < 2 || tr.height < 2) continue;
+        const ci = colIndex.get(fc), cj = colIndex.get(tc);
+        const fromBand = _linAnchorBand(fromEl, fr);
+        const toBand = _linAnchorBand(toEl, tr);
         edges.push({
             from: e.from, to: e.to, hl: !!highlighted,
-            x1: fr.right + ox, y1: _linAnchorY(fromEl, fr) + oy,
-            x2: tr.left + ox, y2: _linAnchorY(toEl, tr) + oy,
-            ci: colIndex.get(fc), cj: colIndex.get(tc),
+            x1: fr.right + ox, y1: fromBand.y + oy,
+            x2: (ci === cj ? tr.right : tr.left) + ox, y2: toBand.y + oy,
+            y1min: fromBand.top + oy, y1max: fromBand.bottom + oy,
+            y2min: toBand.top + oy, y2max: toBand.bottom + oy,
+            ci, cj,
         });
     }
 
-    const byGutter = new Map();
-    for (const e of edges) {
-        if (!(e.cj > e.ci)) continue; // same or backward column: curve instead
-        if (!byGutter.has(e.cj)) byGutter.set(e.cj, []);
-        byGutter.get(e.cj).push(e);
-    }
-    for (const [cj, group] of byGutter) {
-        const left = cj > 0 ? colBounds[cj - 1].right : colBounds[cj].left - 24;
-        _linAssignChannels(group, left, colBounds[cj].left);
-    }
+    _linRouteEdges(edges, colBounds);
 
     for (const e of edges) {
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -8776,7 +8909,7 @@ function _bindLinInteractions() {
             const card = toggle.closest(".lin-subgroup") || toggle.closest(".lin-card");
             if (!card) return;
             card.classList.toggle("expanded");
-            setTimeout(_drawLinEdges, 30);
+            _linScheduleRedraw();
         });
     });
     // Click to highlight and collapse
@@ -8818,6 +8951,21 @@ function _bindLinInteractions() {
         });
     });
     wrap.addEventListener("click", (e) => { if (!e.target.closest("[data-lin-id]")) _resetLinHL(); });
+    const grid = wrap.querySelector(".lin-grid");
+    if (grid) {
+        grid.addEventListener("transitionend", (event) => {
+            if (event.propertyName !== "max-height") return;
+            if (_linSettleTimer !== null) {
+                clearTimeout(_linSettleTimer);
+                _linSettleTimer = null;
+            }
+            if (_linTransitionFrame !== null) cancelAnimationFrame(_linTransitionFrame);
+            _linTransitionFrame = requestAnimationFrame(() => {
+                _linTransitionFrame = null;
+                _drawLinEdges();
+            });
+        });
+    }
     if (window._linResize) window.removeEventListener("resize", window._linResize);
     window._linResize = () => _drawLinEdges();
     window.addEventListener("resize", window._linResize);
