@@ -4042,6 +4042,41 @@ def _copy_with_checksum(source_path: Path, output: Path) -> dict:
     return {"file_size": copied, "checksum": digest.hexdigest()}
 
 
+def _read_size_and_checksum(path: Path) -> dict:
+    """One full read pass over a file: its byte count and SHA-256."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"file_size": size, "checksum": digest.hexdigest()}
+
+
+def _stable_source_snapshot(source_path: Path) -> dict:
+    """Read the staged download until two consecutive passes agree.
+
+    The staging profile lives under the signed-in user's profile, which on a
+    BI desktop is often redirected to a network share. Right after Edge
+    finishes a download there, a second reader can still see a view that is a
+    few kilobytes short of the true file while the write-behind tail settles,
+    and one ``stat`` or one read pass is not evidence of the final content.
+    Two full reads that agree on size and checksum are.
+    """
+    previous = None
+    for attempt in range(6):
+        if attempt:
+            time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
+        current = _read_size_and_checksum(source_path)
+        if current == previous:
+            return current
+        previous = current
+    raise RuntimeError(
+        f"The staged download kept changing while being read back: {source_path} "
+        f"(last pass read {previous['file_size']} bytes)."
+    )
+
+
 def _verify_copied_file(
     output: Path, expected_size: int, expected_checksum: str, *, label: str,
 ) -> None:
@@ -4196,6 +4231,10 @@ def _store_completed_download(
     """
     local_path = Path(local_path)
     file_format = str(file_format or "csv").casefold()
+    # Settle the staged download before reading anything out of it: format
+    # detection, normalization, and the target copy must all see the same
+    # final bytes, not a mid-flush view of a share-backed staging folder.
+    snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path)
     if detected in {"xls", "pdf", "binary"}:
         raise RuntimeError(
@@ -4217,19 +4256,19 @@ def _store_completed_download(
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
     if file_format == "xlsx":
-        original_size = local_path.stat().st_size
+        original_size = snapshot["file_size"]
         if original_size <= 0:
             raise RuntimeError("The downloaded Excel workbook is empty.")
         if not require_normalized_csv:
-            # Edge's stable staging file is local and cheap to inspect. Check
-            # the entire OOXML container before creating anything in the
-            # configured (often network-backed) target folder.
+            # The settled staging file is cheap to inspect compared to the
+            # configured (often network-backed) target folder. Check the
+            # entire OOXML container before creating anything there.
             _validate_xlsx_container(local_path)
         copied = _copy_with_checksum(local_path, output)
-        if copied["file_size"] != original_size:
+        if copied["file_size"] != original_size or copied["checksum"] != snapshot["checksum"]:
             raise RuntimeError(
-                f"The staged Excel workbook changed size while copying to {output}: "
-                f"streamed {copied['file_size']} of {original_size} bytes."
+                f"The staged Excel workbook changed while copying to {output}: "
+                f"streamed {copied['file_size']} of {original_size} settled bytes."
             )
         _verify_copied_file(
             output, original_size, copied["checksum"], label="Downloaded Excel workbook",
