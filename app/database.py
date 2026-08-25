@@ -1148,6 +1148,40 @@ MIGRATIONS = [
               OR lower(trim(name))='gscm'
               OR lower(COALESCE(base_url, '')) LIKE '%mdscm.sec.samsung.net%'
        )""",
+    # Per-run download folders with keep-last-3 retention. The worker registers
+    # the folder it created for a run; the server records it here and assigns
+    # retention operations against these recorded paths only.
+    "ALTER TABLE flow_runs ADD COLUMN run_folder TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN folder_key TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN folder_state TEXT",
+    "ALTER TABLE flow_runs ADD COLUMN pruned_at DATETIME",
+    "CREATE INDEX IF NOT EXISTS idx_flow_runs_folder_key ON flow_runs(folder_key, folder_state)",
+    # Idempotent retention operations: the tombstone path is chosen before the
+    # deletion is issued, so a worker crash at any point reconciles from here.
+    """CREATE TABLE IF NOT EXISTS flow_retention_ops (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_run_id   INTEGER NOT NULL REFERENCES flow_runs(id),
+        original_path   TEXT NOT NULL,
+        tombstone_path  TEXT NOT NULL,
+        state           TEXT NOT NULL DEFAULT 'issued',
+        assigned_run_id INTEGER REFERENCES flow_runs(id),
+        error           TEXT,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_retention_ops_state ON flow_retention_ops(state, assigned_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_retention_ops_source ON flow_retention_ops(source_run_id)",
+    # Consumer pinning: a queued resume or SQL retry references the run folders
+    # its files live in, blocking retention assignment while it is not terminal.
+    """CREATE TABLE IF NOT EXISTS flow_run_source_refs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        consumer_run_id INTEGER NOT NULL REFERENCES flow_runs(id),
+        source_run_id   INTEGER NOT NULL REFERENCES flow_runs(id),
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(consumer_run_id, source_run_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_source ON flow_run_source_refs(source_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_consumer ON flow_run_source_refs(consumer_run_id)",
 ]
 
 

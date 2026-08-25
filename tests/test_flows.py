@@ -2906,7 +2906,11 @@ def test_resume_queues_a_run_that_skips_saved_files(flow_db):
     assert resumed["skipped_files"] == 1
     assert resumed["job"]["resume"] == {
         "from_run_id": queued["id"],
-        "completed": [{"export_view": None, "period_key": ["2026-W30"]}],
+        "completed": [{
+            "export_view": None, "period_key": ["2026-W30"],
+            "file_path": "C:\\Reports\\Downloads\\weekly_2026-W30.csv",
+            "source_run_id": queued["id"],
+        }],
     }
     assert flows.get_run(resumed["id"])["trigger_type"] == "resume"
 
@@ -2991,13 +2995,17 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
     resumed = flows.resume_run(queued["id"], _request())
     assert resumed["skipped_files"] == 1
     assert resumed["job"]["resume"]["completed"] == [
-        {"export_view": None, "period_key": ["2026-W30"]},
+        {
+            "export_view": None, "period_key": ["2026-W30"],
+            "file_path": "C:\\Reports\\Downloads\\weekly_2026-W30.csv",
+            "source_run_id": queued["id"],
+        },
     ]
 
 
 def test_worker_shares_the_artifact_list_with_its_failure_report():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "artifacts=artifacts,\n                        )\n                        sql_artifacts = artifacts" in source
+    assert "artifacts=artifacts,\n                            run_id=run_id, register_folder=register_folder,\n                        )\n                        sql_artifacts = artifacts" in source
 
 
 def test_scan_progress_posts_build_a_live_event_log(flow_db):
@@ -3262,3 +3270,336 @@ def test_dashboard_builder_section_replaces_export_views():
     assert "data-flow-download-link" in source
     assert "download_links: [...document.querySelectorAll" in source
     assert "_flowSyncExportSections" in source
+
+
+# --- Run-folder retention: server-side registration, assignment, pinning ---
+
+
+def _retention_folder(target, run_id):
+    from app import flow_retention
+
+    # str(Path(...)) matches the server's own normalization, so these
+    # assertions hold on Windows (backslashes) and POSIX alike.
+    return str(Path(target) / flow_retention.run_folder_name(run_id))
+
+
+def _complete_registered_run(worker_id, flow_id, target, status="succeeded"):
+    """Queue, claim, register a run folder, and finish the run."""
+    queued = flows.queue_run(flow_id, _request())
+    flows.claim_run(worker_id)
+    registration = flows.register_run_folder(
+        worker_id, queued["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, queued["id"])),
+    )
+    flows.update_run(worker_id, queued["id"], flows.WorkerProgress(status=status))
+    return queued["id"], registration
+
+
+def _retention_flow(target, **overrides):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], target_folder=target, **overrides), _request(),
+    )
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="retention-worker", display_name="Retention worker", capabilities={},
+    ))
+    return saved, site, report
+
+
+def test_registration_counts_the_current_run_and_keeps_the_newest_three(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+
+    run_ids = []
+    for _ in range(3):
+        run_id, registration = _complete_registered_run("retention-worker", saved["id"], target)
+        run_ids.append(run_id)
+        # With at most 3 recorded folders (the current one included), nothing
+        # is ever assigned - the off-by-one would assign on the 3rd run.
+        assert registration["ops"] == []
+
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    registration = flows.register_run_folder(
+        "retention-worker", queued["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, queued["id"])),
+    )
+    assert [op["source_run_id"] for op in registration["ops"]] == [run_ids[0]]
+    op = registration["ops"][0]
+    assert op["original_path"] == _retention_folder(target, run_ids[0])
+    assert op["tombstone_path"].endswith(f".op{op['op_id']}.deleting")
+    assert Path(op["tombstone_path"]).parent == Path(target)
+
+
+def test_folder_key_groups_path_spellings(flow_db):
+    assert flows._folder_key("/reports//downloads/./#5_25-08-2026") == flows._folder_key(
+        "/reports/downloads/#9_26-08-2026"
+    )
+    assert flows._folder_key("/reports/other/#5_25-08-2026") != flows._folder_key(
+        "/reports/downloads/#5_25-08-2026"
+    )
+
+
+def test_an_active_runs_folder_is_never_assigned_for_cleanup(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+    # An old run that is still running (its worker is alive) sits below the
+    # keep window but must never be assigned; two flows share the target.
+    other = flows.create_flow(
+        _flow(site["id"], report["id"], name="Second flow", target_folder=target),
+        _request(),
+    )
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="stuck-worker", display_name="Stuck worker", capabilities={},
+    ))
+    stuck = flows.queue_run(other["id"], _request())
+    flows.claim_run("stuck-worker")
+    flows.register_run_folder(
+        "stuck-worker", stuck["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, stuck["id"])),
+    )  # never finishes
+
+    for _ in range(3):
+        _complete_registered_run("retention-worker", saved["id"], target)
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    registration = flows.register_run_folder(
+        "retention-worker", queued["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, queued["id"])),
+    )
+    assert stuck["id"] not in [op["source_run_id"] for op in registration["ops"]]
+
+
+def test_retention_outcomes_update_ops_and_release_failures_for_retry(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+    old_ids = [_complete_registered_run("retention-worker", saved["id"], target)[0] for _ in range(3)]
+
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    registration = flows.register_run_folder(
+        "retention-worker", queued["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, queued["id"])),
+    )
+    op = registration["ops"][0]
+
+    # A transient failure releases the operation; the next run retries it.
+    flows.update_run(
+        "retention-worker", queued["id"],
+        flows.WorkerProgress(status="running", retention=[
+            {"op_id": op["op_id"], "outcome": "failed", "detail": "file is open in Excel"},
+        ]),
+    )
+    flows.update_run("retention-worker", queued["id"], flows.WorkerProgress(status="succeeded"))
+    with database.get_db() as db:
+        row = db.execute("SELECT * FROM flow_retention_ops WHERE id=?", (op["op_id"],)).fetchone()
+        assert row["state"] == "issued" and row["assigned_run_id"] is None
+        assert "Excel" in row["error"]
+
+    retry_run = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    retry_registration = flows.register_run_folder(
+        "retention-worker", retry_run["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, retry_run["id"])),
+    )
+    retry_ops = {item["op_id"] for item in retry_registration["ops"]}
+    assert op["op_id"] in retry_ops
+
+    # A completed deletion marks the source folder pruned...
+    flows.update_run(
+        "retention-worker", retry_run["id"],
+        flows.WorkerProgress(status="succeeded", retention=[
+            {"op_id": op["op_id"], "outcome": "deleted", "detail": ""},
+        ]),
+    )
+    with database.get_db() as db:
+        row = db.execute("SELECT * FROM flow_retention_ops WHERE id=?", (op["op_id"],)).fetchone()
+        assert row["state"] == "done"
+        source = db.execute("SELECT folder_state, pruned_at FROM flow_runs WHERE id=?", (old_ids[0],)).fetchone()
+        assert source["folder_state"] == "pruned" and source["pruned_at"]
+
+
+def test_a_skipped_operation_is_abandoned_and_never_reassigned(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+    for _ in range(3):
+        _complete_registered_run("retention-worker", saved["id"], target)
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    registration = flows.register_run_folder(
+        "retention-worker", queued["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, queued["id"])),
+    )
+    op = registration["ops"][0]
+    flows.update_run(
+        "retention-worker", queued["id"],
+        flows.WorkerProgress(status="succeeded", retention=[
+            {"op_id": op["op_id"], "outcome": "skipped",
+             "detail": "the folder has no Metronome ownership marker"},
+        ]),
+    )
+    next_run = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    next_registration = flows.register_run_folder(
+        "retention-worker", next_run["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, next_run["id"])),
+    )
+    assert op["op_id"] not in {item["op_id"] for item in next_registration["ops"]}
+    with database.get_db() as db:
+        row = db.execute("SELECT state FROM flow_retention_ops WHERE id=?", (op["op_id"],)).fetchone()
+        assert row["state"] == "abandoned"
+
+
+def test_a_queued_resume_pins_its_source_folders_against_cleanup(flow_db):
+    target = "/reports/downloads"
+    # The resumable flow runs headed so the headless helper worker for the
+    # second flow can never claim the queued resume out from under the test.
+    saved, site, report = _retention_flow(target, browser_mode="headed")
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="retention-worker", display_name="Retention worker",
+        capabilities={"headed": True},
+    ))
+
+    failed = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    flows.register_run_folder(
+        "retention-worker", failed["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, failed["id"])),
+    )
+    _fail_run_with_saved_files("retention-worker", failed["id"], ["2026-W30"])
+    resumed = flows.resume_run(failed["id"], _request())
+    with database.get_db() as db:
+        refs = db.execute(
+            "SELECT source_run_id FROM flow_run_source_refs WHERE consumer_run_id=?",
+            (resumed["id"],),
+        ).fetchall()
+    assert [ref["source_run_id"] for ref in refs] == [failed["id"]]
+
+    # Push the failed run's folder beyond the keep window with another flow
+    # sharing the target: while the resume is queued, it must not be assigned.
+    other = flows.create_flow(
+        _flow(site["id"], report["id"], name="Second flow", target_folder=target),
+        _request(),
+    )
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="other-worker", display_name="Other worker", capabilities={},
+    ))
+    for _ in range(3):
+        _complete_registered_run("other-worker", other["id"], target)
+    pusher = flows.queue_run(other["id"], _request())
+    flows.claim_run("other-worker")
+    registration = flows.register_run_folder(
+        "other-worker", pusher["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, pusher["id"])),
+    )
+    assert failed["id"] not in [op["source_run_id"] for op in registration["ops"]]
+    flows.update_run("other-worker", pusher["id"], flows.WorkerProgress(status="succeeded"))
+
+    # Once the resume finishes, the pin no longer holds.
+    flows.claim_run("retention-worker")
+    flows.update_run("retention-worker", resumed["id"], flows.WorkerProgress(status="succeeded"))
+    final = flows.queue_run(other["id"], _request())
+    flows.claim_run("other-worker")
+    final_registration = flows.register_run_folder(
+        "other-worker", final["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, final["id"])),
+    )
+    assert failed["id"] in [op["source_run_id"] for op in final_registration["ops"]]
+
+
+def test_sql_retry_is_rejected_once_the_source_folder_is_scheduled_for_cleanup(
+    flow_db, tmp_path,
+):
+    target = str(tmp_path)
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'inflow', CURRENT_TIMESTAMP, 0)"""
+        )
+    saved, site, report = _retention_flow(
+        target, sql_handoff_enabled=True, sql_mode="append",
+        sql_database="warehouse", sql_schema="reporting", sql_table="inflow",
+    )
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    artifact = Path(target) / "weekly_2026-W30.csv"
+    artifact.write_text("a,b\n1,2\n", encoding="utf-8")
+    flows.update_run(
+        "retention-worker", queued["id"],
+        flows.WorkerProgress(status="succeeded", artifacts=[{
+            "period_key": ["2026-W30"], "export_view": None, "status": "saved",
+            "file_path": str(artifact), "filename": artifact.name,
+        }]),
+    )
+
+    retried = flows.retry_run_sql(queued["id"], _request())
+    with database.get_db() as db:
+        refs = db.execute(
+            "SELECT source_run_id FROM flow_run_source_refs WHERE consumer_run_id=?",
+            (retried["id"],),
+        ).fetchall()
+        assert [ref["source_run_id"] for ref in refs] == [queued["id"]]
+        db.execute("UPDATE flow_runs SET status='cancelled' WHERE id=?", (retried["id"],))
+        db.execute(
+            """INSERT INTO flow_retention_ops
+               (source_run_id, original_path, tombstone_path, state, created_at, updated_at)
+               VALUES (?, ?, ?, 'issued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (queued["id"], target, f"{target}/.x.op1.deleting"),
+        )
+    with pytest.raises(HTTPException, match="run folder cleanup"):
+        flows.retry_run_sql(queued["id"], _request())
+
+
+def test_retention_module_is_the_only_deletion_site_and_gates_every_path():
+    worker_source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
+    forbidden = [".unlink(", ".rmdir(", "shutil.rmtree", "os.remove(", "os.unlink("]
+    assert all(token not in worker_source for token in forbidden)
+    retention_source = Path(__file__).parents[1].joinpath("app", "flow_retention.py").read_text()
+    assert "_gate_reason" in retention_source
+    assert "original.rename(tombstone)" in retention_source
+    assert retention_source.index("original.rename(tombstone)") < retention_source.index(
+        "shutil.rmtree(tombstone)", retention_source.index("original.rename(tombstone)")
+    )
+    assert "run_id=run_id, register_folder=register_folder" in worker_source
+
+
+def test_resume_omits_pruned_entries_and_resumes_an_all_pruned_source(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+
+    failed = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    flows.register_run_folder(
+        "retention-worker", failed["id"],
+        flows.FolderRegister(run_folder=_retention_folder(target, failed["id"])),
+    )
+    _fail_run_with_saved_files("retention-worker", failed["id"], ["2026-W30"])
+    with database.get_db() as db:
+        db.execute("UPDATE flow_runs SET folder_state='pruned' WHERE id=?", (failed["id"],))
+
+    # Every saved file's folder is gone: the resume still queues, with an
+    # empty completed list, so the worker downloads everything again. An
+    # entry stripped only of its path would read as legacy-complete instead.
+    resumed = flows.resume_run(failed["id"], _request())
+    assert resumed["skipped_files"] == 0
+    assert resumed["job"]["resume"] == {"from_run_id": failed["id"], "completed": []}
+
+
+def test_register_folder_is_idempotent_and_rejects_a_different_path(flow_db):
+    target = "/reports/downloads"
+    saved, site, report = _retention_flow(target)
+    for _ in range(3):
+        _complete_registered_run("retention-worker", saved["id"], target)
+    queued = flows.queue_run(saved["id"], _request())
+    flows.claim_run("retention-worker")
+    folder = flows.FolderRegister(run_folder=_retention_folder(target, queued["id"]))
+    first = flows.register_run_folder("retention-worker", queued["id"], folder)
+    again = flows.register_run_folder("retention-worker", queued["id"], folder)
+    assert [op["op_id"] for op in first["ops"]] == [op["op_id"] for op in again["ops"]]
+    with pytest.raises(HTTPException, match="already registered a different folder"):
+        flows.register_run_folder(
+            "retention-worker", queued["id"],
+            flows.FolderRegister(run_folder=str(Path(target) / "somewhere-else")),
+        )

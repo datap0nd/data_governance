@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1405,6 +1406,27 @@ def test_targeted_scan_surfaces_path_error_when_no_report_is_discovered(monkeypa
         )
 
 
+RUN_ID = 77
+
+
+def _run_dir(target) -> Path:
+    """The run folder execute_job creates for RUN_ID inside the target folder."""
+    return Path(target) / flow_worker.flow_retention.run_folder_name(RUN_ID)
+
+
+def _no_ops_register(_folder: str) -> dict:
+    """Registration stub for tests that exercise no retention assignment."""
+    return {"ops": []}
+
+
+def _symlink_or_skip(link: Path, destination: Path) -> None:
+    """Create a directory symlink, or skip where the OS forbids them."""
+    try:
+        link.symlink_to(destination, target_is_directory=True)
+    except OSError as exc:  # unprivileged Windows configurations
+        pytest.skip(f"symlinks are not available here: {exc}")
+
+
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
     activated = []
     staged = []
@@ -1448,7 +1470,7 @@ def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, t
 
     artifacts, _timings = flow_worker.execute_job(
         object(), job, lambda *args: progress.append(args), tmp_path,
-        tmp_path / "staging",
+        tmp_path / "staging", run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
     assert activated == job["report"]["export_views"]
@@ -1488,7 +1510,7 @@ def test_execute_job_skips_files_already_saved_by_the_resumed_run(tmp_path):
     artifacts, timings = flow_worker.execute_job(
         object(), job,
         lambda _status, progress, _artifacts=None: events.append(progress),
-        tmp_path,
+        tmp_path, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
     assert artifacts == []
@@ -1529,7 +1551,7 @@ def test_execute_job_appends_into_the_callers_artifact_list(tmp_path):
     }
 
     artifacts, _timings = flow_worker.execute_job(
-        object(), job, lambda *_args: None, tmp_path, artifacts=shared,
+        object(), job, lambda *_args: None, tmp_path, artifacts=shared, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
     # In-place semantics: a failure that unwinds execute_job leaves every
@@ -1984,7 +2006,7 @@ def test_execute_job_downloads_each_selected_dashboard_link(tmp_path, monkeypatc
 
     artifacts, _timings = flow_worker.execute_job(
         _WaitPage(), job, lambda _s, progress, _a=None: events.append(progress),
-        tmp_path, tmp_path / "staging",
+        tmp_path, tmp_path / "staging", run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
     assert clicked == ["Download CSV", "Download raw data"]
@@ -2028,16 +2050,16 @@ def test_dashboard_xlsx_without_downstream_finishes_from_the_raw_workbook(
         _mtracker_dashboard_job(target, file_format="csv"),
         lambda _status, detail, _artifacts=None: events.append(detail),
         tmp_path / "profile",
-        staging,
+        staging, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
-    saved = target / "mtracker.xlsx"
+    saved = _run_dir(target) / "mtracker.xlsx"
     assert saved.is_file()
     assert artifacts[0]["file_path"] == str(saved)
     assert artifacts[0]["filename"] == saved.name
     assert artifacts[0]["detected_format"] == "xlsx"
     assert artifacts[0]["row_count"] is None
-    assert not (target / "mtracker.csv").exists()
+    assert not (_run_dir(target) / "mtracker.csv").exists()
     stages = [event["stage"] for event in events]
     assert "file_transfer" in stages
     assert "file_normalization" not in stages
@@ -2074,10 +2096,10 @@ def test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing(
     def progress(_status, detail, _artifacts=None):
         events.append(detail)
         if detail["stage"] == "file_normalization":
-            raw_seen_before_normalization.append((target / "mtracker.xlsx").is_file())
+            raw_seen_before_normalization.append((_run_dir(target) / "mtracker.xlsx").is_file())
         if detail["stage"] == "file_metadata":
             normalized_seen_before_metadata.append(
-                (target / "mtracker_normalized.csv").is_file()
+                (_run_dir(target) / "mtracker_normalized.csv").is_file()
             )
 
     job = _mtracker_dashboard_job(
@@ -2086,11 +2108,11 @@ def test_dashboard_xlsx_normalizes_only_for_configured_downstream_processing(
         sql=downstream == "sql_handoff",
     )
     artifacts, _timings = flow_worker.execute_job(
-        _WaitPage(), job, progress, tmp_path / "profile", staging,
+        _WaitPage(), job, progress, tmp_path / "profile", staging, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
-    normalized = target / "mtracker_normalized.csv"
-    assert (target / "mtracker.xlsx").is_file()
+    normalized = _run_dir(target) / "mtracker_normalized.csv"
+    assert (_run_dir(target) / "mtracker.xlsx").is_file()
     assert normalized.is_file()
     assert artifacts[0]["file_path"] == str(normalized)
     assert artifacts[0]["row_count"] == 1
@@ -2135,12 +2157,12 @@ def test_asap_export_view_workbook_still_normalizes_without_downstream(
     }
 
     artifacts, _timings = flow_worker.execute_job(
-        _WaitPage(), job, lambda *_args: None, tmp_path / "profile", staging,
+        _WaitPage(), job, lambda *_args: None, tmp_path / "profile", staging, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
-    assert (target / "mtracker.xlsx").is_file()
-    assert (target / "mtracker_normalized.csv").is_file()
-    assert artifacts[0]["file_path"] == str(target / "mtracker_normalized.csv")
+    assert (_run_dir(target) / "mtracker.xlsx").is_file()
+    assert (_run_dir(target) / "mtracker_normalized.csv").is_file()
+    assert artifacts[0]["file_path"] == str(_run_dir(target) / "mtracker_normalized.csv")
 
 
 def test_dashboard_transfer_progress_failure_is_not_redownloaded(
@@ -2178,11 +2200,11 @@ def test_dashboard_transfer_progress_failure_is_not_redownloaded(
     ):
         flow_worker.execute_job(
             _WaitPage(), _mtracker_dashboard_job(target), progress,
-            tmp_path / "profile", staging,
+            tmp_path / "profile", staging, run_id=RUN_ID, register_folder=_no_ops_register,
         )
 
     assert downloads == [1]
-    assert not (target / "mtracker.xlsx").exists()
+    assert not (_run_dir(target) / "mtracker.xlsx").exists()
     assert not any(event["stage"] == "export_retry" for event in events)
 
 
@@ -2225,12 +2247,12 @@ def test_dashboard_completed_download_processing_failure_is_not_redownloaded(
             _mtracker_dashboard_job(target, sql=True),
             progress,
             tmp_path / "profile",
-            staging,
+            staging, run_id=RUN_ID, register_folder=_no_ops_register,
         )
 
     assert downloads == [1]
-    assert (target / "mtracker.xlsx").is_file()
-    assert not (target / "mtracker_normalized.csv").exists()
+    assert (_run_dir(target) / "mtracker.xlsx").is_file()
+    assert not (_run_dir(target) / "mtracker_normalized.csv").exists()
     assert not any(event["stage"] == "export_retry" for event in events)
 
 
@@ -2339,10 +2361,10 @@ def test_execute_job_stores_dashboard_csv_without_closing_download_popup(
     }
 
     artifacts, _timings = flow_worker.execute_job(
-        page, job, lambda *_args: None, tmp_path / "profile", staging,
+        page, job, lambda *_args: None, tmp_path / "profile", staging, run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
-    saved = target / "mtracker.csv"
+    saved = _run_dir(target) / "mtracker.csv"
     assert saved.is_file()
     assert artifacts[0]["file_path"] == str(saved)
     assert artifacts[0]["status"] == "saved"
@@ -2426,7 +2448,7 @@ def test_gscm_retry_reloads_portal_after_an_empty_favorite_dialog(
     }
 
     artifacts, _timings = flow_worker.execute_job(
-        page, job, lambda *_args, **_kwargs: None, tmp_path, tmp_path / "staging",
+        page, job, lambda *_args, **_kwargs: None, tmp_path, tmp_path / "staging", run_id=RUN_ID, register_folder=_no_ops_register,
     )
 
     assert order == ["open", "reload", "open", "export", "download"]
@@ -2938,3 +2960,324 @@ def test_catalogued_href_is_available_to_the_run():
 def test_dashboard_download_passes_the_job_so_href_matching_can_work():
     source = Path(flow_worker.__file__).read_text()
     assert "_asap_download_dashboard_link(\n                        page, download_link, staging, job,\n                    )" in source
+
+
+# --- Run folders and retention operations ---
+
+
+def test_run_folder_name_formats_run_id_and_date():
+    from datetime import date
+
+    assert flow_worker.flow_retention.run_folder_name(57, date(2026, 8, 25)) == "#57_25-08-2026"
+    assert flow_worker.flow_retention.RUN_FOLDER_RE.fullmatch("#57_25-08-2026")
+    assert flow_worker.flow_retention.RUN_FOLDER_RE.fullmatch("#57_25-08-2026 (2)")
+    assert not flow_worker.flow_retention.RUN_FOLDER_RE.fullmatch("#57_2026-08-25")
+
+
+def test_create_run_folder_writes_marker_and_reuses_its_own_folder(tmp_path):
+    retention = flow_worker.flow_retention
+    created = retention.create_run_folder(tmp_path, 57, 4)
+    assert created.name == retention.run_folder_name(57)
+    marker = retention.read_marker(created)
+    assert marker["run_id"] == 57 and marker["flow_id"] == 4
+    # A re-claimed run re-enters its own folder instead of creating another.
+    assert retention.create_run_folder(tmp_path, 57, 4) == created
+
+
+def test_create_run_folder_never_reuses_a_user_folder_with_the_same_name(tmp_path):
+    retention = flow_worker.flow_retention
+    user_folder = tmp_path / retention.run_folder_name(57)
+    user_folder.mkdir()
+    (user_folder / "keep.txt").write_text("user data", encoding="utf-8")
+    created = retention.create_run_folder(tmp_path, 57, 4)
+    assert created != user_folder
+    assert created.name == f"{retention.run_folder_name(57)} (2)"
+    assert (user_folder / "keep.txt").read_text(encoding="utf-8") == "user data"
+    assert retention.read_marker(user_folder) is None
+
+
+def _op_for(target, folder_name, op_id=1, source_run_id=54):
+    return {
+        "op_id": op_id,
+        "source_run_id": source_run_id,
+        "original_path": str(target / folder_name),
+        "tombstone_path": str(target / f".{folder_name}.op{op_id}.deleting"),
+    }
+
+
+def _marked_run_folder(target, run_id, name=None):
+    folder = target / (name or flow_worker.flow_retention.run_folder_name(run_id))
+    folder.mkdir()
+    (folder / flow_worker.flow_retention.MARKER_NAME).write_text(
+        json.dumps({"run_id": run_id, "flow_id": 4}), encoding="utf-8",
+    )
+    (folder / "report.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    return folder
+
+
+def test_execute_ops_deletes_only_the_marked_recorded_folder(tmp_path):
+    retention = flow_worker.flow_retention
+    victim = _marked_run_folder(tmp_path, 54)
+    decoys = [tmp_path / "Archive", tmp_path / "#old", tmp_path / "#54_2026-08-25"]
+    for decoy in decoys:
+        decoy.mkdir()
+    loose = tmp_path / "report.xlsx"
+    loose.write_text("keep", encoding="utf-8")
+
+    results = retention.execute_ops(tmp_path, [_op_for(tmp_path, victim.name)])
+
+    assert [item["outcome"] for item in results] == ["deleted"]
+    assert not victim.exists()
+    assert all(decoy.is_dir() for decoy in decoys)
+    assert loose.is_file()
+
+
+def test_execute_ops_safety_gate_refuses_everything_not_provably_ours(tmp_path):
+    retention = flow_worker.flow_retention
+    inner = tmp_path / "target"
+    inner.mkdir()
+
+    unmarked = tmp_path / "target" / retention.run_folder_name(50)
+    unmarked.mkdir()
+    foreign = _marked_run_folder(inner, 51)  # marker says 51, op will say 99
+    elsewhere = _marked_run_folder(tmp_path, 52)  # outside the target folder
+    badname = inner / "not_a_run_folder"
+    badname.mkdir()
+    plainfile = inner / retention.run_folder_name(53)
+    plainfile.write_text("a file, not a folder", encoding="utf-8")
+    linked = inner / retention.run_folder_name(55)
+    _symlink_or_skip(linked, elsewhere)
+
+    ops = [
+        _op_for(inner, unmarked.name, op_id=1, source_run_id=50),
+        _op_for(inner, foreign.name, op_id=2, source_run_id=99),
+        {"op_id": 3, "source_run_id": 52, "original_path": str(elsewhere),
+         "tombstone_path": str(tmp_path / f".{elsewhere.name}.op3.deleting")},
+        _op_for(inner, badname.name, op_id=4, source_run_id=54),
+        _op_for(inner, plainfile.name, op_id=5, source_run_id=53),
+        _op_for(inner, linked.name, op_id=6, source_run_id=55),
+    ]
+    results = retention.execute_ops(inner, ops)
+
+    assert [item["outcome"] for item in results] == ["skipped"] * 6
+    assert unmarked.is_dir() and foreign.is_dir() and elsewhere.is_dir()
+    assert badname.is_dir() and plainfile.is_file() and linked.is_symlink()
+    # The out-of-target op is refused on its tombstone location too.
+    assert "tombstone" in results[2]["detail"] or "target folder" in results[2]["detail"]
+    linked.unlink()  # leave nothing for tmp_path cleanup to trip over on Windows
+
+
+def test_execute_ops_skips_junctions(tmp_path, monkeypatch):
+    retention = flow_worker.flow_retention
+    victim = _marked_run_folder(tmp_path, 54)
+    monkeypatch.setattr(retention, "_is_junction", lambda path: path == victim)
+    results = retention.execute_ops(tmp_path, [_op_for(tmp_path, victim.name)])
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert victim.is_dir()
+
+
+def test_execute_ops_reconciles_after_a_crash_between_rename_and_delete(tmp_path):
+    retention = flow_worker.flow_retention
+    op = _op_for(tmp_path, retention.run_folder_name(54))
+    tombstone = Path(op["tombstone_path"])
+    tombstone.mkdir()
+    (tombstone / "leftover.csv").write_text("half-deleted", encoding="utf-8")
+
+    results = retention.execute_ops(tmp_path, [op])
+
+    assert [item["outcome"] for item in results] == ["deleted"]
+    assert not tombstone.exists()
+
+
+def test_execute_ops_reports_deleted_when_both_paths_are_already_gone(tmp_path):
+    retention = flow_worker.flow_retention
+    results = retention.execute_ops(tmp_path, [_op_for(tmp_path, retention.run_folder_name(54))])
+    assert [item["outcome"] for item in results] == ["deleted"]
+
+
+def test_execute_ops_leaves_the_folder_intact_when_rename_fails(tmp_path, monkeypatch):
+    retention = flow_worker.flow_retention
+    victim = _marked_run_folder(tmp_path, 54)
+
+    def refuse(_self, _target):
+        raise PermissionError("file is open in Excel")
+
+    monkeypatch.setattr(Path, "rename", refuse)
+    results = retention.execute_ops(tmp_path, [_op_for(tmp_path, victim.name)])
+    assert [item["outcome"] for item in results] == ["failed"]
+    assert victim.is_dir() and (victim / "report.csv").is_file()
+
+
+def test_execute_ops_quarantines_when_delete_fails_after_rename(tmp_path, monkeypatch):
+    retention = flow_worker.flow_retention
+    victim = _marked_run_folder(tmp_path, 54)
+    op = _op_for(tmp_path, victim.name)
+
+    def refuse(_path):
+        raise PermissionError("file is open in Excel")
+
+    monkeypatch.setattr(flow_worker.flow_retention.shutil, "rmtree", refuse)
+    results = retention.execute_ops(tmp_path, [op])
+    assert [item["outcome"] for item in results] == ["quarantined"]
+    assert not victim.exists()
+    assert Path(op["tombstone_path"]).is_dir()
+
+    # The next assigned run reconciles the DB-known tombstone and finishes.
+    monkeypatch.undo()
+    retry = flow_worker.flow_retention.execute_ops(tmp_path, [op])
+    assert [item["outcome"] for item in retry] == ["deleted"]
+    assert not Path(op["tombstone_path"]).exists()
+
+
+def test_execute_job_places_files_in_a_run_folder_and_prunes_assigned_ops(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    old = _marked_run_folder(target, 53)
+    survivor = _marked_run_folder(target, 55)
+    decoy = target / "Keep Me"
+    decoy.mkdir()
+    _stub_dashboard_execution(monkeypatch)
+    monkeypatch.setattr(
+        flow_worker, "_asap_download_dashboard_link",
+        lambda _page, _link, staging_dir, _job: (
+            staging_dir.mkdir(parents=True, exist_ok=True) or None,
+            (staging_dir / "mtracker.csv").write_text("a,b\n1,2\n", encoding="utf-8"),
+        ) and (staging_dir / "mtracker.csv"),
+    )
+    registered = []
+
+    def register_folder(folder):
+        registered.append(folder)
+        return {"ops": [_op_for(target, old.name, op_id=9, source_run_id=53)]}
+
+    events = []
+    artifacts, _timings = flow_worker.execute_job(
+        _WaitPage(), _mtracker_dashboard_job(target), lambda _s, detail, *rest: events.append(detail),
+        tmp_path / "profile", staging, run_id=RUN_ID, register_folder=register_folder,
+    )
+
+    run_dir = _run_dir(target)
+    assert registered == [str(run_dir)]
+    assert [Path(item["file_path"]).parent for item in artifacts] == [run_dir]
+    assert not old.exists()
+    assert survivor.is_dir() and decoy.is_dir()
+    stages = [event.get("stage") for event in events]
+    assert "run_folder" in stages and "run_folder_retention" in stages
+    retention_event = next(e for e in events if e.get("stage") == "run_folder_retention")
+    assert retention_event["retention_results"] == [
+        {"op_id": 9, "outcome": "deleted", "detail": ""},
+    ]
+
+
+def test_execute_ops_refuses_a_tombstone_that_is_no_longer_a_real_folder(tmp_path):
+    retention = flow_worker.flow_retention
+    elsewhere = tmp_path / "user-data"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("user data", encoding="utf-8")
+
+    op = _op_for(tmp_path, retention.run_folder_name(54))
+    linked = Path(op["tombstone_path"])
+    _symlink_or_skip(linked, elsewhere)
+    results = retention.execute_ops(tmp_path, [op])
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert (elsewhere / "keep.txt").is_file() and linked.is_symlink()
+
+    linked.unlink()
+    plainfile = Path(op["tombstone_path"])
+    plainfile.write_text("not a folder", encoding="utf-8")
+    results = retention.execute_ops(tmp_path, [op])
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert plainfile.is_file()
+
+
+def test_execute_ops_deletes_nothing_when_original_and_tombstone_both_exist(tmp_path):
+    retention = flow_worker.flow_retention
+    victim = _marked_run_folder(tmp_path, 54)
+    op = _op_for(tmp_path, victim.name)
+    tombstone = Path(op["tombstone_path"])
+    tombstone.mkdir()
+    (tombstone / "leftover.csv").write_text("ambiguous", encoding="utf-8")
+
+    results = retention.execute_ops(tmp_path, [op])
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert "ambiguous" in results[0]["detail"]
+    assert victim.is_dir() and tombstone.is_dir()
+
+
+def test_execute_job_requires_a_registration_callback():
+    import inspect
+
+    parameters = inspect.signature(flow_worker.execute_job).parameters
+    assert parameters["register_folder"].default is inspect.Parameter.empty
+    assert parameters["run_id"].default is inspect.Parameter.empty
+
+
+def test_execute_job_registers_the_folder_before_reporting_progress(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "target"
+    staging = tmp_path / "staging"
+    target.mkdir()
+    staging.mkdir()
+    _stub_dashboard_execution(monkeypatch)
+    monkeypatch.setattr(
+        flow_worker, "_asap_download_dashboard_link",
+        lambda _page, _link, staging_dir, _job: (
+            staging_dir.mkdir(parents=True, exist_ok=True) or None,
+            (staging_dir / "mtracker.csv").write_text("a,b\n1,2\n", encoding="utf-8"),
+        ) and (staging_dir / "mtracker.csv"),
+    )
+    order = []
+
+    def register_folder(folder):
+        order.append(("register", folder))
+        return {"ops": []}
+
+    def progress(_status, detail, *_rest):
+        order.append(("progress", detail.get("stage")))
+
+    flow_worker.execute_job(
+        _WaitPage(), _mtracker_dashboard_job(target), progress,
+        tmp_path / "profile", staging, run_id=RUN_ID, register_folder=register_folder,
+    )
+    # Once the marked folder exists it is registered immediately - before the
+    # run_folder progress post, whose failure would otherwise leave the folder
+    # unknown to the server's retention window. (The opening_report post comes
+    # first, but at that point no folder exists to orphan.)
+    assert order[0] == ("progress", "opening_report")
+    assert order[1] == ("register", str(_run_dir(target)))
+    assert order[2] == ("progress", "run_folder")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions exist only on Windows")
+def test_execute_ops_skips_a_real_windows_junction(tmp_path):
+    import _winapi
+
+    retention = flow_worker.flow_retention
+    elsewhere = tmp_path / "user-data"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("user data", encoding="utf-8")
+
+    junction = tmp_path / retention.run_folder_name(54)
+    _winapi.CreateJunction(str(elsewhere), str(junction))
+    try:
+        results = retention.execute_ops(tmp_path, [_op_for(tmp_path, junction.name)])
+        assert [item["outcome"] for item in results] == ["skipped"]
+        assert (elsewhere / "keep.txt").is_file()
+
+        # A junction swapped in at the tombstone path is refused the same way.
+        op = _op_for(tmp_path, retention.run_folder_name(56), op_id=2, source_run_id=56)
+        tomb_junction = Path(op["tombstone_path"])
+        _winapi.CreateJunction(str(elsewhere), str(tomb_junction))
+        try:
+            results = retention.execute_ops(tmp_path, [op])
+            assert [item["outcome"] for item in results] == ["skipped"]
+            assert (elsewhere / "keep.txt").is_file()
+        finally:
+            tomb_junction.rmdir()
+    finally:
+        junction.rmdir()
