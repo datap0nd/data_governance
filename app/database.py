@@ -1148,6 +1148,39 @@ MIGRATIONS = [
               OR lower(trim(name))='gscm'
               OR lower(COALESCE(base_url, '')) LIKE '%mdscm.sec.samsung.net%'
        )""",
+    # Durable per-artifact query history. One row per observed version of a
+    # report table's M expression ('report_table') or a tracked materialized
+    # view's SQL definition ('mv'). Versions are never deleted.
+    """CREATE TABLE IF NOT EXISTS query_versions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        artifact_kind   TEXT NOT NULL,
+        report_id       INTEGER REFERENCES reports(id),
+        source_id       INTEGER REFERENCES sources(id),
+        artifact_name   TEXT NOT NULL,
+        language        TEXT NOT NULL,
+        query_text      TEXT,
+        normalized_hash TEXT NOT NULL,
+        prev_version_id INTEGER REFERENCES query_versions(id),
+        scan_run_id     INTEGER REFERENCES scan_runs(id),
+        action_id       INTEGER REFERENCES actions(id),
+        change_kind     TEXT NOT NULL DEFAULT 'baseline',
+        detected_at     DATETIME NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_report ON query_versions(report_id, artifact_name, id)",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_source ON query_versions(source_id, artifact_name, id)",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_action ON query_versions(action_id)",
+    # Legacy source-level query-change alerts cannot be attributed to a
+    # specific report table or MV version, so they cannot be routed or
+    # diffed. Resolve any that are still active; per-artifact detection
+    # recreates real ones with attached history on the next scan.
+    """UPDATE actions
+       SET status='resolved', resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes, '') || ' [auto-resolved: legacy source-level query alert without query history]'
+       WHERE type='changed_query'
+         AND status IN ('open','acknowledged','investigating')
+         AND id NOT IN (
+             SELECT DISTINCT action_id FROM query_versions WHERE action_id IS NOT NULL
+         )""",
 ]
 
 

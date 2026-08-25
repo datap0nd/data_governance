@@ -11,10 +11,62 @@ READ-ONLY: Only SELECT queries are used against PostgreSQL.
 import logging
 from datetime import datetime, timezone
 
+from app.asset_visibility import get_active_source_ids
 from app.database import get_db
 from app.scanner.prober import _get_pg_connection
+from app.scanner.query_history import sync_mv_query_version
 
 logger = logging.getLogger(__name__)
+
+
+def _fetch_mv_definitions(pg_conn) -> dict[str, str] | None:
+    """Read every catalog MV's SQL definition, keyed by schema.name.
+
+    Returns None when definition capture is unavailable (missing view,
+    permission error, or unexpected row shape). Dependency discovery must
+    continue either way; callers log the skipped history step instead of
+    producing false alerts.
+    """
+    try:
+        cur = pg_conn.cursor()
+        cur.execute("SELECT schemaname, matviewname, definition FROM pg_matviews")
+        rows = cur.fetchall()
+    except Exception as e:
+        logger.warning("MV definition capture unavailable: %s", e)
+        return None
+
+    definitions: dict[str, str] = {}
+    for row in rows:
+        try:
+            schema, name, definition = row
+        except (TypeError, ValueError):
+            logger.warning("MV definition capture returned unexpected rows; skipping history")
+            return None
+        if not isinstance(schema, str) or not isinstance(name, str) or not isinstance(definition, str):
+            logger.warning("MV definition capture returned unexpected values; skipping history")
+            return None
+        definitions[f"{schema}.{name}"] = definition
+    return definitions
+
+
+def _find_tracked_mv_source(db, full_mv_name: str, tracked_ids: set[int]) -> int | None:
+    """Resolve an MV to a tracked source ID, or None when untracked.
+
+    'Tracked' means the MV matches an active Metronome source or a lineage
+    artifact; unrelated database MVs are ignored.
+    """
+    row = db.execute(
+        "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
+        (f"%{full_mv_name}",),
+    ).fetchone()
+    if not row:
+        row = db.execute(
+            "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
+            (f"%{full_mv_name}%",),
+        ).fetchone()
+    if not row:
+        return None
+    return row["id"] if row["id"] in tracked_ids else None
 
 
 def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
@@ -62,7 +114,7 @@ def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
     return cursor.lastrowid
 
 
-def scan_pg_dependencies() -> dict:
+def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
     """Scan PostgreSQL for materialized view dependencies.
 
     Uses pg_depend/pg_rewrite catalog tables to find real table dependencies
@@ -114,8 +166,19 @@ def scan_pg_dependencies() -> dict:
         """)
         dep_rows = pg_cur.fetchall()
 
-        if not dep_rows:
-            return {"status": "completed", "mvs_found": 0, "deps_created": 0}
+        # Definitions come from pg_matviews for every catalog MV; only MVs
+        # already tracked as sources get versioned below.
+        mv_definitions = _fetch_mv_definitions(pg_conn)
+
+        if not dep_rows and not mv_definitions:
+            return {
+                "status": "completed",
+                "mvs_found": 0,
+                "deps_created": 0,
+                "query_changes": 0,
+                "query_change_log": [],
+                "mv_definitions": "captured" if mv_definitions is not None else "unavailable",
+            }
 
         # Group by MV
         mv_deps = {}
@@ -198,11 +261,47 @@ def scan_pg_dependencies() -> dict:
                 (now,),
             ).fetchone()[0]
 
+            # Version definitions for tracked MVs. First observation is a
+            # baseline; later definition changes raise an MV-linked action.
+            query_changes = 0
+            query_change_log: list[str] = []
+            if mv_definitions is None:
+                log_lines.append(
+                    "MV definitions unavailable; query history step skipped"
+                )
+            else:
+                tracked_ids = get_active_source_ids(db)
+                tracked_ids |= {
+                    row[0]
+                    for row in db.execute(
+                        """SELECT source_id FROM source_dependencies
+                           UNION SELECT depends_on_id FROM source_dependencies"""
+                    ).fetchall()
+                }
+                for full_mv_name in sorted(mv_definitions):
+                    mv_source_id = _find_tracked_mv_source(db, full_mv_name, tracked_ids)
+                    if mv_source_id is None:
+                        continue
+                    result = sync_mv_query_version(
+                        db, mv_source_id, full_mv_name,
+                        mv_definitions[full_mv_name], scan_run_id, now,
+                    )
+                    if result["baselined"]:
+                        log_lines.append(f"MV QUERY BASELINE: {full_mv_name}")
+                    elif result["changed"]:
+                        query_changes += 1
+                        line = f"QUERY CHANGED: {full_mv_name} MV definition changed"
+                        query_change_log.append(line)
+                        log_lines.append(line)
+
         summary = {
             "status": "completed",
             "mvs_found": mvs_found,
             "deps_created": deps_created,
             "sources_created": sources_created,
+            "query_changes": query_changes,
+            "query_change_log": query_change_log,
+            "mv_definitions": "captured" if mv_definitions is not None else "unavailable",
             "log": "\n".join(log_lines) if log_lines else "No MV dependencies found.",
         }
         logger.info("PG dependency scan completed: %s", summary)

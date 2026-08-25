@@ -670,6 +670,244 @@ function _openNotifySlaModal(actionId) {
     reason?.focus();
 }
 
+// ── Query history & diff ──
+
+function queryChangeKindBadge(kind) {
+    const labels = {
+        baseline: "Baseline",
+        changed: "Changed",
+        added: "Added",
+        removed: "Removed",
+        restored: "Restored",
+    };
+    const colors = {
+        baseline: "badge-muted",
+        changed: "badge-blue",
+        added: "badge-green",
+        removed: "badge-red",
+        restored: "badge-yellow",
+    };
+    return `<span class="badge ${colors[kind] || "badge-muted"}" style="font-size:0.62rem">${labels[kind] || esc(kind || "")}</span>`;
+}
+
+function queryLanguageBadge(language) {
+    const label = language === "m" ? "M query" : language === "sql" ? "SQL" : (language || "");
+    return `<span class="badge badge-muted" style="font-size:0.62rem">${esc(label)}</span>`;
+}
+
+/** Rows listing each changed artifact in a changed_query alert, with a
+ *  "View diff" action per change. */
+function queryChangesListHtml(changes) {
+    if (!changes || changes.length === 0) return "";
+    return `<div class="query-change-list">${changes.map(c => `
+        <div class="query-change-item">
+            ${queryChangeKindBadge(c.change_kind)}
+            <strong class="query-change-name">${esc(c.artifact_name)}</strong>
+            ${queryLanguageBadge(c.language)}
+            <span class="query-change-date">${formatDateOnly(c.detected_at)}</span>
+            <button type="button" class="btn-outline query-view-diff"
+                    data-to-id="${c.version_id}"
+                    ${c.prev_version_id ? `data-from-id="${c.prev_version_id}"` : ""}>View diff</button>
+        </div>
+    `).join("")}</div>`;
+}
+
+function bindQueryDiffButtons(root) {
+    (root || document).querySelectorAll(".query-view-diff").forEach(btn => {
+        if (btn._qdiffBound) return;
+        btn._qdiffBound = true;
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const toId = parseInt(btn.dataset.toId);
+            const fromId = btn.dataset.fromId ? parseInt(btn.dataset.fromId) : null;
+            if (toId) openQueryDiffModal(toId, fromId);
+        });
+    });
+}
+
+function _queryDiffRowsHtml(rows) {
+    if (!rows || rows.length === 0) {
+        return '<div class="empty-state" style="padding:1rem">Both versions are empty</div>';
+    }
+    const cell = (lineNo, text, cls) => `
+        <td class="qdiff-ln">${lineNo ?? ""}</td>
+        <td class="qdiff-text ${cls}">${text === null || text === undefined ? "" : (esc(text) || "&nbsp;")}</td>`;
+    const body = rows.map(r => {
+        const leftCls = r.kind === "context" ? "" : (r.left_text !== null && r.left_text !== undefined ? "qdiff-removed" : "qdiff-blank");
+        const rightCls = r.kind === "context" ? "" : (r.right_text !== null && r.right_text !== undefined ? "qdiff-added" : "qdiff-blank");
+        return `<tr>${cell(r.left_line, r.left_text, leftCls)}${cell(r.right_line, r.right_text, rightCls)}</tr>`;
+    }).join("");
+    return `
+        <div class="qdiff-scroll">
+            <table class="qdiff-table">
+                <colgroup><col class="qdiff-col-ln"><col class="qdiff-col-text"><col class="qdiff-col-ln"><col class="qdiff-col-text"></colgroup>
+                <tbody>${body}</tbody>
+            </table>
+        </div>`;
+}
+
+function _queryVersionOptionLabel(v) {
+    return `v${v.id} - ${formatDateOnly(v.detected_at)} (${v.change_kind})`;
+}
+
+/** Side-by-side diff modal with version selectors. `toId` is the After
+ *  version; `fromId` defaults to that version's recorded predecessor. */
+async function openQueryDiffModal(toId, fromId) {
+    let resp;
+    try {
+        const params = fromId ? `to_id=${toId}&from_id=${fromId}` : `to_id=${toId}`;
+        resp = await api(`/api/query-history/compare?${params}`);
+    } catch (err) {
+        toast("Could not load diff: " + err.message);
+        return;
+    }
+
+    // All versions of this artifact, for the Before/After selectors
+    let versions = [];
+    try {
+        if (resp.report_id) {
+            const hist = await api(`/api/query-history/reports/${resp.report_id}`);
+            const group = (hist.tables || []).find(t => t.table_name === resp.artifact_name);
+            versions = group ? group.versions : [];
+        } else if (resp.source_id) {
+            const hist = await api(`/api/query-history/sources/${resp.source_id}`);
+            const group = (hist.artifacts || []).find(t => t.artifact_name === resp.artifact_name);
+            versions = group ? group.versions : [];
+        }
+    } catch (_) { /* selectors degrade to the two compared versions */ }
+
+    document.getElementById("query-diff-overlay")?.remove();
+
+    const artifactKindLabel = resp.artifact_kind === "mv" ? "Materialized view" : "Report table";
+    const overlayHtml = `
+        <div class="task-modal-overlay" id="query-diff-overlay">
+            <div class="task-modal query-diff-modal" role="dialog" aria-modal="true" aria-labelledby="query-diff-title">
+                <div class="query-diff-header">
+                    <h2 id="query-diff-title">${esc(artifactKindLabel)}: ${esc(resp.artifact_name)} ${queryLanguageBadge(resp.language)}</h2>
+                    <button class="btn-outline" id="query-diff-close">&times; Close</button>
+                </div>
+                <div class="query-diff-controls">
+                    <label>Before
+                        <select id="query-diff-from"></select>
+                    </label>
+                    <label>After
+                        <select id="query-diff-to"></select>
+                    </label>
+                </div>
+                <div class="query-diff-meta" id="query-diff-meta"></div>
+                <div id="query-diff-body"></div>
+            </div>
+        </div>`;
+    document.body.insertAdjacentHTML("beforeend", overlayHtml);
+
+    const overlay = document.getElementById("query-diff-overlay");
+    const fromSel = document.getElementById("query-diff-from");
+    const toSel = document.getElementById("query-diff-to");
+    const close = () => overlay?.remove();
+    overlay?.addEventListener("click", e => { if (e.target === overlay) close(); });
+    document.getElementById("query-diff-close")?.addEventListener("click", close);
+
+    const fillSelectors = (current) => {
+        const opts = versions.length ? versions : [current.to_version, current.from_version].filter(Boolean);
+        const fromValue = current.from_version ? String(current.from_version.id) : "";
+        const toValue = String(current.to_version.id);
+        fromSel.innerHTML = `<option value="">(empty - before first version)</option>` +
+            opts.map(v => `<option value="${v.id}"${String(v.id) === fromValue ? " selected" : ""}>${esc(_queryVersionOptionLabel(v))}</option>`).join("");
+        toSel.innerHTML = opts.map(v => `<option value="${v.id}"${String(v.id) === toValue ? " selected" : ""}>${esc(_queryVersionOptionLabel(v))}</option>`).join("");
+    };
+
+    const renderBody = (current) => {
+        const meta = document.getElementById("query-diff-meta");
+        const beforeStamp = current.from_version
+            ? `${formatDate(current.from_version.detected_at)}`
+            : "no earlier version";
+        const afterStamp = `${formatDate(current.to_version.detected_at)}`;
+        meta.innerHTML = `
+            <div class="qdiff-side-label"><span class="qdiff-dot qdiff-dot-removed"></span><strong>Before</strong> <span>${esc(beforeStamp)}</span></div>
+            <div class="qdiff-side-label"><span class="qdiff-dot qdiff-dot-added"></span><strong>After</strong> <span>${esc(afterStamp)}</span></div>`;
+        document.getElementById("query-diff-body").innerHTML = _queryDiffRowsHtml(current.rows);
+    };
+
+    const reload = async () => {
+        const newTo = parseInt(toSel.value);
+        // "(empty)" compares against nothing: from_id=0 is the explicit
+        // empty-before marker understood by the compare endpoint.
+        const newFrom = fromSel.value ? parseInt(fromSel.value) : 0;
+        if (!newTo) return;
+        try {
+            const updated = await api(`/api/query-history/compare?to_id=${newTo}&from_id=${newFrom}`);
+            renderBody(updated);
+        } catch (err) {
+            toast("Could not load diff: " + err.message);
+        }
+    };
+
+    fillSelectors(resp);
+    renderBody(resp);
+    fromSel.addEventListener("change", reload);
+    toSel.addEventListener("change", reload);
+}
+
+/** Collapsible per-artifact version list used by report and source details. */
+function queryHistoryGroupsHtml(groups, idPrefix) {
+    if (!groups || groups.length === 0) {
+        return '<div class="rx-l2" style="color:var(--text-dim);font-size:0.78rem;padding:0.3rem 0">No recorded query history yet. Versions appear after the next scan.</div>';
+    }
+    let idx = 0;
+    return groups.map(group => {
+        const gid = `${idPrefix}-${idx++}`;
+        const name = group.table_name || group.artifact_name;
+        const versions = [...group.versions].reverse(); // newest first
+        const versionRows = versions.map(v => `
+            <div class="query-change-item rx-l3">
+                ${queryChangeKindBadge(v.change_kind)}
+                <strong class="query-change-name">v${v.id}</strong>
+                <span class="query-change-date">${formatDate(v.detected_at)}</span>
+                <button type="button" class="btn-outline query-view-diff"
+                        data-to-id="${v.id}"
+                        ${v.prev_version_id ? `data-from-id="${v.prev_version_id}"` : ""}>View diff</button>
+            </div>`).join("");
+        const compareControls = group.versions.length > 1 ? `
+            <div class="query-history-compare rx-l3">
+                <select class="qh-compare-from">
+                    ${group.versions.map(v => `<option value="${v.id}"${v.id === group.versions[group.versions.length - 2].id ? " selected" : ""}>${esc(_queryVersionOptionLabel(v))}</option>`).join("")}
+                </select>
+                <span class="qh-compare-arrow">&rarr;</span>
+                <select class="qh-compare-to">
+                    ${group.versions.map(v => `<option value="${v.id}"${v.id === group.versions[group.versions.length - 1].id ? " selected" : ""}>${esc(_queryVersionOptionLabel(v))}</option>`).join("")}
+                </select>
+                <button type="button" class="btn-outline qh-compare-btn">Compare</button>
+            </div>` : "";
+        return `
+            <div class="rx-section rx-l2">
+                <div class="rx-toggle" data-target="${gid}">
+                    <span class="rx-arrow">&#9656;</span> ${esc(name)} <span class="rx-count">(${group.versions.length} version${group.versions.length !== 1 ? "s" : ""})</span>
+                </div>
+                <div class="rx-body" id="${gid}" style="display:none">
+                    ${versionRows}
+                    ${compareControls}
+                </div>
+            </div>`;
+    }).join("");
+}
+
+function bindQueryHistorySection(root) {
+    bindQueryDiffButtons(root);
+    (root || document).querySelectorAll(".qh-compare-btn").forEach(btn => {
+        if (btn._qhBound) return;
+        btn._qhBound = true;
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const wrap = btn.closest(".query-history-compare");
+            const fromId = parseInt(wrap.querySelector(".qh-compare-from").value);
+            const toId = parseInt(wrap.querySelector(".qh-compare-to").value);
+            if (!toId) return;
+            if (fromId === toId) { toast("Pick two different versions"); return; }
+            openQueryDiffModal(toId, fromId);
+        });
+    });
+}
+
 function typeBadge(type) {
     const colors = {
         csv: "badge-blue", excel: "badge-green", sql: "badge-yellow",
@@ -1267,11 +1505,15 @@ async function showSourceDetail(source) {
     const existing = $("#source-detail");
     if (existing) existing.remove();
 
-    const [reports, scripts] = await Promise.all([
+    const [reports, scripts, queryHist] = await Promise.all([
         api(`/api/sources/${source.id}/reports`),
         api(`/api/sources/${source.id}/scripts`),
+        api(`/api/query-history/sources/${source.id}`).catch(() => ({ artifacts: [] })),
     ]);
     const parsed = parseSourceName(source);
+    const queryHistoryArtifacts = queryHist.artifacts || [];
+    const showQueryHistory = queryHistoryArtifacts.length > 0 ||
+        String(source.type || "").toLowerCase() === "postgresql";
 
     const panel = document.createElement("div");
     panel.id = "source-detail";
@@ -1327,6 +1569,13 @@ async function showSourceDetail(source) {
             }</tbody>
         </table>
 
+        ${showQueryHistory ? `
+        <h2>Query History</h2>
+        <div class="source-query-history">
+            ${queryHistoryGroupsHtml(queryHistoryArtifacts, `qh-source-${source.id}`)}
+        </div>
+        ` : ""}
+
         <h2>Freshness Rule</h2>
         ${_freshnessRuleFormHtml(source, { prefix: "source-freshness", wide: true })}
     `;
@@ -1334,6 +1583,19 @@ async function showSourceDetail(source) {
     $("#app").appendChild(panel);
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
     $("#btn-close-detail").addEventListener("click", () => panel.remove());
+
+    // Query history: collapsible artifact groups plus diff/compare actions
+    panel.querySelectorAll(".source-query-history .rx-toggle[data-target]").forEach(toggle => {
+        toggle.addEventListener("click", () => {
+            const body = panel.querySelector(`#${toggle.dataset.target}`);
+            if (!body) return;
+            const showing = body.style.display !== "none";
+            body.style.display = showing ? "none" : "";
+            const arrow = toggle.querySelector(".rx-arrow");
+            if (arrow) arrow.innerHTML = showing ? "&#9656;" : "&#9662;";
+        });
+    });
+    bindQueryHistorySection(panel);
 
     // View path buttons
     panel.querySelectorAll(".view-path-btn").forEach(btn => {
@@ -1373,10 +1635,11 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, unusedData, docData] = await Promise.all([
+    const [tables, unusedData, docData, queryHist] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
         api(`/api/documentation?report_id=${report.id}`).catch(() => []),
+        api(`/api/query-history/reports/${report.id}`).catch(() => ({ tables: [] })),
     ]);
     let doc = docData.length > 0 ? docData[0] : null;
 
@@ -1565,6 +1828,17 @@ async function showReportDetail(report) {
             </div>
 
             <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="query-history-section">
+                    <span class="rx-arrow">&#9656;</span> Query History
+                    <span class="rx-count">(${(queryHist.tables || []).reduce((n, t) => n + t.versions.length, 0)} versions)</span>
+                    <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">M expression changes per table</span>
+                </div>
+                <div class="rx-body" id="query-history-section" style="display:none">
+                    ${queryHistoryGroupsHtml(queryHist.tables || [], `qh-report-${report.id}`)}
+                </div>
+            </div>
+
+            <div class="rx-section rx-l1">
                 <div class="rx-toggle" data-target="optimization-section">
                     <span class="rx-arrow">&#9656;</span> Optimization
                     ${unusedMC + unusedData.unused_tables_count > 0
@@ -1595,6 +1869,9 @@ async function showReportDetail(report) {
             if (arrow) arrow.innerHTML = showing ? "&#9656;" : "&#9662;";
         });
     });
+
+    // Query history diff buttons and compare selectors
+    bindQueryHistorySection(expandRow);
 
     // Clickable sources -> navigate to source detail
     expandRow.querySelectorAll(".report-source-clickable").forEach(el => {
@@ -2061,6 +2338,8 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const assetName = shortNameFromPath(rawName) || rawName;
         const linkData = a.asset_type === "source"
             ? `alerts-source-link" data-source-id="${a.asset_id}`
+            : a.asset_type === "report"
+            ? `alerts-go-report" data-report-id="${a.asset_id}`
             : a.asset_type === "scheduled_task"
             ? `alerts-task-link" data-task-id="${a.asset_id}`
             : a.asset_type === "script"
@@ -2069,7 +2348,13 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         // Secondary info under the asset name
         let sub = "";
-        if (a.asset_type === "source" && a.top_report_name) {
+        if (a.type === "changed_query" && (a.query_changes || []).length > 0) {
+            const changed = a.query_changes.map(c => c.artifact_name);
+            const summary = changed.slice(0, 3).map(esc).join(", ");
+            const more = changed.length > 3 ? ` +${changed.length - 3}` : "";
+            const what = a.asset_type === "report" ? "changed tables" : "changed definition";
+            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">${what}: ${summary}${more}</div>`;
+        } else if (a.asset_type === "source" && a.top_report_name) {
             sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">affects ${esc(a.top_report_name)}${a.report_names.length > 1 ? ` +${a.report_names.length - 1}` : ""}</div>`;
         } else if (a.detail_items && a.detail_items.length > 0) {
             // For schedule_mismatch, show the sources that refreshed after
@@ -2087,7 +2372,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
-        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0);
+        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0) || (a.query_changes && a.query_changes.length > 0);
         const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
@@ -2133,6 +2418,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 <td colspan="6" class="alerts-expand-cell">
                     ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
+                    ${(a.query_changes || []).length > 0 ? `<div class="alerts-sources-label">${a.asset_type === "report" ? "Changed report tables:" : "Changed definitions:"}</div>${queryChangesListHtml(a.query_changes)}` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
                 </td>
             </tr>
@@ -2364,6 +2650,9 @@ function bindDashboardAlertsRowControls() {
             _openNotifySlaModal(btn.dataset.actionId);
         });
     });
+
+    // View diff buttons inside expanded changed_query alerts
+    bindQueryDiffButtons();
 
     // Owner assignment selects
     document.querySelectorAll(".dashboard-action-owner-select").forEach(sel => {
@@ -3505,6 +3794,7 @@ async function renderActionsContent() {
                             <span>${timeAgo(a.created_at)}</span>
                         </div>
                         ${a.notes ? `<div class="action-notes">${esc(a.notes)}</div>` : ""}
+                        ${(a.query_changes || []).length ? queryChangesListHtml(a.query_changes) : ""}
                     </div>
                     <div class="action-controls">
                         <div class="status-pill-wrapper">
@@ -3571,6 +3861,7 @@ function _reRenderActionList() {
     container.innerHTML = window._actionsData.renderActionCards(statusFilter, ownerFilter);
     bindActionStatusSelects();
     bindActionOwnerSelects();
+    bindQueryDiffButtons(container);
 }
 
 function bindActionsTab() {
@@ -3591,6 +3882,7 @@ function bindActionsTab() {
 
     bindActionStatusSelects();
     bindActionOwnerSelects();
+    bindQueryDiffButtons();
 }
 
 function bindIssuesPage() {

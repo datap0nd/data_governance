@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
-from app.models import ActionOut, ActionUpdate
+from app.models import ActionOut, ActionUpdate, QueryChangeOut
 from app.usage import get_report_usage_map, get_source_usage_map, sync_usage_from_csv_if_configured
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
@@ -241,6 +241,33 @@ def _issue_reason(action_type: str) -> str:
     }.get(action_type, action_type.replace("_", " "))
 
 
+def _query_changes_by_action(db) -> dict[int, list[QueryChangeOut]]:
+    """Lightweight query-change pointers per changed_query action.
+
+    Full query text stays in query_versions and is loaded only when two
+    versions are compared.
+    """
+    rows = db.execute(
+        """SELECT id, prev_version_id, artifact_kind, artifact_name, language,
+                  change_kind, detected_at, action_id
+           FROM query_versions
+           WHERE action_id IS NOT NULL
+           ORDER BY artifact_name ASC, id ASC"""
+    ).fetchall()
+    result: dict[int, list[QueryChangeOut]] = {}
+    for r in rows:
+        result.setdefault(r["action_id"], []).append(QueryChangeOut(
+            version_id=r["id"],
+            prev_version_id=r["prev_version_id"],
+            artifact_kind=r["artifact_kind"],
+            artifact_name=r["artifact_name"],
+            language=r["language"],
+            change_kind=r["change_kind"],
+            detected_at=r["detected_at"],
+        ))
+    return result
+
+
 def _triage_cta(asset_type: str | None, assigned_to: str | None) -> str:
     if not assigned_to:
         return "Assign owner"
@@ -367,6 +394,7 @@ def list_actions(status: str | None = None):
         report_stale_sources = _compute_report_stale_sources(db)
         report_usage = get_report_usage_map(db)
         source_usage = get_source_usage_map(db)
+        query_changes_map = _query_changes_by_action(db)
 
     ACTIONABLE_STATUSES = {"outdated", "stale", "error"}
     FRESHNESS_ACTION_TYPES = {"stale_source", "outdated_source", "error_source"}
@@ -489,6 +517,7 @@ def list_actions(status: str | None = None):
             asset_days=asset_days,
             detail_items=detail_items,
             recommendation=recommendation,
+            query_changes=query_changes_map.get(r["id"], []),
             type=r["type"],
             status=r["status"],
             assigned_to=r["assigned_to"],

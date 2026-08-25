@@ -42,9 +42,23 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
                 (1, None, None, "outdated_source", "outdated:1", "2026-08-11", "2026-08-11"),
                 (1, None, None, "changed_query", "changed:old", "2026-08-12", "2026-08-12"),
                 (1, None, None, "changed_query", "changed:new", "2026-08-13", "2026-08-13"),
+                (None, 1, None, "changed_query", "changed_query:report:1:abc", "2026-08-13", "2026-08-13"),
                 (None, 1, None, "best_practice", "best:1", "2026-08-14", "2026-08-14"),
                 (None, None, 1, "flow_failed", "flow_failed:1", "2026-08-15", "2026-08-15"),
             ],
+        )
+        # The report-level query alert has attributable query history; the two
+        # legacy source-level alerts do not and must be retired by migrations.
+        attributed = db.execute(
+            "SELECT id FROM actions WHERE fingerprint = 'changed_query:report:1:abc'"
+        ).fetchone()
+        db.execute(
+            """INSERT INTO query_versions
+               (artifact_kind, report_id, artifact_name, language, query_text,
+                normalized_hash, action_id, change_kind, detected_at)
+               VALUES ('report_table', 1, 'Table A', 'm', 'let x', 'hash', ?, 'changed',
+                       '2026-08-13')""",
+            (attributed["id"],),
         )
 
     # Re-running startup migrations must clean legacy operational clutter.
@@ -58,6 +72,7 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
     counts = {row["type"]: row["count"] for row in active}
     assert counts.get("best_practice", 0) == 0
     assert sum(counts.get(name, 0) for name in ("stale_source", "outdated_source", "error_source")) == 1
+    # Only the attributed report-level query alert survives the legacy cleanup
     assert counts.get("changed_query", 0) == 1
 
     actions = list_actions(status="open")
@@ -66,6 +81,9 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
     assert "best_practice" not in types
     assert sum(action.type in {"stale_source", "outdated_source", "error_source"} for action in actions) == 1
     assert types.count("changed_query") == 1
+    surviving = next(action for action in actions if action.type == "changed_query")
+    assert surviving.report_id == 1
+    assert [change.artifact_name for change in surviving.query_changes] == ["Table A"]
     flow = next(action for action in actions if action.type == "flow_failed")
     assert flow.asset_type == "flow"
     assert flow.asset_name == "Target Flow"

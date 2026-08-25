@@ -8,7 +8,6 @@ Scan runner — orchestrates a full scan.
 5. Record the scan run
 """
 
-import hashlib
 import logging
 import re
 import shutil
@@ -22,6 +21,7 @@ from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_ex
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
+from app.scanner.query_history import sync_report_query_versions
 from app.asset_visibility import get_active_source_ids
 
 logger = logging.getLogger(__name__)
@@ -296,60 +296,18 @@ def run_scan(
                 ).fetchone()
 
                 if existing:
+                    # sources.source_query stays a stored convenience copy,
+                    # but it is deduplicated across reports and is no longer
+                    # the authority for change detection. Per-table M query
+                    # changes are versioned against report_tables below.
                     source_id = existing["id"]
                     old_query = existing["source_query"] or ""
                     new_query = source_info.raw_expression or ""
                     if old_query != new_query:
-                        changed_queries += 1
                         db.execute(
                             "UPDATE sources SET source_query = ?, connection_info = ?, updated_at = ? WHERE id = ?",
                             (new_query, source_info.connection_info, now, source_id),
                         )
-                        log_lines.append(f"CHANGED: {source_info.display_name} query updated")
-                        owner = existing["owner"]
-                        if not owner:
-                            owner_row = db.execute(
-                                """SELECT r.owner FROM report_tables rt
-                                   JOIN reports r ON r.id = rt.report_id
-                                   WHERE rt.source_id = ? AND NULLIF(TRIM(r.owner), '') IS NOT NULL
-                                   ORDER BY r.id LIMIT 1""",
-                                (source_id,),
-                            ).fetchone()
-                            owner = owner_row["owner"] if owner_row else None
-                        fingerprint = (
-                            f"changed_query:{source_id}:"
-                            f"{hashlib.sha256(new_query.encode('utf-8')).hexdigest()[:16]}"
-                        )
-                        prior = db.execute(
-                            "SELECT id FROM actions WHERE fingerprint = ? AND status != 'resolved'",
-                            (fingerprint,),
-                        ).fetchone()
-                        notes = (
-                            f"Source query changed for {source_info.display_name}. "
-                            f"Previous: {old_query[:1200] or '[empty]'} | "
-                            f"Current: {new_query[:1200] or '[empty]'}"
-                        )
-                        db.execute(
-                            """UPDATE actions
-                               SET status='resolved', resolved_at=?, updated_at=?,
-                                   notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
-                               WHERE source_id=? AND type='changed_query'
-                                 AND fingerprint!=?
-                                 AND status IN ('open','acknowledged','investigating')""",
-                            (now, now, source_id, fingerprint),
-                        )
-                        if prior:
-                            db.execute(
-                                "UPDATE actions SET notes = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
-                                (notes, owner, now, prior["id"]),
-                            )
-                        else:
-                            db.execute(
-                                """INSERT INTO actions
-                                   (source_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
-                                   VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
-                                (source_id, owner, notes, fingerprint, now, now),
-                            )
                 else:
                     db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
@@ -395,6 +353,7 @@ def run_scan(
 
                 # Upsert report tables
                 from app.scanner.tmdl_parser import is_auto_table
+                report_table_expressions: dict[str, str | None] = {}
                 for table in report.tables:
                     assert_not_cancelled(generation, "Report scan")
                     # Skip Power BI auto-generated internal tables
@@ -433,6 +392,7 @@ def run_scan(
                             )
 
                     if not is_metadata:
+                        report_table_expressions[table.table_name] = m_expression
                         db.execute(
                             """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
                                VALUES (?, ?, ?, ?, ?)
@@ -449,6 +409,23 @@ def run_scan(
                                 now,
                             ),
                         )
+
+                # Version each table's M expression independently so changes
+                # are attributed to this exact report, not a shared source.
+                history = sync_report_query_versions(
+                    db, report_id, report.name, report_table_expressions, scan_id, now
+                )
+                changed_queries += len(history["changes"])
+                if history["baselined"]:
+                    log_lines.append(
+                        f"QUERY BASELINE: {report.name} - "
+                        f"{history['baselined']} table M expression(s) recorded"
+                    )
+                for change in history["changes"]:
+                    log_lines.append(
+                        f"QUERY CHANGED: {report.name}/{change['artifact_name']} "
+                        f"M expression {change['change_kind']}"
+                    )
 
                 # Store visual layout (PBIX mode only)
                 layout = getattr(report, "layout", None)
@@ -592,15 +569,30 @@ def run_scan(
                 ),
             )
 
-        # Scan PostgreSQL MV dependencies
+        # Scan PostgreSQL MV dependencies (also versions tracked MV
+        # definitions and raises MV-linked query-change actions)
         assert_not_cancelled(generation, "Report scan")
         from app.scanner.pg_deps import scan_pg_dependencies
         try:
-            dep_result = scan_pg_dependencies()
+            dep_result = scan_pg_dependencies(scan_run_id=scan_id)
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
             dep_result = {"status": "failed", "error": str(e)}
             logger.exception("PG dependency scan failed: %s", e)
+
+        # Individual MV definition changes count toward the scan's changed
+        # queries alongside per-table report changes.
+        mv_changed = int(dep_result.get("query_changes") or 0)
+        if mv_changed:
+            changed_queries += mv_changed
+            for line in dep_result.get("query_change_log") or []:
+                log_lines.append(line)
+            log_text = "\n".join(log_lines)
+            with get_db() as db:
+                db.execute(
+                    "UPDATE scan_runs SET changed_queries = ?, log = ? WHERE id = ?",
+                    (changed_queries, log_text, scan_id),
+                )
 
         # Scan pg_cron for MV refresh schedules
         assert_not_cancelled(generation, "Report scan")

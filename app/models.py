@@ -146,6 +146,21 @@ class AlertOut(BaseModel):
 
 # --- Actions ---
 
+class QueryChangeOut(BaseModel):
+    """Lightweight pointer to one recorded query change.
+
+    Full query text stays in query-version storage and is loaded only when
+    two versions are compared.
+    """
+    version_id: int
+    prev_version_id: int | None = None
+    artifact_kind: str  # "report_table" or "mv"
+    artifact_name: str
+    language: str  # "m" or "sql"
+    change_kind: str | None = None
+    detected_at: str | None = None
+
+
 class ActionOut(BaseModel):
     id: int
     source_id: int | None = None
@@ -174,6 +189,9 @@ class ActionOut(BaseModel):
     detail_items: list[dict] = []
     # Short actionable recommendation shown when the row is expanded.
     recommendation: str | None = None
+    # For changed_query actions: one entry per changed report table or MV
+    # definition, each linking to its recorded query version for diffing.
+    query_changes: list[QueryChangeOut] = []
     type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue, schedule_mismatch
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
