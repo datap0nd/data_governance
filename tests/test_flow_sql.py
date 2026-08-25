@@ -1,4 +1,5 @@
 import hashlib
+import io
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -180,6 +181,49 @@ def test_copy_verification_rejects_a_truncated_target_despite_matching_metadata(
             stale, len(expected), hashlib.sha256(expected).hexdigest(),
             label="Downloaded Excel workbook",
         )
+
+
+class _SettlingPath:
+    """A staged file whose first read passes serve a short mid-flush view."""
+
+    def __init__(self, real: Path, short_reads):
+        self._real = real
+        self._short_reads = list(short_reads)
+
+    def open(self, mode="rb"):
+        if self._short_reads:
+            return io.BytesIO(self._real.read_bytes()[: self._short_reads.pop(0)])
+        return self._real.open(mode)
+
+    def __str__(self):
+        return str(self._real)
+
+
+def test_source_snapshot_waits_out_a_mid_flush_short_read(tmp_path, monkeypatch):
+    # A share-backed staging folder can serve a view that is a few kilobytes
+    # short right after Edge finishes the download. The snapshot must wait for
+    # two agreeing full reads instead of trusting the first pass.
+    payload = b"a complete staged workbook"
+    staged = tmp_path / "staged.xlsx"
+    staged.write_bytes(payload)
+    settling = _SettlingPath(staged, [len(payload) - 4])
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    snapshot = flow_worker._stable_source_snapshot(settling)
+
+    assert snapshot["file_size"] == len(payload)
+    assert snapshot["checksum"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_source_snapshot_rejects_a_file_that_never_settles(tmp_path, monkeypatch):
+    payload = b"a staged workbook that keeps changing"
+    staged = tmp_path / "staged.xlsx"
+    staged.write_bytes(payload)
+    settling = _SettlingPath(staged, [1, 2, 3, 4, 5, 6])
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="kept changing"):
+        flow_worker._stable_source_snapshot(settling)
 
 
 def test_copy_verification_rejects_same_size_corruption(tmp_path, monkeypatch):
