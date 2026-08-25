@@ -3278,7 +3278,9 @@ def test_dashboard_builder_section_replaces_export_views():
 def _retention_folder(target, run_id):
     from app import flow_retention
 
-    return f"{target}/{flow_retention.run_folder_name(run_id)}"
+    # str(Path(...)) matches the server's own normalization, so these
+    # assertions hold on Windows (backslashes) and POSIX alike.
+    return str(Path(target) / flow_retention.run_folder_name(run_id))
 
 
 def _complete_registered_run(worker_id, flow_id, target, status="succeeded"):
@@ -3599,5 +3601,5 @@ def test_register_folder_is_idempotent_and_rejects_a_different_path(flow_db):
     with pytest.raises(HTTPException, match="already registered a different folder"):
         flows.register_run_folder(
             "retention-worker", queued["id"],
-            flows.FolderRegister(run_folder=f"{target}/somewhere-else"),
+            flows.FolderRegister(run_folder=str(Path(target) / "somewhere-else")),
         )

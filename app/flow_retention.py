@@ -151,8 +151,8 @@ def execute_ops(target: Path, ops: list[dict]) -> list[dict]:
             record("skipped", "the tombstone path is not a Metronome tombstone inside this target folder")
             continue
         try:
-            original_present = original.exists() or original.is_symlink()
-            tombstone_present = tombstone.exists() or tombstone.is_symlink()
+            original_present = original.is_symlink() or original.exists()
+            tombstone_present = tombstone.is_symlink() or tombstone.exists()
             if original_present and tombstone_present:
                 record(
                     "skipped",

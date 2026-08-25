@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1416,6 +1417,14 @@ def _run_dir(target) -> Path:
 def _no_ops_register(_folder: str) -> dict:
     """Registration stub for tests that exercise no retention assignment."""
     return {"ops": []}
+
+
+def _symlink_or_skip(link: Path, destination: Path) -> None:
+    """Create a directory symlink, or skip where the OS forbids them."""
+    try:
+        link.symlink_to(destination, target_is_directory=True)
+    except OSError as exc:  # unprivileged Windows configurations
+        pytest.skip(f"symlinks are not available here: {exc}")
 
 
 def test_execute_job_downloads_every_export_view_before_returning(monkeypatch, tmp_path):
@@ -3037,7 +3046,7 @@ def test_execute_ops_safety_gate_refuses_everything_not_provably_ours(tmp_path):
     plainfile = inner / retention.run_folder_name(53)
     plainfile.write_text("a file, not a folder", encoding="utf-8")
     linked = inner / retention.run_folder_name(55)
-    linked.symlink_to(elsewhere)
+    _symlink_or_skip(linked, elsewhere)
 
     ops = [
         _op_for(inner, unmarked.name, op_id=1, source_run_id=50),
@@ -3055,6 +3064,7 @@ def test_execute_ops_safety_gate_refuses_everything_not_provably_ours(tmp_path):
     assert badname.is_dir() and plainfile.is_file() and linked.is_symlink()
     # The out-of-target op is refused on its tombstone location too.
     assert "tombstone" in results[2]["detail"] or "target folder" in results[2]["detail"]
+    linked.unlink()  # leave nothing for tmp_path cleanup to trip over on Windows
 
 
 def test_execute_ops_skips_junctions(tmp_path, monkeypatch):
@@ -3171,7 +3181,7 @@ def test_execute_ops_refuses_a_tombstone_that_is_no_longer_a_real_folder(tmp_pat
 
     op = _op_for(tmp_path, retention.run_folder_name(54))
     linked = Path(op["tombstone_path"])
-    linked.symlink_to(elsewhere)
+    _symlink_or_skip(linked, elsewhere)
     results = retention.execute_ops(tmp_path, [op])
     assert [item["outcome"] for item in results] == ["skipped"]
     assert (elsewhere / "keep.txt").is_file() and linked.is_symlink()
@@ -3241,3 +3251,33 @@ def test_execute_job_registers_the_folder_before_reporting_progress(
     assert order[0] == ("progress", "opening_report")
     assert order[1] == ("register", str(_run_dir(target)))
     assert order[2] == ("progress", "run_folder")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS junctions exist only on Windows")
+def test_execute_ops_skips_a_real_windows_junction(tmp_path):
+    import _winapi
+
+    retention = flow_worker.flow_retention
+    elsewhere = tmp_path / "user-data"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("user data", encoding="utf-8")
+
+    junction = tmp_path / retention.run_folder_name(54)
+    _winapi.CreateJunction(str(elsewhere), str(junction))
+    try:
+        results = retention.execute_ops(tmp_path, [_op_for(tmp_path, junction.name)])
+        assert [item["outcome"] for item in results] == ["skipped"]
+        assert (elsewhere / "keep.txt").is_file()
+
+        # A junction swapped in at the tombstone path is refused the same way.
+        op = _op_for(tmp_path, retention.run_folder_name(56), op_id=2, source_run_id=56)
+        tomb_junction = Path(op["tombstone_path"])
+        _winapi.CreateJunction(str(elsewhere), str(tomb_junction))
+        try:
+            results = retention.execute_ops(tmp_path, [op])
+            assert [item["outcome"] for item in results] == ["skipped"]
+            assert (elsewhere / "keep.txt").is_file()
+        finally:
+            tomb_junction.rmdir()
+    finally:
+        junction.rmdir()
