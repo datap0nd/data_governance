@@ -192,3 +192,67 @@ def test_freshness_schedule_parser(schedule, rule_type, days):
     rule = sources._freshness_rule_from_schedule(schedule)
     assert rule["rule_type"] == rule_type
     assert rule["refresh_days"] == days
+
+
+def test_unreachable_local_user_paths_are_labelled_not_probeable(source_db):
+    # Analysts register reports fed from their own Downloads/Desktop folders.
+    # The server can never reach those, so the probe message should say what
+    # the path is instead of raising a generic accessibility warning.
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Analyst export")
+        status = prober._probe_file_source(
+            db, 1, r"C:\Users\nana.e\Desktop\Market Share\data.xlsx",
+            now, {"type": None, "description": None},
+        )
+        message = db.execute(
+            "SELECT message FROM source_probes WHERE source_id = 1"
+        ).fetchone()["message"]
+
+    assert status == "unknown"
+    assert "local_user_path" in message
+    assert "analyst's local profile" in message
+
+
+def test_unreachable_shared_paths_keep_the_generic_accessibility_message(source_db):
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Share export")
+        prober._probe_file_source(
+            db, 1, r"\\MX-SHARE\Users\METOMX\Desktop\gone.xlsx",
+            now, {"type": None, "description": None},
+        )
+        message = db.execute(
+            "SELECT message FROM source_probes WHERE source_id = 1"
+        ).fetchone()["message"]
+
+    assert message.startswith("File not accessible:")
+
+
+def test_probe_history_pruning_keeps_latest_probe_and_latest_row_count(source_db):
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=prober.SOURCE_PROBE_RETENTION_DAYS + 10)).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Long unreachable source")
+        db.executemany(
+            """INSERT INTO source_probes (id, source_id, probed_at, row_count, status)
+               VALUES (?, 1, ?, ?, 'unknown')""",
+            [
+                (1, old, 500),   # latest probe with a row count: kept for alerts
+                (2, old, None),  # old and redundant: pruned
+                (3, old, None),  # latest probe overall: kept
+            ],
+        )
+        pruned = prober._prune_probe_history(db, now.isoformat())
+        remaining = [
+            row["id"] for row in db.execute("SELECT id FROM source_probes ORDER BY id")
+        ]
+
+    assert pruned == 1
+    assert remaining == [1, 3]

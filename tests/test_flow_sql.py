@@ -127,6 +127,57 @@ def test_raw_xlsx_passthrough_skips_unused_csv_normalization(
     assert "normalization_error" not in metadata
 
 
+class _StaleStatPath:
+    """A saved file whose first ``stat`` sizes mimic a stale SMB cache."""
+
+    def __init__(self, real: Path, stat_sizes):
+        self._real = real
+        self._stat_sizes = list(stat_sizes)
+
+    def stat(self):
+        if self._stat_sizes:
+            return SimpleNamespace(st_size=self._stat_sizes.pop(0))
+        return self._real.stat()
+
+    def open(self, mode="rb"):
+        return self._real.open(mode)
+
+    def __str__(self):
+        return str(self._real)
+
+
+def test_copy_verification_survives_a_stale_smb_size_report(tmp_path):
+    # Windows' SMB client can report a stale size right after the copied
+    # handle closes. The bytes on the share are complete, so re-reading them
+    # must count as proof instead of failing the whole flow run.
+    output = tmp_path / "MTracker_subs.xlsx"
+    payload = b"complete workbook bytes"
+    output.write_bytes(payload)
+    stale = _StaleStatPath(output, [0])
+
+    flow_worker._verify_copied_file(
+        stale, len(payload), hashlib.sha256(payload).hexdigest(),
+        label="Downloaded Excel workbook",
+    )
+
+    assert not stale._stat_sizes
+
+
+def test_copy_verification_still_rejects_a_truncated_target(tmp_path, monkeypatch):
+    output = tmp_path / "MTracker_subs.xlsx"
+    output.write_bytes(b"short")
+    expected = b"the complete payload"
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        RuntimeError, match="Downloaded Excel workbook was not copied completely",
+    ):
+        flow_worker._verify_copied_file(
+            output, len(expected), hashlib.sha256(expected).hexdigest(),
+            label="Downloaded Excel workbook",
+        )
+
+
 def test_raw_xlsx_passthrough_rejects_an_incomplete_zip_container(tmp_path):
     source = tmp_path / "browser-download"
     source.write_bytes(b"PK\x03\x04not-a-complete-workbook")

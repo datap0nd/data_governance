@@ -117,6 +117,10 @@ PORTAL_READY_TIMEOUT_MS = 180_000
 DIALOG_READY_TIMEOUT_MS = 60_000
 BOOKMARK_DATASET_READY_TIMEOUT_MS = 30_000
 BOOKMARK_SETTLE_TIMEOUT_MS = 300_000
+#: Switching Favorite scope triggers an asynchronous server request before the
+#: virtual grid rebinds. Under peak load GSCM regularly needs more than the 15
+#: seconds this wait originally allowed, so the budget covers a slow backend.
+FAVORITE_ROWS_TIMEOUT_MS = 45_000
 #: The wait overlay flickers between backend calls. Only treat the screen as
 #: idle once it has stayed hidden across this many consecutive polls.
 IDLE_POLLS_REQUIRED = 6
@@ -1183,7 +1187,7 @@ def select_scope_tab(page, tab: str, *, require_rows: bool = False) -> bool:
     return wait_for_favorite_rows(page)
 
 
-def wait_for_favorite_rows(page, *, timeout_ms: int = 15_000) -> bool:
+def wait_for_favorite_rows(page, *, timeout_ms: int = FAVORITE_ROWS_TIMEOUT_MS) -> bool:
     """Wait for Nexacro to populate the selected Favorite scope.
 
     The tab caption changes before the virtual bookmark grid finishes
@@ -1191,8 +1195,8 @@ def wait_for_favorite_rows(page, *, timeout_ms: int = 15_000) -> bool:
     a real Public bookmark look deleted, especially on a retry immediately
     after an export.
     """
-    deadline = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < deadline:
+    poll_count = max(1, timeout_ms // IDLE_POLL_INTERVAL_MS)
+    for _poll in range(poll_count):
         if favorite_tree_rows(page):
             return True
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
@@ -1711,6 +1715,12 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
             )
             if alternate:
                 select_scope_tab(page, alternate)
+            if scope_attempt == 1:
+                # Flipping scope twice did not force a rebind, so the stalled
+                # bookmark request is stuck in this client. Rebuild the whole
+                # Nexacro component tree before the final attempt.
+                reload_portal(page, job)
+                open_favorites_dialog(page, report_progress)
     else:
         raise RuntimeError(
             f"GSCM's {tab} bookmark tab stayed empty after three activation and "
