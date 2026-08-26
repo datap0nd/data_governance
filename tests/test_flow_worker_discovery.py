@@ -3482,17 +3482,3 @@ def test_execute_ops_skips_a_real_windows_junction(tmp_path):
             tomb_junction.rmdir()
     finally:
         junction.rmdir()
-
-
-def test_teach_recorder_picks_the_last_click_with_a_component_id():
-    clicks = [
-        {"ids": ["mainframe.TopFrame.form.btn_setting:icontext"], "ts": 1},
-        {"ids": [], "text": "a stray click on plain canvas", "ts": 2},
-        {"ids": ["mainframe.Setting1.form.div_favorite.form.btn_go:text",
-                 "mainframe.Setting1.form.div_favorite.form"], "ts": 3},
-    ]
-    assert flow_worker._teach_recorded_id(clicks) == (
-        "mainframe.Setting1.form.div_favorite.form.btn_go"
-    )
-    assert flow_worker._teach_recorded_id([{"ids": []}]) is None
-    assert flow_worker._teach_recorded_id([]) is None

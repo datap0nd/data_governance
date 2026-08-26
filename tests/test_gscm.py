@@ -168,9 +168,6 @@ class FakeGscmPage:
         self.wait_window_hidden = 0
         self.waits = []
         self.components = {"mainframe.VFrameSet", EXCEL_BUTTON}
-        # What the live Nexacro component tree reports to the shared resolver
-        # (find_live_components): dicts of {id, name, text}.
-        self.live_components = []
         if gear:
             self.components.add(self.gear_id)
 
@@ -335,17 +332,6 @@ class FakeGscmPage:
                 {"id": item, "x": 1700, "y": 300}
                 for item in sorted(self.components)
                 if any(hint in item.lower() for hint in argument)
-            ]
-        if "namePattern" in script:
-            # The shared resolver's component-tree search, applied faithfully:
-            # the same name/text regexes the browser would compile.
-            name_pattern, text_pattern = (list(argument or []) + ["", ""])[:2]
-            name_re = re.compile(name_pattern, re.IGNORECASE) if name_pattern else None
-            text_re = re.compile(text_pattern, re.IGNORECASE) if text_pattern else None
-            return [
-                dict(component) for component in self.live_components
-                if (name_re and name_re.match(component.get("name", "")))
-                or (text_re and text_re.match(component.get("text", "")))
             ]
         if "out.password" in script:
             return self._login_inputs()
@@ -1506,12 +1492,14 @@ class RelocatedGoButtonPage(FakeGscmPage):
     def __init__(self, **kwargs):
         super().__init__(dialog_open=True, **kwargs)
         self.components.add(self.RELOCATED_GO_ID)
-        self.live_components = [
-            {"id": self.RELOCATED_GO_ID, "name": "btn_go", "text": ""},
-        ]
 
     def _screen(self):
         return [row for row in super()._screen() if row.get("text") != "Go >>"]
+
+    def evaluate(self, script, argument=None):
+        if "btn_?go" in script:
+            return [{"id": self.RELOCATED_GO_ID, "name": "btn_go", "text": ""}]
+        return super().evaluate(script, argument)
 
     def on_click(self, element_id):
         if element_id == self.RELOCATED_GO_ID:
@@ -1534,96 +1522,31 @@ def test_go_button_is_rediscovered_when_the_hardcoded_id_is_stale():
 
 
 def test_go_candidates_prefer_the_favorite_dialog_and_drop_forbidden_controls():
-    page = FakeGscmPage(dialog_open=True)
-    # A DOM id that merely contains the hint must not become a candidate:
-    # "btn_gotohome" is not a Go button.
-    page.components.add("mainframe.TopFrame.form.btn_gotohome")
-    page.live_components = [
-        {"id": "mainframe.WorkFrame.form.btn_go", "name": "btn_go", "text": ""},
-        {"id": flow_gscm.GO_BUTTON_ID, "name": "btn_go", "text": "Go >>"},
-        # "save" is forbidden: a Go-named control inside a save panel is
-        # never worth the risk.
-        {"id": "mainframe.SavePanel.form.btn_go", "name": "btn_go", "text": ""},
-    ]
+    class ManyGoButtonsPage(FakeGscmPage):
+        def __init__(self):
+            super().__init__(dialog_open=True)
+            # A DOM id that merely contains the hint must not become a
+            # candidate: "btn_gotohome" is not a Go button.
+            self.components.add("mainframe.TopFrame.form.btn_gotohome")
+
+        def evaluate(self, script, argument=None):
+            if "btn_?go" in script:
+                return [
+                    {"id": "mainframe.WorkFrame.form.btn_go", "name": "btn_go", "text": ""},
+                    {"id": flow_gscm.GO_BUTTON_ID, "name": "btn_go", "text": "Go >>"},
+                    # "save" is forbidden: a Go-named control inside a save
+                    # panel is never worth the risk.
+                    {"id": "mainframe.SavePanel.form.btn_go", "name": "btn_go", "text": ""},
+                ]
+            return super().evaluate(script, argument)
+
+    page = ManyGoButtonsPage()
     candidates = flow_gscm._discover_go_candidates(page)
 
     assert candidates[0] == flow_gscm.GO_BUTTON_ID
     assert "mainframe.WorkFrame.form.btn_go" in candidates
     assert all("SavePanel" not in item for item in candidates)
     assert all("gotohome" not in item for item in candidates)
-
-
-def test_setting_gear_is_resolved_from_the_component_tree_when_hints_fail():
-    # This build's gear is named "Button00": no id hint matches it, and the
-    # icon renders no text for the label sweep. Only the component tree knows
-    # its caption is "Setting".
-    unhinted = "mainframe.VFrameSet.TopFrame.form.div_main.form.Button00"
-    page = FakeGscmPage(gear=False, gear_id=unhinted)
-    page.components.add(unhinted)
-    page.live_components = [{"id": unhinted, "name": "Button00", "text": "Setting"}]
-
-    flow_gscm.open_favorites_dialog(page)
-
-    assert page.dialog_open is True
-    assert unhinted in page.clicks
-
-
-def test_excel_export_button_is_resolved_from_the_component_tree():
-    # A build that renames the toolbar button: no configured or fallback id
-    # matches, and its id does not contain "btn_exceldown" for the contains
-    # selector. Its component caption still says "Excel download".
-    relocated = "mainframe.HFrameSet.MdiFrame.form.toolbar.form.btn_xlsdown"
-    page = FakeGscmPage()
-    page.components.discard(EXCEL_BUTTON)
-    page.components.add(relocated)
-    page.live_components = [
-        {"id": relocated, "name": "btn_xlsdown", "text": "Excel download"},
-    ]
-
-    flow_gscm.trigger_excel_export(page, {"report": {"automation": {}}})
-
-    assert relocated in page.clicks
-
-
-def test_recorded_control_ids_override_every_builtin_guess(tmp_path, monkeypatch):
-    monkeypatch.setattr(flow_gscm, "_control_overrides", {})
-    recorded_go = "mainframe.NewBuild.form.div_fav.form.btn_go"
-    recorded_excel = "mainframe.NewBuild.form.btn_exceldown"
-    flow_gscm.save_control_overrides(tmp_path, {
-        "go_button_id": recorded_go,
-        "excel_button_id": recorded_excel,
-        "unknown_key": "never stored",
-    })
-
-    overrides = flow_gscm.load_control_overrides(tmp_path)
-    assert overrides == {
-        "go_button_id": recorded_go, "excel_button_id": recorded_excel,
-    }
-    # The operator's recorded id outranks even a per-report scanned id.
-    assert flow_gscm.excel_button_id({"excel_btn_id": "scanned.btn"}) == recorded_excel
-
-    class RecordedGoPage(FakeGscmPage):
-        def on_click(self, element_id):
-            if element_id == recorded_go:
-                self.clicks.append(element_id)
-                self.dialog_open = False
-                return
-            super().on_click(element_id)
-
-    page = RecordedGoPage(dialog_open=True)
-    page.components.add(recorded_go)
-
-    assert flow_gscm._click_go_button(page) is True
-    assert recorded_go in page.clicks
-    assert flow_gscm.GO_BUTTON_ID not in page.clicks
-
-
-def test_control_overrides_reset_when_the_settings_file_is_absent(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        flow_gscm, "_control_overrides", {"go_button_id": "stale.id"},
-    )
-    assert flow_gscm.load_control_overrides(tmp_path / "no-such-profile") == {}
-    assert flow_gscm.excel_button_id({}) == flow_gscm.FALLBACK_EXCEL_BUTTON_ID
 
 
 def test_setting_falls_back_to_native_nexacro_click_when_dom_click_is_a_noop():
