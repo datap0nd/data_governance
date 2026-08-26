@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -3582,6 +3583,54 @@ def _decode_downloaded_text(raw: bytes, *, source_label: str) -> tuple[str, str]
     raise RuntimeError(f"Could not decode {source_label}.")
 
 
+def _parse_strict_delimited_rows(decoded: str) -> tuple[list[list[str]], str] | None:
+    """Choose an Outlook delimiter by rectangularity, not raw punctuation.
+
+    ``csv.Sniffer`` commonly mistakes commas inside Salesforce text values for
+    separators even when the export is tab- or semicolon-delimited. Only accept
+    candidates explicitly present in the header and structurally valid across
+    all populated rows. A genuinely malformed CSV therefore still fails rather
+    than being reinterpreted as a one-column file.
+    """
+    candidates: list[tuple[int, int, int, list[list[str]], str]] = []
+    preference = {",": 0, ";": 1, "|": 2, "\t": 3}
+    for delimiter in (",", ";", "\t", "|"):
+        try:
+            rows = list(csv.reader(io.StringIO(decoded), delimiter=delimiter))
+        except csv.Error:
+            continue
+        if not rows or len(rows[0]) < 2:
+            continue
+        header = [str(value).strip() for value in rows[0]]
+        try:
+            _validate_strict_headers(header, source_label="Downloaded CSV")
+        except RuntimeError:
+            continue
+        populated = [
+            row for row in rows[1:] if any(str(value).strip() for value in row)
+        ]
+        if not populated or any(
+            len(row) > len(header)
+            and any(str(value).strip() for value in row[len(header):])
+            for row in populated
+        ):
+            continue
+        exact_width = sum(len(row) == len(header) for row in populated)
+        # A delimiter seen only in the header is probably punctuation inside a
+        # real CSV header, not the file separator.
+        if exact_width * 2 < len(populated):
+            continue
+        candidates.append((
+            preference[delimiter], len(header), exact_width, rows, delimiter,
+        ))
+    if not candidates:
+        return None
+    _preference, _width, _exact, rows, delimiter = max(
+        candidates, key=lambda item: item[:3],
+    )
+    return rows, delimiter
+
+
 def _normalize_csv(
     path: Path, *, preamble: str = "asap", strict_headers: bool = False,
 ) -> dict:
@@ -3597,14 +3646,18 @@ def _normalize_csv(
     decoded, encoding_used = _decode_downloaded_text(
         raw, source_label=f"downloaded CSV {path.name}",
     )
-    lines = decoded.splitlines()
-    sample = "\n".join(lines[:20])
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-        delimiter = dialect.delimiter
-    except csv.Error:
-        delimiter = max((",", ";", "\t", "|"), key=lambda item: sample.count(item))
-    rows = list(csv.reader(lines, delimiter=delimiter))
+    parsed = _parse_strict_delimited_rows(decoded) if strict_headers else None
+    if parsed is not None:
+        rows, delimiter = parsed
+    else:
+        lines = decoded.splitlines()
+        sample = "\n".join(lines[:20])
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            delimiter = dialect.delimiter
+        except csv.Error:
+            delimiter = max((",", ";", "\t", "|"), key=lambda item: sample.count(item))
+        rows = list(csv.reader(io.StringIO(decoded), delimiter=delimiter))
     if not rows:
         raise RuntimeError("The downloaded CSV is empty.")
     header_index = 0
@@ -3628,7 +3681,9 @@ def _normalize_csv(
             if populated_overflow:
                 raise RuntimeError(
                     f"Downloaded CSV row {row_index} has {len(row)} columns, exceeding "
-                    f"the {len(header)} first-row headers. Refusing to discard "
+                    f"the {len(header)} first-row headers while parsing with "
+                    f"{('tab' if delimiter == chr(9) else repr(delimiter))} as the delimiter. "
+                    "Refusing to discard "
                     f"{populated_overflow} populated extra cell(s)."
                 )
     elif len(header) < 2:
@@ -4660,7 +4715,10 @@ def _detect_download_format(path: Path) -> str:
         head, source_label=f"download prefix for {path.name}",
     )
     stripped_text = decoded_head.lstrip("\ufeff \t\r\n").casefold()
-    if stripped_text.startswith(HTML_PREFIXES):
+    if stripped_text.startswith(HTML_PREFIXES) or re.search(
+        r"<(?:[a-z_][\w.-]*:)?(?:html|table|workbook)\b|<\?xml\b",
+        stripped_text,
+    ):
         return "html"
     if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "binary"

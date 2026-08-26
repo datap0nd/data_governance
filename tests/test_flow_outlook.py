@@ -1,3 +1,4 @@
+import csv
 import json
 import re
 from pathlib import Path
@@ -179,6 +180,31 @@ def test_outlook_csv_first_row_allows_one_column_and_rejects_blank_or_duplicate_
         match=r"row 2 has 3 columns.*2 first-row headers.*1 populated extra cell",
     ):
         flow_worker._normalize_csv(wider, preamble="none", strict_headers=True)
+
+
+def test_outlook_tab_export_with_commas_in_values_becomes_real_csv(tmp_path):
+    source = tmp_path / "salesforce.xls"
+    source.write_text(
+        "Account, Name\tUnits\n"
+        "Acme, Inc.\t7\n"
+        "Beta, LLC\t8\n"
+        "Gamma, Holdings, Ltd.\t9\n",
+        encoding="utf-8",
+    )
+
+    result = flow_worker._normalize_csv(
+        source, preamble="none", strict_headers=True,
+    )
+
+    assert result["source_delimiter"] == "tab"
+    assert result["columns"] == ["Account, Name", "Units"]
+    with source.open("r", encoding="utf-8-sig", newline="") as handle:
+        assert list(csv.reader(handle)) == [
+            ["Account, Name", "Units"],
+            ["Acme, Inc.", "7"],
+            ["Beta, LLC", "8"],
+            ["Gamma, Holdings, Ltd.", "9"],
+        ]
 
 
 def test_outlook_no_op_does_not_register_a_run_folder(monkeypatch, tmp_path):

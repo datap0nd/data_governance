@@ -81,7 +81,7 @@ def test_salesforce_html_xls_is_preserved_and_normalizes_a_large_table(tmp_path)
         for index in range(32_000)
     )
     payload = (
-        "<!DOCTYPE html><html><body>"
+        "<!-- Salesforce legacy Excel export --><!DOCTYPE html><html><body>"
         "<table><tr><td>Report generated</td></tr></table>"
         "<table><tr><th>Code</th><th>Units</th></tr>"
         f"{data_rows}</table></body></html>"

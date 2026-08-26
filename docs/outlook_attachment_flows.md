@@ -25,6 +25,11 @@ daily/weekly/monthly schedule, and the normal optional SQL handoff.
   and extracts the largest valid first-row-header table to the normalized CSV.
   HTML without a usable data table is rejected; portal HTML responses and HTML
   files named `.csv` remain errors so login pages cannot be loaded into SQL.
+- Text-based Salesforce exports may also use tabs or semicolons despite their
+  `.xls` name. Outlook normalization selects a delimiter only when it produces
+  a structurally consistent table, so commas inside names and descriptions do
+  not become extra columns. The resulting artifact is always a properly quoted
+  UTF-8 CSV; no manual copy/paste or Excel resave is required.
 
 The attachment identity is a SHA-256 receipt over the Outlook store, message,
 attachment position, and original attachment name. Metronome advances that
