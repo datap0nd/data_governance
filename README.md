@@ -94,7 +94,7 @@ Scheduled emails are blocked by default if the latest completed Power BI refresh
 
 If service-principal access is later approved, set `DG_PBI_TENANT_ID`, `DG_PBI_CLIENT_ID`, and `DG_PBI_CLIENT_SECRET` to run the sync without an interactive account picker.
 
-Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the Power BI refresh sync, report and lineage scan, PostgreSQL dependency and cron discovery, script scan, Windows Task Scheduler scan, source probe, configured data-quality checks, governance checks, configured usage CSV import, and Power BI usage sync. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
+Users can change the daily overall refresh time from System > Refresh Schedule. The job runs the Power BI refresh sync, report and lineage scan, PostgreSQL dependency and cron discovery, source probe, configured data-quality checks, governance checks, configured usage CSV import, and Power BI usage sync. The default can also be set with `DG_OVERALL_REFRESH_HOUR` and `DG_OVERALL_REFRESH_MINUTE`.
 
 ### Data quality checks
 
@@ -152,7 +152,7 @@ Metronome first calls the official JavaScript `visual.exportData` summarized exp
 
 The scheduler checks for due recurrences every minute and interprets the saved time in the Windows host's local timezone. Before every draft or send run, Metronome queries Power BI Service for the semantic model's latest refresh attempt using the same cached Microsoft account. The run continues only when the live status is `Completed`. A failed, cancelled, running, missing, or unavailable refresh check blocks the visual export and sends no alert data.
 
-Each recurrence has an alert owner. New recurrences default to the selected report's owner, and the owner's current email is resolved from Management > Create > People. The builder requires a valid People email before saving. When an actual send run fails before delivery is launched, Metronome sends that owner a separate failure email with the reason, latest refresh status when available, the report/page/visual, and a link to the Power BI report. Draft-test failures are recorded but do not notify the owner. Failure notifications use the same Outlook delivery path, so if Outlook itself is unavailable the notification attempt is recorded in the run detail but cannot be delivered by email.
+Each recurrence has an alert owner. New recurrences default to the selected report's owner, and the owner's current email is resolved from Tools > Create Artifacts > People. The builder requires a valid People email before saving. When an actual send run fails before delivery is launched, Metronome sends that owner a separate failure email with the reason, latest refresh status when available, the report/page/visual, and a link to the Power BI report. Draft-test failures are recorded but do not notify the owner. Failure notifications use the same Outlook delivery path, so if Outlook itself is unavailable the notification attempt is recorded in the run detail but cannot be delivered by email.
 
 `Create drafts` runs the complete refresh, export, and filtering path without sending alert emails, while `Run now` sends immediately after confirmation. Scheduled runs send automatically through the existing Outlook implementation.
 

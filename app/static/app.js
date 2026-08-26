@@ -1415,9 +1415,8 @@ async function showSourceDetail(source) {
     if (existing) existing.remove();
 
     const historyEndpoint = `/api/query-history/materialized-view/${source.id}`;
-    const [reports, scripts, queryHistory] = await Promise.all([
+    const [reports, queryHistory] = await Promise.all([
         api(`/api/sources/${source.id}/reports`),
-        api(`/api/sources/${source.id}/scripts`),
         api(historyEndpoint).catch(() => []),
     ]);
     const parsed = parseSourceName(source);
@@ -1458,22 +1457,6 @@ async function showSourceDetail(source) {
         <table class="detail-table">
             <thead><tr><th>Report</th><th>Table Name</th><th>Owner</th></tr></thead>
             <tbody>${reportRows}</tbody>
-        </table>
-
-        <h2>Scripts linked to this source (${scripts.length})</h2>
-        <table class="detail-table">
-            <thead><tr><th>Script</th><th>Direction</th><th>Table/File</th><th>Path</th></tr></thead>
-            <tbody>${scripts.length > 0
-                ? scripts.map(sc => `
-                    <tr>
-                        <td><strong>${esc(sc.display_name)}</strong></td>
-                        <td><span class="badge ${sc.direction === 'write' ? 'badge-orange' : 'badge-blue'}" style="font-size:0.7rem">${esc(sc.direction)}</span></td>
-                        <td style="color:var(--text-muted);font-size:0.78rem">${esc(sc.table_name) || "-"}</td>
-                        <td style="font-size:0.75rem;word-break:break-all;color:var(--text-dim)">${esc(sc.path)} ${_viewPathBtn(sc.path)}</td>
-                    </tr>
-                `).join("")
-                : '<tr><td colspan="4" class="empty-state" style="border:none">No scripts linked to this source</td></tr>'
-            }</tbody>
         </table>
 
         ${queryHistory.length ? `
@@ -2127,12 +2110,6 @@ function renderFixFirstPanel(openActions) {
         if (a.asset_type === "report" && a.asset_id) {
             return `<button type="button" class="fix-first-cta alerts-go-report" data-report-id="${a.asset_id}">${label}</button>`;
         }
-        if (a.asset_type === "scheduled_task" && a.asset_id) {
-            return `<button type="button" class="fix-first-cta alerts-task-link" data-task-id="${a.asset_id}">${label}</button>`;
-        }
-        if (a.asset_type === "script" && a.asset_id) {
-            return `<button type="button" class="fix-first-cta alerts-script-link" data-script-id="${a.asset_id}">${label}</button>`;
-        }
         return `<button type="button" class="fix-first-cta fix-first-focus-owner" data-action-id="${a.id}">${label}</button>`;
     };
 
@@ -2236,10 +2213,6 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             ? `alerts-source-link" data-source-id="${a.asset_id}`
             : a.asset_type === "report"
             ? `alerts-go-report" data-report-id="${a.asset_id}`
-            : a.asset_type === "scheduled_task"
-            ? `alerts-task-link" data-task-id="${a.asset_id}`
-            : a.asset_type === "script"
-            ? `alerts-script-link" data-script-id="${a.asset_id}`
             : null;
 
         // Secondary info under the asset name
@@ -2513,35 +2486,6 @@ function bindDashboardAlertsRowControls() {
             await showSourceDetail(src);
             const panel = await _waitForElement("#source-detail", 3000);
             if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-    });
-
-    // Clickable scheduled task cell - navigate to scheduled tasks page
-    document.querySelectorAll(".alerts-task-link").forEach(el => {
-        el.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const tid = parseInt(el.dataset.taskId);
-            if (!tid) return;
-            await navigate("scheduledtasks");
-            // Try to scroll/open the specific task
-            setTimeout(() => {
-                const row = document.querySelector(`[data-task-id="${tid}"]`);
-                if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-            }, 150);
-        });
-    });
-
-    // Clickable script cell - navigate to scripts page
-    document.querySelectorAll(".alerts-script-link").forEach(el => {
-        el.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const scid = parseInt(el.dataset.scriptId);
-            if (!scid) return;
-            await navigate("scripts");
-            setTimeout(() => {
-                const row = document.querySelector(`[data-script-id="${scid}"]`);
-                if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-            }, 150);
         });
     });
 
@@ -2873,10 +2817,6 @@ async function renderSources() {
             const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
             return `<select class="freq-select-inline source-owner-select" data-source-id="${s.id}" aria-label="Owner for ${esc(s._shortName)}"><option value="">--</option>${currentOption}${opts}</select>`;
         }, sortVal: s => s.owner || "" },
-        { key: "linked_scripts", label: "Scripts", width: COL_W.sm, render: s => {
-            if (!s.linked_scripts) return '-';
-            return `<span class="badge badge-blue" title="${esc(s.linked_scripts)}" style="cursor:help">python</span>`;
-        }, sortVal: s => s.linked_scripts ? "0_yes" : "1_no", filterVal: s => s.linked_scripts ? `yes has script ${s.linked_scripts}` : "no script" },
         _archiveColDef("source"),
     ];
 
@@ -2884,7 +2824,6 @@ async function renderSources() {
     const healthy = active.filter(s => s.status === "fresh").length;
     const degradedCount = active.filter(s => s.status === "outdated" || s.status === "stale").length;
 
-    const scriptCount = sources.filter(s => !s.archived && s.linked_scripts).length;
     const excelCount = sources.filter(s => !s.archived && (s.type === "excel" || s.type === "csv")).length;
     const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
     const unhealthyCount = degradedCount;
@@ -2916,7 +2855,6 @@ async function renderSources() {
                     <button class="btn-sm source-filter-btn" data-filter="all">All (${active.length})</button>
                     <button class="btn-sm btn-outline source-filter-btn" data-filter="excel">Excel/CSV (${excelCount})</button>
                     <button class="btn-sm btn-outline source-filter-btn" data-filter="postgresql">PostgreSQL (${pgCount})</button>
-                    <button class="btn-sm btn-outline source-filter-btn" data-filter="has-script">Has Script (${scriptCount})</button>
                     <button class="btn-sm btn-outline source-filter-btn" data-filter="unhealthy">Not Healthy (${unhealthyCount})</button>
                 </div>
                 <div class="source-bulk-actions" aria-label="Fill missing source information">
@@ -2957,8 +2895,6 @@ function bindSourcesPage() {
                 dt.filters["type"] = "excel|csv";
             } else if (filter === "postgresql") {
                 dt.filters["type"] = "postgresql";
-            } else if (filter === "has-script") {
-                dt.filters["linked_scripts"] = "yes";
             } else if (filter === "unhealthy") {
                 dt.filters["status"] = "outdated|degraded|unknown";
             }
@@ -4319,7 +4255,7 @@ async function renderCreate() {
 
     return `
         <div class="page-header">
-            <h1>Create</h1>
+            <h1>Create Artifacts</h1>
             <span class="subtitle">Manually add assets and people</span>
         </div>
 
@@ -5058,7 +4994,7 @@ async function renderEmail() {
                         <thead><tr><th>BI Owner</th><th>Scope</th><th>Active Alerts</th><th>Email</th><th></th></tr></thead>
                         <tbody>${mappingRows}</tbody>
                     </table>
-                ` : '<div class="empty-state">Add BI people under Management -> Create -> People first.</div>'}
+                ` : '<div class="empty-state">Add BI people under Tools -> Create Artifacts -> People first.</div>'}
             </section>
 
             <section class="email-section">
@@ -5643,7 +5579,7 @@ function _recStepFour(state) {
                         <option value="">Select an owner</option>
                         ${ownerOptions}
                     </select>
-                    <small>Defaults to the selected report owner. The owner's email comes from Management &gt; Create &gt; People.</small>
+                    <small>Defaults to the selected report owner. The owner's email comes from Tools &gt; Create Artifacts &gt; People.</small>
                 </label>
                 <label class="rec-field full">Email subject
                     <input id="rec-subject" type="text" maxlength="500" value="${esc(config.subject_template)}">
@@ -5977,7 +5913,7 @@ function _recBindBuilder() {
         if (!state.config.owner_name) { state.error = "Choose an alert owner."; _recRenderBuilder(); return; }
         const alertOwner = state.people.find(person => person.name === state.config.owner_name);
         if (!alertOwner?.email) {
-            state.error = `Alert owner '${state.config.owner_name}' needs an email in Management > Create > People.`;
+            state.error = `Alert owner '${state.config.owner_name}' needs an email in Tools > Create Artifacts > People.`;
             _recRenderBuilder();
             return;
         }
@@ -6109,18 +6045,6 @@ async function renderExport() {
             </label>
         </fieldset>
         <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
-            <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Scripts & Schedules</legend>
-            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
-                <input type="checkbox" class="export-opt" data-section="scripts"> Python scripts (path, owner, tables read/written)
-            </label>
-            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
-                <input type="checkbox" class="export-opt" data-section="script-code"> Python scripts - full source code
-            </label>
-            <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
-                <input type="checkbox" class="export-opt" data-section="scheduled-tasks"> Scheduled tasks (task scheduler entries)
-            </label>
-        </fieldset>
-        <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;min-width:220px;flex:1">
             <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">Diagnostics</legend>
             <label style="display:block;margin:0.3rem 0;font-size:0.8rem;cursor:pointer">
                 <input type="checkbox" class="export-opt" data-section="diagnostic"> Diagnostic report (debugging info for troubleshooting)
@@ -6180,9 +6104,6 @@ function bindExportPage() {
             const needVisuals = selected.has("visuals-fields") || selected.has("reports-overview");
             const needMeasures = selected.has("measures-dax");
             const needColumns = selected.has("columns");
-            const needScripts = selected.has("scripts");
-            const needScriptCode = selected.has("script-code");
-            const needSchTasks = selected.has("scheduled-tasks");
             const needDiagnostic = selected.has("diagnostic");
 
             // Fetch base data in parallel
@@ -6193,9 +6114,6 @@ function bindExportPage() {
             if (needLineage) fetches.edges = api("/api/lineage");
             if (needMeasures) fetches.measures = api("/api/reports/all-measures");
             if (needColumns) fetches.columns = api("/api/reports/all-columns");
-            if (needScripts) fetches.scripts = api("/api/scripts");
-            if (needScriptCode) fetches.scriptCode = api("/api/scripts/export-code");
-            if (needSchTasks) fetches.schTasks = api("/api/scheduled-tasks");
             if (needDiagnostic) fetches.diagnostic = api("/api/scanner/diagnostic");
 
             const keys = Object.keys(fetches);
@@ -6366,54 +6284,6 @@ function bindExportPage() {
                 sections.push(`${edges.length} edges`);
             }
 
-            // ── Python Scripts ──
-            if (selected.has("scripts")) {
-                const scripts = data.scripts || [];
-                md += `## Python Scripts (${scripts.length})\n\n`;
-                for (const s of scripts) {
-                    md += `**${s.display_name}**\n`;
-                    md += `- Path: ${s.path || "-"}\n`;
-                    md += `- Owner: ${s.owner || "-"}\n`;
-                    md += `- Modified: ${s.last_modified || "-"}\n`;
-                    md += `- Size: ${s.file_size ? Math.round(s.file_size / 1024) + " KB" : "-"}\n`;
-                    if (s.tables_written && s.tables_written.length > 0)
-                        md += `- Writes to: ${s.tables_written.join(", ")}\n`;
-                    if (s.tables_read && s.tables_read.length > 0)
-                        md += `- Reads from: ${s.tables_read.join(", ")}\n`;
-                    md += "\n";
-                }
-                sections.push(`${scripts.length} scripts`);
-            }
-
-            // ── Script Source Code ──
-            if (selected.has("script-code")) {
-                const codeData = data.scriptCode || {};
-                md += `## Python Script Source Code (${codeData.count || 0} files)\n\n`;
-                md += "```\n" + (codeData.code || "No scripts found") + "\n```\n\n";
-                sections.push(`${codeData.count || 0} script source files`);
-            }
-
-            // ── Scheduled Tasks ──
-            if (selected.has("scheduled-tasks")) {
-                const tasks = data.schTasks || [];
-                md += `## Scheduled Tasks (${tasks.length})\n\n`;
-                for (const t of tasks) {
-                    md += `**${t.task_name}**\n`;
-                    md += `- Path: ${t.task_path || "-"}\n`;
-                    md += `- Status: ${t.status || "-"}\n`;
-                    md += `- Enabled: ${t.enabled ? "Yes" : "No"}\n`;
-                    md += `- Schedule: ${t.schedule_type || "-"}\n`;
-                    md += `- Last Run: ${t.last_run_time && !/1999/.test(t.last_run_time) ? t.last_run_time : "Never"}\n`;
-                    md += `- Last Result: ${t.last_result || "-"}\n`;
-                    md += `- Next Run: ${t.next_run_time || "-"}\n`;
-                    md += `- Command: ${t.action_command || "-"}\n`;
-                    if (t.action_args) md += `- Args: ${t.action_args}\n`;
-                    if (t.script_name) md += `- Linked Script: ${t.script_name}\n`;
-                    md += "\n";
-                }
-                sections.push(`${tasks.length} scheduled tasks`);
-            }
-
             // ── Diagnostic Report ──
             if (selected.has("diagnostic")) {
                 const d = data.diagnostic || {};
@@ -6483,10 +6353,10 @@ function bindExportPage() {
 
                 // All sources
                 md += `### All Sources (${(d.sources || []).length})\n\n`;
-                md += `| ID | Name | Type | Discovered By | Status | Reports | Scripts | Dep From | Dep To |\n`;
-                md += `|----|------|------|---------------|--------|---------|---------|----------|--------|\n`;
+                md += `| ID | Name | Type | Discovered By | Status | Reports | Dep From | Dep To |\n`;
+                md += `|----|------|------|---------------|--------|---------|----------|--------|\n`;
                 for (const s of (d.sources || [])) {
-                    md += `| ${s.id} | ${s.name} | ${s.type} | ${s.discovered_by} | ${s.probe_status} | ${s.report_count} | ${s.script_ref_count} | ${s.dep_from_count} | ${s.dep_to_count} |\n`;
+                    md += `| ${s.id} | ${s.name} | ${s.type} | ${s.discovered_by} | ${s.probe_status} | ${s.report_count} | ${s.dep_from_count} | ${s.dep_to_count} |\n`;
                 }
                 md += "\n";
 
@@ -6498,17 +6368,6 @@ function bindExportPage() {
                     for (const dep of deps) {
                         md += `| ${dep.source_name || dep.source_id} | ${dep.depends_on_name || dep.depends_on_id} | ${dep.discovered_by} |\n`;
                     }
-                }
-                md += "\n";
-
-                // Script tables
-                const stAll = d.script_tables || [];
-                const stUnlinked = d.unlinked_script_tables || [];
-                md += `### Script-to-Table Mappings (${stAll.length} total, ${stUnlinked.length} unlinked)\n\n`;
-                md += `| Script | Table | Direction | Source ID | Matched Source |\n`;
-                md += `|--------|-------|-----------|----------|----------------|\n`;
-                for (const st of stAll) {
-                    md += `| ${st.script} | ${st.table} | ${st.direction} | ${st.source_id || "-"} | ${st.matched_source || "UNLINKED"} |\n`;
                 }
                 md += "\n";
 
@@ -6559,968 +6418,6 @@ function bindExportPage() {
             toast("Copied to clipboard");
         }
     });
-}
-
-
-// ── Scripts ──
-
-function formatFileSize(bytes) {
-    if (bytes == null) return "-";
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / 1048576).toFixed(1) + " MB";
-}
-
-function truncatePath(path, maxLen) {
-    if (!path) return "-";
-    if (path.length <= maxLen) return path;
-    return "..." + path.slice(path.length - maxLen + 3);
-}
-
-// Derive script category from its data (SQL writes vs Excel)
-// SQL = writes to PostgreSQL tables/MVs. Excel = no SQL writes.
-// SQL takes precedence if a script does both.
-function _scriptCategory(script) {
-    if (!script) return "Other";
-    const writes = script.tables_written || [];
-    const sqlWrites = writes.filter(t => !t.startsWith("["));
-    const fileWrites = writes.filter(t => t.startsWith("[excel]") || t.startsWith("[csv]") || t.startsWith("[parquet]") || t.startsWith("[json]"));
-    if (sqlWrites.length > 0) return "Data to SQL";
-    if (fileWrites.length > 0) return "Data to Excel";
-    if (writes.length > 0) return "Data to Excel";
-    return "Other";
-}
-
-function _refType(name) {
-    if (name.startsWith("[excel]")) return { label: name.slice(7), type: "excel", cls: "badge-yellow" };
-    if (name.startsWith("[csv]")) return { label: name.slice(5), type: "csv", cls: "badge-purple" };
-    if (name.startsWith("[parquet]")) return { label: name.slice(9), type: "parquet", cls: "badge-purple" };
-    if (name.startsWith("[json]")) return { label: name.slice(6), type: "json", cls: "badge-purple" };
-    if (name.startsWith("[web-scraping]")) return { label: name.slice(14), type: "web-scraping", cls: "badge-dim" };
-    if (name.startsWith("[web-download]")) return { label: name.slice(14), type: "web-download", cls: "badge-dim" };
-    if (name.startsWith("[web]")) return { label: name.slice(5), type: "web", cls: "badge-dim" };
-    if (name.startsWith("[pdf]")) return { label: name.slice(5), type: "pdf", cls: "badge-muted" };
-    if (name.startsWith("[text]")) return { label: name.slice(6), type: "text", cls: "badge-muted" };
-    return { label: name, type: "sql", cls: "" };
-}
-
-const _CATEGORY_COLORS = {
-    "Data to SQL": "badge-green",
-    "Data to Excel": "badge-yellow",
-    "Other": "badge-muted",
-};
-
-// Classify a table reference by its PostgreSQL schema or pattern
-function _classifyTable(tableName) {
-    const t = tableName.toLowerCase();
-    if (t.startsWith("reporting.")) return { label: "Reporting", cls: "badge-blue" };
-    if (t.startsWith("smartswitch.")) return { label: "SmartSwitch", cls: "badge-purple" };
-    if (t.startsWith("device_health.")) return { label: "Device Health", cls: "badge-purple" };
-    if (t.startsWith("do_not_use_tables.")) return { label: "Internal", cls: "badge-dim" };
-    if (t.includes("mdscm") || t.includes("gscm")) return { label: "GSCM", cls: "badge-green" };
-    if (t.includes("asap")) return { label: "ASAP", cls: "badge-yellow" };
-    if (/\.csv$/i.test(t) || /csv/i.test(t)) return { label: "CSV", cls: "badge-muted" };
-    if (t.includes(".") && !t.includes("/") && !t.includes("\\")) return { label: "Postgres", cls: "badge-blue" };
-    return { label: "Other", cls: "badge-muted" };
-}
-
-async function renderScripts() {
-    const showArchived = _isShowingArchived("scripts");
-    const [scripts, options] = await Promise.all([
-        api("/api/scripts" + (showArchived ? "?include_archived=true" : "")),
-        api("/api/create/options"),
-    ]);
-    const people = options.people || [];
-
-    const cols = [
-        { key: "machine_alias", label: "Machine", width: COL_W.sm, render: s => {
-            const alias = s.machine_alias || s.hostname || "Local";
-            return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(s.hostname || '')}">${esc(alias)}</span>`;
-        }, sortVal: s => s.machine_alias || s.hostname || "" },
-        { key: "category", label: "Category", width: COL_W.sm, render: s => {
-            const cat = _scriptCategory(s);
-            const cls = _CATEGORY_COLORS[cat] || "badge-muted";
-            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
-        }, sortVal: s => _scriptCategory(s) },
-        { key: "display_name", label: "Script", width: COL_W.lg, render: s => `<strong>${esc(s.display_name)}</strong>`, sortVal: s => s.display_name || "" },
-        { key: "_scope", label: "Role", width: COL_W.sm, render: s => {
-            const connected = (s.tables_written || []).length || (s.tables_read || []).length;
-            return connected ? '<span class="badge badge-blue">Pipeline</span>' : '<span class="badge badge-muted">Helper</span>';
-        }, sortVal: s => ((s.tables_written || []).length || (s.tables_read || []).length) ? "0_pipeline" : "1_helper" },
-        { key: "path", label: "Path", width: COL_W.xl, render: s => {
-            const escaped = (s.path || "").replace(/"/g, '&quot;');
-            return `<span class="cell-expandable cell-copyable" title="Click to copy path" data-copy="${escaped}" style="font-size:0.75rem;color:var(--text-muted)">${esc(s.path || "-")}</span> ${_viewPathBtn(s.path)}`;
-        }, sortVal: s => s.path || "" },
-        { key: "owner", label: "Owner", width: COL_W.md, render: s => {
-            const opts = people.map(p => `<option value="${esc(p.name)}"${s.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-            return `<select class="freq-select-inline script-owner-select" data-script-id="${s.id}"><option value="">--</option>${opts}</select>`;
-        }, sortVal: s => s.owner || "" },
-        { key: "tables_written", label: "Writes to", width: COL_W.lg, render: s => {
-            const all = s.tables_written || [];
-            if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            const sql = all.filter(t => !t.startsWith("["));
-            const excel = all.filter(t => t.startsWith("[excel]"));
-            const csv = all.filter(t => t.startsWith("[csv]"));
-            const parquet = all.filter(t => t.startsWith("[parquet]") || t.startsWith("[json]"));
-            const parts = [];
-            if (sql.length) parts.push(`<span class="badge badge-red" style="font-size:0.72rem">${sql.length} SQL</span>`);
-            if (excel.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${excel.length} Excel</span>`);
-            if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
-            if (parquet.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${parquet.length} File</span>`);
-            return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_written || []).length, filterVal: s => (s.tables_written || []).join(" "), filterPlaceholder: "Search tables..." },
-        { key: "tables_read", label: "Reads from", width: COL_W.lg, render: s => {
-            const all = s.tables_read || [];
-            if (all.length === 0) return '<span style="color:var(--text-dim)">-</span>';
-            const sql = all.filter(t => !t.startsWith("["));
-            const excel = all.filter(t => t.startsWith("[excel]"));
-            const csv = all.filter(t => t.startsWith("[csv]"));
-            const otherFiles = all.filter(t => t.startsWith("[pdf]") || t.startsWith("[parquet]") || t.startsWith("[json]") || t.startsWith("[text]"));
-            const scraping = all.filter(t => t.startsWith("[web-scraping]"));
-            const download = all.filter(t => t.startsWith("[web-download]") || t.startsWith("[web]"));
-            const parts = [];
-            if (sql.length) parts.push(`<span class="badge badge-blue" style="font-size:0.72rem">${sql.length} SQL</span>`);
-            if (excel.length) parts.push(`<span class="badge badge-yellow" style="font-size:0.72rem">${excel.length} Excel</span>`);
-            if (csv.length) parts.push(`<span class="badge badge-purple" style="font-size:0.72rem">${csv.length} CSV</span>`);
-            if (otherFiles.length) parts.push(`<span class="badge badge-muted" style="font-size:0.72rem">${otherFiles.length} File</span>`);
-            if (scraping.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${scraping.length} Web Scrape</span>`);
-            if (download.length) parts.push(`<span class="badge badge-dim" style="font-size:0.72rem">${download.length} Web DL</span>`);
-            return parts.join(" ") || '<span style="color:var(--text-dim)">-</span>';
-        }, sortVal: s => (s.tables_read || []).length, filterVal: s => (s.tables_read || []).join(" "), filterPlaceholder: "Search tables..." },
-        { key: "last_modified", label: "Modified", width: COL_W.md, render: s => `<span style="color:var(--text-muted)" title="${s.last_modified || ''}">${s.last_modified ? timeAgo(s.last_modified) : "-"}</span>`, sortVal: s => s.last_modified || "" },
-        { key: "age_days", label: "Age (days)", width: COL_W.sm, render: s => {
-            const d = daysOld(s.last_modified);
-            if (d === null) return '<span style="color:var(--text-dim)">-</span>';
-            return `<span style="font-weight:600">${d}</span>`;
-        }, sortVal: s => daysOld(s.last_modified) ?? 9999 },
-        _archiveColDef("script"),
-    ];
-
-    const scriptTypeFilter = sessionStorage.getItem("scripts_type_filter") || "all";
-    const machineFilter = sessionStorage.getItem("scripts_machine") || "";
-    const scopeFilter = sessionStorage.getItem("scripts_scope") || "connected";
-    const connectedScripts = scripts.filter(s => (s.tables_written || []).length || (s.tables_read || []).length);
-    let filtered = scripts;
-    if (scopeFilter === "connected") filtered = filtered.filter(s => (s.tables_written || []).length || (s.tables_read || []).length);
-    if (scriptTypeFilter === "sql") filtered = filtered.filter(s => _scriptCategory(s) === "Data to SQL");
-    else if (scriptTypeFilter === "excel") filtered = filtered.filter(s => _scriptCategory(s) === "Data to Excel");
-    else if (scriptTypeFilter === "other") filtered = filtered.filter(s => _scriptCategory(s) === "Other");
-    if (machineFilter) filtered = filtered.filter(s => (s.machine_alias || s.hostname || "Local") === machineFilter);
-    const activeCount = filtered.filter(s => !s.archived).length;
-    const totalCount = scripts.filter(s => !s.archived).length;
-    const sqlCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Data to SQL").length;
-    const excelCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Data to Excel").length;
-    const otherCount = scripts.filter(s => !s.archived && _scriptCategory(s) === "Other").length;
-
-    const allMachines = [...new Set(scripts.map(s => s.machine_alias || s.hostname || "Local"))].sort();
-    const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
-
-    return `
-        <div class="page-header">
-            <h1>Scripts</h1>
-            <span class="subtitle">${activeCount}${scopeFilter === "connected" || machineFilter || scriptTypeFilter !== 'all' ? ` of ${totalCount}` : ''} scripts${machineFilter ? ` on ${machineFilter}` : ''} - ${connectedScripts.filter(s => !s.archived).length} connected to governed data</span>
-            <button class="btn-outline" id="btn-scan-scripts-full" style="margin-left:0.5rem">Full Scan</button>
-            <button class="btn-outline" id="btn-scan-scripts-new">Scan New</button>
-            <button class="btn-outline" id="btn-reparse-scripts" title="Re-read and re-parse known scripts (no directory walk)">Re-parse</button>
-            <button class="btn-outline btn-archive-toggle ${scopeFilter === 'connected' ? 'active' : ''}" id="btn-scripts-scope">${scopeFilter === "connected" ? "Show all scripts" : "Show connected only"}</button>
-            <select id="scripts-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'all' ? 'active' : ''}" id="btn-filter-all" style="font-size:0.75rem">All (${totalCount})</button>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'sql' ? 'active' : ''}" id="btn-filter-sql" style="font-size:0.75rem">Data to SQL (${sqlCount})</button>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'excel' ? 'active' : ''}" id="btn-filter-excel" style="font-size:0.75rem">Data to Excel (${excelCount})</button>
-            <button class="btn-outline btn-archive-toggle ${scriptTypeFilter === 'other' ? 'active' : ''}" id="btn-filter-other" style="font-size:0.75rem">Other (${otherCount})</button>
-            ${_archiveToggleHtml("scripts")}
-            <button class="btn-export" onclick="exportTableCSV('dt-scripts','scripts.csv')">Export CSV</button>
-        </div>
-        <div id="script-scan-log-wrap" class="scan-log-wrap" style="display:none">
-            <button class="scan-log-toggle" id="btn-toggle-scan-log">Scan Log <span class="nav-arrow">&#9662;</span></button>
-            <div id="script-scan-log-status" class="scan-log-status"></div>
-            <pre id="script-scan-log" class="scan-log-pre" style="display:none"></pre>
-        </div>
-        ${dataTable("dt-scripts", cols, filtered, { onRowClick: showScriptDetail })}
-    `;
-}
-
-async function showScriptDetail(script) {
-    const existing = $("#script-detail");
-    if (existing) existing.remove();
-
-    const [tables, options] = await Promise.all([
-        api(`/api/scripts/${script.id}/tables`),
-        api("/api/create/options"),
-    ]);
-    const people = options.people || [];
-
-    const panel = document.createElement("div");
-    panel.id = "script-detail";
-    panel.className = "source-detail-panel";
-
-    const writeRows = tables.filter(t => t.direction === "write");
-    const readRows = tables.filter(t => t.direction === "read");
-
-    const writeBadges = writeRows.length > 0
-        ? writeRows.map(t => {
-            const ref = _refType(t.table_name);
-            const cls = ref.type === "sql" ? "badge-red" : ref.cls;
-            if (t.source_id) {
-                return `<span class="badge ${cls} script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
-            }
-            return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
-        }).join(" ")
-        : '<span style="color:var(--text-dim)">None detected</span>';
-
-    const readBadges = readRows.length > 0
-        ? readRows.map(t => {
-            const ref = _refType(t.table_name);
-            const cls = ref.type === "sql" ? "badge-blue" : ref.cls;
-            if (t.source_id) {
-                return `<span class="badge ${cls} script-table-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
-            }
-            return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
-        }).join(" ")
-        : '<span style="color:var(--text-dim)">None detected</span>';
-
-    const ownerOpts = people.map(p => `<option value="${esc(p.name)}"${script.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("");
-
-    panel.innerHTML = `
-        <div class="source-detail-header">
-            <h2>${esc(script.display_name)}</h2>
-            <button class="btn-outline" id="btn-close-script-detail">&times; Close</button>
-        </div>
-        <div class="detail-grid">
-            <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_scriptCategory(script)] || 'badge-muted'}">${esc(_scriptCategory(script))}</span></div>
-            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)} ${_viewPathBtn(script.path)}</span></div>
-            <div class="detail-item"><div class="detail-label">Owner</div>
-                <select class="freq-select-inline script-detail-owner-select" data-script-id="${script.id}">
-                    <option value="">--</option>${ownerOpts}
-                </select>
-            </div>
-            <div class="detail-item"><div class="detail-label">File Size</div><span style="color:var(--text)">${formatFileSize(script.file_size)}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Modified</div><span style="color:var(--text)">${script.last_modified ? formatDate(script.last_modified) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Scanned</div><span style="color:var(--text)">${script.last_scanned ? formatDate(script.last_scanned) : "-"}</span></div>
-        </div>
-
-        <h2>Writes to / Refreshes (${writeRows.length})</h2>
-        <div style="padding:0.25rem 0">${writeBadges}</div>
-
-        <h2>Reads From (${readRows.length})</h2>
-        <div style="padding:0.25rem 0">${readBadges}</div>
-    `;
-
-    $("#app").appendChild(panel);
-    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    // Close button
-    document.getElementById("btn-close-script-detail").addEventListener("click", () => panel.remove());
-
-    // View path buttons
-    panel.querySelectorAll(".view-path-btn").forEach(btn => {
-        btn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            try { await apiPostJson("/api/scanner/open-path", { path: btn.dataset.path }); }
-            catch { toast("Could not open path (only works on server machine)"); }
-        });
-    });
-
-    // Owner dropdown in detail panel
-    const ownerSelect = panel.querySelector(".script-detail-owner-select");
-    if (ownerSelect) {
-        ownerSelect.addEventListener("change", async () => {
-            try {
-                await apiPatch(`/api/scripts/${script.id}`, { owner: ownerSelect.value });
-                toast("Owner updated");
-            } catch (err) {
-                toast("Failed: " + err.message);
-            }
-        });
-    }
-
-    // Clickable table badges that link to sources
-    panel.querySelectorAll(".script-table-link").forEach(el => {
-        el.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const srcId = parseInt(el.dataset.sourceId);
-            try {
-                const source = await api(`/api/sources/${srcId}`);
-                await navigate("sources");
-                showSourceDetail(source);
-            } catch (err) {
-                toast("Source not found");
-            }
-        });
-    });
-}
-
-function bindScriptsPage() {
-    document.getElementById("btn-scripts-scope")?.addEventListener("click", () => {
-        const current = sessionStorage.getItem("scripts_scope") || "connected";
-        sessionStorage.setItem("scripts_scope", current === "connected" ? "all" : "connected");
-        navigate("scripts");
-    });
-    // Machine filter dropdown
-    const machSel = document.getElementById("scripts-machine-filter");
-    if (machSel) {
-        machSel.addEventListener("change", () => {
-            sessionStorage.setItem("scripts_machine", machSel.value);
-            navigate("scripts");
-        });
-    }
-
-    // Script type filter buttons
-    const filterBtns = {
-        "btn-filter-all": "all",
-        "btn-filter-sql": "sql",
-        "btn-filter-excel": "excel",
-        "btn-filter-other": "other",
-    };
-    for (const [id, val] of Object.entries(filterBtns)) {
-        const btn = document.getElementById(id);
-        if (btn) {
-            btn.addEventListener("click", () => {
-                sessionStorage.setItem("scripts_type_filter", val);
-                navigate("scripts");
-            });
-        }
-    }
-
-    // Scan buttons - async with live log polling
-    const btnFull = document.getElementById("btn-scan-scripts-full");
-    const btnNew = document.getElementById("btn-scan-scripts-new");
-    const btnReparse = document.getElementById("btn-reparse-scripts");
-    const logWrap = document.getElementById("script-scan-log-wrap");
-    const logPre = document.getElementById("script-scan-log");
-    const logStatus = document.getElementById("script-scan-log-status");
-    const btnToggle = document.getElementById("btn-toggle-scan-log");
-    let logExpanded = false;
-
-    if (btnToggle) {
-        btnToggle.addEventListener("click", () => {
-            logExpanded = !logExpanded;
-            logPre.style.display = logExpanded ? "" : "none";
-            btnToggle.querySelector(".nav-arrow").innerHTML = logExpanded ? "&#9652;" : "&#9662;";
-        });
-    }
-
-    function _disableScanBtns(label) {
-        if (btnFull) { btnFull.disabled = true; btnFull.textContent = label; }
-        if (btnNew) { btnNew.disabled = true; }
-        if (btnReparse) { btnReparse.disabled = true; }
-    }
-    function _enableScanBtns() {
-        if (btnFull) { btnFull.disabled = false; btnFull.textContent = "Full Scan"; }
-        if (btnNew) { btnNew.disabled = false; }
-        if (btnReparse) { btnReparse.disabled = false; }
-    }
-
-    // Check if a scan is already running on page load
-    (async () => {
-        try {
-            const st = await api("/api/scripts/scan/status");
-            if (st.status === "running") {
-                logWrap.style.display = "";
-                logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
-                logPre.textContent = (st.log || []).join("\n");
-                _disableScanBtns("Scanning...");
-                _pollScriptScanLog();
-            }
-        } catch (_) {}
-    })();
-
-    function _startScriptScan(newOnly) {
-        return async () => {
-            _disableScanBtns("Scanning...");
-            logWrap.style.display = "";
-            logPre.textContent = "";
-            logStatus.innerHTML = '<span class="badge badge-yellow">Scanning...</span>';
-            logExpanded = true;
-            logPre.style.display = "";
-            btnToggle.querySelector(".nav-arrow").innerHTML = "&#9652;";
-
-            try {
-                const url = "/api/scripts/scan" + (newOnly ? "?new_only=true" : "");
-                const result = await apiPost(url);
-                if (result.status === "already_running") {
-                    toast("Scan already running");
-                    logPre.textContent = (result.log || []).join("\n");
-                }
-                _pollScriptScanLog();
-            } catch (err) {
-                toast("Scan failed: " + err.message);
-                logStatus.innerHTML = '<span class="badge badge-red">Failed</span>';
-                _enableScanBtns();
-            }
-        };
-    }
-    if (btnFull) btnFull.addEventListener("click", _startScriptScan(false));
-    if (btnNew) btnNew.addEventListener("click", _startScriptScan(true));
-    if (btnReparse) btnReparse.addEventListener("click", async () => {
-        _disableScanBtns("Re-parsing...");
-        logWrap.style.display = "";
-        logPre.textContent = "";
-        logStatus.innerHTML = '<span class="badge badge-yellow">Re-parsing...</span>';
-        logExpanded = true;
-        logPre.style.display = "";
-        btnToggle.querySelector(".nav-arrow").innerHTML = "&#9652;";
-        try {
-            const result = await apiPost("/api/scripts/reparse");
-            if (result.status === "already_running") {
-                toast("Scan already running");
-                logPre.textContent = (result.log || []).join("\n");
-            }
-            _pollScriptScanLog();
-        } catch (err) {
-            toast("Re-parse failed: " + err.message);
-            logStatus.innerHTML = '<span class="badge badge-red">Failed</span>';
-            _enableScanBtns();
-        }
-    });
-
-    function _pollScriptScanLog() {
-        const interval = setInterval(async () => {
-            // Stop polling if user navigated away
-            if (currentPage !== "scripts") { clearInterval(interval); return; }
-            try {
-                const st = await api("/api/scripts/scan/status");
-                logPre.textContent = (st.log || []).join("\n");
-                logPre.scrollTop = logPre.scrollHeight;
-
-                if (st.status !== "running") {
-                    clearInterval(interval);
-                    if (st.status === "completed") {
-                        const r = st.result || {};
-                        logStatus.innerHTML = `<span class="badge badge-green">Complete</span> ${r.scripts_total || 0} scripts, ${r.tables_linked || 0} linked`;
-                        toast(`Scan complete - ${r.scripts_total || 0} scripts found`);
-                    } else {
-                        logStatus.innerHTML = `<span class="badge badge-red">Failed</span> ${(st.result || {}).error || ""}`;
-                    }
-                    _enableScanBtns();
-                    // Refresh the whole page to show new data
-                    navigate("scripts");
-                }
-            } catch (_) {
-                clearInterval(interval);
-            }
-        }, 2000);
-    }
-
-    // Keep owner controls alive when the data table rebuilds its rows.
-    const scriptsTable = document.getElementById("dt-scripts");
-    if (scriptsTable) {
-        scriptsTable.addEventListener("focusin", e => {
-            const select = e.target.closest(".script-owner-select");
-            if (select) select.dataset.previousValue = select.value;
-        });
-        scriptsTable.addEventListener("click", e => {
-            if (e.target.closest(".script-owner-select")) e.stopPropagation();
-        });
-        scriptsTable.addEventListener("change", async e => {
-            const select = e.target.closest(".script-owner-select");
-            if (!select) return;
-            e.stopPropagation();
-            const scriptId = Number(select.dataset.scriptId);
-            const previousValue = select.dataset.previousValue || "";
-            select.disabled = true;
-            try {
-                const updated = await apiPatch(`/api/scripts/${scriptId}`, { owner: select.value || null });
-                const script = window._dt?.["dt-scripts"]?.rows.find(item => item.id === scriptId);
-                if (script) script.owner = updated.owner;
-                select.dataset.previousValue = updated.owner || "";
-                toast("Owner updated");
-            } catch (err) {
-                select.value = previousValue;
-                toast("Owner was not saved: " + err.message);
-            } finally {
-                select.disabled = false;
-            }
-        });
-    }
-
-    // Click-to-copy on path cells
-    document.querySelectorAll(".cell-copyable").forEach(el => {
-        el.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const path = el.dataset.copy;
-            if (!path || path === "-") return;
-            navigator.clipboard.writeText(path).then(() => {
-                toast("Path copied to clipboard");
-            }).catch(() => {
-                toast("Failed to copy path");
-            });
-        });
-    });
-    _bindArchiveButtons(() => navigate("scripts"));
-}
-
-
-// ── Scheduled Tasks (Windows Task Scheduler) ──
-
-// Derive category for a scheduled task from its linked script path or action command
-function _taskCategory(task) {
-    if (task.script_id) return "Data to SQL";
-    const cmd = (task.action_command || "").toLowerCase();
-    if (cmd.includes("python") || cmd.includes(".py")) return "Data to SQL";
-    if (cmd.includes("excel") || cmd.includes(".xlsx") || cmd.includes(".csv")) return "Data to Excel";
-    return "Other";
-}
-
-async function renderScheduledTasks() {
-    const showArchived = _isShowingArchived("scheduledtasks");
-    const showOtherTasks = sessionStorage.getItem("schtasks_show_other") === "1";
-    const query = new URLSearchParams();
-    if (showArchived) query.set("include_archived", "true");
-    if (showOtherTasks) query.set("include_unlinked", "true");
-    const tasks = await api("/api/scheduled-tasks" + (query.size ? `?${query}` : ""));
-    const catFilter = sessionStorage.getItem("schtasks_category") || "";
-    const machineFilter = sessionStorage.getItem("schtasks_machine") || "";
-    let filtered = catFilter ? tasks.filter(t => _taskCategory(t) === catFilter) : tasks;
-    if (machineFilter) filtered = filtered.filter(t => (t.machine_alias || t.hostname || "Local") === machineFilter);
-
-    // Collect unique categories and machines
-    const allCats = [...new Set(tasks.map(t => _taskCategory(t)))].sort();
-    const catOpts = allCats.map(c => `<option value="${esc(c)}"${catFilter === c ? ' selected' : ''}>${esc(c)}</option>`).join("");
-    const allMachines = [...new Set(tasks.map(t => t.machine_alias || t.hostname || "Local"))].sort();
-    const machineOpts = allMachines.map(m => `<option value="${esc(m)}"${machineFilter === m ? ' selected' : ''}>${esc(m)}</option>`).join("");
-
-    const cols = [
-        { key: "machine_alias", label: "Machine", width: COL_W.sm, render: t => {
-            const alias = t.machine_alias || t.hostname || "Local";
-            return `<span class="badge badge-muted" style="font-size:0.68rem" title="${esc(t.hostname || '')}">${esc(alias)}</span>`;
-        }, sortVal: t => t.machine_alias || t.hostname || "" },
-        { key: "category", label: "Category", width: COL_W.sm, render: t => {
-            const cat = _taskCategory(t);
-            const cls = _CATEGORY_COLORS[cat] || "badge-muted";
-            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(cat)}</span>`;
-        }, sortVal: t => _taskCategory(t) },
-        { key: "task_name", label: "Task", width: COL_W.xl, render: t => `<strong>${esc(t.task_name)}</strong>`, sortVal: t => t.task_name || "" },
-        { key: "status", label: "Status", width: COL_W.sm, render: t => {
-            if (!t.status) return '<span style="color:var(--text-dim)">-</span>';
-            const cls = t.status === "Ready" ? "badge-green" : t.status === "Running" ? "badge-yellow" : t.status === "Disabled" ? "badge-dim" : "badge-yellow";
-            return `<span class="badge ${cls}">${esc(t.status)}</span>`;
-        }, sortVal: t => t.status || "" },
-        { key: "last_run_time", label: "Last Run", width: COL_W.md, render: t => t.last_run_time
-            ? `<span style="color:var(--text-muted)" title="${esc(t.last_run_time)}">${timeAgo(t.last_run_time)}</span>`
-            : '<span style="color:var(--text-dim)">Never</span>',
-          sortVal: t => t.last_run_time || "" },
-        { key: "last_result", label: "Result", width: COL_W.sm, render: t => {
-            const cls = t.result_state === "success" ? "badge-green" : t.result_state === "failed" ? "badge-red" : t.result_state === "benign" ? "badge-muted" : "badge-dim";
-            return `<span class="badge ${cls}" title="${esc(t.last_result || '')}">${esc(t.result_label || "Unknown")}</span>`;
-        }, sortVal: t => `${t.result_state || "unknown"}_${t.result_label || ""}` },
-        { key: "next_run_time", label: "Next Run", width: COL_W.md, render: t => t.next_run_time
-            ? `<span style="color:var(--text-muted)" title="${esc(t.next_run_time)}">${timeAgo(t.next_run_time)}</span>`
-            : '<span style="color:var(--text-dim)">-</span>',
-          sortVal: t => t.next_run_time || "" },
-        { key: "schedule_type", label: "Schedule", width: COL_W.sm, render: t => {
-            if (!t.schedule_type) return '<span style="color:var(--text-dim)">-</span>';
-            const s = t.schedule_type.toLowerCase();
-            const cls = s.includes("daily") ? "badge-green" : s.includes("weekly") ? "badge-blue" : s.includes("monthly") ? "badge-yellow" : "badge-muted";
-            return `<span class="badge ${cls}" style="font-size:0.68rem">${esc(t.schedule_type)}</span>`;
-        }, sortVal: t => t.schedule_type || "" },
-        { key: "script_name", label: "Linked Script", width: COL_W.lg, render: t => t.script_id
-            ? `<span class="badge badge-blue schtask-script-link" style="cursor:pointer" data-script-id="${t.script_id}">${esc(t.script_name)}</span>`
-            : '<span style="color:var(--text-dim)">-</span>',
-          sortVal: t => t.script_name || "" },
-        _archiveColDef("scheduled_task"),
-    ];
-
-    const active = filtered.filter(t => !t.archived);
-    const failedCount = active.filter(t => t.result_state === "failed").length;
-    const linkedCount = active.filter(t => t.script_id).length;
-    const disabledCount = active.filter(t => !t.enabled).length;
-    const failedNote = failedCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${failedCount} failed</span>` : "";
-    const disabledNote = disabledCount > 0 ? ` <span class="badge badge-dim" style="font-size:0.72rem">${disabledCount} disabled</span>` : "";
-
-    return `
-        <div class="page-header">
-            <h1>Scheduled Tasks</h1>
-            <span class="subtitle">${active.length} ${showOtherTasks ? "Windows" : "governed refresh"} tasks, ${linkedCount} linked${failedNote}${disabledNote}</span>
-            <button class="btn-outline" id="btn-scan-schtasks-full" style="margin-left:0.5rem">Full Scan</button>
-            <button class="btn-outline" id="btn-scan-schtasks-new">Scan New</button>
-            <button class="btn-outline btn-archive-toggle ${showOtherTasks ? 'active' : ''}" id="btn-schtasks-scope">${showOtherTasks ? "Show governed only" : "Show other Windows tasks"}</button>
-            <select id="schtasks-machine-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Machines</option>${machineOpts}</select>
-            <select id="schtasks-cat-filter" class="freq-select-inline" style="font-size:0.75rem;margin-left:0.25rem"><option value="">All Categories</option>${catOpts}</select>
-            ${_archiveToggleHtml("scheduledtasks")}
-            <button class="btn-export" onclick="exportTableCSV('dt-schtasks','scheduled_tasks.csv')">Export CSV</button>
-        </div>
-        ${filtered.length === 0
-            ? `<div class="empty-state" style="margin-top:2rem">${showOtherTasks ? "No Windows scheduled tasks found." : "No governed refresh tasks are linked to a script yet."}<br><span style="color:var(--text-dim);font-size:0.8rem">Run a scan to import Task Scheduler data. Use Show other Windows tasks to inspect unrelated entries.</span></div>`
-            : dataTable("dt-schtasks", cols, filtered, { onRowClick: showScheduledTaskDetail })
-        }
-    `;
-}
-
-async function showScheduledTaskDetail(task) {
-    const existing = $("#schtask-detail");
-    if (existing) existing.remove();
-
-    const panel = document.createElement("div");
-    panel.id = "schtask-detail";
-    panel.className = "source-detail-panel";
-
-    const resultClass = task.result_state === "success" ? "badge-green" : task.result_state === "failed" ? "badge-red" : task.result_state === "benign" ? "badge-muted" : "badge-dim";
-    const resultBadge = `<span class="badge ${resultClass}" title="${esc(task.last_result || '')}">${esc(task.result_label || "Unknown")}</span>`;
-
-    const enabledBadge = task.enabled
-        ? '<span class="badge badge-green">Enabled</span>'
-        : '<span class="badge badge-dim">Disabled</span>';
-
-    const statusBadge = !task.status ? '-'
-        : task.status === "Ready" ? '<span class="badge badge-green">Ready</span>'
-        : task.status === "Running" ? '<span class="badge badge-yellow">Running</span>'
-        : `<span class="badge badge-dim">${esc(task.status)}</span>`;
-
-    const scriptLink = task.script_id
-        ? `<span class="badge badge-blue schtask-detail-script-link" style="cursor:pointer" data-script-id="${task.script_id}">${esc(task.script_name)}</span>`
-        : '<span style="color:var(--text-dim)">Not linked</span>';
-
-    const actionDisplay = [task.action_command, task.action_args].filter(Boolean).join(" ");
-
-    panel.innerHTML = `
-        <div class="source-detail-header">
-            <h2>${esc(task.task_name)}</h2>
-            <button class="btn-outline" id="btn-close-schtask-detail">&times; Close</button>
-        </div>
-        <div class="detail-grid">
-            <div class="detail-item"><div class="detail-label">Machine</div><span class="badge badge-muted">${esc(task.machine_alias || task.hostname || 'Local')}</span> <span style="color:var(--text-dim);font-size:0.75rem">${task.hostname ? esc(task.hostname) : ''}</span></div>
-            <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_taskCategory(task)] || 'badge-muted'}">${esc(_taskCategory(task))}</span></div>
-            <div class="detail-item"><div class="detail-label">Full Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(task.task_path)}</span></div>
-            <div class="detail-item"><div class="detail-label">Status</div>${statusBadge}</div>
-            <div class="detail-item"><div class="detail-label">Enabled</div>${enabledBadge}</div>
-            <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(task.schedule_type || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${task.last_run_time && !/1999/.test(task.last_run_time) ? esc(task.last_run_time) : "Never"}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Result</div>${resultBadge}</div>
-            <div class="detail-item"><div class="detail-label">Next Run</div><span style="color:var(--text)">${esc(task.next_run_time || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Author</div><span style="color:var(--text)">${esc(task.author || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Run As</div><span style="color:var(--text)">${esc(task.run_as_user || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Action</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(actionDisplay || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Linked Script</div>${scriptLink}</div>
-            <div class="detail-item"><div class="detail-label">Last Scanned</div><span style="color:var(--text)">${task.last_scanned ? formatDate(task.last_scanned) : "-"}</span></div>
-        </div>
-    `;
-
-    $("#app").appendChild(panel);
-    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    document.getElementById("btn-close-schtask-detail").addEventListener("click", () => panel.remove());
-
-    // Click linked script to navigate
-    const scriptEl = panel.querySelector(".schtask-detail-script-link");
-    if (scriptEl) {
-        scriptEl.addEventListener("click", async () => {
-            const scriptId = parseInt(scriptEl.dataset.scriptId);
-            try {
-                const script = await api(`/api/scripts/${scriptId}`);
-                await navigate("scripts");
-                showScriptDetail(script);
-            } catch (err) {
-                toast("Script not found");
-            }
-        });
-    }
-}
-
-function bindScheduledTasksPage() {
-    document.getElementById("btn-schtasks-scope")?.addEventListener("click", () => {
-        const showOther = sessionStorage.getItem("schtasks_show_other") === "1";
-        sessionStorage.setItem("schtasks_show_other", showOther ? "0" : "1");
-        navigate("scheduledtasks");
-    });
-    // Machine filter
-    const machSel = document.getElementById("schtasks-machine-filter");
-    if (machSel) {
-        machSel.addEventListener("change", () => {
-            sessionStorage.setItem("schtasks_machine", machSel.value);
-            navigate("scheduledtasks");
-        });
-    }
-
-    // Category filter
-    const catSel = document.getElementById("schtasks-cat-filter");
-    if (catSel) {
-        catSel.addEventListener("change", () => {
-            sessionStorage.setItem("schtasks_category", catSel.value);
-            navigate("scheduledtasks");
-        });
-    }
-
-    // Scan buttons
-    const btnSchFull = document.getElementById("btn-scan-schtasks-full");
-    const btnSchNew = document.getElementById("btn-scan-schtasks-new");
-
-    async function _runSchScan(newOnly) {
-        if (btnSchFull) { btnSchFull.disabled = true; btnSchFull.textContent = "Scanning..."; }
-        if (btnSchNew) btnSchNew.disabled = true;
-        try {
-            const url = "/api/scheduled-tasks/scan" + (newOnly ? "?new_only=true" : "");
-            const result = await apiPost(url);
-            if (result.status === "completed") {
-                toast(`Scan complete - ${result.tasks_total || 0} tasks found, ${result.scripts_linked || 0} linked`);
-            } else {
-                toast("Scan failed: " + (result.error || "unknown error"));
-            }
-            await navigate("scheduledtasks");
-        } catch (err) {
-            toast("Scan failed: " + err.message);
-            if (btnSchFull) { btnSchFull.disabled = false; btnSchFull.textContent = "Full Scan"; }
-            if (btnSchNew) btnSchNew.disabled = false;
-        }
-    }
-    if (btnSchFull) btnSchFull.addEventListener("click", () => _runSchScan(false));
-    if (btnSchNew) btnSchNew.addEventListener("click", () => _runSchScan(true));
-
-    // Clickable script badges in table rows
-    document.querySelectorAll(".schtask-script-link").forEach(el => {
-        el.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const scriptId = parseInt(el.dataset.scriptId);
-            try {
-                const script = await api(`/api/scripts/${scriptId}`);
-                await navigate("scripts");
-                showScriptDetail(script);
-            } catch (err) {
-                toast("Script not found");
-            }
-        });
-    });
-    _bindArchiveButtons(() => navigate("scheduledtasks"));
-}
-
-
-// ── Power Automate Flows ──
-
-const _PA_STATUS_BADGE = {
-    active: "badge-green",
-    paused: "badge-yellow",
-    error: "badge-red",
-    disabled: "badge-dim",
-};
-
-async function renderPowerAutomate() {
-    const showArchived = _isShowingArchived("powerautomate");
-    const flows = await api("/api/power-automate-flows" + (showArchived ? "?include_archived=true" : ""));
-    const active = flows.filter(f => !f.archived);
-    const errorCount = active.filter(f => f.status === "error").length;
-    const errorNote = errorCount > 0 ? ` <span class="badge badge-red" style="font-size:0.72rem">${errorCount} error</span>` : "";
-
-    const cols = [
-        { key: "name", label: "Name", width: COL_W.xl, render: f => `<strong>${esc(f.name)}</strong>`, sortVal: f => f.name || "" },
-        { key: "status", label: "Status", width: COL_W.sm, render: f => {
-            const cls = _PA_STATUS_BADGE[f.status] || "badge-muted";
-            return `<span class="badge ${cls}">${esc(f.status || "unknown")}</span>`;
-        }, sortVal: f => f.status || "" },
-        { key: "owner", label: "Owner", width: COL_W.md, render: f => f.owner ? esc(f.owner) : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.owner || "" },
-        { key: "schedule", label: "Schedule", width: COL_W.md, render: f => f.schedule ? esc(f.schedule) : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.schedule || "" },
-        { key: "account", label: "Account", width: COL_W.md, render: f => f.account ? `<span class="badge badge-muted" style="font-size:0.68rem">${esc(f.account)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.account || "" },
-        { key: "source_url", label: "Source URL", width: COL_W.lg, render: f => f.source_url ? `<span style="color:var(--text-muted);font-size:0.78rem;word-break:break-all" title="${esc(f.source_url)}">${esc(f.source_url.length > 40 ? f.source_url.slice(0, 40) + "..." : f.source_url)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.source_url || "" },
-        { key: "output_source_name", label: "Output", width: COL_W.lg, render: f => f.output_source_id ? `<span class="badge badge-blue pa-source-link" style="cursor:pointer" data-source-id="${f.output_source_id}">${esc(f.output_source_name || "Source #" + f.output_source_id)}</span>` : (f.output_description ? `<span style="color:var(--text-muted);font-size:0.78rem">${esc(f.output_description)}</span>` : '<span style="color:var(--text-dim)">-</span>'), sortVal: f => f.output_source_name || f.output_description || "" },
-        { key: "last_run_time", label: "Last Run", width: COL_W.md, render: f => f.last_run_time ? `<span style="color:var(--text-muted)" title="${esc(f.last_run_time)}">${timeAgo(f.last_run_time)}</span>` : '<span style="color:var(--text-dim)">-</span>', sortVal: f => f.last_run_time || "" },
-        _archiveColDef("power_automate"),
-    ];
-
-    return `
-        <div class="page-header">
-            <h1>Power Automate</h1>
-            <span class="subtitle">${active.length} flow${active.length !== 1 ? 's' : ''}${errorNote}</span>
-            <button class="btn-outline" id="btn-pa-new-flow" style="margin-left:0.5rem">+ New Flow</button>
-            ${_archiveToggleHtml("powerautomate")}
-            <button class="btn-export" onclick="exportTableCSV('dt-pa-flows','power_automate_flows.csv')">Export CSV</button>
-        </div>
-        <div id="pa-create-form-area"></div>
-        ${flows.length === 0
-            ? '<div class="empty-state" style="margin-top:2rem">No Power Automate flows registered yet. Click <strong>+ New Flow</strong> to add one.</div>'
-            : dataTable("dt-pa-flows", cols, flows, { onRowClick: showPowerAutomateDetail })
-        }
-    `;
-}
-
-async function showPowerAutomateDetail(flow) {
-    const existing = $("#pa-detail");
-    if (existing) existing.remove();
-
-    const panel = document.createElement("div");
-    panel.id = "pa-detail";
-    panel.className = "source-detail-panel";
-
-    const statusCls = _PA_STATUS_BADGE[flow.status] || "badge-muted";
-    const outputDisplay = flow.output_source_id
-        ? `<span class="badge badge-blue pa-detail-source-link" style="cursor:pointer" data-source-id="${flow.output_source_id}">${esc(flow.output_source_name || "Source #" + flow.output_source_id)}</span>`
-        : (flow.output_description ? esc(flow.output_description) : '<span style="color:var(--text-dim)">Not linked</span>');
-
-    panel.innerHTML = `
-        <div class="source-detail-header">
-            <h2>${esc(flow.name)}</h2>
-            <button class="btn-outline" id="btn-pa-edit" style="margin-right:0.25rem">Edit</button>
-            <button class="btn-outline" id="btn-pa-delete" style="margin-right:0.25rem;color:var(--red)">Delete</button>
-            <button class="btn-outline" id="btn-close-pa-detail">&times; Close</button>
-        </div>
-        <div class="detail-grid">
-            <div class="detail-item"><div class="detail-label">Status</div><span class="badge ${statusCls}">${esc(flow.status || "unknown")}</span></div>
-            <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(flow.owner || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Account</div><span style="color:var(--text)">${esc(flow.account || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Schedule</div><span style="color:var(--text)">${esc(flow.schedule || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Last Run</div><span style="color:var(--text)">${flow.last_run_time ? formatDate(flow.last_run_time) : "-"}</span>${flow.output_source_id ? ' <span style="color:var(--text-dim);font-size:0.7rem">(from output source)</span>' : ''}</div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Source URL</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${flow.source_url ? esc(flow.source_url) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Output</div>${outputDisplay}</div>
-            <div class="detail-item"><div class="detail-label">Output Description</div><span style="color:var(--text)">${esc(flow.output_description || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Description</div><span style="color:var(--text)">${esc(flow.description || "-")}</span></div>
-            <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Notes</div><span style="color:var(--text);white-space:pre-wrap">${esc(flow.notes || "-")}</span></div>
-            <div class="detail-item"><div class="detail-label">Created</div><span style="color:var(--text-dim)">${flow.created_at ? formatDate(flow.created_at) : "-"}</span></div>
-            <div class="detail-item"><div class="detail-label">Updated</div><span style="color:var(--text-dim)">${flow.updated_at ? formatDate(flow.updated_at) : "-"}</span></div>
-        </div>
-    `;
-
-    $("#app").appendChild(panel);
-    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    document.getElementById("btn-close-pa-detail").addEventListener("click", () => panel.remove());
-
-    document.getElementById("btn-pa-delete").addEventListener("click", async () => {
-        if (!confirm(`Delete flow "${flow.name}"?`)) return;
-        try {
-            await apiDelete(`/api/power-automate-flows/${flow.id}`);
-            toast("Flow deleted");
-            panel.remove();
-            navigate("powerautomate");
-        } catch (err) {
-            toast("Delete failed: " + err.message);
-        }
-    });
-
-    document.getElementById("btn-pa-edit").addEventListener("click", () => {
-        panel.remove();
-        _showPaEditForm(flow);
-    });
-
-    // Click linked source
-    const srcEl = panel.querySelector(".pa-detail-source-link");
-    if (srcEl) {
-        srcEl.addEventListener("click", async () => {
-            const srcId = parseInt(srcEl.dataset.sourceId);
-            try {
-                const src = await api(`/api/sources/${srcId}`);
-                await navigate("sources");
-                showSourceDetail(src);
-            } catch (err) {
-                toast("Source not found");
-            }
-        });
-    }
-}
-
-async function _renderPaForm(existing) {
-    const opts = await api("/api/power-automate-flows/options");
-    const f = existing || {};
-    const isEdit = !!existing;
-
-    const ownerOptions = opts.people.length > 0
-        ? opts.people.map(p => `<option value="${esc(p.name)}"${f.owner === p.name ? ' selected' : ''}>${esc(p.name)} (${esc(p.role)})</option>`).join("")
-        : opts.owners.map(o => `<option value="${esc(o)}"${f.owner === o ? ' selected' : ''}>${esc(o)}</option>`).join("");
-
-    const sourceOptions = opts.sources.map(s => `<option value="${s.id}"${f.output_source_id === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join("");
-
-    const statusOptions = opts.statuses.map(s => `<option value="${s}"${(f.status || 'active') === s ? ' selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join("");
-
-    return `
-        <div class="create-form" id="pa-form" style="margin-bottom:1.5rem">
-            <h3 style="margin:0 0 0.75rem">${isEdit ? "Edit" : "New"} Power Automate Flow</h3>
-            <div class="create-fields">
-                <div class="create-field"><label>Name *</label><input id="pa-f-name" value="${esc(f.name || "")}" required></div>
-                <div class="create-field"><label>Status</label><select id="pa-f-status">${statusOptions}</select></div>
-                <div class="create-field"><label>Owner</label><select id="pa-f-owner"><option value="">-</option>${ownerOptions}</select></div>
-                <div class="create-field"><label>Account</label><input id="pa-f-account" value="${esc(f.account || "")}" placeholder="e.g. user@example.com"></div>
-                <div class="create-field"><label>Schedule</label><input id="pa-f-schedule" value="${esc(f.schedule || "")}" placeholder="e.g. Daily 6:00 AM"></div>
-                <div class="create-field"><label>Source URL</label><input id="pa-f-source-url" value="${esc(f.source_url || "")}" placeholder="Website the flow scrapes"></div>
-                <div class="create-field"><label>Output Source</label><select id="pa-f-output-source"><option value="">- None -</option>${sourceOptions}</select></div>
-                <div class="create-field"><label>Output Description</label><input id="pa-f-output-desc" value="${esc(f.output_description || "")}" placeholder="e.g. C:\\Data\\retailer_x.csv"></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Description</label><textarea id="pa-f-desc" rows="2" style="width:100%">${esc(f.description || "")}</textarea></div>
-                <div class="create-field" style="grid-column:1/-1"><label>Notes</label><textarea id="pa-f-notes" rows="2" style="width:100%">${esc(f.notes || "")}</textarea></div>
-            </div>
-            <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
-                <button class="btn-outline" id="pa-f-save">${isEdit ? "Save Changes" : "Create Flow"}</button>
-                <button class="btn-outline" id="pa-f-cancel">Cancel</button>
-            </div>
-        </div>
-    `;
-}
-
-function _collectPaFormData() {
-    const name = document.getElementById("pa-f-name").value.trim();
-    if (!name) { toast("Name is required"); return null; }
-    return {
-        name,
-        status: document.getElementById("pa-f-status").value,
-        owner: document.getElementById("pa-f-owner").value || null,
-        account: document.getElementById("pa-f-account").value.trim() || null,
-        schedule: document.getElementById("pa-f-schedule").value.trim() || null,
-        source_url: document.getElementById("pa-f-source-url").value.trim() || null,
-        output_source_id: parseInt(document.getElementById("pa-f-output-source").value) || null,
-        output_description: document.getElementById("pa-f-output-desc").value.trim() || null,
-        description: document.getElementById("pa-f-desc").value.trim() || null,
-        notes: document.getElementById("pa-f-notes").value.trim() || null,
-    };
-}
-
-async function _showPaCreateForm() {
-    const area = document.getElementById("pa-create-form-area");
-    if (!area) return;
-    area.innerHTML = await _renderPaForm(null);
-
-    document.getElementById("pa-f-cancel").addEventListener("click", () => { area.innerHTML = ""; });
-    document.getElementById("pa-f-save").addEventListener("click", async () => {
-        const data = _collectPaFormData();
-        if (!data) return;
-        try {
-            await apiPostJson("/api/power-automate-flows", data);
-            toast("Flow created");
-            navigate("powerautomate");
-        } catch (err) {
-            toast("Create failed: " + err.message);
-        }
-    });
-}
-
-async function _showPaEditForm(flow) {
-    const area = document.getElementById("pa-create-form-area");
-    if (!area) return;
-    area.innerHTML = await _renderPaForm(flow);
-    area.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-    document.getElementById("pa-f-cancel").addEventListener("click", () => {
-        area.innerHTML = "";
-        showPowerAutomateDetail(flow);
-    });
-    document.getElementById("pa-f-save").addEventListener("click", async () => {
-        const data = _collectPaFormData();
-        if (!data) return;
-        try {
-            const updated = await apiPatch(`/api/power-automate-flows/${flow.id}`, data);
-            toast("Flow updated");
-            area.innerHTML = "";
-            navigate("powerautomate");
-        } catch (err) {
-            toast("Update failed: " + err.message);
-        }
-    });
-}
-
-function bindPowerAutomatePage() {
-    const btnNew = document.getElementById("btn-pa-new-flow");
-    if (btnNew) btnNew.addEventListener("click", () => _showPaCreateForm());
-
-    // Clickable source badges in table rows
-    document.querySelectorAll(".pa-source-link").forEach(el => {
-        el.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            const srcId = parseInt(el.dataset.sourceId);
-            try {
-                const src = await api(`/api/sources/${srcId}`);
-                await navigate("sources");
-                showSourceDetail(src);
-            } catch (err) {
-                toast("Source not found");
-            }
-        });
-    });
-
-    _bindArchiveButtons(() => navigate("powerautomate"));
 }
 
 
@@ -7835,7 +6732,7 @@ async function _renderDocForm(existing) {
                 <div class="task-link-add-row" style="margin-top:0.25rem">
                     <select id="doc-link-type">
                         <option value="">Select type...</option>
-                        ${Object.entries(ENTITY_TYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+                        ${Object.entries(LINKABLE_ENTITY_TYPE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
                     </select>
                     <select id="doc-link-entity" disabled>
                         <option value="">Select entity...</option>
@@ -8085,8 +6982,6 @@ function bindDocumentationPage() {
 
 const LINEAGE_COLS = [
     { key: "upstreams", label: "Upstream Systems" },
-    { key: "tasks", label: "Scheduled Tasks" },
-    { key: "scripts", label: "Scripts" },
     { key: "flows", label: "Flows" },
     { key: "mv_upstream", label: "Source Dependencies" },
     { key: "sources", label: "Sources" },
@@ -8462,13 +7357,9 @@ function _renderLineageDiagram(data) {
         fieldsByTable.get(f.table).push({ id: `field-${key}`, key, table: f.table, field: f.field });
     }
 
-    // Tables, sources, flows, scripts, tasks, upstreams
+    // Tables, sources, flows, upstreams
     const tableMap = new Map();
     for (const t of data.tables) tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
-    const scriptMap = new Map();
-    for (const s of (data.scripts || [])) scriptMap.set(s.id, s);
-    const taskMap = new Map();
-    for (const t of (data.scheduled_tasks || [])) taskMap.set(t.id, t);
     const upstreamMap = new Map();
     for (const u of data.upstreams) upstreamMap.set(u.id, u);
 
@@ -8482,9 +7373,6 @@ function _renderLineageDiagram(data) {
     const allSourceIds = new Set(allSourceNodes.map(s => s.id));
     const usedUpstreamIds = new Set(allSourceNodes.map(s => s.upstream_id).filter(Boolean));
     const upstreamNodes = [...upstreamMap.values()].filter(u => usedUpstreamIds.has(u.id));
-    const scriptNodes = [...scriptMap.values()].filter(s => (s.source_ids || []).some(sid => allSourceIds.has(sid)));
-    const usedScriptIds = new Set(scriptNodes.map(s => s.id));
-    const taskNodes = [...taskMap.values()].filter(t => usedScriptIds.has(t.script_id));
     const flowNodes = (data.flows || []).filter(flow =>
         (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
     );
@@ -8650,24 +7538,6 @@ function _renderLineageDiagram(data) {
     }
     colHtml.flows = flowH;
 
-    // -- Scripts --
-    let scrH = "";
-    for (const s of scriptNodes) {
-        const m = s.machine_alias || s.hostname || "";
-        scrH += `<div class="lin-card" data-lin-id="script-${s.id}"><div class="lin-card-hdr"><span class="lin-card-lbl">${esc(s.display_name)}</span>${m ? `<span class="lin-card-meta">${esc(m)}</span>` : ""}</div></div>`;
-    }
-    colHtml.scripts = scrH;
-
-    // -- Tasks --
-    let tskH = "";
-    for (const t of taskNodes) {
-        const ok = t.enabled && t.last_result === "0";
-        const warn = t.enabled && t.last_result && t.last_result !== "0";
-        const cls = !t.enabled ? "lin-st-off" : warn ? "lin-st-warn" : ok ? "lin-st-ok" : "";
-        tskH += `<div class="lin-card ${cls}" data-lin-id="task-${t.id}"><div class="lin-card-hdr"><span class="lin-card-lbl">${esc(t.task_name)}</span>${t.schedule_type ? `<span class="lin-card-meta">${esc(t.schedule_type)}</span>` : ""}</div></div>`;
-    }
-    colHtml.tasks = tskH;
-
     // -- Upstreams --
     let upH = "";
     for (const u of upstreamNodes) {
@@ -8675,7 +7545,7 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length + legacyFlowNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length + legacyFlowNodes.length, upstreams: upstreamNodes.length };
     for (let depth = 1; depth < sourceLayers.length; depth++) {
         colCounts[`mv_upstream_${depth}`] = (sourceLayers[depth] || []).length;
     }
@@ -8712,7 +7582,7 @@ function _renderLineageDiagram(data) {
         <div class="lin-hint-bar">Click any node to trace its lineage. Scroll horizontally for deeper levels. Click empty space to reset.</div>
     `;
 
-    _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, allSourceNodes, scriptNodes, taskNodes, upstreamNodes);
+    _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, allSourceNodes, upstreamNodes);
     window._lineageBindTimer = setTimeout(() => {
         window._lineageBindTimer = null;
         _drawLinEdges();
@@ -8789,90 +7659,7 @@ async function _showLineageSourceDetail(sourceId) {
     }
 }
 
-async function _showLineageScriptDetail(scriptId) {
-    const id = parseInt(scriptId, 10);
-    const container = document.getElementById("lineage-container");
-    if (!container || isNaN(id)) return;
-
-    const sourcePanel = document.getElementById("lineage-source-detail");
-    if (sourcePanel) sourcePanel.remove();
-
-    let panel = document.getElementById("lineage-script-detail");
-    if (!panel) {
-        panel = document.createElement("div");
-        panel.id = "lineage-script-detail";
-        panel.className = "source-detail-panel lineage-source-detail-panel";
-        container.appendChild(panel);
-    }
-    panel.innerHTML = '<div class="lineage-source-detail-loading">Loading script details...</div>';
-
-    try {
-        const [script, tables] = await Promise.all([
-            api(`/api/scripts/${id}`),
-            api(`/api/scripts/${id}/tables`),
-        ]);
-        const writeRows = tables.filter(t => t.direction === "write");
-        const readRows = tables.filter(t => t.direction === "read");
-        const machine = script.machine_alias || script.hostname || "-";
-        const lastModified = script.last_modified ? esc(script.last_modified) : "-";
-        const lastScanned = script.last_scanned ? esc(script.last_scanned) : "-";
-
-        const tableBadges = (rows, mode) => rows.length > 0
-            ? rows.map(t => {
-                const ref = _refType(t.table_name);
-                const cls = mode === "write" && ref.type === "sql" ? "badge-red" : mode === "read" && ref.type === "sql" ? "badge-blue" : ref.cls;
-                if (t.source_id) {
-                    return `<span class="badge ${cls} lineage-script-source-link" style="cursor:pointer;margin:2px" data-source-id="${t.source_id}" title="Click to view source">${esc(ref.label)}</span>`;
-                }
-                return `<span class="badge ${cls}" style="margin:2px">${esc(ref.label)}</span>`;
-            }).join(" ")
-            : '<span style="color:var(--text-dim)">None detected</span>';
-
-        panel.innerHTML = `
-            <div class="source-detail-header">
-                <h2>${esc(script.display_name)}</h2>
-                <button class="btn-outline" id="btn-close-lineage-script-detail">&times; Close</button>
-            </div>
-            <div class="detail-grid lineage-source-detail-grid">
-                <div class="detail-item"><div class="detail-label">Category</div><span class="badge ${_CATEGORY_COLORS[_scriptCategory(script)] || 'badge-muted'}">${esc(_scriptCategory(script))}</span></div>
-                <div class="detail-item"><div class="detail-label">Owner</div><span style="color:var(--text)">${esc(script.owner) || "-"}</span></div>
-                <div class="detail-item"><div class="detail-label">Machine</div><span style="color:var(--text)">${esc(machine)}</span></div>
-                <div class="detail-item"><div class="detail-label">File Size</div><span style="color:var(--text)">${formatFileSize(script.file_size)}</span></div>
-                <div class="detail-item"><div class="detail-label">Last Modified</div><span class="lineage-exact-timestamp">${lastModified}</span></div>
-                <div class="detail-item"><div class="detail-label">Last Scanned</div><span class="lineage-exact-timestamp">${lastScanned}</span></div>
-                <div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Path</div><span style="color:var(--text-muted);word-break:break-all;font-size:0.78rem">${esc(script.path)} ${_viewPathBtn(script.path)}</span></div>
-            </div>
-            <h2>Writes to / Refreshes (${writeRows.length})</h2>
-            <div style="padding:0.25rem 0">${tableBadges(writeRows, "write")}</div>
-            <h2>Reads From (${readRows.length})</h2>
-            <div style="padding:0.25rem 0">${tableBadges(readRows, "read")}</div>
-        `;
-
-        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-
-        const closeBtn = panel.querySelector("#btn-close-lineage-script-detail");
-        if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
-
-        panel.querySelectorAll(".view-path-btn").forEach(btn => {
-            btn.addEventListener("click", async (e) => {
-                e.stopPropagation();
-                try { await apiPostJson("/api/scanner/open-path", { path: btn.dataset.path }); }
-                catch { toast("Could not open path (only works on server machine)"); }
-            });
-        });
-
-        panel.querySelectorAll(".lineage-script-source-link").forEach(el => {
-            el.addEventListener("click", (e) => {
-                e.stopPropagation();
-                _showLineageSourceDetail(el.dataset.sourceId);
-            });
-        });
-    } catch (err) {
-        panel.innerHTML = `<div class="lineage-source-detail-loading" style="color:var(--red)">Failed to load script: ${esc(err.message)}</div>`;
-    }
-}
-
-function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, scriptNodes, taskNodes, upstreamNodes) {
+function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, upstreamNodes) {
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
     function add(a, b, svg) {
         if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
@@ -8892,10 +7679,6 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const [tbl, fields] of fieldsByTable) for (const f of fields) add(`table-${tbl}`, f.id, false);
     // Source -> Table (SVG)
     for (const t of tableNodes) if (t.source_id) add(`source-${t.source_id}`, `table-${t.name}`, true);
-    // Script -> Source (SVG)
-    for (const s of scriptNodes) for (const sid of (s.source_ids || [])) add(`script-${s.id}`, `source-${sid}`, true);
-    // Task -> Script (SVG)
-    for (const t of taskNodes) add(`task-${t.id}`, `script-${t.script_id}`, true);
     // Upstream dependency -> target source (upstream table -> MV) (SVG)
     for (const d of (data.source_deps || [])) {
         add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true);
@@ -9249,7 +8032,6 @@ function _bindLinInteractions() {
             e.stopPropagation();
             const id = node.dataset.linId;
             if (id.startsWith("source-")) _showLineageSourceDetail(id.replace("source-", ""));
-            if (id.startsWith("script-")) _showLineageScriptDetail(id.replace("script-", ""));
             if (node.classList.contains("lin-highlighted")) { _resetLinHL(); return; }
             const connected = _traceLinLineage(id);
             window._linHL = connected;
@@ -9341,12 +8123,20 @@ function _resetLinHL() {
 }
 
 
+// Full label map - includes removed legacy types so existing links still
+// render with a friendly badge. New links only offer LINKABLE_ENTITY_TYPE_LABELS.
 const ENTITY_TYPE_LABELS = {
     report: "Report",
     source: "Data Source",
     script: "Script",
     upstream_system: "Upstream System",
     scheduled_task: "Scheduled Task",
+};
+
+const LINKABLE_ENTITY_TYPE_LABELS = {
+    report: "Report",
+    source: "Data Source",
+    upstream_system: "Upstream System",
 };
 
 function _emailPersonById(personId) {
@@ -9514,7 +8304,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "Where does the data come from?",
-        a: "The scanner reads .pbix files and TMDL exports from a shared folder you configure (DG_TMDL_ROOT). It extracts all tables, data sources, measures, and columns automatically. It also scans Python scripts, Windows Task Scheduler, Power Automate flows, and PostgreSQL materialized view dependencies."
+        a: "The scanner reads .pbix files and TMDL exports from a shared folder you configure (DG_TMDL_ROOT). It extracts all tables, data sources, measures, and columns automatically. It also scans PostgreSQL materialized view dependencies and pg_cron schedules."
     },
     {
         q: "What data source types are supported?",
@@ -9526,7 +8316,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "What are Report Owner and Business Owner?",
-        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans. You can also assign owners manually from the People list under Management."
+        a: "These are metadata tables inside each Power BI report. Report Owner is typically the developer or analyst who maintains the report. Business Owner is the stakeholder accountable for the data. Both are extracted automatically during scans. You can also assign owners manually from the People list under Tools > Create Artifacts."
     },
     {
         q: "How do alerts work?",
@@ -9537,20 +8327,8 @@ const FAQ_ITEMS = [
         a: "Under Tools, the TMDL Checker scans all reports against best-practice rules: no local file paths, required owner metadata, proper date types, avoiding DirectQuery mode, excessive columns, duplicate sources, unused measures, and visual density. Findings are shown by severity with filtering by report owner."
     },
     {
-        q: "What is the Scripts page?",
-        a: "The Scripts page discovers and tracks all Python ETL scripts on the desktop machine and shared drives. It detects which SQL tables each script writes to and reads from, links scripts to data sources in the lineage, and shows modification dates. Scripts are categorized as Data to SQL, Data to Excel, or Other. Use Full Scan to discover new scripts or Re-parse to re-analyze existing ones."
-    },
-    {
-        q: "What is the Scheduled Tasks page?",
-        a: "Under Data, Scheduled Tasks shows governed Windows refresh jobs linked to scripts. Failed actionable jobs and their schedules are highlighted. Use Show other Windows tasks only when you need to inspect unrelated Task Scheduler entries."
-    },
-    {
-        q: "What is the Power Automate page?",
-        a: "Under Data, Power Automate lets you manually register Power Automate flows that feed data into your pipeline. Flows can be linked to output sources, and their last run time is derived from the linked source's probe data."
-    },
-    {
         q: "What is the Lineage view?",
-        a: "Lineage shows the full dependency chain as a horizontal DAG: Visuals, Tables, Sources, every upstream source level, Scripts, and Tasks. Select a report to see exactly which sources feed each visual, how materialized views depend on one another, and which scripts refresh the data."
+        a: "Lineage shows the full dependency chain as a horizontal DAG: Visuals, Tables, Sources, every upstream source level, and Flows. Select a report to see exactly which sources feed each visual, how materialized views depend on one another, and which Flows refresh the data."
     },
     {
         q: "How do upstream systems work?",
@@ -9561,20 +8339,16 @@ const FAQ_ITEMS = [
         a: "It validates that data flows in the right order: Upstream System refreshes before Source, which refreshes before Report. If the timing is wrong (e.g., a report refreshes before its source), it flags a warning or critical issue. pg_cron schedules are also scanned for mismatches."
     },
     {
-        q: "How does multi-machine support work?",
-        a: "The platform can scan scripts and scheduled tasks from multiple machines. Each script and task is tagged with its hostname. The Sources page filter buttons let you focus on specific machines."
-    },
-    {
         q: "What is the Archive feature?",
-        a: "Reports, sources, scripts, and scheduled tasks can be archived to remove them from active views without deleting data. Archived items are hidden by default but can be shown with the Show Archived toggle."
+        a: "Reports, sources, and upstream systems can be archived to remove them from active views without deleting data. Archived items are hidden by default but can be shown with the Show Archived toggle."
     },
     {
         q: "Can I add sources and reports manually?",
-        a: "Yes. Under Management, the Create page has Assets and People tabs. Assets lets you add reports, sources, or upstream systems manually. People lets you manage team members who can be assigned as owners."
+        a: "Yes. Under Tools, the Create Artifacts page has Assets and People tabs. Assets lets you add reports, sources, or upstream systems manually. People lets you manage team members who can be assigned as owners."
     },
     {
         q: "What is the Full Export?",
-        a: "Under Tools, Full Export generates a structured text dump of all platform data (sources, reports, scripts, tasks, lineage) with section checkboxes. Includes a diagnostic report and optional Python source code export."
+        a: "Under Tools, Full Export generates a structured text dump of all platform data (sources, reports, flows, lineage) with section checkboxes. Includes a diagnostic report."
     },
     {
         q: "How do GSCM flows work?",
@@ -10145,7 +8919,7 @@ function _flowOwnerOptions(people, selectedId) {
 }
 
 function _flowOwnerHelp(owner) {
-    if (!owner) return "Choose a person from Management > Create > People. Without an owner, nobody is emailed when this flow fails.";
+    if (!owner) return "Choose a person from Tools > Create Artifacts > People. Without an owner, nobody is emailed when this flow fails.";
     if (!owner.email) return `${esc(owner.name)} has no email mapped in People. Add one or no failure alert can be delivered.`;
     return `Failure alerts are sent to ${esc(owner.email)} through Outlook on the app host.`;
 }
@@ -11558,9 +10332,6 @@ const pages = {
     dashboard: renderDashboard,
     sources: renderSources,
     reports: renderReports,
-    scripts: renderScripts,
-    scheduledtasks: renderScheduledTasks,
-    powerautomate: renderPowerAutomate,
     lineage: renderLineageDiagram,
     scanner: renderScanner,
     changelog: renderChangelog,
@@ -11579,7 +10350,7 @@ const pages = {
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard", scripts: "flows", scheduledtasks: "flows", powerautomate: "flows" };
 
 let currentPage = "dashboard";
 let navigationRequestId = 0;
@@ -11700,9 +10471,6 @@ async function navigate(page) {
         if (page === "scanner") bindScannerButtons();
         if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
-        if (page === "scripts") bindScriptsPage();
-        if (page === "scheduledtasks") bindScheduledTasksPage();
-        if (page === "powerautomate") bindPowerAutomatePage();
         if (page === "flows") bindFlowsPage();
         if (page === "create") bindCreatePage();
         if (page === "changelog") bindChangelogPage();

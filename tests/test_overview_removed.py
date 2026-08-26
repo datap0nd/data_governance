@@ -15,7 +15,7 @@ def test_pipeline_overview_surface_is_removed():
     assert 'overview: "dashboard"' in app_js
 
 
-def test_manual_tasks_surface_is_removed_but_scheduled_tasks_remain():
+def test_manual_tasks_surface_is_removed_and_legacy_artifact_pages_are_gone():
     index_html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
     app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
 
@@ -24,7 +24,28 @@ def test_manual_tasks_surface_is_removed_but_scheduled_tasks_remain():
     assert "Pending Task Summaries" not in app_js
     assert '/api/email/task-summaries' not in app_js
     assert 'tasks: "dashboard"' in app_js
-    assert 'data-page="scheduledtasks"' in index_html
+    # Scripts, Scheduled Tasks, and Power Automate were replaced by Flows.
+    assert 'data-page="scripts"' not in index_html
+    assert 'data-page="scheduledtasks"' not in index_html
+    assert 'data-page="powerautomate"' not in index_html
+    for renderer in ("renderScripts", "renderScheduledTasks", "renderPowerAutomate",
+                     "bindScriptsPage", "bindScheduledTasksPage", "bindPowerAutomatePage"):
+        assert renderer not in app_js
+    # Old hashes land on the superseding Flows page.
+    assert 'scripts: "flows"' in app_js
+    assert 'scheduledtasks: "flows"' in app_js
+    assert 'powerautomate: "flows"' in app_js
+
+
+def test_management_group_became_create_artifacts_under_tools():
+    index_html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'aria-label="Management pages"' not in index_html
+    assert ">Management <" not in index_html
+    assert '<a href="#create" data-page="create" role="menuitem">Create Artifacts</a>' in index_html
+    assert 'data-pages="create,bestpractices' in index_html
+    assert "<h1>Create Artifacts</h1>" in app_js
 
 
 def test_pipelines_and_new_flows_are_top_level_navigation_items():

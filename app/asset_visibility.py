@@ -28,16 +28,6 @@ def get_active_source_ids(db) -> set[int]:
 
             UNION
 
-            SELECT DISTINCT st.source_id
-            FROM script_tables st
-            JOIN scripts sc ON sc.id = st.script_id
-            JOIN sources s ON s.id = st.source_id
-            WHERE st.source_id IS NOT NULL
-              AND COALESCE(sc.archived, 0) = 0
-              AND COALESCE(s.archived, 0) = 0
-
-            UNION
-
             SELECT DISTINCT tl.entity_id
             FROM task_links tl
             JOIN tasks t ON t.id = tl.task_id

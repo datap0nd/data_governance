@@ -24,7 +24,6 @@ class SourceOut(BaseModel):
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
-    linked_scripts: str | None = None
     linked_task_count: int = 0
     views_30d: int | None = None
     unique_users_30d: int | None = None
@@ -448,87 +447,6 @@ class PersonUpdate(BaseModel):
     email: str | None = None
 
 
-# --- Scripts ---
-
-class ScriptOut(BaseModel):
-    id: int
-    path: str
-    display_name: str
-    owner: str | None = None
-    last_modified: str | None = None
-    last_scanned: str | None = None
-    file_size: int | None = None
-    tables_read: list[str] = []
-    tables_written: list[str] = []
-    hostname: str | None = None
-    machine_alias: str | None = None
-    archived: bool = False
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-class ScriptUpdate(BaseModel):
-    owner: str | None = None
-
-
-# --- Power Automate Flows ---
-
-class PowerAutomateFlowOut(BaseModel):
-    id: int
-    name: str
-    description: str | None = None
-    owner: str | None = None
-    schedule: str | None = None
-    source_url: str | None = None
-    output_source_id: int | None = None
-    output_source_name: str | None = None
-    output_description: str | None = None
-    status: str | None = "active"
-    account: str | None = None
-    last_run_time: str | None = None
-    notes: str | None = None
-    archived: bool = False
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-class PowerAutomateFlowCreate(BaseModel):
-    name: str
-    description: str | None = None
-    owner: str | None = None
-    schedule: str | None = None
-    source_url: str | None = None
-    output_source_id: int | None = None
-    output_description: str | None = None
-    status: str = "active"
-    account: str | None = None
-    last_run_time: str | None = None
-    notes: str | None = None
-
-
-class PowerAutomateFlowUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    owner: str | None = None
-    schedule: str | None = None
-    source_url: str | None = None
-    output_source_id: int | None = None
-    output_description: str | None = None
-    status: str | None = None
-    account: str | None = None
-    last_run_time: str | None = None
-    notes: str | None = None
-
-
-class ScriptTableOut(BaseModel):
-    id: int
-    script_id: int
-    table_name: str
-    direction: str
-    source_id: int | None = None
-    source_name: str | None = None
-
-
 # --- Documentation ---
 
 class DocEntityLinkInfo(BaseModel):
@@ -604,32 +522,3 @@ class EventLogOut(BaseModel):
     detail: str | None = None
     actor: str | None = None
     created_at: str | None = None
-
-
-# --- Scheduled Tasks (Windows Task Scheduler) ---
-
-class ScheduledTaskOut(BaseModel):
-    id: int
-    task_name: str
-    task_path: str
-    status: str | None = None
-    last_run_time: str | None = None
-    last_result: str | None = None
-    next_run_time: str | None = None
-    author: str | None = None
-    run_as_user: str | None = None
-    action_command: str | None = None
-    action_args: str | None = None
-    schedule_type: str | None = None
-    enabled: bool = True
-    script_id: int | None = None
-    script_name: str | None = None
-    hostname: str | None = None
-    machine_alias: str | None = None
-    governed: bool = False
-    result_state: str = "unknown"
-    result_label: str = "Unknown"
-    archived: bool = False
-    last_scanned: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None

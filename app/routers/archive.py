@@ -1,4 +1,4 @@
-"""Archive / unarchive entities (sources, reports, scripts, upstream systems, scheduled tasks)."""
+"""Archive / unarchive entities (sources, reports, upstream systems, documentation)."""
 
 from datetime import datetime, timezone
 
@@ -12,20 +12,14 @@ router = APIRouter(prefix="/api/archive", tags=["archive"])
 _TABLES = {
     "source": "sources",
     "report": "reports",
-    "script": "scripts",
     "upstream": "upstream_systems",
-    "scheduled_task": "scheduled_tasks",
-    "power_automate": "power_automate_flows",
     "documentation": "documentation",
 }
 
 _NAME_COL = {
     "source": "name",
     "report": "name",
-    "script": "display_name",
     "upstream": "name",
-    "scheduled_task": "task_name",
-    "power_automate": "name",
     "documentation": "title",
 }
 

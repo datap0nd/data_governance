@@ -26,7 +26,7 @@ vm.runInContext(
 
 assert.deepEqual(
     Array.from(context.lineageCols, col => col.key),
-    ["upstreams", "tasks", "scripts", "flows", "mv_upstream", "sources", "tables", "visuals"],
+    ["upstreams", "flows", "mv_upstream", "sources", "tables", "visuals"],
     "Pipeline columns must run from upstream producers on the left to report visuals on the right",
 );
 
@@ -39,7 +39,7 @@ const orderedColumns = context.buildColumnDefs(
 );
 assert.deepEqual(
     Array.from(orderedColumns, col => col.key),
-    ["upstreams", "tasks", "scripts", "flows", "mv_upstream_2", "mv_upstream_1", "sources", "tables", "visuals"],
+    ["upstreams", "flows", "mv_upstream_2", "mv_upstream_1", "sources", "tables", "visuals"],
     "Deep source dependencies must be placed before their consumers",
 );
 
@@ -47,7 +47,7 @@ const defaults = context.getLineageCols();
 assert.equal(defaults.visuals, false, "Visuals must be hidden by default");
 assert.equal(defaults.tables, false, "Power BI tables must be hidden by default");
 assert.equal(defaults.sources, true, "Sources must remain visible by default");
-assert.equal(defaults.scripts, true, "Scripts must remain visible by default");
+assert.equal(defaults.flows, true, "Flows must remain visible by default");
 
 context.setLineageCols({ ...defaults, visuals: true });
 assert.equal(context.getLineageCols().visuals, true, "A user's toggle choice must persist for the session");
@@ -71,8 +71,6 @@ vm.runInContext(`
         new Map([["Model", [{ id: "field-Model.Field" }]]]),
         [{ name: "Model", source_id: 10 }],
         [{ id: 10, upstream_id: 20 }, { id: 11 }],
-        [{ id: 40, source_ids: [10] }],
-        [{ id: 50, script_id: 40 }],
         [{ id: 20 }],
     );
     this.svgEdges = window._linSvgEdges;
@@ -80,8 +78,6 @@ vm.runInContext(`
 const edgeKeys = new Set(Array.from(context.svgEdges, edge => `${edge.from}->${edge.to}`));
 for (const expected of [
     "upstream-20->source-10",
-    "task-50->script-40",
-    "script-40->source-10",
     "flow-30->source-10",
     "source-11->source-10",
     "source-10->table-Model",

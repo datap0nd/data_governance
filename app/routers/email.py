@@ -58,7 +58,7 @@ PATH_SOURCE_TYPES = {"csv", "excel", "file", "folder", "sharepoint", "web"}
 SQL_SOURCE_TYPES = {"postgres", "postgresql", "sql", "sql server", "mssql", "mysql", "oracle"}
 SOURCE_ALERT_TYPES = {"stale_source", "outdated_source", "error_source"}
 DEGRADED_SOURCE_RECOMMENDATION = (
-    "Find out why these sources haven't updated. Check linked scripts and scheduled tasks. "
+    "Find out why these sources haven't updated. Check their linked Flows or refresh processes. "
     "Once they're updated, refresh upstream reports."
 )
 WEEKDAY_ORDER = {

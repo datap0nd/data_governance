@@ -60,7 +60,6 @@ def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
         upstream_id=_row_value(r, "upstream_id"),
         upstream_name=_row_value(r, "upstream_name"),
         upstream_refresh_day=_row_value(r, "upstream_refresh_day"),
-        linked_scripts=r["linked_scripts"],
         linked_task_count=r["linked_task_count"] if "linked_task_count" in r.keys() else 0,
         views_30d=usage.get("views_30d"),
         unique_users_30d=usage.get("unique_users_30d"),
@@ -261,11 +260,6 @@ def list_sources(include_archived: bool = False):
                    ) AS report_count,
                    us.name AS upstream_name,
                    us.refresh_day AS upstream_refresh_day,
-                   (SELECT GROUP_CONCAT(sc.display_name, ', ')
-                    FROM script_tables st
-                    JOIN scripts sc ON sc.id = st.script_id
-                    WHERE st.source_id = s.id AND COALESCE(sc.archived, 0) = 0
-                   ) AS linked_scripts,
                    (SELECT COUNT(*) FROM task_links tl
                     JOIN tasks t ON t.id = tl.task_id
                     WHERE tl.entity_type = 'source' AND tl.entity_id = s.id
@@ -431,12 +425,7 @@ def get_source(source_id: int):
                       AND COALESCE(r.archived, 0) = 0
                    ) AS report_count,
                    us.name AS upstream_name,
-                   us.refresh_day AS upstream_refresh_day,
-                   (SELECT GROUP_CONCAT(sc.display_name, ', ')
-                    FROM script_tables st
-                    JOIN scripts sc ON sc.id = st.script_id
-                    WHERE st.source_id = s.id AND COALESCE(sc.archived, 0) = 0
-                   ) AS linked_scripts
+                   us.refresh_day AS upstream_refresh_day
             FROM sources s
             LEFT JOIN (
                 SELECT source_id, status, last_data_at, row_count,
@@ -490,22 +479,6 @@ def get_source_reports(source_id: int):
             WHERE rt.source_id = ?
               AND COALESCE(r.archived, 0) = 0
             ORDER BY r.name
-        """, (source_id,)).fetchall()
-
-    return [dict(r) for r in rows]
-
-
-@router.get("/{source_id}/scripts")
-def get_source_scripts(source_id: int):
-    """Get scripts linked to this source via script_tables."""
-    with get_db() as db:
-        rows = db.execute("""
-            SELECT DISTINCT sc.id, sc.display_name, sc.path, sc.owner,
-                   st.direction, st.table_name
-            FROM script_tables st
-            JOIN scripts sc ON sc.id = st.script_id
-            WHERE st.source_id = ? AND COALESCE(sc.archived, 0) = 0
-            ORDER BY sc.display_name
         """, (source_id,)).fetchall()
 
     return [dict(r) for r in rows]

@@ -258,7 +258,7 @@ def notify_flow_owner_of_failure(run_id: int) -> dict:
             outcome = {
                 "status": "not_sent",
                 "owner_name": context["owner_name"],
-                "reason": f"Owner {context['owner_name']} has no email mapped in Management > Create > People.",
+                "reason": f"Owner {context['owner_name']} has no email mapped in Tools > Create Artifacts > People.",
             }
         else:
             from app.routers.email import _launch_outlook_payload
@@ -1016,7 +1016,7 @@ def _validate_owner(db, body: FlowWrite):
         return
     row = db.execute("SELECT id FROM people WHERE id=?", (body.owner_person_id,)).fetchone()
     if not row:
-        raise HTTPException(400, "Choose a flow owner from Management > Create > People.")
+        raise HTTPException(400, "Choose a flow owner from Tools > Create Artifacts > People.")
 
 
 def _validate_sql_target(db, body: FlowWrite):
