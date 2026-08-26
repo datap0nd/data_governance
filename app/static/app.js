@@ -273,7 +273,7 @@ function actionTypeBadge(type, neutral = false) {
         refresh_overdue: "Refresh Overdue",
         task_failed: "Task Failed",
         script_failed: "Script Failed",
-        schedule_mismatch: "Stale vs Source",
+        schedule_mismatch: "Upstream Newer",
         data_quality: "Data Quality",
         dependency_stale: "Upstream Newer",
         schedule_discrepancy: "Schedule Mismatch",
@@ -314,7 +314,7 @@ function actionTypeLabel(type) {
         refresh_overdue: "Refresh overdue",
         task_failed: "Scheduled task failed",
         script_failed: "Script failed",
-        schedule_mismatch: "Stale vs source",
+        schedule_mismatch: "Upstream data is newer",
         data_quality: "Data-quality check failed",
         dependency_stale: "Upstream data is newer",
         schedule_discrepancy: "Refresh schedule mismatch",
@@ -2225,7 +2225,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 `${esc(d.name)} (+${d.delta_hours < 48 ? d.delta_hours + 'h' : Math.floor(d.delta_hours / 24) + 'd'})`
             ).join(", ");
             const more = a.detail_items.length > 3 ? ` +${a.detail_items.length - 3}` : "";
-            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">stale vs: ${summary}${more}</div>`;
+            sub = `<div style="font-size:0.7rem;color:var(--text-dim);font-weight:400">newer inputs: ${summary}${more}</div>`;
         }
 
         const assetBody = `<div class="alerts-asset-body"><div class="alerts-asset-title"><strong>${esc(assetName)}</strong></div>${sub}</div>`;

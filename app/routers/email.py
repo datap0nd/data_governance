@@ -50,7 +50,7 @@ ACTION_TYPE_LABELS = {
     "refresh_overdue": "Refresh overdue",
     "task_failed": "Scheduled task failed",
     "script_failed": "Script failed",
-    "schedule_mismatch": "Stale vs source",
+    "schedule_mismatch": "Upstream data is newer",
 }
 
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
