@@ -587,12 +587,48 @@ def list_actions(status: str | None = None):
     return deduped
 
 
+# Alert message prefix per action type, for resolving the linked alert when a
+# person resolves the action. Explicit map only - types without a known alert
+# pattern leave alerts untouched.
+_ACTION_ALERT_MESSAGE_PREFIX = {
+    "stale_source": "Source data is outside freshness rule%",
+    "outdated_source": "Source data is outside freshness rule%",
+    "error_source": "Source data is outside freshness rule%",
+    "empty_source": "Source row count dropped%",
+}
+
+_FRESHNESS_ALERT_ACTION_TYPES = {"stale_source", "outdated_source", "error_source"}
+
+
+def _action_alert_is_still_supported(db, source_id: int, action_type: str) -> bool:
+    """Return whether current probe evidence still supports reopening the alert."""
+    if action_type in _FRESHNESS_ALERT_ACTION_TYPES:
+        row = db.execute(
+            """SELECT status FROM source_probes
+               WHERE source_id = ?
+               ORDER BY probed_at DESC, id DESC LIMIT 1""",
+            (source_id,),
+        ).fetchone()
+        return bool(row and row["status"] in {"outdated", "stale", "error"})
+    if action_type == "empty_source":
+        row = db.execute(
+            """SELECT row_count FROM source_probes
+               WHERE source_id = ? AND row_count IS NOT NULL
+               ORDER BY probed_at DESC, id DESC LIMIT 1""",
+            (source_id,),
+        ).fetchone()
+        return bool(row and row["row_count"] == 0)
+    return False
+
+
 @router.patch("/{action_id}", response_model=ActionOut)
 def update_action(action_id: int, update: ActionUpdate, request: Request):
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
-        existing = db.execute("SELECT id FROM actions WHERE id = ?", (action_id,)).fetchone()
+        existing = db.execute(
+            "SELECT id, source_id, type FROM actions WHERE id = ?", (action_id,)
+        ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Action not found")
 
@@ -603,16 +639,51 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
             fields.append(f"{field_name} = ?")
             values.append(value)
 
-        # Auto-set resolved_at when status becomes resolved or expected
+        # Keep the lifecycle timestamp aligned when actions are closed/reopened.
         if update.status in ("resolved", "expected"):
             fields.append("resolved_at = ?")
             values.append(now)
+        elif update.status is not None:
+            fields.append("resolved_at = NULL")
 
         values.append(action_id)
         db.execute(
             f"UPDATE actions SET {', '.join(fields)} WHERE id = ?",
             values,
         )
+
+        # Keep the latest linked alert in sync with explicit action lifecycle
+        # changes. Reopening is evidence-gated so a stale UI action cannot
+        # resurrect an alert after the source has recovered.
+        message_prefix = _ACTION_ALERT_MESSAGE_PREFIX.get(existing["type"])
+        if (update.status in ("resolved", "expected")
+                and existing["source_id"] is not None and message_prefix):
+            db.execute(
+                """UPDATE alerts
+                   SET resolution_status = 'resolved', resolved_at = ?,
+                       acknowledged = 1, acknowledged_by = ?,
+                       resolution_reason = 'Linked action resolved'
+                   WHERE source_id = ? AND message LIKE ?
+                     AND COALESCE(resolution_status, '') != 'resolved'""",
+                (now, get_actor(request) or "user", existing["source_id"], message_prefix),
+            )
+        elif (update.status in ("open", "investigating")
+              and existing["source_id"] is not None and message_prefix
+              and _action_alert_is_still_supported(
+                  db, existing["source_id"], existing["type"]
+              )):
+            db.execute(
+                """UPDATE alerts
+                   SET resolution_status = NULL, resolution_reason = NULL,
+                       resolved_at = NULL, acknowledged = 0,
+                       acknowledged_by = NULL
+                   WHERE id = (
+                       SELECT id FROM alerts
+                       WHERE source_id = ? AND message LIKE ?
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   )""",
+                (existing["source_id"], message_prefix),
+            )
 
         changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
         log_event(db, "action", action_id, None, "updated", changed, get_actor(request))

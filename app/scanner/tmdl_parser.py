@@ -124,6 +124,13 @@ def path_has_file_extension(path: str | None) -> bool:
     return bool(PureWindowsPath(clean).suffix or PurePosixPath(clean.replace("\\", "/")).suffix)
 
 
+# A drive-letter path under another user's Windows profile. Analysts register
+# reports whose connections point at their own Downloads/Desktop folders;
+# the server's service account can never see those, so probing them is noise
+# rather than a data-freshness signal.
+LOCAL_USER_PATH = re.compile(r"^[A-Za-z]:[\\/]Users[\\/](?!Public[\\/])[^\\/]+[\\/]", re.IGNORECASE)
+
+
 def is_folder_like_file_source(source: "SourceInfo | None") -> bool:
     """Return True for folder paths used to combine files."""
     if source is None:

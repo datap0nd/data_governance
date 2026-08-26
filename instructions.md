@@ -82,7 +82,7 @@ Place in the project root (next to `governance.db`, one level above the code fol
 ## Data source freshness
 
 - **File sources** (CSV, Excel): probed by checking the file's last modified time at the path extracted from the Power BI report. Paths must be accessible from this machine.
-- **PostgreSQL sources**: probed by connecting to the database and reading `pg_stat_user_tables` for activity timestamps. Requires `PGHOST`, `PGUSER`, `PGPASSWORD` environment variables (set in `setup.ps1`).
+- **PostgreSQL sources**: probed by reading `MAX(pg_xact_commit_timestamp(xmin))` per table (requires `track_commit_timestamp = on` on the server). When the server has it disabled, the probe falls back to a `COUNT(*)` row-count-only probe and records status `unknown` — maintenance timestamps like `pg_stat_user_tables.last_analyze` are deliberately not used because they don't reflect data write time. Requires `PGHOST`, `PGUSER`, `PGPASSWORD` environment variables (set in `setup.ps1`).
 - **Other database sources** (SQL Server, etc.): marked as unknown. No connection attempted.
 
 ## PostgreSQL connection - READ-ONLY CONSTRAINT
@@ -95,7 +95,7 @@ Environment variables:
 - `PGPASSWORD` - PostgreSQL password
 - `PGDATABASE` - Database name (default: `postgres`)
 
-The prober enforces read-only at the connection level via `SET default_transaction_read_only = ON`. Even so, the code must never contain any write queries against PostgreSQL. All probing is done via `pg_stat_user_tables` metadata only.
+The prober enforces read-only at the connection level via `SET default_transaction_read_only = ON`. Even so, the code must never contain any write queries against PostgreSQL. All probing is done via read-only SELECTs (commit-timestamp lookups and row counts) only.
 
 ## Running manually (without the service)
 

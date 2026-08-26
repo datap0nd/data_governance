@@ -18,7 +18,13 @@ def list_alerts(active_only: bool = True):
             LEFT JOIN sources s ON s.id = a.source_id
         """
         if active_only:
-            query += " WHERE a.resolution_status IS NULL AND a.acknowledged = 0"
+            # Alerts on archived sources are excluded here as well as being
+            # resolved at archive time (archive_ops), so rows archived before
+            # that cleanup existed still drop out of the active view.
+            query += (
+                " WHERE a.resolution_status IS NULL AND a.acknowledged = 0"
+                " AND (a.source_id IS NULL OR COALESCE(s.archived, 0) = 0)"
+            )
         query += " ORDER BY a.created_at DESC LIMIT 100"
 
         rows = db.execute(query).fetchall()

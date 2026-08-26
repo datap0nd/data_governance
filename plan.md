@@ -115,7 +115,7 @@ Track every data source your reports depend on. **Initially populated by the TMD
 | Tags | `sales`, `orders` |
 
 **How freshness is checked (probes):**
-- **PostgreSQL tables:** `SELECT MAX(updated_at) FROM table` or check pg_stat_user_tables for last modification
+- **PostgreSQL tables:** `SELECT MAX(pg_xact_commit_timestamp(xmin))` per table (needs `track_commit_timestamp = on`); falls back to a row-count-only probe with status `unknown` when disabled
 - **SQL Server tables:** Similar lightweight query
 - **Excel/CSV files:** File modified timestamp on the server
 - **SharePoint:** Last modified date via file system or mapped drive
