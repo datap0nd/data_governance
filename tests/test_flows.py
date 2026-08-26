@@ -3628,3 +3628,24 @@ def test_register_folder_is_idempotent_and_rejects_a_different_path(flow_db):
             "retention-worker", queued["id"],
             flows.FolderRegister(run_folder=str(Path(target) / "somewhere-else")),
         )
+
+
+def test_excel_trim_is_a_recorded_flow_setting_not_a_hardcoded_step(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], excel_trim="First_Row_And_Column"),
+        _request(),
+    )
+
+    assert saved["excel_trim"] == "first_row_and_column"
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["excel_trim"] == "first_row_and_column"
+    reloaded = next(item for item in flows.list_flows() if item["id"] == saved["id"])
+    assert reloaded["excel_trim"] == "first_row_and_column"
+
+
+def test_excel_trim_defaults_to_none_and_rejects_unknown_options():
+    assert _flow(1, 1).excel_trim == "none"
+    with pytest.raises(ValueError, match="pre-processing"):
+        _flow(1, 1, excel_trim="drop_everything")

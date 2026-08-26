@@ -9037,6 +9037,11 @@ function _flowBuilderHtml(catalog, existing = null) {
     const periodStrategy = hasWeekFilter ? (existing?.period_strategy || "latest") : "none";
     // GSCM exports through its Nexacro toolbar, which only emits .xlsx.
     const fileFormat = isGscm ? "xlsx" : (existing?.file_format || "xlsx");
+    // Recorded pre-processing for the workbook-to-CSV step. GSCM's toolbar
+    // export frames every workbook with a blank first column and a non-data
+    // first row, so new GSCM flows preselect the trim - still a visible,
+    // changeable setting rather than a hardcoded behavior.
+    const excelTrim = existing?.excel_trim || (isGscm ? "first_row_and_column" : "none");
     const people = window._flowsState?.people || [];
     const owner = people.find(person => person.id === existing?.owner_person_id);
     const exportViewCount = _flowExportViewLabels(report).length;
@@ -9084,6 +9089,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label ${isGscm ? "hidden" : ""}><span>Period</span><select id="flow-period-strategy"><option value="none" ${periodStrategy === "none" ? "selected" : ""}>No period selection</option><option value="latest" ${periodStrategy === "latest" ? "selected" : ""}>Start to latest available</option><option value="fixed" ${periodStrategy === "fixed" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${periodStrategy === "rolling" ? "selected" : ""}>Rolling X-week window</option></select><small id="flow-period-help">${hasWeekFilter ? "Latest available comes from ASAP discovery." : "This report has no Sell-out Week prompt."}</small></label>
                             <label ${isGscm ? "hidden" : ""}><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
                             <label><span>Download type</span><select id="flow-file-format" ${isGscm ? "disabled" : ""}><option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option>${isGscm ? "" : `<option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV (.csv)</option>`}</select><small>${isGscm ? "GSCM's toolbar export only emits Excel. The original workbook is kept and normalized to CSV for SQL." : "Excel originals are preserved and normalized to CSV for SQL."}</small></label>
+                            <label><span>Excel pre-processing</span><select id="flow-excel-trim"><option value="none" ${excelTrim === "none" ? "selected" : ""}>None</option><option value="first_row_and_column" ${excelTrim === "first_row_and_column" ? "selected" : ""}>Drop first row and first column (GSCM report frame)</option></select><small>Applied while normalizing the downloaded workbook to CSV, before headers are detected and before any transformation or SQL handoff. Recorded on every run.</small></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
@@ -9445,6 +9451,7 @@ function _flowCollectBuilder() {
         selections, download_mode: downloadMode, period_strategy: periodStrategy,
         window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null,
         file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value,
+        excel_trim: $("#flow-excel-trim")?.value || "none",
         start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null),
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
         filename_template: $("#flow-filename").value.trim(),

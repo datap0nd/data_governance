@@ -4112,6 +4112,45 @@ def _xlsx_expand_multi_week_metric_header(
     )
 
 
+class _TrimmedWorksheet:
+    """A worksheet view with its first row and first column removed.
+
+    GSCM's toolbar export frames every workbook with a blank first column and
+    a non-data first row. Applying the flow's configured trim here - before
+    header detection - lets the standard normalization see a clean table.
+    The trim is a per-flow setting (``downloads.excel_trim``), never a
+    hardcoded assumption, so each run records that the step was applied.
+    """
+
+    def __init__(self, worksheet):
+        self._worksheet = worksheet
+
+    @property
+    def title(self):
+        return self._worksheet.title
+
+    def iter_rows(
+        self, *, min_row: int | None = None, max_row: int | None = None,
+        values_only: bool = True,
+    ):
+        for row in self._worksheet.iter_rows(
+            min_row=int(min_row or 1) + 1,
+            max_row=None if max_row is None else int(max_row) + 1,
+            values_only=values_only,
+        ):
+            yield tuple(row)[1:]
+
+
+def _trim_worksheet(worksheet, excel_trim: str):
+    """Apply the flow's configured Excel trim, validating the option name."""
+    trim = str(excel_trim or "none").strip().casefold()
+    if trim == "none":
+        return worksheet
+    if trim == "first_row_and_column":
+        return _TrimmedWorksheet(worksheet)
+    raise RuntimeError(f"Unsupported Excel pre-processing option: {excel_trim!r}.")
+
+
 def _xlsx_rows(worksheet):
     """Yield one populated, right-trimmed row at a time.
 
@@ -4372,13 +4411,16 @@ def _open_excel_workbook(source: Path, workbook_format: str):
 def _normalize_xlsx(
     source: Path, output: Path, *, requested_weeks: list[str],
     header_mode: str = "auto", strict_headers: bool = False,
-    workbook_format: str | None = None,
+    workbook_format: str | None = None, excel_trim: str = "none",
 ) -> dict:
     """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
     Rows are streamed from the workbook straight to the CSV writer, so a
     multi-million-row export costs a constant amount of memory.
+    ``excel_trim`` applies the flow's configured pre-processing (for GSCM:
+    drop the frame's first row and first column) before header detection.
     """
+    excel_trim = str(excel_trim or "none").strip().casefold()
     workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
     workbook = _open_excel_workbook(source, workbook_format)
     common_header: list[str] | None = None
@@ -4397,6 +4439,7 @@ def _normalize_xlsx(
     try:
         writer = csv.writer(handle, lineterminator="\n")
         for worksheet in workbook.worksheets:
+            worksheet = _trim_worksheet(worksheet, excel_trim)
             plan = _xlsx_sheet_plan(
                 worksheet, requested_weeks,
                 header_mode=header_mode, strict_headers=strict_headers,
@@ -4458,9 +4501,13 @@ def _normalize_xlsx(
         if not handle.closed:
             handle.close()
     if common_header is None or not rows_written:
-        raise RuntimeError("Downloaded Excel workbook did not contain a usable table with data rows.")
+        raise RuntimeError(
+            "Downloaded Excel workbook did not contain a usable table with "
+            f"data rows (Excel pre-processing: {excel_trim})."
+        )
     partial.replace(output)
     return {
+        "excel_trim": excel_trim,
         "preamble_rows_removed": preamble_rows_removed,
         "source_encoding": workbook_format,
         "source_delimiter": None,
@@ -4798,6 +4845,7 @@ def _store_completed_download(
     csv_preamble: str = "asap",
     strict_headers: bool = False,
     xlsx_header_mode: str = "auto",
+    excel_trim: str = "none",
     processing_progress: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
@@ -4924,15 +4972,21 @@ def _store_completed_download(
         )
         requested_weeks = _validated_requested_weeks(requested_period)
         if processing_progress is not None:
+            trim_note = (
+                " Applying the flow's Excel pre-processing first: dropping "
+                "the first row and first column."
+                if str(excel_trim or "none").casefold() != "none" else ""
+            )
             processing_progress(
                 "file_normalization",
-                f"Saved {output.name} to the target folder; preparing its normalized CSV.",
+                f"Saved {output.name} to the target folder; preparing its "
+                f"normalized CSV.{trim_note}",
             )
         try:
             normalization = _normalize_xlsx(
                 output, normalized_output, requested_weeks=requested_weeks,
                 header_mode=xlsx_header_mode, strict_headers=strict_headers,
-                workbook_format=detected,
+                workbook_format=detected, excel_trim=excel_trim,
             )
         except Exception as exc:
             if not allow_raw_xlsx_fallback:
@@ -5560,6 +5614,7 @@ def execute_job(
                     metadata = _store_completed_download(
                         staged_file, output,
                         file_format=job["downloads"].get("file_format") or "csv",
+                        excel_trim=job["downloads"].get("excel_trim") or "none",
                         requested_period=period,
                         allow_raw_xlsx_fallback=(
                             is_gscm
@@ -5698,6 +5753,7 @@ def execute_job(
                 metadata = _store_completed_download(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
+                    excel_trim=job["downloads"].get("excel_trim") or "none",
                     requested_period=period,
                     allow_raw_xlsx_fallback=(is_gscm and not downstream_requires_csv),
                     require_normalized_csv=require_normalized_csv,

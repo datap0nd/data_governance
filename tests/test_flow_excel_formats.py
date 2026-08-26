@@ -169,3 +169,52 @@ def test_portal_html_named_xls_does_not_opt_into_outlook_table_extraction(tmp_pa
 
     with pytest.raises(RuntimeError, match="HTML page"):
         flow_worker._store_completed_download(source, tmp_path / "report.xls")
+
+
+def test_gscm_frame_workbook_normalizes_only_with_the_configured_trim(tmp_path):
+    # The GSCM frame: a non-data first row, and a first column whose
+    # header-row cell duplicates a real column label while its data cells are
+    # row numbers. Untrimmed, no row in the sheet is a valid unique header -
+    # the exact "no usable table" failure seen on live GSCM workbooks.
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "MENA_Actual_sales"
+    sheet.append(["MENA Actual Sales Weekly", None, None, None])
+    sheet.append(["Region", "Region", "Subsidiary", "Qty"])
+    sheet.append([1, "MENA", "MENA", 5])
+    sheet.append([2, "MENA", "MENA", 7])
+    source = tmp_path / "gscm.xlsx"
+    workbook.save(source)
+
+    with pytest.raises(RuntimeError, match="usable table"):
+        flow_worker._normalize_xlsx(
+            source, tmp_path / "untrimmed.csv", requested_weeks=[],
+        )
+
+    output = tmp_path / "trimmed.csv"
+    metadata = flow_worker._normalize_xlsx(
+        source, output, requested_weeks=[], excel_trim="first_row_and_column",
+    )
+
+    assert metadata["excel_trim"] == "first_row_and_column"
+    lines = output.read_text(encoding="utf-8-sig").splitlines()
+    assert lines[0] == "Region,Subsidiary,Qty"
+    assert lines[1:] == ["MENA,MENA,5", "MENA,MENA,7"]
+
+
+def test_unknown_excel_trim_option_is_rejected_not_ignored(tmp_path):
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.append(["Region", "Qty"])
+    workbook.active.append(["MENA", 5])
+    source = tmp_path / "plain.xlsx"
+    workbook.save(source)
+
+    with pytest.raises(RuntimeError, match="pre-processing"):
+        flow_worker._normalize_xlsx(
+            source, tmp_path / "out.csv", requested_weeks=[],
+            excel_trim="drop_everything",
+        )

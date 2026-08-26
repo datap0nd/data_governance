@@ -37,6 +37,10 @@ CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
 PERIOD_STRATEGIES = {"none", "latest", "fixed", "rolling"}
 FILE_FORMATS = {"csv", "xlsx"}
+# Recorded pre-processing applied while normalizing a downloaded Excel
+# workbook to CSV, before header detection. GSCM's toolbar export frames
+# every workbook with a blank first column and a title first row.
+EXCEL_TRIMS = {"none", "first_row_and_column"}
 SOURCE_TYPES = {"portal", "outlook"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
@@ -608,6 +612,7 @@ class FlowWrite(BaseModel):
     period_strategy: str = "latest"
     window_weeks: int | None = Field(default=None, ge=1, le=105)
     file_format: str = "csv"
+    excel_trim: str = "none"
     browser_mode: str = "headless"
     start_week: str | None = None
     end_week: str | None = None
@@ -655,6 +660,7 @@ class FlowWrite(BaseModel):
             self.period_strategy = "none"
             self.window_weeks = None
             self.file_format = "auto"
+            self.excel_trim = "none"
             self.browser_mode = "headless"
             self.start_week = None
             self.end_week = None
@@ -672,6 +678,11 @@ class FlowWrite(BaseModel):
             self.filename_template = _clean_filename_template(
                 self.filename_template or "", self.file_format,
             )
+            self.excel_trim = (self.excel_trim or "none").strip().casefold()
+            if self.excel_trim not in EXCEL_TRIMS:
+                raise ValueError(
+                    "Excel pre-processing must be 'none' or 'first_row_and_column'."
+                )
             if self.download_mode not in DOWNLOAD_MODES:
                 raise ValueError("Unsupported download mode.")
             if self.download_mode == "one_per_week":
@@ -1210,6 +1221,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
             "period_unit": "week",
             "period_size": flow.get("window_weeks") or len(weeks),
             "file_format": flow.get("file_format") or "csv",
+            "excel_trim": flow.get("excel_trim") or "none",
             "period_start_week": weeks[0] if weeks else None,
             "period_end_week": weeks[-1] if weeks else None,
             "next_start_week": _week_window(weeks[-1], 2)[1] if weeks else None,
@@ -1926,14 +1938,14 @@ def create_flow(body: FlowWrite, request: Request):
             cursor = db.execute(
                 """INSERT INTO flows
                    (name, source_type, site_id, report_id, outlook_subject_contains,
-                    export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
+                    export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, excel_trim, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
                     transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.source_type, body.site_id, body.report_id,
                  body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
-                 body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+                 body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
@@ -2012,13 +2024,13 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         cursor = db.execute(
             """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
                export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
-               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
+               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
             (body.name, body.source_type, body.site_id, body.report_id,
              body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
-             body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+             body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
