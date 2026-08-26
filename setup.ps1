@@ -443,24 +443,33 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
             $FlowAuthUrl = $Parts[1].Trim()
             if (-not $FlowAuthUrl) { continue }
             $PortalLabel = if ($FlowAuthAdapter -eq "gscm_portal") { "GSCM" } else { "ASAP" }
-            Write-Host "Authenticating the Flows automation browser for $PortalLabel..." -ForegroundColor Yellow
-            Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray
-            try {
-                # The embedded Python runtime runs in isolated mode and can
-                # ignore PYTHONPATH for ``-m app...``. The worker script
-                # bootstraps its package root before importing app modules.
-                & $PyExe "$CodeDir\app\flow_worker.py" `
-                    --profile-dir $FlowProfile `
-                    --authenticate-url $FlowAuthUrl `
-                    --authenticate-adapter $FlowAuthAdapter `
-                    --authentication-timeout-minutes 10
-                if ($LASTEXITCODE -ne 0) {
-                    throw "authentication helper exited with code $LASTEXITCODE"
+            # Headless and headed flows use SEPARATE browser profiles (they
+            # cannot share a Chromium profile concurrently), and Samsung SSO
+            # sessions live per profile. Signing in only the headless profile
+            # left every headed run parked on the SSO form, so bootstrap both.
+            foreach ($ProfileTarget in @(
+                @{ Path = $FlowProfile;       Label = "headless service" },
+                @{ Path = $HeadedFlowProfile; Label = "headed on-demand" }
+            )) {
+                Write-Host "Authenticating the $($ProfileTarget.Label) Flows browser for $PortalLabel..." -ForegroundColor Yellow
+                Write-Host "  Complete $PortalLabel sign-in in the Edge window if prompted." -ForegroundColor DarkGray
+                try {
+                    # The embedded Python runtime runs in isolated mode and can
+                    # ignore PYTHONPATH for ``-m app...``. The worker script
+                    # bootstraps its package root before importing app modules.
+                    & $PyExe "$CodeDir\app\flow_worker.py" `
+                        --profile-dir $ProfileTarget.Path `
+                        --authenticate-url $FlowAuthUrl `
+                        --authenticate-adapter $FlowAuthAdapter `
+                        --authentication-timeout-minutes 10
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "authentication helper exited with code $LASTEXITCODE"
+                    }
+                    Write-Host "  $($ProfileTarget.Label) Flows browser authenticated for $PortalLabel." -ForegroundColor Green
+                } catch {
+                    Write-Host "  WARNING: $PortalLabel authentication was not completed for the $($ProfileTarget.Label) profile: $_" -ForegroundColor Yellow
+                    Write-Host "  Runs in that mode will wait for sign-in (headed) or fail as not signed in (headless) until setup is rerun." -ForegroundColor Yellow
                 }
-                Write-Host "  Flows automation browser authenticated for $PortalLabel." -ForegroundColor Green
-            } catch {
-                Write-Host "  WARNING: $PortalLabel automation authentication was not completed: $_" -ForegroundColor Yellow
-                Write-Host "  Discovery and downloads for $PortalLabel will wait until setup is rerun and sign-in completes." -ForegroundColor Yellow
             }
         }
     }

@@ -214,8 +214,13 @@ python app/flow_worker.py --profile-dir <profile> \
 
 `setup.ps1` does this automatically for every enabled portal — `tools/get_flow_auth_url.py`
 now prints one `adapter<TAB>url` line per site, and setup bootstraps each in
-turn. The two portals are separate sign-ins against the same profile; the
-marker files (`.asap_authenticated`, `.gscm_authenticated`) record each.
+turn, **for both browser profiles**: the headless service profile
+(`~/.metronome-flow-browser`) and the headed on-demand profile
+(`~/.metronome-flow-browser-headed`). The two profiles are deliberately
+separate (Chromium profiles cannot be shared concurrently), and SSO sessions
+live per profile — signing in one does nothing for the other. The two portals
+are also separate sign-ins against each profile; the marker files
+(`.asap_authenticated`, `.gscm_authenticated`) record each.
 
 Readiness is detected per portal: ASAP is up when it renders navigation
 anchors, GSCM when the Nexacro component `mainframe.VFrameSet` exists — GSCM
