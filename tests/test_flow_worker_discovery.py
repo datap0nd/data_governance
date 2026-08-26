@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app import flow_worker
+from app import flow_gscm, flow_worker
 from app.flow_worker import (
     _asap_frame,
     _asap_goto,
@@ -710,8 +710,151 @@ def test_export_task_retry_reports_every_distinct_attempt_error():
         )
 
     message = str(excinfo.value)
-    assert "Attempt 1: Workbook contains no default style" in message
-    assert "Attempt 2: bookmark list was temporarily empty" in message
+    assert "Attempt(s) 1: Workbook contains no default style" in message
+    assert "Attempt(s) 2: bookmark list was temporarily empty" in message
+
+
+def test_export_task_retry_groups_identical_attempt_errors():
+    # Two GSCM attempts that fail the same way must report one message, not
+    # two concatenated screen dumps - the raw exception is re-raised as-is.
+    big_message = "GSCM's Public bookmark tab was not on screen. " + "x" * 50_000
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._export_task_with_retry(
+            _WaitPage(), lambda _attempt: (_ for _ in ()).throw(RuntimeError(big_message)),
+            lambda *_args: None, max_attempts=2,
+        )
+
+    assert str(excinfo.value) == big_message
+
+
+def test_export_task_retry_caps_each_distinct_error_message():
+    errors = iter([
+        RuntimeError("first failure " + "a" * 50_000),
+        RuntimeError("second failure " + "b" * 50_000),
+    ])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._export_task_with_retry(
+            _WaitPage(), lambda _attempt: (_ for _ in ()).throw(next(errors)),
+            lambda *_args: None, max_attempts=2,
+        )
+
+    message = str(excinfo.value)
+    assert "Attempt(s) 1: first failure" in message
+    assert "Attempt(s) 2: second failure" in message
+    assert len(message) < 5_000
+
+
+def test_export_task_does_not_retry_a_sign_in_wall():
+    attempts = []
+
+    def run_task(attempt):
+        attempts.append(attempt)
+        raise flow_gscm.NotSignedInError("GSCM is not signed in")
+
+    with pytest.raises(flow_gscm.NotSignedInError, match="not signed in"):
+        flow_worker._export_task_with_retry(
+            _WaitPage(), run_task, lambda *_args: None, max_attempts=3,
+        )
+
+    assert attempts == [1]
+
+
+def test_gscm_call_propagates_the_sign_in_wall_when_headless():
+    notifications = []
+
+    def operation():
+        raise flow_gscm.NotSignedInError("GSCM is not signed in")
+
+    with pytest.raises(flow_gscm.NotSignedInError):
+        flow_worker._gscm_call(_WaitPage(), False, notifications.append, operation)
+
+    assert notifications == []
+
+
+def test_gscm_call_waits_for_the_human_and_retries_when_headed(monkeypatch):
+    notifications = []
+    waited = []
+    monkeypatch.setattr(
+        flow_worker.flow_gscm, "wait_for_manual_login",
+        lambda page, report_progress=None: waited.append(page),
+    )
+    attempts = []
+
+    def operation():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise flow_gscm.NotSignedInError("GSCM is not signed in")
+        return "opened"
+
+    result = flow_worker._gscm_call(_WaitPage(), True, notifications.append, operation)
+
+    assert result == "opened"
+    assert len(attempts) == 2
+    assert len(waited) == 1
+    assert any("visible Edge window" in message for message in notifications)
+
+
+def test_bounded_detail_caps_only_the_message():
+    detail = {"stage": "failed", "message": "m" * 50_000, "item_count": 3}
+
+    bounded = flow_worker._bounded_detail(detail)
+
+    assert len(bounded["message"]) <= flow_worker.PROGRESS_MESSAGE_MAX_CHARS + 20
+    assert bounded["message"].endswith("[truncated]")
+    assert bounded["stage"] == "failed"
+    assert bounded["item_count"] == 3
+    # short messages and empty details pass through untouched
+    assert flow_worker._bounded_detail({"message": "fine"}) == {"message": "fine"}
+    assert flow_worker._bounded_detail(None) is None
+
+
+def test_failure_screenshot_rotates_a_bounded_set_of_files(tmp_path):
+    class _ShotPage:
+        def screenshot(self, path, full_page=False):
+            Path(path).write_bytes(b"PNG")
+
+    paths = [
+        flow_worker._failure_screenshot(_ShotPage(), tmp_path, f"run-{index}")
+        for index in range(flow_worker.FAILURE_SCREENSHOT_KEEP + 5)
+    ]
+
+    assert all(paths)
+    diagnostics = tmp_path / "diagnostics"
+    saved = list(diagnostics.glob("*.png"))
+    # the worker never deletes files, so growth is bounded by slot overwrite
+    assert len(saved) == flow_worker.FAILURE_SCREENSHOT_KEEP
+
+
+def test_failure_screenshot_survives_a_dead_page(tmp_path):
+    class _DeadPage:
+        def screenshot(self, path, full_page=False):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    assert flow_worker._failure_screenshot(_DeadPage(), tmp_path, "run-1") is None
+
+
+def test_a_held_worker_lock_exits_nonzero_instead_of_looping(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def never_acquired(_profile_dir):
+        yield False
+
+    monkeypatch.setattr(flow_worker, "_exclusive_worker_lock", never_acquired)
+    monkeypatch.setattr(flow_worker.time, "sleep", lambda _seconds: None)
+    clock = iter(range(0, 10_000, 30))
+    monkeypatch.setattr(flow_worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        flow_worker.sys, "argv",
+        ["flow_worker.py", "--profile-dir", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        flow_worker.main()
+
+    assert excinfo.value.code == 11
 
 
 def test_export_task_does_not_reopen_report_after_edge_completed_download():

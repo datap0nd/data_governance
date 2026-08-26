@@ -1600,6 +1600,39 @@ def test_worker_claim_and_completion_records_artifact(flow_db):
     assert timing["duration_ms"] == 2400
 
 
+def test_an_oversized_progress_message_is_truncated_not_stored_verbatim(flow_db):
+    # Before this cap a GSCM screen dump reached flow_run_events at 100,000
+    # characters and the run-log page rendered it verbatim.
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+    queued = flows.queue_run(saved["id"], _request())
+    worker_id = "verbose-worker"
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=worker_id,
+        display_name="Verbose worker",
+        capabilities={"headed": False},
+    ))
+    assert flows.claim_run(worker_id)["run"]["id"] == queued["id"]
+
+    flows.update_run(
+        worker_id,
+        queued["id"],
+        flows.WorkerProgress(
+            status="failed",
+            progress={"stage": "failed", "message": "boom " + "x" * 100_000},
+            error="boom",
+        ),
+    )
+    with database.get_db() as db:
+        event = db.execute(
+            "SELECT message FROM flow_run_events WHERE run_id=? ORDER BY id DESC LIMIT 1",
+            (queued["id"],),
+        ).fetchone()
+    assert len(event["message"]) <= flows.PROGRESS_MESSAGE_MAX_CHARS + 20
+    assert event["message"].endswith("[truncated]")
+
+
 def test_terminal_sql_retry_serializes_list_period_key_instead_of_returning_500(flow_db):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
@@ -2997,7 +3030,7 @@ def test_failed_report_without_artifacts_keeps_previously_saved_files(flow_db):
 
 def test_worker_shares_the_artifact_list_with_its_failure_report():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "artifacts=artifacts,\n                            run_id=run_id, register_folder=register_folder,\n                        )\n                        sql_artifacts = artifacts" in source
+    assert "artifacts=artifacts,\n                            run_id=run_id, register_folder=register_folder,\n                            headed=headed,\n                        )\n                        sql_artifacts = artifacts" in source
 
 
 def test_scan_progress_posts_build_a_live_event_log(flow_db):

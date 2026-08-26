@@ -333,9 +333,15 @@ class FakeGscmPage:
                 for item in sorted(self.components)
                 if any(hint in item.lower() for hint in argument)
             ]
+        if "out.password" in script:
+            return self._login_inputs()
         if "getElementById(id)" in script:
             return argument in self.components
         raise AssertionError(f"unexpected evaluate: {script[:70]}")
+
+    def _login_inputs(self):
+        """What the sign-in input probe sees. The portal has no such inputs."""
+        return None
 
 
 def _scan_job():
@@ -1646,6 +1652,164 @@ def test_the_sso_form_is_reported_as_not_signed_in():
 
 def test_a_signed_in_portal_is_not_mistaken_for_the_login_form():
     assert flow_gscm.on_login_page(FakeGscmPage()) is False
+
+
+class FakeKnoxPage(FakeGscmPage):
+    """A Knox MFA step whose wording matches none of the exact SSO labels."""
+
+    def _screen(self):
+        return [
+            _label("Knox Approval is required to continue", 465, 236, element_id=""),
+            _label("Enter the verification code sent to your device", 465, 266, element_id=""),
+        ]
+
+    def _icon_records(self):
+        return []
+
+    def evaluate(self, script, argument=None):
+        if "getElementById(id)" in script:
+            return False
+        return super().evaluate(script, argument)
+
+
+class FakeRewordedSsoPage(FakeGscmPage):
+    """One recognisable phrase only; the input probe must corroborate it.
+
+    The username/password boxes carry no textContent and are wider than the
+    icon sweep's 80px cut-off, so only the direct input probe can see them.
+    """
+
+    def _screen(self):
+        return [_label("Sign in to your account", 465, 236, element_id="")]
+
+    def _icon_records(self):
+        return []
+
+    def _login_inputs(self):
+        return {"password": 1, "text": 1, "ids": ["userid", "password"]}
+
+    def evaluate(self, script, argument=None):
+        if "getElementById(id)" in script:
+            return False
+        return super().evaluate(script, argument)
+
+
+def test_a_knox_mfa_page_is_reported_as_not_signed_in():
+    # The exact-label markers miss Knox's wording; substring matching over the
+    # joined page text must not.
+    assert flow_gscm.on_login_page(FakeKnoxPage()) is True
+
+
+def test_the_input_probe_recognises_a_reworded_sign_in_form():
+    assert flow_gscm.on_login_page(FakeRewordedSsoPage()) is True
+
+
+class SessionExpiredAtFavoritesPage(FakeGscmPage):
+    """SSO reclaims the page the moment the Setting dialog is opened.
+
+    This is the mid-flow expiry that used to fail with "bookmark tab was not
+    on screen" plus a screen dump of the SSO form itself.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.expired = False
+
+    def on_click(self, element_id):
+        super().on_click(element_id)
+        if self.dialog_open:
+            self.expired = True
+
+    def _screen(self):
+        if self.expired:
+            return [
+                _label("Single Sign On Login", 465, 236, element_id=""),
+                _label("Please enter your password.", 465, 266, element_id="loginMessage"),
+                _label("Login", 465, 409, element_id="submitButton"),
+                _label("AD SSO", 415, 575, element_id="contact"),
+            ]
+        return super()._screen()
+
+    def _icon_records(self):
+        return [] if self.expired else super()._icon_records()
+
+    def evaluate(self, script, argument=None):
+        if self.expired and "getElementById(id)" in script:
+            return False
+        return super().evaluate(script, argument)
+
+
+def test_a_session_that_expires_mid_flow_reports_sign_in_not_a_screen_dump():
+    page = SessionExpiredAtFavoritesPage()
+    job = {
+        "site": {"auth_url": "https://mdscm.sec.samsung.net/nexa/index.html"},
+        "report": {"automation": {"favorite_name": "MENA_Actual_sales",
+                                  "favorite_tab": "Public"}},
+    }
+    with pytest.raises(flow_gscm.NotSignedInError) as excinfo:
+        flow_gscm.open_bookmark(page, job)
+    message = str(excinfo.value)
+    assert "not signed in" in message
+    assert "bookmark tab was not on screen" not in message
+
+
+def test_fail_with_screen_reports_sign_out_as_sign_out():
+    with pytest.raises(flow_gscm.NotSignedInError):
+        flow_gscm._fail_with_screen(FakeLoginPage(), "Anything was not on screen.")
+
+
+def test_fail_with_screen_keeps_the_screen_dump_when_signed_in():
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm._fail_with_screen(FakeGscmPage(), "The gizmo was not on screen.")
+    assert not isinstance(excinfo.value, flow_gscm.NotSignedInError)
+    assert "On screen:" in str(excinfo.value)
+
+
+def test_the_inventory_is_bounded_for_failure_messages():
+    long_prefix = "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.grd_bookmark.body"
+    rows = [
+        _label(f"Row {index}", 800, 500 + index,
+               element_id=f"{long_prefix}.gridrow_{index}.cell_{index}_0.treeitemtext_{index}")
+        for index in range(300)
+    ]
+    page = FakeGscmPage(trees={"Private": [], "Public": rows, "Custom": []},
+                        dialog_open=True)
+
+    inventory = flow_gscm.screen_inventory(page)
+
+    assert len(inventory) <= flow_gscm.MAX_INVENTORY_CHARS + 50
+    assert "(+" in inventory  # says how much was withheld
+    assert long_prefix not in inventory  # ids are trimmed to their tails
+    # the discriminating tail segments survive the trim
+    assert "treeitemtext_0" in inventory
+
+
+def test_wait_for_manual_login_returns_once_the_portal_renders():
+    page = FakeGscmPage()
+    page.components.discard("mainframe.VFrameSet")
+    polls = []
+
+    def wait_for_timeout(ms):
+        polls.append(ms)
+        if len(polls) >= 3:
+            page.components.add("mainframe.VFrameSet")
+
+    page.wait_for_timeout = wait_for_timeout
+    progress = []
+
+    flow_gscm.wait_for_manual_login(page, report_progress=progress.append)
+
+    assert page.navigations == []  # SSO owns the redirects; never navigate
+    assert len(polls) >= 3
+
+
+def test_wait_for_manual_login_gives_up_with_the_sign_in_error(monkeypatch):
+    page = FakeLoginPage()
+    progress = []
+    with pytest.raises(flow_gscm.NotSignedInError):
+        flow_gscm.wait_for_manual_login(
+            page, timeout_ms=2_000, report_progress=progress.append,
+        )
 
 
 def test_the_login_check_does_not_wait_out_the_full_budget():

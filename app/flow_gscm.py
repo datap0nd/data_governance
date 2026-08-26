@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 GSCM_PORTAL_ADAPTER = "gscm_portal"
 
@@ -134,6 +134,12 @@ TAB_SETTLE_MS = 2_500
 #: many pixels. Nexacro indents one level by roughly 12-16px.
 INDENT_TOLERANCE_PX = 6
 MAX_INVENTORY_ITEMS = 120
+#: Failure messages travel through run events into the log UI; an unbounded
+#: inventory once produced 100,000-character errors nobody could read.
+MAX_INVENTORY_CHARS = 1_800
+#: How long a headed worker waits for a human to finish SSO and Knox MFA in
+#: the visible window before giving up on the run.
+MANUAL_LOGIN_WAIT_MS = 5 * 60_000
 
 # Nexacro keeps the Favorite grid's scroll position in its own component
 # state. The live grid exposes these controls even though ``scrollHeight`` on
@@ -149,7 +155,8 @@ DOWNLOAD_TEXT = "Excel download"
 #: bare "the client did not render" message fails to convey.
 LOGIN_PAGE_MARKERS = (
     "single sign on login", "please enter your password", "ad sso",
-    "change password", "sign in", "log in",
+    "change password", "sign in", "log in", "knox", "verification code",
+    "two-factor", "otp",
 )
 LOGIN_PAGE_ELEMENT_IDS = ("submitbutton", "loginmessage", "userid", "password")
 
@@ -292,6 +299,27 @@ _ICON_CONTROLS_JS = """() => {
         if (out.length >= 400) break;
     }
     return out;
+}"""
+
+#: Visible username/password inputs. The SSO form's fields carry no text of
+#: their own and are wider than the 80px cut-off in ``_ICON_CONTROLS_JS``, so
+#: neither the label sweep nor the icon sweep can see them - this probe is the
+#: only reliable way to recognise a sign-in form from the DOM.
+_LOGIN_INPUTS_JS = """() => {
+    const out = { password: 0, text: 0, ids: [] };
+    for (const el of document.querySelectorAll('input')) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        const type = (el.type || 'text').toLowerCase();
+        if (type === 'password') out.password += 1;
+        else if (type === 'text' || type === 'email') out.text += 1;
+        else continue;
+        if (el.id) out.ids.push(el.id.toLowerCase());
+        if (el.name) out.ids.push(el.name.toLowerCase());
+    }
+    return (out.password || out.text) ? out : null;
 }"""
 
 #: Nexacro grids virtualize: only the rows in view exist in the DOM. Paging the
@@ -697,32 +725,63 @@ def top_bar_report(page) -> str:
     )
 
 
-def screen_inventory(page, *, keyword: str | None = None) -> str:
+def _short_id(identifier: Any, *, segments: int = 3) -> str:
+    """The trailing component-path segments, which are the discriminating part.
+
+    A full Nexacro path runs past 120 characters; the tail
+    (``…div_favorite.form.grd_bookmark``) identifies the control just as well.
+    """
+    value = str(identifier or "")
+    parts = value.split(".")
+    if len(parts) <= segments:
+        return value
+    return "…" + ".".join(parts[-segments:])
+
+
+def screen_inventory(
+    page, *, keyword: str | None = None, max_chars: int = MAX_INVENTORY_CHARS,
+) -> str:
     """A compact dump of what is actually on screen, for failure messages.
 
     Selector work against an undocumented Nexacro screen is guesswork until
     something reports the real ids. Every failure in this module carries this
     so one test run is enough to write the exact selector - which is why it
     reports icon-only controls too: the first version listed labelled elements
-    only, and the control it most needed to reveal has no label.
+    only, and the control it most needed to reveal has no label. The whole
+    report stays within ``max_chars`` because it ends up in run logs read by
+    people; raise the budget when debugging interactively.
     """
-    lines = []
+    entries = []
     for _root, record in visible_text(page):
         text = record.get("text") or ""
         if keyword and keyword.casefold() not in text.casefold():
             continue
         identifier = record.get("id") or "(no id)"
-        lines.append(f"{text[:60]!r} @({record.get('x')},{record.get('y')}) id={identifier}")
-        if len(lines) >= MAX_INVENTORY_ITEMS:
-            lines.append("... (truncated)")
+        entries.append(
+            f"{text[:40]!r} @({record.get('x')},{record.get('y')}) id={_short_id(identifier)}"
+        )
+        if len(entries) >= MAX_INVENTORY_ITEMS:
             break
-    icons = [
-        f"[icon] @({record.get('x')},{record.get('y')}) id={record.get('id')}"
-        for _root, record in icon_controls(page)
-        if not keyword
-    ]
-    if icons:
-        lines.append("ICON CONTROLS: " + " | ".join(icons[:MAX_INVENTORY_ITEMS]))
+    if not keyword:
+        icons = [
+            f"[icon] @({record.get('x')},{record.get('y')}) id={_short_id(record.get('id'))}"
+            for _root, record in icon_controls(page, include_chrome=False)
+        ]
+        if icons:
+            entries.append("ICON CONTROLS: " + " | ".join(icons[:MAX_INVENTORY_ITEMS]))
+    lines: list[str] = []
+    used = 0
+    for index, entry in enumerate(entries):
+        cost = len(entry) + (3 if lines else 0)
+        if used + cost > max_chars:
+            remaining_budget = max_chars - used - (3 if lines else 0)
+            if remaining_budget > 40:
+                lines.append(entry[: remaining_budget - 1] + "…")
+            hidden = len(entries) - index
+            lines.append(f"… (+{hidden} more)")
+            break
+        lines.append(entry)
+        used += cost
     return " | ".join(lines) or "nothing visible"
 
 
@@ -898,11 +957,11 @@ def clear_screen(page, target: dict | str | None = None) -> list[dict]:
                 target if isinstance(target, str) else (target or {}).get("id")
             )
             details = "; ".join(_popup_description(record) for record in blockers)
-            raise RuntimeError(
+            _fail_with_screen(
+                page,
                 f"GSCM popup blocked control {target_id!r} at "
                 f"({target_rect.get('x')},{target_rect.get('y')},"
-                f"{target_rect.get('w')},{target_rect.get('h')}). {details}. "
-                "On screen: " + screen_inventory(page)
+                f"{target_rect.get('w')},{target_rect.get('h')}). {details}.",
             )
     return remaining
 
@@ -1109,20 +1168,50 @@ def reload_portal(page, job: dict, *, timeout_ms: int = PORTAL_READY_TIMEOUT_MS)
     clear_screen(page)
 
 
+class NotSignedInError(RuntimeError):
+    """The automation profile is parked on the Samsung SSO / Knox MFA form."""
+
+
 def on_login_page(page) -> bool:
-    """True when the browser is parked on the SSO sign-in form."""
-    labels = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
-    if sum(1 for marker in LOGIN_PAGE_MARKERS if marker in labels) >= 2:
+    """True when the browser is parked on the SSO or Knox MFA sign-in form."""
+    # A rendered Nexacro shell is never the login form, whatever its text says.
+    if _evaluate_everywhere(
+        page, "(id) => !!document.getElementById(id)", "mainframe.VFrameSet"
+    ):
+        return False
+    # Substring match over the joined page text: SSO and Knox reword their
+    # headings, so exact whole-label membership misses real sign-in pages.
+    joined = " | ".join(
+        _normalize_label(record.get("text")) for _root, record in visible_text(page)
+    )
+    marker_hits = sum(1 for marker in LOGIN_PAGE_MARKERS if marker in joined)
+    if marker_hits >= 2:
+        return True
+    # The form's inputs carry no text and are wider than the icon sweep's 80px
+    # cut-off, so probe for them directly.
+    password_inputs = 0
+    text_inputs = 0
+    input_ids: list[str] = []
+    for _root, found in _evaluate_everywhere(page, _LOGIN_INPUTS_JS):
+        password_inputs += int(found.get("password") or 0)
+        text_inputs += int(found.get("text") or 0)
+        input_ids.extend(str(item) for item in found.get("ids") or [])
+    if password_inputs and (marker_hits or text_inputs):
         return True
     identifiers = {
         str(record.get("id") or "").casefold()
         for _root, record in [*visible_text(page), *icon_controls(page)]
     }
-    return sum(1 for marker in LOGIN_PAGE_ELEMENT_IDS if marker in identifiers) >= 2
+    identifiers.update(identifier.casefold() for identifier in input_ids)
+    identifiers.discard("")
+    return sum(
+        1 for marker in LOGIN_PAGE_ELEMENT_IDS
+        if any(marker in identifier for identifier in identifiers)
+    ) >= 2
 
 
-def _not_signed_in_error() -> RuntimeError:
-    return RuntimeError(
+def _not_signed_in_error() -> NotSignedInError:
+    return NotSignedInError(
         "GSCM is not signed in: the automation browser is on the Samsung SSO "
         "login page. ASAP and GSCM are separate portals with separate sessions, "
         "so an ASAP scan can succeed while this one cannot. Sign the profile in "
@@ -1131,6 +1220,46 @@ def _not_signed_in_error() -> RuntimeError:
         "https://mdscm.sec.samsung.net/nexa/index.html --authenticate-adapter "
         "gscm_portal   - or re-run setup.ps1, which now bootstraps every portal."
     )
+
+
+def _fail_with_screen(page, message: str) -> NoReturn:
+    """Raise for a missing control, reporting sign-out as sign-out.
+
+    An expired session mid-flow makes every later step fail with "X was not on
+    screen"; checking the login form first turns that into the actionable
+    sign-in error instead of a screen dump of the SSO page.
+    """
+    if on_login_page(page):
+        raise _not_signed_in_error()
+    raise RuntimeError(f"{message} On screen: {screen_inventory(page)}")
+
+
+def wait_for_manual_login(
+    page, *, timeout_ms: int = MANUAL_LOGIN_WAIT_MS, report_progress=None,
+) -> None:
+    """Poll until a human completes SSO/Knox in the visible window.
+
+    Never navigates: the SSO and Knox redirects own the page until the portal
+    shell renders. Raises ``NotSignedInError`` when nobody signs in within the
+    budget.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_report = 0.0
+    while time.monotonic() < deadline:
+        if _evaluate_everywhere(
+            page, "(id) => !!document.getElementById(id)", "mainframe.VFrameSet"
+        ):
+            clear_screen(page)
+            return
+        now = time.monotonic()
+        if report_progress and now - last_report >= 30:
+            last_report = now
+            remaining = int(deadline - now)
+            report_progress(
+                f"Waiting for sign-in in the visible browser window ({remaining}s left)."
+            )
+        page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+    raise _not_signed_in_error()
 
 
 def wait_for_component(page, component_id: str, *, timeout_ms: int) -> None:
@@ -1152,11 +1281,10 @@ def wait_for_component(page, component_id: str, *, timeout_ms: int) -> None:
             if on_login_page(page):
                 raise _not_signed_in_error()
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
-    if on_login_page(page):
-        raise _not_signed_in_error()
-    raise RuntimeError(
+    _fail_with_screen(
+        page,
         f"GSCM did not render its Nexacro client within {timeout_ms // 1000} seconds. "
-        f"Component not found: {component_id}. On screen: {screen_inventory(page)}"
+        f"Component not found: {component_id}.",
     )
 
 
@@ -1228,6 +1356,8 @@ def open_favorites_dialog(page, report_progress=None) -> None:
         report_progress("Opening GSCM Setting > Favorite.")
     if _open_setting(page) and _reach_favorite_panel(page):
         return
+    if on_login_page(page):
+        raise _not_signed_in_error()
     raise RuntimeError(
         "GSCM's Setting > Favorite dialog did not open, so its bookmark tabs "
         "(Private, Public, Custom) were never reachable. The gear that opens it "
@@ -1851,10 +1981,10 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
             })
 
     if not entries:
-        raise RuntimeError(
+        _fail_with_screen(
+            page,
             "GSCM exposed no bookmark rows in gds_bookmark or its Setting > "
-            "Favorite tabs (Private, Public, Custom). On screen: "
-            + screen_inventory(page)
+            "Favorite tabs (Private, Public, Custom).",
         )
 
     discovery = job.get("discovery") or {}
@@ -1918,10 +2048,7 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
     open_favorites_dialog(page, report_progress)
     for scope_attempt in range(3):
         if not find_by_label(page, [tab]):
-            raise RuntimeError(
-                f"GSCM's {tab} bookmark tab was not on screen. On screen: "
-                + screen_inventory(page)
-            )
+            _fail_with_screen(page, f"GSCM's {tab} bookmark tab was not on screen.")
         if select_scope_tab(page, tab, require_rows=True):
             break
         # A real refresh changes scope before returning.  Re-clicking the same
@@ -1940,6 +2067,8 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
                 reload_portal(page, job)
                 open_favorites_dialog(page, report_progress)
     else:
+        if on_login_page(page):
+            raise _not_signed_in_error()
         raise RuntimeError(
             f"GSCM's {tab} bookmark tab stayed empty after three activation and "
             "rebind attempts. The portal did not finish rendering its bookmark grid."
@@ -1950,9 +2079,8 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
         report_progress(f"Opening GSCM bookmark {' > '.join([*folder_path, name])}.")
     _click_entry(page, entry)
     if not _click_go_button(page):
-        raise RuntimeError(
-            "GSCM's Go button was not on screen after selecting the bookmark. "
-            "On screen: " + screen_inventory(page)
+        _fail_with_screen(
+            page, "GSCM's Go button was not on screen after selecting the bookmark."
         )
     wait_for_calculation(page, report_progress=report_progress)
     clear_screen(page)
@@ -2078,8 +2206,8 @@ def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
                 except Exception:
                     continue
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
-    raise RuntimeError(
+    _fail_with_screen(
+        page,
         "GSCM's Excel export button was not found on the toolbar. The bookmark "
-        "may have opened a screen that cannot export. On screen: "
-        + screen_inventory(page)
+        "may have opened a screen that cannot export.",
     )

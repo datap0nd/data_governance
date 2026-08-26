@@ -74,6 +74,12 @@ ASAP_MAX_FILTER_LABEL = 200
 ASAP_MAX_REPORT_FILTERS = 200
 ASAP_MAX_ERROR_CHARS = 10_000
 ASAP_MAX_DOWNLOAD_LINKS = 50
+# Progress messages land in flow_run_events and are rendered verbatim by the
+# run-log page; an unbounded screen dump once produced a 100,000-character
+# entry nobody could read.
+PROGRESS_MESSAGE_MAX_CHARS = 4_000
+# How many failure screenshots to keep in <profile>/diagnostics.
+FAILURE_SCREENSHOT_KEEP = 20
 # An embedded dashboard renders after its frame reports loaded, so its
 # download controls appear later than the report navigation completes.
 ASAP_DASHBOARD_LINK_TIMEOUT_SECONDS = 120
@@ -111,11 +117,17 @@ class _CompletedDownloadProcessingError(RuntimeError):
     """A native browser download finished, so report navigation must not retry."""
 
 
+WORKER_LOCK_FILENAME = ".worker.lock"
+# How long a starting worker waits for a stopping predecessor to release the
+# profile lock before treating the holder as an orphan and exiting nonzero.
+LOCK_RETRY_SECONDS = 60
+
+
 @contextmanager
 def _exclusive_worker_lock(profile_dir: Path):
     """Prevent the service and login task from running duplicate workers."""
     profile_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = profile_dir / ".worker.lock"
+    lock_path = profile_dir / WORKER_LOCK_FILENAME
     handle = lock_path.open("a+b")
     handle.seek(0, os.SEEK_END)
     if handle.tell() == 0:
@@ -5007,12 +5019,22 @@ def _export_task_with_retry(
             failures.append((attempt, exc))
             if isinstance(exc, _CompletedDownloadProcessingError):
                 raise
+            if isinstance(exc, flow_gscm.NotSignedInError):
+                # Another attempt cannot sign the profile in; keep the
+                # actionable message instead of a retry transcript.
+                raise
             if attempt == max_attempts:
                 if len(failures) > 1 and any(
                     str(error) != str(failures[0][1]) for _number, error in failures[1:]
                 ):
+                    # Group identical messages so two attempts that fail the
+                    # same way report one message, not two screen dumps.
+                    grouped: dict[str, list[int]] = {}
+                    for number, error in failures:
+                        grouped.setdefault(str(error), []).append(number)
                     detail = " ".join(
-                        f"Attempt {number}: {error}" for number, error in failures
+                        f"Attempt(s) {','.join(map(str, numbers))}: {message[:2000]}"
+                        for message, numbers in grouped.items()
                     )
                     raise RuntimeError(
                         f"Export failed after {max_attempts} attempts. {detail}"
@@ -5021,6 +5043,66 @@ def _export_task_with_retry(
             on_retry(attempt, exc)
             page.wait_for_timeout(5_000)
     raise AssertionError("unreachable")
+
+
+def _gscm_call(page: Page, headed: bool, notify, operation):
+    """Run one GSCM portal operation, handling a sign-in wall by worker mode.
+
+    Headless cannot satisfy Samsung SSO + Knox MFA, so the actionable
+    ``NotSignedInError`` propagates. A headed worker has a visible window and a
+    human nearby: tell them, wait for the portal to render, and retry once.
+    """
+    try:
+        return operation()
+    except flow_gscm.NotSignedInError:
+        if not headed:
+            raise
+        notify(
+            "GSCM sign-in required. Complete Samsung SSO and the Knox MFA "
+            "prompt in the visible Edge window; the run resumes automatically."
+        )
+        flow_gscm.wait_for_manual_login(page, report_progress=notify)
+        return operation()
+
+
+def _bounded_detail(detail: dict | None) -> dict | None:
+    """Cap the one progress field nothing else truncates before it is sent."""
+    if not detail:
+        return detail
+    message = detail.get("message")
+    if isinstance(message, str) and len(message) > PROGRESS_MESSAGE_MAX_CHARS:
+        return {
+            **detail,
+            "message": message[:PROGRESS_MESSAGE_MAX_CHARS] + "… [truncated]",
+        }
+    return detail
+
+
+def _failure_screenshot(page, profile_dir: Path, label: str) -> str | None:
+    """Best-effort PNG of the live page for a failed run or scan.
+
+    Saved under the profile's ``diagnostics`` folder, never the run folder -
+    run folders feed downstream pipelines and retention. The worker never
+    deletes files (flow_retention is the one gated deletion site), so growth
+    is bounded by overwriting a fixed rotation of slot filenames instead of
+    pruning old screenshots. Returns the saved path, or ``None`` when the
+    page is already gone.
+    """
+    try:
+        diagnostics = Path(profile_dir) / "diagnostics"
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        counter_path = diagnostics / ".screenshot_counter"
+        try:
+            counter = int(counter_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            counter = 0
+        counter_path.write_text(str(counter + 1), encoding="utf-8")
+        target = diagnostics / f"failure-{counter % FAILURE_SCREENSHOT_KEEP:02d}.png"
+        page.screenshot(path=str(target), full_page=False)
+        safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", str(label))[:60] or "failure"
+        return f"{target} ({safe_label}, {datetime.now():%Y-%m-%d %H:%M:%S})"
+    except Exception:
+        return None
 
 
 def _prepare_run_folder(
@@ -5139,7 +5221,7 @@ def execute_job(
     page: Page, job: dict, report_progress, profile_dir: Path,
     download_staging_dir: Path | None = None,
     artifacts: list[dict] | None = None,
-    *, run_id: int, register_folder,
+    *, run_id: int, register_folder, headed: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     # The caller may own the artifact list. Files are appended in place, so
     # everything saved before a mid-bundle failure stays visible to the
@@ -5199,18 +5281,30 @@ def execute_job(
                 # A GSCM bookmark already carries its filters, period, and
                 # dimensions. Opening it is the whole configuration step.
                 frame = None
-                if attempt > 1:
-                    # The first failure can leave Setting1 mounted with an
-                    # empty/stale virtual grid. A same-host ``open_portal``
-                    # deliberately reuses that tree, so make a retry real by
-                    # rebuilding Nexacro before opening the bookmark again.
-                    flow_gscm.reload_portal(page, job)
-                flow_gscm.open_bookmark(page, job, report_progress=lambda message: report_progress(
-                    "running",
-                    {"stage": "opening_report", "message": message,
-                     "item_index": index, "item_count": len(tasks)},
-                    artifacts,
-                ))
+
+                def _notify_auth(message: str):
+                    report_progress(
+                        "running",
+                        {"stage": "authentication", "message": message,
+                         "item_index": index, "item_count": len(tasks)},
+                        artifacts,
+                    )
+
+                def _open_gscm_bookmark():
+                    if attempt > 1:
+                        # The first failure can leave Setting1 mounted with an
+                        # empty/stale virtual grid. A same-host ``open_portal``
+                        # deliberately reuses that tree, so make a retry real by
+                        # rebuilding Nexacro before opening the bookmark again.
+                        flow_gscm.reload_portal(page, job)
+                    flow_gscm.open_bookmark(page, job, report_progress=lambda message: report_progress(
+                        "running",
+                        {"stage": "opening_report", "message": message,
+                         "item_index": index, "item_count": len(tasks)},
+                        artifacts,
+                    ))
+
+                _gscm_call(page, headed, _notify_auth, _open_gscm_bookmark)
                 load_buffer_ms = (
                     GSCM_INITIAL_LOAD_BUFFER_MS
                     if attempt == 1 else GSCM_RETRY_LOAD_BUFFER_MS
@@ -5554,7 +5648,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                       timings: list | None = None, error: str | None = None,
                                       complete: bool = True):
                         _api(client, "POST", f"/api/flows/worker/{worker_id}/scans/{scan_id}/progress", {
-                            "status": status, "progress": detail, "reports": reports or [],
+                            "status": status, "progress": _bounded_detail(detail), "reports": reports or [],
                             "timings": timings or [],
                             "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
                             "complete": complete,
@@ -5563,8 +5657,15 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     try:
                         scan_job = scan["job"]
                         if scan_job.get("site", {}).get("adapter") == GSCM_PORTAL_ADAPTER:
-                            reports, complete = flow_gscm.discover_catalog(
-                                page, scan_job, scan_progress,
+                            reports, complete = _gscm_call(
+                                page, headed,
+                                lambda message: scan_progress(
+                                    "running",
+                                    {"stage": "authentication", "message": message},
+                                ),
+                                lambda: flow_gscm.discover_catalog(
+                                    page, scan_job, scan_progress,
+                                ),
                             )
                             timings = [{
                                 "phase": "report_discovery",
@@ -5581,10 +5682,16 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             reports, timings, complete=complete,
                         )
                     except Exception as exc:
+                        failure_message = str(exc)
+                        screenshot_path = _failure_screenshot(
+                            page, profile_dir, f"scan-{scan_id}",
+                        )
+                        if screenshot_path:
+                            failure_message += f" Screenshot: {screenshot_path}"
                         scan_progress(
-                            "failed", {"stage": "failed", "message": str(exc)},
+                            "failed", {"stage": "failed", "message": failure_message},
                             timings=[{"phase": "total", "duration_ms": round((time.perf_counter() - scan_started) * 1000), "status": "failed"}],
-                            error=str(exc), complete=False,
+                            error=failure_message, complete=False,
                         )
                     if once:
                         break
@@ -5604,7 +5711,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                              traceback_text: str | None = None,
                              source_receipt: dict | None = None):
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
-                        "status": status, "progress": detail, "artifacts": artifacts or [],
+                        "status": status, "progress": _bounded_detail(detail), "artifacts": artifacts or [],
                         "timings": timings or [],
                         "retention": (detail or {}).get("retention_results") or [],
                         "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
@@ -5677,6 +5784,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             page, run["job"], progress, profile_dir, download_staging_dir,
                             artifacts=artifacts,
                             run_id=run_id, register_folder=register_folder,
+                            headed=headed,
                         )
                         sql_artifacts = artifacts
                     if (
@@ -5787,8 +5895,13 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     else:
                         timings = [{"phase": "total", "duration_ms": round((time.perf_counter() - run_started) * 1000), "status": "failed"}]
                     failure_message = str(exc)
-                    failure_detail = {"stage": "failed", "message": failure_message}
                     failure_traceback = traceback.format_exc()
+                    screenshot_path = _failure_screenshot(
+                        page, profile_dir, f"run-{run_id}",
+                    )
+                    if screenshot_path:
+                        failure_message += f" Screenshot: {screenshot_path}"
+                    failure_detail = {"stage": "failed", "message": failure_message}
                     try:
                         progress(
                             "failed", failure_detail,
@@ -5920,14 +6033,35 @@ def main():
             args.authenticate_adapter,
         )
         return
-    with _exclusive_worker_lock(profile_dir) as acquired:
-        if not acquired:
-            print("Another Metronome flow worker is already running.", flush=True)
-            return
+    def _run():
         run_worker(
             args.server, args.worker_id, args.name, profile_dir, args.headed,
             args.once, max(0, args.idle_exit_seconds),
         )
+
+    # During an update the outgoing worker may hold the profile lock for a few
+    # more seconds; retry briefly so the handover self-heals. A holder that
+    # outlives the retry window is an orphaned process: exit nonzero so the
+    # service manager records a failure instead of a healthy-looking exit-0
+    # restart loop that never registers a worker.
+    deadline = time.monotonic() + LOCK_RETRY_SECONDS
+    while True:
+        with _exclusive_worker_lock(profile_dir) as acquired:
+            if acquired:
+                _run()
+                return
+        if time.monotonic() >= deadline:
+            break
+        print("Another Metronome flow worker is already running. Retrying...", flush=True)
+        time.sleep(5)
+    print(
+        "Another Metronome flow worker is already running. It holds "
+        f"{profile_dir / WORKER_LOCK_FILENAME}. Kill leftover flow_worker.py / "
+        "msedge processes for this profile, or re-run setup.ps1, which now "
+        "clears them.",
+        file=sys.stderr, flush=True,
+    )
+    sys.exit(11)
 
 
 if __name__ == "__main__":

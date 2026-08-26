@@ -768,6 +768,23 @@ class OutlookSourceReceipt(BaseModel):
     subject: str | None = Field(default=None, max_length=1000)
 
 
+#: The one progress field the run-log UI renders verbatim. ``error`` and
+#: ``traceback`` already carry max_length caps; before this cap existed a
+#: worker screen dump reached flow_run_events at 100,000 characters.
+PROGRESS_MESSAGE_MAX_CHARS = 4_000
+
+
+def _bound_progress_message(value: dict[str, Any]) -> dict[str, Any]:
+    """Truncate, never reject: older workers must keep posting progress."""
+    message = value.get("message") if isinstance(value, dict) else None
+    if isinstance(message, str) and len(message) > PROGRESS_MESSAGE_MAX_CHARS:
+        value = {
+            **value,
+            "message": message[:PROGRESS_MESSAGE_MAX_CHARS] + "… [truncated]",
+        }
+    return value
+
+
 class WorkerProgress(BaseModel):
     status: Literal["running", "succeeded", "failed", "cancelled"]
     progress: dict[str, Any] = Field(default_factory=dict)
@@ -777,6 +794,11 @@ class WorkerProgress(BaseModel):
     error: str | None = Field(default=None, max_length=10000)
     traceback: str | None = Field(default=None, max_length=100000)
     source_receipt: OutlookSourceReceipt | None = None
+
+    @field_validator("progress")
+    @classmethod
+    def _bound_message(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _bound_progress_message(value)
 
 
 class FolderRegister(BaseModel):
@@ -839,6 +861,11 @@ class ScanProgress(BaseModel):
     complete: bool = True
     error: str | None = Field(default=None, max_length=10000)
     skipped_reports: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+
+    @field_validator("progress")
+    @classmethod
+    def _bound_message(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _bound_progress_message(value)
 
     @model_validator(mode="before")
     @classmethod

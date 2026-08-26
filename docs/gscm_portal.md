@@ -222,7 +222,15 @@ anchors, GSCM when the Nexacro component `mainframe.VFrameSet` exists — GSCM
 has no anchors at all.
 
 If MFA cannot be satisfied in the service profile, set the flow's browser mode
-to **headed** and complete the prompt in the visible window.
+to **headed** and complete the prompt in the visible window. A headed run that
+lands on the sign-in form does not fail: it posts "GSCM sign-in required" to
+the run log and waits up to five minutes for SSO and Knox to be completed in
+the visible Edge window, then resumes on its own. A headless run reports the
+actionable "GSCM is not signed in" error instead — including when the session
+expires mid-flow, which previously surfaced as a misleading "was not on
+screen" failure. Every failed run and scan also saves a screenshot of the
+live page under the profile's `diagnostics` folder; the error message names
+the file.
 
 ### The CDP alternative, and why it is not the default
 

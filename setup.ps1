@@ -229,6 +229,22 @@ if ($existingFlowService) {
     }
 }
 
+# Kill any orphaned worker or automation Edge still holding a flow profile.
+# A leftover process keeps the profile's .worker.lock, so every new service
+# instance exits with "already running" and the worker never registers.
+$FlowProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    ($_.CommandLine -match 'flow_worker\.py') -or
+    ($_.CommandLine -match '\.metronome-flow-browser')
+})
+foreach ($proc in $FlowProcs) {
+    Write-Host "  Killing leftover flow process PID $($proc.ProcessId): $($proc.Name)" -ForegroundColor Yellow
+    $KillProcess = Start-Process taskkill.exe -ArgumentList @("/PID", $proc.ProcessId, "/T", "/F") -PassThru -WindowStyle Hidden
+    if (-not $KillProcess.WaitForExit(10000)) {
+        Stop-Process -Id $KillProcess.Id -Force -ErrorAction SilentlyContinue
+        Write-Host "  WARNING: Timed out waiting for taskkill on PID $($proc.ProcessId). Continuing setup." -ForegroundColor Yellow
+    }
+}
+
 # Kill anything still holding the port
 $portPid = (netstat -ano | Select-String ":$Port\s" | ForEach-Object {
     ($_ -split '\s+')[-1]
@@ -453,14 +469,42 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
     Write-Host "  Open Metronome > Flows > Catalog > ASAP and store the encrypted BI-desktop credential once." -ForegroundColor DarkGray
 }
 
+# The worker starts before the app on purpose: it retries registration for
+# 120 seconds, and this ordering keeps the app's own ensure-worker watchdog
+# from winning the race and making our start report a scary (but harmless)
+# "An instance of the service is already running".
+Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
+$WorkerStartedAt = Get-Date
+$WorkerStartOutput = (& $NssmExe start $FlowServiceName 2>&1 | Out-String)
+if ($WorkerStartOutput -match 'already running') {
+    Write-Host "  Flows worker service was already running - OK." -ForegroundColor DarkGray
+}
+
 & $NssmExe start $ServiceName
 Start-Sleep -Seconds 3
 
-Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
-$WorkerStartedAt = Get-Date
-& $NssmExe start $FlowServiceName
+function Describe-WorkerRegistrationFailure {
+    param($Port, $CodeDir, $LogDir, $WorkerStartedAt)
+    try {
+        $Workers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
+    } catch {
+        return "Metronome is not answering on port $Port, so the worker cannot register. Check $LogDir\mx_analytics_error.log."
+    }
+    $Row = $Workers | Where-Object { $_.worker_id -eq "bi-desktop-headless" } | Select-Object -First 1
+    if (-not $Row) {
+        return "The worker never reached the server. Check $LogDir\flow_worker_error.log for a '.worker.lock' holder or a Python traceback."
+    }
+    $Expected = (Get-Content "$CodeDir\VERSION" -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $RowVersion = $Row.capabilities.code_version
+    if ($Expected -and $RowVersion -and ("$RowVersion".Trim() -ne "$Expected".Trim())) {
+        return "A worker running OLD code (version $RowVersion, deployed $Expected) is registered - a leftover process survived the update. Re-run setup.ps1, which now kills leftovers, or end it in Task Manager."
+    }
+    return "A worker row exists but is stale (status=$($Row.status), last seen $($Row.last_seen_at)). The service may be crash-looping; check $LogDir\flow_worker_error.log."
+}
 
-    # Poll until the service registers with Metronome.
+    # Poll until the service registers with Metronome. The worker itself
+    # retries registration for up to 120 seconds while the app boots, so the
+    # poll allows the same window.
     $WorkerOnline = $false
     try {
         $ExistingWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
@@ -470,7 +514,7 @@ $WorkerStartedAt = Get-Date
         }).Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
-        for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
             Start-Sleep -Seconds 2
             try {
                 $RegisteredWorkers = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/flows/workers" -TimeoutSec 5)
@@ -487,7 +531,8 @@ $WorkerStartedAt = Get-Date
     if ($WorkerOnline) {
         Write-Host "  Flows worker registered with Metronome." -ForegroundColor Green
     } else {
-        Write-Host "  WARNING: Flows worker did not register. Check $LogDir\flow_worker.log" -ForegroundColor Yellow
+        $Reason = Describe-WorkerRegistrationFailure -Port $Port -CodeDir $CodeDir -LogDir $LogDir -WorkerStartedAt $WorkerStartedAt
+        Write-Host "  WARNING: Flows worker did not register. $Reason" -ForegroundColor Yellow
     }
 
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
