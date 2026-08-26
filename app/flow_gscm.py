@@ -59,6 +59,13 @@ CLOSE_LABELS = ("Close",)
 GO_BUTTON_ID = (
     "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_go"
 )
+#: The absolute path above is the shape observed on one deployment. Other
+#: builds mount the Favorite dialog under a different frame path, or render
+#: the caption as an icon with no text, so when the exact id is not on screen
+#: the button is rediscovered: by component name in the live Nexacro tree,
+#: and by id shape in the DOM.
+_GO_NAME_RE = re.compile(r"^btn_?go\d*$", re.IGNORECASE)
+GO_ID_HINTS = ("btn_go",)
 #: The gear that opens Setting, read off the live portal. Tried first and
 #: exactly; the hints below only matter if GSCM renames it.
 SETTING_BUTTON_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
@@ -527,6 +534,53 @@ _NATIVE_COMPONENT_CLICK_JS = """(elementId) => {
             reason: String(error && error.message ? error.message : error),
         };
     }
+}"""
+
+
+#: Walk the live Nexacro component tree for Go-shaped buttons. A DOM id is
+#: only as good as the guess that produced it; the component tree is the
+#: portal's own registry of what exists, so a build that mounts the Favorite
+#: dialog under a different frame path still reports its real Go button here.
+#: Matches by component name (``btn_go``) or caption text (``Go >>``), and
+#: reports the component's fully-qualified ``id`` - the same value the DOM
+#: and the native click API both address.
+_GO_COMPONENT_SEARCH_JS = """() => {
+    if (typeof nexacro === 'undefined' || !nexacro
+            || typeof nexacro.getApplication !== 'function') return null;
+    const nameRe = /^btn_?go\\d*$/i;
+    const textRe = /^\\s*go[\\s>\\u00bb!]*$/i;
+    const out = [];
+    const seen = new Set();
+    const visit = (component, depth) => {
+        if (!component || typeof component !== 'object') return;
+        if (depth > 14 || out.length >= 40 || seen.has(component)) return;
+        seen.add(component);
+        try {
+            const id = String(component.id || '');
+            if (id && (nameRe.test(String(component.name || ''))
+                    || textRe.test(String(component.text || '')))) {
+                out.push({
+                    id,
+                    name: String(component.name || ''),
+                    text: String(component.text || ''),
+                });
+            }
+        } catch (error) { /* a getter that throws is not a candidate */ }
+        for (const key of ['components', 'frames']) {
+            let children = null;
+            try { children = component[key]; } catch (error) { continue; }
+            if (!children || typeof children.length !== 'number') continue;
+            for (let index = 0; index < children.length && index < 300; index++) {
+                try { visit(children[index], depth + 1); } catch (error) {}
+            }
+        }
+        try { if (component.form) visit(component.form, depth + 1); } catch (error) {}
+    };
+    try {
+        const app = nexacro.getApplication();
+        visit(app.mainframe || app, 0);
+    } catch (error) { return null; }
+    return out;
 }"""
 
 
@@ -2088,7 +2142,7 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
             page,
             "GSCM's Go button could not be activated after selecting the "
             "bookmark: it was missing, or clicking it (DOM and native) left "
-            "the Favorite dialog open.",
+            f"the Favorite dialog open. {_go_button_report(page)}",
         )
     wait_for_calculation(page, report_progress=report_progress)
     clear_screen(page)
@@ -2101,6 +2155,63 @@ def _go_button_fired(page) -> bool:
     return not favorites_dialog_open(page)
 
 
+def _looks_like_go_component(element_id: Any) -> bool:
+    """Whether an id's terminal segment names a Go button (``btn_go``).
+
+    A substring hint alone would also reach ``btn_gotohome``; requiring the
+    terminal path segment to *be* a Go name keeps a wrong control from ever
+    becoming a candidate.
+    """
+    component = str(element_id or "").split(":", 1)[0]
+    return bool(_GO_NAME_RE.match(component.split(".")[-1]))
+
+
+def _discover_go_candidates(page) -> list[str]:
+    """Find the Favorite dialog's Go button without trusting one guessed id.
+
+    Two independent sources: the live Nexacro component tree (which reports
+    the real component paths, whatever frame this build mounts the dialog
+    under - and sees an icon-styled Go that renders no caption text), and
+    visible DOM ids shaped like a Go button. Candidates inside the Favorite
+    dialog outrank the rest, and anything on the forbidden list never becomes
+    a candidate.
+    """
+    candidates: dict[str, None] = {}
+    for _root, records in _evaluate_everywhere(page, _GO_COMPONENT_SEARCH_JS):
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            identifier = str((record or {}).get("id") or "")
+            if identifier and not is_forbidden(identifier):
+                candidates.setdefault(identifier)
+    for _root, records in _evaluate_everywhere(page, _ID_MATCH_JS, list(GO_ID_HINTS)):
+        for record in records:
+            identifier = str((record or {}).get("id") or "")
+            if (
+                identifier
+                and _looks_like_go_component(identifier)
+                and not is_forbidden(identifier)
+            ):
+                candidates.setdefault(identifier)
+
+    def rank(identifier: str) -> tuple:
+        lowered = identifier.casefold()
+        return (
+            0 if "div_favorite" in lowered else 1 if "setting" in lowered else 2,
+            0 if _looks_like_go_component(identifier) else 1,
+            len(identifier),
+        )
+
+    return sorted(candidates, key=rank)
+
+
+def _go_button_report(page) -> str:
+    """What the Go hunt could see, for the failure message."""
+    discovered = _discover_go_candidates(page)
+    listed = ", ".join(_short_id(item) for item in discovered[:8]) or "none"
+    return f"Go-shaped candidates on this screen: {listed}."
+
+
 def _click_go_button(page) -> bool:
     """Activate the Favorite dialog's native Go button.
 
@@ -2111,23 +2222,36 @@ def _click_go_button(page) -> bool:
     around. So every strategy is verified by the dialog actually closing, and
     a landed-but-ignored DOM click falls back to firing the component's own
     onclick through the Nexacro event API (``_native_click``).
+
+    The known id is tried first; when this build does not carry it, the
+    button is rediscovered from the Nexacro component tree and the DOM
+    (``_discover_go_candidates``) before falling back to its visible label.
     """
     clear_screen(page)
-    for root in _roots(page):
-        try:
-            button = root.locator(f"[id='{_css_escape(GO_BUTTON_ID)}']").first
-            if not button.count():
-                continue
-        except Exception:
+    tried: set[str] = set()
+    for candidate in (GO_BUTTON_ID, *_discover_go_candidates(page)):
+        component_ids = _component_element_ids(candidate)
+        if not component_ids or component_ids[0] in tried:
             continue
-        clear_screen(page, target=GO_BUTTON_ID)
-        try:
-            button.click(force=True, timeout=30_000)
-            if _go_button_fired(page):
-                return True
-        except Exception:
-            pass
-        if _native_click(page, GO_BUTTON_ID) and _go_button_fired(page):
+        component_id = component_ids[0]
+        tried.add(component_id)
+        for root in _roots(page):
+            try:
+                button = root.locator(f"[id='{_css_escape(component_id)}']").first
+                if not button.count():
+                    continue
+            except Exception:
+                continue
+            clear_screen(page, target=component_id)
+            try:
+                button.click(force=True, timeout=30_000)
+                if _go_button_fired(page):
+                    return True
+            except Exception:
+                pass
+        # A discovered component can exist in the Nexacro tree without a
+        # reachable DOM node; the native event API addresses it either way.
+        if _native_click(page, component_id) and _go_button_fired(page):
             return True
     clicked = click_label(page, GO_LABELS)
     if clicked is not None:

@@ -1473,6 +1473,80 @@ def test_go_button_failure_is_reported_as_activation_not_visibility():
     with pytest.raises(RuntimeError) as excinfo:
         flow_gscm.open_bookmark(page, job)
     assert "could not be activated" in str(excinfo.value)
+    assert "Go-shaped candidates" in str(excinfo.value)
+
+
+class RelocatedGoButtonPage(FakeGscmPage):
+    """A build that mounts the Favorite dialog under a different frame path.
+
+    The hardcoded ``GO_BUTTON_ID`` does not exist here, and the Go button is
+    icon-styled: it renders no ``Go >>`` caption text at all, so the label
+    fallback cannot see it either. Only the Nexacro component tree reports
+    its real id.
+    """
+
+    RELOCATED_GO_ID = (
+        "mainframe.HFrameSet.TopFrame.SettingPopup.form.div_favorite.form.btn_go"
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(dialog_open=True, **kwargs)
+        self.components.add(self.RELOCATED_GO_ID)
+
+    def _screen(self):
+        return [row for row in super()._screen() if row.get("text") != "Go >>"]
+
+    def evaluate(self, script, argument=None):
+        if "btn_?go" in script:
+            return [{"id": self.RELOCATED_GO_ID, "name": "btn_go", "text": ""}]
+        return super().evaluate(script, argument)
+
+    def on_click(self, element_id):
+        if element_id == self.RELOCATED_GO_ID:
+            self.clicks.append(element_id)
+            self.dialog_open = False
+            return
+        super().on_click(element_id)
+
+
+def test_go_button_is_rediscovered_when_the_hardcoded_id_is_stale():
+    # The live failure: the Go button is plainly on screen, but this build
+    # does not carry the component path the adapter guessed, and the icon
+    # button renders no caption for the label fallback to find.
+    page = RelocatedGoButtonPage()
+
+    assert flow_gscm._click_go_button(page) is True
+
+    assert page.RELOCATED_GO_ID in page.clicks
+    assert page.dialog_open is False
+
+
+def test_go_candidates_prefer_the_favorite_dialog_and_drop_forbidden_controls():
+    class ManyGoButtonsPage(FakeGscmPage):
+        def __init__(self):
+            super().__init__(dialog_open=True)
+            # A DOM id that merely contains the hint must not become a
+            # candidate: "btn_gotohome" is not a Go button.
+            self.components.add("mainframe.TopFrame.form.btn_gotohome")
+
+        def evaluate(self, script, argument=None):
+            if "btn_?go" in script:
+                return [
+                    {"id": "mainframe.WorkFrame.form.btn_go", "name": "btn_go", "text": ""},
+                    {"id": flow_gscm.GO_BUTTON_ID, "name": "btn_go", "text": "Go >>"},
+                    # "save" is forbidden: a Go-named control inside a save
+                    # panel is never worth the risk.
+                    {"id": "mainframe.SavePanel.form.btn_go", "name": "btn_go", "text": ""},
+                ]
+            return super().evaluate(script, argument)
+
+    page = ManyGoButtonsPage()
+    candidates = flow_gscm._discover_go_candidates(page)
+
+    assert candidates[0] == flow_gscm.GO_BUTTON_ID
+    assert "mainframe.WorkFrame.form.btn_go" in candidates
+    assert all("SavePanel" not in item for item in candidates)
+    assert all("gotohome" not in item for item in candidates)
 
 
 def test_setting_falls_back_to_native_nexacro_click_when_dom_click_is_a_noop():
