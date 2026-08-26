@@ -78,6 +78,16 @@ if ($GitHubToken) {
 $ZipPath     = "$ProjectDir\_update.zip"
 $PyDir       = "$ProjectDir\python313"
 $PyExe       = "$PyDir\python.exe"
+
+# The copy of this script that is running is the PREVIOUS version - the update
+# it downloads replaces setup.ps1 on disk, and the new one is relaunched after
+# extraction. Capture the running copy's hash to detect that replacement.
+$SetupScriptPath = Join-Path $CodeDir "setup.ps1"
+$SetupHashBefore = ""
+try { $SetupHashBefore = (Get-FileHash $SetupScriptPath -Algorithm SHA256).Hash } catch {}
+$InstalledVersion = "unknown"
+try { $InstalledVersion = (Get-Content "$CodeDir\VERSION" -ErrorAction Stop | Select-Object -First 1).Trim() } catch {}
+Write-Host "Currently installed version: $InstalledVersion" -ForegroundColor Cyan
 $FlowProfile = "$env:USERPROFILE\.metronome-flow-browser"
 $HeadedFlowProfile = "$env:USERPROFILE\.metronome-flow-browser-headed"
 $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
@@ -282,6 +292,22 @@ if ($Inner) {
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
+# --- Relaunch the freshly downloaded setup.ps1 if it changed ---
+# Without this, fixes to setup itself (sign-in bootstrap, service handling)
+# only take effect on the NEXT update - the run that downloaded them still
+# executes the old logic to the end.
+if (-not $env:DG_SETUP_RELAUNCHED) {
+    $SetupHashAfter = ""
+    try { $SetupHashAfter = (Get-FileHash $SetupScriptPath -Algorithm SHA256).Hash } catch {}
+    if ($SetupHashAfter -and $SetupHashAfter -ne $SetupHashBefore) {
+        Write-Host ""
+        Write-Host "setup.ps1 itself was updated. Relaunching the new version..." -ForegroundColor Yellow
+        $env:DG_SETUP_RELAUNCHED = "1"
+        & powershell.exe -ExecutionPolicy Bypass -File $SetupScriptPath
+        exit $LASTEXITCODE
+    }
+}
+
 # Publish versioned external flow transformations to the shared location used
 # by BI desktop workers. A temporarily unavailable share must not prevent the
 # application itself from updating; the affected flow will fail closed before
@@ -298,10 +324,20 @@ if (Test-Path $BundledFlowTransforms) {
     }
 }
 
-# --- Stamp VERSION with download timestamp ---
+# --- Stamp VERSION with download timestamp and the deployed commit ---
+# GitHub archive zips carry the exact commit SHA as the zip archive comment,
+# so the stamp names the code revision, not just when it was downloaded.
 $ver = (Get-Date -Format "yyyyMMdd-HHmmss")
+$CommitSha = ""
+try {
+    $CommitSha = (& $PyExe -c "import zipfile; print(zipfile.ZipFile(r'$ZipPath').comment.decode()[:9])").Trim()
+} catch {}
+if (-not $CommitSha -and $Inner -and $Inner.Name -match '-([0-9a-f]{7,40})$') {
+    $CommitSha = $Matches[1].Substring(0, [Math]::Min(9, $Matches[1].Length))
+}
+if ($CommitSha) { $ver = "$ver-$CommitSha" }
 Set-Content "$CodeDir\VERSION" $ver
-Write-Host "  Version: $ver" -ForegroundColor DarkGray
+Write-Host "  Deployed version: $ver" -ForegroundColor Cyan
 
 # --- Install dependencies ---
 Write-Host "[5/5] Installing dependencies..." -ForegroundColor Yellow
@@ -548,6 +584,8 @@ $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
     Write-Host ""
     Write-Host "Done. MX Analytics running at http://localhost:$Port" -ForegroundColor Green
+    Write-Host "Deployed version: $ver" -ForegroundColor Cyan
+    Write-Host "  Also shown in the web UI top bar and at http://localhost:$Port/api/version" -ForegroundColor DarkGray
     Start-Process "http://localhost:$Port"
     Write-Host ""
 } else {
