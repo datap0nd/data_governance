@@ -900,17 +900,12 @@ def _asap_login_visible(page: Page) -> bool:
         return False
 
 
-def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
-    """Recover an expired ASAP session using the local DPAPI credential."""
-    if not _asap_login_visible(page):
-        return False
-    # Browser profiles are isolated by mode, but both use the one account-level
-    # DPAPI credential selected by METRONOME_FLOW_PROFILE during setup.
-    credentials = load_asap_credentials()
-    if not credentials:
-        raise RuntimeError(
-            "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
-        )
+def _sso_fill_and_submit(page: Page, credentials: dict, portal_label: str) -> None:
+    """Fill and submit the Samsung SSO form with the stored credential.
+
+    ASAP and GSCM redirect to the same SSO host, so one fill serves both; the
+    caller waits for its own portal's readiness proof afterwards.
+    """
     visible_inputs = page.locator('input:visible')
     username = page.locator('input[type="text"]:visible, input:not([type]):visible').first
     password = page.locator('input[type="password"]:visible').first
@@ -922,14 +917,62 @@ def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
     if not submit.count():
         submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
     if not submit.count():
-        raise RuntimeError("ASAP sign-in form was found, but its Login action was not recognized.")
+        raise RuntimeError(f"{portal_label} sign-in form was found, but its Login action was not recognized.")
     submit.click()
+
+
+def _asap_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
+    """Recover an expired ASAP session using the local DPAPI credential."""
+    if not _asap_login_visible(page):
+        return False
+    # Browser profiles are isolated by mode, but both use the one account-level
+    # DPAPI credential selected by METRONOME_FLOW_PROFILE during setup.
+    credentials = load_asap_credentials()
+    if not credentials:
+        raise RuntimeError(
+            "ASAP sign-in is required. Configure the encrypted BI desktop credential in Flows > Catalog."
+        )
+    _sso_fill_and_submit(page, credentials, "ASAP")
     roots = _wait_for_navigation_roots(page, 120_000)
     if not roots:
         error = page.locator("text=/incorrect user id|incorrect password|try again/i").first
         detail = _clean_text(error.text_content()) if error.count() else "ASAP did not open after automatic sign-in."
         raise RuntimeError(f"ASAP automatic sign-in failed: {detail}")
     return True
+
+
+#: How long GSCM's Nexacro shell gets to render after an automatic SSO submit.
+GSCM_AUTO_LOGIN_TIMEOUT_MS = 180_000
+
+
+def _gscm_authenticate_if_needed(page: Page, profile_dir: Path) -> bool:
+    """Recover an expired GSCM session using the same stored SSO credential.
+
+    GSCM sits behind the same Samsung SSO as ASAP, and ASAP has recovered its
+    session unattended with this credential since it was stored - so GSCM uses
+    the identical fill instead of demanding a manual re-bootstrap. Returns
+    False when there is nothing to do (no visible form, or no stored
+    credential); raises when the credential was submitted but the portal never
+    rendered - a wrong password or a Knox MFA challenge.
+    """
+    if not _asap_login_visible(page):
+        return False
+    credentials = load_asap_credentials()
+    if not credentials:
+        return False
+    _sso_fill_and_submit(page, credentials, "GSCM")
+    deadline = time.monotonic() + GSCM_AUTO_LOGIN_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        if flow_gscm.portal_shell_rendered(page):
+            flow_gscm.clear_screen(page)
+            return True
+        page.wait_for_timeout(1_000)
+    raise RuntimeError(
+        "GSCM automatic sign-in submitted the stored credential, but the portal "
+        "did not render within 180 seconds. The password may be wrong, or a "
+        "Knox MFA prompt is blocking it - run the flow in headed mode once and "
+        "complete the prompt in the visible window."
+    )
 
 
 def _asap_goto(page: Page, url: str, profile_dir: Path) -> bool:
@@ -5045,24 +5088,38 @@ def _export_task_with_retry(
     raise AssertionError("unreachable")
 
 
-def _gscm_call(page: Page, headed: bool, notify, operation):
-    """Run one GSCM portal operation, handling a sign-in wall by worker mode.
+def _gscm_call(page: Page, headed: bool, notify, operation, profile_dir: Path):
+    """Run one GSCM portal operation, recovering a sign-in wall like ASAP does.
 
-    Headless cannot satisfy Samsung SSO + Knox MFA, so the actionable
-    ``NotSignedInError`` propagates. A headed worker has a visible window and a
-    human nearby: tell them, wait for the portal to render, and retry once.
+    First try the stored SSO credential - the same unattended re-login ASAP
+    performs on every run, against the same Samsung SSO. Only when that cannot
+    finish does the mode matter: a headed worker has a visible window and a
+    human nearby (tell them, wait, retry once); headless raises the actionable
+    error.
     """
     try:
         return operation()
-    except flow_gscm.NotSignedInError:
-        if not headed:
-            raise
-        notify(
-            "GSCM sign-in required. Complete Samsung SSO and the Knox MFA "
-            "prompt in the visible Edge window; the run resumes automatically."
-        )
-        flow_gscm.wait_for_manual_login(page, report_progress=notify)
-        return operation()
+    except flow_gscm.NotSignedInError as exc:
+        auto_login_failure = None
+        try:
+            if _gscm_authenticate_if_needed(page, profile_dir):
+                notify("GSCM session was recovered automatically with the stored credential.")
+                return operation()
+        except Exception as auto_exc:
+            auto_login_failure = str(auto_exc)
+        if headed:
+            notify(
+                "GSCM sign-in required. Complete Samsung SSO and the Knox MFA "
+                "prompt in the visible Edge window; the run resumes automatically."
+            )
+            flow_gscm.wait_for_manual_login(page, report_progress=notify)
+            return operation()
+        if auto_login_failure:
+            raise RuntimeError(
+                f"{exc} Automatic sign-in with the stored credential was "
+                f"attempted and failed: {auto_login_failure}"
+            ) from exc
+        raise
 
 
 def _bounded_detail(detail: dict | None) -> dict | None:
@@ -5304,7 +5361,7 @@ def execute_job(
                         artifacts,
                     ))
 
-                _gscm_call(page, headed, _notify_auth, _open_gscm_bookmark)
+                _gscm_call(page, headed, _notify_auth, _open_gscm_bookmark, profile_dir)
                 load_buffer_ms = (
                     GSCM_INITIAL_LOAD_BUFFER_MS
                     if attempt == 1 else GSCM_RETRY_LOAD_BUFFER_MS
@@ -5670,6 +5727,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 lambda: flow_gscm.discover_catalog(
                                     page, scan_job, scan_progress,
                                 ),
+                                profile_dir,
                             )
                             timings = [{
                                 "phase": "report_discovery",

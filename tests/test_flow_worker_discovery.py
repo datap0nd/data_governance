@@ -761,19 +761,64 @@ def test_export_task_does_not_retry_a_sign_in_wall():
     assert attempts == [1]
 
 
-def test_gscm_call_propagates_the_sign_in_wall_when_headless():
+def test_gscm_call_propagates_the_sign_in_wall_when_headless(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        flow_worker, "_gscm_authenticate_if_needed", lambda page, profile_dir: False,
+    )
     notifications = []
 
     def operation():
         raise flow_gscm.NotSignedInError("GSCM is not signed in")
 
     with pytest.raises(flow_gscm.NotSignedInError):
-        flow_worker._gscm_call(_WaitPage(), False, notifications.append, operation)
+        flow_worker._gscm_call(_WaitPage(), False, notifications.append, operation, tmp_path)
 
     assert notifications == []
 
 
-def test_gscm_call_waits_for_the_human_and_retries_when_headed(monkeypatch):
+def test_gscm_call_recovers_with_the_stored_credential_like_asap(monkeypatch, tmp_path):
+    # The same Samsung SSO credential ASAP re-submits on every run recovers
+    # GSCM too - headless included, no human needed.
+    monkeypatch.setattr(
+        flow_worker, "_gscm_authenticate_if_needed", lambda page, profile_dir: True,
+    )
+    notifications = []
+    attempts = []
+
+    def operation():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise flow_gscm.NotSignedInError("GSCM is not signed in")
+        return "opened"
+
+    result = flow_worker._gscm_call(_WaitPage(), False, notifications.append, operation, tmp_path)
+
+    assert result == "opened"
+    assert len(attempts) == 2
+    assert any("recovered automatically" in message for message in notifications)
+
+
+def test_gscm_call_reports_a_failed_automatic_sign_in_when_headless(monkeypatch, tmp_path):
+    def failed_login(page, profile_dir):
+        raise RuntimeError("a Knox MFA prompt is blocking it")
+
+    monkeypatch.setattr(flow_worker, "_gscm_authenticate_if_needed", failed_login)
+
+    def operation():
+        raise flow_gscm.NotSignedInError("GSCM is not signed in")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_worker._gscm_call(_WaitPage(), False, lambda _m: None, operation, tmp_path)
+
+    message = str(excinfo.value)
+    assert "GSCM is not signed in" in message
+    assert "Knox MFA" in message
+
+
+def test_gscm_call_waits_for_the_human_and_retries_when_headed(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        flow_worker, "_gscm_authenticate_if_needed", lambda page, profile_dir: False,
+    )
     notifications = []
     waited = []
     monkeypatch.setattr(
@@ -788,12 +833,25 @@ def test_gscm_call_waits_for_the_human_and_retries_when_headed(monkeypatch):
             raise flow_gscm.NotSignedInError("GSCM is not signed in")
         return "opened"
 
-    result = flow_worker._gscm_call(_WaitPage(), True, notifications.append, operation)
+    result = flow_worker._gscm_call(_WaitPage(), True, notifications.append, operation, tmp_path)
 
     assert result == "opened"
     assert len(attempts) == 2
     assert len(waited) == 1
     assert any("visible Edge window" in message for message in notifications)
+
+
+def test_gscm_auto_login_is_a_noop_without_a_stored_credential(monkeypatch, tmp_path):
+    # No credential stored: return False so the caller falls back to the
+    # actionable error / manual wait instead of raising here.
+    monkeypatch.setattr(flow_worker, "_asap_login_visible", lambda page: True)
+    monkeypatch.setattr(flow_worker, "load_asap_credentials", lambda: None)
+    assert flow_worker._gscm_authenticate_if_needed(_WaitPage(), tmp_path) is False
+
+
+def test_gscm_auto_login_is_a_noop_off_the_login_page(monkeypatch, tmp_path):
+    monkeypatch.setattr(flow_worker, "_asap_login_visible", lambda page: False)
+    assert flow_worker._gscm_authenticate_if_needed(_WaitPage(), tmp_path) is False
 
 
 def test_bounded_detail_caps_only_the_message():

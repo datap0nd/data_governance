@@ -226,6 +226,12 @@ Readiness is detected per portal: ASAP is up when it renders navigation
 anchors, GSCM when the Nexacro component `mainframe.VFrameSet` exists — GSCM
 has no anchors at all.
 
+When a GSCM session expires mid-flight, the worker first recovers it exactly
+the way ASAP always has: it fills the encrypted BI-desktop credential (stored
+once under Flows > Catalog) into the shared Samsung SSO form and waits for the
+Nexacro shell to render. Both portals redirect to the same SSO host, so the
+one stored credential serves both.
+
 If MFA cannot be satisfied in the service profile, set the flow's browser mode
 to **headed** and complete the prompt in the visible window. A headed run that
 lands on the sign-in form does not fail: it posts "GSCM sign-in required" to

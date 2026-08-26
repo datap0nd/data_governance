@@ -1172,12 +1172,17 @@ class NotSignedInError(RuntimeError):
     """The automation profile is parked on the Samsung SSO / Knox MFA form."""
 
 
+def portal_shell_rendered(page) -> bool:
+    """Whether the Nexacro shell exists in any root - the signed-in proof."""
+    return bool(_evaluate_everywhere(
+        page, "(id) => !!document.getElementById(id)", "mainframe.VFrameSet"
+    ))
+
+
 def on_login_page(page) -> bool:
     """True when the browser is parked on the SSO or Knox MFA sign-in form."""
     # A rendered Nexacro shell is never the login form, whatever its text says.
-    if _evaluate_everywhere(
-        page, "(id) => !!document.getElementById(id)", "mainframe.VFrameSet"
-    ):
+    if portal_shell_rendered(page):
         return False
     # Substring match over the joined page text: SSO and Knox reword their
     # headings, so exact whole-label membership misses real sign-in pages.
@@ -1218,7 +1223,9 @@ def _not_signed_in_error() -> NotSignedInError:
         "to GSCM once, in a visible window, with:  python app\\flow_worker.py "
         "--profile-dir <profile> --authenticate-url "
         "https://mdscm.sec.samsung.net/nexa/index.html --authenticate-adapter "
-        "gscm_portal   - or re-run setup.ps1, which now bootstraps every portal."
+        "gscm_portal   - or re-run setup.ps1, which now bootstraps every portal. "
+        "Storing the encrypted BI-desktop credential in Flows > Catalog lets "
+        "the worker sign back in automatically when the session expires."
     )
 
 
@@ -1246,9 +1253,7 @@ def wait_for_manual_login(
     deadline = time.monotonic() + timeout_ms / 1000
     last_report = 0.0
     while time.monotonic() < deadline:
-        if _evaluate_everywhere(
-            page, "(id) => !!document.getElementById(id)", "mainframe.VFrameSet"
-        ):
+        if portal_shell_rendered(page):
             clear_screen(page)
             return
         now = time.monotonic()
