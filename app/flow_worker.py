@@ -4165,6 +4165,61 @@ def _xlsx_rows(worksheet):
             yield values
 
 
+def _deduped_header(header: list) -> list:
+    """Number repeated header labels instead of rejecting them.
+
+    Portal reports legitimately repeat column labels - one ``Qty`` per week,
+    or merged group headers expanded across their span. When the operator has
+    declared where the header row is, the labels are kept and numbered
+    (``Qty``, ``Qty_2``) so the CSV and its SQL table stay unambiguous.
+    """
+    seen: dict[str, int] = {}
+    deduped = []
+    for value in header:
+        label = str(value).strip()
+        key = re.sub(r"\W+", "_", label).strip("_").casefold()
+        if not key:
+            deduped.append(label)
+            continue
+        count = seen.get(key, 0) + 1
+        seen[key] = count
+        deduped.append(label if count == 1 else f"{label}_{count}")
+    return deduped
+
+
+def _sheet_header_scan(worksheet, limit: int = 12) -> str:
+    """A compact, label-level account of why no row was a usable header.
+
+    Reports populated-cell counts and repeated labels only - enough to fix a
+    layout straight from the run log, without copying data values into it.
+    """
+    notes = []
+    for index, row in enumerate(_xlsx_rows(worksheet)):
+        if index >= limit:
+            notes.append("…")
+            break
+        labels = [
+            re.sub(r"\W+", "_", str(value).strip()).strip("_").casefold()
+            for value in row
+        ]
+        counts: dict[str, int] = {}
+        for label in labels:
+            if label:
+                counts[label] = counts.get(label, 0) + 1
+        populated = sum(counts.values())
+        repeated = sorted(label for label, count in counts.items() if count > 1)
+        if populated < 2:
+            notes.append(f"row {index + 1}: {populated} cell(s)")
+        elif repeated:
+            notes.append(
+                f"row {index + 1}: {populated} cells, repeated labels: "
+                + ", ".join(repeated[:4])
+            )
+        else:
+            notes.append(f"row {index + 1}: {populated} cells, header-shaped")
+    return "; ".join(notes) or "no populated rows"
+
+
 def _xlsx_header_index(preview: list[list[Any]]) -> int | None:
     """Pick the row that defines this sheet's columns."""
     header_candidates = []
@@ -4223,9 +4278,15 @@ def _xlsx_sheet_plan(
         while physical_header and not str(physical_header[-1]).strip():
             physical_header.pop()
         if not physical_header:
-            raise RuntimeError(
-                f"Downloaded Excel sheet {worksheet.title!r} has no headers in its first row."
-            )
+            if strict_headers:
+                raise RuntimeError(
+                    f"Downloaded Excel sheet {worksheet.title!r} has no headers in its first row."
+                )
+            # A trimmed portal workbook can carry an extra empty or notes
+            # sheet whose first row is blank; skip it, don't fail the file.
+            return None
+        if not strict_headers:
+            physical_header = _deduped_header(physical_header)
         header_index = 0
         preview[0] = physical_header
     else:
@@ -4421,6 +4482,13 @@ def _normalize_xlsx(
     drop the frame's first row and first column) before header detection.
     """
     excel_trim = str(excel_trim or "none").strip().casefold()
+    if excel_trim != "none" and header_mode == "auto":
+        # Selecting the trim declares that the frame is gone and the table
+        # starts immediately: the first remaining row IS the header. The
+        # heuristic header hunt - and its unique-label rule, built for ASAP
+        # exports - no longer applies, so a GSCM header that repeats labels
+        # (one Qty per week) converts instead of being rejected.
+        header_mode = "first_row"
     workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
     workbook = _open_excel_workbook(source, workbook_format)
     common_header: list[str] | None = None
@@ -4438,6 +4506,7 @@ def _normalize_xlsx(
     handle = partial.open("x", encoding="utf-8-sig", newline="")
     try:
         writer = csv.writer(handle, lineterminator="\n")
+        skipped_sheets: list[str] = []
         for worksheet in workbook.worksheets:
             worksheet = _trim_worksheet(worksheet, excel_trim)
             plan = _xlsx_sheet_plan(
@@ -4445,6 +4514,9 @@ def _normalize_xlsx(
                 header_mode=header_mode, strict_headers=strict_headers,
             )
             if plan is None:
+                skipped_sheets.append(
+                    f"{worksheet.title}: {_sheet_header_scan(worksheet)}"
+                )
                 continue
             header = plan["header"]
             if plan["metric_label"]:
@@ -4501,13 +4573,16 @@ def _normalize_xlsx(
         if not handle.closed:
             handle.close()
     if common_header is None or not rows_written:
+        detail = " | ".join(skipped_sheets) or "no populated sheets"
         raise RuntimeError(
             "Downloaded Excel workbook did not contain a usable table with "
-            f"data rows (Excel pre-processing: {excel_trim})."
+            f"data rows (Excel pre-processing: {excel_trim}). Sheet scan, "
+            f"after pre-processing: {detail}."
         )
     partial.replace(output)
     return {
         "excel_trim": excel_trim,
+        "xlsx_header_mode": header_mode,
         "preamble_rows_removed": preamble_rows_removed,
         "source_encoding": workbook_format,
         "source_delimiter": None,
