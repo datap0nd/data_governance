@@ -64,6 +64,24 @@ a full scan and a full run touch neither Save, Unselect, nor a pin.
 
 The tree sweep clicks folder rows only, never report rows.
 
+## Popup cleanup before bookmark clicks
+
+Every existing `clear_screen` call hides the stale wait overlay and inventories
+visible Nexacro popup, notice, alert, message, confirmation, and `pdv_`
+containers. It closes only an observed Close/X component, promotes rendered
+`:text` or `:icontext` children to their owning component, and uses the native
+Nexacro click fallback when the DOM click does not dispatch the handler.
+Setting > Favorite and the wait window are explicitly excluded, and every
+close candidate still passes through `FORBIDDEN_CLICK_WORDS`.
+
+There is no startup delay when no popup is visible. When a popup is found,
+Metronome rechecks it for up to two seconds. A popup that remains is tolerated
+unless its rectangle overlaps the exact gear, tab, folder, bookmark row, or Go
+control Metronome is about to click. Only that proven obstruction stops the
+operation; its container id, close-control id, geometry, and screen inventory
+are included in the error. Reading `gds_bookmark` remains a direct JavaScript
+operation and is not gated on popup state.
+
 ## Why discovery reads Nexacro memory
 
 The Favorite grid is virtualized. Its fixed `gridrow_0` through `gridrow_8`
@@ -252,6 +270,7 @@ instead of the API.
 | Scan fails: "none of its tabs listed a bookmark" | The tree did not render, or the scope dropdown points at an empty business | Read the `On screen:` inventory; check the `MX` dropdown |
 | Scan fails: "GSCM did not render its Nexacro client" | The profile has no GSCM session | Re-run the auth bootstrap; try headed mode |
 | Run fails naming the available bookmarks | The bookmark was renamed or deleted in GSCM | Rescan the GSCM catalog, then repoint the flow |
+| Run fails: "GSCM popup blocked control" | A visible portal popup survived its Close/X action and overlaps the next bookmark control | Use the reported container and close-control ids plus `On screen` inventory to update the observed id vocabulary; protected Save/Delete-style controls are never clicked |
 | Run fails: "Excel export button was not found" | The bookmark opened a screen with no grid export | Open the bookmark by hand and confirm the toolbar offers Excel |
 | Run hangs then exports anyway | The wait overlay outlived its query | Expected; the adapter forces the overlay down after its budget |
 

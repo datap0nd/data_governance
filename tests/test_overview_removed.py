@@ -48,7 +48,7 @@ def test_pipelines_exposes_report_flow_and_materialized_view_refresh_controls():
     assert 'id="lineage-report-refresh"' in app_js
     assert 'data-lin-refresh-flow' in app_js
     assert 'data-lin-refresh-mv' in app_js
-    assert 'add(`source-${sourceId}`, `flow-${flow.id}`, true)' in app_js
+    assert 'add(`flow-${flow.id}`, `source-${sourceId}`, true)' in app_js
 
 
 def test_alert_surfaces_use_detection_dates_and_power_bi_error_details():

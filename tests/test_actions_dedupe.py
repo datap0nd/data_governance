@@ -58,14 +58,16 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
     counts = {row["type"]: row["count"] for row in active}
     assert counts.get("best_practice", 0) == 0
     assert sum(counts.get(name, 0) for name in ("stale_source", "outdated_source", "error_source")) == 1
-    assert counts.get("changed_query", 0) == 1
+    # Legacy source-level query changes cannot identify the report table that
+    # changed, so v2 startup cleanup removes them from the active queue.
+    assert counts.get("changed_query", 0) == 0
 
     actions = list_actions(status="open")
     types = [action.type for action in actions]
 
     assert "best_practice" not in types
     assert sum(action.type in {"stale_source", "outdated_source", "error_source"} for action in actions) == 1
-    assert types.count("changed_query") == 1
+    assert types.count("changed_query") == 0
     flow = next(action for action in actions if action.type == "flow_failed")
     assert flow.asset_type == "flow"
     assert flow.asset_name == "Target Flow"

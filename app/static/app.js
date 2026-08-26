@@ -324,6 +324,153 @@ function actionTypeLabel(type) {
     return labels[type] || String(type || "Alert").replace(/_/g, " ");
 }
 
+function _queryHistoryEndpointForAction(action) {
+    if (action.report_id || (action.asset_type === "report" && action.asset_id)) {
+        return `/api/query-history/report/${action.report_id || action.asset_id}`;
+    }
+    if (action.source_id || (action.asset_type === "source" && action.asset_id)) {
+        return `/api/query-history/materialized-view/${action.source_id || action.asset_id}`;
+    }
+    return "";
+}
+
+function _queryVersionLabel(version) {
+    const prefix = version.is_baseline ? "Baseline" : "Change";
+    return `${prefix} · ${version.detected_at ? formatDate(version.detected_at) : `version ${version.id}`}`;
+}
+
+function _queryHistoryListHtml(groups, endpoint, prefix) {
+    if (!groups || groups.length === 0) {
+        return '<div class="query-history-empty">No query versions captured yet. The next scan will establish a baseline.</div>';
+    }
+    return groups.map((group, groupIndex) => {
+        const versions = group.versions || [];
+        const changes = versions.filter(version => !version.is_baseline).length;
+        const rows = versions.map(version => `
+            <div class="query-history-version">
+                <div>
+                    <strong>${esc(version.is_baseline ? "Baseline" : "Changed")}</strong>
+                    <span>${esc(version.detected_at ? formatDate(version.detected_at) : "Unknown time")}</span>
+                </div>
+                ${version.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
+                    data-query-version="${version.id}"
+                    data-query-previous="${version.previous_version_id}"
+                    data-query-history-endpoint="${esc(endpoint)}">View diff</button>` : ""}
+            </div>
+        `).join("");
+        return `
+            <div class="query-history-group" id="${esc(prefix)}-${groupIndex}">
+                <div class="query-history-group-title">
+                    <span><strong>${esc(group.artifact_name)}</strong> <span class="badge badge-muted">${esc(String(group.language || "query").toUpperCase())}</span></span>
+                    <span>${changes} change${changes === 1 ? "" : "s"}</span>
+                </div>
+                <div class="query-history-versions">${rows}</div>
+            </div>
+        `;
+    }).join("");
+}
+
+async function _openQueryDiffModal(versionId, previousVersionId, historyEndpoint) {
+    let groups;
+    try {
+        groups = await api(historyEndpoint);
+    } catch (error) {
+        toast("Query history could not be loaded: " + error.message);
+        return;
+    }
+    const group = (groups || []).find(item => (item.versions || []).some(version => Number(version.id) === Number(versionId)));
+    if (!group) {
+        toast("This query version is no longer available.");
+        return;
+    }
+    const versions = group.versions || [];
+    const overlay = document.createElement("div");
+    overlay.className = "task-modal-overlay query-diff-overlay";
+    overlay.id = "query-diff-overlay";
+    const options = versions.map(version => `<option value="${version.id}">${esc(_queryVersionLabel(version))}</option>`).join("");
+    overlay.innerHTML = `
+        <div class="task-modal query-diff-modal" role="dialog" aria-modal="true" aria-labelledby="query-diff-title">
+            <div class="query-diff-header">
+                <div>
+                    <h2 id="query-diff-title">${esc(group.artifact_name)} query diff</h2>
+                    <span>${esc(String(group.language || "query").toUpperCase())} · saved Metronome history</span>
+                </div>
+                <button type="button" class="btn-outline query-diff-close" aria-label="Close query diff">&times; Close</button>
+            </div>
+            <div class="query-diff-selectors">
+                <label>Before<select id="query-diff-before">${options}</select></label>
+                <label>After<select id="query-diff-after">${options}</select></label>
+            </div>
+            <div id="query-diff-content" class="query-diff-content"><div class="query-history-empty">Loading comparison...</div></div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    const beforeSelect = overlay.querySelector("#query-diff-before");
+    const afterSelect = overlay.querySelector("#query-diff-after");
+    beforeSelect.value = String(previousVersionId || versions[versions.length - 1]?.id || versionId);
+    afterSelect.value = String(versionId);
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeyDown);
+        overlay.remove();
+    };
+    const onKeyDown = event => { if (event.key === "Escape") close(); };
+    document.addEventListener("keydown", onKeyDown);
+    overlay.querySelector(".query-diff-close").addEventListener("click", close);
+    overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
+
+    const renderComparison = async () => {
+        const content = overlay.querySelector("#query-diff-content");
+        beforeSelect.disabled = true;
+        afterSelect.disabled = true;
+        content.innerHTML = '<div class="query-history-empty">Loading comparison...</div>';
+        try {
+            const diff = await api(`/api/query-history/compare?from_version_id=${encodeURIComponent(beforeSelect.value)}&to_version_id=${encodeURIComponent(afterSelect.value)}`);
+            const rows = (diff.rows || []).map(row => `
+                <tr class="query-diff-${esc(row.kind)}">
+                    <td class="query-diff-line">${row.before_line ?? ""}</td>
+                    <td><pre>${esc(row.before_text ?? "")}</pre></td>
+                    <td class="query-diff-line">${row.after_line ?? ""}</td>
+                    <td><pre>${esc(row.after_text ?? "")}</pre></td>
+                </tr>
+            `).join("");
+            content.innerHTML = `
+                <div class="query-diff-times">
+                    <span>Before: ${esc(diff.before.detected_at ? formatDate(diff.before.detected_at) : "Unknown")}</span>
+                    <span>After: ${esc(diff.after.detected_at ? formatDate(diff.after.detected_at) : "Unknown")}</span>
+                </div>
+                <div class="query-diff-table-wrap"><table class="query-diff-table">
+                    <thead><tr><th colspan="2">Before</th><th colspan="2">After</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div>
+            `;
+        } catch (error) {
+            content.innerHTML = `<div class="query-history-empty query-diff-error">Comparison failed: ${esc(error.message)}</div>`;
+        } finally {
+            beforeSelect.disabled = false;
+            afterSelect.disabled = false;
+        }
+    };
+    beforeSelect.addEventListener("change", renderComparison);
+    afterSelect.addEventListener("change", renderComparison);
+    await renderComparison();
+}
+
+function bindQueryDiffButtons(scope = document) {
+    scope.querySelectorAll(".query-diff-open").forEach(button => {
+        if (button.dataset.queryDiffBound === "1") return;
+        button.dataset.queryDiffBound = "1";
+        button.addEventListener("click", event => {
+            event.stopPropagation();
+            _openQueryDiffModal(
+                Number(button.dataset.queryVersion),
+                Number(button.dataset.queryPrevious),
+                button.dataset.queryHistoryEndpoint,
+            );
+        });
+    });
+}
+
 function alertAssetKind(action) {
     const assetType = String(action.asset_type || "").toLowerCase();
     if (assetType === "report") return "powerbi";
@@ -1267,9 +1414,11 @@ async function showSourceDetail(source) {
     const existing = $("#source-detail");
     if (existing) existing.remove();
 
-    const [reports, scripts] = await Promise.all([
+    const historyEndpoint = `/api/query-history/materialized-view/${source.id}`;
+    const [reports, scripts, queryHistory] = await Promise.all([
         api(`/api/sources/${source.id}/reports`),
         api(`/api/sources/${source.id}/scripts`),
+        api(historyEndpoint).catch(() => []),
     ]);
     const parsed = parseSourceName(source);
 
@@ -1327,6 +1476,11 @@ async function showSourceDetail(source) {
             }</tbody>
         </table>
 
+        ${queryHistory.length ? `
+            <h2>Materialized View Query History</h2>
+            <div class="query-history-list">${_queryHistoryListHtml(queryHistory, historyEndpoint, `source-query-${source.id}`)}</div>
+        ` : ""}
+
         <h2>Freshness Rule</h2>
         ${_freshnessRuleFormHtml(source, { prefix: "source-freshness", wide: true })}
     `;
@@ -1349,6 +1503,7 @@ async function showSourceDetail(source) {
     });
 
     _bindFreshnessRuleForm(panel, source, { prefix: "source-freshness" });
+    bindQueryDiffButtons(panel);
 }
 
 
@@ -1373,10 +1528,12 @@ async function showReportDetail(report) {
         }
     });
 
-    const [tables, unusedData, docData] = await Promise.all([
+    const historyEndpoint = `/api/query-history/report/${report.id}`;
+    const [tables, unusedData, docData, queryHistory] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
         api(`/api/documentation?report_id=${report.id}`).catch(() => []),
+        api(historyEndpoint).catch(() => []),
     ]);
     let doc = docData.length > 0 ? docData[0] : null;
 
@@ -1456,6 +1613,10 @@ async function showReportDetail(report) {
 
     // Known Issues (separate from documentation)
     const hasKnownIssues = doc?.technical_known_issues && doc.technical_known_issues.trim();
+    const queryChangeCount = queryHistory.reduce(
+        (total, group) => total + (group.versions || []).filter(version => !version.is_baseline).length,
+        0,
+    );
 
     const docEditHtml = `
         <div class="doc-inline-edit">
@@ -1520,6 +1681,17 @@ async function showReportDetail(report) {
                     <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">${typeSummary}</span>
                 </div>
                 <div class="rx-body" id="ds-list" style="display:none">${groupedSourcesHtml}</div>
+            </div>
+
+            <div class="rx-section rx-l1">
+                <div class="rx-toggle" data-target="query-history-section">
+                    <span class="rx-arrow">&#9656;</span> Query History
+                    <span class="rx-count">(${queryHistory.length} table${queryHistory.length === 1 ? "" : "s"})</span>
+                    ${queryChangeCount ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.58rem">${queryChangeCount} change${queryChangeCount === 1 ? "" : "s"}</span>` : ""}
+                </div>
+                <div class="rx-body query-history-list" id="query-history-section" style="display:none">
+                    ${_queryHistoryListHtml(queryHistory, historyEndpoint, `report-query-${report.id}`)}
+                </div>
             </div>
 
             <div class="rx-section rx-l1">
@@ -1595,6 +1767,7 @@ async function showReportDetail(report) {
             if (arrow) arrow.innerHTML = showing ? "&#9656;" : "&#9662;";
         });
     });
+    bindQueryDiffButtons(expandRow);
 
     // Clickable sources -> navigate to source detail
     expandRow.querySelectorAll(".report-source-clickable").forEach(el => {
@@ -2061,6 +2234,8 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
         const assetName = shortNameFromPath(rawName) || rawName;
         const linkData = a.asset_type === "source"
             ? `alerts-source-link" data-source-id="${a.asset_id}`
+            : a.asset_type === "report"
+            ? `alerts-go-report" data-report-id="${a.asset_id}`
             : a.asset_type === "scheduled_task"
             ? `alerts-task-link" data-task-id="${a.asset_id}`
             : a.asset_type === "script"
@@ -2087,7 +2262,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
-        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0);
+        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0) || (a.query_changes && a.query_changes.length > 0);
         const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
@@ -2127,12 +2302,23 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 </span>
             </a>`;
         }).join("");
+        const queryHistoryEndpoint = _queryHistoryEndpointForAction(a);
+        const queryChangesHtml = (a.query_changes || []).map(change => `
+            <div class="alerts-query-change">
+                <span><strong>${esc(change.artifact_name)}</strong> <span class="badge badge-muted">${esc(String(change.language || "query").toUpperCase())}</span></span>
+                ${change.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
+                    data-query-version="${change.version_id}"
+                    data-query-previous="${change.previous_version_id}"
+                    data-query-history-endpoint="${esc(queryHistoryEndpoint)}">View diff</button>` : ""}
+            </div>
+        `).join("");
 
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
                 <td colspan="6" class="alerts-expand-cell">
                     ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
                     ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
+                    ${queryChangesHtml ? `<div class="alerts-sources-label">Changed queries:</div><div class="alerts-query-changes">${queryChangesHtml}</div>` : ""}
                     ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
                 </td>
             </tr>
@@ -2226,6 +2412,7 @@ function _waitForElement(selector, timeoutMs = 2000) {
 }
 
 function bindDashboardAlertsRowControls() {
+    bindQueryDiffButtons(document);
     document.querySelectorAll(".fix-first-focus-owner").forEach(btn => {
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -3489,12 +3676,27 @@ async function renderActionsContent() {
             const assetName = a.asset_name || a.source_name || a.report_name || "-";
             const shortAsset = shortNameFromPath(assetName) || assetName;
             const currentOwner = a.assigned_to || "";
+            const historyEndpoint = _queryHistoryEndpointForAction(a);
+            const assetTitle = a.asset_type === "report" && a.asset_id
+                ? `<button type="button" class="action-asset-link action-go-report" data-report-id="${a.asset_id}">${esc(shortAsset)}</button>`
+                : a.asset_type === "source" && a.asset_id
+                ? `<button type="button" class="action-asset-link action-go-source" data-source-id="${a.asset_id}">${esc(shortAsset)}</button>`
+                : esc(shortAsset);
+            const queryChanges = (a.query_changes || []).map(change => `
+                <div class="action-query-change">
+                    <span>${esc(change.artifact_name)} <span class="badge badge-muted">${esc(String(change.language || "query").toUpperCase())}</span></span>
+                    ${change.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
+                        data-query-version="${change.version_id}"
+                        data-query-previous="${change.previous_version_id}"
+                        data-query-history-endpoint="${esc(historyEndpoint)}">View diff</button>` : ""}
+                </div>
+            `).join("");
 
             return `
                 <div class="action-card" data-action-id="${a.id}">
                     <div class="action-indicator ${indColor}"></div>
                     <div class="action-body">
-                        <div class="action-title">${shortAsset}</div>
+                        <div class="action-title">${assetTitle}</div>
                         <div class="action-meta">
                             ${actionTypeBadge(a.type)}
                             <span title="Views in the last 30 days">Views ${fmtInt(a.impact_views_30d || 0)}</span>
@@ -3505,6 +3707,7 @@ async function renderActionsContent() {
                             <span>${timeAgo(a.created_at)}</span>
                         </div>
                         ${a.notes ? `<div class="action-notes">${esc(a.notes)}</div>` : ""}
+                        ${queryChanges ? `<div class="action-query-changes">${queryChanges}</div>` : ""}
                     </div>
                     <div class="action-controls">
                         <div class="status-pill-wrapper">
@@ -3571,6 +3774,8 @@ function _reRenderActionList() {
     container.innerHTML = window._actionsData.renderActionCards(statusFilter, ownerFilter);
     bindActionStatusSelects();
     bindActionOwnerSelects();
+    bindActionAssetLinks();
+    bindQueryDiffButtons(container);
 }
 
 function bindActionsTab() {
@@ -3591,6 +3796,34 @@ function bindActionsTab() {
 
     bindActionStatusSelects();
     bindActionOwnerSelects();
+    bindActionAssetLinks();
+    bindQueryDiffButtons(document);
+}
+
+function bindActionAssetLinks() {
+    document.querySelectorAll(".action-go-report").forEach(button => {
+        if (button.dataset.actionAssetBound === "1") return;
+        button.dataset.actionAssetBound = "1";
+        button.addEventListener("click", async event => {
+            event.stopPropagation();
+            const reportId = Number(button.dataset.reportId);
+            await navigate("reports");
+            const reports = await api("/api/reports").catch(() => []);
+            const report = reports.find(item => Number(item.id) === reportId);
+            if (report) await showReportDetail(report);
+        });
+    });
+    document.querySelectorAll(".action-go-source").forEach(button => {
+        if (button.dataset.actionAssetBound === "1") return;
+        button.dataset.actionAssetBound = "1";
+        button.addEventListener("click", async event => {
+            event.stopPropagation();
+            const sourceId = Number(button.dataset.sourceId);
+            await navigate("sources");
+            const source = await api(`/api/sources/${sourceId}`).catch(() => null);
+            if (source) await showSourceDetail(source);
+        });
+    });
 }
 
 function bindIssuesPage() {
@@ -7851,14 +8084,14 @@ function bindDocumentationPage() {
 // ── Lineage Diagram ──
 
 const LINEAGE_COLS = [
-    { key: "visuals", label: "Visuals" },
-    { key: "tables", label: "Power BI Tables" },
-    { key: "sources", label: "Sources" },
-    { key: "mv_upstream", label: "Source Dependencies" },
-    { key: "flows", label: "Flows" },
-    { key: "scripts", label: "Scripts" },
-    { key: "tasks", label: "Scheduled Tasks" },
     { key: "upstreams", label: "Upstream Systems" },
+    { key: "tasks", label: "Scheduled Tasks" },
+    { key: "scripts", label: "Scripts" },
+    { key: "flows", label: "Flows" },
+    { key: "mv_upstream", label: "Source Dependencies" },
+    { key: "sources", label: "Sources" },
+    { key: "tables", label: "Power BI Tables" },
+    { key: "visuals", label: "Visuals" },
 ];
 
 const LINEAGE_COL_STORAGE_KEY = "lineage_cols_v2";
@@ -7871,6 +8104,20 @@ function _getLineageCols() {
     return defaults;
 }
 function _setLineageCols(state) { sessionStorage.setItem(LINEAGE_COL_STORAGE_KEY, JSON.stringify(state)); }
+
+function _lineageColumnDefs(colState, upstreamColumnDefs = []) {
+    const columnDefs = [];
+    for (const col of LINEAGE_COLS) {
+        if (col.key === "mv_upstream") {
+            if (colState.mv_upstream) {
+                columnDefs.push(...[...upstreamColumnDefs].reverse());
+            }
+        } else if (colState[col.key]) {
+            columnDefs.push({ ...col, stateKey: col.key });
+        }
+    }
+    return columnDefs;
+}
 
 async function renderLineageDiagram() {
     const showArchived = sessionStorage.getItem("lineage_show_archived") === "1";
@@ -8023,10 +8270,10 @@ function _lineageSourceLayers(data, directSourceIds) {
     }
 
     // Assign the longest DAG depth so every non-cyclic dependency edge moves
-    // to the right, even when a shared ancestor is reached by unequal paths.
+    // to an increasing depth, even when a shared ancestor is reached by unequal paths.
     // If malformed data contains a cycle, deterministically break that cycle
-    // at the nearest remaining node; only the cycle's back-edge can then point
-    // left, while downstream dependencies continue at increasing levels.
+    // at the nearest remaining node; downstream dependencies then continue at
+    // increasing levels.
     const reachableIds = new Set(nearestDepth.keys());
     const indegree = new Map([...reachableIds].map(sourceId => [sourceId, 0]));
     for (const sourceId of reachableIds) {
@@ -8394,14 +8641,7 @@ function _renderLineageDiagram(data) {
     }
 
     // Build grid
-    const columnDefs = [];
-    for (const col of LINEAGE_COLS) {
-        if (col.key === "mv_upstream") {
-            if (colState.mv_upstream) columnDefs.push(...upstreamColumnDefs);
-        } else if (colState[col.key]) {
-            columnDefs.push({ ...col, stateKey: col.key });
-        }
-    }
+    const columnDefs = _lineageColumnDefs(colState, upstreamColumnDefs);
     const activeCols = columnDefs.filter(col => colHtml[col.key] || col.key === "visuals" || col.key === "tables");
     const gridCols = activeCols.map(() => "minmax(180px, 1fr)").join(" ");
     let gridH = "";
@@ -8599,35 +8839,35 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
         if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
         if (svg) svgEdges.push({ from: a, to: b });
     }
-    // Visual -> Field (detail)
-    for (const v of visualNodes) for (const fk of v.fields) add(v.id, `field-${fk}`, false);
-    // Page -> Table (SVG)
+    // Field -> Visual (detail)
+    for (const v of visualNodes) for (const fk of v.fields) add(`field-${fk}`, v.id, false);
+    // Table -> Page (SVG)
     const ptDone = new Set();
     for (const v of visualNodes) for (const fk of v.fields) {
         const tbl = fk.split(".")[0];
         const k = `page-${v.page}|table-${tbl}`;
-        if (!ptDone.has(k)) { ptDone.add(k); add(`page-${v.page}`, `table-${tbl}`, true); }
+        if (!ptDone.has(k)) { ptDone.add(k); add(`table-${tbl}`, `page-${v.page}`, true); }
     }
-    // Field -> Table (detail)
-    for (const [tbl, fields] of fieldsByTable) for (const f of fields) add(f.id, `table-${tbl}`, false);
-    // Table -> Source (SVG)
-    for (const t of tableNodes) if (t.source_id) add(`table-${t.name}`, `source-${t.source_id}`, true);
-    // Source -> Script (SVG)
-    for (const s of scriptNodes) for (const sid of (s.source_ids || [])) add(`source-${sid}`, `script-${s.id}`, true);
-    // Script -> Task (SVG)
-    for (const t of taskNodes) add(`script-${t.script_id}`, `task-${t.id}`, true);
-    // Source -> Upstream dependency (MV -> upstream table) (SVG)
+    // Table -> Field (detail)
+    for (const [tbl, fields] of fieldsByTable) for (const f of fields) add(`table-${tbl}`, f.id, false);
+    // Source -> Table (SVG)
+    for (const t of tableNodes) if (t.source_id) add(`source-${t.source_id}`, `table-${t.name}`, true);
+    // Script -> Source (SVG)
+    for (const s of scriptNodes) for (const sid of (s.source_ids || [])) add(`script-${s.id}`, `source-${sid}`, true);
+    // Task -> Script (SVG)
+    for (const t of taskNodes) add(`task-${t.id}`, `script-${t.script_id}`, true);
+    // Upstream dependency -> target source (upstream table -> MV) (SVG)
     for (const d of (data.source_deps || [])) {
-        add(`source-${d.source_id}`, `source-${d.depends_on_id}`, true);
+        add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true);
     }
-    // Target source -> Flow that loads it (SVG)
+    // Flow -> target source (SVG)
     for (const flow of (data.flows || [])) {
         for (const sourceId of (flow.target_source_ids || [])) {
-            add(`source-${sourceId}`, `flow-${flow.id}`, true);
+            add(`flow-${flow.id}`, `source-${sourceId}`, true);
         }
     }
-    // Source -> Upstream system (SVG)
-    for (const s of sourceNodes) if (s.upstream_id) add(`source-${s.id}`, `upstream-${s.upstream_id}`, true);
+    // Upstream system -> source (SVG)
+    for (const s of sourceNodes) if (s.upstream_id) add(`upstream-${s.upstream_id}`, `source-${s.id}`, true);
 
     window._linFwd = fwd;
     window._linBwd = bwd;
@@ -9023,10 +9263,10 @@ function _traceLinLineage(startId) {
     const fwd = window._linFwd, bwd = window._linBwd;
     if (!fwd || !bwd) return new Set([startId]);
     const visited = new Set();
-    // Forward (toward upstream/right)
+    // Forward (toward consumers/right)
     const q1 = [startId];
     while (q1.length) { const c = q1.shift(); if (visited.has(c)) continue; visited.add(c); const n = fwd.get(c); if (n) for (const x of n) if (!visited.has(x)) q1.push(x); }
-    // Backward (toward visuals/left) - separate seen set so startId gets reprocessed
+    // Backward (toward producers/left) - separate seen set so startId gets reprocessed
     const bwdSeen = new Set();
     const q2 = [startId];
     while (q2.length) { const c = q2.shift(); if (bwdSeen.has(c)) continue; bwdSeen.add(c); visited.add(c); const n = bwd.get(c); if (n) for (const x of n) if (!bwdSeen.has(x)) q2.push(x); }

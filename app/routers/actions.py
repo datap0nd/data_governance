@@ -47,7 +47,7 @@ def _compute_report_context(db, source_days: dict[int, int]):
     Active (non-archived) reports are preferred, but archived reports are
     still included so the Alerts table matches what Sources page shows.
     """
-    rows = db.execute("""
+    direct_rows = db.execute("""
         SELECT rt.source_id, rt.report_id, r.name AS report_name,
                COALESCE(r.archived, 0) AS archived
         FROM report_tables rt
@@ -55,14 +55,35 @@ def _compute_report_context(db, source_days: dict[int, int]):
         WHERE rt.source_id IS NOT NULL
         ORDER BY archived ASC, r.name ASC
     """).fetchall()
+    # Include reports reached through downstream lineage so an upstream MV
+    # definition alert retains the impacted-report context.
+    context_rows = db.execute("""
+        WITH RECURSIVE source_reports(source_id, report_id) AS (
+            SELECT rt.source_id, rt.report_id
+            FROM report_tables rt
+            WHERE rt.source_id IS NOT NULL
+            UNION
+            SELECT sd.depends_on_id, sr.report_id
+            FROM source_dependencies sd
+            JOIN source_reports sr ON sr.source_id = sd.source_id
+        )
+        SELECT sr.source_id, sr.report_id, r.name AS report_name,
+               COALESCE(r.archived, 0) AS archived
+        FROM source_reports sr
+        JOIN reports r ON r.id = sr.report_id
+        ORDER BY archived ASC, r.name ASC
+    """).fetchall()
 
     source_reports: dict[int, list[tuple[int, str]]] = {}
     report_sources: dict[int, list[int]] = {}
     report_names: dict[int, str] = {}
-    for r in rows:
+    for r in context_rows:
         sid = r["source_id"]
         rid = r["report_id"]
         source_reports.setdefault(sid, []).append((rid, r["report_name"]))
+    for r in direct_rows:
+        sid = r["source_id"]
+        rid = r["report_id"]
         report_sources.setdefault(rid, []).append(sid)
         report_names[rid] = r["report_name"]
 
@@ -188,7 +209,7 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
     if action_type == "broken_ref":
         return "Update the report to point at an existing source, or remove the unused table."
     if action_type == "changed_query":
-        return "Review the query change - confirm downstream usage is still correct."
+        return "Open the saved query diff and confirm downstream usage is still correct."
     if action_type == "schedule_discrepancy":
         return "Move the upstream, source, or report schedule so each dependent step runs after its inputs."
     if action_type == "documentation_missing":
@@ -361,6 +382,28 @@ def list_actions(status: str | None = None):
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
 
+        query_change_map: dict[int, list[dict]] = {}
+        action_ids = [int(row["id"]) for row in rows]
+        if action_ids:
+            placeholders = ",".join("?" for _ in action_ids)
+            version_rows = db.execute(
+                f"""SELECT action_id, id AS version_id, previous_version_id,
+                            artifact_kind, artifact_name, language, detected_at
+                     FROM query_versions
+                     WHERE action_id IN ({placeholders})
+                     ORDER BY artifact_name COLLATE NOCASE, id""",
+                action_ids,
+            ).fetchall()
+            for version in version_rows:
+                query_change_map.setdefault(int(version["action_id"]), []).append({
+                    "version_id": version["version_id"],
+                    "previous_version_id": version["previous_version_id"],
+                    "artifact_kind": version["artifact_kind"],
+                    "artifact_name": version["artifact_name"],
+                    "language": version["language"],
+                    "detected_at": version["detected_at"],
+                })
+
         source_days = _compute_source_days_outdated(db)
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
         report_days = _compute_report_action_days(db)
@@ -497,6 +540,7 @@ def list_actions(status: str | None = None):
             check_id=r["check_id"] if "check_id" in r.keys() else None,
             impact_views_30d=impact_views_30d,
             degraded_since=r["created_at"],
+            query_changes=query_change_map.get(int(r["id"]), []),
             pbi_refresh_error=r["pbi_refresh_error"] if rid is not None else None,
             created_at=r["created_at"],
             updated_at=r["updated_at"],

@@ -12,6 +12,13 @@ import logging
 from datetime import datetime, timezone
 
 from app.database import get_db
+from app.asset_visibility import get_active_source_ids
+from app.query_history import (
+    MATERIALIZED_VIEW_KIND,
+    link_versions_to_action,
+    mv_artifact_key,
+    observe_query,
+)
 from app.scanner.prober import _get_pg_connection
 
 logger = logging.getLogger(__name__)
@@ -62,7 +69,7 @@ def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
     return cursor.lastrowid
 
 
-def scan_pg_dependencies() -> dict:
+def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
     """Scan PostgreSQL for materialized view dependencies.
 
     Uses pg_depend/pg_rewrite catalog tables to find real table dependencies
@@ -82,7 +89,11 @@ def scan_pg_dependencies() -> dict:
     pg_conn = _get_pg_connection()
 
     if pg_conn is None:
-        return {"status": "skipped", "reason": "No PostgreSQL credentials configured"}
+        return {
+            "status": "skipped",
+            "reason": "No PostgreSQL credentials configured",
+            "changed_queries": 0,
+        }
 
     try:
         pg_cur = pg_conn.cursor()
@@ -114,8 +125,26 @@ def scan_pg_dependencies() -> dict:
         """)
         dep_rows = pg_cur.fetchall()
 
-        if not dep_rows:
-            return {"status": "completed", "mvs_found": 0, "deps_created": 0}
+        # Definition capture is intentionally independent of dependency
+        # discovery. If permissions or a test adapter cannot expose pg_matviews,
+        # lineage still refreshes and no false query-change alert is produced.
+        mv_definitions: dict[str, str] = {}
+        definition_error = None
+        try:
+            pg_cur.execute("""
+                SELECT schemaname, matviewname, definition
+                FROM pg_matviews
+                ORDER BY schemaname, matviewname
+            """)
+            definition_rows = pg_cur.fetchall()
+            for row in definition_rows:
+                if len(row) != 3:
+                    raise ValueError("PostgreSQL adapter returned an unexpected pg_matviews row")
+                schema, name, definition = row
+                mv_definitions[f"{schema}.{name}"] = definition or ""
+        except Exception as exc:
+            definition_error = str(exc)
+            logger.warning("MV definition capture skipped: %s", exc)
 
         # Group by MV
         mv_deps = {}
@@ -127,7 +156,9 @@ def scan_pg_dependencies() -> dict:
 
         mvs_found = 0
         deps_created = 0
+        changed_queries = 0
         log_lines = []
+        query_change_lines = []
 
         with get_db() as db:
             # Clear old dependency edges (rebuild each time)
@@ -182,6 +213,94 @@ def scan_pg_dependencies() -> dict:
                 if not progressed:
                     break
 
+            # Version only catalog MVs already present in the active Metronome
+            # graph. This includes report sources and reachable upstream MVs,
+            # while unrelated database objects remain invisible.
+            active_source_ids = get_active_source_ids(db)
+            for full_mv_name, definition in sorted(mv_definitions.items()):
+                mv_source = db.execute(
+                    """SELECT id, name, owner FROM sources
+                       WHERE COALESCE(archived, 0) = 0
+                         AND (name = ? OR connection_info = ? OR connection_info LIKE ?)
+                       ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END, id
+                       LIMIT 1""",
+                    (full_mv_name, full_mv_name, f"%/{full_mv_name}", full_mv_name),
+                ).fetchone()
+                if not mv_source or int(mv_source["id"]) not in active_source_ids:
+                    continue
+
+                source_id = int(mv_source["id"])
+                observation = observe_query(
+                    db,
+                    artifact_kind=MATERIALIZED_VIEW_KIND,
+                    artifact_key=mv_artifact_key(source_id),
+                    report_id=None,
+                    source_id=source_id,
+                    artifact_name=full_mv_name,
+                    language="sql",
+                    query_text=definition,
+                    scan_run_id=scan_run_id,
+                    detected_at=now,
+                )
+                if not observation.changed:
+                    continue
+
+                changed_queries += 1
+                fingerprint = f"changed_query:mv:{source_id}:{observation.query_hash[:16]}"
+                owner = mv_source["owner"]
+                if not owner:
+                    owner_row = db.execute(
+                        """WITH RECURSIVE downstream_sources(id) AS (
+                               SELECT ?
+                               UNION
+                               SELECT sd.source_id
+                               FROM source_dependencies sd
+                               JOIN downstream_sources ds ON sd.depends_on_id = ds.id
+                           )
+                           SELECT r.owner FROM report_tables rt
+                           JOIN reports r ON r.id = rt.report_id
+                           JOIN downstream_sources ds ON ds.id = rt.source_id
+                           WHERE 1 = 1
+                             AND COALESCE(r.archived, 0) = 0
+                             AND NULLIF(TRIM(r.owner), '') IS NOT NULL
+                           ORDER BY r.id LIMIT 1""",
+                        (source_id,),
+                    ).fetchone()
+                    owner = owner_row["owner"] if owner_row else None
+
+                db.execute(
+                    """UPDATE actions
+                       SET status='resolved', resolved_at=?, updated_at=?,
+                           notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
+                       WHERE source_id=? AND report_id IS NULL AND type='changed_query'
+                         AND fingerprint!=?
+                         AND status IN ('open','acknowledged','investigating')""",
+                    (now, now, source_id, fingerprint),
+                )
+                prior = db.execute(
+                    """SELECT id FROM actions
+                       WHERE fingerprint=? AND status!='resolved'
+                       ORDER BY id DESC LIMIT 1""",
+                    (fingerprint,),
+                ).fetchone()
+                notes = f"Materialized view definition changed for {full_mv_name}."
+                if prior:
+                    action_id = int(prior["id"])
+                    db.execute(
+                        "UPDATE actions SET notes=?, assigned_to=?, updated_at=? WHERE id=?",
+                        (notes, owner, now, action_id),
+                    )
+                else:
+                    cursor = db.execute(
+                        """INSERT INTO actions
+                           (source_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
+                           VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
+                        (source_id, owner, notes, fingerprint, now, now),
+                    )
+                    action_id = int(cursor.lastrowid)
+                link_versions_to_action(db, [observation.version_id], action_id)
+                query_change_lines.append(f"CHANGED MV QUERY: {full_mv_name}")
+
             # Clean up orphaned sources created by pg_deps or pg_matviews
             # that no longer have any dependency edges or script references
             db.execute("""
@@ -191,6 +310,7 @@ def scan_pg_dependencies() -> dict:
                   AND id NOT IN (SELECT source_id FROM source_dependencies)
                   AND id NOT IN (SELECT source_id FROM report_tables WHERE source_id IS NOT NULL)
                   AND id NOT IN (SELECT source_id FROM script_tables WHERE source_id IS NOT NULL)
+                  AND id NOT IN (SELECT source_id FROM query_versions WHERE source_id IS NOT NULL)
             """)
 
             sources_created = db.execute(
@@ -203,8 +323,13 @@ def scan_pg_dependencies() -> dict:
             "mvs_found": mvs_found,
             "deps_created": deps_created,
             "sources_created": sources_created,
+            "changed_queries": changed_queries,
+            "definition_status": "skipped" if definition_error else "completed",
             "log": "\n".join(log_lines) if log_lines else "No MV dependencies found.",
+            "query_change_log": "\n".join(query_change_lines),
         }
+        if definition_error:
+            summary["definition_error"] = definition_error
         logger.info("PG dependency scan completed: %s", summary)
         return summary
 

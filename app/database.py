@@ -128,6 +128,23 @@ CREATE TABLE IF NOT EXISTS actions (
     resolved_at     DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS query_versions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_kind       TEXT NOT NULL,
+    artifact_key        TEXT NOT NULL,
+    report_id           INTEGER REFERENCES reports(id),
+    source_id           INTEGER REFERENCES sources(id),
+    artifact_name       TEXT NOT NULL,
+    language            TEXT NOT NULL,
+    query_text          TEXT NOT NULL,
+    query_hash          TEXT NOT NULL,
+    previous_version_id INTEGER REFERENCES query_versions(id),
+    scan_run_id         INTEGER REFERENCES scan_runs(id),
+    action_id           INTEGER REFERENCES actions(id),
+    is_baseline         INTEGER DEFAULT 0,
+    detected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS upstream_systems (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT UNIQUE NOT NULL,
@@ -332,6 +349,10 @@ CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
+CREATE INDEX IF NOT EXISTS idx_query_versions_artifact ON query_versions(artifact_key, id DESC);
+CREATE INDEX IF NOT EXISTS idx_query_versions_report ON query_versions(report_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_query_versions_source ON query_versions(source_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_query_versions_action ON query_versions(action_id);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_pbi_recurrences_next_run ON pbi_recurrences(enabled, next_run_at);
@@ -959,6 +980,27 @@ MIGRATIONS = [
     "ALTER TABLE actions ADD COLUMN check_id INTEGER REFERENCES checks(id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_actions_check_id ON actions(check_id)",
+    # Durable Power Query / materialized-view definition history.
+    """CREATE TABLE IF NOT EXISTS query_versions (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        artifact_kind       TEXT NOT NULL,
+        artifact_key        TEXT NOT NULL,
+        report_id           INTEGER REFERENCES reports(id),
+        source_id           INTEGER REFERENCES sources(id),
+        artifact_name       TEXT NOT NULL,
+        language            TEXT NOT NULL,
+        query_text          TEXT NOT NULL,
+        query_hash          TEXT NOT NULL,
+        previous_version_id INTEGER REFERENCES query_versions(id),
+        scan_run_id         INTEGER REFERENCES scan_runs(id),
+        action_id           INTEGER REFERENCES actions(id),
+        is_baseline         INTEGER DEFAULT 0,
+        detected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_artifact ON query_versions(artifact_key, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_report ON query_versions(report_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_source ON query_versions(source_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_query_versions_action ON query_versions(action_id)",
     # Data-quality check metadata. The original tables existed without a
     # usable runner or management surface.
     "ALTER TABLE checks ADD COLUMN name TEXT",
@@ -1222,6 +1264,21 @@ def init_db():
                 pass  # column already exists
             else:
                 raise
+    # Old query-change actions were attached only to a deduplicated source and
+    # cannot be mapped reliably to the report table whose M expression changed.
+    # Any v2 action has at least one query_versions row, so this cleanup is safe
+    # to run on every startup and also repairs partially-created legacy rows.
+    conn.execute(
+        """UPDATE actions
+           SET status = 'resolved', resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP),
+               updated_at = CURRENT_TIMESTAMP,
+               notes = COALESCE(notes, '') || ' [auto-resolved: legacy unattributed query change]'
+           WHERE type = 'changed_query'
+             AND status IN ('open', 'acknowledged', 'investigating')
+             AND NOT EXISTS (
+                 SELECT 1 FROM query_versions qv WHERE qv.action_id = actions.id
+             )"""
+    )
     conn.commit()
     conn.close()
 

@@ -125,7 +125,9 @@ class FakeGscmPage:
                  url="https://mdscm.sec.samsung.net/nexa/index.html",
                  always_busy=False, busy_polls=0, popup_ids=(),
                  hidden_rows=None, gear_id=None, scroll_rows=None,
-                 dataset_rows=None):
+                 dataset_rows=None, popup_records=None,
+                 popup_dom_noop_ids=(), popup_persistent_ids=(),
+                 popup_cascades=None):
         # hidden_rows: {folder name: [rows revealed when that folder is clicked]}
         self.hidden_rows = dict(hidden_rows or {})
         # scroll_rows: rows that only exist once the tree has been paged down.
@@ -141,12 +143,30 @@ class FakeGscmPage:
         self.url = url
         self.always_busy = always_busy
         self.busy_polls = busy_polls
-        self.popup_ids = list(popup_ids)
+        self.popups = [dict(record) for record in (popup_records or [])]
+        self.popups.extend({
+            "container_id": element_id,
+            "x": 1100, "y": 0, "w": 300, "h": 160,
+            "closers": [{
+                "id": element_id, "text": "", "x": 1370, "y": 10,
+                "w": 20, "h": 20,
+            }],
+        } for element_id in popup_ids)
+        self.popup_dom_noop_ids = {
+            flow_gscm._component_element_ids(value)[0]
+            for value in popup_dom_noop_ids
+        }
+        self.popup_persistent_ids = {
+            flow_gscm._component_element_ids(value)[0]
+            for value in popup_persistent_ids
+        }
+        self.popup_cascades = dict(popup_cascades or {})
         self.dataset_rows = dataset_rows
         self.tab = "Public"
         self.clicks = []
         self.navigations = []
         self.wait_window_hidden = 0
+        self.waits = []
         self.components = {"mainframe.VFrameSet", EXCEL_BUTTON}
         if gear:
             self.components.add(self.gear_id)
@@ -155,6 +175,12 @@ class FakeGscmPage:
 
     def on_click(self, element_id):
         self.clicks.append(element_id)
+        popup = self._popup_for_closer(element_id)
+        if popup is not None:
+            component_id = flow_gscm._component_element_ids(element_id)[0]
+            if component_id not in self.popup_dom_noop_ids:
+                self._dismiss_popup(popup, component_id)
+            return
         record = next(
             (item for item in self._screen() if item["id"] == element_id), None,
         )
@@ -200,7 +226,33 @@ class FakeGscmPage:
         self.url = url
 
     def wait_for_timeout(self, _ms):
+        self.waits.append(_ms)
+
+    def _popup_for_closer(self, element_id):
+        component_id = flow_gscm._component_element_ids(element_id)[0]
+        for popup in self.popups:
+            for closer in popup.get("closers") or []:
+                candidates = flow_gscm._component_element_ids(closer.get("id"))
+                if candidates and candidates[0] == component_id:
+                    return popup
         return None
+
+    def _dismiss_popup(self, popup, component_id):
+        if component_id in self.popup_persistent_ids:
+            return
+        if popup in self.popups:
+            self.popups.remove(popup)
+        self.popups.extend(
+            dict(record) for record in self.popup_cascades.get(component_id, [])
+        )
+
+    def _popup_close_ids(self):
+        return {
+            element_id
+            for popup in self.popups
+            for closer in popup.get("closers") or []
+            for element_id in flow_gscm._component_element_ids(closer.get("id"))
+        }
 
     def _icon_records(self):
         if not self.dialog_open:
@@ -215,7 +267,7 @@ class FakeGscmPage:
             wanted = selector[len("[id='"):-len("']")].replace("\\'", "'").replace("\\\\", "\\")
             matches = [wanted] if any(
                 item["id"] == wanted for item in self._screen()
-            ) or wanted in self.components else []
+            ) or wanted in self.components or wanted in self._popup_close_ids() else []
         elif selector.startswith("[id*='"):
             fragment = selector[len("[id*='"):-len("']")]
             matches = sorted(item for item in self.components if fragment in item)
@@ -253,8 +305,28 @@ class FakeGscmPage:
                 self.scrolled.add(self.tab)
                 return {"moved": True, "top": 100, "max": 400}
             return {"moved": False, "top": 0, "max": 0}
-        if "lowered.includes('popup')" in script:
-            return list(self.popup_ids)
+        if "const popupPattern" in script:
+            return [
+                {**popup, "closers": [dict(item) for item in popup.get("closers") or []]}
+                for popup in self.popups
+            ]
+        if "targetIds" in script:
+            for element_id in argument or []:
+                records = [*self._screen(), *self._icon_records()]
+                match = next((item for item in records if item.get("id") == element_id), None)
+                if match:
+                    return {
+                        "id": element_id, "x": match.get("x", 0), "y": match.get("y", 0),
+                        "w": match.get("w", 0), "h": match.get("h", 0),
+                    }
+            return None
+        if "on_fire_onclick" in script and isinstance(argument, str):
+            popup = self._popup_for_closer(argument)
+            if popup is not None:
+                component_id = flow_gscm._component_element_ids(argument)[0]
+                self._dismiss_popup(popup, component_id)
+                return {"available": True, "fired": True, "component_id": component_id}
+            return {"available": False, "fired": False, "reason": "missing"}
         if "hints.some" in script:
             return [
                 {"id": item, "x": 1700, "y": 300}
@@ -284,6 +356,22 @@ def _collect_progress():
         events.append((status, detail))
 
     return events, report_progress
+
+
+def _popup(
+    container_id="mainframe.VFrameSet.TopFrame.form.div_notice",
+    close_id=None,
+    *, x=1100, y=0, w=300, h=160, close_text="",
+):
+    close_id = close_id or f"{container_id}.form.btn_close:icontext"
+    return {
+        "container_id": container_id,
+        "x": x, "y": y, "w": w, "h": h,
+        "closers": [{
+            "id": close_id, "text": close_text,
+            "x": x + w - 30, "y": y + 10, "w": 20, "h": 20,
+        }],
+    }
 
 
 def _discover(page=None, job=None):
@@ -531,6 +619,184 @@ def test_a_stuck_wait_overlay_is_forced_down_instead_of_hanging_the_run():
     page = FakeGscmPage(always_busy=True)
     assert flow_gscm.wait_for_calculation(page, timeout_ms=2_000) is False
     assert page.wait_window_hidden >= 1
+
+
+# ── Portal popup cleanup ──
+
+
+def test_popup_detector_uses_id_vocabulary_without_z_index_guesses():
+    script = flow_gscm._POPUP_RECORDS_JS
+    for marker in ("popup", "notice", "alert", "message", "msg", "confirm", "pdv_"):
+        assert marker in script
+    assert "topframe.setting1" in script
+    assert "div_favorite" in script
+    assert "mainframe.waitwindow" in script
+    assert "zIndex" not in script
+
+
+@pytest.mark.parametrize(
+    ("container_id", "close_id", "close_text"),
+    [
+        ("mainframe.portal_popup", "mainframe.portal_popup.close", ""),
+        (
+            "mainframe.VFrameSet.TopFrame.form.div_notice",
+            "mainframe.VFrameSet.TopFrame.form.div_notice.form.btn_close:icontext",
+            "",
+        ),
+        (
+            "mainframe.VFrameSet.TopFrame.form.div_msg",
+            "mainframe.VFrameSet.TopFrame.form.div_msg.form.btn_x:icontext",
+            "×",
+        ),
+    ],
+)
+def test_popup_close_uses_the_owning_component_first(container_id, close_id, close_text):
+    page = FakeGscmPage(popup_records=[_popup(
+        container_id, close_id, close_text=close_text,
+    )])
+
+    assert flow_gscm.clear_screen(page) == []
+
+    assert page.popups == []
+    assert page.clicks[0] == flow_gscm._component_element_ids(close_id)[0]
+    assert page.waits == [flow_gscm.POPUP_VERIFY_INTERVAL_MS]
+
+
+def test_clear_screen_adds_no_verification_wait_when_no_popup_was_seen():
+    page = FakeGscmPage()
+
+    assert flow_gscm.clear_screen(page) == []
+
+    assert page.waits == []
+
+
+def test_a_popup_that_survives_dom_click_uses_the_exact_native_component():
+    close_id = "mainframe.VFrameSet.TopFrame.form.div_alert.form.btn_close:icontext"
+    component_id = flow_gscm._component_element_ids(close_id)[0]
+    page = FakeGscmPage(
+        popup_records=[_popup(
+            "mainframe.VFrameSet.TopFrame.form.div_alert", close_id,
+        )],
+        popup_dom_noop_ids=[component_id],
+    )
+
+    assert flow_gscm.clear_screen(page) == []
+
+    assert component_id in page.clicks
+    assert page.popups == []
+    assert page.waits == [
+        flow_gscm.POPUP_VERIFY_INTERVAL_MS,
+        flow_gscm.POPUP_VERIFY_INTERVAL_MS,
+    ]
+
+
+def test_cascading_popups_are_each_closed_within_the_same_verification_pass():
+    first_close = "mainframe.first_popup.btn_close"
+    second_close = "mainframe.second_notice.btn_x:icontext"
+    first_component = flow_gscm._component_element_ids(first_close)[0]
+    second_component = flow_gscm._component_element_ids(second_close)[0]
+    page = FakeGscmPage(
+        popup_records=[_popup("mainframe.first_popup", first_close)],
+        popup_cascades={first_component: [
+            _popup("mainframe.second_notice", second_close),
+        ]},
+    )
+
+    assert flow_gscm.clear_screen(page) == []
+
+    assert first_component in page.clicks
+    assert second_component in page.clicks
+    assert page.popups == []
+
+
+class AutoVanishingPopupPage(FakeGscmPage):
+    def evaluate(self, script, argument=None):
+        if "const popupPattern" in script and self.popups:
+            records = super().evaluate(script, argument)
+            self.popups.clear()
+            return records
+        return super().evaluate(script, argument)
+
+
+def test_an_auto_vanishing_popup_is_not_an_error():
+    page = AutoVanishingPopupPage(popup_records=[_popup()])
+
+    assert flow_gscm.clear_screen(page, target=GEAR_ID) == []
+    assert page.popups == []
+
+
+def test_a_persistent_non_overlapping_popup_remains_best_effort():
+    close_id = "mainframe.side_notice.btn_close"
+    component_id = flow_gscm._component_element_ids(close_id)[0]
+    page = FakeGscmPage(
+        popup_records=[_popup(
+            "mainframe.side_notice", close_id, x=100, y=500, w=200, h=120,
+        )],
+        popup_persistent_ids=[component_id],
+    )
+
+    remaining = flow_gscm.clear_screen(page, target=GEAR_ID)
+
+    assert [item["container_id"] for item in remaining] == ["mainframe.side_notice"]
+    assert component_id in page.clicks
+
+
+def test_a_persistent_overlapping_popup_stops_before_the_gear_click():
+    close_id = "mainframe.top_notice.btn_close"
+    component_id = flow_gscm._component_element_ids(close_id)[0]
+    page = FakeGscmPage(
+        popup_records=[_popup(
+            "mainframe.top_notice", close_id, x=1600, y=0, w=140, h=80,
+        )],
+        popup_persistent_ids=[component_id],
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.open_favorites_dialog(page)
+
+    message = str(excinfo.value)
+    assert "popup blocked control" in message
+    assert "mainframe.top_notice" in message
+    assert close_id in message
+    assert GEAR_ID in message
+    assert "On screen:" in message
+    assert GEAR_ID not in page.clicks
+
+
+def test_a_forbidden_popup_control_is_never_clicked():
+    close_id = "mainframe.confirm_popup.form.btn_save_close"
+    page = FakeGscmPage(popup_records=[_popup(
+        "mainframe.confirm_popup", close_id, x=1600, y=0, w=140, h=80,
+    )])
+
+    with pytest.raises(RuntimeError, match="popup blocked control"):
+        flow_gscm.open_favorites_dialog(page)
+
+    assert not any("save" in element_id.casefold() for element_id in page.clicks)
+    assert GEAR_ID not in page.clicks
+
+
+def test_dataset_scan_and_saved_flow_inherit_the_existing_popup_cleanup_path():
+    dataset_page = FakeGscmPage(
+        popup_records=[_popup()],
+        dataset_rows=[{
+            "userreportid": "RC_1", "userreportname": "Dataset bookmark",
+            "scope": "AS", "publicscope": "Public", "menuid": "AS470",
+        }],
+    )
+    reports, _complete = flow_gscm.discover_catalog(
+        dataset_page, _scan_job(), _collect_progress()[1],
+    )
+    assert [item["name"] for item in reports] == ["Dataset bookmark"]
+    assert dataset_page.popups == []
+
+    flow_page = FakeGscmPage(popup_records=[_popup()])
+    flow_gscm.open_bookmark(flow_page, _run_job())
+    assert flow_page.popups == []
+    close_component = flow_gscm._component_element_ids(
+        _popup()["closers"][0]["id"],
+    )[0]
+    assert flow_page.clicks.index(close_component) < flow_page.clicks.index(GEAR_ID)
 
 
 # ── Download ──
@@ -1120,19 +1386,20 @@ class NativeOnlyControlPage(FakeGscmPage):
         return []
 
     def evaluate(self, script, argument=None):
-        candidates = self._argument_ids(argument)
-        if GEAR_ID in candidates:
-            self.native_clicks.append(GEAR_ID)
-            self.dialog_open = True
-            return {"available": True, "fired": True, "component_id": GEAR_ID}
-        if self.PUBLIC_COMPONENT_ID in candidates:
-            self.native_clicks.append(self.PUBLIC_COMPONENT_ID)
-            self.tab = "Public"
-            return {
-                "available": True,
-                "fired": True,
-                "component_id": self.PUBLIC_COMPONENT_ID,
-            }
+        if "on_fire_onclick" in script:
+            candidates = self._argument_ids(argument)
+            if GEAR_ID in candidates:
+                self.native_clicks.append(GEAR_ID)
+                self.dialog_open = True
+                return {"available": True, "fired": True, "component_id": GEAR_ID}
+            if self.PUBLIC_COMPONENT_ID in candidates:
+                self.native_clicks.append(self.PUBLIC_COMPONENT_ID)
+                self.tab = "Public"
+                return {
+                    "available": True,
+                    "fired": True,
+                    "component_id": self.PUBLIC_COMPONENT_ID,
+                }
         return super().evaluate(script, argument)
 
 

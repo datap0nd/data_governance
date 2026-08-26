@@ -23,6 +23,12 @@ from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
 from app.asset_visibility import get_active_source_ids
+from app.query_history import (
+    REPORT_M_KIND,
+    link_versions_to_action,
+    observe_query,
+    report_artifact_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -297,59 +303,14 @@ def run_scan(
 
                 if existing:
                     source_id = existing["id"]
-                    old_query = existing["source_query"] or ""
                     new_query = source_info.raw_expression or ""
-                    if old_query != new_query:
-                        changed_queries += 1
-                        db.execute(
-                            "UPDATE sources SET source_query = ?, connection_info = ?, updated_at = ? WHERE id = ?",
-                            (new_query, source_info.connection_info, now, source_id),
-                        )
-                        log_lines.append(f"CHANGED: {source_info.display_name} query updated")
-                        owner = existing["owner"]
-                        if not owner:
-                            owner_row = db.execute(
-                                """SELECT r.owner FROM report_tables rt
-                                   JOIN reports r ON r.id = rt.report_id
-                                   WHERE rt.source_id = ? AND NULLIF(TRIM(r.owner), '') IS NOT NULL
-                                   ORDER BY r.id LIMIT 1""",
-                                (source_id,),
-                            ).fetchone()
-                            owner = owner_row["owner"] if owner_row else None
-                        fingerprint = (
-                            f"changed_query:{source_id}:"
-                            f"{hashlib.sha256(new_query.encode('utf-8')).hexdigest()[:16]}"
-                        )
-                        prior = db.execute(
-                            "SELECT id FROM actions WHERE fingerprint = ? AND status != 'resolved'",
-                            (fingerprint,),
-                        ).fetchone()
-                        notes = (
-                            f"Source query changed for {source_info.display_name}. "
-                            f"Previous: {old_query[:1200] or '[empty]'} | "
-                            f"Current: {new_query[:1200] or '[empty]'}"
-                        )
-                        db.execute(
-                            """UPDATE actions
-                               SET status='resolved', resolved_at=?, updated_at=?,
-                                   notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
-                               WHERE source_id=? AND type='changed_query'
-                                 AND fingerprint!=?
-                                 AND status IN ('open','acknowledged','investigating')""",
-                            (now, now, source_id, fingerprint),
-                        )
-                        if prior:
-                            db.execute(
-                                "UPDATE actions SET notes = ?, assigned_to = ?, updated_at = ? WHERE id = ?",
-                                (notes, owner, now, prior["id"]),
-                            )
-                        else:
-                            db.execute(
-                                """INSERT INTO actions
-                                   (source_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
-                                   VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
-                                (source_id, owner, notes, fingerprint, now, now),
-                            )
+                    # Keep the legacy representative expression for backwards
+                    # compatibility, but never use it for change detection. One
+                    # source may be shared by many reports with different M.
+                    db.execute(
+                        "UPDATE sources SET source_query = ?, connection_info = ?, updated_at = ? WHERE id = ?",
+                        (new_query, source_info.connection_info, now, source_id),
+                    )
                 else:
                     db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
@@ -395,6 +356,7 @@ def run_scan(
 
                 # Upsert report tables
                 from app.scanner.tmdl_parser import is_auto_table
+                report_query_changes: list[dict] = []
                 for table in report.tables:
                     assert_not_cancelled(generation, "Report scan")
                     # Skip Power BI auto-generated internal tables
@@ -404,6 +366,11 @@ def run_scan(
                     source = getattr(table, "source", None)
                     m_expression = getattr(table, "m_expression", None)
                     is_metadata = getattr(table, "is_metadata", False)
+                    existing_table = db.execute(
+                        """SELECT id, source_id, source_expression, last_scanned
+                           FROM report_tables WHERE report_id = ? AND table_name = ?""",
+                        (report_id, table.table_name),
+                    ).fetchone()
 
                     if source and not is_metadata and is_folder_like_file_source(source):
                         log_lines.append(
@@ -433,6 +400,34 @@ def run_scan(
                             )
 
                     if not is_metadata:
+                        # Version M at report-table grain. A brand-new table is
+                        # a baseline; an existing table moving to/from an empty
+                        # expression is a real addition/removal.
+                        if m_expression is not None or (
+                            existing_table is not None and existing_table["source_expression"] is not None
+                        ):
+                            observation = observe_query(
+                                db,
+                                artifact_kind=REPORT_M_KIND,
+                                artifact_key=report_artifact_key(report_id, table.table_name),
+                                report_id=report_id,
+                                source_id=source_id,
+                                artifact_name=table.table_name,
+                                language="m",
+                                query_text=m_expression,
+                                scan_run_id=scan_id,
+                                detected_at=now,
+                                has_saved_baseline=existing_table is not None,
+                                saved_baseline_text=existing_table["source_expression"] if existing_table else None,
+                                saved_baseline_source_id=existing_table["source_id"] if existing_table else None,
+                                saved_baseline_at=existing_table["last_scanned"] if existing_table else None,
+                            )
+                            if observation.changed:
+                                report_query_changes.append({
+                                    "version_id": observation.version_id,
+                                    "table_name": table.table_name,
+                                    "query_hash": observation.query_hash,
+                                })
                         db.execute(
                             """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
                                VALUES (?, ?, ?, ?, ?)
@@ -449,6 +444,61 @@ def run_scan(
                                 now,
                             ),
                         )
+
+                if report_query_changes:
+                    changed_queries += len(report_query_changes)
+                    signature = "|".join(
+                        f"{item['table_name']}:{item['query_hash']}"
+                        for item in sorted(report_query_changes, key=lambda item: item["table_name"].casefold())
+                    )
+                    fingerprint = (
+                        f"changed_query:report:{report_id}:"
+                        f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]}"
+                    )
+                    owner_row = db.execute("SELECT owner FROM reports WHERE id = ?", (report_id,)).fetchone()
+                    owner = owner_row["owner"] if owner_row else report.report_owner
+                    names = [item["table_name"] for item in report_query_changes]
+                    notes = (
+                        f"{len(names)} Power Query change{'s' if len(names) != 1 else ''} "
+                        f"detected in {report.name}: {', '.join(names)}."
+                    )
+                    db.execute(
+                        """UPDATE actions
+                           SET status='resolved', resolved_at=?, updated_at=?,
+                               notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
+                           WHERE report_id=? AND type='changed_query'
+                             AND fingerprint!=?
+                             AND status IN ('open','acknowledged','investigating')""",
+                        (now, now, report_id, fingerprint),
+                    )
+                    prior = db.execute(
+                        """SELECT id FROM actions
+                           WHERE fingerprint = ? AND status != 'resolved'
+                           ORDER BY id DESC LIMIT 1""",
+                        (fingerprint,),
+                    ).fetchone()
+                    if prior:
+                        action_id = prior["id"]
+                        db.execute(
+                            "UPDATE actions SET notes=?, assigned_to=?, updated_at=? WHERE id=?",
+                            (notes, owner, now, action_id),
+                        )
+                    else:
+                        cursor = db.execute(
+                            """INSERT INTO actions
+                               (report_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
+                               VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
+                            (report_id, owner, notes, fingerprint, now, now),
+                        )
+                        action_id = int(cursor.lastrowid)
+                    link_versions_to_action(
+                        db,
+                        [item["version_id"] for item in report_query_changes],
+                        action_id,
+                    )
+                    log_lines.append(
+                        f"CHANGED: {report.name} Power Query in {', '.join(names)}"
+                    )
 
                 # Store visual layout (PBIX mode only)
                 layout = getattr(report, "layout", None)
@@ -596,7 +646,7 @@ def run_scan(
         assert_not_cancelled(generation, "Report scan")
         from app.scanner.pg_deps import scan_pg_dependencies
         try:
-            dep_result = scan_pg_dependencies()
+            dep_result = scan_pg_dependencies(scan_run_id=scan_id)
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
             dep_result = {"status": "failed", "error": str(e)}
@@ -683,6 +733,8 @@ def run_scan(
             governance_results["documentation"] = {"status": "failed", "error": str(e)}
             logger.exception("Documentation completeness scan failed: %s", e)
 
+        mv_changed_queries = int(dep_result.get("changed_queries") or 0)
+        changed_queries += mv_changed_queries
         auxiliary_log = [
             f"PostgreSQL dependencies: {dep_result.get('status', 'unknown')}",
             f"PostgreSQL schedules: {cron_result.get('status', 'unknown')}",
@@ -690,16 +742,22 @@ def run_scan(
             f"Windows scheduled tasks: {task_result.get('status', 'unknown')}",
             f"Configured usage import: {usage_result.get('status', 'unknown')}",
         ]
+        if dep_result.get("definition_status") == "skipped":
+            auxiliary_log.append(
+                "PostgreSQL MV query history: skipped; dependency discovery continued"
+            )
         if probe_result is not None:
             auxiliary_log.append(f"Source probe: {probe_result.get('status', 'unknown')}")
+        if dep_result.get("query_change_log"):
+            auxiliary_log.append(dep_result["query_change_log"])
         for name, result in governance_results.items():
             status = result.get("status", "completed") if isinstance(result, dict) else "unknown"
             auxiliary_log.append(f"Governance {name}: {status}")
         final_log = "\n".join([log_text, *auxiliary_log])
         with get_db() as db:
             db.execute(
-                "UPDATE scan_runs SET finished_at = ?, log = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), final_log, scan_id),
+                "UPDATE scan_runs SET finished_at = ?, changed_queries = ?, log = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), changed_queries, final_log, scan_id),
             )
 
         summary = {

@@ -146,6 +146,53 @@ class AlertOut(BaseModel):
 
 # --- Actions ---
 
+class QueryChangeSummary(BaseModel):
+    version_id: int
+    previous_version_id: int | None = None
+    artifact_kind: str
+    artifact_name: str
+    language: str
+    detected_at: str | None = None
+
+
+class QueryVersionSummary(BaseModel):
+    id: int
+    previous_version_id: int | None = None
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    query_hash: str
+    is_baseline: bool = False
+    action_id: int | None = None
+    detected_at: str | None = None
+
+
+class QueryHistoryGroup(BaseModel):
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    versions: list[QueryVersionSummary] = Field(default_factory=list)
+
+
+class QueryDiffRow(BaseModel):
+    kind: str
+    before_line: int | None = None
+    after_line: int | None = None
+    before_text: str | None = None
+    after_text: str | None = None
+
+
+class QueryDiffOut(BaseModel):
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    before: QueryVersionSummary
+    after: QueryVersionSummary
+    rows: list[QueryDiffRow] = Field(default_factory=list)
+
 class ActionOut(BaseModel):
     id: int
     source_id: int | None = None
@@ -187,6 +234,7 @@ class ActionOut(BaseModel):
     triage_score: int = 0
     triage_reasons: list[str] = []
     triage_cta: str | None = None
+    query_changes: list[QueryChangeSummary] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
     resolved_at: str | None = None

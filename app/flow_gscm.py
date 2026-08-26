@@ -121,6 +121,8 @@ BOOKMARK_SETTLE_TIMEOUT_MS = 300_000
 #: virtual grid rebinds. Under peak load GSCM regularly needs more than the 15
 #: seconds this wait originally allowed, so the budget covers a slow backend.
 FAVORITE_ROWS_TIMEOUT_MS = 45_000
+POPUP_VERIFY_TIMEOUT_MS = 2_000
+POPUP_VERIFY_INTERVAL_MS = 250
 #: The wait overlay flickers between backend calls. Only treat the screen as
 #: idle once it has stayed hidden across this many consecutive polls.
 IDLE_POLLS_REQUIRED = 6
@@ -332,17 +334,98 @@ _RESET_TREE_JS = """() => {
     return {available: true, moved: before !== 0};
 }"""
 
-_POPUP_CLOSERS_JS = """() => {
-    const ids = [];
-    for (const element of document.querySelectorAll("[id]")) {
-        const id = element.id || '';
-        const lowered = id.toLowerCase();
-        if (!lowered.includes('popup')) continue;
-        if (!lowered.includes('close')) continue;
-        if (element.getClientRects().length === 0) continue;
-        ids.push(id);
+_POPUP_RECORDS_JS = """() => {
+    const popupPattern = /(?:^|[._:])(notice|alert|message|msg|confirm)(?:$|[._:])/;
+    const closePattern = /(?:^|[._:])(?:btn_?)?(?:close|x)(?:$|[._:])/;
+    const excluded = ['topframe.setting1', 'div_favorite', 'mainframe.waitwindow'];
+    const visibleRect = element => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') return null;
+        return {
+            x: Math.round(rect.left), y: Math.round(rect.top),
+            w: Math.round(rect.width), h: Math.round(rect.height),
+        };
+    };
+    const isPopupId = value => {
+        const lowered = String(value || '').toLowerCase();
+        return lowered.includes('popup') || lowered.includes('pdv_')
+            || popupPattern.test(lowered);
+    };
+    const isExcluded = value => {
+        const lowered = String(value || '').toLowerCase();
+        return excluded.some(fragment => lowered.includes(fragment));
+    };
+    const terminalId = value => String(value || '').split(':', 1)[0].split('.').pop();
+    const isCloseControl = element => {
+        const id = (element.id || '').toLowerCase();
+        const text = (element.textContent || '').trim().toLowerCase();
+        return id.includes('close') || closePattern.test(id)
+            || ['close', 'x', '\u00d7'].includes(text);
+    };
+
+    const byContainer = new Map();
+    for (const close of document.querySelectorAll('[id]')) {
+        const closeRect = visibleRect(close);
+        if (!closeRect || !isCloseControl(close) || isExcluded(close.id)) continue;
+        const popupAncestors = [];
+        for (let current = close; current; current = current.parentElement) {
+            if (!current.id || isExcluded(current.id) || !isPopupId(current.id)) continue;
+            const rect = visibleRect(current);
+            if (rect) popupAncestors.push({element: current, rect});
+        }
+        // Nexacro component ids preserve ancestry even in builds that render
+        // component nodes as DOM siblings rather than nested descendants.
+        for (const candidate of document.querySelectorAll('[id]')) {
+            if (!candidate.id || candidate === close || isExcluded(candidate.id)) continue;
+            if (!close.id.startsWith(candidate.id + '.') || !isPopupId(candidate.id)) continue;
+            const rect = visibleRect(candidate);
+            if (rect && !popupAncestors.some(item => item.element === candidate)) {
+                popupAncestors.push({element: candidate, rect});
+            }
+        }
+        if (!popupAncestors.length) continue;
+        popupAncestors.sort((a, b) => {
+            const aDirect = isPopupId(terminalId(a.element.id)) ? 0 : 1;
+            const bDirect = isPopupId(terminalId(b.element.id)) ? 0 : 1;
+            return (aDirect - bDirect)
+                || ((b.rect.w * b.rect.h) - (a.rect.w * a.rect.h));
+        });
+        const container = popupAncestors[0];
+        const containerId = container.element.id || close.id;
+        if (!byContainer.has(containerId)) {
+            byContainer.set(containerId, {
+                container_id: containerId,
+                x: container.rect.x, y: container.rect.y,
+                w: container.rect.w, h: container.rect.h,
+                closers: [],
+            });
+        }
+        byContainer.get(containerId).closers.push({
+            id: close.id || '',
+            text: (close.textContent || '').trim().slice(0, 80),
+            x: closeRect.x, y: closeRect.y, w: closeRect.w, h: closeRect.h,
+        });
     }
-    return ids;
+    return Array.from(byContainer.values());
+}"""
+
+_ELEMENT_RECT_JS = """(targetIds) => {
+    for (const id of targetIds) {
+        const element = document.getElementById(id);
+        if (!element) continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const style = window.getComputedStyle(element);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        return {
+            id: element.id || id,
+            x: Math.round(rect.left), y: Math.round(rect.top),
+            w: Math.round(rect.width), h: Math.round(rect.height),
+        };
+    }
+    return null;
 }"""
 
 _ID_MATCH_JS = """(hints) => {
@@ -666,28 +749,162 @@ def wait_window_visible(page) -> bool:
     )
 
 
-def dismiss_popups(page) -> int:
-    """Close floating Nexacro notification cards that block background clicks."""
-    closed = 0
-    for root, ids in _evaluate_everywhere(page, _POPUP_CLOSERS_JS):
-        for element_id in ids:
-            try:
-                root.locator(f"[id='{_css_escape(element_id)}']").first.click(
-                    force=True, timeout=5_000,
-                )
-                closed += 1
-            except Exception:
-                # A popup that vanished on its own is the expected outcome, not
-                # a failure: the sweep clears the screen, it does not audit it.
+def popup_records(page) -> list[tuple[Any, dict]]:
+    """Visible transient popup containers and their observed close controls."""
+    items = []
+    seen: set[tuple] = set()
+    for root, records in _evaluate_everywhere(page, _POPUP_RECORDS_JS):
+        for record in records:
+            if not isinstance(record, dict):
                 continue
-    return closed
+            key = (
+                record.get("container_id"), record.get("x"), record.get("y"),
+                record.get("w"), record.get("h"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append((root, record))
+    return items
 
 
-def clear_screen(page) -> None:
-    """One call for the two things that must be true before any click."""
+def _safe_popup_closers(record: dict) -> list[dict]:
+    closers = []
+    seen: set[str] = set()
+    for closer in record.get("closers") or []:
+        if not isinstance(closer, dict):
+            continue
+        component_ids = _component_element_ids(closer.get("id"))
+        if not component_ids:
+            continue
+        component_id = component_ids[0]
+        if component_id in seen or is_forbidden(closer.get("id"), closer.get("text")):
+            continue
+        seen.add(component_id)
+        closers.append(closer)
+    return closers
+
+
+def _click_popup_closer(root, closer: dict) -> None:
+    """Try the owning DOM component before its rendered caption child."""
+    for element_id in _component_element_ids(closer.get("id")):
+        if is_forbidden(element_id, closer.get("text")):
+            continue
+        try:
+            root.locator(f"[id='{_css_escape(element_id)}']").first.click(
+                force=True, timeout=5_000,
+            )
+            return
+        except Exception:
+            # Auto-vanishing notices routinely disappear between inventory and
+            # click. Verification below decides whether anything remains.
+            continue
+
+
+def dismiss_popups(page) -> list[dict]:
+    """Dismiss observed popups and briefly verify only when one was present.
+
+    Popup cleanup remains best-effort. Callers decide whether a surviving
+    popup matters by comparing it with the control they are about to click.
+    """
+    pending = popup_records(page)
+    if not pending:
+        return []
+
+    dom_attempted: set[tuple[str, str]] = set()
+    native_attempted: set[tuple[str, str]] = set()
+    poll_count = max(1, POPUP_VERIFY_TIMEOUT_MS // POPUP_VERIFY_INTERVAL_MS)
+    for _poll in range(poll_count):
+        for root, record in pending:
+            container_id = str(record.get("container_id") or "")
+            closers = _safe_popup_closers(record)
+            closer = next((item for item in closers if (
+                container_id, _component_element_ids(item.get("id"))[0]
+            ) not in native_attempted), None)
+            if closer is None:
+                continue
+            component_id = _component_element_ids(closer.get("id"))[0]
+            key = (container_id, component_id)
+            if key not in dom_attempted:
+                _click_popup_closer(root, closer)
+                dom_attempted.add(key)
+            elif key not in native_attempted:
+                _native_click(page, closer.get("id"))
+                native_attempted.add(key)
+
+        page.wait_for_timeout(POPUP_VERIFY_INTERVAL_MS)
+        pending = popup_records(page)
+        if not pending:
+            return []
+    return [record for _root, record in pending]
+
+
+def _target_rect(page, target: dict | str | None) -> dict | None:
+    if not target:
+        return None
+    record = {"id": target} if isinstance(target, str) else dict(target)
+    try:
+        if float(record.get("w") or 0) > 0 and float(record.get("h") or 0) > 0:
+            return {
+                "id": record.get("id") or record.get("element_id") or record.get("text") or "",
+                "x": float(record.get("x") or 0), "y": float(record.get("y") or 0),
+                "w": float(record["w"]), "h": float(record["h"]),
+            }
+    except (TypeError, ValueError):
+        pass
+    element_id = record.get("id") or record.get("element_id")
+    target_ids = _component_element_ids(element_id)
+    if not target_ids:
+        return None
+    for _root, value in _evaluate_everywhere(page, _ELEMENT_RECT_JS, target_ids):
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _rects_overlap(first: dict, second: dict) -> bool:
+    try:
+        return (
+            float(first["x"]) < float(second["x"]) + float(second["w"])
+            and float(first["x"]) + float(first["w"]) > float(second["x"])
+            and float(first["y"]) < float(second["y"]) + float(second["h"])
+            and float(first["y"]) + float(first["h"]) > float(second["y"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _popup_description(record: dict) -> str:
+    rect = f"({record.get('x')},{record.get('y')},{record.get('w')},{record.get('h')})"
+    close_ids = [str(item.get("id") or "") for item in record.get("closers") or []]
+    return (
+        f"container={record.get('container_id') or '(unknown)'} rect={rect} "
+        f"close={','.join(close_ids) or '(none)'}"
+    )
+
+
+def clear_screen(page, target: dict | str | None = None) -> list[dict]:
+    """Clear click blockers and reject only proven target obstruction."""
     unlock_wait_window(page)
-    dismiss_popups(page)
+    remaining = dismiss_popups(page)
     unlock_wait_window(page)
+    if not remaining or not target:
+        return remaining
+    target_rect = _target_rect(page, target)
+    if target_rect:
+        blockers = [record for record in remaining if _rects_overlap(record, target_rect)]
+        if blockers:
+            target_id = target_rect.get("id") or (
+                target if isinstance(target, str) else (target or {}).get("id")
+            )
+            details = "; ".join(_popup_description(record) for record in blockers)
+            raise RuntimeError(
+                f"GSCM popup blocked control {target_id!r} at "
+                f"({target_rect.get('x')},{target_rect.get('y')},"
+                f"{target_rect.get('w')},{target_rect.get('h')}). {details}. "
+                "On screen: " + screen_inventory(page)
+            )
+    return remaining
 
 
 def _css_escape(value: str) -> str:
@@ -728,8 +945,9 @@ def _native_click(page, element_id: str | None) -> bool:
     return False
 
 
-def _click_record(root, record: dict, *, timeout_ms: int) -> str | None:
+def _click_record(page, root, record: dict, *, timeout_ms: int) -> str | None:
     """Click a visible record's owning component, then its caption fallback."""
+    clear_screen(page, target=record)
     for element_id in _component_element_ids(record.get("id")):
         try:
             root.locator(f"[id='{_css_escape(element_id)}']").first.click(
@@ -797,7 +1015,7 @@ def click_label(
             item[1].get("w", 0) * item[1].get("h", 0),
         ))
     for root, record in matches:
-        clicked_id = _click_record(root, record, timeout_ms=timeout_ms)
+        clicked_id = _click_record(page, root, record, timeout_ms=timeout_ms)
         if clicked_id is not None:
             return {**record, "clicked_id": clicked_id}
     return None
@@ -843,7 +1061,7 @@ def click_by_id_hint(
         _hint_rank(item[1].get("id"), hints), item[1].get("y", 0), -item[1].get("x", 0),
     ))
     for root, record in candidates:
-        clicked_id = _click_record(root, record, timeout_ms=timeout_ms)
+        clicked_id = _click_record(page, root, record, timeout_ms=timeout_ms)
         if clicked_id is not None:
             return {**record, "clicked_id": clicked_id}
     return None
@@ -1052,7 +1270,7 @@ def _activate_setting_record(
     if component_id in tried_ids or is_forbidden(component_id):
         return False
     tried_ids.add(component_id)
-    clicked_id = _click_record(root, record, timeout_ms=15_000)
+    clicked_id = _click_record(page, root, record, timeout_ms=15_000)
     if clicked_id is None:
         return False
     if _wait_for_dialog_state(
@@ -1755,6 +1973,10 @@ def _click_go_button(page) -> bool:
             button = root.locator(f"[id='{_css_escape(GO_BUTTON_ID)}']").first
             if not button.count():
                 continue
+        except Exception:
+            continue
+        clear_screen(page, target=GO_BUTTON_ID)
+        try:
             button.click(force=True, timeout=30_000)
             page.wait_for_timeout(1_000)
             if not favorites_dialog_open(page):
@@ -1813,6 +2035,11 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
 
 def _click_entry(page, entry: dict) -> None:
     root = entry.get("root")
+    clear_screen(page, target={
+        "id": entry.get("element_id"), "text": entry.get("name"),
+        "x": entry.get("x"), "y": entry.get("y"),
+        "w": entry.get("w"), "h": entry.get("h"),
+    })
     selector = (
         f"[id='{_css_escape(entry['element_id'])}']" if entry.get("element_id")
         else f"text={entry['name']}"
