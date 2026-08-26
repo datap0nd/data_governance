@@ -43,6 +43,10 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
                 (1, None, None, "changed_query", "changed:old", "2026-08-12", "2026-08-12"),
                 (1, None, None, "changed_query", "changed:new", "2026-08-13", "2026-08-13"),
                 (None, 1, None, "best_practice", "best:1", "2026-08-14", "2026-08-14"),
+                (None, 1, None, "broken_ref", "broken:1", "2026-08-14", "2026-08-14"),
+                (None, 1, None, "documentation_missing", "docs:1", "2026-08-14", "2026-08-14"),
+                (None, 1, None, "schedule_mismatch", "report_upstream:1", "2026-08-14", "2026-08-14"),
+                (1, None, None, "dependency_stale", "source_upstream:1", "2026-08-14", "2026-08-14"),
                 (None, None, 1, "flow_failed", "flow_failed:1", "2026-08-15", "2026-08-15"),
             ],
         )
@@ -66,6 +70,10 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
     types = [action.type for action in actions]
 
     assert "best_practice" not in types
+    assert "broken_ref" not in types
+    assert "documentation_missing" not in types
+    assert "schedule_mismatch" in types
+    assert "dependency_stale" in types
     assert sum(action.type in {"stale_source", "outdated_source", "error_source"} for action in actions) == 1
     assert types.count("changed_query") == 0
     flow = next(action for action in actions if action.type == "flow_failed")

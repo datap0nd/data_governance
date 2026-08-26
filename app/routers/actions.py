@@ -9,6 +9,11 @@ from app.usage import get_report_usage_map, get_source_usage_map, sync_usage_fro
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
 
+# These scanner findings remain available in their dedicated product areas,
+# but they are governance metadata rather than operational alerts.
+NON_ALERT_ACTION_TYPES = {"best_practice", "broken_ref", "documentation_missing"}
+
+
 def _compute_source_days_outdated(db) -> dict[int, int]:
     """For each source with outdated latest probe, days between now and last_data_at."""
     rows = db.execute("""
@@ -371,7 +376,9 @@ def list_actions(status: str | None = None):
             ) sp ON sp.source_id = a.source_id AND sp.rn = 1
         """
         params = []
-        query += " WHERE a.type != 'best_practice'"
+        placeholders = ",".join("?" for _ in NON_ALERT_ACTION_TYPES)
+        query += f" WHERE a.type NOT IN ({placeholders})"
+        params.extend(sorted(NON_ALERT_ACTION_TYPES))
         if status:
             query += " AND a.status = ?"
             params.append(status)
