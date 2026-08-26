@@ -1,8 +1,11 @@
 import logging
+import os
 import re
 import socket
 import sqlite3
 import subprocess
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -546,10 +549,70 @@ def _get_version() -> str:
 
 _APP_VERSION = _get_version()
 
+#: Latest-commit lookup for the "am I on the latest version?" badge. Cached so
+#: the UI polling the version never hammers GitHub (unauthenticated rate limit
+#: is 60 requests/hour).
+_UPDATE_CHECK_TTL_SECONDS = 15 * 60
+_UPDATE_CHECK_LOCK = threading.Lock()
+_UPDATE_CHECK: dict = {"checked_at": 0.0, "latest_commit": None, "error": None}
+_LATEST_COMMIT_URL = (
+    "https://api.github.com/repos/datap0nd/data_governance/commits/main"
+)
+
+
+def _deployed_commit() -> str | None:
+    """The commit SHA setup.ps1 stamps into VERSION ("<timestamp>-<sha>")."""
+    token = _APP_VERSION.rsplit("-", 1)[-1].strip().lower()
+    if re.fullmatch(r"[0-9a-f]{7,40}", token) and not token.isdigit():
+        return token
+    return None
+
+
+def _fetch_latest_commit() -> str:
+    import httpx
+
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Metronome"}
+    token = os.environ.get("DG_GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = httpx.get(_LATEST_COMMIT_URL, headers=headers, timeout=5)
+    response.raise_for_status()
+    return str(response.json()["sha"]).lower()
+
+
+def _latest_commit() -> tuple[str | None, str | None]:
+    """(latest main commit, error), refreshed at most every 15 minutes."""
+    with _UPDATE_CHECK_LOCK:
+        if time.time() - _UPDATE_CHECK["checked_at"] < _UPDATE_CHECK_TTL_SECONDS:
+            return _UPDATE_CHECK["latest_commit"], _UPDATE_CHECK["error"]
+        try:
+            _UPDATE_CHECK["latest_commit"] = _fetch_latest_commit()
+            _UPDATE_CHECK["error"] = None
+        except Exception as exc:
+            _UPDATE_CHECK["error"] = f"{type(exc).__name__}: {exc}"
+        _UPDATE_CHECK["checked_at"] = time.time()
+        return _UPDATE_CHECK["latest_commit"], _UPDATE_CHECK["error"]
+
 
 @app.get("/api/version")
 def get_version():
-    return {"version": _APP_VERSION}
+    deployed = _deployed_commit()
+    latest = None
+    error = None
+    if deployed:
+        latest, error = _latest_commit()
+    else:
+        error = "VERSION carries no commit stamp; re-run setup.ps1 to enable the check"
+    up_to_date = None
+    if deployed and latest:
+        up_to_date = latest.startswith(deployed) or deployed.startswith(latest)
+    return {
+        "version": _APP_VERSION,
+        "commit": deployed,
+        "latest_commit": latest,
+        "up_to_date": up_to_date,
+        "update_check_error": error,
+    }
 
 
 # ── Multi-user identity endpoints ──

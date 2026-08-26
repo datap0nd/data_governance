@@ -11113,10 +11113,28 @@ document.addEventListener("DOMContentLoaded", () => {
     initAIChatPanel();
     navigate(getInitialPage());
 
-    // Show version in nav
+    // Show version in nav, with a live check against GitHub main so "am I on
+    // the latest version?" is answered inside the app.
     api("/api/version").then(v => {
         const el = document.getElementById("app-version");
-        if (el && v.version) el.textContent = "#" + v.version;
+        if (!el || !v.version) return;
+        el.textContent = "#" + v.version;
+        if (v.up_to_date === true) {
+            el.textContent += " · up to date";
+            el.style.color = "#3fb950";
+            el.style.opacity = "1";
+            el.title = "This install matches the latest commit on GitHub main.";
+        } else if (v.up_to_date === false) {
+            el.textContent += " · update available";
+            el.style.color = "#d29922";
+            el.style.opacity = "1";
+            el.title = "A newer version is on GitHub ("
+                + String(v.latest_commit || "").slice(0, 9)
+                + "). Use Update App or run setup.ps1.";
+        } else {
+            el.title = "Update check unavailable"
+                + (v.update_check_error ? ": " + v.update_check_error : "");
+        }
     }).catch(() => {});
 
     // Update App button
