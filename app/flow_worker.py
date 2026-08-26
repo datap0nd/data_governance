@@ -41,11 +41,12 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
-    from app import flow_gscm, flow_outlook, flow_retention
+    from app import flow_gscm, flow_outlook, flow_replay, flow_retention
     from app.flow_credentials import load_asap_credentials
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
     import flow_outlook
+    import flow_replay
     import flow_retention
     from flow_credentials import load_asap_credentials
 
@@ -5592,6 +5593,143 @@ def execute_job(
             "bundle_index": index,
             "bundle_count": len(tasks),
             "status": "saved",
+            "export_transport": "browser",
+            **metadata,
+        }
+
+    capture_replay = (is_asap or is_gscm) and flow_replay.enabled(job)
+
+    def _record_export_recipe(recorder, task: dict, artifact: dict, index: int) -> None:
+        """Best-effort: remember the HTTP request behind a finished export."""
+        baseline = artifact.get("original_file_path") or artifact.get("file_path")
+        if not baseline:
+            return
+        task_key = _export_task_key(task["export_view"], task["period"])
+        try:
+            stored = flow_replay.store_capture(
+                profile_dir, job, task_key, recorder, Path(str(baseline)),
+            )
+        except Exception:
+            return
+        if stored:
+            report_progress(
+                "running",
+                {
+                    "stage": "file_export",
+                    "message": (
+                        f"Recorded the HTTP request behind export {index} of "
+                        f"{len(tasks)}; future runs will try to replay it "
+                        "without driving the portal UI."
+                    ),
+                    "period": task["period"], "export_view": task["export_view"],
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+
+    def _replay_task(index: int, task: dict) -> dict | None:
+        """Replay a recorded export request instead of driving the portal UI.
+
+        Attempted once per file and never retried: any rejection - a missing
+        or expired recipe, a network error, a sign-in page, a body from the
+        wrong file family, or a processing failure downstream - falls back to
+        the browser flow, which records a fresh recipe as it succeeds.
+        """
+        context = getattr(page, "context", None)
+        if not capture_replay or context is None:
+            return None
+        period = task["period"]
+        export_view = task["export_view"]
+        task_key = _export_task_key(export_view, period)
+        recipe = flow_replay.load_recipe(profile_dir, job, task_key)
+        if recipe is None:
+            return None
+        report_progress(
+            "running",
+            {
+                "stage": "file_export",
+                "message": (
+                    f"Export {index} of {len(tasks)}: replaying the recorded "
+                    "HTTP export request instead of driving the portal UI."
+                ),
+                "period": period, "export_view": export_view,
+                "item_index": index, "item_count": len(tasks),
+            },
+            artifacts,
+        )
+        staging = download_staging_dir or profile_dir / "downloads"
+        with timings.measure("file_export", report_id=job["report"].get("id")):
+            staged_file = flow_replay.try_replay(context, recipe, staging)
+        if staged_file is None:
+            flow_replay.forget_recipe(profile_dir, job, task_key)
+            report_progress(
+                "running",
+                {
+                    "stage": "file_export",
+                    "message": (
+                        f"Export {index} of {len(tasks)}: the recorded request "
+                        "did not replay cleanly; falling back to the browser "
+                        "export."
+                    ),
+                    "period": period, "export_view": export_view,
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+            return None
+
+        def _processing_progress(stage: str, message: str):
+            report_progress(
+                "running",
+                {
+                    "stage": stage, "message": message,
+                    "period": period, "export_view": export_view,
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+
+        try:
+            filename = _render_filename(
+                job["downloads"]["filename_template"], job, period, index, export_view,
+            )
+            output = _safe_output_path(target, filename)
+            with timings.measure("file_transfer", report_id=job["report"].get("id")):
+                metadata = _store_completed_download(
+                    staged_file, output,
+                    file_format=job["downloads"].get("file_format") or "csv",
+                    requested_period=period,
+                    allow_raw_xlsx_fallback=(is_gscm and not downstream_requires_csv),
+                    require_normalized_csv=require_normalized_csv,
+                    processing_progress=_processing_progress,
+                )
+        except Exception as exc:
+            # Unlike a browser download, a replayed file that fails processing
+            # costs nothing to redo: the portal was never opened, so fall back
+            # to the full UI export instead of failing the run.
+            flow_replay.forget_recipe(profile_dir, job, task_key)
+            report_progress(
+                "running",
+                {
+                    "stage": "file_export",
+                    "message": (
+                        f"Export {index} of {len(tasks)}: the replayed file "
+                        "failed processing; falling back to the browser "
+                        f"export. {str(exc)[:2000]}"
+                    ),
+                    "period": period, "export_view": export_view,
+                    "item_index": index, "item_count": len(tasks),
+                },
+                artifacts,
+            )
+            return None
+        return {
+            "period_key": period,
+            "export_view": export_view,
+            "bundle_index": index,
+            "bundle_count": len(tasks),
+            "status": "saved",
+            "export_transport": "http_replay",
             **metadata,
         }
 
@@ -5614,6 +5752,11 @@ def execute_job(
             )
             continue
 
+        replayed = _replay_task(index, task)
+        if replayed is not None:
+            artifacts.append(replayed)
+            continue
+
         task_attempts = GSCM_EXPORT_TASK_ATTEMPTS if is_gscm else EXPORT_TASK_ATTEMPTS
 
         def _task_retry(attempt: int, exc: Exception, *, index=index, task=task):
@@ -5632,9 +5775,29 @@ def execute_job(
                 artifacts,
             )
 
+        def _run_attempt(attempt: int, *, index=index, task=task) -> dict:
+            # The recorder observes the whole attempt so the capture works
+            # whichever page or popup the portal routes the download through;
+            # matching against the download's own URL keeps it precise.
+            # Capture is best-effort: a page without a usable context simply
+            # exports without recording a recipe.
+            context = getattr(page, "context", None) if capture_replay else None
+            recorder = (
+                flow_replay.ExportRequestRecorder(context)
+                if context is not None else None
+            )
+            try:
+                artifact = _download_task(index, task, attempt)
+            finally:
+                if recorder is not None:
+                    recorder.detach()
+            if recorder is not None:
+                _record_export_recipe(recorder, task, artifact, index)
+            return artifact
+
         artifacts.append(_export_task_with_retry(
             page,
-            lambda attempt, index=index, task=task: _download_task(index, task, attempt),
+            _run_attempt,
             _task_retry,
             max_attempts=task_attempts,
         ))
