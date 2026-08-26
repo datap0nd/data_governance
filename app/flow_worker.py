@@ -5607,13 +5607,17 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
             "display_name": display_name,
             "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False, "code_version": code_version},
         }
-        for attempt in range(60):
+        # Metronome can take several minutes to boot after an update (service
+        # reinstall, migrations, first-request warmup), and this worker now
+        # starts first. Outlasting that boot beats dying at two minutes and
+        # leaning on the service manager's restart loop.
+        for attempt in range(300):
             try:
                 _api(client, "POST", "/api/flows/worker/register", registration)
                 break
             except (httpx.HTTPError, OSError) as exc:
-                if attempt == 59:
-                    raise RuntimeError(f"Could not register worker after 120 seconds: {exc}") from exc
+                if attempt == 299:
+                    raise RuntimeError(f"Could not register worker after 600 seconds: {exc}") from exc
                 time.sleep(2)
         print(f"Worker {worker_id} registered with {server}.", flush=True)
         with sync_playwright() as playwright:

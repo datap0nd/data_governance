@@ -1916,7 +1916,7 @@ def test_setup_waits_for_headless_worker_to_stop_before_replacing_code():
 
 def test_worker_retries_registration_and_prevents_duplicates():
     source = Path(__file__).parents[1].joinpath("app", "flow_worker.py").read_text()
-    assert "for attempt in range(60)" in source
+    assert "for attempt in range(300)" in source
     assert "_exclusive_worker_lock" in source
     assert "Another Metronome flow worker is already running." in source
 

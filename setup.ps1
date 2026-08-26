@@ -515,9 +515,10 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
 }
 
 # The worker starts before the app on purpose: it retries registration for
-# 120 seconds, and this ordering keeps the app's own ensure-worker watchdog
-# from winning the race and making our start report a scary (but harmless)
-# "An instance of the service is already running".
+# up to 10 minutes while Metronome boots, and this ordering keeps the app's
+# own ensure-worker watchdog from winning the race and making our start
+# report a scary (but harmless) "An instance of the service is already
+# running".
 Write-Host "Starting headless Flows worker service..." -ForegroundColor Yellow
 $WorkerStartedAt = Get-Date
 $WorkerStartOutput = (& $NssmExe start $FlowServiceName 2>&1 | Out-String)
@@ -536,15 +537,31 @@ function Describe-WorkerRegistrationFailure {
         return "Metronome is not answering on port $Port, so the worker cannot register. Check $LogDir\mx_analytics_error.log."
     }
     $Row = $Workers | Where-Object { $_.worker_id -eq "bi-desktop-headless" } | Select-Object -First 1
+    $LiveWorkers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -match 'flow_worker\.py'
+    })
     if (-not $Row) {
-        return "The worker never reached the server. Check $LogDir\flow_worker_error.log for a '.worker.lock' holder or a Python traceback."
+        if ($LiveWorkers.Count -gt 0) {
+            return "STILL STARTING: the worker process is running (PID $($LiveWorkers[0].ProcessId)) and retries registration for up to 10 minutes while Metronome boots. Verify in the app (Flows) in a few minutes; if it stays offline, check $LogDir\flow_worker_error.log."
+        }
+        return "The worker never reached the server and no worker process is running. Check $LogDir\flow_worker_error.log for a '.worker.lock' holder or a Python traceback."
+    }
+    # Freshness FIRST: a dead worker's database row keeps its old
+    # code_version forever, so version can only be judged on a live row.
+    $RowFresh = $Row.status -ne "offline" -and $Row.last_seen_at -and
+        ([datetime]$Row.last_seen_at) -ge $WorkerStartedAt.AddSeconds(-5)
+    if (-not $RowFresh) {
+        if ($LiveWorkers.Count -gt 0) {
+            return "STILL STARTING: the registered row is from before the update, and the new worker process (PID $($LiveWorkers[0].ProcessId)) retries registration for up to 10 minutes while Metronome boots. Verify in the app (Flows) in a few minutes; if it stays offline, check $LogDir\flow_worker_error.log."
+        }
+        return "The registered row is from before the update (status=$($Row.status), last seen $($Row.last_seen_at)) and no worker process is running. Check $LogDir\flow_worker_error.log for a '.worker.lock' holder or a Python traceback."
     }
     $Expected = (Get-Content "$CodeDir\VERSION" -ErrorAction SilentlyContinue | Select-Object -First 1)
     $RowVersion = $Row.capabilities.code_version
     if ($Expected -and $RowVersion -and ("$RowVersion".Trim() -ne "$Expected".Trim())) {
-        return "A worker running OLD code (version $RowVersion, deployed $Expected) is registered - a leftover process survived the update. Re-run setup.ps1, which now kills leftovers, or end it in Task Manager."
+        return "A LIVE worker running OLD code (version $RowVersion, deployed $Expected) is registered - a leftover process survived the update. Re-run setup.ps1, which kills leftovers, or end PID $($LiveWorkers[0].ProcessId) in Task Manager."
     }
-    return "A worker row exists but is stale (status=$($Row.status), last seen $($Row.last_seen_at)). The service may be crash-looping; check $LogDir\flow_worker_error.log."
+    return "The worker looks registered and current; the poll may simply have raced it. Verify in the app under Flows."
 }
 
     # Poll until the service registers with Metronome. The worker itself
@@ -577,7 +594,11 @@ function Describe-WorkerRegistrationFailure {
         Write-Host "  Flows worker registered with Metronome." -ForegroundColor Green
     } else {
         $Reason = Describe-WorkerRegistrationFailure -Port $Port -CodeDir $CodeDir -LogDir $LogDir -WorkerStartedAt $WorkerStartedAt
-        Write-Host "  WARNING: Flows worker did not register. $Reason" -ForegroundColor Yellow
+        if ($Reason -like "STILL STARTING:*") {
+            Write-Host "  Flows worker has not registered yet. $Reason" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "  WARNING: Flows worker did not register. $Reason" -ForegroundColor Yellow
+        }
     }
 
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
