@@ -55,8 +55,9 @@ GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
     "#loading-spinner-container, .loading-spinner-container, .loading-overlay"
 )
-# A wide report over a long period can render for a long time. Wait it out.
-ASAP_REPORT_RESULT_TIMEOUT_MS = 30 * 60 * 1_000
+# A silently-empty render is only detected when this wait expires, so keep it
+# short enough that the automatic re-run happens within minutes.
+ASAP_REPORT_RESULT_TIMEOUT_MS = 5 * 60 * 1_000
 EXPORT_TASK_ATTEMPTS = 3
 GSCM_EXPORT_TASK_ATTEMPTS = 2
 GSCM_INITIAL_LOAD_BUFFER_MS = 60_000
