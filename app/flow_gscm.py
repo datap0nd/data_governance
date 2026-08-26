@@ -56,16 +56,24 @@ FAVORITE_PANEL_LABEL = "Favorite"
 SCOPE_TABS = ("Private", "Public", "Custom")
 GO_LABELS = ("Go >>", "Go»", "Go »", "Go")
 CLOSE_LABELS = ("Close",)
+#: Read off the live portal via DevTools (2026-08): the Favorite dialog
+#: mounts as ``Setting0`` and its Go control is named ``btn_openFavorite``,
+#: whose caption child (``:icontext``) renders the visible "Go" text.
 GO_BUTTON_ID = (
-    "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_go"
+    "mainframe.VFrameSet.TopFrame.Setting0.form.div_favorite.form.btn_openFavorite"
 )
-#: The absolute path above is the shape observed on one deployment. Other
-#: builds mount the Favorite dialog under a different frame path, or render
-#: the caption as an icon with no text, so when the exact id is not on screen
-#: the button is rediscovered: by component name in the live Nexacro tree,
-#: and by id shape in the DOM.
-_GO_NAME_RE = re.compile(r"^btn_?go\d*$", re.IGNORECASE)
-GO_ID_HINTS = ("btn_go",)
+#: Tried after the id above, each verified by the dialog actually closing,
+#: so a stale entry costs one no-op attempt. The all-lowercase twin guards
+#: against a build (or a hand transcription) that lowercases component
+#: paths; the ``btn_go`` shape is the id an earlier deployment carried.
+GO_BUTTON_FALLBACK_IDS = (
+    "mainframe.vframeset.topframe.setting0.form.div_favorite.form.btn_openfavorite",
+    "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_go",
+)
+#: When no known id is on screen the button is rediscovered: by component
+#: name in the live Nexacro tree, and by id shape in the DOM.
+_GO_NAME_RE = re.compile(r"^btn_?(?:go\d*|open_?favorite\d*)$", re.IGNORECASE)
+GO_ID_HINTS = ("btn_go", "btn_openfavorite")
 #: The gear that opens Setting, read off the live portal. Tried first and
 #: exactly; the hints below only matter if GSCM renames it.
 SETTING_BUTTON_ID = "mainframe.VFrameSet.TopFrame.form.div_main.form.btn_setting"
@@ -151,7 +159,10 @@ MANUAL_LOGIN_WAIT_MS = 5 * 60_000
 # Nexacro keeps the Favorite grid's scroll position in its own component
 # state. The live grid exposes these controls even though ``scrollHeight`` on
 # the surrounding HTML element never changes from its viewport height.
-FAVORITE_GRID_ID_SUFFIX = "Setting1.form.div_favorite.form.grd_bookmark"
+#: The live portal mounts the Setting dialog with a numbered frame name
+#: (Setting0 on the current build, Setting1 on an earlier one), so the grid
+#: is matched on the dialog-local tail of its path, never on that number.
+FAVORITE_GRID_ID_SUFFIX = "div_favorite.form.grd_bookmark"
 FAVORITE_SCROLL_PAGE_STEPS = 8
 FAVORITE_SCROLL_RESET_PASSES = 40
 
@@ -246,7 +257,7 @@ _BOOKMARK_DATASET_JS = """(columns) => {
 _FAVORITE_TREE_ROWS_JS = r"""() => {
     const grids = Array.from(document.querySelectorAll('[id]')).filter(element => {
         const id = element.id || '';
-        return id.endsWith('Setting1.form.div_favorite.form.grd_bookmark');
+        return id.endsWith('div_favorite.form.grd_bookmark');
     });
     const out = [];
     for (const grid of grids) {
@@ -333,7 +344,7 @@ _LOGIN_INPUTS_JS = """() => {
 #: tallest scrollable container is how the rest are reached.
 _SCROLL_TREE_JS = """() => {
     const grid = Array.from(document.querySelectorAll('[id]')).find(element =>
-        (element.id || '').endsWith('Setting1.form.div_favorite.form.grd_bookmark'));
+        (element.id || '').endsWith('div_favorite.form.grd_bookmark'));
     if (!grid) return null;
     let best = null;
     let bestOverflow = 0;
@@ -352,7 +363,7 @@ _SCROLL_TREE_JS = """() => {
 
 _RESET_TREE_JS = """() => {
     const grid = Array.from(document.querySelectorAll('[id]')).find(element =>
-        (element.id || '').endsWith('Setting1.form.div_favorite.form.grd_bookmark'));
+        (element.id || '').endsWith('div_favorite.form.grd_bookmark'));
     if (!grid) return null;
     let best = null;
     let bestOverflow = 0;
@@ -372,7 +383,7 @@ _RESET_TREE_JS = """() => {
 _POPUP_RECORDS_JS = """() => {
     const popupPattern = /(?:^|[._:])(notice|alert|message|msg|confirm)(?:$|[._:])/;
     const closePattern = /(?:^|[._:])(?:btn_?)?(?:close|x)(?:$|[._:])/;
-    const excluded = ['topframe.setting1', 'div_favorite', 'mainframe.waitwindow'];
+    const excluded = ['topframe.setting', 'div_favorite', 'mainframe.waitwindow'];
     const visibleRect = element => {
         const rect = element.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return null;
@@ -477,8 +488,8 @@ _ID_MATCH_JS = """(hints) => {
 
 _COMPONENT_VISIBLE_JS = """(fragments) => {
     for (const element of document.querySelectorAll('[id]')) {
-        const id = element.id || '';
-        if (!fragments.some(fragment => id.includes(fragment))) continue;
+        const id = (element.id || '').toLowerCase();
+        if (!fragments.some(fragment => id.includes(String(fragment).toLowerCase()))) continue;
         const rect = element.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) continue;
         const style = window.getComputedStyle(element);
@@ -1385,7 +1396,11 @@ def wait_for_calculation(
 
 def favorites_dialog_open(page) -> bool:
     """The Favorite panel is up when its component or scope tabs are visible."""
-    if _component_visible(page, "TopFrame.Setting1.form.div_favorite"):
+    if _component_visible(
+        page,
+        "TopFrame.Setting0.form.div_favorite",
+        "TopFrame.Setting1.form.div_favorite",
+    ):
         return True
     visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
     return any(_normalize_label(tab) in visible for tab in SCOPE_TABS)
@@ -1428,7 +1443,7 @@ def open_favorites_dialog(page, report_progress=None) -> None:
 def _reach_favorite_panel(page) -> bool:
     """Select the Favorite panel and confirm its scope tabs rendered."""
     record = click_label(
-        page, [FAVORITE_PANEL_LABEL], prefer_id_fragment="TopFrame.Setting1",
+        page, [FAVORITE_PANEL_LABEL], prefer_id_fragment="TopFrame.Setting",
     )
     if record is None:
         return False
@@ -1544,7 +1559,7 @@ def _open_setting(page) -> bool:
 
 def _setting_dialog_open(page) -> bool:
     """The Setting dialog is up when its left rail is on screen."""
-    if _component_visible(page, "TopFrame.Setting1"):
+    if _component_visible(page, "TopFrame.Setting0", "TopFrame.Setting1"):
         return True
     visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
     rail = {"favorite", "layout", "dashboard", "installation"}
@@ -1563,7 +1578,7 @@ def _dismiss_stray_panel(page) -> None:
 def select_scope_tab(page, tab: str, *, require_rows: bool = False) -> bool:
     """Switch scope and optionally prove its virtual grid actually rebound."""
     record = click_label(
-        page, [tab], prefer_id_fragment="TopFrame.Setting1",
+        page, [tab], prefer_id_fragment="TopFrame.Setting",
     )
     if record is None:
         return False
@@ -2229,7 +2244,9 @@ def _click_go_button(page) -> bool:
     """
     clear_screen(page)
     tried: set[str] = set()
-    for candidate in (GO_BUTTON_ID, *_discover_go_candidates(page)):
+    for candidate in (
+        GO_BUTTON_ID, *GO_BUTTON_FALLBACK_IDS, *_discover_go_candidates(page),
+    ):
         component_ids = _component_element_ids(candidate)
         if not component_ids or component_ids[0] in tried:
             continue
@@ -2264,7 +2281,10 @@ def _click_go_button(page) -> bool:
             return True
     # Last resort: the stable component may exist in the Nexacro tree even
     # when its DOM node was not found in any root.
-    return _native_click(page, GO_BUTTON_ID) and _go_button_fired(page)
+    return any(
+        _native_click(page, candidate) and _go_button_fired(page)
+        for candidate in (GO_BUTTON_ID, *GO_BUTTON_FALLBACK_IDS)
+    )
 
 
 def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:

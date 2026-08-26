@@ -99,7 +99,9 @@ Private/Public/Custom tab, `scope` identifies the module, `menugroupname` and
 This avoids scrolling, expansion, geometry, and concatenated ancestor text.
 
 If a deployment does not expose `gds_bookmark`, the fallback is deliberately
-restricted to `TopFrame.Setting1.form.div_favorite.form.grd_bookmark`. It reads
+restricted to the Setting dialog's `div_favorite.form.grd_bookmark` grid (the
+dialog frame's index varies by build: `Setting0` on the current portal,
+`Setting1` on an earlier one, so only the dialog-local tail is matched). It reads
 only `GridRowControl` labels in that grid and treats a visible
 `treeitembutton` as the folder signal. It never queries the whole page. This
 scope matters because reading the global TopFrame container's `textContent`

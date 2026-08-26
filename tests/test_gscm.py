@@ -634,7 +634,7 @@ def test_popup_detector_uses_id_vocabulary_without_z_index_guesses():
     script = flow_gscm._POPUP_RECORDS_JS
     for marker in ("popup", "notice", "alert", "message", "msg", "confirm", "pdv_"):
         assert marker in script
-    assert "topframe.setting1" in script
+    assert "topframe.setting" in script
     assert "div_favorite" in script
     assert "mainframe.waitwindow" in script
     assert "zIndex" not in script
@@ -2064,3 +2064,46 @@ def test_a_renamed_gear_still_falls_back_to_position():
     )
     flow_gscm.discover_catalog(page, _scan_job(), _collect_progress()[1])
     assert renamed in page.clicks
+
+
+def test_go_button_id_matches_the_live_portal_inspection():
+    # Read off the real portal via DevTools: the dialog mounts as Setting0
+    # and the Go control is btn_openFavorite, captioned by an :icontext child.
+    assert flow_gscm.GO_BUTTON_ID == (
+        "mainframe.VFrameSet.TopFrame.Setting0.form.div_favorite.form.btn_openFavorite"
+    )
+    assert flow_gscm._looks_like_go_component(
+        "mainframe.vframeset.topframe.setting0.form.div_favorite.form"
+        ".btn_openFavorite:icontext"
+    )
+
+
+def test_go_button_still_works_on_the_previous_builds_id():
+    old_id = "mainframe.VFrameSet.TopFrame.Setting1.form.div_favorite.form.btn_go"
+
+    class OldBuildPage(FakeGscmPage):
+        def on_click(self, element_id):
+            if element_id == old_id:
+                self.clicks.append(element_id)
+                self.dialog_open = False
+                return
+            super().on_click(element_id)
+
+    page = OldBuildPage(dialog_open=True)
+    page.components.add(old_id)
+
+    assert flow_gscm._click_go_button(page) is True
+    assert old_id in page.clicks
+
+
+def test_favorite_grid_matching_never_depends_on_the_setting_frame_index():
+    # The dialog mounts as Setting0 on the current build and Setting1 on an
+    # earlier one; every grid script matches the dialog-local tail instead.
+    for script in (
+        flow_gscm._FAVORITE_TREE_ROWS_JS,
+        flow_gscm._SCROLL_TREE_JS,
+        flow_gscm._RESET_TREE_JS,
+    ):
+        assert "Setting1" not in script
+        assert "div_favorite.form.grd_bookmark" in script
+    assert "Setting" not in flow_gscm.FAVORITE_GRID_ID_SUFFIX
