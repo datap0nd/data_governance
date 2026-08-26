@@ -94,6 +94,15 @@ XLSX_HEADER_LABEL_HINTS = frozenset({
     "item",
 })
 REQUESTED_WEEK = re.compile(r"^(20\d{2})-W(\d{2})$", re.IGNORECASE)
+OOXML_EXCEL_EXTENSIONS = frozenset({".xlsx", ".xlsm", ".xltx", ".xltm"})
+LEGACY_EXCEL_EXTENSIONS = frozenset({".xls", ".xlt"})
+XLSB_EXCEL_EXTENSIONS = frozenset({".xlsb"})
+EXCEL_EXTENSIONS_BY_FORMAT = {
+    "xlsx": OOXML_EXCEL_EXTENSIONS,
+    "xls": LEGACY_EXCEL_EXTENSIONS,
+    "xlsb": XLSB_EXCEL_EXTENSIONS,
+}
+EXCEL_DOWNLOAD_FORMATS = frozenset(EXCEL_EXTENSIONS_BY_FORMAT)
 
 
 class _CompletedDownloadProcessingError(RuntimeError):
@@ -3892,23 +3901,156 @@ def _xlsx_sheet_plan(
     }
 
 
+class _XlrdWorksheet:
+    """Expose an xlrd sheet through the small interface our normalizer uses."""
+
+    def __init__(self, sheet, workbook, xlrd_module):
+        self._sheet = sheet
+        self._workbook = workbook
+        self._xlrd = xlrd_module
+        self.title = sheet.name
+
+    def iter_rows(
+        self, *, min_row: int | None = None, max_row: int | None = None,
+        values_only: bool = True,
+    ):
+        if not values_only:
+            raise ValueError("Metronome's Excel normalizer only exposes cell values.")
+        start = max(0, int(min_row or 1) - 1)
+        stop = min(self._sheet.nrows, int(max_row) if max_row is not None else self._sheet.nrows)
+        for row_index in range(start, stop):
+            values = []
+            for cell in self._sheet.row(row_index):
+                if cell.ctype in {self._xlrd.XL_CELL_EMPTY, self._xlrd.XL_CELL_BLANK}:
+                    value = None
+                elif cell.ctype == self._xlrd.XL_CELL_DATE:
+                    try:
+                        value = self._xlrd.xldate_as_datetime(
+                            cell.value, self._workbook.datemode,
+                        )
+                    except (OverflowError, ValueError):
+                        value = cell.value
+                elif cell.ctype == self._xlrd.XL_CELL_BOOLEAN:
+                    value = bool(cell.value)
+                elif cell.ctype == self._xlrd.XL_CELL_ERROR:
+                    value = self._xlrd.error_text_from_code.get(
+                        cell.value, f"#ERROR_{cell.value}",
+                    )
+                else:
+                    value = cell.value
+                values.append(value)
+            yield tuple(values)
+
+
+class _XlrdWorkbook:
+    def __init__(self, workbook, xlrd_module):
+        self._workbook = workbook
+        self.worksheets = [
+            _XlrdWorksheet(workbook.sheet_by_index(index), workbook, xlrd_module)
+            for index in range(workbook.nsheets)
+        ]
+
+    def close(self):
+        self._workbook.release_resources()
+
+
+class _XlsbWorksheet:
+    """Re-open an XLSB sheet for every streaming pass used by the normalizer."""
+
+    def __init__(self, workbook, title: str):
+        self._workbook = workbook
+        self.title = title
+
+    def iter_rows(
+        self, *, min_row: int | None = None, max_row: int | None = None,
+        values_only: bool = True,
+    ):
+        if not values_only:
+            raise ValueError("Metronome's Excel normalizer only exposes cell values.")
+        start = max(1, int(min_row or 1))
+        stop = int(max_row) if max_row is not None else None
+        with self._workbook.get_sheet(self.title) as worksheet:
+            for row_number, cells in enumerate(worksheet.rows(), start=1):
+                if row_number < start:
+                    continue
+                if stop is not None and row_number > stop:
+                    break
+                yield tuple(cell.v for cell in cells)
+
+
+class _XlsbWorkbook:
+    def __init__(self, workbook):
+        self._workbook = workbook
+        self.worksheets = [
+            _XlsbWorksheet(workbook, title) for title in workbook.sheets
+        ]
+
+    def close(self):
+        self._workbook.close()
+
+
+def _open_excel_workbook(source: Path, workbook_format: str):
+    """Open an Excel family with a consistent read-only worksheet interface."""
+    if workbook_format == "xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise RuntimeError(
+                "Modern Excel normalization requires openpyxl. Re-run setup.ps1."
+            ) from exc
+        try:
+            # data_only reads cached formula results and never executes VBA.
+            return load_workbook(source, read_only=True, data_only=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Downloaded modern Excel workbook could not be opened: {source.name}. "
+                "It may be damaged or password-protected/encrypted."
+            ) from exc
+    if workbook_format == "xls":
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise RuntimeError(
+                "Legacy XLS/XLT normalization requires xlrd. Re-run setup.ps1."
+            ) from exc
+        try:
+            return _XlrdWorkbook(
+                xlrd.open_workbook(str(source), on_demand=True), xlrd,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Downloaded legacy Excel workbook could not be opened: {source.name}. "
+                "It may be damaged, password-protected/encrypted, or a modern encrypted workbook."
+            ) from exc
+    if workbook_format == "xlsb":
+        try:
+            from pyxlsb import open_workbook
+        except ImportError as exc:
+            raise RuntimeError(
+                "Binary XLSB normalization requires pyxlsb. Re-run setup.ps1."
+            ) from exc
+        try:
+            return _XlsbWorkbook(open_workbook(str(source)))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Downloaded binary Excel workbook could not be opened: {source.name}. "
+                "It may be damaged or password-protected/encrypted."
+            ) from exc
+    raise RuntimeError(f"Unsupported Excel workbook format: {workbook_format}")
+
+
 def _normalize_xlsx(
     source: Path, output: Path, *, requested_weeks: list[str],
     header_mode: str = "auto", strict_headers: bool = False,
+    workbook_format: str | None = None,
 ) -> dict:
-    """Convert populated workbook sheets into one normalized UTF-8 CSV.
+    """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
     Rows are streamed from the workbook straight to the CSV writer, so a
     multi-million-row export costs a constant amount of memory.
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as exc:
-        raise RuntimeError("Excel normalization requires openpyxl. Re-run setup.ps1.") from exc
-    try:
-        workbook = load_workbook(source, read_only=True, data_only=True)
-    except Exception as exc:
-        raise RuntimeError(f"Downloaded Excel workbook could not be opened: {source.name}") from exc
+    workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
+    workbook = _open_excel_workbook(source, workbook_format)
     common_header: list[str] | None = None
     common_normalized: list[str] | None = None
     source_sheets = []
@@ -3990,7 +4132,7 @@ def _normalize_xlsx(
     partial.replace(output)
     return {
         "preamble_rows_removed": preamble_rows_removed,
-        "source_encoding": "xlsx",
+        "source_encoding": workbook_format,
         "source_delimiter": None,
         "source_sheets": source_sheets,
         "columns": common_header,
@@ -4178,7 +4320,7 @@ def _raw_xlsx_metadata(
     *,
     normalization_error: str | None = None,
 ) -> dict:
-    """Describe a verified raw workbook when no CSV artifact is required."""
+    """Describe a verified raw Excel workbook when no CSV artifact is required."""
     metadata = {
         "file_size": original_size,
         "checksum": checksum,
@@ -4189,7 +4331,7 @@ def _raw_xlsx_metadata(
         "original_filename": output.name,
         "original_file_size": original_size,
         "detected_format": detected,
-        "source_encoding": "xlsx",
+        "source_encoding": detected,
         "source_delimiter": None,
         "source_sheets": [],
         "columns": [],
@@ -4209,30 +4351,46 @@ def _completed_export_format_label(artifacts: list[dict], configured: str) -> st
     return "/".join(sorted(detected)) or str(configured or "csv").upper()
 
 
-def _validate_xlsx_container(path: Path) -> None:
-    """Require a complete OOXML ZIP container before raw-XLSX success."""
+def _validate_excel_container(path: Path, workbook_format: str) -> None:
+    """Require a structurally complete workbook before raw-Excel success."""
+    if workbook_format == "xls":
+        workbook = _open_excel_workbook(path, workbook_format)
+        workbook.close()
+        return
+    if workbook_format not in {"xlsx", "xlsb"}:
+        raise RuntimeError(f"Unsupported Excel workbook format: {workbook_format}")
+    format_label = workbook_format.upper()
+    workbook_member = "xl/workbook.bin" if workbook_format == "xlsb" else "xl/workbook.xml"
     missing: set[str] = set()
     corrupt_member: str | None = None
     try:
         with zipfile.ZipFile(path) as workbook:
             members = set(workbook.namelist())
-            missing = {"[Content_Types].xml", "xl/workbook.xml"} - members
+            missing = {"[Content_Types].xml", workbook_member} - members
             if not missing:
                 corrupt_member = workbook.testzip()
     except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError) as exc:
         raise RuntimeError(
-            f"The downloaded Excel workbook is not a complete XLSX ZIP container: {path.name}"
+            f"The downloaded Excel workbook is not a complete {format_label} ZIP container: "
+            f"{path.name}"
         ) from exc
     if missing:
         raise RuntimeError(
-            f"The downloaded Excel workbook is missing required XLSX content in {path.name}: "
+            f"The downloaded Excel workbook is missing required {format_label} content in "
+            f"{path.name}: "
             f"{', '.join(sorted(missing))}"
         )
     if corrupt_member:
         raise RuntimeError(
-            f"The downloaded Excel workbook contains a corrupt XLSX member in {path.name}: "
+            f"The downloaded Excel workbook contains a corrupt {format_label} member in "
+            f"{path.name}: "
             f"{corrupt_member}"
         )
+
+
+def _validate_xlsx_container(path: Path) -> None:
+    """Backward-compatible wrapper for the existing raw-XLSX validation seam."""
+    _validate_excel_container(path, "xlsx")
 
 
 #: What a downloaded file actually is, read from its first bytes. A portal
@@ -4240,8 +4398,13 @@ def _validate_xlsx_container(path: Path) -> None:
 #: evidence: an "(xlsx)" dashboard link can emit HTML, and a CSV-configured
 #: flow can receive a workbook.
 DOWNLOAD_SIGNATURES = (
-    (b"PK\x03\x04", "xlsx"),
     (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "xls"),
+    # Standalone BIFF2/3/4/5 workbook streams predate the usual OLE compound
+    # wrapper but are still valid .xls/.xlt files that xlrd can read.
+    (b"\x09\x00", "xls"),
+    (b"\x09\x02", "xls"),
+    (b"\x09\x04", "xls"),
+    (b"\x09\x08", "xls"),
     (b"%PDF-", "pdf"),
 )
 HTML_PREFIXES = (b"<!doctype html", b"<html", b"<?xml", b"<table", b"<meta")
@@ -4259,6 +4422,18 @@ def _detect_download_format(path: Path) -> str:
         head = handle.read(1024)
     if not head:
         raise RuntimeError(f"The downloaded file is empty: {path.name}")
+    if head.startswith(b"PK"):
+        # OOXML and XLSB are both ZIP packages. workbook.bin is the decisive
+        # XLSB marker; corrupt ZIPs retain the suffix-based family only so the
+        # later container check can issue the useful integrity error.
+        try:
+            with zipfile.ZipFile(path) as workbook:
+                members = set(workbook.namelist())
+            if "xl/workbook.bin" in members:
+                return "xlsb"
+            return "xlsx"
+        except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError):
+            return "xlsb" if path.suffix.casefold() in XLSB_EXCEL_EXTENSIONS else "xlsx"
     for signature, kind in DOWNLOAD_SIGNATURES:
         if head.startswith(signature):
             return kind
@@ -4268,6 +4443,15 @@ def _detect_download_format(path: Path) -> str:
     if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "binary"
     return "csv"
+
+
+def _excel_output_suffix(local_path: Path, output: Path, workbook_format: str) -> str:
+    """Preserve a compatible original Excel extension, otherwise correct it."""
+    compatible = EXCEL_EXTENSIONS_BY_FORMAT[workbook_format]
+    for candidate in (output.suffix.casefold(), local_path.suffix.casefold()):
+        if candidate in compatible:
+            return candidate
+    return {"xlsx": ".xlsx", "xls": ".xls", "xlsb": ".xlsb"}[workbook_format]
 
 
 def _store_completed_download(
@@ -4294,11 +4478,14 @@ def _store_completed_download(
     # final bytes, not a mid-flush view of a share-backed staging folder.
     snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path)
-    if detected == "xls":
+    declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
+    if detected == "xls" and declared_suffixes & (
+        OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
+    ):
         raise RuntimeError(
-            f"The download looks like xls: {local_path.name}. It is either a legacy .xls "
-            "file or a password-protected/encrypted Excel workbook. Attach an unencrypted "
-            ".xlsx workbook instead."
+            f"The Excel attachment {local_path.name} uses an OLE encrypted container even "
+            "though its filename declares a modern workbook. Password-protected/encrypted "
+            "Excel attachments are unsupported; attach an unencrypted workbook instead."
         )
     if detected in {"pdf", "binary"}:
         raise RuntimeError(
@@ -4312,22 +4499,29 @@ def _store_completed_download(
             "portal most likely returned an error or a login page instead of "
             "the export."
         )
-    if detected != file_format:
-        # The portal decides the format, not the flow's setting. Follow the
-        # file and correct the saved name so a workbook never lands as .csv.
+    if detected in EXCEL_DOWNLOAD_FORMATS:
+        # The portal decides the format, not the flow's setting. Preserve an
+        # original compatible extension (for example .xlsm) and otherwise
+        # correct the saved name so a workbook never lands as .csv.
+        file_format = detected
+        expected_suffix = _excel_output_suffix(local_path, output, detected)
+        if output.suffix.casefold() != expected_suffix:
+            output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
+    elif detected != file_format:
         file_format = detected
         expected_suffix = f".{detected}"
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
-    if file_format == "xlsx":
+    if file_format in EXCEL_DOWNLOAD_FORMATS:
+        saved_format = output.suffix.casefold().lstrip(".") or detected
         original_size = snapshot["file_size"]
         if original_size <= 0:
             raise RuntimeError("The downloaded Excel workbook is empty.")
         if not require_normalized_csv:
             # The settled staging file is cheap to inspect compared to the
             # configured (often network-backed) target folder. Check the
-            # entire OOXML container before creating anything there.
-            _validate_xlsx_container(local_path)
+            # complete workbook container before creating anything there.
+            _validate_excel_container(local_path, detected)
         copied = _copy_with_checksum(local_path, output)
         if copied["file_size"] != original_size or copied["checksum"] != snapshot["checksum"]:
             raise RuntimeError(
@@ -4339,7 +4533,7 @@ def _store_completed_download(
         )
         if not require_normalized_csv:
             return _raw_xlsx_metadata(
-                output, original_size, copied["checksum"], detected,
+                output, original_size, copied["checksum"], saved_format,
             )
         normalized_output = _safe_output_path(
             output.parent, f"{output.stem}_normalized.csv",
@@ -4354,6 +4548,7 @@ def _store_completed_download(
             normalization = _normalize_xlsx(
                 output, normalized_output, requested_weeks=requested_weeks,
                 header_mode=xlsx_header_mode, strict_headers=strict_headers,
+                workbook_format=detected,
             )
         except Exception as exc:
             if not allow_raw_xlsx_fallback:
@@ -4366,9 +4561,9 @@ def _store_completed_download(
             # transformation nor SQL handoff needs a CSV, keep that verified
             # XLSX as the successful artifact instead of throwing it away and
             # retrying report navigation.
-            _validate_xlsx_container(local_path)
+            _validate_excel_container(local_path, detected)
             return _raw_xlsx_metadata(
-                output, original_size, copied["checksum"], detected,
+                output, original_size, copied["checksum"], saved_format,
                 normalization_error=str(exc),
             )
         if processing_progress is not None:
@@ -4384,7 +4579,7 @@ def _store_completed_download(
             "original_file_path": str(output),
             "original_filename": output.name,
             "original_file_size": original_size,
-            "detected_format": detected,
+            "detected_format": saved_format,
         }
     if file_format != "csv":
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")

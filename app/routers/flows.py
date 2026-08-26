@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
+from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
 from app.flow_retention import tombstone_name as retention_tombstone_name
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
@@ -1171,7 +1172,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
             "folder": "inbox",
             "include_subfolders": False,
             "subject_contains": flow.get("outlook_subject_contains"),
-            "supported_extensions": [".csv", ".xlsx"],
+            "supported_extensions": list(SUPPORTED_ATTACHMENT_EXTENSIONS),
             "attachment_policy": "exactly_one",
             "last_processed_identity": flow.get("outlook_last_identity"),
             "force_reprocess": bool(force_reprocess),

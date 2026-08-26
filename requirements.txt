@@ -11,6 +11,8 @@ psycopg2-binary
 pandas==2.3.3
 sqlalchemy==2.0.50
 openpyxl==3.1.5
+xlrd==2.0.2
+pyxlsb==1.0.10
 pycountry
 reverse_geocoder==1.5.1
 python-multipart

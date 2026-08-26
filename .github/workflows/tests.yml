@@ -20,7 +20,8 @@ jobs:
       - name: Install test dependencies
         run: >
           pip install pytest fastapi uvicorn pydantic httpx playwright
-          openpyxl python-multipart apscheduler pandas sqlalchemy truststore
+          openpyxl==3.1.5 xlrd==2.0.2 pyxlsb==1.0.10
+          python-multipart apscheduler pandas sqlalchemy truststore
       - name: Run Python test suite
         run: python -m pytest tests -q
       - name: Run catalog tree tests

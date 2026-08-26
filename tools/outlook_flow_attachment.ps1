@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$SupportedDataExtensions = @(".csv", ".xls", ".xlsb", ".xlsm", ".xlsx", ".xlt", ".xltm", ".xltx")
 
 function Write-AtomicJson([hashtable]$Value) {
     $parent = Split-Path -Parent $ResultPath
@@ -77,7 +78,7 @@ try {
             for ($index = 1; $index -le $message.Attachments.Count; $index++) {
                 $attachment = $message.Attachments.Item($index)
                 $extension = [IO.Path]::GetExtension([string]$attachment.FileName).ToLowerInvariant()
-                if ($extension -eq ".csv" -or $extension -eq ".xlsx") {
+                if ($SupportedDataExtensions -contains $extension) {
                     $supported += [pscustomobject]@{ Index = $index; Attachment = $attachment }
                 }
             }
@@ -85,7 +86,7 @@ try {
                 continue
             }
             if ($supported.Count -gt 1) {
-                throw "The newest matching Outlook email has more than one CSV/XLSX attachment. Keep exactly one supported data attachment on the message."
+                throw "The newest matching Outlook email has more than one CSV/Excel workbook attachment. Keep exactly one supported data attachment on the message."
             }
 
             $selected = $supported[0]
@@ -146,7 +147,7 @@ try {
     }
     Write-AtomicJson @{
         status = "no_match"
-        message = "No matching Outlook email with exactly one CSV/XLSX attachment was found."
+        message = "No matching Outlook email with exactly one CSV/Excel workbook attachment was found."
     }
 }
 catch {

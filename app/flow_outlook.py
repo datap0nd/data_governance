@@ -20,6 +20,21 @@ from typing import Callable
 
 
 OUTLOOK_ATTACHMENT_ADAPTER = "outlook_attachment"
+# Worksheet-oriented flat-file formats that the worker can normalize to CSV.
+# Macro-capable formats are read as values only; Metronome never executes VBA.
+# Excel add-ins (.xla/.xlam/.xll) are deliberately excluded because they are
+# programs, not a reliable tabular workbook contract.
+SUPPORTED_ATTACHMENT_EXTENSIONS = (
+    ".csv",
+    ".xls",
+    ".xlsb",
+    ".xlsm",
+    ".xlsx",
+    ".xlt",
+    ".xltm",
+    ".xltx",
+)
+SUPPORTED_ATTACHMENT_EXTENSION_SET = frozenset(SUPPORTED_ATTACHMENT_EXTENSIONS)
 _SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "outlook_flow_attachment.ps1"
 _IDENTITY_PART_SEPARATOR = "\x1f"
 _TASK_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -157,7 +172,7 @@ def acquire_attachment(
         raise OutlookAcquisitionError("Outlook returned an attachment path outside its staging folder.") from exc
     if not name or saved_path.name != name or not saved_path.is_file():
         raise OutlookAcquisitionError("Outlook did not save the selected attachment safely.")
-    if saved_path.suffix.casefold() not in {".csv", ".xlsx"}:
+    if saved_path.suffix.casefold() not in SUPPORTED_ATTACHMENT_EXTENSION_SET:
         raise OutlookAcquisitionError("Outlook selected an unsupported attachment type.")
 
     try:

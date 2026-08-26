@@ -1294,12 +1294,19 @@ def test_an_html_page_is_refused_instead_of_being_loaded_as_data(tmp_path):
     assert "HTML page" in str(excinfo.value)
 
 
-def test_a_legacy_xls_is_refused_with_its_real_type(tmp_path):
+def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
     source = tmp_path / "download.csv"
     source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
     with pytest.raises(RuntimeError) as excinfo:
         flow_worker._store_completed_download(source, tmp_path / "out.csv")
-    assert "looks like xls" in str(excinfo.value)
+    assert "legacy Excel workbook could not be opened" in str(excinfo.value)
+
+
+def test_an_encrypted_modern_excel_container_has_an_actionable_error(tmp_path):
+    source = tmp_path / "protected.xlsx"
+    source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    with pytest.raises(RuntimeError, match="Password-protected/encrypted"):
+        flow_worker._store_completed_download(source, tmp_path / "protected.xlsx")
 
 
 def test_a_real_csv_is_still_normalized_untouched(tmp_path):

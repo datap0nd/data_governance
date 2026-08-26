@@ -10,12 +10,15 @@ daily/weekly/monthly schedule, and the normal optional SQL handoff.
 - Only the default profile's top-level Inbox is searched. Subfolders and other
   mailboxes are not included.
 - Subject matching is a case-insensitive substring match.
-- Messages are inspected newest first. Messages with no `.csv` or `.xlsx`
-  attachment are skipped.
+- Messages are inspected newest first. Messages with no supported attachment
+  are skipped. Supported files are `.csv`, legacy `.xls`/`.xlt`, binary
+  `.xlsb`, and OOXML `.xlsx`/`.xlsm`/`.xltx`/`.xltm` workbooks.
 - The newest message with supported data must have exactly one supported
   attachment. More than one fails with an actionable error. Other attachment
   types do not count.
-- Legacy `.xls` and password-protected/encrypted workbooks are unsupported.
+- Excel add-ins (`.xla`, `.xlam`, `.xll`) and password-protected/encrypted
+  workbooks are unsupported. Macro-capable workbooks are read as stored cell
+  values only; Metronome never executes VBA.
 
 The attachment identity is a SHA-256 receipt over the Outlook store, message,
 attachment position, and original attachment name. Metronome advances that
@@ -35,16 +38,16 @@ including when it re-pokes an existing queued scheduled run.
 After a new attachment is acquired locally, the worker creates the normal
 `#<run_id>_<dd-mm-yyyy>` folder, registers it, applies the keep-newest-three
 protocol, and uses the shared verified storage path. The original safe filename
-is retained with collision suffixes. CSV is normalized in place; XLSX keeps the
-verified original and adds a `_normalized.csv` sibling used by transformations
-and SQL.
+is retained with collision suffixes. CSV is normalized in place; every Excel
+format keeps the verified original and adds a `_normalized.csv` sibling used by
+transformations and SQL.
 
 ## Flat-file validation
 
 Outlook files do not use ASAP's preamble detection. The physical first row is
 the header. A one-column file is valid, but blank or case-insensitively
 duplicated headers, data beyond the declared headers, and header-only files are
-rejected. Every populated XLSX worksheet follows the same rule, and populated
+rejected. Every populated Excel worksheet follows the same rule, and populated
 worksheets must resolve to the same normalized header list before their rows
 are streamed into one CSV.
 

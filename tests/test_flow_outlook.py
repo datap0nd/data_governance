@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,19 @@ def _outlook_flow(**overrides):
     return flows.FlowWrite(**values)
 
 
+def test_outlook_helper_and_python_use_the_same_excel_extension_contract():
+    script = Path(__file__).parents[1].joinpath(
+        "tools", "outlook_flow_attachment.ps1",
+    ).read_text(encoding="utf-8")
+    definition = next(
+        line for line in script.splitlines() if line.startswith("$SupportedDataExtensions")
+    )
+    helper_extensions = tuple(re.findall(r'"(\.[a-z0-9]+)"', definition))
+
+    assert helper_extensions == flow_outlook.SUPPORTED_ATTACHMENT_EXTENSIONS
+    assert not ({".xla", ".xlam", ".xll"} & set(helper_extensions))
+
+
 def test_outlook_flow_uses_hidden_internal_catalog_source_and_headless_job(outlook_db):
     saved = flows.create_flow(_outlook_flow(), _request())
 
@@ -51,7 +65,9 @@ def test_outlook_flow_uses_hidden_internal_catalog_source_and_headless_job(outlo
         "folder": "inbox",
         "include_subfolders": False,
         "subject_contains": "CODE 42",
-        "supported_extensions": [".csv", ".xlsx"],
+        "supported_extensions": [
+            ".csv", ".xls", ".xlsb", ".xlsm", ".xlsx", ".xlt", ".xltm", ".xltx",
+        ],
         "attachment_policy": "exactly_one",
         "last_processed_identity": None,
         "force_reprocess": False,
