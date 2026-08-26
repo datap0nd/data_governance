@@ -15,10 +15,15 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.archive_ops import archive_source
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE
 from app.database import get_db
 from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, current_cancel_generation
-from app.scanner.tmdl_parser import is_folder_like_file_source, path_has_file_extension
+from app.scanner.tmdl_parser import (
+    LOCAL_USER_PATH,
+    is_folder_like_file_source,
+    path_has_file_extension,
+)
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
@@ -80,28 +85,64 @@ def _archive_folder_like_scan_sources(db, now: str, log_lines: list[str]) -> Non
         if not _source_row_is_folder_like(row):
             continue
         db.execute("UPDATE report_tables SET source_id = NULL WHERE source_id = ?", (row["id"],))
-        db.execute(
-            "UPDATE sources SET archived = 1, updated_at = ? WHERE id = ?",
-            (now, row["id"]),
-        )
-        db.execute(
-            """UPDATE actions SET status = 'resolved', resolved_at = ?,
-                                  updated_at = ?,
-                                  notes = COALESCE(notes, '') || ' [auto-resolved: folder source archived]'
-               WHERE source_id = ? AND status NOT IN ('resolved', 'expected')""",
-            (now, now, row["id"]),
-        )
-        db.execute(
-            """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
-                                 acknowledged = 1, acknowledged_by = 'auto',
-                                 resolution_reason = 'Folder source archived'
-               WHERE source_id = ? AND resolution_status IS NULL""",
-            (now, row["id"]),
+        archive_source(
+            db, row["id"], now,
+            reason="Folder source archived",
+            action_note=" [auto-resolved: folder source archived]",
         )
         archived_count += 1
         log_lines.append(f"ARCHIVED: {row['name']} (folder path, not a file source)")
     if archived_count:
         log_lines.append(f"TOTAL ARCHIVED: {archived_count} folder-like file sources")
+
+
+def _archive_local_user_path_sources(db, all_sources, now: str, log_lines: list[str]) -> None:
+    """Archive scan-discovered file sources on an analyst's local profile.
+
+    The server's service account can never reach C:\\Users\\<analyst> paths,
+    so probing them only produces 'unknown' noise. Archiving (rather than
+    dropping) keeps the "report reads from a personal folder" signal visible
+    under Show Archived and preserves report lineage.
+    """
+    # File-source rows are keyed by basename (sources.name is UNIQUE), so one
+    # row can serve both a C:\Users\... and a \\share\... lineage, with
+    # connection_info last-writer-wins. Only archive a basename when no
+    # non-local path was observed for it anywhere in this scan.
+    def _basename(path: str) -> str:
+        return path.replace("\\", "/").rstrip("/").split("/")[-1]
+
+    contested_names = set()
+    for info in all_sources.values():
+        path = (getattr(info, "file_path", None) or "").strip()
+        if path and not LOCAL_USER_PATH.match(path):
+            contested_names.add(_basename(path))
+
+    rows = db.execute(
+        """SELECT id, name, connection_info FROM sources
+           WHERE COALESCE(archived, 0) = 0
+             AND discovered_by = 'scan'
+             AND type IN ('csv', 'excel', 'folder', 'file')"""
+    ).fetchall()
+    archived_count = 0
+    for row in rows:
+        path = (row["connection_info"] or row["name"] or "").strip()
+        if not LOCAL_USER_PATH.match(path):
+            continue
+        if row["name"] in contested_names:
+            log_lines.append(
+                f"SKIPPED (shared basename): {row['name']} also scanned at a non-local path"
+            )
+            continue
+        archive_source(
+            db, row["id"], now,
+            reason="Source archived (local user path, not probeable from server)",
+        )
+        archived_count += 1
+        log_lines.append(
+            f"ARCHIVED: {row['name']} (local user profile path, not probeable from server)"
+        )
+    if archived_count:
+        log_lines.append(f"TOTAL ARCHIVED: {archived_count} local-user-path sources")
 
 
 def run_scan(
@@ -262,26 +303,9 @@ def run_scan(
             for row in pg_rows:
                 # A clean PG source name is either "schema.table" or "table"
                 if _validate_table_name(row["name"]) is None:
-                    db.execute(
-                        "UPDATE sources SET archived = 1, updated_at = ? WHERE id = ?",
-                        (now, row["id"]),
-                    )
-                    # Close any open actions tied to this source so the Alerts
-                    # table doesn't keep showing noise
-                    db.execute(
-                        """UPDATE actions SET status = 'resolved', resolved_at = ?,
-                                              updated_at = ?,
-                                              notes = COALESCE(notes, '') || ' [auto-resolved: source archived]'
-                           WHERE source_id = ? AND status NOT IN ('resolved', 'expected')""",
-                        (now, now, row["id"]),
-                    )
-                    # Acknowledge any open alerts too
-                    db.execute(
-                        """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
-                                             acknowledged = 1, acknowledged_by = 'auto',
-                                             resolution_reason = 'Source archived (invalid name)'
-                           WHERE source_id = ? AND resolution_status IS NULL""",
-                        (now, row["id"]),
+                    archive_source(
+                        db, row["id"], now,
+                        reason="Source archived (invalid name)",
                     )
                     archived_count += 1
                     log_lines.append(
@@ -327,6 +351,10 @@ def run_scan(
                     new_sources += 1
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
+
+            # After the upsert so sources first seen this scan are archived
+            # before the follow-up probe runs.
+            _archive_local_user_path_sources(db, all_sources, now, log_lines)
 
             # Upsert reports and their tables
             for report in reports:

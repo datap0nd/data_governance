@@ -587,12 +587,25 @@ def list_actions(status: str | None = None):
     return deduped
 
 
+# Alert message prefix per action type, for resolving the linked alert when a
+# person resolves the action. Explicit map only - types without a known alert
+# pattern leave alerts untouched.
+_ACTION_ALERT_MESSAGE_PREFIX = {
+    "stale_source": "Source data is outside freshness rule%",
+    "outdated_source": "Source data is outside freshness rule%",
+    "error_source": "Source data is outside freshness rule%",
+    "empty_source": "Source row count dropped%",
+}
+
+
 @router.patch("/{action_id}", response_model=ActionOut)
 def update_action(action_id: int, update: ActionUpdate, request: Request):
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as db:
-        existing = db.execute("SELECT id FROM actions WHERE id = ?", (action_id,)).fetchone()
+        existing = db.execute(
+            "SELECT id, source_id, type FROM actions WHERE id = ?", (action_id,)
+        ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Action not found")
 
@@ -613,6 +626,24 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
             f"UPDATE actions SET {', '.join(fields)} WHERE id = ?",
             values,
         )
+
+        # Resolving the action also resolves its linked open alerts; otherwise
+        # they stay open forever (the prober's auto-closer only acts on probe
+        # evidence). Deliberately one-way: reopening an action does not reopen
+        # alerts - if the source is still outdated, the next probe run
+        # recreates the alert.
+        message_prefix = _ACTION_ALERT_MESSAGE_PREFIX.get(existing["type"])
+        if (update.status in ("resolved", "expected")
+                and existing["source_id"] is not None and message_prefix):
+            db.execute(
+                """UPDATE alerts
+                   SET resolution_status = 'resolved', resolved_at = ?,
+                       acknowledged = 1, acknowledged_by = ?,
+                       resolution_reason = 'Linked action resolved'
+                   WHERE source_id = ? AND message LIKE ?
+                     AND resolution_status IS NULL""",
+                (now, get_actor(request) or "user", existing["source_id"], message_prefix),
+            )
 
         changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
         log_event(db, "action", action_id, None, "updated", changed, get_actor(request))

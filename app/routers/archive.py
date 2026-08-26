@@ -1,6 +1,9 @@
 """Archive / unarchive entities (sources, reports, scripts, upstream systems, scheduled tasks)."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Request
+from app.archive_ops import archive_source
 from app.database import get_db
 from app.routers.eventlog import log_event, get_actor
 
@@ -40,7 +43,13 @@ def toggle_archive(entity_type: str, entity_id: int, request: Request):
             raise HTTPException(status_code=404, detail="Entity not found")
 
         new_val = 0 if row["archived"] else 1
-        db.execute(f"UPDATE {table} SET archived = ? WHERE id = ?", (new_val, entity_id))
+        if entity_type == "source" and new_val:
+            # Archived sources are no longer probed, so nothing would ever
+            # close their open actions/alerts again - resolve them now.
+            now = datetime.now(timezone.utc).isoformat()
+            archive_source(db, entity_id, now, reason="Source archived")
+        else:
+            db.execute(f"UPDATE {table} SET archived = ? WHERE id = ?", (new_val, entity_id))
         action = "archived" if new_val else "unarchived"
         log_event(db, entity_type, entity_id, row["ename"], action, actor=get_actor(request))
 

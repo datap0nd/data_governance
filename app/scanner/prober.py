@@ -17,15 +17,15 @@ or ANY other write/DDL operation. This is a strict, non-negotiable constraint.
 import csv
 import logging
 import os
-import re
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from app.config import BASE_DIR, PGHOST, PGUSER, PGPASSWORD, PGDATABASE
+from app.config import PGHOST, PGUSER, PGPASSWORD, PGDATABASE
 from app.database import get_db
 from app.scanner.control import assert_not_cancelled, current_cancel_generation
+from app.scanner.tmdl_parser import LOCAL_USER_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,6 @@ FILE_SOURCE_TYPES = {"csv", "excel", "folder"}
 # grows source_probes into the largest table in the database, which slows the
 # freshness queries that sort it per source.
 SOURCE_PROBE_RETENTION_DAYS = 90
-
-# A drive-letter path under another user's Windows profile. Analysts register
-# reports whose connections point at their own Downloads/Desktop folders;
-# the server's service account can never see those, so probing them is noise
-# rather than a data-freshness signal.
-LOCAL_USER_PATH = re.compile(r"^[A-Za-z]:[\\/]Users[\\/](?!Public[\\/])[^\\/]+[\\/]", re.IGNORECASE)
 
 # PostgreSQL source types
 PG_SOURCE_TYPES = {"postgresql"}
@@ -168,24 +162,14 @@ def _compute_status_for_rule(last_activity_str: str | None, rule: dict) -> str:
 
 
 def _find_file(file_path: str) -> Path | None:
-    """Try to locate a file at its original path or common fallback locations."""
+    """Return the file at its exact registered path, or None.
+
+    No basename fallback: matching an unreachable path to a same-named file
+    elsewhere would report that unrelated file's mtime as the source's
+    freshness - a silent false "fresh" is worse than an honest "unknown".
+    """
     p = Path(file_path)
-    if p.exists():
-        return p
-
-    # Extract filename - handle both Unix and Windows path separators
-    # On Linux, Path("C:\Data\file.xlsx").name returns the whole string with backslashes
-    name = file_path.replace("\\", "/").split("/")[-1]
-
-    search_dirs = [
-        BASE_DIR,
-    ]
-    for d in search_dirs:
-        candidate = d / name
-        if candidate.exists():
-            return candidate
-
-    return None
+    return p if p.exists() else None
 
 
 def _latest_source_row_count(db, source_id: int) -> int | None:
@@ -700,27 +684,32 @@ def _dedupe_open_actions(db, now: str) -> int:
     return closed
 
 
-def _auto_close_stale_entries(db, now: str) -> int:
-    """Close stale_source actions and alerts for sources no longer outdated.
+def _auto_close_stale_entries(db, now: str) -> tuple[int, int]:
+    """Close stale_source actions and alerts contradicted by the latest probe.
 
-    When a source transitions from "outdated" to "fresh", "no_rule", or
-    "unknown" (e.g., rule cleared), its open stale_source action/alert are
-    stranded. Auto-close them here so the Alerts table reflects reality.
+    Only 'fresh' (verifiably compliant) and 'no_rule' (rule removed, so no
+    violation can exist) close anything: 'unknown' means the probe failed or
+    the source is unreachable, which does not contradict an existing alert,
+    so those entries stay open until real evidence arrives.
 
-    Returns the count of actions closed.
+    The alert sweep is independent of action state, so alerts whose action
+    was closed out-of-band (e.g. resolved manually before the router also
+    resolved alerts) self-heal here instead of staying open forever.
+
+    Returns (actions_closed, alerts_closed).
     """
-    # Find sources whose latest probe is not outdated but have open stale_source actions
+    # Find sources whose latest probe is compliant but have open stale_source actions
     rows = db.execute("""
         SELECT a.id AS action_id, a.source_id, sp.status AS latest_status
         FROM actions a
         JOIN (
             SELECT source_id, status,
-                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
+                   ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC, id DESC) AS rn
             FROM source_probes
         ) sp ON sp.source_id = a.source_id AND sp.rn = 1
         WHERE a.type = 'stale_source'
           AND a.status NOT IN ('resolved', 'expected')
-          AND sp.status NOT IN ('outdated', 'stale', 'error')
+          AND sp.status IN ('fresh', 'no_rule')
     """).fetchall()
 
     closed = 0
@@ -729,31 +718,31 @@ def _auto_close_stale_entries(db, now: str) -> int:
             """UPDATE actions
                SET status = 'resolved', resolved_at = ?, updated_at = ?,
                    notes = COALESCE(notes, '') || ' [auto-resolved: source is now '
-                   || COALESCE((SELECT status FROM source_probes WHERE id = (
-                       SELECT id FROM source_probes WHERE source_id = ? ORDER BY probed_at DESC LIMIT 1
-                   )), 'fresh') || ']'
+                   || ? || ']'
                WHERE id = ?""",
-            (now, now, r["source_id"], r["action_id"]),
+            (now, now, r["latest_status"], r["action_id"]),
         )
         closed += 1
 
-    # Also resolve alerts for those same sources
-    source_ids = [r["source_id"] for r in rows]
-    if source_ids:
-        placeholders = ",".join("?" * len(source_ids))
-        db.execute(
-            f"""UPDATE alerts
-                SET resolution_status = 'resolved', resolved_at = ?,
-                    acknowledged = 1, acknowledged_by = 'auto',
-                    resolution_reason = 'Source no longer outdated'
-                WHERE source_id IN ({placeholders})
-                  AND severity = 'critical'
-                  AND message LIKE 'Source data is outside freshness rule%'
-                  AND resolution_status IS NULL""",
-            [now, *source_ids],
-        )
+    cursor = db.execute(
+        """UPDATE alerts
+           SET resolution_status = 'resolved', resolved_at = ?,
+               acknowledged = 1, acknowledged_by = 'auto',
+               resolution_reason = 'Source no longer outdated'
+           WHERE severity = 'critical'
+             AND message LIKE 'Source data is outside freshness rule%'
+             AND resolution_status IS NULL
+             AND source_id IN (
+                 SELECT source_id FROM (
+                     SELECT source_id, status,
+                            ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC, id DESC) AS rn
+                     FROM source_probes
+                 ) WHERE rn = 1 AND status IN ('fresh', 'no_rule'))""",
+        (now,),
+    )
+    alerts_closed = cursor.rowcount if cursor.rowcount is not None and cursor.rowcount > 0 else 0
 
-    return closed
+    return closed, alerts_closed
 
 
 def _auto_close_empty_source_entries(db, now: str) -> int:
@@ -1098,7 +1087,8 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         file_sources = db.execute(
             """SELECT id, name, type, connection_info, custom_fresh_days,
                       freshness_rule_type, freshness_schedule_days
-               FROM sources WHERE type IN ('csv', 'excel', 'folder')"""
+               FROM sources WHERE type IN ('csv', 'excel', 'folder')
+                 AND COALESCE(archived, 0) = 0"""
         ).fetchall()
 
         for src in file_sources:
@@ -1117,7 +1107,8 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         pg_sources = db.execute(
             """SELECT id, name, type, connection_info, custom_fresh_days,
                       freshness_rule_type, freshness_schedule_days
-               FROM sources WHERE type = 'postgresql'"""
+               FROM sources WHERE type = 'postgresql'
+                 AND COALESCE(archived, 0) = 0"""
         ).fetchall()
 
         if pg_sources:
@@ -1133,6 +1124,7 @@ def run_probe(cancel_generation: int | None = None) -> dict:
             """SELECT s.id, s.name, s.type
                FROM sources s
                WHERE s.type NOT IN ('csv', 'excel', 'folder', 'postgresql')
+               AND COALESCE(s.archived, 0) = 0
                AND NOT EXISTS (
                    SELECT 1 FROM source_probes sp
                    WHERE sp.source_id = s.id AND sp.probed_at = ?
@@ -1160,9 +1152,12 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         _check_report_source_schedule(db, now, log_lines)
 
         # 5. Auto-close stale_source actions/alerts for sources no longer outdated
-        auto_closed = _auto_close_stale_entries(db, now)
-        if auto_closed:
-            log_lines.append(f"Auto-closed {auto_closed} stale alerts (sources no longer outdated)")
+        closed_actions, closed_alerts = _auto_close_stale_entries(db, now)
+        if closed_actions or closed_alerts:
+            log_lines.append(
+                f"Auto-closed {closed_actions} stale actions and {closed_alerts} stale alerts "
+                "(sources verified compliant)"
+            )
 
         empty_closed = _auto_close_empty_source_entries(db, now)
         if empty_closed:

@@ -256,3 +256,283 @@ def test_probe_history_pruning_keeps_latest_probe_and_latest_row_count(source_db
 
     assert pruned == 1
     assert remaining == [1, 3]
+
+
+def _insert_open_alert(db, alert_id, source_id,
+                       message="Source data is outside freshness rule (30 days)",
+                       severity="critical"):
+    db.execute(
+        """INSERT INTO alerts (id, source_id, severity, message, acknowledged)
+           VALUES (?, ?, ?, ?, 0)""",
+        (alert_id, source_id, severity, message),
+    )
+
+
+def _insert_open_action(db, action_id, source_id, action_type="stale_source"):
+    db.execute(
+        "INSERT INTO actions (id, source_id, type, status) VALUES (?, ?, ?, 'open')",
+        (action_id, source_id, action_type),
+    )
+
+
+def test_archiving_a_source_resolves_its_open_actions_and_alerts(source_db):
+    from app.routers import archive
+
+    with database.get_db() as db:
+        _insert_source(db, 1, "Noisy source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+
+    archive.toggle_archive("source", 1, _request())
+
+    with database.get_db() as db:
+        source = db.execute("SELECT archived FROM sources WHERE id = 1").fetchone()
+        action = db.execute("SELECT status FROM actions WHERE id = 1").fetchone()
+        alert = db.execute(
+            "SELECT resolution_status, resolution_reason FROM alerts WHERE id = 1"
+        ).fetchone()
+
+    assert source["archived"] == 1
+    assert action["status"] == "resolved"
+    assert alert["resolution_status"] == "resolved"
+    assert alert["resolution_reason"] == "Source archived"
+
+
+def test_active_alert_list_hides_alerts_on_already_archived_sources(source_db):
+    # Rows archived before archive-time cleanup existed can still hold open
+    # alerts; the active view must not show them, the history view must.
+    from app.routers import alerts
+
+    with database.get_db() as db:
+        _insert_source(db, 1, "Legacy archived source", archived=1)
+        _insert_source(db, 2, "Active source")
+        _insert_open_alert(db, 1, 1)
+        _insert_open_alert(db, 2, 2)
+
+    active_ids = {a.id for a in alerts.list_alerts(active_only=True)}
+    all_ids = {a.id for a in alerts.list_alerts(active_only=False)}
+
+    assert active_ids == {2}
+    assert all_ids == {1, 2}
+
+
+def test_run_probe_skips_archived_sources(source_db, tmp_path, monkeypatch):
+    from app.checks import data_quality
+    from app.scanner import prober
+
+    data_file = tmp_path / "active.xlsx"
+    data_file.write_text("data")
+    monkeypatch.setattr(data_quality, "run_quality_checks", lambda: {})
+    with database.get_db() as db:
+        _insert_source(db, 1, "Active file", connection_info=str(data_file))
+        _insert_source(db, 2, "Archived file", connection_info=str(data_file), archived=1)
+
+    prober.run_probe()
+
+    with database.get_db() as db:
+        probed_ids = {
+            row["source_id"]
+            for row in db.execute("SELECT DISTINCT source_id FROM source_probes")
+        }
+    assert probed_ids == {1}
+
+
+def test_scan_archives_local_user_path_sources_and_resolves_their_entries(source_db):
+    from app.scanner import runner
+    from app.scanner.tmdl_parser import SourceInfo
+
+    now = datetime.now(timezone.utc).isoformat()
+    local_only = SourceInfo(source_type="excel", file_path=r"C:\Users\ana\Desktop\solo.xlsx")
+    all_sources = {local_only.connection_key: local_only}
+    log_lines = []
+    with database.get_db() as db:
+        _insert_source(
+            db, 1, "solo.xlsx",
+            connection_info=r"C:\Users\ana\Desktop\solo.xlsx", discovered_by="scan",
+        )
+        _insert_source(
+            db, 2, "share.xlsx",
+            connection_info=r"\\MX-SHARE\exports\share.xlsx", discovered_by="scan",
+        )
+        _insert_source(
+            db, 3, "manual.xlsx",
+            connection_info=r"C:\Users\ana\Desktop\manual.xlsx", discovered_by="manual",
+        )
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+
+        runner._archive_local_user_path_sources(db, all_sources, now, log_lines)
+
+        archived = {
+            row["id"]: row["archived"]
+            for row in db.execute("SELECT id, COALESCE(archived, 0) AS archived FROM sources")
+        }
+        action = db.execute("SELECT status FROM actions WHERE id = 1").fetchone()
+        alert = db.execute("SELECT resolution_status FROM alerts WHERE id = 1").fetchone()
+
+    assert archived == {1: 1, 2: 0, 3: 0}
+    assert action["status"] == "resolved"
+    assert alert["resolution_status"] == "resolved"
+    assert any(line.startswith("ARCHIVED: solo.xlsx") for line in log_lines)
+
+
+def test_scan_keeps_local_path_source_whose_basename_also_has_a_shared_path(source_db):
+    # sources.name is UNIQUE and file rows are keyed by basename, so one row
+    # can serve both C:\Users\... and \\share\... lineages. Archiving it would
+    # hide the legitimate shared one - the pass must skip contested basenames.
+    from app.scanner import runner
+    from app.scanner.tmdl_parser import SourceInfo
+
+    now = datetime.now(timezone.utc).isoformat()
+    local = SourceInfo(source_type="excel", file_path=r"C:\Users\ana\Desktop\data.xlsx")
+    shared = SourceInfo(source_type="excel", file_path=r"\\MX-SHARE\exports\data.xlsx")
+    all_sources = {local.connection_key: local, shared.connection_key: shared}
+    log_lines = []
+    with database.get_db() as db:
+        # connection_info is last-writer-wins; here the local path won.
+        _insert_source(
+            db, 1, "data.xlsx",
+            connection_info=r"C:\Users\ana\Desktop\data.xlsx", discovered_by="scan",
+        )
+
+        runner._archive_local_user_path_sources(db, all_sources, now, log_lines)
+
+        archived = db.execute(
+            "SELECT COALESCE(archived, 0) AS archived FROM sources WHERE id = 1"
+        ).fetchone()
+
+    assert archived["archived"] == 0
+    assert any(line.startswith("SKIPPED (shared basename): data.xlsx") for line in log_lines)
+
+
+def test_auto_close_resolves_orphaned_alert_when_latest_probe_is_fresh(source_db):
+    # An alert whose action was closed out-of-band used to stay open forever;
+    # the sweep closes it as soon as a probe proves the source compliant.
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Recovered source")
+        _insert_open_alert(db, 1, 1)
+        db.execute(
+            "INSERT INTO source_probes (source_id, probed_at, status) VALUES (1, ?, 'fresh')",
+            (now,),
+        )
+
+        actions_closed, alerts_closed = prober._auto_close_stale_entries(db, now)
+        alert = db.execute(
+            "SELECT resolution_status, resolution_reason FROM alerts WHERE id = 1"
+        ).fetchone()
+
+    assert (actions_closed, alerts_closed) == (0, 1)
+    assert alert["resolution_status"] == "resolved"
+    assert alert["resolution_reason"] == "Source no longer outdated"
+
+
+def test_auto_close_leaves_alert_open_when_latest_probe_is_outdated(source_db):
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Still stale source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+        db.execute(
+            "INSERT INTO source_probes (source_id, probed_at, status) VALUES (1, ?, 'outdated')",
+            (now,),
+        )
+
+        actions_closed, alerts_closed = prober._auto_close_stale_entries(db, now)
+        action = db.execute("SELECT status FROM actions WHERE id = 1").fetchone()
+        alert = db.execute("SELECT resolution_status FROM alerts WHERE id = 1").fetchone()
+
+    assert (actions_closed, alerts_closed) == (0, 0)
+    assert action["status"] == "open"
+    assert alert["resolution_status"] is None
+
+
+def test_auto_close_leaves_entries_open_when_latest_probe_is_unknown(source_db):
+    # 'unknown' means the probe failed or the source is unreachable - that
+    # does not contradict the alert, so nothing may auto-close on it.
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Unreachable source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+        db.execute(
+            "INSERT INTO source_probes (source_id, probed_at, status) VALUES (1, ?, 'unknown')",
+            (now,),
+        )
+
+        actions_closed, alerts_closed = prober._auto_close_stale_entries(db, now)
+        action = db.execute("SELECT status FROM actions WHERE id = 1").fetchone()
+        alert = db.execute("SELECT resolution_status FROM alerts WHERE id = 1").fetchone()
+
+    assert (actions_closed, alerts_closed) == (0, 0)
+    assert action["status"] == "open"
+    assert alert["resolution_status"] is None
+
+
+def test_auto_close_breaks_probe_timestamp_ties_by_id(source_db):
+    from app.scanner import prober
+
+    now = datetime.now(timezone.utc).isoformat()
+    with database.get_db() as db:
+        _insert_source(db, 1, "Tied probes source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+        db.executemany(
+            "INSERT INTO source_probes (id, source_id, probed_at, status) VALUES (?, 1, ?, ?)",
+            [(1, now, "outdated"), (2, now, "fresh")],
+        )
+
+        actions_closed, alerts_closed = prober._auto_close_stale_entries(db, now)
+
+    assert (actions_closed, alerts_closed) == (1, 1)
+
+
+def test_resolving_an_action_resolves_its_linked_alert_one_way(source_db):
+    from app.models import ActionUpdate
+    from app.routers import actions
+
+    with database.get_db() as db:
+        _insert_source(db, 1, "Stale source")
+        _insert_source(db, 2, "Other source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+        _insert_open_alert(db, 2, 2)
+
+    actions.update_action(1, ActionUpdate(status="resolved"), _request())
+
+    with database.get_db() as db:
+        linked = db.execute(
+            "SELECT resolution_status, resolution_reason, acknowledged_by FROM alerts WHERE id = 1"
+        ).fetchone()
+        unrelated = db.execute("SELECT resolution_status FROM alerts WHERE id = 2").fetchone()
+
+    assert linked["resolution_status"] == "resolved"
+    assert linked["resolution_reason"] == "Linked action resolved"
+    assert linked["acknowledged_by"] == "Test User"
+    assert unrelated["resolution_status"] is None
+
+    # Deliberately one-way: reopening the action does not reopen the alert -
+    # if the source is still outdated the next probe run recreates it.
+    actions.update_action(1, ActionUpdate(status="open"), _request())
+    with database.get_db() as db:
+        linked = db.execute("SELECT resolution_status FROM alerts WHERE id = 1").fetchone()
+    assert linked["resolution_status"] == "resolved"
+
+
+def test_find_file_has_no_basename_fallback(source_db, tmp_path):
+    # Matching an unreachable path to a same-named file elsewhere would report
+    # the wrong file's mtime as the source's freshness (a false "fresh").
+    from app.scanner import prober
+
+    real = tmp_path / "data.xlsx"
+    real.write_text("data")
+
+    assert prober._find_file(str(real)) == real
+    assert prober._find_file(r"C:\Users\ana\Desktop\data.xlsx") is None
+    assert prober._find_file(r"\\MX-SHARE\exports\data.xlsx") is None
