@@ -193,9 +193,12 @@ def get_lineage_diagram(report_id: int):
                 SELECT s.id, s.name, s.type, s.owner, s.upstream_id, s.connection_info,
                        s.refresh_schedule, s.custom_fresh_days,
                        s.freshness_rule_type, s.freshness_schedule_days,
+                       spi.server_name, spi.database_name, spi.schema_name,
+                       spi.relation_name, spi.relation_kind, spi.verified_at,
                        sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at,
                        sp.row_count
                 FROM sources s
+                LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
                 LEFT JOIN (
                     SELECT source_id, status, last_data_at, row_count,
                            ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY probed_at DESC) AS rn
@@ -219,6 +222,14 @@ def get_lineage_diagram(report_id: int):
                     "custom_fresh_days": r["custom_fresh_days"],
                     "freshness_rule_type": r["freshness_rule_type"],
                     "freshness_schedule_days": r["freshness_schedule_days"],
+                    "postgres_identity": (
+                        {
+                            "server": r["server_name"], "database": r["database_name"],
+                            "schema": r["schema_name"], "relation": r["relation_name"],
+                            "kind": r["relation_kind"], "verified_at": r["verified_at"],
+                        }
+                        if r["server_name"] is not None else None
+                    ),
                 }
                 for r in source_rows
             ]
@@ -280,15 +291,21 @@ def get_lineage_diagram(report_id: int):
         materialized_source_ids = {dep["source_id"] for dep in source_deps}
         for source in sources:
             source["is_materialized_view"] = source["id"] in materialized_source_ids
+            identity = source.get("postgres_identity") or {}
             source["postgres_ref"] = (
-                _postgres_ref(source["name"])
-                if source["is_materialized_view"] and (source["type"] or "").casefold() == "postgresql"
-                else None
+                {"schema": identity["schema"], "name": identity["relation"]}
+                if source["is_materialized_view"] and identity
+                else (
+                    _postgres_ref(source["name"])
+                    if source["is_materialized_view"] and (source["type"] or "").casefold() == "postgresql"
+                    else None
+                )
             )
 
         # 8. Flows that load a SQL target represented anywhere in this report
         # pipeline. A Flow is upstream of its target source.
         flows = []
+        legacy_flow_suggestions = []
         if sources:
             flow_rows = db.execute(
                 """SELECT f.*,
@@ -304,13 +321,24 @@ def get_lineage_diagram(report_id: int):
             ).fetchall()
             for row in flow_rows:
                 flow = dict(row)
-                target_source_ids = [
-                    source["id"]
-                    for source in sources
-                    if _source_matches_flow_target(source, flow)
-                ]
-                if not target_source_ids:
+                confirmed_source_id = flow.get("sql_target_source_id")
+                if confirmed_source_id not in source_ids:
+                    suggested_source_ids = [
+                        source["id"] for source in sources
+                        if _source_matches_flow_target(source, flow)
+                    ]
+                    if suggested_source_ids:
+                        legacy_flow_suggestions.append({
+                            "id": flow["id"], "name": flow["name"],
+                            "target_source_ids": suggested_source_ids,
+                            "sql_database": flow.get("sql_database"),
+                            "sql_schema": flow.get("sql_schema"),
+                            "sql_table": flow.get("sql_table"),
+                            "executable": False,
+                            "reason": "Legacy display-name suggestion; confirm the exact SQL target in the Flow editor.",
+                        })
                     continue
+                target_source_ids = [int(confirmed_source_id)]
                 last_success_at = flow.get("last_success_at")
                 if not last_success_at and flow.get("last_status") == "succeeded":
                     last_success_at = flow.get("last_run_at")
@@ -326,6 +354,8 @@ def get_lineage_diagram(report_id: int):
                     "last_status": flow.get("last_status"),
                     "last_error": flow.get("last_error"),
                     "has_active_run": bool(flow.get("has_active_run")),
+                    "sql_target_link_status": "confirmed",
+                    "executable": True,
                 })
 
         # 9. Scripts that write to any source in the dependency chain
@@ -398,6 +428,7 @@ def get_lineage_diagram(report_id: int):
         "sources": sources,
         "source_deps": source_deps,
         "flows": flows,
+        "legacy_flow_suggestions": legacy_flow_suggestions,
         "upstreams": upstreams,
         "scripts": scripts,
         "scheduled_tasks": scheduled_tasks,

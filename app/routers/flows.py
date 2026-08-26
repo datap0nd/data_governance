@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app.config import DB_PATH
+from app.config import DB_PATH, UPLOAD_PGHOST
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_retention import tombstone_name as retention_tombstone_name
@@ -28,6 +28,7 @@ from app.flow_local_runner import (
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
+from app.source_identity import exact_identity_rows, flow_link_status
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
@@ -35,6 +36,7 @@ CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
 PERIOD_STRATEGIES = {"none", "latest", "fixed", "rolling"}
 FILE_FORMATS = {"csv", "xlsx"}
+SOURCE_TYPES = {"portal", "outlook"}
 SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
 SCAN_MODES = {"full", "partial"}
@@ -46,6 +48,7 @@ RUN_TERMINAL = {"succeeded", "failed", "cancelled"}
 RUN_STATUSES = {"queued", "claimed", "running", *RUN_TERMINAL}
 ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = "gscm_portal"
+OUTLOOK_ATTACHMENT_ADAPTER = "outlook_attachment"
 # Portals Metronome can inventory on its own. Each one is a separate website
 # with its own structure: ASAP is catalogued by walking its report menus, GSCM
 # by reading the bookmarks the user saved on its home screen.
@@ -86,7 +89,8 @@ def _flow_failure_context(db, run_id: int) -> dict | None:
     row = db.execute(
         """SELECT r.id AS run_id, r.flow_id, r.trigger_type, r.requested_by, r.worker_id,
                   r.error, r.created_at, r.started_at, r.finished_at,
-                  f.name AS flow_name, f.target_folder,
+                  f.name AS flow_name, f.target_folder, f.source_type,
+                  f.outlook_subject_contains,
                   s.name AS site_name, rep.name AS report_name,
                   p.name AS owner_name, p.email AS owner_email
            FROM flow_runs r
@@ -133,9 +137,14 @@ def _flow_failure_message(context: dict) -> dict:
             "</tr>"
         )
 
+    source_label = (
+        f"Outlook Inbox subject containing {context.get('outlook_subject_contains')!r}"
+        if context.get("source_type") == "outlook"
+        else f'{context["site_name"]} / {context["report_name"]}'
+    )
     rows = [
         detail_row("Flow", context["flow_name"]),
-        detail_row("Website / report", f'{context["site_name"]} / {context["report_name"]}'),
+        detail_row("Source", source_label),
         detail_row("Run", f"#{run_id} - {trigger}" + (f" by {requested_by}" if requested_by else "")),
         detail_row("Worker", str(context.get("worker_id") or "Never claimed by a worker")),
         detail_row("Failed at", str(failed_at or "Unknown")),
@@ -586,8 +595,10 @@ class ReportWrite(BaseModel):
 
 class FlowWrite(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    site_id: int
-    report_id: int
+    source_type: str = "portal"
+    site_id: int | None = Field(default=None, ge=1)
+    report_id: int | None = Field(default=None, ge=1)
+    outlook_subject_contains: str | None = Field(default=None, max_length=500)
     export_views: list[str] = Field(default_factory=list, max_length=20)
     download_links: list[str] = Field(default_factory=list, max_length=50)
     enabled: bool = False
@@ -600,7 +611,7 @@ class FlowWrite(BaseModel):
     start_week: str | None = None
     end_week: str | None = None
     target_folder: str = Field(min_length=1, max_length=2000)
-    filename_template: str = Field(min_length=1, max_length=500)
+    filename_template: str | None = Field(default=None, max_length=500)
     schedule_type: str = "manual"
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
@@ -612,11 +623,15 @@ class FlowWrite(BaseModel):
     sql_database: str | None = Field(default=None, max_length=63)
     sql_schema: str | None = Field(default=None, max_length=63)
     sql_table: str | None = Field(default=None, max_length=63)
+    sql_target_source_id: int | None = Field(default=None, ge=1)
     owner_person_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_flow(self):
         self.name = self.name.strip()
+        self.source_type = self.source_type.strip().casefold()
+        if self.source_type not in SOURCE_TYPES:
+            raise ValueError("Flow source type must be a website report or Outlook attachment.")
         self.target_folder = self.target_folder.strip()
         self.export_views = list(dict.fromkeys(
             str(value).strip() for value in self.export_views if str(value).strip()
@@ -624,63 +639,90 @@ class FlowWrite(BaseModel):
         self.download_links = list(dict.fromkeys(
             str(value).strip() for value in self.download_links if str(value).strip()
         ))
-        self.file_format = self.file_format.strip().casefold()
-        if self.file_format not in FILE_FORMATS:
-            raise ValueError("Download type must be CSV or Excel XLSX.")
-        self.filename_template = _clean_filename_template(self.filename_template, self.file_format)
         if not _is_absolute_worker_path(self.target_folder):
             raise ValueError("Target folder must be an absolute path visible to the worker.")
-        if self.download_mode not in DOWNLOAD_MODES:
-            raise ValueError("Unsupported download mode.")
-        if self.download_mode == "one_per_week":
-            self.download_mode = "one_per_period"
-            self.window_weeks = self.window_weeks or 1
-        if self.period_strategy not in PERIOD_STRATEGIES:
-            raise ValueError("Unsupported period strategy.")
-        if self.browser_mode not in BROWSER_MODES:
-            raise ValueError("Browser mode must be headed or headless.")
-        if self.schedule_type not in SCHEDULE_TYPES:
-            raise ValueError("Unsupported schedule type.")
-        self.start_week = _week_value(self.start_week, "Start week")
-        self.end_week = _week_value(self.end_week, "End week")
-        if self.period_strategy == "none":
+        if self.source_type == "outlook":
+            self.outlook_subject_contains = (self.outlook_subject_contains or "").strip()
+            if not self.outlook_subject_contains:
+                raise ValueError("Enter text to find in the Outlook email subject.")
+            self.site_id = None
+            self.report_id = None
+            self.export_views = []
+            self.download_links = []
+            self.selections = {}
+            self.download_mode = "single"
+            self.period_strategy = "none"
+            self.window_weeks = None
+            self.file_format = "auto"
+            self.browser_mode = "headless"
             self.start_week = None
             self.end_week = None
-            self.window_weeks = None
-            self.download_mode = "single"
-        elif not self.start_week:
-            raise ValueError("Choose a Sell-out Week start.")
-        elif self.period_strategy == "fixed":
-            if not self.end_week:
-                raise ValueError("Choose a Sell-out Week end.")
-            _week_range(self.start_week, self.end_week)
-            if self.download_mode == "one_per_period" and not self.window_weeks:
-                raise ValueError("Choose how many weeks each period should contain.")
-            if self.download_mode == "single":
-                self.window_weeks = None
-        elif self.period_strategy == "rolling":
-            if not self.window_weeks:
-                raise ValueError("Choose how many weeks each file should contain.")
-            self.download_mode = "one_per_period"
-            self.end_week = None
+            # The database column remains non-null. This source-specific
+            # sentinel documents that the attachment basename is authoritative;
+            # portal filename rendering never receives it.
+            self.filename_template = "{original}"
         else:
-            self.end_week = None
-            if self.download_mode == "one_per_period" and not self.window_weeks:
-                raise ValueError("Choose how many weeks each download should contain.")
-            if self.download_mode == "single":
+            self.outlook_subject_contains = None
+            if self.site_id is None or self.report_id is None:
+                raise ValueError("Choose a website and report.")
+            self.file_format = self.file_format.strip().casefold()
+            if self.file_format not in FILE_FORMATS:
+                raise ValueError("Download type must be CSV or Excel XLSX.")
+            self.filename_template = _clean_filename_template(
+                self.filename_template or "", self.file_format,
+            )
+            if self.download_mode not in DOWNLOAD_MODES:
+                raise ValueError("Unsupported download mode.")
+            if self.download_mode == "one_per_week":
+                self.download_mode = "one_per_period"
+                self.window_weeks = self.window_weeks or 1
+            if self.period_strategy not in PERIOD_STRATEGIES:
+                raise ValueError("Unsupported period strategy.")
+            if self.browser_mode not in BROWSER_MODES:
+                raise ValueError("Browser mode must be headed or headless.")
+        if self.schedule_type not in SCHEDULE_TYPES:
+            raise ValueError("Unsupported schedule type.")
+        if self.source_type == "portal":
+            self.start_week = _week_value(self.start_week, "Start week")
+            self.end_week = _week_value(self.end_week, "End week")
+            if self.period_strategy == "none":
+                self.start_week = None
+                self.end_week = None
                 self.window_weeks = None
-        if self.download_mode == "one_per_period" and not any(
-            token in self.filename_template for token in ("{week}", "{start_period}", "{end_period}", "{index}")
-        ):
-            raise ValueError("Multiple downloads require a period or index token in the filename template.")
-        if len(self.export_views) > 1 and not any(
-            token in self.filename_template for token in ("{export}", "{index}")
-        ):
-            raise ValueError("Multiple export views require an export or index token in the filename template.")
-        if len(self.download_links) > 1 and not any(
-            token in self.filename_template for token in ("{export}", "{index}")
-        ):
-            raise ValueError("Multiple download links require an export or index token in the filename template.")
+                self.download_mode = "single"
+            elif not self.start_week:
+                raise ValueError("Choose a Sell-out Week start.")
+            elif self.period_strategy == "fixed":
+                if not self.end_week:
+                    raise ValueError("Choose a Sell-out Week end.")
+                _week_range(self.start_week, self.end_week)
+                if self.download_mode == "one_per_period" and not self.window_weeks:
+                    raise ValueError("Choose how many weeks each period should contain.")
+                if self.download_mode == "single":
+                    self.window_weeks = None
+            elif self.period_strategy == "rolling":
+                if not self.window_weeks:
+                    raise ValueError("Choose how many weeks each file should contain.")
+                self.download_mode = "one_per_period"
+                self.end_week = None
+            else:
+                self.end_week = None
+                if self.download_mode == "one_per_period" and not self.window_weeks:
+                    raise ValueError("Choose how many weeks each download should contain.")
+                if self.download_mode == "single":
+                    self.window_weeks = None
+            if self.download_mode == "one_per_period" and not any(
+                token in self.filename_template for token in ("{week}", "{start_period}", "{end_period}", "{index}")
+            ):
+                raise ValueError("Multiple downloads require a period or index token in the filename template.")
+            if len(self.export_views) > 1 and not any(
+                token in self.filename_template for token in ("{export}", "{index}")
+            ):
+                raise ValueError("Multiple export views require an export or index token in the filename template.")
+            if len(self.download_links) > 1 and not any(
+                token in self.filename_template for token in ("{export}", "{index}")
+            ):
+                raise ValueError("Multiple download links require an export or index token in the filename template.")
         self.schedule_days = [str(day).strip().casefold() for day in self.schedule_days]
         if self.schedule_type != "monthly":
             self.schedule_day = None
@@ -708,6 +750,7 @@ class FlowWrite(BaseModel):
                 setattr(self, field_name, value)
         else:
             self.sql_mode = self.sql_database = self.sql_schema = self.sql_table = None
+            self.sql_target_source_id = None
         return self
 
 
@@ -715,6 +758,13 @@ class WorkerRegister(BaseModel):
     worker_id: str = Field(min_length=3, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
     display_name: str = Field(min_length=1, max_length=200)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutlookSourceReceipt(BaseModel):
+    identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    received_at: str | None = Field(default=None, max_length=100)
+    attachment_name: str = Field(min_length=1, max_length=500)
+    subject: str | None = Field(default=None, max_length=1000)
 
 
 class WorkerProgress(BaseModel):
@@ -725,6 +775,7 @@ class WorkerProgress(BaseModel):
     retention: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     error: str | None = Field(default=None, max_length=10000)
     traceback: str | None = Field(default=None, max_length=100000)
+    source_receipt: OutlookSourceReceipt | None = None
 
 
 class FolderRegister(BaseModel):
@@ -856,7 +907,8 @@ def _report_out(db, report_id: int) -> dict:
 
 def _flow_out(db, flow_id: int) -> dict:
     row = db.execute(
-        """SELECT f.*, s.name AS site_name, r.name AS report_name,
+        """SELECT f.*, s.name AS site_name, s.adapter AS source_adapter,
+                  r.name AS report_name,
                   p.name AS owner_name, p.email AS owner_email
            FROM flows f
            JOIN flow_sites s ON s.id = f.site_id
@@ -875,10 +927,67 @@ def _flow_out(db, flow_id: int) -> dict:
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
+    link = flow_link_status(db, row, server=UPLOAD_PGHOST)
+    result["sql_target_source_id"] = link.get("source_id")
+    result["sql_target_link_status"] = link["status"]
+    result["sql_target_match_source_ids"] = link.get("matches", [])
+    result["sql_target_legacy_suggestions"] = []
+    if result["sql_handoff_enabled"] and link["status"] != "confirmed":
+        display_target = f"{result.get('sql_schema')}.{result.get('sql_table')}".casefold()
+        suggestions = db.execute(
+            """SELECT id, name FROM sources
+               WHERE COALESCE(archived, 0)=0 AND lower(name) LIKE ?
+               ORDER BY id LIMIT 20""",
+            (f"%{display_target}",),
+        ).fetchall()
+        result["sql_target_legacy_suggestions"] = [dict(item) for item in suggestions]
     if result["download_mode"] == "one_per_week":
         result["download_mode"] = "one_per_period"
         result["window_weeks"] = result["window_weeks"] or 1
     return result
+
+
+def _outlook_source_ids(db) -> tuple[int, int]:
+    row = db.execute(
+        """SELECT s.id AS site_id, r.id AS report_id
+           FROM flow_sites s JOIN flow_reports r ON r.site_id=s.id
+           WHERE s.adapter=? AND r.source_kind='system'
+           ORDER BY r.id LIMIT 1""",
+        (OUTLOOK_ATTACHMENT_ADAPTER,),
+    ).fetchone()
+    if not row:
+        site = db.execute(
+            "SELECT id FROM flow_sites WHERE adapter=? ORDER BY id LIMIT 1",
+            (OUTLOOK_ATTACHMENT_ADAPTER,),
+        ).fetchone()
+        if not site:
+            raise HTTPException(
+                500,
+                "The internal Outlook flow source is missing. Restart Metronome to apply migrations.",
+            )
+        now = _iso(_now())
+        db.execute(
+            """INSERT OR IGNORE INTO flow_reports
+               (site_id, name, report_url, download_text, automation_json, source_kind,
+                stale, enabled, created_at, updated_at)
+               VALUES (?, 'Inbox attachment', 'outlook://inbox', 'Save attachment',
+                       '{"kind":"outlook_attachment"}', 'system', 0, 1, ?, ?)""",
+            (site["id"], now, now),
+        )
+        report = db.execute(
+            """SELECT id FROM flow_reports
+               WHERE site_id=? AND source_kind='system' ORDER BY id LIMIT 1""",
+            (site["id"],),
+        ).fetchone()
+        if not report:
+            raise HTTPException(500, "The internal Outlook report could not be created.")
+        return site["id"], report["id"]
+    return row["site_id"], row["report_id"]
+
+
+def _resolve_flow_source(db, body: FlowWrite) -> None:
+    if body.source_type == "outlook":
+        body.site_id, body.report_id = _outlook_source_ids(db)
 
 
 def _latest_discovered_week(report: dict, start_week: str) -> str:
@@ -930,7 +1039,34 @@ def _validate_sql_target(db, body: FlowWrite):
         raise HTTPException(400, "Choose a database, schema, and table from the latest SQL catalog scan.")
 
 
+def _resolve_sql_target_source(db, body: FlowWrite) -> int | None:
+    """Resolve or confirm the Flow's executable target identity."""
+    if not body.sql_handoff_enabled:
+        return None
+    matches = exact_identity_rows(
+        db,
+        server=UPLOAD_PGHOST,
+        database=body.sql_database,
+        schema=body.sql_schema,
+        relation=body.sql_table,
+    )
+    match_ids = [int(row["source_id"]) for row in matches]
+    if body.sql_target_source_id is not None:
+        if body.sql_target_source_id not in match_ids:
+            raise HTTPException(
+                400,
+                "The confirmed source does not exactly match this SQL server, database, schema, and table.",
+            )
+        return int(body.sql_target_source_id)
+    return match_ids[0] if len(match_ids) == 1 else None
+
+
 def _validate_flow_selections(db, body: FlowWrite):
+    if body.source_type == "outlook":
+        expected_site, expected_report = _outlook_source_ids(db)
+        if body.site_id != expected_site or body.report_id != expected_report:
+            raise HTTPException(400, "The Outlook flow source could not be resolved.")
+        return
     report = db.execute(
         """SELECT r.site_id, r.automation_json, s.adapter FROM flow_reports r
            JOIN flow_sites s ON s.id = r.site_id
@@ -987,7 +1123,7 @@ def _validate_flow_selections(db, body: FlowWrite):
             raise HTTPException(400, f"Invalid {row['label']} value: {invalid[0]}")
 
 
-def _build_job(db, flow_id: int) -> dict:
+def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
     flow = _flow_out(db, flow_id)
     report = _report_out(db, flow["report_id"])
     if flow.get("period_strategy") == "none":
@@ -1008,12 +1144,15 @@ def _build_job(db, flow_id: int) -> dict:
     else:
         periods = _periods(weeks, flow.get("window_weeks") or 1)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "execution": {
             "mode": "local", "host": "bi_desktop", "browser_mode": flow["browser_mode"],
             "worker_id": HEADED_WORKER_ID if flow["browser_mode"] == "headed" else LOCAL_WORKER_ID,
         },
-        "flow": {"id": flow["id"], "name": flow["name"]},
+        "flow": {
+            "id": flow["id"], "name": flow["name"],
+            "source_type": flow.get("source_type") or "portal",
+        },
         "site": {
             "id": flow["site_id"], "name": flow["site_name"],
             "adapter": report["adapter"], "auth_url": report["auth_url"],
@@ -1026,6 +1165,17 @@ def _build_job(db, flow_id: int) -> dict:
             "download_links": flow.get("download_links") or [],
         },
         "selections": flow["selections"],
+        "outlook_source": {
+            "enabled": (flow.get("source_type") or "portal") == "outlook",
+            "mailbox": "default",
+            "folder": "inbox",
+            "include_subfolders": False,
+            "subject_contains": flow.get("outlook_subject_contains"),
+            "supported_extensions": [".csv", ".xlsx"],
+            "attachment_policy": "exactly_one",
+            "last_processed_identity": flow.get("outlook_last_identity"),
+            "force_reprocess": bool(force_reprocess),
+        },
         "downloads": {
             "mode": flow["download_mode"], "periods": periods,
             "period_strategy": flow.get("period_strategy") or "fixed",
@@ -1058,6 +1208,35 @@ def _build_job(db, flow_id: int) -> dict:
     }
 
 
+def queue_flow_run_service(
+    db,
+    flow_id: int,
+    *,
+    requested_by: str | None,
+    trigger_type: str,
+) -> tuple[int, dict]:
+    """Create one durable Flow run for manual, scheduled, or pipeline callers."""
+    if trigger_type not in {"manual", "scheduled", "pipeline", "resume", "sql_retry"}:
+        raise ValueError("Unsupported Flow trigger type.")
+    if not db.execute("SELECT 1 FROM flows WHERE id=?", (flow_id,)).fetchone():
+        raise HTTPException(404, "Flow not found.")
+    active = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=?
+           AND status IN ('queued','claimed','running') LIMIT 1""",
+        (flow_id,),
+    ).fetchone()
+    if active:
+        raise HTTPException(409, "This flow already has an active run.")
+    job = _build_job(db, flow_id)
+    cursor = db.execute(
+        """INSERT INTO flow_runs
+               (flow_id, trigger_type, status, requested_by, job_json, created_at)
+           VALUES (?, ?, 'queued', ?, ?, ?)""",
+        (flow_id, trigger_type, requested_by, _json(job), _iso(_now())),
+    )
+    return int(cursor.lastrowid), job
+
+
 def queue_due_flows() -> dict:
     """Queue due scheduled flows without executing browser work in the API process."""
     now = _now()
@@ -1073,6 +1252,13 @@ def queue_due_flows() -> dict:
             (now_text,),
         ).fetchall()
         for row in rows:
+            locked = db.execute(
+                """SELECT run_id FROM pipeline_resource_locks
+                   WHERE resource_type='flow' AND resource_key=?""",
+                (str(row["id"]),),
+            ).fetchone()
+            if locked:
+                continue
             active = db.execute(
                 "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
                 (row["id"],),
@@ -1109,9 +1295,23 @@ def queue_due_flows() -> dict:
 @router.get("/catalog")
 def catalog():
     with get_db() as db:
-        sites = [dict(row) for row in db.execute("SELECT * FROM flow_sites ORDER BY name").fetchall()]
-        reports = [dict(row) for row in db.execute("SELECT * FROM flow_reports ORDER BY name").fetchall()]
-        filters = db.execute("SELECT * FROM flow_report_filters ORDER BY report_id, position, id").fetchall()
+        sites = [dict(row) for row in db.execute(
+            "SELECT * FROM flow_sites WHERE adapter<>? ORDER BY name",
+            (OUTLOOK_ATTACHMENT_ADAPTER,),
+        ).fetchall()]
+        reports = [dict(row) for row in db.execute(
+            """SELECT r.* FROM flow_reports r JOIN flow_sites s ON s.id=r.site_id
+               WHERE s.adapter<>? ORDER BY r.name""",
+            (OUTLOOK_ATTACHMENT_ADAPTER,),
+        ).fetchall()]
+        report_ids = [report["id"] for report in reports]
+        filters = (
+            db.execute(
+                f"SELECT * FROM flow_report_filters WHERE report_id IN ({','.join('?' for _ in report_ids)}) ORDER BY report_id, position, id",
+                report_ids,
+            ).fetchall()
+            if report_ids else []
+        )
     by_report: dict[int, list] = {}
     for row in filters:
         by_report.setdefault(row["report_id"], []).append(_filter_row(row))
@@ -1152,6 +1352,8 @@ def configure_site_credentials(site_id: int, body: CredentialWrite, request: Req
 
 @router.post("/sites")
 def create_site(body: SiteWrite, request: Request):
+    if body.adapter == OUTLOOK_ATTACHMENT_ADAPTER:
+        raise HTTPException(400, "Outlook is an internal flow source, not a configurable website.")
     now = _iso(_now())
     try:
         with get_db() as db:
@@ -1180,6 +1382,11 @@ def create_site(body: SiteWrite, request: Request):
 @router.put("/sites/{site_id}")
 def update_site(site_id: int, body: SiteWrite, request: Request):
     with get_db() as db:
+        existing = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
+        if existing and existing["adapter"] == OUTLOOK_ATTACHMENT_ADAPTER:
+            raise HTTPException(400, "The internal Outlook flow source cannot be edited.")
+        if body.adapter == OUTLOOK_ATTACHMENT_ADAPTER:
+            raise HTTPException(400, "Outlook is an internal flow source, not a configurable website.")
         cursor = db.execute(
             """UPDATE flow_sites SET name=?, adapter=?, base_url=?, auth_url=?, discovery_enabled=?,
                discovery_interval_hours=?, discovery_scope_json=?,
@@ -1209,8 +1416,11 @@ def create_report(body: ReportWrite, request: Request):
     now = _iso(_now())
     try:
         with get_db() as db:
-            if not db.execute("SELECT id FROM flow_sites WHERE id = ?", (body.site_id,)).fetchone():
+            site = db.execute("SELECT id, adapter FROM flow_sites WHERE id = ?", (body.site_id,)).fetchone()
+            if not site:
                 raise HTTPException(400, "Website not found.")
+            if site["adapter"] == OUTLOOK_ATTACHMENT_ADAPTER:
+                raise HTTPException(400, "The internal Outlook source cannot contain user reports.")
             cursor = db.execute(
                 """INSERT INTO flow_reports
                    (site_id, name, report_url, ready_text, open_export_text, download_text,
@@ -1265,6 +1475,16 @@ def _replace_filters(db, report_id: int, filters: list[FilterWrite], now: str):
 def update_report(report_id: int, body: ReportWrite, request: Request):
     now = _iso(_now())
     with get_db() as db:
+        existing = db.execute(
+            """SELECT s.adapter FROM flow_reports r JOIN flow_sites s ON s.id=r.site_id
+               WHERE r.id=?""",
+            (report_id,),
+        ).fetchone()
+        target_site = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (body.site_id,)).fetchone()
+        if existing and existing["adapter"] == OUTLOOK_ATTACHMENT_ADAPTER:
+            raise HTTPException(400, "The internal Outlook report cannot be edited.")
+        if target_site and target_site["adapter"] == OUTLOOK_ATTACHMENT_ADAPTER:
+            raise HTTPException(400, "The internal Outlook source cannot contain user reports.")
         cursor = db.execute(
             """UPDATE flow_reports SET site_id=?, name=?, report_url=?, ready_text=?, open_export_text=?,
                download_text=?, automation_json=?, notes=?, enabled=?, updated_at=? WHERE id=?""",
@@ -1365,6 +1585,8 @@ def retry_run_sql(run_id: int, request: Request):
         ).fetchone()
         if not source:
             raise HTTPException(404, "Source flow run not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
         if source["status"] not in RUN_TERMINAL:
             raise HTTPException(409, "Wait for the source run to finish before retrying SQL.")
         source_job = _loads(source["job_json"], {})
@@ -1380,7 +1602,10 @@ def retry_run_sql(run_id: int, request: Request):
         artifacts = [
             {
                 key: item.get(key)
-                for key in ("file_path", "filename", "period_key", "file_size", "checksum", "row_count", "status")
+                for key in (
+                    "file_path", "filename", "period_key", "file_size", "checksum",
+                    "row_count", "status", "source_receipt",
+                )
                 if item.get(key) is not None
             }
             for item in candidates if item.get("file_path") and item.get("filename")
@@ -1419,6 +1644,12 @@ def retry_run_sql(run_id: int, request: Request):
             "source_was_transformed": transformed,
         }
         job["sql_retry"] = {"source_run_id": run_id, "artifacts": artifacts}
+        source_receipt = next(
+            (item.get("source_receipt") for item in artifacts if item.get("source_receipt")),
+            None,
+        )
+        if source_receipt:
+            job["outlook_source_receipt"] = source_receipt
         cursor = db.execute(
             """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1466,14 +1697,21 @@ def resume_run(run_id: int, request: Request):
     now = _iso(_now())
     with get_db() as db:
         source = db.execute(
-            """SELECT r.*, f.name AS flow_name FROM flow_runs r
+            """SELECT r.*, f.name AS flow_name, f.source_type FROM flow_runs r
                JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
             (run_id,),
         ).fetchone()
         if not source:
             raise HTTPException(404, "Source flow run not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
         if source["status"] not in {"failed", "cancelled"}:
             raise HTTPException(409, "Only a failed or cancelled run can be resumed.")
+        if (source["source_type"] or "portal") == "outlook":
+            raise HTTPException(
+                409,
+                "Outlook attachment runs cannot be resumed. Use Run to acquire the attachment again, or Retry SQL for a saved file.",
+            )
         active = db.execute(
             """SELECT id FROM flow_runs WHERE flow_id=?
                AND status IN ('queued','claimed','running') LIMIT 1""",
@@ -1652,23 +1890,28 @@ def create_flow(body: FlowWrite, request: Request):
     )) if body.enabled else None
     try:
         with get_db() as db:
+            _resolve_flow_source(db, body)
             _validate_flow_selections(db, body)
             _validate_sql_target(db, body)
             _validate_owner(db, body)
+            sql_target_source_id = _resolve_sql_target_source(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
-                   (name, site_id, report_id, export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
+                   (name, source_type, site_id, report_id, outlook_subject_contains,
+                    export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
-                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (body.name, body.site_id, body.report_id, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
+                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (body.name, body.source_type, body.site_id, body.report_id,
+                 body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
                  body.sql_handoff_enabled, body.sql_mode,
-                 body.sql_database, body.sql_schema, body.sql_table, body.owner_person_id, get_actor(request), now, now),
+                 body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
+                 body.owner_person_id, get_actor(request), now, now),
             )
             flow_id = cursor.lastrowid
             log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
@@ -1716,22 +1959,44 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
     )) if body.enabled else None
     with get_db() as db:
+        existing = db.execute(
+            """SELECT source_type, sql_database, sql_schema, sql_table
+               FROM flows WHERE id=?""",
+            (flow_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(404, "Flow not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
+        if (existing["source_type"] or "portal") != body.source_type:
+            raise HTTPException(409, "A flow's source category cannot be changed after creation.")
+        _resolve_flow_source(db, body)
         _validate_flow_selections(db, body)
         _validate_sql_target(db, body)
         _validate_owner(db, body)
+        target_changed = (
+            (existing["sql_database"] or None, existing["sql_schema"] or None, existing["sql_table"] or None)
+            != (body.sql_database, body.sql_schema, body.sql_table)
+        )
+        if target_changed:
+            body.sql_target_source_id = None
+        sql_target_source_id = _resolve_sql_target_source(db, body)
         cursor = db.execute(
-            """UPDATE flows SET name=?, site_id=?, report_id=?, export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
+            """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
+               export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
-               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, owner_person_id=?, updated_at=? WHERE id=?""",
-            (body.name, body.site_id, body.report_id, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
+               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
+            (body.name, body.source_type, body.site_id, body.report_id,
+             body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
              body.sql_handoff_enabled, body.sql_mode,
-             body.sql_database, body.sql_schema, body.sql_table, body.owner_person_id, now, flow_id),
+             body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
+             body.owner_person_id, now, flow_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
@@ -1746,6 +2011,8 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
         flow = db.execute("SELECT * FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
         if body.enabled and flow["schedule_type"] == "manual":
             raise HTTPException(400, "Choose a daily, weekly, or monthly schedule before activating this flow.")
         next_run = (
@@ -1771,9 +2038,11 @@ def queue_run(flow_id: int, request: Request):
     now = _iso(_now())
     resumed = False
     with get_db() as db:
-        flow = db.execute("SELECT id, name FROM flows WHERE id = ?", (flow_id,)).fetchone()
+        flow = db.execute("SELECT id, name, source_type FROM flows WHERE id = ?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
         active = db.execute(
             """SELECT id, status, job_json FROM flow_runs
                WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1""",
@@ -1786,13 +2055,23 @@ def queue_run(flow_id: int, request: Request):
             # worker. Let Run retry the launcher without creating a duplicate.
             run_id = active["id"]
             job = _loads(active["job_json"], {})
+            if (flow["source_type"] or "portal") == "outlook":
+                job.setdefault("outlook_source", {})["force_reprocess"] = True
+                db.execute(
+                    """UPDATE flow_runs SET trigger_type='manual', requested_by=?, job_json=?
+                       WHERE id=?""",
+                    (get_actor(request), _json(job), run_id),
+                )
             resumed = True
             log_event(
                 db, "flow", flow_id, flow["name"], "worker_restart_requested",
                 f"run_id={run_id}", get_actor(request),
             )
         else:
-            job = _build_job(db, flow_id)
+            job = _build_job(
+                db, flow_id,
+                force_reprocess=(flow["source_type"] or "portal") == "outlook",
+            )
             cursor = db.execute(
                 """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                    VALUES (?, 'manual', 'queued', ?, ?, ?)""",
@@ -1826,6 +2105,8 @@ def stop_run(flow_id: int, request: Request):
         flow = db.execute("SELECT id, name FROM flows WHERE id=?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        from app.routers.pipelines import assert_resource_unlocked
+        assert_resource_unlocked(db, "flow", str(flow_id))
         row = db.execute(
             """SELECT * FROM flow_runs WHERE flow_id=?
                AND status IN ('queued','claimed','running') ORDER BY id DESC LIMIT 1""",
@@ -2860,6 +3141,28 @@ def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
     return {"run_id": run_id, "ops": ops}
 
 
+def _outlook_receipt_is_current(db, flow_id: int, receipt: dict) -> bool:
+    """Prevent an SQL retry of an older run from rolling dedup state backward."""
+    current = db.execute(
+        "SELECT outlook_last_identity, outlook_last_received_at FROM flows WHERE id=?",
+        (flow_id,),
+    ).fetchone()
+    if not current or not current["outlook_last_identity"]:
+        return True
+    if current["outlook_last_identity"] == receipt.get("identity"):
+        return True
+    new_value = receipt.get("received_at")
+    old_value = current["outlook_last_received_at"]
+    if not new_value or not old_value:
+        return False
+    try:
+        new_stamp = datetime.fromisoformat(str(new_value).replace("Z", "+00:00"))
+        old_stamp = datetime.fromisoformat(str(old_value).replace("Z", "+00:00"))
+        return new_stamp >= old_stamp
+    except (TypeError, ValueError):
+        return False
+
+
 @router.post("/worker/{worker_id}/runs/{run_id}/progress")
 def update_run(worker_id: str, run_id: int, body: WorkerProgress):
     if body.status not in RUN_STATUSES:
@@ -2878,6 +3181,7 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         # worker's download loop - must not erase files earlier progress
         # already recorded: Resume depends on that record.
         stored_artifacts = body.artifacts or _loads(row["artifact_json"], [])
+        no_op = bool(body.progress.get("no_op"))
         db.execute(
             """UPDATE flow_runs SET status=?, progress_json=?, artifact_json=?, error=?,
                started_at=COALESCE(started_at, ?), finished_at=?, heartbeat_at=? WHERE id=?""",
@@ -2896,12 +3200,13 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         db.execute(
             """UPDATE flows
                SET last_run_at=?,
-                   last_success_at=CASE WHEN ?='succeeded' THEN ? ELSE last_success_at END,
+                   last_success_at=CASE WHEN ?='succeeded' AND ?=0 THEN ? ELSE last_success_at END,
                    last_status=?, last_error=?, updated_at=?
                WHERE id=?""",
             (
                 finished or started or now,
                 body.status,
+                int(no_op),
                 finished,
                 body.status,
                 body.error,
@@ -2919,12 +3224,33 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         if body.status in RUN_TERMINAL:
             _release_retention_ops(db, run_id, now)
             downloads = job.get("downloads", {})
-            if body.status == "succeeded" and downloads.get("period_strategy") == "rolling":
+            if (
+                body.status == "succeeded" and not no_op
+                and downloads.get("period_strategy") == "rolling"
+            ):
                 db.execute(
                     """UPDATE flows SET start_week=?, updated_at=?
                        WHERE id=? AND start_week=?""",
                     (downloads.get("next_start_week"), now, row["flow_id"], downloads.get("period_start_week")),
                 )
+            if (
+                body.status == "succeeded" and not no_op
+                and body.source_receipt is not None
+                and (job.get("flow", {}).get("source_type") or "portal") == "outlook"
+            ):
+                receipt = body.source_receipt.model_dump()
+                if _outlook_receipt_is_current(db, row["flow_id"], receipt):
+                    db.execute(
+                        """UPDATE flows
+                           SET outlook_last_identity=?, outlook_last_received_at=?,
+                               outlook_last_attachment_name=?, outlook_last_subject=?, updated_at=?
+                           WHERE id=?""",
+                        (
+                            receipt["identity"], receipt.get("received_at"),
+                            receipt["attachment_name"], receipt.get("subject"),
+                            now, row["flow_id"],
+                        ),
+                    )
             db.execute(
                 """UPDATE flow_workers SET status='idle', current_run_id=NULL, last_error=?,
                    last_seen_at=?, updated_at=? WHERE worker_id=?""",

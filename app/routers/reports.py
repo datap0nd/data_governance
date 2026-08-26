@@ -127,6 +127,10 @@ def refresh_report(report_id: int, request: Request):
                        WHERE id=?""",
                     (dataset_id, resolved.get("web_url"), report_id),
                 )
+        from app.routers.pipelines import assert_resource_unlocked
+        with get_db() as db:
+            assert_resource_unlocked(db, "report", str(report_id))
+            assert_resource_unlocked(db, "dataset", str(dataset_id))
         result = trigger_dataset_refresh(PBI_WORKSPACE, dataset_id)
     except PbiFetchError as exc:
         raise HTTPException(403 if exc.permission else 502, str(exc)) from exc

@@ -32,6 +32,7 @@ def archive_source(db, source_id: int, now: str, reason: str,
         """UPDATE alerts SET resolution_status = 'resolved', resolved_at = ?,
                              acknowledged = 1, acknowledged_by = 'auto',
                              resolution_reason = ?
-           WHERE source_id = ? AND resolution_status IS NULL""",
+           WHERE source_id = ?
+             AND COALESCE(resolution_status, '') != 'resolved'""",
         (now, reason, source_id),
     )

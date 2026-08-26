@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.archive_ops import archive_source
-from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE
+from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, UPLOAD_PGHOST
 from app.database import get_db
 from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, current_cancel_generation
 from app.scanner.tmdl_parser import (
@@ -34,6 +34,7 @@ from app.query_history import (
     observe_query,
     report_artifact_key,
 )
+from app.source_identity import exact_identity_rows, reconcile_flow_target, split_relation, upsert_postgres_identity
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,26 @@ def _archive_local_user_path_sources(db, all_sources, now: str, log_lines: list[
     for info in all_sources.values():
         path = (getattr(info, "file_path", None) or "").strip()
         if path and not LOCAL_USER_PATH.match(path):
-            contested_names.add(_basename(path))
+            contested_names.add(_basename(path).casefold())
+
+    # A targeted scan may not contain every report already in the registry.
+    # Preserve a basename that an existing lineage expression still points at
+    # through a non-local path, even if that report was outside this scan.
+    contested_source_ids = set()
+    file_call = re.compile(
+        r'(?:File\.Contents|Folder\.Files)\s*\(\s*"((?:[^"]|"")*)"',
+        re.IGNORECASE,
+    )
+    linked_rows = db.execute(
+        """SELECT source_id, source_expression FROM report_tables
+           WHERE source_id IS NOT NULL AND source_expression IS NOT NULL"""
+    ).fetchall()
+    for linked in linked_rows:
+        for match in file_call.finditer(linked["source_expression"] or ""):
+            path = match.group(1).replace('""', '"').strip()
+            if path and not LOCAL_USER_PATH.match(path):
+                contested_source_ids.add(linked["source_id"])
+                break
 
     rows = db.execute(
         """SELECT id, name, connection_info FROM sources
@@ -128,9 +148,9 @@ def _archive_local_user_path_sources(db, all_sources, now: str, log_lines: list[
         path = (row["connection_info"] or row["name"] or "").strip()
         if not LOCAL_USER_PATH.match(path):
             continue
-        if row["name"] in contested_names:
+        if row["name"].casefold() in contested_names or row["id"] in contested_source_ids:
             log_lines.append(
-                f"SKIPPED (shared basename): {row['name']} also scanned at a non-local path"
+                f"SKIPPED (shared basename): {row['name']} also has a non-local path"
             )
             continue
         archive_source(
@@ -227,6 +247,9 @@ def run_scan(
                            (new_id, old_id))
                 db.execute("UPDATE actions SET source_id = ? WHERE source_id = ?",
                            (new_id, old_id))
+                db.execute("UPDATE flows SET sql_target_source_id = ? WHERE sql_target_source_id = ?",
+                           (new_id, old_id))
+                db.execute("DELETE FROM source_postgres_identities WHERE source_id = ?", (old_id,))
                 db.execute("DELETE FROM source_probes WHERE source_id = ?", (old_id,))
                 db.execute("DELETE FROM sources WHERE id = ?", (old_id,))
                 log_lines.append(f"MERGED: {old_name} -> {new_name} (source {old_id} into {new_id})")
@@ -318,12 +341,44 @@ def run_scan(
 
             _archive_folder_like_scan_sources(db, now, log_lines)
 
-            # Upsert sources
+            # Upsert sources. PostgreSQL relations are resolved through their
+            # structured identity first so two databases may legitimately have
+            # the same display relation name.
+            source_ids_by_key: dict[str, int] = {}
             for key, source_info in all_sources.items():
-                existing = db.execute(
-                    "SELECT id, source_query, owner FROM sources WHERE name = ?",
-                    (source_info.display_name,),
-                ).fetchone()
+                pg_parts = (
+                    split_relation(source_info.sql_table)
+                    if source_info.source_type == "postgresql" and source_info.server
+                    else None
+                )
+                existing = None
+                if pg_parts and source_info.database:
+                    identity_matches = exact_identity_rows(
+                        db,
+                        server=source_info.server,
+                        database=source_info.database,
+                        schema=pg_parts[0],
+                        relation=pg_parts[1],
+                    )
+                    if len(identity_matches) == 1:
+                        existing = db.execute(
+                            "SELECT id, source_query, owner FROM sources WHERE id=?",
+                            (identity_matches[0]["source_id"],),
+                        ).fetchone()
+                if not existing:
+                    candidate = db.execute(
+                        "SELECT id, source_query, owner FROM sources WHERE name = ?",
+                        (source_info.display_name,),
+                    ).fetchone()
+                    if candidate and pg_parts:
+                        claimed = db.execute(
+                            "SELECT 1 FROM source_postgres_identities WHERE source_id=?",
+                            (candidate["id"],),
+                        ).fetchone()
+                        if not claimed:
+                            existing = candidate
+                    else:
+                        existing = candidate
 
                 if existing:
                     source_id = existing["id"]
@@ -336,11 +391,20 @@ def run_scan(
                         (new_query, source_info.connection_info, now, source_id),
                     )
                 else:
-                    db.execute(
+                    source_name = source_info.display_name
+                    name_taken = db.execute(
+                        "SELECT 1 FROM sources WHERE name=?", (source_name,)
+                    ).fetchone()
+                    if name_taken and pg_parts:
+                        source_name = (
+                            f"{source_info.display_name} "
+                            f"[{source_info.database}@{source_info.server}]"
+                        )
+                    cursor = db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
                            VALUES (?, ?, ?, ?, 'scan', ?, ?)""",
                         (
-                            source_info.display_name,
+                            source_name,
                             source_info.source_type,
                             source_info.connection_info,
                             source_info.raw_expression,
@@ -348,9 +412,27 @@ def run_scan(
                             now,
                         ),
                     )
+                    source_id = int(cursor.lastrowid)
                     new_sources += 1
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
+                source_ids_by_key[key] = int(source_id)
+                if pg_parts and source_info.database:
+                    upsert_postgres_identity(
+                        db,
+                        source_id=int(source_id),
+                        server=source_info.server,
+                        database=source_info.database,
+                        schema=pg_parts[0],
+                        relation=pg_parts[1],
+                        relation_kind="table",
+                        verified_at=now,
+                    )
+
+            # Exact links are safe to backfill only after every source identity
+            # from this scan has landed. Ambiguous targets remain null.
+            for flow_row in db.execute("SELECT id FROM flows ORDER BY id").fetchall():
+                reconcile_flow_target(db, int(flow_row["id"]), server=UPLOAD_PGHOST)
 
             # After the upsert so sources first seen this scan are archived
             # before the follow-up probe runs.
@@ -407,12 +489,9 @@ def run_scan(
                         )
                     elif source and not is_metadata:
                         # Find matching source in DB
-                        source_row = db.execute(
-                            "SELECT id FROM sources WHERE name = ?",
-                            (source.display_name,),
-                        ).fetchone()
-                        if source_row:
-                            source_id = source_row["id"]
+                        mapped_source_id = source_ids_by_key.get(source.connection_key)
+                        if mapped_source_id:
+                            source_id = mapped_source_id
                         elif source.source_type != "unknown":
                             broken_refs += 1
                             bucket = broken_by_report.setdefault(

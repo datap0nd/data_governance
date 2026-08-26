@@ -239,13 +239,13 @@ class LineageDepthTests(unittest.TestCase):
                 """INSERT INTO flows
                    (id, name, site_id, report_id, target_folder, filename_template,
                     sql_handoff_enabled, sql_database, sql_schema, sql_table,
-                    last_run_at, last_success_at, last_status)
+                    sql_target_source_id, last_run_at, last_success_at, last_status)
                    VALUES
                    (1, 'FOTA', 90, 1, '/tmp', 'fota.csv', 1, 'postgres',
-                    'BI_REPORTING', 'ASAP_FOTA_OUTPUT',
+                    'BI_REPORTING', 'ASAP_FOTA_OUTPUT', 10,
                     '2026-08-15T11:00:00', '2026-08-15T11:00:00', 'succeeded'),
                    (2, 'Unrelated', 90, 1, '/tmp', 'other.csv', 1, 'postgres',
-                    'other_schema', 'other_table', NULL, NULL, NULL)"""
+                    'other_schema', 'other_table', NULL, NULL, NULL, NULL)"""
             )
 
         result = get_lineage_diagram(1)

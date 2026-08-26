@@ -493,24 +493,21 @@ def _log_unknown_expression(expr: str):
 # A clean table identifier: starts with letter or underscore, then word chars.
 # Optionally prefixed with a schema in the same shape.
 _CLEAN_TABLE_RE = re.compile(r'^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?$')
+_QUOTED_COMPONENT = r'"(?:[^"]|"")+"'
+_QUOTED_TABLE_RE = re.compile(
+    rf'^(?:{_QUOTED_COMPONENT}|[A-Za-z_][\w]*)(?:\.(?:{_QUOTED_COMPONENT}|[A-Za-z_][\w]*))?$'
+)
 
 # Extensions that indicate the "name" is actually a file, not a database table.
 _FILE_EXTENSIONS = (".xlsx", ".xls", ".csv", ".txt", ".json", ".parquet",
                     ".xlsm", ".xlsb", ".pbix", ".zip", ".gz")
 
-# Characters that must never appear in a real table identifier. Presence of any
-# of these means the regex above was matching decoration or a query fragment
-# that happens to contain the word Name=.
-_DISALLOWED_CHARS = set("()[]{}<>*?|\\'\"`!@#$%^&+=~;,: \t\n")
-
-
 def _validate_table_name(name: str | None) -> str | None:
     """Return name if it looks like a clean table identifier, else None.
 
-    This keeps junk out of the sql_table field. Legacy quoted names with
-    embedded dots/spaces are intentionally rejected here - they can still be
-    stored via the source_query rather than display_name, and the display
-    falls back to server/database.
+    This keeps junk out of the sql_table field while allowing explicitly
+    quoted PostgreSQL identifiers. Quoted spelling is retained because case,
+    spaces, and punctuation are part of the exact relation identity.
     """
     if not name:
         return None
@@ -521,13 +518,24 @@ def _validate_table_name(name: str | None) -> str | None:
     low = n.lower()
     if any(low.endswith(ext) for ext in _FILE_EXTENSIONS):
         return None
-    # Reject obviously non-identifier content (parens, spaces, etc.)
-    if any(ch in _DISALLOWED_CHARS for ch in n):
-        return None
     # Accept bare or schema.table shape
     if _CLEAN_TABLE_RE.match(n):
         return n
+    if _QUOTED_TABLE_RE.match(n) and "\x00" not in n and "\n" not in n and "\r" not in n:
+        return n
     return None
+
+
+def _navigation_identifier(value: str) -> str | None:
+    """Encode a trusted M navigation component as a PostgreSQL identifier."""
+    value = (value or "").strip()
+    if not value or "\x00" in value or any(ord(char) < 32 for char in value):
+        return None
+    if len(value.encode("utf-8")) > 63:
+        return None
+    if re.fullmatch(r"[A-Za-z_][\w]*", value):
+        return value
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _extract_table_navigation(expr: str) -> str | None:
@@ -549,14 +557,18 @@ def _extract_table_navigation(expr: str) -> str | None:
     # Pattern 1: Schema + Item (most common for SQL Server, PostgreSQL)
     match = re.search(r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr)
     if match:
-        candidate = f"{match.group(1)}.{match.group(2)}"
+        schema = _navigation_identifier(match.group(1))
+        relation = _navigation_identifier(match.group(2))
+        candidate = f"{schema}.{relation}" if schema and relation else None
         if (v := _validate_table_name(candidate)):
             return v
 
     # Pattern 2: Item + Schema (reversed order)
     match = re.search(r'Item\s*=\s*"([^"]+)"\s*,\s*Schema\s*=\s*"([^"]+)"', expr)
     if match:
-        candidate = f"{match.group(2)}.{match.group(1)}"
+        schema = _navigation_identifier(match.group(2))
+        relation = _navigation_identifier(match.group(1))
+        candidate = f"{schema}.{relation}" if schema and relation else None
         if (v := _validate_table_name(candidate)):
             return v
 
@@ -564,7 +576,7 @@ def _extract_table_navigation(expr: str) -> str | None:
     # keeps us from matching navigation into views, functions, or columns)
     match = re.search(r'Name\s*=\s*"([^"]+)"\s*,\s*Kind\s*=\s*"Table"', expr)
     if match:
-        if (v := _validate_table_name(match.group(1))):
+        if (v := _validate_table_name(_navigation_identifier(match.group(1)))):
             return v
 
     # Pattern 4: Just Name= - only accept if it passes strict validation.
@@ -575,6 +587,18 @@ def _extract_table_navigation(expr: str) -> str | None:
             return v
 
     # Pattern 5: Native query: FROM/JOIN "schema"."table"
+    match = re.search(
+        r'(?:FROM|JOIN)\s+"((?:[^"]|"")+)"\s*\.\s*"((?:[^"]|"")+)"',
+        expr,
+        re.IGNORECASE,
+    )
+    if match:
+        schema = _navigation_identifier(match.group(1).replace('""', '"'))
+        relation = _navigation_identifier(match.group(2).replace('""', '"'))
+        candidate = f"{schema}.{relation}" if schema and relation else None
+        if (v := _validate_table_name(candidate)):
+            return v
+
     match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s*\.\s*["\[]?(\w+)["\]]?', expr, re.IGNORECASE)
     if match:
         candidate = f"{match.group(1)}.{match.group(2)}"

@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.pytest_tmp*/
 governance.db
 *.db.bak
 node_modules/

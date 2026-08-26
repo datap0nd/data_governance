@@ -275,13 +275,21 @@ def _insert_open_action(db, action_id, source_id, action_type="stale_source"):
     )
 
 
-def test_archiving_a_source_resolves_its_open_actions_and_alerts(source_db):
+@pytest.mark.parametrize("alert_status", [None, "acknowledged"])
+def test_archiving_a_source_resolves_its_open_actions_and_alerts(source_db, alert_status):
     from app.routers import archive
 
     with database.get_db() as db:
         _insert_source(db, 1, "Noisy source")
         _insert_open_action(db, 1, 1)
         _insert_open_alert(db, 1, 1)
+        if alert_status:
+            db.execute(
+                """UPDATE alerts SET resolution_status = ?, acknowledged = 1,
+                                     acknowledged_by = 'Reviewer'
+                   WHERE id = 1""",
+                (alert_status,),
+            )
 
     archive.toggle_archive("source", 1, _request())
 
@@ -405,6 +413,37 @@ def test_scan_keeps_local_path_source_whose_basename_also_has_a_shared_path(sour
     assert any(line.startswith("SKIPPED (shared basename): data.xlsx") for line in log_lines)
 
 
+def test_scan_keeps_local_path_source_with_existing_shared_lineage(source_db):
+    from app.scanner import runner
+    from app.scanner.tmdl_parser import SourceInfo
+
+    now = datetime.now(timezone.utc).isoformat()
+    local = SourceInfo(source_type="excel", file_path=r"C:\Users\ana\Desktop\data.xlsx")
+    log_lines = []
+    with database.get_db() as db:
+        _insert_source(
+            db, 1, "data.xlsx",
+            connection_info=r"C:\Users\ana\Desktop\data.xlsx", discovered_by="scan",
+        )
+        db.execute("INSERT INTO reports (id, name) VALUES (1, 'Existing shared report')")
+        db.execute(
+            """INSERT INTO report_tables
+               (report_id, table_name, source_id, source_expression)
+               VALUES (1, 'Data', 1, ?)""",
+            (r'let Source = Excel.Workbook(File.Contents("\\MX-SHARE\exports\data.xlsx")) in Source',),
+        )
+
+        runner._archive_local_user_path_sources(
+            db, {local.connection_key: local}, now, log_lines
+        )
+        archived = db.execute(
+            "SELECT COALESCE(archived, 0) AS archived FROM sources WHERE id = 1"
+        ).fetchone()["archived"]
+
+    assert archived == 0
+    assert any(line.startswith("SKIPPED (shared basename): data.xlsx") for line in log_lines)
+
+
 def test_auto_close_resolves_orphaned_alert_when_latest_probe_is_fresh(source_db):
     # An alert whose action was closed out-of-band used to stay open forever;
     # the sweep closes it as soon as a probe proves the source compliant.
@@ -493,7 +532,7 @@ def test_auto_close_breaks_probe_timestamp_ties_by_id(source_db):
     assert (actions_closed, alerts_closed) == (1, 1)
 
 
-def test_resolving_an_action_resolves_its_linked_alert_one_way(source_db):
+def test_resolving_and_reopening_an_action_syncs_its_linked_alert(source_db):
     from app.models import ActionUpdate
     from app.routers import actions
 
@@ -503,6 +542,10 @@ def test_resolving_an_action_resolves_its_linked_alert_one_way(source_db):
         _insert_open_action(db, 1, 1)
         _insert_open_alert(db, 1, 1)
         _insert_open_alert(db, 2, 2)
+        db.execute(
+            """INSERT INTO source_probes (source_id, probed_at, status)
+               VALUES (1, CURRENT_TIMESTAMP, 'outdated')"""
+        )
 
     actions.update_action(1, ActionUpdate(status="resolved"), _request())
 
@@ -517,12 +560,48 @@ def test_resolving_an_action_resolves_its_linked_alert_one_way(source_db):
     assert linked["acknowledged_by"] == "Test User"
     assert unrelated["resolution_status"] is None
 
-    # Deliberately one-way: reopening the action does not reopen the alert -
-    # if the source is still outdated the next probe run recreates it.
     actions.update_action(1, ActionUpdate(status="open"), _request())
     with database.get_db() as db:
-        linked = db.execute("SELECT resolution_status FROM alerts WHERE id = 1").fetchone()
-    assert linked["resolution_status"] == "resolved"
+        linked = db.execute(
+            """SELECT resolution_status, acknowledged, resolved_at
+               FROM alerts WHERE id = 1"""
+        ).fetchone()
+        action = db.execute("SELECT resolved_at FROM actions WHERE id = 1").fetchone()
+    assert linked["resolution_status"] is None
+    assert linked["acknowledged"] == 0
+    assert linked["resolved_at"] is None
+    assert action["resolved_at"] is None
+
+
+def test_reopening_an_action_does_not_resurrect_a_recovered_alert(source_db):
+    from app.models import ActionUpdate
+    from app.routers import actions
+
+    with database.get_db() as db:
+        _insert_source(db, 1, "Recovered source")
+        _insert_open_action(db, 1, 1)
+        _insert_open_alert(db, 1, 1)
+        db.execute(
+            """INSERT INTO source_probes (source_id, probed_at, status)
+               VALUES (1, '2026-08-25T10:00:00+00:00', 'outdated')"""
+        )
+
+    actions.update_action(1, ActionUpdate(status="resolved"), _request())
+
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO source_probes (source_id, probed_at, status)
+               VALUES (1, '2026-08-26T10:00:00+00:00', 'fresh')"""
+        )
+
+    actions.update_action(1, ActionUpdate(status="open"), _request())
+
+    with database.get_db() as db:
+        alert = db.execute(
+            "SELECT resolution_status FROM alerts WHERE id = 1"
+        ).fetchone()
+
+    assert alert["resolution_status"] == "resolved"
 
 
 def test_find_file_has_no_basename_fallback(source_db, tmp_path):
@@ -535,4 +614,15 @@ def test_find_file_has_no_basename_fallback(source_db, tmp_path):
 
     assert prober._find_file(str(real)) == real
     assert prober._find_file(r"C:\Users\ana\Desktop\data.xlsx") is None
+    assert prober._find_file(r"\\MX-SHARE\exports\data.xlsx") is None
+
+
+def test_find_file_treats_path_access_errors_as_unreachable(source_db, monkeypatch):
+    from app.scanner import prober
+
+    class InaccessiblePath:
+        def exists(self):
+            raise OSError("share unavailable")
+
+    monkeypatch.setattr(prober, "Path", lambda _path: InaccessiblePath())
     assert prober._find_file(r"\\MX-SHARE\exports\data.xlsx") is None

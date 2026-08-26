@@ -169,7 +169,13 @@ def _find_file(file_path: str) -> Path | None:
     freshness - a silent false "fresh" is worse than an honest "unknown".
     """
     p = Path(file_path)
-    return p if p.exists() else None
+    try:
+        return p if p.exists() else None
+    except OSError:
+        # A disconnected UNC share can raise instead of returning False on
+        # newer Windows/Python builds. Treat it like any inaccessible source
+        # so the probe records the normal unknown status below.
+        return None
 
 
 def _latest_source_row_count(db, source_id: int) -> int | None:

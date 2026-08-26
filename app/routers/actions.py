@@ -597,6 +597,29 @@ _ACTION_ALERT_MESSAGE_PREFIX = {
     "empty_source": "Source row count dropped%",
 }
 
+_FRESHNESS_ALERT_ACTION_TYPES = {"stale_source", "outdated_source", "error_source"}
+
+
+def _action_alert_is_still_supported(db, source_id: int, action_type: str) -> bool:
+    """Return whether current probe evidence still supports reopening the alert."""
+    if action_type in _FRESHNESS_ALERT_ACTION_TYPES:
+        row = db.execute(
+            """SELECT status FROM source_probes
+               WHERE source_id = ?
+               ORDER BY probed_at DESC, id DESC LIMIT 1""",
+            (source_id,),
+        ).fetchone()
+        return bool(row and row["status"] in {"outdated", "stale", "error"})
+    if action_type == "empty_source":
+        row = db.execute(
+            """SELECT row_count FROM source_probes
+               WHERE source_id = ? AND row_count IS NOT NULL
+               ORDER BY probed_at DESC, id DESC LIMIT 1""",
+            (source_id,),
+        ).fetchone()
+        return bool(row and row["row_count"] == 0)
+    return False
+
 
 @router.patch("/{action_id}", response_model=ActionOut)
 def update_action(action_id: int, update: ActionUpdate, request: Request):
@@ -616,10 +639,12 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
             fields.append(f"{field_name} = ?")
             values.append(value)
 
-        # Auto-set resolved_at when status becomes resolved or expected
+        # Keep the lifecycle timestamp aligned when actions are closed/reopened.
         if update.status in ("resolved", "expected"):
             fields.append("resolved_at = ?")
             values.append(now)
+        elif update.status is not None:
+            fields.append("resolved_at = NULL")
 
         values.append(action_id)
         db.execute(
@@ -627,11 +652,9 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
             values,
         )
 
-        # Resolving the action also resolves its linked open alerts; otherwise
-        # they stay open forever (the prober's auto-closer only acts on probe
-        # evidence). Deliberately one-way: reopening an action does not reopen
-        # alerts - if the source is still outdated, the next probe run
-        # recreates the alert.
+        # Keep the latest linked alert in sync with explicit action lifecycle
+        # changes. Reopening is evidence-gated so a stale UI action cannot
+        # resurrect an alert after the source has recovered.
         message_prefix = _ACTION_ALERT_MESSAGE_PREFIX.get(existing["type"])
         if (update.status in ("resolved", "expected")
                 and existing["source_id"] is not None and message_prefix):
@@ -641,8 +664,25 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
                        acknowledged = 1, acknowledged_by = ?,
                        resolution_reason = 'Linked action resolved'
                    WHERE source_id = ? AND message LIKE ?
-                     AND resolution_status IS NULL""",
+                     AND COALESCE(resolution_status, '') != 'resolved'""",
                 (now, get_actor(request) or "user", existing["source_id"], message_prefix),
+            )
+        elif (update.status in ("open", "investigating")
+              and existing["source_id"] is not None and message_prefix
+              and _action_alert_is_still_supported(
+                  db, existing["source_id"], existing["type"]
+              )):
+            db.execute(
+                """UPDATE alerts
+                   SET resolution_status = NULL, resolution_reason = NULL,
+                       resolved_at = NULL, acknowledged = 0,
+                       acknowledged_by = NULL
+                   WHERE id = (
+                       SELECT id FROM alerts
+                       WHERE source_id = ? AND message LIKE ?
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   )""",
+                (existing["source_id"], message_prefix),
             )
 
         changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
