@@ -172,6 +172,14 @@ def test_outlook_csv_first_row_allows_one_column_and_rejects_blank_or_duplicate_
     with pytest.raises(RuntimeError, match="blank column header"):
         flow_worker._normalize_csv(blank, preamble="none", strict_headers=True)
 
+    wider = tmp_path / "wider.csv"
+    wider.write_text("Code,Units\nA,7,must-not-be-dropped\n", encoding="utf-8")
+    with pytest.raises(
+        RuntimeError,
+        match=r"row 2 has 3 columns.*2 first-row headers.*1 populated extra cell",
+    ):
+        flow_worker._normalize_csv(wider, preamble="none", strict_headers=True)
+
 
 def test_outlook_no_op_does_not_register_a_run_folder(monkeypatch, tmp_path):
     monkeypatch.setattr(

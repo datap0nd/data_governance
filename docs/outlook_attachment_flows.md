@@ -19,6 +19,12 @@ daily/weekly/monthly schedule, and the normal optional SQL handoff.
 - Excel add-ins (`.xla`, `.xlam`, `.xll`) and password-protected/encrypted
   workbooks are unsupported. Macro-capable workbooks are read as stored cell
   values only; Metronome never executes VBA.
+- Salesforce and similar systems sometimes put an HTML or XML data table in a
+  file named `.xls`. For Outlook `.xls`/`.xlt` attachments only, Metronome
+  recognizes UTF-8 and UTF-16 variants, preserves the attachment unchanged,
+  and extracts the largest valid first-row-header table to the normalized CSV.
+  HTML without a usable data table is rejected; portal HTML responses and HTML
+  files named `.csv` remain errors so login pages cannot be loaded into SQL.
 
 The attachment identity is a SHA-256 receipt over the Outlook store, message,
 attachment position, and original attachment name. Metronome advances that

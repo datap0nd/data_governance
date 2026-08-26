@@ -24,6 +24,7 @@ import traceback
 import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -3555,33 +3556,47 @@ def _validate_strict_headers(header: list[str], *, source_label: str) -> None:
         )
 
 
+def _text_encoding_candidates(raw: bytes) -> list[str]:
+    """Return likely text encodings without letting latin-1 hide UTF-16."""
+    encodings = ["utf-8-sig"]
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings.append("utf-16")
+    elif b"\x00" in raw[:512]:
+        even_nuls = raw[:512:2].count(0)
+        odd_nuls = raw[1:512:2].count(0)
+        encodings.extend(
+            ["utf-16-le", "utf-16-be"]
+            if odd_nuls >= even_nuls
+            else ["utf-16-be", "utf-16-le"]
+        )
+    encodings.extend(["cp1252", "latin-1"])
+    return encodings
+
+
+def _decode_downloaded_text(raw: bytes, *, source_label: str) -> tuple[str, str]:
+    for encoding in _text_encoding_candidates(raw):
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise RuntimeError(f"Could not decode {source_label}.")
+
+
 def _normalize_csv(
     path: Path, *, preamble: str = "asap", strict_headers: bool = False,
 ) -> dict:
     """Normalize a delimited file with source-specific header resolution."""
     if preamble not in {"asap", "none"}:
         raise ValueError(f"Unsupported CSV preamble mode: {preamble}")
-    decoded = None
-    encoding_used = None
     detected = _detect_download_format(path)
     if detected != "csv":
         raise RuntimeError(
             f"Refusing to read {path.name} as CSV: it looks like {detected}."
         )
     raw = path.read_bytes()
-    encodings = ["utf-8-sig"]
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in raw[:512]:
-        encodings.extend(["utf-16", "utf-16-le", "utf-16-be"])
-    encodings.extend(["cp1252", "latin-1"])
-    for encoding in encodings:
-        try:
-            decoded = raw.decode(encoding)
-            encoding_used = encoding
-            break
-        except UnicodeDecodeError:
-            continue
-    if decoded is None:
-        raise RuntimeError(f"Could not decode downloaded CSV: {path.name}")
+    decoded, encoding_used = _decode_downloaded_text(
+        raw, source_label=f"downloaded CSV {path.name}",
+    )
     lines = decoded.splitlines()
     sample = "\n".join(lines[:20])
     try:
@@ -3607,13 +3622,15 @@ def _normalize_csv(
         data_rows = rows[header_index + 1:]
         if not any(any(str(value).strip() for value in row) for row in data_rows):
             raise RuntimeError("Downloaded CSV contains a header but no data rows.")
-        if any(
-            len(row) > len(header) and any(str(value).strip() for value in row[len(header):])
-            for row in data_rows
-        ):
-            raise RuntimeError(
-                "Downloaded CSV contains populated data cells beyond its first-row headers."
-            )
+        for row_index, row in enumerate(data_rows, start=header_index + 2):
+            overflow = row[len(header):]
+            populated_overflow = sum(bool(str(value).strip()) for value in overflow)
+            if populated_overflow:
+                raise RuntimeError(
+                    f"Downloaded CSV row {row_index} has {len(row)} columns, exceeding "
+                    f"the {len(header)} first-row headers. Refusing to discard "
+                    f"{populated_overflow} populated extra cell(s)."
+                )
     elif len(header) < 2:
         raise RuntimeError("Downloaded CSV did not contain a usable delimited header.")
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -3623,6 +3640,208 @@ def _normalize_csv(
         "preamble_rows_removed": header_index,
         "source_encoding": encoding_used,
         "source_delimiter": "tab" if delimiter == "\t" else delimiter,
+        "columns": header,
+    }
+
+
+def _html_tag_name(tag: str) -> str:
+    """Treat XML Spreadsheet namespace prefixes like ordinary HTML tags."""
+    return str(tag).casefold().rsplit(":", 1)[-1]
+
+
+def _html_span(attrs: list[tuple[str, str | None]], name: str) -> int:
+    values = {
+        _html_tag_name(key): value for key, value in attrs if value is not None
+    }
+    try:
+        return max(1, min(1_000, int(values.get(name) or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+class _ExcelHtmlTableParser(HTMLParser):
+    """Collect HTML and XML Spreadsheet tables without executing any markup."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[tuple[str, int, int]]]] = []
+        self._stack: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _cell_value(parts: list[str]) -> str:
+        value = "".join(parts).replace("\xa0", " ").replace("\r", "")
+        lines = [re.sub(r"[^\S\n]+", " ", line).strip() for line in value.split("\n")]
+        return "\n".join(line for line in lines if line).strip()
+
+    def _finish_cell(self, context: dict[str, Any]) -> None:
+        cell = context.get("cell")
+        row = context.get("row")
+        if cell is None or row is None:
+            return
+        row.append((
+            self._cell_value(cell["parts"]), cell["colspan"], cell["rowspan"],
+        ))
+        context["cell"] = None
+
+    def _finish_row(self, context: dict[str, Any]) -> None:
+        self._finish_cell(context)
+        row = context.get("row")
+        if row is not None:
+            context["rows"].append(row)
+        context["row"] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = _html_tag_name(tag)
+        if tag == "table":
+            self._stack.append({"rows": [], "row": None, "cell": None})
+            return
+        if not self._stack:
+            return
+        context = self._stack[-1]
+        if tag in {"tr", "row"}:
+            if context["row"] is not None:
+                self._finish_row(context)
+            context["row"] = []
+        elif tag in {"td", "th", "cell"}:
+            if context["row"] is None:
+                context["row"] = []
+            self._finish_cell(context)
+            context["cell"] = {
+                "parts": [],
+                "colspan": _html_span(attrs, "colspan"),
+                "rowspan": _html_span(attrs, "rowspan"),
+            }
+        elif tag == "br" and context["cell"] is not None:
+            context["cell"]["parts"].append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = _html_tag_name(tag)
+        if not self._stack:
+            return
+        context = self._stack[-1]
+        if tag in {"td", "th", "cell"}:
+            self._finish_cell(context)
+        elif tag in {"tr", "row"}:
+            self._finish_row(context)
+        elif tag == "table":
+            self._finish_row(context)
+            self.tables.append(context["rows"])
+            self._stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        # A nested presentation table may sit inside an outer cell. Attribute
+        # text to the nearest active cell while collecting the nested table
+        # independently as another candidate.
+        for context in reversed(self._stack):
+            if context["cell"] is not None:
+                context["cell"]["parts"].append(data)
+                break
+
+
+def _expand_html_table(
+    raw_rows: list[list[tuple[str, int, int]]],
+) -> list[list[str]]:
+    """Expand colspan/rowspan into a rectangular sequence of explicit cells."""
+    rows: list[list[str]] = []
+    carried: dict[int, tuple[str, int]] = {}
+    for raw_row in raw_rows:
+        cells = {column: value for column, (value, _remaining) in carried.items()}
+        next_carried = {
+            column: (value, remaining - 1)
+            for column, (value, remaining) in carried.items()
+            if remaining > 1
+        }
+        column = 0
+        for value, colspan, rowspan in raw_row:
+            targets = []
+            while len(targets) < colspan:
+                while column in cells:
+                    column += 1
+                targets.append(column)
+                column += 1
+            for offset, target in enumerate(targets):
+                expanded_value = value if offset == 0 else ""
+                cells[target] = expanded_value
+                if rowspan > 1:
+                    next_carried[target] = (expanded_value, rowspan - 1)
+        if cells:
+            row = [cells.get(index, "") for index in range(max(cells) + 1)]
+            while row and not str(row[-1]).strip():
+                row.pop()
+            rows.append(row)
+        carried = next_carried
+    return [row for row in rows if any(str(value).strip() for value in row)]
+
+
+def _validated_html_table(
+    raw_rows: list[list[tuple[str, int, int]]], *, table_number: int,
+) -> tuple[list[str], list[list[str]]]:
+    rows = _expand_html_table(raw_rows)
+    source_label = f"Downloaded HTML-as-XLS table {table_number}"
+    if not rows:
+        raise RuntimeError(f"{source_label} is empty.")
+    header = [str(value).strip() for value in rows[0]]
+    _validate_strict_headers(header, source_label=source_label)
+    data_rows: list[list[str]] = []
+    for row_number, row in enumerate(rows[1:], start=2):
+        overflow = row[len(header):]
+        populated_overflow = sum(bool(str(value).strip()) for value in overflow)
+        if populated_overflow:
+            raise RuntimeError(
+                f"{source_label} row {row_number} has {len(row)} columns, exceeding "
+                f"the {len(header)} first-row headers. Refusing to discard "
+                f"{populated_overflow} populated extra cell(s)."
+            )
+        values = row[:len(header)] + [""] * max(0, len(header) - len(row))
+        if any(str(value).strip() for value in values):
+            data_rows.append(values)
+    if not data_rows:
+        raise RuntimeError(f"{source_label} contains a header but no data rows.")
+    return header, data_rows
+
+
+def _normalize_html_excel(source: Path, output: Path) -> dict:
+    """Normalize a Salesforce-style HTML/XML table delivered as legacy XLS."""
+    decoded, encoding_used = _decode_downloaded_text(
+        source.read_bytes(), source_label=f"HTML-as-XLS attachment {source.name}",
+    )
+    parser = _ExcelHtmlTableParser()
+    parser.feed(decoded.lstrip("\ufeff"))
+    parser.close()
+    candidates: list[tuple[int, int, list[str], list[list[str]]]] = []
+    failures: list[tuple[int, str]] = []
+    for table_number, raw_rows in enumerate(parser.tables, start=1):
+        try:
+            header, rows = _validated_html_table(raw_rows, table_number=table_number)
+        except RuntimeError as exc:
+            failures.append((len(raw_rows), str(exc)))
+            continue
+        candidates.append((len(rows), table_number, header, rows))
+    if not candidates:
+        detail = max(failures, default=(0, "no table elements were found"))[1]
+        raise RuntimeError(
+            "The legacy .xls attachment contains HTML/XML but no usable first-row-header "
+            f"data table. {detail}"
+        )
+    _row_count, table_number, header, data_rows = max(
+        candidates, key=lambda item: (item[0], len(item[2]), -item[1]),
+    )
+    partial = output.with_name(f".{output.name}.partial")
+    with partial.open("x", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(header)
+        writer.writerows(data_rows)
+    partial.replace(output)
+    return {
+        "preamble_rows_removed": 0,
+        "source_encoding": encoding_used,
+        "source_delimiter": None,
+        "source_sheets": [f"HTML table {table_number}"],
+        "source_container": "html_xls",
         "columns": header,
     }
 
@@ -4407,7 +4626,7 @@ DOWNLOAD_SIGNATURES = (
     (b"\x09\x08", "xls"),
     (b"%PDF-", "pdf"),
 )
-HTML_PREFIXES = (b"<!doctype html", b"<html", b"<?xml", b"<table", b"<meta")
+HTML_PREFIXES = ("<!doctype html", "<html", "<?xml", "<table", "<meta")
 
 
 def _detect_download_format(path: Path) -> str:
@@ -4419,7 +4638,7 @@ def _detect_download_format(path: Path) -> str:
     column name. Refuse it at the door instead.
     """
     with path.open("rb") as handle:
-        head = handle.read(1024)
+        head = handle.read(4096)
     if not head:
         raise RuntimeError(f"The downloaded file is empty: {path.name}")
     if head.startswith(b"PK"):
@@ -4437,8 +4656,11 @@ def _detect_download_format(path: Path) -> str:
     for signature, kind in DOWNLOAD_SIGNATURES:
         if head.startswith(signature):
             return kind
-    stripped = head.lstrip().lower()
-    if stripped.startswith(HTML_PREFIXES):
+    decoded_head, _encoding = _decode_downloaded_text(
+        head, source_label=f"download prefix for {path.name}",
+    )
+    stripped_text = decoded_head.lstrip("\ufeff \t\r\n").casefold()
+    if stripped_text.startswith(HTML_PREFIXES):
         return "html"
     if b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff")):
         return "binary"
@@ -4479,6 +4701,15 @@ def _store_completed_download(
     snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path)
     declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
+    html_excel = (
+        detected == "html"
+        and bool(declared_suffixes & LEGACY_EXCEL_EXTENSIONS)
+        # Only Outlook's strict, physical-first-row flat-file contract opts
+        # into HTML-as-XLS. A portal login/error page must remain a failure.
+        and require_normalized_csv
+        and strict_headers
+        and csv_preamble == "none"
+    )
     if detected == "xls" and declared_suffixes & (
         OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
     ):
@@ -4493,12 +4724,51 @@ def _store_completed_download(
             f"looks like {detected}. Check what this report's download link "
             "actually produces."
         )
-    if detected == "html":
+    if detected == "html" and not html_excel:
         raise RuntimeError(
             f"The download is an HTML page, not data: {local_path.name}. The "
             "portal most likely returned an error or a login page instead of "
             "the export."
         )
+    if html_excel:
+        expected_suffix = _excel_output_suffix(local_path, output, "xls")
+        if output.suffix.casefold() != expected_suffix:
+            output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
+        original_size = snapshot["file_size"]
+        copied = _copy_with_checksum(local_path, output)
+        if copied["file_size"] != original_size or copied["checksum"] != snapshot["checksum"]:
+            raise RuntimeError(
+                f"The staged legacy Excel attachment changed while copying to {output}: "
+                f"streamed {copied['file_size']} of {original_size} settled bytes."
+            )
+        _verify_copied_file(
+            output, original_size, copied["checksum"],
+            label="Downloaded legacy Excel attachment",
+        )
+        normalized_output = _safe_output_path(
+            output.parent, f"{output.stem}_normalized.csv",
+        )
+        if processing_progress is not None:
+            processing_progress(
+                "file_normalization",
+                f"Saved {output.name}; extracting its embedded data table.",
+            )
+        normalization = _normalize_html_excel(output, normalized_output)
+        if processing_progress is not None:
+            processing_progress(
+                "file_metadata",
+                f"Normalized {normalized_output.name}; calculating its checksum and row count.",
+            )
+        metadata = {**_csv_metadata(normalized_output), **normalization}
+        return {
+            **metadata,
+            "file_path": str(normalized_output),
+            "filename": normalized_output.name,
+            "original_file_path": str(output),
+            "original_filename": output.name,
+            "original_file_size": original_size,
+            "detected_format": expected_suffix.lstrip("."),
+        }
     if detected in EXCEL_DOWNLOAD_FORMATS:
         # The portal decides the format, not the flow's setting. Preserve an
         # original compatible extension (for example .xlsm) and otherwise
