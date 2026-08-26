@@ -197,7 +197,7 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
     if action_type == "refresh_overdue":
         return "Trigger a manual refresh or verify the schedule is enabled and the gateway is up."
     if action_type in ("stale_source", "outdated_source", "error_source"):
-        return "Find out why this source hasn't updated. Check linked scripts and scheduled tasks."
+        return "Find out why this source hasn't updated. Check its linked Flow or refresh process."
     if action_type == "empty_source":
         return "Check the latest refresh output. The source now has zero rows after previously having data."
     if action_type == "task_failed":
@@ -269,10 +269,6 @@ def _triage_cta(asset_type: str | None, assigned_to: str | None) -> str:
         return "Open report"
     if asset_type == "source":
         return "Open source"
-    if asset_type == "scheduled_task":
-        return "Open task"
-    if asset_type == "script":
-        return "Open script"
     if asset_type == "flow":
         return "Open flow"
     return "Open details"

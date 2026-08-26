@@ -387,14 +387,14 @@ def _ensure_write_owner(body: RecurrenceWrite) -> dict:
         )
     if not owner:
         raise ValueError(
-            f"Alert owner '{body.owner_name}' is not in Management > Create > People."
+            f"Alert owner '{body.owner_name}' is not in Tools > Create Artifacts > People."
         )
     try:
         _parse_recipients(owner.get("email") or "")
     except ValueError as exc:
         raise ValueError(
             f"Alert owner '{owner['name']}' needs a valid email in "
-            "Management > Create > People."
+            "Tools > Create Artifacts > People."
         ) from exc
     body.owner_name = owner["name"]
     return owner
@@ -1109,7 +1109,7 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         owner = _resolve_recurrence_owner(recurrence)
         if not owner:
             raise RuntimeError(
-                "The alert owner is missing from Management > Create > People. "
+                "The alert owner is missing from Tools > Create Artifacts > People. "
                 "Assign a valid owner before this alert can run."
             )
         try:
@@ -1117,7 +1117,7 @@ def run_recurrence(recurrence_id: int, *, mode: str = "send", trigger_type: str 
         except ValueError as exc:
             raise RuntimeError(
                 f"Alert owner '{owner['name']}' needs a valid email in "
-                "Management > Create > People."
+                "Tools > Create Artifacts > People."
             ) from exc
         refresh = _require_successful_refresh(recurrence)
         exported = export_visual_data(

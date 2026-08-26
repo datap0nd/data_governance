@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH
 from app.database import init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
@@ -496,10 +496,7 @@ app.include_router(data_quality.router)
 app.include_router(tasks.router)
 app.include_router(eventlog.router)
 app.include_router(people.router)
-app.include_router(scripts.router)
-app.include_router(scheduled_tasks.router)
 app.include_router(archive.router)
-app.include_router(power_automate.router)
 app.include_router(documentation.router)
 app.include_router(email.router)
 app.include_router(email_schedules.router)

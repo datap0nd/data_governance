@@ -158,19 +158,6 @@ class LineageDepthTests(unittest.TestCase):
             )
             db.execute("UPDATE sources SET upstream_id = 50 WHERE id = 14")
             db.execute(
-                """INSERT INTO scripts (id, path, display_name, archived)
-                   VALUES (60, '/jobs/load_root.py', 'Load root source', 0)"""
-            )
-            db.execute(
-                """INSERT INTO script_tables (script_id, table_name, direction, source_id)
-                   VALUES (60, 'source_14', 'write', 14)"""
-            )
-            db.execute(
-                """INSERT INTO scheduled_tasks
-                   (id, task_name, task_path, script_id, enabled, archived)
-                   VALUES (70, 'Load root task', '/tasks/load_root', 60, 1, 0)"""
-            )
-            db.execute(
                 """INSERT INTO sources
                    (id, name, type, discovered_by, archived)
                    VALUES (90, 'unrelated_source', 'postgresql', 'pg_deps', 0),
@@ -193,8 +180,8 @@ class LineageDepthTests(unittest.TestCase):
         self.assertEqual(deepest["type"], "excel")
         self.assertEqual(deepest["status"], "fresh")
         self.assertEqual(deepest["row_count"], 321)
-        self.assertEqual([s["id"] for s in result["scripts"]], [60])
-        self.assertEqual([t["id"] for t in result["scheduled_tasks"]], [70])
+        self.assertNotIn("scripts", result)
+        self.assertNotIn("scheduled_tasks", result)
         self.assertEqual([u["id"] for u in result["upstreams"]], [50])
         self.assertEqual({s.name for s in list_sources()}, {f"source_{i}" for i in source_ids})
 

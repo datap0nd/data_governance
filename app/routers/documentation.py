@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.database import get_db
+from app.legacy_links import reject_new_legacy_links
 from app.models import (
     DocumentationOut, DocumentationCreate, DocumentationUpdate,
     DocEntityLinkInfo,
@@ -81,6 +82,14 @@ def _resolve_links(db, doc_id: int) -> list[DocEntityLinkInfo]:
 
 def _save_links(db, doc_id: int, links):
     """Replace all entity links for a doc."""
+    existing = {
+        (r["entity_type"], r["entity_id"])
+        for r in db.execute(
+            "SELECT entity_type, entity_id FROM doc_entity_links WHERE doc_id = ?",
+            (doc_id,),
+        ).fetchall()
+    }
+    reject_new_legacy_links(links, existing)
     db.execute("DELETE FROM doc_entity_links WHERE doc_id = ?", (doc_id,))
     for link in links:
         db.execute(
@@ -143,9 +152,6 @@ def get_doc_options():
         sources = db.execute(
             "SELECT id, name FROM sources WHERE archived = 0 ORDER BY name"
         ).fetchall()
-        scripts = db.execute(
-            "SELECT id, display_name FROM scripts WHERE archived = 0 ORDER BY display_name"
-        ).fetchall()
         upstreams = db.execute(
             "SELECT id, name FROM upstream_systems WHERE archived = 0 ORDER BY name"
         ).fetchall()
@@ -153,7 +159,6 @@ def get_doc_options():
         "people": [dict(r) for r in people],
         "reports": [dict(r) for r in reports],
         "sources": [{"id": r["id"], "name": r["name"]} for r in sources],
-        "scripts": [{"id": r["id"], "name": r["display_name"]} for r in scripts],
         "upstreams": [dict(r) for r in upstreams],
         "statuses": ["draft", "published"],
         "cadences": ["Daily", "Weekly", "Bi-weekly", "Monthly", "Quarterly", "Yearly", "Ad-hoc"],
@@ -179,30 +184,6 @@ def suggest_doc(report_id: int):
             ORDER BY rt.table_name
         """, (report_id,)).fetchall()
 
-        # Scripts that write to any of these sources
-        source_ids = [t["source_id"] for t in tables if t["source_id"]]
-        scripts = []
-        if source_ids:
-            placeholders = ",".join("?" * len(source_ids))
-            scripts = db.execute(f"""
-                SELECT DISTINCT sc.id, sc.display_name, st.table_name, st.direction
-                FROM script_tables st
-                JOIN scripts sc ON sc.id = st.script_id
-                WHERE st.source_id IN ({placeholders})
-                ORDER BY sc.display_name
-            """, source_ids).fetchall()
-
-        # Scheduled tasks linked to these scripts
-        script_ids = list(set(s["id"] for s in scripts))
-        sched_tasks = []
-        if script_ids:
-            placeholders = ",".join("?" * len(script_ids))
-            sched_tasks = db.execute(f"""
-                SELECT task_name, schedule_type, script_id
-                FROM scheduled_tasks
-                WHERE script_id IN ({placeholders}) AND archived = 0
-            """, script_ids).fetchall()
-
         # Key measures (top 20 by name)
         measures = db.execute("""
             SELECT table_name, measure_name, measure_dax
@@ -215,21 +196,6 @@ def suggest_doc(report_id: int):
         # Build Mermaid diagram
         mermaid_lines = ["graph LR"]
         seen_nodes = set()
-
-        for st in sched_tasks:
-            node_id = f"sched_{st['script_id']}"
-            if node_id not in seen_nodes:
-                mermaid_lines.append(f'    {node_id}["{_mesc(st["task_name"])}"]:::task')
-                seen_nodes.add(node_id)
-
-        for s in scripts:
-            node_id = f"script_{s['id']}"
-            if node_id not in seen_nodes:
-                mermaid_lines.append(f'    {node_id}["{_mesc(s["display_name"])}"]:::script')
-                seen_nodes.add(node_id)
-
-        for st in sched_tasks:
-            mermaid_lines.append(f"    sched_{st['script_id']} --> script_{st['script_id']}")
 
         upstreams_seen = set()
         for t in tables:
@@ -247,21 +213,12 @@ def suggest_doc(report_id: int):
                     us_node = f"us_{t['upstream_name'].replace(' ', '_')}"
                     mermaid_lines.append(f"    {us_node} --> {src_node}")
 
-        for s in scripts:
-            for t in tables:
-                if t["source_id"]:
-                    src_node = f"src_{t['source_id']}"
-                    mermaid_lines.append(f"    script_{s['id']} --> {src_node}")
-                    break
-
         report_node = f"report_{report_id}"
         mermaid_lines.append(f'    {report_node}["{_mesc(report["name"])}"]:::report')
         for t in tables:
             if t["source_id"]:
                 mermaid_lines.append(f"    src_{t['source_id']} --> {report_node}")
 
-        mermaid_lines.append("    classDef task fill:#fbbf24,color:#000")
-        mermaid_lines.append("    classDef script fill:#c4b5fd,color:#000")
         mermaid_lines.append("    classDef upstream fill:#fb923c,color:#000")
         mermaid_lines.append("    classDef source fill:#34d399,color:#000")
         mermaid_lines.append("    classDef report fill:#60a5fa,color:#000")
@@ -311,7 +268,7 @@ def ai_suggest_doc(report_id: int):
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
 
-        # Gather context: tables, sources, measures, scripts, schedules
+        # Gather context: tables, sources, measures
         tables = db.execute("""
             SELECT rt.table_name, s.name AS source_name, s.type AS source_type,
                    us.name AS upstream_name
@@ -327,33 +284,6 @@ def ai_suggest_doc(report_id: int):
             FROM report_measures WHERE report_id = ?
             ORDER BY table_name, measure_name LIMIT 30
         """, (report_id,)).fetchall()
-
-        source_ids = [t["source_id"] for t in db.execute(
-            "SELECT DISTINCT source_id FROM report_tables WHERE report_id = ? AND source_id IS NOT NULL",
-            (report_id,)
-        ).fetchall()]
-
-        scripts = []
-        sched_tasks = []
-        if source_ids:
-            ph = ",".join("?" * len(source_ids))
-            scripts = db.execute(f"""
-                SELECT DISTINCT sc.display_name, st.direction
-                FROM script_tables st JOIN scripts sc ON sc.id = st.script_id
-                WHERE st.source_id IN ({ph})
-            """, source_ids).fetchall()
-
-            script_ids = [s["id"] for s in db.execute(f"""
-                SELECT DISTINCT sc.id FROM script_tables st
-                JOIN scripts sc ON sc.id = st.script_id
-                WHERE st.source_id IN ({ph})
-            """, source_ids).fetchall()]
-            if script_ids:
-                ph2 = ",".join("?" * len(script_ids))
-                sched_tasks = db.execute(f"""
-                    SELECT task_name, schedule_type FROM scheduled_tasks
-                    WHERE script_id IN ({ph2}) AND archived = 0
-                """, script_ids).fetchall()
 
         # Report pages and visuals
         pages = db.execute(
@@ -395,9 +325,6 @@ def ai_suggest_doc(report_id: int):
     for m in measures[:25]:
         measure_details.append(f"- {m['measure_name']}")
 
-    script_names = [s["display_name"] for s in scripts]
-    schedule_names = [s["task_name"] for s in sched_tasks]
-
     context = (
         f"Report: {report['name']}\n"
         f"Owner: {report['owner'] or 'Unknown'}\n"
@@ -407,8 +334,6 @@ def ai_suggest_doc(report_id: int):
         f"\nData sources ({len(tables)} tables): {sources_text}\n"
         f"Upstream systems: {', '.join(set(t['upstream_name'] for t in tables if t['upstream_name'])) or 'None detected'}\n"
         f"\nMeasures ({len(measures)}):\n" + "\n".join(measure_details) + "\n"
-        f"\nETL scripts: {', '.join(script_names) if script_names else 'None detected'}\n"
-        f"Scheduled tasks: {', '.join(schedule_names) if schedule_names else 'None detected'}\n"
     )
 
     system_prompt = (

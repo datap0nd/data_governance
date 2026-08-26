@@ -769,27 +769,6 @@ def run_scan(
             cron_result = {"status": "failed", "error": str(e)}
             logger.exception("pg_cron scan failed: %s", e)
 
-        # Scan Python scripts for table references
-        assert_not_cancelled(generation, "Report scan")
-        from app.scanner.script_runner import run_script_scan
-        try:
-            script_result = run_script_scan()
-            logger.info("Script scan completed: %s", script_result.get("status"))
-        except Exception as e:
-            script_result = {"status": "failed", "error": str(e)}
-            logger.exception("Script scan failed: %s", e)
-
-        # Scan Windows Task Scheduler after scripts so task-to-script links
-        # and task failure actions are refreshed in the same overall run.
-        assert_not_cancelled(generation, "Report scan")
-        from app.scanner.task_scheduler_runner import run_task_scheduler_scan
-        try:
-            task_result = run_task_scheduler_scan()
-            logger.info("Task Scheduler scan completed: %s", task_result.get("status"))
-        except Exception as e:
-            task_result = {"status": "failed", "error": str(e)}
-            logger.exception("Task Scheduler scan failed: %s", e)
-
         # Import configured usage CSVs as part of the scan instead of waiting
         # for a user to open a report or action page.
         from app.usage import sync_usage_from_csv_if_configured
@@ -801,8 +780,8 @@ def run_scan(
             usage_result = {"status": "failed", "error": str(e)}
             logger.exception("Usage sync failed: %s", e)
 
-        # Probe after dependency, cron, script, and task discovery so all
-        # freshness and data-quality decisions use the current graph.
+        # Probe after dependency and cron discovery so all freshness and
+        # data-quality decisions use the current graph.
         probe_result = None
         if run_followup_probe:
             from app.scanner.prober import run_probe
@@ -845,8 +824,6 @@ def run_scan(
         auxiliary_log = [
             f"PostgreSQL dependencies: {dep_result.get('status', 'unknown')}",
             f"PostgreSQL schedules: {cron_result.get('status', 'unknown')}",
-            f"Scripts: {script_result.get('status', 'unknown')}",
-            f"Windows scheduled tasks: {task_result.get('status', 'unknown')}",
             f"Configured usage import: {usage_result.get('status', 'unknown')}",
         ]
         if dep_result.get("definition_status") == "skipped":
@@ -877,8 +854,6 @@ def run_scan(
             "probe": probe_result,
             "postgres_dependencies": dep_result,
             "postgres_schedules": cron_result,
-            "scripts": script_result,
-            "task_scheduler": task_result,
             "usage": usage_result,
             "governance": governance_results,
             "status": "completed",

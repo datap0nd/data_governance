@@ -28,20 +28,6 @@ if not os.path.isabs(_tmdl_root_raw):
 TMDL_ROOT = _tmdl_root_raw
 
 
-# Folders where Python scripts live (semicolon-separated for multiple paths)
-_default_script_paths = [
-    p.strip()
-    for p in os.environ.get("DG_DEFAULT_SCRIPT_PATHS", "").split(";")
-    if p.strip()
-]
-_env_scripts = os.environ.get("DG_SCRIPTS_PATH", "")
-if _env_scripts:
-    SCRIPTS_PATHS = [p.strip() for p in _env_scripts.split(";") if p.strip()]
-else:
-    SCRIPTS_PATHS = _default_script_paths
-# Keep single-path compat
-SCRIPTS_PATH = SCRIPTS_PATHS[0] if SCRIPTS_PATHS else ""
-
 # How often to run scheduled scans and checks (in hours)
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
 CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))

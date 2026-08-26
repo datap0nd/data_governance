@@ -274,7 +274,7 @@ def diagnostic_report():
     import os
     import platform
     from pathlib import Path
-    from app.config import SCRIPTS_PATHS, REPORTS_PATH
+    from app.config import REPORTS_PATH
 
     report = {}
 
@@ -288,7 +288,6 @@ def diagnostic_report():
         "tmdl_root": TMDL_ROOT,
         "tmdl_root_exists": Path(TMDL_ROOT).is_dir() if TMDL_ROOT else False,
         "reports_path": REPORTS_PATH,
-        "scripts_paths": SCRIPTS_PATHS,
         "pghost": PGHOST or "(not set)",
         "pgdatabase": PGDATABASE or "(not set)",
         "pguser": PGUSER or "(not set)",
@@ -300,8 +299,7 @@ def diagnostic_report():
             "sources", "reports", "report_tables", "report_pages",
             "report_visuals", "visual_fields", "report_measures", "report_columns",
             "source_probes", "probe_runs", "scan_runs",
-            "source_dependencies", "scripts", "script_tables",
-            "scheduled_tasks", "alerts", "actions", "checks",
+            "source_dependencies", "alerts", "actions", "checks",
             "upstream_systems", "tasks", "event_log", "people",
         ]
         counts = {}
@@ -318,7 +316,6 @@ def diagnostic_report():
             SELECT s.id, s.name, s.type, s.discovered_by,
                    sp.status AS probe_status,
                    (SELECT COUNT(*) FROM report_tables rt WHERE rt.source_id = s.id) AS report_count,
-                   (SELECT COUNT(*) FROM script_tables st WHERE st.source_id = s.id) AS script_ref_count,
                    (SELECT COUNT(*) FROM source_dependencies sd WHERE sd.source_id = s.id) AS dep_from_count,
                    (SELECT COUNT(*) FROM source_dependencies sd WHERE sd.depends_on_id = s.id) AS dep_to_count
             FROM sources s
@@ -334,7 +331,7 @@ def diagnostic_report():
             {
                 "id": r["id"], "name": r["name"], "type": r["type"],
                 "discovered_by": r["discovered_by"], "probe_status": r["probe_status"] or "unknown",
-                "report_count": r["report_count"], "script_ref_count": r["script_ref_count"],
+                "report_count": r["report_count"],
                 "dep_from_count": r["dep_from_count"], "dep_to_count": r["dep_to_count"],
             }
             for r in src_rows
@@ -368,15 +365,6 @@ def diagnostic_report():
         # ── Broken FK References ──
         broken_fks = {}
 
-        # script_tables pointing to non-existent sources
-        broken = db.execute("""
-            SELECT st.id, st.script_id, st.table_name, st.source_id, st.direction
-            FROM script_tables st
-            WHERE st.source_id IS NOT NULL
-              AND st.source_id NOT IN (SELECT id FROM sources)
-        """).fetchall()
-        broken_fks["script_tables_missing_source"] = [dict(r) for r in broken]
-
         # report_tables pointing to non-existent sources
         broken = db.execute("""
             SELECT rt.id, rt.report_id, rt.table_name, rt.source_id
@@ -396,30 +384,6 @@ def diagnostic_report():
         broken_fks["source_deps_missing_source"] = [dict(r) for r in broken]
 
         report["broken_fk_references"] = broken_fks
-
-        # ── Script Tables Detail ──
-        st_rows = db.execute("""
-            SELECT st.table_name, st.direction, st.source_id,
-                   sc.display_name AS script_name, sc.path AS script_path,
-                   s.name AS matched_source_name
-            FROM script_tables st
-            JOIN scripts sc ON sc.id = st.script_id
-            LEFT JOIN sources s ON s.id = st.source_id
-            WHERE COALESCE(sc.archived, 0) = 0
-            ORDER BY sc.display_name, st.direction, st.table_name
-        """).fetchall()
-        report["script_tables"] = [
-            {
-                "script": r["script_name"], "table": r["table_name"],
-                "direction": r["direction"], "source_id": r["source_id"],
-                "matched_source": r["matched_source_name"],
-            }
-            for r in st_rows
-        ]
-
-        # ── Unlinked Script Tables (no source_id match) ──
-        unlinked = [r for r in report["script_tables"] if r["source_id"] is None]
-        report["unlinked_script_tables"] = unlinked
 
         # ── Source Dependencies ──
         dep_rows = db.execute("""

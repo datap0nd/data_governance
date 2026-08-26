@@ -2,18 +2,28 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
+from app.legacy_links import reject_new_legacy_links
 from app.models import TaskOut, TaskCreate, TaskUpdate, TaskMove, TaskLinkInfo
 from app.routers.eventlog import log_event, get_actor
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
-# Maps entity_type to (table, name_column)
+# Maps entity_type to (table, name_column). The legacy script/scheduled_task
+# entries only resolve names for links that already exist in the database -
+# new links to those types are rejected (see LINKABLE_ENTITY_TABLES).
 ENTITY_TABLES = {
     "report": ("reports", "name"),
     "source": ("sources", "name"),
     "script": ("scripts", "display_name"),
     "upstream_system": ("upstream_systems", "name"),
     "scheduled_task": ("scheduled_tasks", "task_name"),
+}
+
+# Entity types offered for NEW links.
+LINKABLE_ENTITY_TABLES = {
+    "report": ("reports", "name"),
+    "source": ("sources", "name"),
+    "upstream_system": ("upstream_systems", "name"),
 }
 
 
@@ -37,6 +47,14 @@ def _get_links(db, task_id: int) -> list[TaskLinkInfo]:
 
 
 def _sync_links(db, task_id: int, links):
+    existing = {
+        (r["entity_type"], r["entity_id"])
+        for r in db.execute(
+            "SELECT entity_type, entity_id FROM task_links WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+    }
+    reject_new_legacy_links(links, existing)
     db.execute("DELETE FROM task_links WHERE task_id = ?", (task_id,))
     for link in links:
         db.execute(
@@ -213,7 +231,7 @@ def list_linkable_entities():
     """Return all entities available for task linking, grouped by type."""
     with get_db() as db:
         result = {}
-        for etype, (table, name_col) in ENTITY_TABLES.items():
+        for etype, (table, name_col) in LINKABLE_ENTITY_TABLES.items():
             archived_filter = " WHERE archived = 0" if etype != "upstream_system" else ""
             try:
                 rows = db.execute(
