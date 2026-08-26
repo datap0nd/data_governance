@@ -5098,6 +5098,9 @@ def _gscm_call(page: Page, headed: bool, notify, operation, profile_dir: Path):
     human nearby (tell them, wait, retry once); headless raises the actionable
     error.
     """
+    # Reloaded before every operation so an operator can edit (or re-record)
+    # <profile>/gscm_controls.json and have the very next run honor it.
+    flow_gscm.load_control_overrides(profile_dir)
     try:
         return operation()
     except flow_gscm.NotSignedInError as exc:
@@ -6237,6 +6240,161 @@ def authenticate_asap(profile_dir: Path, auth_url: str, timeout_minutes: int = 1
     authenticate_site(profile_dir, auth_url, timeout_minutes, ASAP_PORTAL_ADAPTER)
 
 
+# ── Guided control recorder ──
+#
+# The adapter's built-in control ids are guesses observed on one deployment.
+# The recorder removes the guessing: the operator clicks each control once in
+# a visible window, and the click's real component id is saved to
+# <profile>/gscm_controls.json, which every future run reads before trying
+# any built-in id.
+
+TEACH_STEPS = (
+    ("setting_button_id",
+     "the Setting gear icon in the top bar of the GSCM home screen"),
+    ("go_button_id",
+     "the 'Go >>' button inside Setting > Favorite (select any bookmark row first)"),
+    ("excel_button_id",
+     "the Excel download button on an opened report's toolbar"),
+)
+
+_TEACH_CAPTURE_JS = """() => {
+    if (window.__dgTeachInstalled) return true;
+    window.__dgTeachInstalled = true;
+    window.__dgTeachClicks = [];
+    document.addEventListener('click', (event) => {
+        const chain = [];
+        let node = event.target;
+        while (node && chain.length < 8) {
+            if (node.id) chain.push(node.id);
+            node = node.parentElement;
+        }
+        window.__dgTeachClicks.push({
+            ids: chain,
+            text: String((event.target && event.target.textContent) || '')
+                .trim().slice(0, 80),
+            ts: Date.now(),
+        });
+    }, true);
+    return true;
+}"""
+
+_TEACH_DRAIN_JS = """() => {
+    const clicks = window.__dgTeachClicks || [];
+    window.__dgTeachClicks = [];
+    return clicks;
+}"""
+
+
+def _teach_component_id(click: dict) -> str | None:
+    """The owning Nexacro component id behind one recorded click."""
+    for identifier in click.get("ids") or []:
+        component_ids = flow_gscm._component_element_ids(identifier)
+        if component_ids:
+            return component_ids[0]
+    return None
+
+
+def _teach_recorded_id(clicks: list[dict]) -> str | None:
+    """The last recorded click that carries a usable component id."""
+    return next(
+        (identifier for identifier in (
+            _teach_component_id(click) for click in reversed(clicks)
+        ) if identifier),
+        None,
+    )
+
+
+def _install_teach_capture(page: Page) -> None:
+    for root in [page, *page.frames]:
+        try:
+            root.evaluate(_TEACH_CAPTURE_JS)
+        except Exception:
+            continue
+
+
+def _drain_teach_clicks(page: Page) -> list[dict]:
+    clicks: list[dict] = []
+    for root in [page, *page.frames]:
+        try:
+            drained = root.evaluate(_TEACH_DRAIN_JS)
+        except Exception:
+            continue
+        if isinstance(drained, list):
+            clicks.extend(item for item in drained if isinstance(item, dict))
+    clicks.sort(key=lambda item: item.get("ts") or 0)
+    return clicks
+
+
+def teach_controls(profile_dir: Path, url: str) -> None:
+    """Guided recorder: the operator clicks each GSCM control, we record it.
+
+    For each control the console names, the operator navigates wherever they
+    need to inside the visible browser, clicks the control LAST, then returns
+    to the console and presses Enter. The last recorded click becomes that
+    control's id in ``<profile>/gscm_controls.json``. Typing ``s`` before
+    Enter skips a control; the file can also be edited by hand later.
+    """
+    with _exclusive_worker_lock(profile_dir) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                "The Flows worker is still using the automation browser "
+                "profile. Stop it (or wait for the current run) and try again."
+            )
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                channel="msedge" if os.name == "nt" else None,
+                headless=False,
+                accept_downloads=True,
+            )
+            try:
+                # New documents (SSO redirects, frames) get the listener
+                # automatically; already-open ones get it per step below.
+                context.add_init_script("(" + _TEACH_CAPTURE_JS + ")()")
+            except Exception:
+                pass
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=180_000)
+            print(
+                "\nRecorder ready. Sign in if the portal asks; the window stays open.\n"
+                "For each control named below: navigate wherever you need to,\n"
+                "click that control LAST, then come back here and press Enter.\n"
+                "Type 's' then Enter to skip a control.",
+                flush=True,
+            )
+            recorded: dict[str, str] = {}
+            for key, description in TEACH_STEPS:
+                _install_teach_capture(page)
+                _drain_teach_clicks(page)  # discard clicks from earlier steps
+                answer = input(f"\n>>> Click {description}, then press Enter (s = skip): ")
+                _install_teach_capture(page)
+                clicks = _drain_teach_clicks(page)
+                if answer.strip().casefold().startswith("s"):
+                    print(f"    Skipped {key}.", flush=True)
+                    continue
+                component_id = _teach_recorded_id(clicks)
+                if component_id is None:
+                    print(
+                        f"    No click with a usable id was recorded for {key}; "
+                        "skipped. Click it once more on the next control's turn, "
+                        "or re-run the recorder.",
+                        flush=True,
+                    )
+                    continue
+                recorded[key] = component_id
+                print(f"    Recorded {key} = {component_id}", flush=True)
+            if recorded:
+                path = flow_gscm.save_control_overrides(profile_dir, recorded)
+                print(
+                    f"\nSaved {len(recorded)} control id(s) to {path}.\n"
+                    "Every future GSCM run tries these before any built-in guess.",
+                    flush=True,
+                )
+            else:
+                print("\nNothing recorded; the settings file was left unchanged.", flush=True)
+            context.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Metronome authenticated download worker")
     parser.add_argument("--server", default=os.environ.get("METRONOME_URL", "http://127.0.0.1:8000"))
@@ -6245,6 +6403,10 @@ def main():
     parser.add_argument("--profile-dir", default=os.environ.get("METRONOME_FLOW_PROFILE", str(Path.home() / ".metronome-flow-browser")))
     parser.add_argument("--headed", action="store_true", help="Show the browser. Recommended for initial SSO setup.")
     parser.add_argument("--authenticate-url", help="Open a one-time visible portal SSO bootstrap and exit.")
+    parser.add_argument("--teach-controls", metavar="PORTAL_URL",
+                        help="Open a visible guided recorder: click each GSCM control "
+                             "once and its id is saved to <profile>/gscm_controls.json. "
+                             "Future runs use the recorded ids before any built-in guess.")
     parser.add_argument("--authenticate-adapter", default=None,
                         help="Portal adapter for the bootstrap. Inferred from the URL when omitted.")
     parser.add_argument("--authentication-timeout-minutes", type=int, default=10)
@@ -6252,6 +6414,9 @@ def main():
     parser.add_argument("--idle-exit-seconds", type=int, default=0, help="Exit after this many idle seconds.")
     args = parser.parse_args()
     profile_dir = Path(args.profile_dir)
+    if args.teach_controls:
+        teach_controls(profile_dir, args.teach_controls)
+        return
     if args.authenticate_url:
         authenticate_site(
             profile_dir, args.authenticate_url, args.authentication_timeout_minutes,

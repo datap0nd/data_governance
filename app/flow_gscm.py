@@ -34,8 +34,10 @@ handed, which keeps the automation unit-testable without a browser.
 
 from __future__ import annotations
 
+import json
 import re
 import time
+from pathlib import Path
 from typing import Any, NoReturn
 
 GSCM_PORTAL_ADAPTER = "gscm_portal"
@@ -168,6 +170,73 @@ LOGIN_PAGE_MARKERS = (
 LOGIN_PAGE_ELEMENT_IDS = ("submitbutton", "loginmessage", "userid", "password")
 
 _UNSAFE_NAME_RE = re.compile(r"[\x00-\x1f]+")
+
+
+# ── Operator-adjustable control ids ──
+#
+# Every control id in this module is a default observed on one deployment,
+# not a law. The worker loads ``<profile>/gscm_controls.json`` before each
+# GSCM operation; any id recorded there wins over the built-in guess. The
+# file is written by the guided recorder (``python -m app.flow_worker
+# --teach-controls <portal-url>``), where the operator clicks each control
+# in a visible browser window - and it can also be edited by hand.
+
+CONTROLS_FILENAME = "gscm_controls.json"
+CONTROL_KEYS = ("setting_button_id", "go_button_id", "excel_button_id")
+_control_overrides: dict[str, str] = {}
+
+
+def load_control_overrides(profile_dir) -> dict[str, str]:
+    """Read the operator's recorded control ids for this browser profile.
+
+    Called before every GSCM operation, so editing the file takes effect on
+    the next run without restarting the worker. A missing or unreadable file
+    simply clears the overrides back to the built-in defaults.
+    """
+    global _control_overrides
+    overrides: dict[str, str] = {}
+    try:
+        data = json.loads(
+            (Path(profile_dir) / CONTROLS_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict):
+        for key in CONTROL_KEYS:
+            value = str(data.get(key) or "").strip()
+            if value:
+                overrides[key] = value
+    _control_overrides = overrides
+    return dict(overrides)
+
+
+def save_control_overrides(profile_dir, overrides: dict[str, str]) -> Path:
+    """Merge recorded control ids into the profile's settings file."""
+    path = Path(profile_dir) / CONTROLS_FILENAME
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    for key, value in overrides.items():
+        if key in CONTROL_KEYS and str(value or "").strip():
+            existing[key] = str(value).strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(existing, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    global _control_overrides
+    _control_overrides = {
+        key: value for key, value in existing.items()
+        if key in CONTROL_KEYS and str(value or "").strip()
+    }
+    return path
+
+
+def _configured_control(key: str, default: str) -> str:
+    return _control_overrides.get(key) or default
 
 
 # ── Browser-side scripts ──
@@ -537,18 +606,23 @@ _NATIVE_COMPONENT_CLICK_JS = """(elementId) => {
 }"""
 
 
-#: Walk the live Nexacro component tree for Go-shaped buttons. A DOM id is
-#: only as good as the guess that produced it; the component tree is the
-#: portal's own registry of what exists, so a build that mounts the Favorite
-#: dialog under a different frame path still reports its real Go button here.
-#: Matches by component name (``btn_go``) or caption text (``Go >>``), and
-#: reports the component's fully-qualified ``id`` - the same value the DOM
-#: and the native click API both address.
-_GO_COMPONENT_SEARCH_JS = """() => {
+#: One resolver for every control this adapter needs: walk the live Nexacro
+#: component tree for components matching a name and/or caption pattern. A
+#: DOM id is only as good as the guess that produced it; the component tree
+#: is the portal's own registry of what exists, so a build that mounts a
+#: dialog under a different frame path - or styles a button as an icon with
+#: no rendered text - still reports the control's real, fully-qualified
+#: ``id`` here: the same value the DOM and the native click API both address.
+_COMPONENT_SEARCH_JS = """([namePattern, textPattern]) => {
     if (typeof nexacro === 'undefined' || !nexacro
             || typeof nexacro.getApplication !== 'function') return null;
-    const nameRe = /^btn_?go\\d*$/i;
-    const textRe = /^\\s*go[\\s>\\u00bb!]*$/i;
+    let nameRe = null;
+    let textRe = null;
+    try {
+        if (namePattern) nameRe = new RegExp(namePattern, 'i');
+        if (textPattern) textRe = new RegExp(textPattern, 'i');
+    } catch (error) { return null; }
+    if (!nameRe && !textRe) return null;
     const out = [];
     const seen = new Set();
     const visit = (component, depth) => {
@@ -557,8 +631,8 @@ _GO_COMPONENT_SEARCH_JS = """() => {
         seen.add(component);
         try {
             const id = String(component.id || '');
-            if (id && (nameRe.test(String(component.name || ''))
-                    || textRe.test(String(component.text || '')))) {
+            if (id && ((nameRe && nameRe.test(String(component.name || '')))
+                    || (textRe && textRe.test(String(component.text || ''))))) {
                 out.push({
                     id,
                     name: String(component.name || ''),
@@ -622,6 +696,41 @@ def _component_visible(page, *fragments: str) -> bool:
         bool(value)
         for _root, value in _evaluate_everywhere(page, _COMPONENT_VISIBLE_JS, wanted)
     )
+
+
+def find_live_components(
+    page, *, name_pattern: str | None = None, text_pattern: str | None = None,
+    prefer: tuple[str, ...] = (),
+) -> list[str]:
+    """Ask the running Nexacro application for controls by meaning.
+
+    This is the one resolver every control lookup shares: instead of trusting
+    a guessed DOM id or a rendered caption, it queries the portal's own
+    component registry for components whose *name* or *caption* matches, and
+    returns their real fully-qualified ids, ranked by the ``prefer``
+    substrings. Anything on the forbidden list never becomes a candidate.
+    """
+    if not name_pattern and not text_pattern:
+        return []
+    found: dict[str, None] = {}
+    for _root, records in _evaluate_everywhere(
+        page, _COMPONENT_SEARCH_JS, [name_pattern or "", text_pattern or ""],
+    ):
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            identifier = str((record or {}).get("id") or "")
+            if identifier and not is_forbidden(identifier):
+                found.setdefault(identifier)
+
+    def rank(identifier: str) -> tuple:
+        lowered = identifier.casefold()
+        for position, hint in enumerate(prefer):
+            if hint in lowered:
+                return (position, len(identifier))
+        return (len(prefer), len(identifier))
+
+    return sorted(found, key=rank)
 
 
 def _dedupe(items: list[tuple[Any, dict]]) -> list[tuple[Any, dict]]:
@@ -1483,12 +1592,28 @@ def _open_setting(page) -> bool:
     than a failed scan. Nothing on the forbidden list is ever a candidate.
     """
     tried_ids: set[str] = set()
-    for root in _roots(page):
-        if _activate_setting_record(
-            page, root, {"id": SETTING_BUTTON_ID}, tried_ids,
-            ready_timeout_ms=DIALOG_READY_TIMEOUT_MS,
-        ):
-            return True
+    known_ids = [
+        _configured_control("setting_button_id", SETTING_BUTTON_ID),
+        SETTING_BUTTON_ID,
+    ]
+    # One resolver for every control: after the known ids, ask the running
+    # application for a Setting-shaped component before hunting the DOM. This
+    # finds a gear whose name matches no hint but whose component caption
+    # says "Setting" - a shape the icon sweep (nothing rendered) and the
+    # label sweep (no DOM text) both miss.
+    known_ids.extend(find_live_components(
+        page,
+        name_pattern=r"^btn_(settings?|config|setup|env|pref|option|gear)\d*$",
+        text_pattern=r"^\s*settings?\s*$",
+        prefer=("topframe",),
+    ))
+    for identifier in known_ids:
+        for root in _roots(page):
+            if _activate_setting_record(
+                page, root, {"id": identifier}, tried_ids,
+                ready_timeout_ms=DIALOG_READY_TIMEOUT_MS,
+            ):
+                return True
     hinted = click_by_id_hint(
         page, SETTING_BUTTON_HINTS, exclude_ids=tried_ids,
     )
@@ -2177,13 +2302,12 @@ def _discover_go_candidates(page) -> list[str]:
     a candidate.
     """
     candidates: dict[str, None] = {}
-    for _root, records in _evaluate_everywhere(page, _GO_COMPONENT_SEARCH_JS):
-        if not isinstance(records, list):
-            continue
-        for record in records:
-            identifier = str((record or {}).get("id") or "")
-            if identifier and not is_forbidden(identifier):
-                candidates.setdefault(identifier)
+    for identifier in find_live_components(
+        page, name_pattern=_GO_NAME_RE.pattern,
+        text_pattern=r"^\s*go[\s>»!]*$",
+        prefer=("div_favorite", "setting"),
+    ):
+        candidates.setdefault(identifier)
     for _root, records in _evaluate_everywhere(page, _ID_MATCH_JS, list(GO_ID_HINTS)):
         for record in records:
             identifier = str((record or {}).get("id") or "")
@@ -2229,7 +2353,11 @@ def _click_go_button(page) -> bool:
     """
     clear_screen(page)
     tried: set[str] = set()
-    for candidate in (GO_BUTTON_ID, *_discover_go_candidates(page)):
+    for candidate in (
+        _configured_control("go_button_id", GO_BUTTON_ID),
+        GO_BUTTON_ID,
+        *_discover_go_candidates(page),
+    ):
         component_ids = _component_element_ids(candidate)
         if not component_ids or component_ids[0] in tried:
             continue
@@ -2264,7 +2392,9 @@ def _click_go_button(page) -> bool:
             return True
     # Last resort: the stable component may exist in the Nexacro tree even
     # when its DOM node was not found in any root.
-    return _native_click(page, GO_BUTTON_ID) and _go_button_fired(page)
+    return _native_click(
+        page, _configured_control("go_button_id", GO_BUTTON_ID)
+    ) and _go_button_fired(page)
 
 
 def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
@@ -2327,7 +2457,11 @@ def _click_entry(page, entry: dict) -> None:
 
 def excel_button_id(automation: dict | None = None) -> str:
     configured = str((automation or {}).get("excel_btn_id") or "").strip()
-    return configured or FALLBACK_EXCEL_BUTTON_ID
+    return (
+        _configured_control("excel_button_id", "")
+        or configured
+        or FALLBACK_EXCEL_BUTTON_ID
+    )
 
 
 def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
@@ -2342,11 +2476,21 @@ def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
     clear_screen(page)
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
+        # Recomputed each poll: the MDI work frame mounts late, and its real
+        # toolbar path on this build may differ from every configured guess.
+        live_ids = find_live_components(
+            page,
+            name_pattern=r"^btn_?excel_?down(load)?\d*$",
+            text_pattern=r"^\s*excel\s*download\s*$",
+            prefer=("framebutton", "mdiframe"),
+        )
+        selectors = [
+            f"[id='{_css_escape(excel_button_id(automation))}']",
+            *(f"[id='{_css_escape(identifier)}']" for identifier in live_ids[:5]),
+            f"[id*='{EXCEL_BUTTON_COMPONENT}']",
+        ]
         for root in _roots(page):
-            for selector in (
-                f"[id='{_css_escape(excel_button_id(automation))}']",
-                f"[id*='{EXCEL_BUTTON_COMPONENT}']",
-            ):
+            for selector in selectors:
                 try:
                     button = root.locator(selector).first
                     if button.count():
