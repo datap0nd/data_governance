@@ -10,7 +10,8 @@ import os
 import platform
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -786,7 +787,18 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
     return summaries
 
 
-def _launch_outlook_payload(messages: list[dict], mode: str = "send") -> int:
+def launch_outlook_dispatch(
+    messages: list[dict],
+    mode: str = "send",
+    *,
+    pipeline_run_id: int | None = None,
+    purpose: str = "email",
+) -> dict:
+    """Launch one uniquely named interactive Outlook handoff.
+
+    Launching the scheduled task is not delivery.  The PowerShell helper writes
+    an atomic receipt only after Outlook's ``Send``/``Display`` call returns.
+    """
     mode = (mode or "send").lower().strip()
     if mode not in {"draft", "send"}:
         raise OutlookEmailError("Mode must be draft or send", status_code=422)
@@ -797,37 +809,171 @@ def _launch_outlook_payload(messages: list[dict], mode: str = "send") -> int:
     if not messages:
         raise OutlookEmailError("No email messages to send", status_code=400)
 
-    payload = {"mode": mode, "messages": messages}
+    dispatch_token = uuid.uuid4().hex
+    task_name = f"{TASK_NAME}_{dispatch_token}"
+    payload = {"mode": mode, "messages": messages, "dispatch_token": dispatch_token}
     payload_path = _payload_path()
+    receipt_path = payload_path.with_suffix(".receipt.json")
+    with get_db() as db:
+        cursor = db.execute(
+            """INSERT INTO outlook_dispatches
+                   (pipeline_run_id, purpose, task_name, payload_path, receipt_path,
+                    status, message_count)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (
+                pipeline_run_id, purpose, task_name, str(payload_path),
+                str(receipt_path), len(messages),
+            ),
+        )
+        dispatch_id = int(cursor.lastrowid)
+    payload["dispatch_id"] = dispatch_id
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
 
     ps_cmd = (
         f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{OUTLOOK_SCRIPT}" '
-        f'-PayloadPath "{payload_path}"'
+        f'-PayloadPath "{payload_path}" -ReceiptPath "{receipt_path}"'
     )
     if mode == "send":
         ps_cmd += " -Send"
 
     try:
-        subprocess.run(["schtasks", "/delete", "/tn", TASK_NAME, "/f"], capture_output=True, timeout=10)
         subprocess.run(
-            ["schtasks", "/create", "/tn", TASK_NAME, "/tr", ps_cmd, "/sc", "once", "/st", "00:00", "/it", "/f"],
+            ["schtasks", "/create", "/tn", task_name, "/tr", ps_cmd, "/sc", "once", "/st", "00:00", "/it", "/f"],
             capture_output=True,
             text=True,
             timeout=10,
             check=True,
         )
         subprocess.run(
-            ["schtasks", "/run", "/tn", TASK_NAME],
+            ["schtasks", "/run", "/tn", task_name],
             capture_output=True,
             text=True,
             timeout=10,
             check=True,
         )
     except subprocess.CalledProcessError as exc:
+        with get_db() as db:
+            db.execute(
+                "UPDATE outlook_dispatches SET status='failed', error=?, processed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (str(exc.stderr or exc)[:4000], dispatch_id),
+            )
         raise OutlookEmailError(f"Failed to launch Outlook email task: {exc.stderr or exc}") from exc
 
-    return len(messages)
+    return {
+        "id": dispatch_id, "task_name": task_name, "status": "pending",
+        "message_count": len(messages),
+    }
+
+
+def _launch_outlook_payload(messages: list[dict], mode: str = "send") -> int:
+    """Compatibility wrapper for existing alert/recurrence callers."""
+    return int(launch_outlook_dispatch(messages, mode)["message_count"])
+
+
+def _delete_outlook_task(task_name: str) -> bool:
+    if platform.system() != "Windows":
+        return True
+    try:
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", task_name, "/f"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return True
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not remove Outlook scheduled task %s", task_name, exc_info=True
+        )
+        return False
+
+
+def reconcile_outlook_dispatches() -> dict:
+    """Consume receipts and mark old unknown handoffs without retrying them."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+    processed = 0
+    unknown = 0
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM outlook_dispatches WHERE status='pending' ORDER BY id"
+        ).fetchall()
+    for row in rows:
+        receipt_path = Path(row["receipt_path"])
+        if receipt_path.is_file():
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+                if int(receipt.get("dispatch_id") or 0) != int(row["id"]):
+                    raise ValueError("Receipt dispatch ID does not match.")
+                status = "submitted" if receipt.get("status") == "submitted" else "failed"
+                error = receipt.get("error")
+            except Exception as exc:
+                status = "unknown"
+                error = f"Invalid Outlook receipt: {exc}"
+            with get_db() as db:
+                db.execute(
+                    """UPDATE outlook_dispatches SET status=?, error=?,
+                              submitted_at=CASE WHEN ?='submitted' THEN CURRENT_TIMESTAMP ELSE submitted_at END,
+                              processed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (status, str(error)[:4000] if error else None, status, row["id"]),
+                )
+            cleaned = _delete_outlook_task(row["task_name"])
+            receipt_path.unlink(missing_ok=True)
+            Path(row["payload_path"]).unlink(missing_ok=True)
+            if cleaned:
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE outlook_dispatches SET cleanup_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (row["id"],),
+                    )
+            processed += 1
+            continue
+        if str(row["created_at"]) < cutoff:
+            with get_db() as db:
+                db.execute(
+                    """UPDATE outlook_dispatches SET status='unknown',
+                              error='No Outlook receipt arrived within 24 hours; not retried to avoid duplication.',
+                              processed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (row["id"],),
+                )
+            cleaned = _delete_outlook_task(row["task_name"])
+            Path(row["payload_path"]).unlink(missing_ok=True)
+            receipt_path.unlink(missing_ok=True)
+            if cleaned:
+                with get_db() as db:
+                    db.execute(
+                        "UPDATE outlook_dispatches SET cleanup_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (row["id"],),
+                    )
+            unknown += 1
+
+    with get_db() as db:
+        old_rows = db.execute(
+            """SELECT id, task_name, payload_path, receipt_path FROM outlook_dispatches
+               WHERE created_at < ? AND cleanup_at IS NULL""",
+            (cutoff,),
+        ).fetchall()
+    for row in old_rows:
+        cleaned = _delete_outlook_task(row["task_name"])
+        Path(row["payload_path"]).unlink(missing_ok=True)
+        Path(row["receipt_path"]).unlink(missing_ok=True)
+        if cleaned:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE outlook_dispatches SET cleanup_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (row["id"],),
+                )
+
+    root = _payload_path().parent
+    oldest = datetime.now(timezone.utc) - timedelta(hours=24)
+    for pattern in ("outlook-task-email-*.json", "outlook-task-email-*.receipt.json"):
+        for candidate in root.glob(pattern):
+            try:
+                modified = datetime.fromtimestamp(candidate.stat().st_mtime, timezone.utc)
+                if modified < oldest:
+                    candidate.unlink(missing_ok=True)
+            except OSError:
+                continue
+    return {"processed": processed, "unknown": unknown}
 
 
 def _launch_outlook_messages(messages: list[dict], mode: str, event_name: str, request: Request) -> dict:

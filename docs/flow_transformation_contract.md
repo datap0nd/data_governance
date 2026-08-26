@@ -1,6 +1,6 @@
 # Flow Transformation Script Contract
 
-Metronome can run one optional transformation script after ASAP downloads and
+Metronome can run one optional transformation script after Flow downloads and
 before SQL insertion. The script runs once for each downloaded CSV.
 
 ## Invocation

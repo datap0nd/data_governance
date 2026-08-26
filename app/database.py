@@ -475,8 +475,14 @@ CREATE TABLE IF NOT EXISTS flow_report_filters (
 CREATE TABLE IF NOT EXISTS flows (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     name                TEXT UNIQUE NOT NULL,
+    source_type         TEXT NOT NULL DEFAULT 'portal',
     site_id             INTEGER NOT NULL REFERENCES flow_sites(id),
     report_id           INTEGER NOT NULL REFERENCES flow_reports(id),
+    outlook_subject_contains TEXT,
+    outlook_last_identity TEXT,
+    outlook_last_received_at DATETIME,
+    outlook_last_attachment_name TEXT,
+    outlook_last_subject TEXT,
     export_views_json   TEXT NOT NULL DEFAULT '[]',
     download_links_json TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
@@ -1224,6 +1230,135 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_source ON flow_run_source_refs(source_run_id)",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_consumer ON flow_run_source_refs(consumer_run_id)",
+    # Explicit PostgreSQL relation identity.  Display names remain presentation
+    # only; executable lineage is resolved through these exact coordinates.
+    """CREATE TABLE IF NOT EXISTS source_postgres_identities (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        server_name     TEXT NOT NULL,
+        database_name   TEXT NOT NULL,
+        schema_name     TEXT NOT NULL,
+        relation_name   TEXT NOT NULL,
+        relation_kind   TEXT NOT NULL DEFAULT 'table',
+        verified_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(source_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_source_pg_identity_exact ON source_postgres_identities(server_name, database_name, schema_name, relation_name)",
+    "ALTER TABLE flows ADD COLUMN sql_target_source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL",
+    "CREATE INDEX IF NOT EXISTS idx_flows_sql_target_source ON flows(sql_target_source_id)",
+    # Five-minute, server-side pipeline previews prevent a stale browser from
+    # authorising a plan after lineage, ownership, or Power BI routing changes.
+    """CREATE TABLE IF NOT EXISTS pipeline_plan_previews (
+        token           TEXT PRIMARY KEY,
+        report_id       INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+        requested_by    TEXT,
+        plan_hash       TEXT NOT NULL,
+        plan_json       TEXT NOT NULL,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at      DATETIME NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_previews_expiry ON pipeline_plan_previews(expires_at)",
+    """CREATE TABLE IF NOT EXISTS pipeline_runs (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_id           INTEGER NOT NULL REFERENCES reports(id),
+        status              TEXT NOT NULL DEFAULT 'queued',
+        stage               TEXT NOT NULL DEFAULT 'queued',
+        trigger_type        TEXT NOT NULL DEFAULT 'manual',
+        requested_by        TEXT,
+        recipient_name      TEXT,
+        recipient_email     TEXT,
+        recipient_source    TEXT,
+        workspace_id        TEXT,
+        dataset_id          TEXT,
+        plan_hash           TEXT NOT NULL,
+        plan_json           TEXT NOT NULL,
+        error               TEXT,
+        requires_inspection INTEGER NOT NULL DEFAULT 0,
+        notification_status TEXT NOT NULL DEFAULT 'pending',
+        notification_error  TEXT,
+        lease_token         TEXT,
+        lease_expires_at    DATETIME,
+        created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at          DATETIME,
+        finished_at         DATETIME,
+        updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_report ON pipeline_runs(report_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status, updated_at)",
+    """CREATE TABLE IF NOT EXISTS pipeline_run_steps (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id              INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+        step_type           TEXT NOT NULL,
+        sequence_no         INTEGER NOT NULL,
+        entity_type         TEXT,
+        entity_id           TEXT,
+        entity_name         TEXT,
+        status              TEXT NOT NULL DEFAULT 'pending',
+        flow_run_id         INTEGER REFERENCES flow_runs(id),
+        external_request_id TEXT,
+        operation_token     TEXT,
+        started_at          DATETIME,
+        finished_at         DATETIME,
+        duration_ms         INTEGER,
+        row_count           INTEGER,
+        row_count_status    TEXT,
+        details_json        TEXT NOT NULL DEFAULT '{}',
+        error               TEXT,
+        UNIQUE(run_id, step_type, sequence_no)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_steps_run ON pipeline_run_steps(run_id, sequence_no)",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_steps_flow_run ON pipeline_run_steps(flow_run_id)",
+    """CREATE TABLE IF NOT EXISTS pipeline_resource_locks (
+        resource_type   TEXT NOT NULL,
+        resource_key    TEXT NOT NULL,
+        run_id          INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(resource_type, resource_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pipeline_resource_locks_run ON pipeline_resource_locks(run_id)",
+    # Outlook reports submission to the local client, not SMTP delivery.
+    """CREATE TABLE IF NOT EXISTS outlook_dispatches (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        pipeline_run_id INTEGER REFERENCES pipeline_runs(id) ON DELETE SET NULL,
+        purpose         TEXT NOT NULL DEFAULT 'email',
+        task_name       TEXT NOT NULL UNIQUE,
+        payload_path    TEXT NOT NULL,
+        receipt_path    TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        message_count   INTEGER NOT NULL DEFAULT 0,
+        error           TEXT,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        submitted_at    DATETIME,
+        processed_at    DATETIME,
+        cleanup_at      DATETIME
+    )""",
+    "ALTER TABLE outlook_dispatches ADD COLUMN cleanup_at DATETIME",
+    "CREATE INDEX IF NOT EXISTS idx_outlook_dispatches_status ON outlook_dispatches(status, created_at)",
+    "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('pipeline_full_refresh_enabled', '0')",
+    "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('pipeline_full_refresh_report_allowlist', '[]')",
+    # Outlook attachment flows use an internal site/report pair so all existing
+    # flow history and lineage relationships stay non-null. The site is seeded;
+    # the report anchor is created with the first Outlook flow. Catalog
+    # responses hide the adapter from website administration and portal builders.
+    "ALTER TABLE flows ADD COLUMN source_type TEXT NOT NULL DEFAULT 'portal'",
+    "ALTER TABLE flows ADD COLUMN outlook_subject_contains TEXT",
+    "ALTER TABLE flows ADD COLUMN outlook_last_identity TEXT",
+    "ALTER TABLE flows ADD COLUMN outlook_last_received_at DATETIME",
+    "ALTER TABLE flows ADD COLUMN outlook_last_attachment_name TEXT",
+    "ALTER TABLE flows ADD COLUMN outlook_last_subject TEXT",
+    """INSERT INTO flow_sites
+           (name, adapter, base_url, auth_url, discovery_enabled, discovery_scope_json,
+            enabled, created_at, updated_at)
+       SELECT 'Outlook', 'outlook_attachment', NULL, NULL, 0, '[\"Inbox\"]',
+              1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       WHERE NOT EXISTS (SELECT 1 FROM flow_sites WHERE adapter='outlook_attachment')""",
+    # The non-null report anchor is created lazily with the first Outlook flow.
+    # Keeping an unused anchor out of flow_reports preserves the invariant that
+    # an empty discovery catalog has no reports. Once referenced, it remains.
+    """DELETE FROM flow_reports
+       WHERE source_kind='system'
+         AND site_id IN (SELECT id FROM flow_sites WHERE adapter='outlook_attachment')
+         AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='outlook')""",
 ]
 
 

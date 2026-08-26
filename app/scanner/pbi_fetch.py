@@ -154,12 +154,18 @@ def resolve_report_dataset(workspace_name: str, report_name: str) -> dict:
     }
 
 
-def trigger_dataset_refresh(workspace_name: str, dataset_id: str) -> dict:
+def trigger_dataset_refresh(
+    workspace_name: str,
+    dataset_id: str,
+    notify_option: str = "MailOnFailure",
+) -> dict:
     """Request an asynchronous refresh for a Power BI semantic model."""
     selected_workspace = (workspace_name or "").strip()
     if not selected_workspace:
         raise PbiFetchError("No Power BI workspace is configured. Set DG_PBI_WORKSPACE.")
     dataset_guid = _uuid_text(dataset_id, "Dataset ID")
+    if notify_option not in {"MailOnFailure", "NoNotification"}:
+        raise PbiFetchError("Unsupported Power BI refresh notification option.")
     auth = get_access_token()
     token = auth["access_token"]
 
@@ -173,7 +179,7 @@ def trigger_dataset_refresh(workspace_name: str, dataset_id: str) -> dict:
         response = client.post(
             url,
             headers={"Authorization": f"Bearer {token}"},
-            json={"notifyOption": "MailOnFailure"},
+            json={"notifyOption": notify_option},
         )
 
     if response.status_code in (401, 403):
@@ -296,6 +302,65 @@ def fetch_dataset_last_refresh(workspace_id: str, dataset_id: str) -> dict:
         "end_time": entry.get("endTime"),
         "error": _refresh_entry_error(entry),
     }
+
+
+def fetch_dataset_refresh_by_request_id(
+    workspace_id: str,
+    dataset_id: str,
+    request_id: str,
+    *,
+    top: int = 60,
+) -> dict | None:
+    """Find the exact standard refresh history entry requested by Metronome."""
+    workspace_guid = _uuid_text(workspace_id, "Workspace ID")
+    dataset_guid = _uuid_text(dataset_id, "Dataset ID")
+    wanted = (request_id or "").strip().casefold()
+    if not wanted:
+        raise PbiFetchError("Power BI refresh request ID is missing.")
+    auth = get_access_token()
+    url = f"{PBI_API_BASE}/groups/{workspace_guid}/datasets/{dataset_guid}/refreshes"
+    with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+        history = _get_json(
+            client,
+            auth["access_token"],
+            url,
+            params={"$top": max(1, min(int(top), 100))},
+        )
+    for entry in history.get("value") or []:
+        candidate = str(entry.get("requestId") or "").strip().casefold()
+        if candidate != wanted:
+            continue
+        return {
+            "request_id": entry.get("requestId"),
+            "refresh_type": entry.get("refreshType"),
+            "status": entry.get("status"),
+            "start_time": entry.get("startTime"),
+            "end_time": entry.get("endTime"),
+            "error": _refresh_entry_error(entry),
+            "attempts": entry.get("refreshAttempts") or [],
+            "messages": entry.get("messages") or [],
+        }
+    return None
+
+
+def fetch_refresh_execution_details(
+    workspace_id: str, dataset_id: str, refresh_id: str
+) -> dict | None:
+    """Best-effort enhanced details; standard refresh success never depends on it."""
+    workspace_guid = _uuid_text(workspace_id, "Workspace ID")
+    dataset_guid = _uuid_text(dataset_id, "Dataset ID")
+    refresh_guid = _uuid_text(refresh_id, "Refresh ID")
+    auth = get_access_token()
+    url = (
+        f"{PBI_API_BASE}/groups/{workspace_guid}/datasets/{dataset_guid}"
+        f"/refreshes/{refresh_guid}"
+    )
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(url)) as client:
+            return _get_json(client, auth["access_token"], url)
+    except PbiFetchError:
+        logger.info("Execution details unavailable for standard refresh %s", refresh_id)
+        return None
 
 
 def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = None) -> dict:

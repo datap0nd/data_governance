@@ -37,6 +37,7 @@ from app.config import (
 from app.database import get_db
 from app.routers.eventlog import get_actor, log_event
 from app.settings import get_setting, set_setting
+from app.source_identity import normalize_server
 
 logger = logging.getLogger(__name__)
 
@@ -973,6 +974,13 @@ def refresh_materialized_views(req: RefreshMaterializedViewsRequest, request: Re
         views = _validate_materialized_views(engine, req.materialized_views)
         if not views:
             raise HTTPException(400, "Choose at least one materialized view to refresh.")
+        from app.routers.pipelines import assert_resource_unlocked
+        with get_db() as db:
+            for view in views:
+                resource_key = "|".join(
+                    [normalize_server(UPLOAD_PGHOST), UPLOAD_PGDATABASE, view["schema"], view["name"]]
+                )
+                assert_resource_unlocked(db, "mv", resource_key)
         refreshed = _refresh_materialized_views(engine, views)
     except HTTPException:
         raise

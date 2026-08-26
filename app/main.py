@@ -19,7 +19,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH
 from app.database import init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, scripts, scheduled_tasks, archive, power_automate, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.ai.router import router as ai_router
 
@@ -374,6 +374,8 @@ def _configure_scheduler_jobs() -> dict:
         minutes=1,
         id="email_schedule_dispatch",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     _scheduler.add_job(
         _scheduled_recurrence_dispatch,
@@ -407,6 +409,15 @@ def _configure_scheduler_jobs() -> dict:
         "interval",
         seconds=10,
         id="flow_stale_run_reaper",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        pipelines.pipeline_tick,
+        "interval",
+        seconds=5,
+        id="pipeline_full_refresh_tick",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -460,6 +471,7 @@ async def lifespan(app):
     yield
 
     _scheduler.shutdown(wait=False)
+    pipelines.shutdown_pipeline_executor()
 
 
 app = FastAPI(title="Metronome", version="0.1.0", lifespan=lifespan)
@@ -495,6 +507,7 @@ app.include_router(usage.router)
 app.include_router(data_import.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
+app.include_router(pipelines.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

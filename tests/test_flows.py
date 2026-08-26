@@ -1936,7 +1936,7 @@ def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
     assert "script_results" in source
     assert "Retry SQL only" in log_source
     assert "/retry-sql" in log_source
-    assert "ASAP will not open" in log_source
+    assert "The source will not open" in log_source
     assert "setTimeout(loadRun, 2000)" in log_source
 
 

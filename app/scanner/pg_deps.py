@@ -20,53 +20,110 @@ from app.query_history import (
     observe_query,
 )
 from app.scanner.prober import _get_pg_connection
+from app.config import PGHOST, PGDATABASE, UPLOAD_PGHOST
+from app.source_identity import exact_identity_rows, reconcile_flow_target, upsert_postgres_identity
 
 logger = logging.getLogger(__name__)
 
 
-def _find_or_create_source(db, schema: str, table: str, now: str) -> int | None:
+def _find_or_create_source(
+    db, schema: str, table: str, now: str, relation_kind: str = "table"
+) -> int | None:
     """Find existing source by schema.table pattern or create a new one.
 
     Returns source ID.
     """
     full_name = f"{schema}.{table}"
 
+    exact = exact_identity_rows(
+        db,
+        server=PGHOST,
+        database=PGDATABASE,
+        schema=schema,
+        relation=table,
+    )
+    if len(exact) == 1:
+        source_id = int(exact[0]["source_id"])
+        upsert_postgres_identity(
+            db,
+            source_id=source_id,
+            server=PGHOST,
+            database=PGDATABASE,
+            schema=schema,
+            relation=table,
+            relation_kind=relation_kind,
+            verified_at=now,
+        )
+        return source_id
+
     # Try exact match on name ending with schema.table
     row = db.execute(
-        "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
+        """SELECT s.id FROM sources s
+           WHERE s.name LIKE ? AND s.archived = 0
+             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
+           ORDER BY s.id LIMIT 1""",
         (f"%{full_name}",),
     ).fetchone()
     if row:
-        return row["id"]
+        source_id = int(row["id"])
+        upsert_postgres_identity(
+            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
+            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
+        )
+        return source_id
 
     # Try matching just the table part in connection_info
     row = db.execute(
-        "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
+        """SELECT s.id FROM sources s
+           WHERE s.connection_info LIKE ? AND s.archived = 0
+             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
+           ORDER BY s.id LIMIT 1""",
         (f"%{full_name}%",),
     ).fetchone()
     if row:
-        return row["id"]
+        source_id = int(row["id"])
+        upsert_postgres_identity(
+            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
+            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
+        )
+        return source_id
 
     # Try matching just the table name (scanner may use db.table instead of schema.table)
     row = db.execute(
-        "SELECT id FROM sources WHERE (name LIKE ? OR connection_info LIKE ?) AND archived = 0",
+        """SELECT s.id FROM sources s
+           WHERE (s.name LIKE ? OR s.connection_info LIKE ?) AND s.archived = 0
+             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
+           ORDER BY s.id LIMIT 1""",
         (f"%.{table}", f"%.{table}%"),
     ).fetchone()
     if row:
-        return row["id"]
+        source_id = int(row["id"])
+        upsert_postgres_identity(
+            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
+            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
+        )
+        return source_id
 
     # Create new source for this upstream table
+    source_name = full_name
+    if db.execute("SELECT 1 FROM sources WHERE name=?", (source_name,)).fetchone():
+        source_name = f"{full_name} [{PGDATABASE}@{PGHOST}]"
     cursor = db.execute(
         """INSERT INTO sources (name, type, connection_info, discovered_by, created_at, updated_at)
            VALUES (?, 'postgresql', ?, 'pg_deps', ?, ?)""",
-        (full_name, full_name, now, now),
+        (source_name, full_name, now, now),
     )
     # Insert initial unknown probe
     db.execute(
         "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
         (cursor.lastrowid, now, "Discovered as MV dependency"),
     )
-    return cursor.lastrowid
+    source_id = int(cursor.lastrowid)
+    upsert_postgres_identity(
+        db, source_id=source_id, server=PGHOST, database=PGDATABASE,
+        schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
+    )
+    return source_id
 
 
 def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
@@ -152,7 +209,7 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
             mv_key = f"{mv_schema}.{mv_name}"
             if mv_key not in mv_deps:
                 mv_deps[mv_key] = []
-            mv_deps[mv_key].append((dep_schema, dep_name))
+            mv_deps[mv_key].append((dep_schema, dep_name, dep_kind))
 
         mvs_found = 0
         deps_created = 0
@@ -193,9 +250,25 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                     progressed = True
                     mv_source_id = mv_source["id"]
                     mvs_found += 1
+                    mv_schema, mv_name = full_mv_name.split(".", 1)
+                    upsert_postgres_identity(
+                        db,
+                        source_id=int(mv_source_id),
+                        server=PGHOST,
+                        database=PGDATABASE,
+                        schema=mv_schema,
+                        relation=mv_name,
+                        relation_kind="materialized_view",
+                        verified_at=now,
+                    )
 
-                    for dep_schema, dep_table in refs:
-                        dep_source_id = _find_or_create_source(db, dep_schema, dep_table, now)
+                    for dep_schema, dep_table, dep_kind in refs:
+                        kind = {"m": "materialized_view", "v": "view", "r": "table"}.get(
+                            dep_kind, "table"
+                        )
+                        dep_source_id = _find_or_create_source(
+                            db, dep_schema, dep_table, now, relation_kind=kind
+                        )
                         if dep_source_id and dep_source_id != mv_source_id:
                             try:
                                 db.execute(
@@ -207,7 +280,7 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                             except Exception:
                                 pass  # UNIQUE constraint
 
-                    ref_names = [f"{s}.{t}" for s, t in refs]
+                    ref_names = [f"{s}.{t}" for s, t, _kind in refs]
                     log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
 
                 if not progressed:
@@ -312,6 +385,9 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                   AND id NOT IN (SELECT source_id FROM script_tables WHERE source_id IS NOT NULL)
                   AND id NOT IN (SELECT source_id FROM query_versions WHERE source_id IS NOT NULL)
             """)
+
+            for flow_row in db.execute("SELECT id FROM flows ORDER BY id").fetchall():
+                reconcile_flow_target(db, int(flow_row["id"]), server=UPLOAD_PGHOST)
 
             sources_created = db.execute(
                 "SELECT COUNT(*) FROM sources WHERE discovered_by = 'pg_deps' AND created_at = ?",

@@ -39,10 +39,11 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
-    from app import flow_gscm, flow_retention
+    from app import flow_gscm, flow_outlook, flow_retention
     from app.flow_credentials import load_asap_credentials
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
+    import flow_outlook
     import flow_retention
     from flow_credentials import load_asap_credentials
 
@@ -50,6 +51,7 @@ except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = flow_gscm.GSCM_PORTAL_ADAPTER
+OUTLOOK_ATTACHMENT_ADAPTER = flow_outlook.OUTLOOK_ATTACHMENT_ADAPTER
 AUTH_MARKER = ".asap_authenticated"
 GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
@@ -3533,8 +3535,23 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
     return reports, timings.finish(item_count=len(reports), status="succeeded" if complete else "partial"), complete
 
 
-def _normalize_csv(path: Path) -> dict:
-    """Remove ASAP's title/blank preamble while preserving a standard CSV."""
+def _validate_strict_headers(header: list[str], *, source_label: str) -> None:
+    if not header or any(not value for value in header):
+        raise RuntimeError(f"{source_label} contains a blank column header in its first row.")
+    folded = [value.casefold() for value in header]
+    duplicates = sorted({value for value in folded if folded.count(value) > 1})
+    if duplicates:
+        raise RuntimeError(
+            f"{source_label} contains duplicate column headers: {', '.join(duplicates)}."
+        )
+
+
+def _normalize_csv(
+    path: Path, *, preamble: str = "asap", strict_headers: bool = False,
+) -> dict:
+    """Normalize a delimited file with source-specific header resolution."""
+    if preamble not in {"asap", "none"}:
+        raise ValueError(f"Unsupported CSV preamble mode: {preamble}")
     decoded = None
     encoding_used = None
     detected = _detect_download_format(path)
@@ -3567,18 +3584,29 @@ def _normalize_csv(path: Path) -> dict:
     if not rows:
         raise RuntimeError("The downloaded CSV is empty.")
     header_index = 0
-    if len(rows) >= 3 and len(rows[0]) == 1 and not any(str(value).strip() for value in rows[1]):
-        header_index = 2
-    elif len(rows[0]) < 2:
-        header_index = next(
-            (index for index, row in enumerate(rows[:20]) if len(row) >= 2 and sum(bool(str(value).strip()) for value in row) >= 2),
-            0,
-        )
+    if preamble == "asap":
+        if len(rows) >= 3 and len(rows[0]) == 1 and not any(str(value).strip() for value in rows[1]):
+            header_index = 2
+        elif len(rows[0]) < 2:
+            header_index = next(
+                (index for index, row in enumerate(rows[:20]) if len(row) >= 2 and sum(bool(str(value).strip()) for value in row) >= 2),
+                0,
+            )
     header = [str(value).strip() for value in rows[header_index]]
-    if len(header) < 2:
-        raise RuntimeError(
-            "Downloaded CSV did not contain a usable delimited header after the ASAP preamble."
-        )
+    if strict_headers:
+        _validate_strict_headers(header, source_label="Downloaded CSV")
+        data_rows = rows[header_index + 1:]
+        if not any(any(str(value).strip() for value in row) for row in data_rows):
+            raise RuntimeError("Downloaded CSV contains a header but no data rows.")
+        if any(
+            len(row) > len(header) and any(str(value).strip() for value in row[len(header):])
+            for row in data_rows
+        ):
+            raise RuntimeError(
+                "Downloaded CSV contains populated data cells beyond its first-row headers."
+            )
+    elif len(header) < 2:
+        raise RuntimeError("Downloaded CSV did not contain a usable delimited header.")
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerows(rows[header_index:])
@@ -3791,7 +3819,10 @@ def _xlsx_header_index(preview: list[list[Any]]) -> int | None:
     return max(header_candidates)[-1] if header_candidates else None
 
 
-def _xlsx_sheet_plan(worksheet, requested_weeks: list[str]) -> dict | None:
+def _xlsx_sheet_plan(
+    worksheet, requested_weeks: list[str], *,
+    header_mode: str = "auto", strict_headers: bool = False,
+) -> dict | None:
     """Resolve one sheet's header and row transform in two streaming passes.
 
     Pass one buffers only the first rows, enough to find the header, then
@@ -3799,6 +3830,8 @@ def _xlsx_sheet_plan(worksheet, requested_weeks: list[str]) -> dict | None:
     under each descriptor column. Pass two (the caller's) rewrites rows
     straight to the CSV. Neither pass keeps the sheet in memory.
     """
+    if header_mode not in {"auto", "first_row"}:
+        raise ValueError(f"Unsupported Excel header mode: {header_mode}")
     preview = []
     for row in _xlsx_rows(worksheet):
         preview.append(row)
@@ -3806,11 +3839,27 @@ def _xlsx_sheet_plan(worksheet, requested_weeks: list[str]) -> dict | None:
             break
     if not preview:
         return None
-    header_index = _xlsx_header_index(preview)
+    if header_mode == "first_row":
+        raw_first = next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        physical_header = [_excel_cell_value(value) for value in raw_first]
+        while physical_header and not str(physical_header[-1]).strip():
+            physical_header.pop()
+        if not physical_header:
+            raise RuntimeError(
+                f"Downloaded Excel sheet {worksheet.title!r} has no headers in its first row."
+            )
+        header_index = 0
+        preview[0] = physical_header
+    else:
+        header_index = _xlsx_header_index(preview)
     if header_index is None:
         return None
     header = [str(value).strip() for value in preview[header_index]]
-    if len(header) < 2:
+    if strict_headers:
+        _validate_strict_headers(
+            header, source_label=f"Downloaded Excel sheet {worksheet.title!r}",
+        )
+    elif len(header) < 2:
         return None
 
     descriptor_indexes = _xlsx_descriptor_indexes(header)
@@ -3843,7 +3892,10 @@ def _xlsx_sheet_plan(worksheet, requested_weeks: list[str]) -> dict | None:
     }
 
 
-def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -> dict:
+def _normalize_xlsx(
+    source: Path, output: Path, *, requested_weeks: list[str],
+    header_mode: str = "auto", strict_headers: bool = False,
+) -> dict:
     """Convert populated workbook sheets into one normalized UTF-8 CSV.
 
     Rows are streamed from the workbook straight to the CSV writer, so a
@@ -3873,7 +3925,10 @@ def _normalize_xlsx(source: Path, output: Path, *, requested_weeks: list[str]) -
     try:
         writer = csv.writer(handle, lineterminator="\n")
         for worksheet in workbook.worksheets:
-            plan = _xlsx_sheet_plan(worksheet, requested_weeks)
+            plan = _xlsx_sheet_plan(
+                worksheet, requested_weeks,
+                header_mode=header_mode, strict_headers=strict_headers,
+            )
             if plan is None:
                 continue
             header = plan["header"]
@@ -4220,6 +4275,9 @@ def _store_completed_download(
     requested_period: Any = None,
     allow_raw_xlsx_fallback: bool = False,
     require_normalized_csv: bool = True,
+    csv_preamble: str = "asap",
+    strict_headers: bool = False,
+    xlsx_header_mode: str = "auto",
     processing_progress: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Normalize the browser-local file, then copy it to the final target.
@@ -4236,7 +4294,13 @@ def _store_completed_download(
     # final bytes, not a mid-flush view of a share-backed staging folder.
     snapshot = _stable_source_snapshot(local_path)
     detected = _detect_download_format(local_path)
-    if detected in {"xls", "pdf", "binary"}:
+    if detected == "xls":
+        raise RuntimeError(
+            f"The download looks like xls: {local_path.name}. It is either a legacy .xls "
+            "file or a password-protected/encrypted Excel workbook. Attach an unencrypted "
+            ".xlsx workbook instead."
+        )
+    if detected in {"pdf", "binary"}:
         raise RuntimeError(
             f"The download is not a CSV or an Excel workbook: {local_path.name} "
             f"looks like {detected}. Check what this report's download link "
@@ -4289,6 +4353,7 @@ def _store_completed_download(
         try:
             normalization = _normalize_xlsx(
                 output, normalized_output, requested_weeks=requested_weeks,
+                header_mode=xlsx_header_mode, strict_headers=strict_headers,
             )
         except Exception as exc:
             if not allow_raw_xlsx_fallback:
@@ -4323,7 +4388,9 @@ def _store_completed_download(
         }
     if file_format != "csv":
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
-    normalization = _normalize_csv(local_path)
+    normalization = _normalize_csv(
+        local_path, preamble=csv_preamble, strict_headers=strict_headers,
+    )
     metadata = {**_csv_metadata(local_path), **normalization}
     copied = _copy_with_checksum(local_path, output)
     if copied["file_size"] != metadata["file_size"]:
@@ -4433,32 +4500,20 @@ def _export_task_with_retry(
     raise AssertionError("unreachable")
 
 
-def execute_job(
-    page: Page, job: dict, report_progress, profile_dir: Path,
-    download_staging_dir: Path | None = None,
-    artifacts: list[dict] | None = None,
-    *, run_id: int, register_folder,
-) -> tuple[list[dict], list[dict]]:
-    # The caller may own the artifact list. Files are appended in place, so
-    # everything saved before a mid-bundle failure stays visible to the
-    # caller's failure report - the record Resume later relies on.
-    timings = _Timings()
-    report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
-    is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
-    is_gscm = job["site"].get("adapter") == GSCM_PORTAL_ADAPTER
-    ready_text = job["report"].get("ready_text")
-    open_export = job["report"].get("open_export_text")
-
+def _prepare_run_folder(
+    job: dict, *, run_id: int, register_folder, report_progress,
+) -> Path:
+    """Create/register a producing run folder and execute assigned retention."""
     target = Path(job["downloads"]["target_folder"])
     if not target.is_dir():
         raise RuntimeError(f"Target folder does not exist: {target}")
     run_folder = flow_retention.create_run_folder(
         target, run_id, job.get("flow", {}).get("id"),
     )
-    # Register before anything else can fail: an unregistered folder would
-    # never be considered for retention. Registration is idempotent, so a
-    # re-claimed run re-registering the same path just gets its outstanding
-    # cleanup operations back.
+    # Registration is idempotent and intentionally precedes all writes into
+    # the new folder. Outlook calls this only after it has acquired a new
+    # attachment, so a no-match/dedup no-op creates no folder and receives no
+    # retention work; pending operations wait for the next producing run.
     assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
     report_progress("running", {
         "stage": "run_folder",
@@ -4479,7 +4534,104 @@ def execute_job(
             ),
             "retention_results": results,
         })
-    target = run_folder
+    return run_folder
+
+
+def execute_outlook_job(
+    job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
+) -> tuple[list[dict], list[dict], dict]:
+    """Acquire, validate, and store one Outlook Inbox attachment."""
+    timings = _Timings()
+    source = job.get("outlook_source") or {}
+    report_progress("running", {
+        "stage": "outlook_search",
+        "message": (
+            "Searching the default Outlook Inbox for the newest email whose subject "
+            f"contains {source.get('subject_contains')!r}."
+        ),
+    })
+    with timings.measure("outlook_acquisition", report_id=job.get("report", {}).get("id")):
+        acquisition = flow_outlook.acquire_attachment(
+            run_id=run_id,
+            profile_dir=profile_dir,
+            subject_contains=source.get("subject_contains") or "",
+            last_processed_identity=source.get("last_processed_identity"),
+            force_reprocess=bool(source.get("force_reprocess")),
+        )
+    if acquisition["status"] in {"no_match", "already_processed"}:
+        message = acquisition.get("message") or (
+            "No new qualifying Outlook attachment was found."
+        )
+        report_progress("running", {
+            "stage": "outlook_no_op",
+            "message": message,
+            "no_op": True,
+            "reason": acquisition["status"],
+        })
+        return [], timings.finish(item_count=0), {
+            "no_op": True, "reason": acquisition["status"], "message": message,
+        }
+
+    run_folder = _prepare_run_folder(
+        job, run_id=run_id, register_folder=register_folder,
+        report_progress=report_progress,
+    )
+    output = _safe_output_path(run_folder, acquisition["filename"])
+    report_progress("running", {
+        "stage": "outlook_attachment_transfer",
+        "message": f"Saving and validating Outlook attachment {acquisition['filename']}.",
+    })
+
+    def processing_progress(stage: str, message: str):
+        report_progress("running", {"stage": stage, "message": message})
+
+    with timings.measure("file_transfer", report_id=job.get("report", {}).get("id")):
+        metadata = _store_completed_download(
+            acquisition["path"], output,
+            file_format="auto",
+            requested_period=None,
+            allow_raw_xlsx_fallback=False,
+            require_normalized_csv=True,
+            csv_preamble="none",
+            strict_headers=True,
+            xlsx_header_mode="first_row",
+            processing_progress=processing_progress,
+        )
+    receipt = acquisition["receipt"]
+    artifact = {
+        "period_key": None,
+        "export_view": None,
+        "bundle_index": 1,
+        "bundle_count": 1,
+        "status": "saved",
+        "source_receipt": receipt,
+        **metadata,
+    }
+    return [artifact], timings.finish(item_count=1), {
+        "no_op": False, "source_receipt": receipt,
+    }
+
+
+def execute_job(
+    page: Page, job: dict, report_progress, profile_dir: Path,
+    download_staging_dir: Path | None = None,
+    artifacts: list[dict] | None = None,
+    *, run_id: int, register_folder,
+) -> tuple[list[dict], list[dict]]:
+    # The caller may own the artifact list. Files are appended in place, so
+    # everything saved before a mid-bundle failure stays visible to the
+    # caller's failure report - the record Resume later relies on.
+    timings = _Timings()
+    report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
+    is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
+    is_gscm = job["site"].get("adapter") == GSCM_PORTAL_ADAPTER
+    ready_text = job["report"].get("ready_text")
+    open_export = job["report"].get("open_export_text")
+
+    target = _prepare_run_folder(
+        job, run_id=run_id, register_folder=register_folder,
+        report_progress=report_progress,
+    )
 
     periods = job["downloads"].get("periods") or [None]
     # An HTML dashboard has no Export Wizard: its data leaves through the
@@ -4836,7 +4988,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False, "code_version": code_version},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False, "code_version": code_version},
         }
         for attempt in range(60):
             try:
@@ -4921,16 +5073,20 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 transformation_started = None
                 sql_started = None
                 sql_result = None
+                source_receipt = None
+                no_op = False
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
                              timings: list | None = None, error: str | None = None,
-                             traceback_text: str | None = None):
+                             traceback_text: str | None = None,
+                             source_receipt: dict | None = None):
                     _api(client, "POST", f"/api/flows/worker/{worker_id}/runs/{run_id}/progress", {
                         "status": status, "progress": detail, "artifacts": artifacts or [],
                         "timings": timings or [],
                         "retention": (detail or {}).get("retention_results") or [],
                         "error": error[:ASAP_MAX_ERROR_CHARS] if error else error,
                         "traceback": traceback_text[:100_000] if traceback_text else traceback_text,
+                        "source_receipt": source_receipt,
                     })
 
                 def register_folder(folder: str) -> dict:
@@ -4968,6 +5124,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         if not sql_artifacts:
                             raise RuntimeError("SQL-only retry has no saved CSV artifacts.")
                         artifacts = sql_artifacts
+                        source_receipt = run["job"].get("outlook_source_receipt")
                         timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
                         progress(
                             "running",
@@ -4976,11 +5133,19 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 "message": (
                                     f"Reusing {len(sql_artifacts)} saved CSV file(s) from run "
                                     f"#{run['job'].get('sql_retry', {}).get('source_run_id')}. "
-                                    "ASAP will not be opened or downloaded again."
+                                    "The source will not be opened or downloaded again."
                                 ),
                             },
                             artifacts, timings,
                         )
+                    elif (run["job"].get("outlook_source") or {}).get("enabled"):
+                        artifacts, timings, outlook_outcome = execute_outlook_job(
+                            run["job"], progress, profile_dir,
+                            run_id=run_id, register_folder=register_folder,
+                        )
+                        no_op = bool(outlook_outcome.get("no_op"))
+                        source_receipt = outlook_outcome.get("source_receipt")
+                        sql_artifacts = artifacts
                     else:
                         # Share the artifact list so a mid-bundle failure still
                         # reports every file saved before the error - the final
@@ -4991,7 +5156,10 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             run_id=run_id, register_folder=register_folder,
                         )
                         sql_artifacts = artifacts
-                    if not sql_only and run["job"].get("transformation", {}).get("enabled"):
+                    if (
+                        not sql_only and not no_op
+                        and run["job"].get("transformation", {}).get("enabled")
+                    ):
                         progress(
                             "running",
                             {"stage": "transformation", "message": f"Transforming {len(artifacts)} downloaded file(s)."},
@@ -5024,7 +5192,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             },
                             artifacts, timings,
                         )
-                    if run["job"].get("sql_handoff", {}).get("enabled"):
+                    if not no_op and run["job"].get("sql_handoff", {}).get("enabled"):
                         from app.flow_sql import load_artifacts
                         source_label = "transformed" if run["job"].get("transformation", {}).get("enabled") else "downloaded"
                         if sql_only:
@@ -5056,8 +5224,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                     progress(
                         "succeeded", {
                             "stage": "complete",
+                            "no_op": no_op,
                             "message": (
-                                f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
+                                outlook_outcome.get("message", "No new qualifying Outlook attachment was found.")
+                                if no_op
+                                else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
                                 if sql_only
                                 else f"Saved the full {len(sql_artifacts)}-export bundle and committed {sql_result['rows_written']} row(s) to {sql_result['target']}."
                                 if sql_result is not None
@@ -5066,7 +5237,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 else f"Saved {len(artifacts)} {_completed_export_format_label(artifacts, run['job'].get('downloads', {}).get('file_format') or 'csv')} export(s)."
                             ),
                         },
-                        artifacts, timings,
+                        artifacts, timings, source_receipt=source_receipt,
                     )
                 except Exception as exc:
                     if timings:

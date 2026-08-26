@@ -8134,11 +8134,13 @@ async function renderLineageDiagram() {
                 ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
             <button class="btn-outline lineage-refresh-report" id="lineage-report-refresh" type="button" disabled>Refresh report</button>
+            <button class="btn-primary lineage-refresh-report" id="lineage-full-refresh" type="button" disabled>Refresh full pipeline</button>
             <label class="lineage-archive-toggle"><input type="checkbox" id="lineage-show-archived" ${showArchived ? "checked" : ""}> Show archived reports</label>
             <div class="lineage-col-toggles" id="lineage-col-toggles">
                 ${LINEAGE_COLS.map(c => `<button class="lineage-col-toggle${colState[c.key] ? ' active' : ''}" data-col="${c.key}">${c.label}</button>`).join("")}
             </div>
         </div>
+        <div id="lineage-pipeline-status" class="pipeline-run-status" hidden></div>
         <div id="lineage-container" class="lineage-container">
             <div class="lineage-placeholder">Select a report above to view its data lineage</div>
         </div>
@@ -8148,6 +8150,7 @@ async function renderLineageDiagram() {
 function bindLineageDiagramPage() {
     const sel = document.getElementById("lineage-report-select");
     const reportRefresh = document.getElementById("lineage-report-refresh");
+    const fullRefresh = document.getElementById("lineage-full-refresh");
     if (!sel) return;
     document.getElementById("lineage-show-archived")?.addEventListener("change", event => {
         sessionStorage.setItem("lineage_show_archived", event.target.checked ? "1" : "0");
@@ -8156,6 +8159,7 @@ function bindLineageDiagramPage() {
     sel.addEventListener("change", async () => {
         const id = sel.value;
         reportRefresh.disabled = true;
+        fullRefresh.disabled = !id;
         reportRefresh.dataset.canRefresh = "0";
         if (!id) {
             document.getElementById("lineage-container").innerHTML =
@@ -8175,6 +8179,9 @@ function bindLineageDiagramPage() {
                     : `Find ${data.report.name}'s semantic model in Power BI and refresh it`)
                 : "Power BI refresh is unavailable because no workspace is configured";
             _renderLineageDiagram(data);
+            api(`/api/pipelines/reports/${id}/runs/latest`)
+                .then(run => run && _renderPipelineRunStatus(run))
+                .catch(() => {});
         } catch (e) {
             document.getElementById("lineage-container").innerHTML =
                 `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
@@ -8194,6 +8201,29 @@ function bindLineageDiagramPage() {
         } finally {
             reportRefresh.textContent = original;
             reportRefresh.disabled = reportRefresh.dataset.canRefresh !== "1";
+        }
+    });
+    fullRefresh?.addEventListener("click", async () => {
+        const reportId = sel.value;
+        if (!reportId || fullRefresh.disabled) return;
+        const original = fullRefresh.textContent;
+        fullRefresh.disabled = true;
+        fullRefresh.textContent = "Checking...";
+        try {
+            const plan = await api(`/api/pipelines/reports/${reportId}/refresh-plan`);
+            _openPipelinePreview(plan, async () => {
+                const run = await apiPostJson(`/api/pipelines/reports/${reportId}/runs`, {
+                    plan_token: plan.plan_token,
+                });
+                _renderPipelineRunStatus(run);
+                _pollPipelineRun(run.id);
+                toast(`Full-pipeline refresh #${run.id} started.`);
+            });
+        } catch (err) {
+            toast("Pipeline preview failed: " + err.message);
+        } finally {
+            fullRefresh.textContent = original;
+            fullRefresh.disabled = !sel.value;
         }
     });
     document.querySelectorAll(".lineage-col-toggle").forEach(btn => {
@@ -8458,6 +8488,9 @@ function _renderLineageDiagram(data) {
     const flowNodes = (data.flows || []).filter(flow =>
         (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
     );
+    const legacyFlowNodes = (data.legacy_flow_suggestions || []).filter(flow =>
+        (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
+    );
 
     if (visualNodes.length === 0 && tableNodes.length === 0) {
         container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Scanner.</div>';
@@ -8608,6 +8641,13 @@ function _renderLineageDiagram(data) {
             <div class="lin-card-facts">${loaded}${target ? `<span class="lin-card-sep">-</span><span title="Target table">${esc(target)}</span>` : ""}</div>
         </div>`;
     }
+    for (const flow of legacyFlowNodes) {
+        const target = [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".");
+        flowH += `<div class="lin-card lin-flow lin-st-warn lin-flow-suggestion" title="${esc(flow.reason)}">
+            <div class="lin-card-hdr"><span class="lin-card-lbl">${esc(flow.name)}</span><span class="lin-flow-status">suggested</span></div>
+            <div class="lin-card-facts"><span>Not executable · confirm in Flow editor</span>${target ? `<span class="lin-card-sep">-</span><span>${esc(target)}</span>` : ""}</div>
+        </div>`;
+    }
     colHtml.flows = flowH;
 
     // -- Scripts --
@@ -8635,7 +8675,7 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length + legacyFlowNodes.length, scripts: scriptNodes.length, tasks: taskNodes.length, upstreams: upstreamNodes.length };
     for (let depth = 1; depth < sourceLayers.length; depth++) {
         colCounts[`mv_upstream_${depth}`] = (sourceLayers[depth] || []).length;
     }
@@ -9660,7 +9700,10 @@ function bindPremiumViewersPage() {
 }
 
 async function renderRefreshSchedule() {
-    const schedule = await api("/api/system/refresh-schedule");
+    const [schedule, pipelineSettings] = await Promise.all([
+        api("/api/system/refresh-schedule"),
+        api("/api/pipelines/settings"),
+    ]);
     return `
         <div class="page-header">
             <h1>Refresh Schedule</h1>
@@ -9683,6 +9726,12 @@ async function renderRefreshSchedule() {
                 <button class="btn-outline" id="btn-run-overall-refresh">Run once now</button>
             </div>
         </div>
+        <div class="section refresh-schedule-section">
+            <div class="section-header"><div><h2>Full-pipeline refresh</h2><p>Controls the manual Flows → materialized views → Power BI action. Disabling this does not affect metadata scans or report-only refresh.</p></div></div>
+            <label class="flow-check"><input type="checkbox" id="pipeline-refresh-enabled" ${pipelineSettings.enabled ? "checked" : ""}><span>Enable for all reports</span></label>
+            <label class="refresh-schedule-field" style="margin-top:0.75rem"><span>Canary allowlist</span><textarea id="pipeline-refresh-allowlist" rows="5" placeholder="One report ID or exact report name per line">${esc((pipelineSettings.report_allowlist || []).join("\n"))}</textarea><small>Allowlisted reports can use the button while general enablement remains off.</small></label>
+            <div class="refresh-schedule-actions"><button id="btn-save-pipeline-settings">Save full-pipeline settings</button></div>
+        </div>
     `;
 }
 
@@ -9690,6 +9739,7 @@ function bindRefreshSchedulePage() {
     const input = document.getElementById("overall-refresh-time");
     const saveBtn = document.getElementById("btn-save-refresh-schedule");
     const runBtn = document.getElementById("btn-run-overall-refresh");
+    const pipelineSave = document.getElementById("btn-save-pipeline-settings");
 
     if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
@@ -9724,6 +9774,25 @@ function bindRefreshSchedulePage() {
             }
         });
     }
+    pipelineSave?.addEventListener("click", async () => {
+        const values = document.getElementById("pipeline-refresh-allowlist").value
+            .split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+            .map(value => /^\d+$/.test(value) ? Number(value) : value);
+        pipelineSave.disabled = true;
+        pipelineSave.textContent = "Saving...";
+        try {
+            await apiPut("/api/pipelines/settings", {
+                enabled: document.getElementById("pipeline-refresh-enabled").checked,
+                report_allowlist: values,
+            });
+            toast("Full-pipeline settings saved.");
+            await navigate("refreshschedule");
+        } catch (err) {
+            toast("Full-pipeline settings were not saved: " + err.message);
+            pipelineSave.disabled = false;
+            pipelineSave.textContent = "Save full-pipeline settings";
+        }
+    });
 }
 
 
@@ -9869,21 +9938,37 @@ function _flowStatusBadge(status) {
 function _flowEmptyState(catalog) {
     const hasSites = catalog.sites.some(site => site.enabled);
     const hasReports = catalog.reports.some(report => report.enabled);
-    const action = !hasSites
-        ? '<button class="btn-primary" id="flow-add-site-empty">Add website</button>'
-        : !hasReports
-            ? '<button class="btn-primary" id="flow-scan-empty">Scan the catalog</button>'
-            : '<button class="btn-primary" id="flow-create-empty">Create flow</button>';
+    const action = `<button class="btn-primary" id="flow-create-empty">Create flow</button>${!hasSites
+        ? '<button class="btn-secondary" id="flow-add-site-empty">Add website</button>'
+        : !hasReports ? '<button class="btn-secondary" id="flow-scan-empty">Scan the catalog</button>' : ''}`;
     const copy = !hasSites
-        ? "Start with the website whose authenticated browser will download reports."
+        ? "Start from Outlook now, or add a website for authenticated report downloads."
         : !hasReports
-            ? "The website is ready. Scan it to discover its reports - ASAP menus, or the bookmarks saved on GSCM's home screen."
-            : "The catalog is ready. Create a flow and choose its filters, files, and schedule.";
+            ? "Outlook is ready now. Scan the website catalog before creating a website-report flow."
+            : "Choose Outlook or a discovered website report, then configure storage and scheduling.";
     return `
         <div class="flow-empty">
-            <h2>${!hasSites ? "Add the first website" : !hasReports ? "Discover portal reports" : "Build the first download flow"}</h2>
+            <h2>Build the first data flow</h2>
             <p>${copy} Configuration stays in this machine's SQLite database.</p>
             <div class="flow-empty-actions">${action}</div>
+        </div>`;
+}
+
+function _flowSourcePickerHtml(catalog) {
+    const portalReady = catalog.sites.some(site => site.enabled)
+        && catalog.reports.some(report => report.enabled && !report.stale);
+    return `
+        <div class="flow-form-section">
+            <div class="flow-section-head"><h2>Choose a flow source</h2><p>The source controls how Metronome acquires the data. Storage, transformation, scheduling, and SQL handoff stay consistent.</p></div>
+            <div class="flow-source-grid">
+                <button type="button" class="flow-source-card" id="flow-source-outlook">
+                    <strong>Outlook</strong><span>Find the newest matching Inbox email and process its single CSV or XLSX attachment.</span>
+                </button>
+                <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
+                    <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
+                </button>
+            </div>
+            <div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-source-cancel">Cancel</button></div>
         </div>`;
 }
 
@@ -9898,17 +9983,17 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         </div>
         <div class="flow-table-wrap">
             <table class="flow-table">
-                <thead><tr><th>Flow</th><th>Active</th><th>Website / report</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
+                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
                 <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
                     <tr>
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
-                        <td>${esc(flow.site_name)}<small>${esc(flow.report_name)}</small></td>
-                        <td>${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${String(flow.file_format || "csv").toUpperCase()} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${String(flow.file_format || "csv").toUpperCase()} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small></td>
+                        <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
+                        <td>${flow.source_type === "outlook" ? `CSV or XLSX attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${String(flow.file_format || "csv").toUpperCase()} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${String(flow.file_format || "csv").toUpperCase()} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}</td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
-                            <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun ? "disabled" : ""}>${activeRun ? "Running" : "Run"}</button>
+                            <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}>${activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run"}</button>
                             ${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" data-id="${flow.id}">Stop</button>` : ""}
                             <button class="btn-sm flow-edit" data-id="${flow.id}">Edit</button>
                         </td>
@@ -10080,7 +10165,82 @@ function _flowSiteIsGscm(catalog, siteId) {
     return site?.adapter === FLOW_GSCM_ADAPTER;
 }
 
+function _flowSqlLinkHtml(existing) {
+    if (!existing?.sql_handoff_enabled) return "";
+    if (existing.sql_target_link_status === "confirmed") {
+        return `<div class="flow-span-2 flow-dialog-help pipeline-ready">Exact pipeline link confirmed for source #${esc(existing.sql_target_source_id)}.</div>`;
+    }
+    const exactIds = new Set(existing.sql_target_match_source_ids || []);
+    const candidates = (existing.sql_target_legacy_suggestions || []).filter(item => exactIds.has(item.id));
+    if (candidates.length) {
+        return `<label class="flow-span-2"><span>Confirm exact pipeline source</span><select id="flow-sql-target-source"><option value="">Choose the exact source...</option>${candidates.map(item => `<option value="${item.id}">${esc(item.name)} · source #${item.id}</option>`).join("")}</select><small>Required because more than one structured source identity matches this SQL target.</small></label>`;
+    }
+    const legacy = existing.sql_target_legacy_suggestions || [];
+    return `<div class="flow-span-2 flow-dialog-help pipeline-warning">Pipeline link unresolved. Run a full TMDL and PostgreSQL dependency scan, then reopen this Flow.${legacy.length ? ` Legacy display-name suggestion: ${legacy.map(item => esc(item.name)).join(", ")}. Suggestions are not executable.` : ""}</div>`;
+}
+
+function _flowOutlookBuilderHtml(existing = null) {
+    const scheduleDays = new Set(existing?.schedule_days || []);
+    const sqlCatalog = window._flowsState?.sqlCatalog || { configured: false, targets: [], scan: {} };
+    const targets = sqlCatalog.targets || [];
+    const sqlDatabases = [...new Set(targets.map(item => item.database))];
+    const selectedDatabase = existing?.sql_database || sqlDatabases[0] || "";
+    const sqlSchemas = [...new Set(targets.filter(item => item.database === selectedDatabase).map(item => item.schema))];
+    const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
+    const sqlTables = targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
+    const people = window._flowsState?.people || [];
+    const owner = people.find(person => person.id === existing?.owner_person_id);
+    return `
+        <div class="flow-builder-shell"><div class="flow-builder-main">
+            <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="outlook">
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Outlook source</h2><p>Metronome searches the signed-in user's default, top-level Inbox and selects the newest email whose subject contains this text.</p></div>
+                    <div class="flow-form-grid">
+                        <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily emailed data"></label>
+                        <label><span>Subject contains</span><input id="flow-outlook-subject" required maxlength="500" value="${esc(existing?.outlook_subject_contains || "")}" placeholder="Customer data code"></label>
+                        <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The newest matching message must have exactly one .csv or .xlsx attachment. A producing run keeps the attachment's filename inside its own #id_dd-mm-yyyy folder; only the newest 3 run folders are kept. No match or an already-processed attachment succeeds without creating a folder.</small></label>
+                    </div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Transformation</h2><p>Optionally run one local script against the normalized CSV before SQL insertion.</p></div>
+                    <div class="flow-form-grid">
+                        <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform the attachment before SQL insertion</span></label>
+                        <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
+                            <label class="flow-span-2"><span>Transformation script</span><div class="flow-file-control"><input id="flow-transform-script" required value="${esc(existing?.transform_script_path || "")}" placeholder="Absolute worker path to a .py, .ps1, or .exe script"><button type="button" class="btn-secondary" id="flow-transform-browse">Browse...</button><input id="flow-transform-file" type="file" accept=".py,.ps1,.exe" hidden></div><small>The script must create one CSV in script_results. That output becomes the SQL input.</small></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Ownership and failure alerts</h2><p>The owner receives an Outlook alert whenever this flow fails.</p></div>
+                    <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
+                </div>
+                <div class="flow-form-section">
+                    <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>The background worker launches a per-run interactive Outlook task for acquisition, then uses the same transformation and SQL contract as website flows.</p></div>
+                    <div class="flow-form-grid">
+                        <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
+                        <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
+                        <fieldset class="flow-weekdays flow-span-2"><legend>Weekdays</legend>${_FLOW_WEEKDAYS.map(day => `<label><input type="checkbox" value="${day}" ${scheduleDays.has(day) ? "checked" : ""}> ${day.slice(0, 3)}</label>`).join("")}</fieldset>
+                        <label id="flow-schedule-day-field"><span>Day of month</span><input id="flow-schedule-day" type="number" min="1" max="31" value="${esc(existing?.schedule_day || 1)}"><small>Months without that day are skipped.</small></label>
+                        <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert the normalized CSV into SQL</span></label>
+                        <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
+                            <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select></label>
+                            <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
+                            <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
+                            <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist></label>
+                            ${_flowSqlLinkHtml(existing)}
+                            <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="flow-form-error" role="alert"></div><div class="flow-builder-actions"><button type="button" class="btn-secondary" id="flow-builder-cancel">Cancel</button><button type="submit" class="btn-primary">${existing?.id ? "Save changes" : "Create flow"}</button></div>
+            </form>
+        </div></div>`;
+}
+
 function _flowBuilderHtml(catalog, existing = null) {
+    if (existing?.source_type === "outlook" || existing?._source_type === "outlook") {
+        return _flowOutlookBuilderHtml(existing);
+    }
     const sites = catalog.sites.filter(site => site.enabled);
     const siteId = existing?.site_id || sites[0]?.id || "";
     const reports = catalog.reports.filter(report => String(report.site_id) === String(siteId) && report.enabled && !report.stale);
@@ -10116,11 +10276,11 @@ function _flowBuilderHtml(catalog, existing = null) {
     return `
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
-                <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}">
+                <form id="flow-builder-form" data-id="${existing?.id || ""}" data-site-id="${siteId}" data-source-type="portal">
                     ${existing?.id ? "" : `<div class="flow-form-section" id="flow-replicate-section">
                         <div class="flow-section-head"><h2>Start from an existing flow</h2><p>Copy every setting from a flow you already built, then change only what differs. Nothing is copied until you choose one.</p></div>
                         <div class="flow-form-grid">
-                            <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
+                            <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).filter(item => item.source_type !== "outlook").map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
                         </div>
                     </div>`}
                     <div class="flow-form-section">
@@ -10186,6 +10346,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema.</small></label>
+                                ${_flowSqlLinkHtml(existing)}
                             </div>
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
                         </div>
@@ -10330,7 +10491,7 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
 }
 
 function _flowRunsHtml(runs) {
-    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); const browserMode = run.job?.execution?.browser_mode === "headed" ? "Headed browser" : "Headless browser"; const totalFiles = (run.job?.downloads?.periods?.length || 1) * ((run.job?.report?.export_views?.length || 0) || 1); const doneFiles = (run.job?.resume?.completed?.length || 0) + (run.artifacts || []).filter(item => item.status === "saved" && item.file_path).length; const resumable = ["failed", "cancelled"].includes(run.status) && doneFiles > 0 && doneFiles < totalFiles; return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${browserMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
+    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); const browserMode = run.job?.execution?.browser_mode === "headed" ? "Headed browser" : "Headless browser"; const totalFiles = (run.job?.downloads?.periods?.length || 1) * ((run.job?.report?.export_views?.length || 0) || 1); const doneFiles = (run.job?.resume?.completed?.length || 0) + (run.artifacts || []).filter(item => item.status === "saved" && item.file_path).length; const resumable = run.job?.flow?.source_type !== "outlook" && ["failed", "cancelled"].includes(run.status) && doneFiles > 0 && doneFiles < totalFiles; return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${browserMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
 }
 
 async function renderFlows() {
@@ -10346,9 +10507,8 @@ async function renderFlows() {
         catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, scanEvents,
         openCatalogTopics: window._flowsState?.openCatalogTopics || new Set(), view: "list",
     };
-    const canCreate = catalog.sites.some(site => site.enabled) && catalog.reports.some(report => report.enabled && !report.stale);
     return `
-        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Configure report downloads executed by the authenticated BI desktop.</p></div>${canCreate ? '<button class="btn-primary" id="flow-create">Create flow</button>' : ""}</div>
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from Outlook or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
@@ -10358,7 +10518,7 @@ function _flowShowView(view, payload = null) {
     state.view = view;
     const workspace = document.getElementById("flow-workspace");
     document.querySelectorAll(".flow-tabs button").forEach(button => {
-        const active = button.dataset.flowView === view || (view === "builder" && button.dataset.flowView === "list");
+        const active = button.dataset.flowView === view || (["builder", "source-picker"].includes(view) && button.dataset.flowView === "list");
         button.classList.toggle("active", active);
         button.setAttribute("aria-selected", active ? "true" : "false");
     });
@@ -10366,6 +10526,7 @@ function _flowShowView(view, payload = null) {
     workspace.setAttribute("aria-labelledby", selectedTab?.id || "flow-tab-list");
     if (view === "catalog") workspace.innerHTML = _flowCatalogHtml(state.catalog, state.scans, state.estimates, state.workers);
     else if (view === "runs") workspace.innerHTML = _flowRunsHtml(state.runs);
+    else if (view === "source-picker") workspace.innerHTML = _flowSourcePickerHtml(state.catalog);
     else if (view === "builder") workspace.innerHTML = _flowBuilderHtml(state.catalog, payload);
     else workspace.innerHTML = _flowListHtml(state.flows, state.workers, state.catalog, state.runs);
     _bindFlowWorkspace();
@@ -10455,25 +10616,152 @@ function _flowSiteDialog(site = null) {
 }
 
 function _flowCollectBuilder() {
+    const form = $("#flow-builder-form");
+    const scheduleType = $("#flow-schedule-type").value;
+    const transformEnabled = $("#flow-transform-enabled")?.checked || false;
+    const sqlEnabled = $("#flow-sql-enabled")?.checked || false;
+    const existing = window._flowsState?.flows?.find(flow => flow.id === Number(form?.dataset.id));
+    const flowEnabled = scheduleType === "manual" ? false : (existing?.enabled || false);
+    const sqlTargetUnchanged = Boolean(existing)
+        && existing.sql_database === ($("#flow-sql-database")?.value || null)
+        && existing.sql_schema === ($("#flow-sql-schema")?.value || null)
+        && existing.sql_table === ($("#flow-sql-table")?.value || null);
+    const shared = {
+        name: $("#flow-name").value.trim(), enabled: flowEnabled,
+        target_folder: $("#flow-target-folder").value.trim(),
+        schedule_type: scheduleType,
+        schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value,
+        schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [],
+        schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null,
+        transform_enabled: transformEnabled,
+        transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null,
+        sql_handoff_enabled: sqlEnabled,
+        sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null,
+        sql_database: sqlEnabled ? $("#flow-sql-database").value : null,
+        sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null,
+        sql_table: sqlEnabled ? $("#flow-sql-table").value : null,
+        sql_target_source_id: sqlEnabled
+            ? (Number($("#flow-sql-target-source")?.value)
+                || (sqlTargetUnchanged ? existing?.sql_target_source_id : null)
+                || null)
+            : null,
+        owner_person_id: Number($("#flow-owner")?.value) || null,
+    };
+    if (form?.dataset.sourceType === "outlook") {
+        return {
+            ...shared, source_type: "outlook",
+            outlook_subject_contains: $("#flow-outlook-subject").value.trim(),
+            site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
+            download_mode: "single", period_strategy: "none", window_weeks: null,
+            file_format: "auto", browser_mode: "headless", start_week: null, end_week: null,
+            filename_template: null,
+        };
+    }
     const selections = {};
     document.querySelectorAll("[data-flow-filter]").forEach(control => {
         selections[control.dataset.flowFilter] = control.multiple ? [...control.selectedOptions].map(option => option.value) : control.value;
     });
-    const scheduleType = $("#flow-schedule-type").value;
     const periodStrategy = $("#flow-period-strategy").value;
     const downloadMode = $("#flow-download-mode").value;
-    const transformEnabled = $("#flow-transform-enabled")?.checked || false;
-    const sqlEnabled = $("#flow-sql-enabled")?.checked || false;
-    const existing = window._flowsState?.flows?.find(flow => flow.id === Number($("#flow-builder-form")?.dataset.id));
-    const flowEnabled = scheduleType === "manual" ? false : (existing?.enabled || false);
-    return { name: $("#flow-name").value.trim(), site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value), export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value), download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value), enabled: flowEnabled, selections, download_mode: downloadMode, period_strategy: periodStrategy, window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null, file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value, start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null), end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null, target_folder: $("#flow-target-folder").value.trim(), filename_template: $("#flow-filename").value.trim(), schedule_type: scheduleType, schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value, schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [], schedule_day: scheduleType === "monthly" ? Number($("#flow-schedule-day").value) : null, transform_enabled: transformEnabled, transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null, sql_handoff_enabled: sqlEnabled, sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null, sql_database: sqlEnabled ? $("#flow-sql-database").value : null, sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null, sql_table: sqlEnabled ? $("#flow-sql-table").value : null, owner_person_id: Number($("#flow-owner")?.value) || null };
+    return {
+        ...shared, source_type: "portal", outlook_subject_contains: null,
+        site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
+        export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),
+        download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value),
+        selections, download_mode: downloadMode, period_strategy: periodStrategy,
+        window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null,
+        file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value,
+        start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null),
+        end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
+        filename_template: $("#flow-filename").value.trim(),
+    };
+}
+
+function _pipelineDuration(seconds) {
+    const minutes = Math.max(1, Math.round(Number(seconds || 0) / 60));
+    return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+function _openPipelinePreview(plan, onConfirm) {
+    const restoreFocus = document.activeElement;
+    const overlay = document.createElement("div");
+    overlay.className = "task-modal-overlay";
+    const blockers = plan.blockers || [];
+    const warnings = plan.warnings || [];
+    const recipient = plan.recipient;
+    overlay.innerHTML = `
+        <div class="task-modal pipeline-preview" role="dialog" aria-modal="true" aria-labelledby="pipeline-preview-title">
+            <h2 id="pipeline-preview-title">Refresh full pipeline</h2>
+            <p class="pipeline-preview-lead">${esc(plan.report.name)} will run in strict order. A failed or uncertain data stage stops everything downstream.</p>
+            <dl class="pipeline-preview-summary">
+                <div><dt>Recipient</dt><dd>${recipient ? `${esc(recipient.name)} · ${esc(recipient.email)}<small>${esc(recipient.reason)}</small>` : "Unavailable"}</dd></div>
+                <div><dt>Power BI</dt><dd>${esc(plan.powerbi?.workspace_name || "Unavailable")}<small>${esc(plan.powerbi?.dataset_id || "Dataset unresolved")}</small></dd></div>
+                <div><dt>Estimate</dt><dd>${esc(_pipelineDuration(plan.estimated_duration_seconds))}<small>Based on conservative stage defaults</small></dd></div>
+            </dl>
+            <section><h3>1. Flows (${plan.flows.length})</h3>${plan.flows.length ? `<ol>${plan.flows.map(flow => `<li><strong>${esc(flow.name)}</strong><span>${esc(flow.browser_mode)} · ${esc(flow.target.database)}.${esc(flow.target.schema)}.${esc(flow.target.table)}</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No explicitly linked upstream Flows.</p>'}</section>
+            <section><h3>2. Materialized views (${plan.materialized_views.length})</h3>${plan.materialized_views.length ? `<ol>${plan.materialized_views.map(mv => `<li><strong>${esc(mv.database)}.${esc(mv.schema)}.${esc(mv.relation)}</strong><span>commits before the next MV · exact row count after commit</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No materialized views in the report closure.</p>'}</section>
+            <section><h3>Worker readiness</h3>${plan.worker_readiness.length ? `<ul>${plan.worker_readiness.map(worker => `<li class="${worker.ready ? "pipeline-ready" : "pipeline-warning"}"><strong>${esc(worker.mode)}</strong><span>${worker.ready ? `ready · heartbeat ${esc(formatDate(worker.last_seen_at))}` : "will be started; must register within 60 seconds"}</span></li>`).join("")}</ul>` : '<p class="pipeline-empty">No Flow workers are required.</p>'}</section>
+            ${warnings.length ? `<div class="pipeline-message pipeline-warning"><strong>Warnings</strong><ul>${warnings.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+            ${blockers.length ? `<div class="pipeline-message pipeline-blocked"><strong>Cannot run</strong><ul>${blockers.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+            <p class="pipeline-token-note">This preview expires at ${esc(formatDate(plan.expires_at))}. Configuration changes invalidate it.</p>
+            <div class="flow-builder-actions"><button type="button" class="btn-secondary pipeline-cancel">Cancel</button><button type="button" class="btn-primary pipeline-confirm" ${blockers.length ? "disabled" : ""}>Start full refresh</button></div>
+        </div>`;
+    document.body.appendChild(overlay);
+    const close = () => { overlay.remove(); restoreFocus?.focus?.(); };
+    overlay.querySelector(".pipeline-cancel").addEventListener("click", close);
+    overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
+    overlay.querySelector(".pipeline-confirm").addEventListener("click", async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "Starting...";
+        try { await onConfirm(); close(); }
+        catch (err) { button.disabled = false; button.textContent = "Start full refresh"; toast("Full refresh was not started: " + err.message); }
+    });
+    overlay.querySelector(".pipeline-cancel").focus();
+}
+
+function _renderPipelineRunStatus(run) {
+    const panel = document.getElementById("lineage-pipeline-status");
+    if (!panel) return;
+    const terminal = ["succeeded", "failed"].includes(run.status);
+    panel.hidden = false;
+    panel.className = `pipeline-run-status pipeline-run-${esc(run.status)}`;
+    panel.innerHTML = `
+        <div><strong>Full-pipeline run #${esc(run.id)}</strong><span class="badge ${run.status === "succeeded" ? "badge-green" : run.status === "failed" ? "badge-red" : "badge-blue"}">${esc(run.status.replaceAll("_", " "))}</span></div>
+        <div class="pipeline-step-strip">${(run.steps || []).map(step => `<span class="pipeline-step pipeline-step-${esc(step.status)}"><b>${esc(step.step_type)}</b>${esc(step.entity_name || "")} · ${esc(step.status)}</span>`).join("")}</div>
+        ${run.error ? `<p>${esc(run.error)}</p>` : ""}
+        <small>Summary: ${esc(run.notification_status || "pending")}${terminal && ["unknown", "failed"].includes(run.notification_status) ? ` · <button class="btn-link" data-pipeline-resend="${run.id}">resend</button>` : ""}</small>
+        ${(run.recent_runs || []).length > 1 ? `<details class="pipeline-history"><summary>Recent full-pipeline runs</summary>${run.recent_runs.map(item => `<span><b>#${item.id}</b> ${esc(item.status)} · ${esc(formatDate(item.created_at))}${item.error ? ` · ${esc(item.error)}` : ""}</span>`).join("")}</details>` : ""}`;
+    panel.querySelector("[data-pipeline-resend]")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        try { await apiPost(`/api/pipelines/runs/${run.id}/resend-summary`); toast("Pipeline summary queued for submission."); }
+        catch (err) { toast("Summary was not queued: " + err.message); event.currentTarget.disabled = false; }
+    });
+}
+
+function _pollPipelineRun(runId) {
+    if (window._pipelineRunTimer) clearTimeout(window._pipelineRunTimer);
+    const poll = async () => {
+        if (!document.getElementById("lineage-pipeline-status")) return;
+        try {
+            const run = await api(`/api/pipelines/runs/${runId}`);
+            _renderPipelineRunStatus(run);
+            if (!["succeeded", "failed"].includes(run.status) || ["pending", "pending_receipt"].includes(run.notification_status)) {
+                window._pipelineRunTimer = setTimeout(poll, 5000);
+            }
+        } catch (_) { window._pipelineRunTimer = setTimeout(poll, 10000); }
+    };
+    poll();
 }
 
 function _bindFlowWorkspace() {
     const state = window._flowsState;
     $("#flow-add-site-empty")?.addEventListener("click", () => _flowSiteDialog());
     $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
-    $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("builder"));
+    $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
+    $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
+    $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
+    $("#flow-source-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
     // Discovered-report groups: remember which topics the user opened so the
     // 5-second scan monitor re-render does not collapse them again.
@@ -10532,7 +10820,7 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); _flowShowView("list"); toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
@@ -10762,7 +11050,7 @@ function _bindFlowWorkspace() {
 
 function bindFlowsPage() {
     document.querySelectorAll(".flow-tabs button").forEach(button => button.onclick = () => _flowShowView(button.dataset.flowView));
-    $("#flow-create")?.addEventListener("click", () => _flowShowView("builder"));
+    $("#flow-create")?.addEventListener("click", () => _flowShowView("source-picker"));
     _bindFlowWorkspace();
 }
 

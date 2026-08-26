@@ -170,8 +170,14 @@ def _compute_status_for_rule(last_activity_str: str | None, rule: dict) -> str:
 def _find_file(file_path: str) -> Path | None:
     """Try to locate a file at its original path or common fallback locations."""
     p = Path(file_path)
-    if p.exists():
-        return p
+    try:
+        if p.exists():
+            return p
+    except OSError:
+        # A disconnected UNC share can raise instead of returning False on
+        # newer Windows/Python builds. Treat it like any inaccessible source
+        # so the probe records the normal actionable status below.
+        pass
 
     # Extract filename - handle both Unix and Windows path separators
     # On Linux, Path("C:\Data\file.xlsx").name returns the whole string with backslashes
@@ -182,8 +188,11 @@ def _find_file(file_path: str) -> Path | None:
     ]
     for d in search_dirs:
         candidate = d / name
-        if candidate.exists():
-            return candidate
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            pass
 
     return None
 
