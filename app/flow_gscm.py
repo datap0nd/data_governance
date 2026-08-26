@@ -2085,20 +2085,32 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
     _click_entry(page, entry)
     if not _click_go_button(page):
         _fail_with_screen(
-            page, "GSCM's Go button was not on screen after selecting the bookmark."
+            page,
+            "GSCM's Go button could not be activated after selecting the "
+            "bookmark: it was missing, or clicking it (DOM and native) left "
+            "the Favorite dialog open.",
         )
     wait_for_calculation(page, report_progress=report_progress)
     clear_screen(page)
     return entry.get("element_id") or name
 
 
+def _go_button_fired(page) -> bool:
+    """The Go click is proven only by the Favorite dialog closing."""
+    page.wait_for_timeout(1_000)
+    return not favorites_dialog_open(page)
+
+
 def _click_go_button(page) -> bool:
     """Activate the Favorite dialog's native Go button.
 
     The live Nexacro build renders the ``Go >>`` caption in a child text node.
-    Clicking that node can leave the selected row highlighted without firing
-    the Button component. Prefer the stable component id so the report work
-    frame actually opens, then retain the caption lookup for older builds.
+    Clicking that node - and sometimes the Button's own DOM node - leaves the
+    selected row highlighted without firing the Button component: the same
+    swallowed-click shape the Setting gear and the scope tabs already work
+    around. So every strategy is verified by the dialog actually closing, and
+    a landed-but-ignored DOM click falls back to firing the component's own
+    onclick through the Nexacro event API (``_native_click``).
     """
     clear_screen(page)
     for root in _roots(page):
@@ -2111,16 +2123,24 @@ def _click_go_button(page) -> bool:
         clear_screen(page, target=GO_BUTTON_ID)
         try:
             button.click(force=True, timeout=30_000)
-            page.wait_for_timeout(1_000)
-            if not favorites_dialog_open(page):
+            if _go_button_fired(page):
                 return True
         except Exception:
-            continue
+            pass
+        if _native_click(page, GO_BUTTON_ID) and _go_button_fired(page):
+            return True
     clicked = click_label(page, GO_LABELS)
-    if clicked is None:
-        return False
-    page.wait_for_timeout(1_000)
-    return not favorites_dialog_open(page)
+    if clicked is not None:
+        if _go_button_fired(page):
+            return True
+        # The caption is a rendered child; re-fire its parent component.
+        if _native_click(
+            page, clicked.get("clicked_id") or clicked.get("id")
+        ) and _go_button_fired(page):
+            return True
+    # Last resort: the stable component may exist in the Nexacro tree even
+    # when its DOM node was not found in any root.
+    return _native_click(page, GO_BUTTON_ID) and _go_button_fired(page)
 
 
 def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:

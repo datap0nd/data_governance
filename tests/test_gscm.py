@@ -1409,6 +1409,72 @@ class NativeOnlyControlPage(FakeGscmPage):
         return super().evaluate(script, argument)
 
 
+class NativeOnlyGoButtonPage(FakeGscmPage):
+    """The Go button's DOM click is inert; only the native fire opens the report."""
+
+    GO_LABEL_ID = flow_gscm.GO_BUTTON_ID + ":text"
+
+    def __init__(self, *, native_works=True, **kwargs):
+        super().__init__(dialog_open=True, **kwargs)
+        self.native_works = native_works
+        self.native_clicks = []
+        self.components.add(flow_gscm.GO_BUTTON_ID)
+
+    def _screen(self):
+        rows = super()._screen()
+        return [
+            {**row, "id": self.GO_LABEL_ID} if row.get("text") == "Go >>" else row
+            for row in rows
+        ]
+
+    def on_click(self, element_id):
+        if element_id in {self.GO_LABEL_ID, flow_gscm.GO_BUTTON_ID}:
+            # Playwright's click landed on a rendered node, but Nexacro never
+            # dispatched the Button's onclick - the dialog stays open.
+            self.clicks.append(element_id)
+            return
+        super().on_click(element_id)
+
+    def evaluate(self, script, argument=None):
+        if "on_fire_onclick" in script and isinstance(argument, str):
+            if argument.split(":", 1)[0] == flow_gscm.GO_BUTTON_ID:
+                self.native_clicks.append(argument)
+                if self.native_works:
+                    self.dialog_open = False
+                    return {"available": True, "fired": True, "component_id": argument}
+                return {"available": True, "fired": False, "reason": "onclick-unavailable"}
+        return super().evaluate(script, argument)
+
+
+def test_go_button_falls_back_to_native_click_when_dom_click_is_a_noop():
+    # The live failure: the row selects, Go's DOM click lands but Nexacro
+    # swallows it, and the report never opens. The gear and scope tabs already
+    # re-fire the component natively; Go must too.
+    page = NativeOnlyGoButtonPage()
+
+    assert flow_gscm._click_go_button(page) is True
+
+    assert page.dialog_open is False
+    assert page.clicks  # the inert DOM click was attempted first
+    assert page.native_clicks  # then the component was fired through Nexacro
+
+
+def test_go_button_failure_is_reported_as_activation_not_visibility():
+    page = NativeOnlyGoButtonPage(native_works=False)
+
+    assert flow_gscm._click_go_button(page) is False
+
+    job = {
+        "site": {"auth_url": "https://mdscm.sec.samsung.net/nexa/index.html"},
+        "report": {"automation": {"favorite_name": "MENA_Actual_sales",
+                                  "favorite_tab": "Public",
+                                  "favorite_folder_path": ["SCM", "Actual Sales"]}},
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        flow_gscm.open_bookmark(page, job)
+    assert "could not be activated" in str(excinfo.value)
+
+
 def test_setting_falls_back_to_native_nexacro_click_when_dom_click_is_a_noop():
     page = NativeOnlyControlPage()
 
