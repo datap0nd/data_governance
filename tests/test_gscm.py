@@ -437,7 +437,7 @@ DATASET_BOOKMARKS = [
 ]
 
 
-def test_discovery_prefers_the_complete_nexacro_bookmark_dataset():
+def test_discovery_prefers_the_nexacro_dataset_for_each_activated_tab():
     page = FakeGscmPage(dataset_rows=DATASET_BOOKMARKS)
     events, progress = _collect_progress()
 
@@ -447,13 +447,92 @@ def test_discovery_prefers_the_complete_nexacro_bookmark_dataset():
     assert [report["name"] for report in reports] == [
         "Biz_Trip_Account_Portion", "MX B2B FFF8 Actual Sales", "Asia_Actual_sales",
     ]
-    assert page.dialog_open is False
-    assert GEAR_ID not in page.clicks
+    # The walk goes through Setting > Favorite exactly like a flow run...
+    assert GEAR_ID in page.clicks
+    assert page.dialog_open is True
+    # ...but the per-tab dataset read spares the virtualized grid sweep.
     assert not page.scrolled
     assert any("gds_bookmark" in detail["message"] for _status, detail in events)
 
 
-def test_discovery_waits_for_the_bookmark_dataset_to_finish_loading():
+def test_discovery_activates_each_tab_the_way_a_flow_run_does():
+    # The live failure this pins: gds_bookmark read at portal load held only
+    # the user's own rows, so the scan reported the Public bookmarks missing
+    # while every flow run - which selects the tab - found them. Activating a
+    # scope tab is what makes GSCM load that scope.
+    class LazyScopePage(FakeGscmPage):
+        def __init__(self):
+            super().__init__(
+                trees={"Private": [], "Public": [], "Custom": []},
+                dataset_rows=[
+                    row for row in DATASET_BOOKMARKS
+                    if row["publicscope"] == "PRIVATE"
+                ],
+            )
+
+        def on_click(self, element_id):
+            super().on_click(element_id)
+            if self.tab == "Public":
+                self.dataset_rows = list(DATASET_BOOKMARKS)
+
+    page = LazyScopePage()
+    reports, complete = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )
+
+    assert complete is True
+    assert GEAR_ID in page.clicks
+    names = {item["name"] for item in reports}
+    assert {"MX B2B FFF8 Actual Sales", "Asia_Actual_sales"} <= names
+    public = next(item for item in reports if item["name"] == "Asia_Actual_sales")
+    assert public["automation"]["favorite_tab"] == "Public"
+
+
+def test_an_empty_first_tab_activation_is_flipped_and_reselected_like_a_run():
+    # GSCM sometimes leaves a newly selected scope's grid empty until the
+    # scope is flipped away and back - the same refresh open_bookmark uses.
+    class StalledRebindPage(FakeGscmPage):
+        def __init__(self):
+            super().__init__()
+            self.public_selections = 0
+
+        def _rows(self):
+            if self.tab == "Public" and self.public_selections < 2:
+                return []
+            return super()._rows()
+
+        def on_click(self, element_id):
+            record = next(
+                (item for item in self._screen() if item["id"] == element_id), None,
+            )
+            super().on_click(element_id)
+            if (record or {}).get("text") == "Public":
+                self.public_selections += 1
+
+    page = StalledRebindPage()
+    reports, _complete = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )
+
+    assert page.public_selections >= 2
+    assert "MENA_Actual_sales" in {item["name"] for item in reports}
+
+
+def test_a_tab_the_dataset_does_not_cover_is_read_from_its_grid():
+    # A rendered Private row missing from gds_bookmark must not vanish just
+    # because the dataset serves the other tabs.
+    page = FakeGscmPage(dataset_rows=[
+        row for row in DATASET_BOOKMARKS if row["publicscope"] == "PUBLIC"
+    ])
+    reports = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )[0]
+    names = {item["name"] for item in reports}
+    assert "Biz_trip_GSCM" in names               # the Private grid
+    assert "MX B2B FFF8 Actual Sales" in names    # the dataset
+
+
+def test_a_dataset_that_loads_after_tab_activation_is_still_used():
     class DelayedDatasetPage(FakeGscmPage):
         def __init__(self):
             super().__init__(dataset_rows=DATASET_BOOKMARKS)
@@ -462,7 +541,7 @@ def test_discovery_waits_for_the_bookmark_dataset_to_finish_loading():
         def evaluate(self, script, argument=None):
             if "app.gds_bookmark" in script:
                 self.dataset_reads += 1
-                if self.dataset_reads < 4:
+                if self.dataset_reads < 2:
                     return None
             return super().evaluate(script, argument)
 
@@ -472,10 +551,15 @@ def test_discovery_waits_for_the_bookmark_dataset_to_finish_loading():
     )
 
     assert complete is True
-    assert page.dataset_reads == 4
-    assert len(reports) == len(DATASET_BOOKMARKS)
-    assert page.dialog_open is False
-    assert GEAR_ID not in page.clicks
+    names = {item["name"] for item in reports}
+    # Private was read from the grid before the dataset materialized; Public
+    # came from the late dataset, stable bookmark id included.
+    assert "Biz_trip_GSCM" in names
+    assert "MX B2B FFF8 Actual Sales" in names
+    public = next(
+        item for item in reports if item["name"] == "MX B2B FFF8 Actual Sales"
+    )
+    assert public["automation"]["favorite_bookmark_id"] == "RC_1000937"
 
 
 @pytest.mark.parametrize(
@@ -793,7 +877,8 @@ def test_dataset_scan_and_saved_flow_inherit_the_existing_popup_cleanup_path():
     reports, _complete = flow_gscm.discover_catalog(
         dataset_page, _scan_job(), _collect_progress()[1],
     )
-    assert [item["name"] for item in reports] == ["Dataset bookmark"]
+    # Private comes from its rendered grid, Public from the dataset row.
+    assert [item["name"] for item in reports] == ["Biz_trip_GSCM", "Dataset bookmark"]
     assert dataset_page.popups == []
 
     flow_page = FakeGscmPage(popup_records=[_popup()])

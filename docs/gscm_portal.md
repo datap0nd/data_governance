@@ -40,11 +40,16 @@ Top nav gear -> Setting
 ```
 
 Select a row, press **Go >>**, and GSCM opens that report with its saved
-configuration applied. In current GSCM builds the application-level
-`gds_bookmark` dataset is normally available as soon as the portal loads. The
-scan reads that dataset first and catalogues every record with its tab, folder
-path, bookmark id, menu id, scope, and owner metadata. It opens Setting >
-Favorite only as a fallback when the dataset has not loaded yet.
+configuration applied. The scan walks this exact route the way a flow run
+does — gear, Setting, Favorite, one scope tab at a time with the run's rebind
+retries — and stops where a run would press **Go >>**: it reads each activated
+tab's bookmarks and lists them. Activating the tab matters because GSCM loads
+a scope's rows on selection; the application-level `gds_bookmark` dataset read
+at portal load holds only what has loaded so far, and trusting it without the
+walk is what once reported a user's Public bookmarks missing. Once a tab is
+active, its records are catalogued from that dataset when the runtime exposes
+it — tab, folder path, bookmark id, menu id, scope, and owner metadata — and
+from the rendered Favorite grid otherwise.
 
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
@@ -82,12 +87,12 @@ operation; its container id, close-control id, geometry, and screen inventory
 are included in the error. Reading `gds_bookmark` remains a direct JavaScript
 operation and is not gated on popup state.
 
-## Why discovery reads Nexacro memory
+## How discovery reads an activated tab
 
 The Favorite grid is virtualized. Its fixed `gridrow_0` through `gridrow_8`
 slots are recycled as the user scrolls, so a DOM-only scan cannot treat row ids
-or coordinates as bookmark identity. The loaded Nexacro application already
-holds the complete source dataset:
+or coordinates as bookmark identity. Once a scope tab has been activated, the
+loaded Nexacro application holds that scope in its source dataset:
 
 ```javascript
 const ds = nexacro.getApplication().gds_bookmark;
@@ -96,9 +101,13 @@ const ds = nexacro.getApplication().gds_bookmark;
 `userreportid` is the stable bookmark identity, `publicscope` identifies the
 Private/Public/Custom tab, `scope` identifies the module, `menugroupname` and
 `menuname` reconstruct the category path, and `userreportname` is the leaf.
-This avoids scrolling, expansion, geometry, and concatenated ancestor text.
+This avoids scrolling, expansion, geometry, and concatenated ancestor text, so
+per activated tab the dataset is preferred over sweeping the grid. Reading the
+dataset **without** activating the tabs is trusted only when the Setting gear
+cannot be reached at all, and the scan says so in its progress log.
 
-If a deployment does not expose `gds_bookmark`, the fallback is deliberately
+If a deployment does not expose `gds_bookmark` (or the dataset lists nothing
+under a tab whose grid does show rows), the grid sweep is deliberately
 restricted to the Setting dialog's `div_favorite.form.grd_bookmark` grid (the
 dialog frame's index varies by build: `Setting0` on the current portal,
 `Setting1` on an earlier one, so only the dialog-local tail is matched). It reads
@@ -126,8 +135,10 @@ POST /api/flows/sites/{id}/scan         POST /api/flows/{id}/run
   ↓ flow_catalog_scans row                ↓ flow_runs row
 worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
-  read gds_bookmark in memory             open Setting > Favorite, pick the tab
-  (open Favorite only if missing)         select the row, press Go >>
+  open Setting > Favorite, activate       open Setting > Favorite, pick the tab
+  each tab like a run, read its rows      select the row, press Go >>
+  (gds_bookmark preferred, grid sweep
+  otherwise)
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
 flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
                                           click btn_exceldown
@@ -145,8 +156,8 @@ behave identically for GSCM.
 
 ## Scoped DOM fallback
 
-The memory dataset is the normal discovery path. The fallback handles the two
-ways the rendered grid hides bookmarks:
+The per-tab dataset read is the normal discovery path. The grid sweep handles
+the two ways the rendered grid hides bookmarks:
 
 * **The grid virtualizes.** Only rows in view exist in the DOM, so the sweep
   pages the tree down and re-reads until nothing new appears. Because a row's
