@@ -3827,6 +3827,12 @@ button.btn-danger-outline:hover {
 .pipeline-warning { color: var(--orange); }
 .pipeline-message.pipeline-warning { background: color-mix(in srgb, var(--orange) 10%, transparent); border: 1px solid color-mix(in srgb, var(--orange) 35%, var(--border)); }
 .pipeline-message.pipeline-blocked { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); border: 1px solid color-mix(in srgb, var(--red) 35%, var(--border)); }
+.lineage-flow-diagnostics summary { cursor: pointer; color: var(--text); }
+.lineage-flow-diagnostics summary strong { display: inline; margin: 0; }
+.lineage-flow-diagnostics ul { margin: 0.55rem 0; padding-left: 1.2rem; }
+.lineage-flow-diagnostics li { margin: 0.45rem 0; }
+.pipeline-diagnostic-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.45rem; }
+.lineage-flows-hidden { display: flex; align-items: center; gap: 0.25rem; }
 .pipeline-ready { color: var(--green); }
 .pipeline-run-status { margin: 0 0 0.75rem; padding: 0.7rem; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
 .pipeline-run-status > div:first-child { display: flex; align-items: center; gap: 0.5rem; }
