@@ -2245,14 +2245,51 @@ def _scan_out(row) -> dict:
     return result
 
 
+def _scan_browser_mode(db, site) -> str:
+    """The browser mode a catalog scan of this site must run under.
+
+    A GSCM scan walks the portal exactly the way a flow run does (gear,
+    Setting, Favorite, tabs), so it must run on the same worker as the runs
+    that are known to work against this site - same browser mode, same
+    browser profile, same signed-in session. A scan pinned to the headless
+    service while the site's runs execute on the headed worker opens a
+    different browser with a different profile, where the same gear click
+    fails. The most recent successful run decides the mode; before any run
+    has succeeded, an enabled headed flow does. Other adapters keep
+    background headless discovery.
+    """
+    if site["adapter"] != GSCM_PORTAL_ADAPTER:
+        return "headless"
+    recent = db.execute(
+        """SELECT f.browser_mode FROM flow_runs r JOIN flows f ON f.id=r.flow_id
+           WHERE f.site_id=? AND r.status='succeeded'
+           ORDER BY r.finished_at DESC, r.id DESC LIMIT 1""",
+        (site["id"],),
+    ).fetchone()
+    if recent and recent["browser_mode"] in BROWSER_MODES:
+        return recent["browser_mode"]
+    # "enabled" only means scheduled: a manual-only flow still runs headed,
+    # so any headed flow on the site counts before a run has succeeded.
+    headed = db.execute(
+        "SELECT 1 FROM flows WHERE site_id=? AND browser_mode='headed' LIMIT 1",
+        (site["id"],),
+    ).fetchone()
+    return "headed" if headed else "headless"
+
+
 def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=None,
-                mode: str = "full") -> int:
+                mode: str = "full") -> tuple[int, str]:
+    """Queue one catalog scan; returns (scan id, its browser mode)."""
     active = db.execute(
-        "SELECT id FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
+        "SELECT id, job_json FROM flow_catalog_scans WHERE site_id=? AND status IN ('queued','claimed','running') LIMIT 1",
         (site["id"],),
     ).fetchone()
     if active:
-        return active["id"]
+        active_mode = _loads(active["job_json"], {}).get("execution", {}).get(
+            "browser_mode", "headless",
+        )
+        return active["id"], active_mode
+    browser_mode = _scan_browser_mode(db, site)
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -2260,6 +2297,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
             "id": site["id"], "name": site["name"], "adapter": site["adapter"],
             "base_url": site["base_url"], "auth_url": site["auth_url"],
         },
+        "execution": {"browser_mode": browser_mode},
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
             "mode": mode if mode in SCAN_MODES else "full",
@@ -2278,7 +2316,7 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
            VALUES (?, ?, 'queued', ?, ?, ?)""",
         (site["id"], trigger_type, requested_by, _json(job), _iso(_now())),
     )
-    return cursor.lastrowid
+    return cursor.lastrowid, browser_mode
 
 
 @router.get("/scans")
@@ -2353,6 +2391,9 @@ def stop_scan(scan_id: int, request: Request):
                 "message": f"Scan already finished with status {row['status']}.",
                 "worker": {"status": "not_needed"},
             }
+        scan_browser_mode = _loads(row["job_json"], {}).get("execution", {}).get(
+            "browser_mode", "headless",
+        )
         site_id = row["site_id"]
         site_name = row["site_name"]
         worker_id = row["worker_id"]
@@ -2398,7 +2439,7 @@ def stop_scan(scan_id: int, request: Request):
         )
 
     stopped = (
-        stop_local_worker("headless", process_id)
+        stop_local_worker(scan_browser_mode, process_id)
         if stop_assigned_worker
         else {"status": "not_needed", "message": "The scan had not been assigned to a worker."}
     )
@@ -2443,10 +2484,10 @@ def queue_catalog_scan(site_id: int, request: Request, mode: str = Query(default
             # Reading GSCM's home-screen favorites is already a seconds-long
             # sweep, so it has no cheaper "names only" mode to fall back to.
             mode = "full"
-        scan_id = _queue_scan(db, site, "manual", get_actor(request), mode=mode)
+        scan_id, browser_mode = _queue_scan(db, site, "manual", get_actor(request), mode=mode)
         log_event(db, "flow_site", site_id, site["name"], "scan_queued",
-                  f"scan_id={scan_id}; mode={mode}", get_actor(request))
-    worker = launch_local_worker()
+                  f"scan_id={scan_id}; mode={mode}; browser={browser_mode}", get_actor(request))
+    worker = launch_local_worker(browser_mode)
     return {"id": scan_id, "site_id": site_id, "status": "queued", "mode": mode, "worker": worker}
 
 
@@ -2467,12 +2508,12 @@ def queue_report_scan(report_id: int, request: Request):
         ).fetchone()
         if not site or site["adapter"] not in DISCOVERY_ADAPTERS:
             raise HTTPException(400, "This website does not support targeted discovery.")
-        scan_id = _queue_scan(db, site, "report", get_actor(request), report)
+        scan_id, browser_mode = _queue_scan(db, site, "report", get_actor(request), report)
         log_event(
             db, "flow_report", report_id, report["name"], "scan_queued",
-            f"scan_id={scan_id}", get_actor(request),
+            f"scan_id={scan_id}; browser={browser_mode}", get_actor(request),
         )
-    worker = launch_local_worker()
+    worker = launch_local_worker(browser_mode)
     return {"id": scan_id, "site_id": site["id"], "report_id": report_id,
             "status": "queued", "worker": worker}
 
@@ -2487,15 +2528,21 @@ def queue_due_catalog_scans() -> dict:
                AND (next_scan_at IS NULL OR next_scan_at <= ?) ORDER BY id""",
             (*sorted(DISCOVERY_ADAPTERS), _iso(now)),
         ).fetchall()
+        modes: set[str] = set()
         for site in sites:
-            scan_id = _queue_scan(db, site, "scheduled", "scheduler")
+            scan_id, browser_mode = _queue_scan(db, site, "scheduled", "scheduler")
             queued.append(scan_id)
+            modes.add(browser_mode)
             db.execute(
                 "UPDATE flow_sites SET next_scan_at=?, updated_at=? WHERE id=?",
                 (_iso(_next_weekly_scan(site["discovery_weekday"], site["discovery_time"], now)),
                  _iso(now), site["id"]),
             )
-    worker = launch_local_worker() if queued else {"status": "not_needed", "mode": "local"}
+    if queued:
+        workers = [launch_local_worker(browser_mode) for browser_mode in sorted(modes)]
+        worker = workers[0] if len(workers) == 1 else {"status": "starting", "modes": sorted(modes)}
+    else:
+        worker = {"status": "not_needed", "mode": "local"}
     return {"queued": queued, "count": len(queued), "worker": worker}
 
 
@@ -2893,11 +2940,17 @@ def claim_run(worker_id: str):
             == worker_mode
         )), None)
         if not row:
-            # Discovery remains background-only. The interactive worker exists
-            # to make a selected download visible while building or debugging.
-            scan = db.execute(
-                "SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id LIMIT 1"
-            ).fetchone() if worker_mode == "headless" else None
+            # A scan runs on the worker whose mode its job names, exactly like
+            # a run: a GSCM scan must walk the portal in the same browser,
+            # profile, and session as the site's working flow runs. Scans
+            # without a stored mode predate this routing and stay headless.
+            queued_scans = db.execute(
+                "SELECT * FROM flow_catalog_scans WHERE status='queued' ORDER BY created_at, id"
+            ).fetchall()
+            scan = next((candidate for candidate in queued_scans if (
+                _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
+                == worker_mode
+            )), None)
             if scan:
                 cursor = db.execute(
                     """UPDATE flow_catalog_scans SET status='claimed', worker_id=?, claimed_at=?, heartbeat_at=?

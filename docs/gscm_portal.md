@@ -57,6 +57,19 @@ users, so reading it finds nothing even for someone with hundreds of bookmarks.
 An earlier version of this adapter did exactly that and reported "no bookmarks
 found" - a true statement about the wrong panel.
 
+## The scan runs where the site's flow runs run
+
+Because the scan walks the live portal exactly like a run, it must execute in
+the same browser as the runs that are known to work: same worker, same
+browser mode, same persistent profile, same signed-in session. Catalog scans
+used to be pinned to the headless service worker; on a site whose flows run
+headed, that opened a *different* browser with a *different* profile, where
+the same Setting-gear click failed ("the Setting > Favorite dialog did not
+open"). A GSCM scan job now carries an `execution.browser_mode` derived from
+the site's most recent successful run (or, before any run has succeeded, from
+any headed flow on the site), and workers only claim scans that match their
+own mode. ASAP scans and scan jobs queued before this routing stay headless.
+
 ## What the adapter never clicks
 
 The Favorite dialog puts **Save**, **Unselect**, and a per-row **pin** toggle

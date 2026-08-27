@@ -1161,7 +1161,7 @@ def _discover_into_catalog(site_id):
     )
     with database.get_db() as db:
         site = db.execute("SELECT * FROM flow_sites WHERE id=?", (site_id,)).fetchone()
-        scan_id = flows._queue_scan(db, site, "manual", "Analyst")
+        scan_id, _browser_mode = flows._queue_scan(db, site, "manual", "Analyst")
         db.execute(
             "UPDATE flow_catalog_scans SET worker_id='w1', status='claimed' WHERE id=?",
             (scan_id,),
@@ -1314,7 +1314,7 @@ def test_a_gscm_snapshot_with_rejected_bookmarks_keeps_the_last_good_catalog(flo
         site_row = dict(db.execute(
             "SELECT * FROM flow_sites WHERE id=?", (site["id"],),
         ).fetchone())
-        scan_id = flows._queue_scan(db, site_row, "manual", "Analyst")
+        scan_id, _browser_mode = flows._queue_scan(db, site_row, "manual", "Analyst")
         db.execute(
             "UPDATE flow_catalog_scans SET worker_id='gscm-worker', status='claimed' WHERE id=?",
             (scan_id,),
@@ -2192,3 +2192,124 @@ def test_favorite_grid_matching_never_depends_on_the_setting_frame_index():
         assert "Setting1" not in script
         assert "div_favorite.form.grd_bookmark" in script
     assert "Setting" not in flow_gscm.FAVORITE_GRID_ID_SUFFIX
+
+
+# ── Scan worker routing ──
+
+
+def _register_both_workers():
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headless", display_name="BI desktop - headless",
+        capabilities={"headed": False},
+    ))
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="bi-desktop-headed", display_name="BI desktop - headed",
+        capabilities={"headed": True},
+    ))
+
+
+def test_gscm_scan_runs_on_the_same_worker_mode_as_the_sites_flows(flow_db, monkeypatch):
+    """A scan of a site whose runs are headed must not go to the headless worker.
+
+    The scan walks the portal exactly like a run (gear, Setting, Favorite),
+    so it needs the same browser, profile, and session. Pinned to the
+    headless service it opened a different browser where the same gear click
+    failed with "the Setting > Favorite dialog did not open".
+    """
+    launched = []
+    monkeypatch.setattr(
+        flows, "launch_local_worker",
+        lambda mode="headless": launched.append(mode) or {"status": "starting", "mode": mode},
+    )
+    site = flows.create_site(_gscm_site(), _request())
+    _discover_into_catalog(site["id"])
+    bookmark = _catalogued(site["id"], "MENA_Actual_sales")
+    flows.create_flow(flows.FlowWrite(
+        name="GSCM headed flow",
+        site_id=site["id"],
+        report_id=bookmark["id"],
+        period_strategy="none",
+        file_format="xlsx",
+        browser_mode="headed",
+        target_folder="C:\\Reports",
+        filename_template="{flow}.xlsx",
+    ), _request())
+
+    queued = flows.queue_catalog_scan(site["id"], _request(), mode="full")
+
+    scan = flows.list_scans(site_id=site["id"], limit=50)[0]
+    assert scan["job"]["execution"] == {"browser_mode": "headed"}
+    assert launched[-1] == "headed"
+
+    _register_both_workers()
+    assert flows.claim_run("bi-desktop-headless")["scan"] is None
+    claimed = flows.claim_run("bi-desktop-headed")
+    assert claimed["scan"]["id"] == queued["id"]
+
+
+def test_gscm_scan_mode_follows_the_most_recent_successful_run(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    _discover_into_catalog(site["id"])
+    bookmark = _catalogued(site["id"], "MENA_Actual_sales")
+    saved = flows.create_flow(flows.FlowWrite(
+        name="GSCM headed flow",
+        site_id=site["id"],
+        report_id=bookmark["id"],
+        period_strategy="none",
+        file_format="xlsx",
+        browser_mode="headed",
+        target_folder="C:\\Reports",
+        filename_template="{flow}.xlsx",
+    ), _request())
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_runs (flow_id, trigger_type, status, job_json, created_at, finished_at)
+               VALUES (?, 'manual', 'succeeded', '{}', '2026-08-27T08:00:00', '2026-08-27T08:05:00')""",
+            (saved["id"],),
+        )
+        site_row = dict(db.execute(
+            "SELECT * FROM flow_sites WHERE id=?", (site["id"],),
+        ).fetchone())
+        assert flows._scan_browser_mode(db, site_row) == "headed"
+        # The flow later switches to headless and succeeds there: the scan
+        # follows the newest proof of what actually works on this site.
+        db.execute("UPDATE flows SET browser_mode='headless' WHERE id=?", (saved["id"],))
+        db.execute(
+            """INSERT INTO flow_runs (flow_id, trigger_type, status, job_json, created_at, finished_at)
+               VALUES (?, 'manual', 'succeeded', '{}', '2026-08-27T09:00:00', '2026-08-27T09:05:00')""",
+            (saved["id"],),
+        )
+        assert flows._scan_browser_mode(db, site_row) == "headless"
+
+
+def test_asap_scans_and_legacy_scan_jobs_stay_on_the_headless_worker(flow_db, monkeypatch):
+    import json as _json_module
+
+    monkeypatch.setattr(
+        flows, "launch_local_worker",
+        lambda mode="headless": {"status": "starting", "mode": mode},
+    )
+    asap = flows.create_site(flows.SiteWrite(
+        name="ASAP test", adapter="asap_portal",
+        auth_url="https://portal.example.test/portal/login/app",
+        discovery_enabled=True,
+    ), _request())
+    queued = flows.queue_catalog_scan(asap["id"], _request(), mode="full")
+    scan = flows.list_scans(site_id=asap["id"], limit=50)[0]
+    assert scan["job"]["execution"] == {"browser_mode": "headless"}
+
+    # A scan queued before browser-mode routing carries no execution block.
+    with database.get_db() as db:
+        job_json = db.execute(
+            "SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],),
+        ).fetchone()["job_json"]
+        job = _json_module.loads(job_json)
+        job.pop("execution", None)
+        db.execute(
+            "UPDATE flow_catalog_scans SET job_json=? WHERE id=?",
+            (_json_module.dumps(job), queued["id"]),
+        )
+
+    _register_both_workers()
+    assert flows.claim_run("bi-desktop-headed")["scan"] is None
+    assert flows.claim_run("bi-desktop-headless")["scan"]["id"] == queued["id"]

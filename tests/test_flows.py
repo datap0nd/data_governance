@@ -3100,7 +3100,7 @@ def test_scan_progress_posts_build_a_live_event_log(flow_db):
         capabilities={"adapters": ["asap_portal"]},
     ))
     with database.get_db() as db:
-        scan_id = flows._queue_scan(db, dict(
+        scan_id, _browser_mode = flows._queue_scan(db, dict(
             db.execute("SELECT * FROM flow_sites WHERE id=?", (site["id"],)).fetchone()
         ), "manual", "Analyst")
         db.execute(
@@ -3178,7 +3178,7 @@ def test_invalid_reports_are_skipped_so_the_scan_still_lands(flow_db):
         worker_id="skip-worker", display_name="Skip worker", capabilities={},
     ))
     with database.get_db() as db:
-        scan_id = flows._queue_scan(db, dict(
+        scan_id, _browser_mode = flows._queue_scan(db, dict(
             db.execute("SELECT * FROM flow_sites WHERE id=?", (site["id"],)).fetchone()
         ), "manual", "Analyst")
         db.execute(
