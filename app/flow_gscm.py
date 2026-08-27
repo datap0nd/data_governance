@@ -15,13 +15,16 @@ is opened by selecting its row and pressing ``Go >>``. The home screen's own
 Favorite widget shows only the entries a user has *pinned*, which is usually
 empty - reading it finds nothing even for a user with hundreds of bookmarks.
 
-**Where discovery gets its data.** The loaded Nexacro application exposes the
-``gds_bookmark`` dataset that backs the Favorite dialog. Discovery reads that
-dataset directly, preserving bookmark ids, scope, category, and name without
-depending on virtualized DOM rows. A DOM fallback remains for deployments that
-do not expose the application dataset, but it is scoped strictly to the
-Setting dialog's ``grd_bookmark`` grid. Navigation and opening a selected
-bookmark still use the rendered controls.
+**Where discovery gets its data.** Discovery walks the portal the same way a
+flow run does - gear, Setting, Favorite, one scope tab at a time - and stops
+where a run would select a row and press ``Go >>``: it reads the tab's
+bookmarks and lists them instead. Activating each tab matters because GSCM
+loads a scope's rows on selection; the application-level ``gds_bookmark``
+dataset read at portal load holds only what has loaded so far, and trusting
+it without the walk is what once reported a user's Public bookmarks missing.
+Once a tab is activated, its rows are read from that dataset when the runtime
+exposes it (stable bookmark ids, no scrolling), and otherwise from the Setting
+dialog's ``grd_bookmark`` grid - never from anywhere wider.
 
 **The framework fights automation.** Nexacro parks a full-screen wait overlay
 over the page and floats un-anchored popup cards above everything else. Both
@@ -1982,77 +1985,138 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
     }
 
 
+def _tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
+    """One scope tab, activated the way a flow run activates it, then read.
+
+    Returns ``None`` when the tab is not on this screen at all. Activation
+    mirrors ``open_bookmark``: the tab is selected with ``require_rows`` so a
+    caption click that never rebinds the virtual grid is re-fired natively,
+    and a tab that still lists nothing is flipped away from and re-selected
+    once - the same refresh a run uses - before it is accepted as empty.
+
+    Reading prefers the ``gds_bookmark`` dataset that backs the dialog once
+    the tab is active (stable bookmark ids, no scrolling). The rendered grid
+    is swept when the runtime does not expose the dataset, or when the grid
+    shows rows the dataset does not list under this tab. An exposed dataset
+    with nothing under the tab, agreeing with an empty grid, is proof of a
+    genuinely empty tab and skips the retry.
+    """
+    if not find_by_label(page, [tab]):
+        return None
+    for attempt in range(2):
+        if attempt:
+            notify(
+                f"GSCM's {tab} tab listed nothing on the first activation; "
+                "flipping scope and re-selecting it, as a flow run would."
+            )
+            alternate = next(
+                (candidate for candidate in SCOPE_TABS
+                 if candidate.casefold() != tab.casefold()),
+                None,
+            )
+            if alternate:
+                select_scope_tab(page, alternate)
+        rows_bound = select_scope_tab(page, tab, require_rows=True)
+        dataset = bookmark_dataset_entries(page)
+        scoped = [
+            entry for entry in dataset or []
+            if str(entry.get("tab") or "").casefold() == tab.casefold()
+        ]
+        if scoped:
+            return scoped
+        if rows_bound:
+            leaves = _leaf_entries(collect_favorite_tree(
+                page, lambda message: notify(f"{tab}: {message}"),
+            ))
+            if leaves:
+                return [{**entry, "tab": tab} for entry in leaves]
+        if dataset is not None:
+            return []
+    return []
+
+
 def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool]:
-    """Catalog GSCM bookmarks from memory, with a scoped DOM fallback."""
+    """Catalog GSCM bookmarks by walking Setting > Favorite like a flow run.
+
+    Discovery takes the exact route ``open_bookmark`` takes - portal, Setting
+    gear, Favorite panel, one scope tab at a time with the run's rebind
+    retries - and stops where a run would press ``Go >>``: it reads each
+    activated tab's bookmarks and lists them. The in-memory dataset alone is
+    trusted only when the dialog cannot be opened at all, because reading it
+    without activating the tabs misses the scopes GSCM loads on selection.
+    """
     url = portal_url(job)
     report_progress("running", {
         "stage": "navigation",
         "message": "Opening the GSCM portal for bookmark discovery.",
     })
     open_portal(page, url)
-    dataset_entries = wait_for_bookmark_dataset(page)
-    if not dataset_entries:
-        # Most GSCM builds expose the application-level dataset as soon as the
-        # portal loads. Only depend on the fragile Setting gear when this build
-        # has not loaded the dataset yet.
+
+    def notify_discovery(message: str) -> None:
+        report_progress("running", {
+            "stage": "report_discovery", "message": message,
+        })
+
+    entries: list[dict] = []
+    seen: set = set()
+
+    def absorb(tab_entries: list[dict]) -> int:
+        added = 0
+        for entry in tab_entries:
+            identity = entry.get("bookmark_id") or (
+                str(entry.get("tab") or ""),
+                tuple(entry.get("folder_path") or []),
+                entry["name"].casefold(),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            entries.append(entry)
+            added += 1
+        return added
+
+    dialog_error: RuntimeError | None = None
+    try:
         open_favorites_dialog(page, lambda message: report_progress(
             "running", {"stage": "navigation", "message": message},
         ))
-        dataset_entries = bookmark_dataset_entries(page)
-    entries: list[dict] = []
-    seen: set[tuple] = set()
-    if dataset_entries:
-        for entry in dataset_entries:
-            identity = entry.get("bookmark_id") or (
-                entry["tab"], tuple(entry["folder_path"]), entry["name"].casefold(),
-            )
-            key = ("dataset", identity)
-            if key in seen:
-                continue
-            seen.add(key)
-            entries.append(entry)
-        report_progress("running", {
-            "stage": "report_discovery",
-            "message": (
-                f"Read {len(entries)} bookmark(s) from GSCM's in-memory "
-                "gds_bookmark dataset."
-            ),
-            "item_count": len(entries),
-        })
-    else:
-        fallback_reason = (
-            "was empty" if dataset_entries == [] else "was not exposed by this Nexacro runtime"
-        )
-        report_progress("running", {
-            "stage": "report_discovery",
-            "message": (
-                f"GSCM's gds_bookmark dataset {fallback_reason}; reading only "
-                "the Setting Favorite grid as a fallback."
-            ),
-        })
+    except NotSignedInError:
+        raise
+    except RuntimeError as error:
+        dialog_error = error
+
+    if dialog_error is None:
         for tab in SCOPE_TABS:
-            if not select_scope_tab(page, tab):
-                report_progress("running", {
-                    "stage": "report_discovery",
-                    "message": f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
-                })
+            tab_entries = _tab_bookmarks(page, tab, notify_discovery)
+            if tab_entries is None:
+                notify_discovery(
+                    f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
+                )
                 continue
-            leaves = _leaf_entries(collect_favorite_tree(page, lambda message: report_progress(
-                "running", {"stage": "report_discovery", "message": f"{tab}: {message}"},
-            )))
-            added = 0
-            for entry in leaves:
-                key = (tab, tuple(entry["folder_path"]), entry["name"].casefold())
-                if key in seen:
-                    continue
-                seen.add(key)
-                entries.append({**entry, "tab": tab})
-                added += 1
+            added = absorb(tab_entries)
+            source = (
+                " from GSCM's in-memory gds_bookmark dataset"
+                if any(item.get("source") == "gds_bookmark" for item in tab_entries)
+                else " from the Favorite grid" if tab_entries else ""
+            )
             report_progress("running", {
                 "stage": "report_discovery",
-                "message": f"{tab}: {added} bookmark(s).",
+                "message": f"{tab}: {added} bookmark(s){source}.",
                 "item_count": added,
             })
+    else:
+        # The Setting gear could not be reached on this build, so the walk a
+        # run would take is unavailable. The dataset is the only remaining
+        # source; without it, the gear failure stands.
+        dataset_entries = wait_for_bookmark_dataset(page)
+        if not dataset_entries:
+            raise dialog_error
+        notify_discovery(
+            "GSCM's Setting > Favorite dialog did not open; cataloguing from "
+            "the in-memory gds_bookmark dataset without activating its tabs, "
+            "which can miss scopes GSCM loads on selection.",
+        )
+        absorb(dataset_entries)
 
     if not entries:
         _fail_with_screen(
