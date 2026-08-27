@@ -319,7 +319,15 @@ class LineageDepthTests(unittest.TestCase):
             }
 
         self.assertTrue(fake_connection.closed)
-        self.assertEqual(result["status"], "completed")
+        # This intentionally minimal adapter cannot expose pg_matviews
+        # definitions. Dependency lineage still commits, but the omitted
+        # auxiliary catalog is surfaced truthfully as a database warning.
+        self.assertEqual(result["status"], "completed_with_warnings")
+        self.assertEqual(result["definition_status"], "skipped")
+        self.assertEqual(
+            result["databases"][pg_deps.PGDATABASE]["status"],
+            "completed_with_warnings",
+        )
         self.assertEqual(result["mvs_found"], 2)
         self.assertEqual(result["deps_created"], 2)
         self.assertIn("public.a_upstream_mv", sources)

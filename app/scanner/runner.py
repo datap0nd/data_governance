@@ -19,6 +19,13 @@ from app.archive_ops import archive_source
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, UPLOAD_PGHOST
 from app.database import get_db
 from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, current_cancel_generation
+from app.scanner.lifecycle import (
+    component_has_warning,
+    component_result,
+    finish_scan_run,
+    normalize_scan_status,
+    terminal_status_for_components,
+)
 from app.scanner.tmdl_parser import (
     LOCAL_USER_PATH,
     is_folder_like_file_source,
@@ -195,6 +202,26 @@ def run_scan(
         )
         scan_id = cursor.lastrowid
 
+    active_report_count = 0
+    active_source_count = 0
+    new_sources = 0
+    changed_queries = 0
+    broken_refs = 0
+    log_text = "Scan did not complete core discovery."
+    postgres_required = False
+    components = {
+        "core": {
+            "status": "running",
+            "requested": True,
+            "required": True,
+        }
+    }
+
+    def _mapping_result(value):
+        if isinstance(value, dict):
+            return value
+        return {"status": "completed", "result": value}
+
     try:
         assert_not_cancelled(generation, "Report scan")
         reports = walk_reports_root(root)
@@ -202,9 +229,6 @@ def run_scan(
         all_sources = deduplicate_sources(reports)
         assert_not_cancelled(generation, "Report scan")
 
-        new_sources = 0
-        changed_queries = 0
-        broken_refs = 0
         broken_by_report: dict[int, dict] = {}
         log_lines = []
 
@@ -833,76 +857,122 @@ def run_scan(
                     (row["id"], now),
                 )
 
-            # Update scan run record
+            # Capture core counters, but leave the scan row running until every
+            # requested component has completed.
             assert_not_cancelled(generation, "Report scan")
             active_report_count = db.execute(
                 "SELECT COUNT(*) AS count FROM reports WHERE COALESCE(archived, 0) = 0"
             ).fetchone()["count"]
-            active_source_count = len(get_active_source_ids(db))
+            active_source_ids = get_active_source_ids(db)
+            active_source_count = len(active_source_ids)
+            postgres_source_ids = {
+                int(row["id"])
+                for row in db.execute(
+                    """SELECT id FROM sources
+                       WHERE LOWER(COALESCE(type, '')) = 'postgresql'
+                         AND COALESCE(archived, 0) = 0"""
+                ).fetchall()
+            }
+            active_postgres_sources = bool(active_source_ids & postgres_source_ids)
+            sql_flow_targets = db.execute(
+                """SELECT EXISTS(
+                       SELECT 1 FROM flows
+                       WHERE COALESCE(sql_handoff_enabled, 0) = 1
+                   ) AS required"""
+            ).fetchone()["required"]
+            postgres_required = bool(active_postgres_sources or sql_flow_targets)
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
-            finished = datetime.now(timezone.utc).isoformat()
-            db.execute(
-                """UPDATE scan_runs
-                   SET finished_at = ?, reports_scanned = ?, sources_found = ?,
-                       new_sources = ?, changed_queries = ?, broken_refs = ?,
-                       status = 'completed', log = ?
-                   WHERE id = ?""",
-                (
-                    finished,
-                    active_report_count,
-                    active_source_count,
-                    new_sources,
-                    changed_queries,
-                    broken_refs,
-                    log_text,
-                    scan_id,
-                ),
-            )
+
+        components["core"] = component_result(
+            {
+                "status": "completed",
+                "reports_scanned": active_report_count,
+                "sources_found": active_source_count,
+                "new_sources": new_sources,
+                "changed_queries": changed_queries,
+                "broken_refs": broken_refs,
+            },
+            required=True,
+        )
 
         # Scan PostgreSQL MV dependencies
         assert_not_cancelled(generation, "Report scan")
-        from app.scanner.pg_deps import scan_pg_dependencies
         try:
+            from app.scanner.pg_deps import scan_pg_dependencies
+
             dep_result = scan_pg_dependencies(scan_run_id=scan_id)
+            dep_result = _mapping_result(dep_result)
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
             dep_result = {"status": "failed", "error": str(e)}
             logger.exception("PG dependency scan failed: %s", e)
+        dep_status = normalize_scan_status(dep_result.get("status"))
+        dep_requested = not (
+            not postgres_required and dep_status in {"skipped", "not_requested"}
+        )
+        dep_component = component_result(
+            dep_result,
+            requested=dep_requested,
+            required=postgres_required,
+        )
+        components["postgres_dependencies"] = dep_component
 
         # Scan pg_cron for MV refresh schedules
         assert_not_cancelled(generation, "Report scan")
-        from app.scanner.pg_cron import scan_pg_cron
         try:
+            from app.scanner.pg_cron import scan_pg_cron
+
             cron_result = scan_pg_cron()
+            cron_result = _mapping_result(cron_result)
             logger.info("pg_cron scan completed: %s", cron_result.get("status"))
         except Exception as e:
             cron_result = {"status": "failed", "error": str(e)}
             logger.exception("pg_cron scan failed: %s", e)
+        cron_status = normalize_scan_status(cron_result.get("status"))
+        cron_requested = not (
+            not postgres_required and cron_status in {"skipped", "not_requested"}
+        )
+        cron_component = component_result(
+            cron_result,
+            requested=cron_requested,
+            required=postgres_required,
+        )
+        components["postgres_schedules"] = cron_component
 
         # Import configured usage CSVs as part of the scan instead of waiting
         # for a user to open a report or action page.
-        from app.usage import sync_usage_from_csv_if_configured
         try:
+            from app.usage import sync_usage_from_csv_if_configured
+
             with get_db() as db:
                 usage_result = sync_usage_from_csv_if_configured(db)
+            usage_result = _mapping_result(usage_result)
             logger.info("Usage sync completed: %s", usage_result.get("status"))
         except Exception as e:
             usage_result = {"status": "failed", "error": str(e)}
             logger.exception("Usage sync failed: %s", e)
+        usage_component = component_result(usage_result)
+        components["usage"] = usage_component
 
         # Probe after dependency and cron discovery so all freshness and
         # data-quality decisions use the current graph.
         probe_result = None
         if run_followup_probe:
-            from app.scanner.prober import run_probe
             try:
+                from app.scanner.prober import run_probe
+
                 probe_result = run_probe(cancel_generation=generation)
+                probe_result = _mapping_result(probe_result)
                 logger.info("Freshness and data-quality checks completed after scan")
             except ScannerWorkCancelled:
                 raise
             except Exception as e:
                 probe_result = {"status": "failed", "error": str(e)}
                 logger.exception("Probe failed after scan: %s", e)
+            probe_component = component_result(probe_result)
+        else:
+            probe_component = component_result(requested=False)
+        components["probe"] = probe_component
 
         # Persist governance findings as owned actions with automatic closure
         # when the next scan proves the condition has cleared.
@@ -929,29 +999,52 @@ def run_scan(
             governance_results["documentation"] = {"status": "failed", "error": str(e)}
             logger.exception("Documentation completeness scan failed: %s", e)
 
-        mv_changed_queries = int(dep_result.get("changed_queries") or 0)
+        governance_components = {}
+        for name, result in governance_results.items():
+            governance_components[name] = component_result(_mapping_result(result))
+        governance_status = (
+            "completed_with_warnings"
+            if any(component_has_warning(item) for item in governance_components.values())
+            else "completed"
+        )
+        governance_component = component_result(
+            {
+                "status": governance_status,
+                **governance_components,
+            }
+        )
+        components["governance"] = governance_component
+
+        mv_changed_queries = int(dep_component.get("changed_queries") or 0)
         changed_queries += mv_changed_queries
         auxiliary_log = [
-            f"PostgreSQL dependencies: {dep_result.get('status', 'unknown')}",
-            f"PostgreSQL schedules: {cron_result.get('status', 'unknown')}",
-            f"Configured usage import: {usage_result.get('status', 'unknown')}",
+            f"PostgreSQL dependencies: {dep_component.get('status', 'unknown')}",
+            f"PostgreSQL schedules: {cron_component.get('status', 'unknown')}",
+            f"Configured usage import: {usage_component.get('status', 'unknown')}",
         ]
-        if dep_result.get("definition_status") == "skipped":
+        if dep_component.get("definition_status") == "skipped":
             auxiliary_log.append(
                 "PostgreSQL MV query history: skipped; dependency discovery continued"
             )
-        if probe_result is not None:
-            auxiliary_log.append(f"Source probe: {probe_result.get('status', 'unknown')}")
-        if dep_result.get("query_change_log"):
-            auxiliary_log.append(dep_result["query_change_log"])
-        for name, result in governance_results.items():
-            status = result.get("status", "completed") if isinstance(result, dict) else "unknown"
-            auxiliary_log.append(f"Governance {name}: {status}")
+        auxiliary_log.append(f"Source probe: {probe_component.get('status', 'unknown')}")
+        if dep_component.get("query_change_log"):
+            auxiliary_log.append(dep_component["query_change_log"])
+        for name, result in governance_components.items():
+            auxiliary_log.append(f"Governance {name}: {result.get('status', 'unknown')}")
         final_log = "\n".join([log_text, *auxiliary_log])
+        overall_status = terminal_status_for_components(components)
         with get_db() as db:
-            db.execute(
-                "UPDATE scan_runs SET finished_at = ?, changed_queries = ?, log = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), changed_queries, final_log, scan_id),
+            stored_status = finish_scan_run(
+                db,
+                scan_id,
+                status=overall_status,
+                reports_scanned=active_report_count,
+                sources_found=active_source_count,
+                new_sources=new_sources,
+                changed_queries=changed_queries,
+                broken_refs=broken_refs,
+                components=components,
+                log=final_log,
             )
 
         summary = {
@@ -961,12 +1054,13 @@ def run_scan(
             "new_sources": new_sources,
             "changed_queries": changed_queries,
             "broken_refs": broken_refs,
-            "probe": probe_result,
-            "postgres_dependencies": dep_result,
-            "postgres_schedules": cron_result,
-            "usage": usage_result,
-            "governance": governance_results,
-            "status": "completed",
+            "components": components,
+            "probe": probe_component,
+            "postgres_dependencies": dep_component,
+            "postgres_schedules": cron_component,
+            "usage": usage_component,
+            "governance": governance_components,
+            "status": stored_status,
             "log": final_log,
             "scanned_path": str(Path(root).resolve()),
         }
@@ -975,26 +1069,69 @@ def run_scan(
 
     except ScannerWorkCancelled as e:
         logger.info("Scan stopped: %s", e)
+        if normalize_scan_status(components.get("core", {}).get("status")) == "running":
+            components["core"] = component_result(
+                {"status": "stopped", "message": str(e)}, required=True
+            )
+        else:
+            components["cancellation"] = component_result(
+                {"status": "stopped", "message": str(e)}, required=True
+            )
+        stopped_log = f"STOPPED: {e}"
         with get_db() as db:
-            db.execute(
-                "UPDATE scan_runs SET finished_at = ?, status = 'stopped', log = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), str(e), scan_id),
+            stored_status = finish_scan_run(
+                db,
+                scan_id,
+                status="stopped",
+                reports_scanned=active_report_count,
+                sources_found=active_source_count,
+                new_sources=new_sources,
+                changed_queries=changed_queries,
+                broken_refs=broken_refs,
+                components=components,
+                log=stopped_log,
             )
         return {
             "scan_id": scan_id,
-            "status": "stopped",
+            "status": stored_status,
             "message": str(e),
+            "components": components,
         }
 
     except Exception as e:
         logger.exception("Scan failed")
+        core_status = normalize_scan_status(components.get("core", {}).get("status"))
+        if core_status == "running":
+            components["core"] = component_result(
+                {"status": "failed", "error": str(e)}, required=True
+            )
+            terminal_status = "failed"
+        else:
+            components["runner"] = component_result(
+                {"status": "failed", "error": str(e)}, required=True
+            )
+            terminal_status = "completed_with_warnings"
+        failure_log = (
+            "Core discovery failed; review server logs."
+            if terminal_status == "failed"
+            else "An auxiliary scan component failed; review server logs."
+        )
         with get_db() as db:
-            db.execute(
-                "UPDATE scan_runs SET finished_at = ?, status = 'failed', log = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), str(e), scan_id),
+            stored_status = finish_scan_run(
+                db,
+                scan_id,
+                status=terminal_status,
+                reports_scanned=active_report_count,
+                sources_found=active_source_count,
+                new_sources=new_sources,
+                changed_queries=changed_queries,
+                broken_refs=broken_refs,
+                components=components,
+                log=failure_log,
             )
         return {
             "scan_id": scan_id,
-            "status": "failed",
-            "error": str(e),
+            "status": stored_status,
+            "error": "Redacted; review server logs.",
+            "components": components,
         }

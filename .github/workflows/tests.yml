@@ -32,5 +32,7 @@ jobs:
         run: node tests/test_lineage_edges.mjs
       - name: Run lineage layer tests
         run: node tests/test_lineage_layers.mjs
+      - name: Run scan status display tests
+        run: node tests/test_scan_status_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js

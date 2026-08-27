@@ -33,7 +33,12 @@ def current_cancel_generation() -> int:
 
 
 def request_stop_existing_work(reason: str) -> dict:
-    """Signal in-process work to stop and mark stale running rows as stopped."""
+    """Signal in-process work to stop without preempting atomic finalization.
+
+    Active scan runners observe the generation change and write their terminal
+    counters, components, log, and stopped status together. Truly orphaned rows
+    are recovered during application startup.
+    """
     global _CANCEL_GENERATION
     with _CANCEL_LOCK:
         _CANCEL_GENERATION += 1
@@ -51,18 +56,11 @@ def request_stop_existing_work(reason: str) -> dict:
 
     try:
         with get_db() as db:
-            scan_cursor = db.execute(
-                """UPDATE scan_runs
-                   SET finished_at = ?,
-                       status = 'stopped',
-                       log = CASE
-                           WHEN log IS NULL OR TRIM(log) = '' THEN ?
-                           ELSE log || char(10) || ?
-                       END
-                   WHERE LOWER(COALESCE(status, '')) = 'running'""",
-                (now, log_note, log_note),
-            )
-            result["scan_runs_stopped"] = scan_cursor.rowcount if scan_cursor.rowcount != -1 else 0
+            scan_row = db.execute(
+                """SELECT COUNT(*) AS count FROM scan_runs
+                   WHERE LOWER(COALESCE(status, '')) = 'running'"""
+            ).fetchone()
+            result["scan_runs_stopped"] = int(scan_row["count"] or 0)
 
             probe_cursor = db.execute(
                 """UPDATE probe_runs
