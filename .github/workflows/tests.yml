@@ -26,3 +26,11 @@ jobs:
         run: python -m pytest tests -q
       - name: Run catalog tree tests
         run: node tests/test_flow_catalog_tree.mjs
+      - name: Run lineage display tests
+        run: node tests/test_lineage_display.mjs
+      - name: Run lineage edge tests
+        run: node tests/test_lineage_edges.mjs
+      - name: Run lineage layer tests
+        run: node tests/test_lineage_layers.mjs
+      - name: Check frontend JavaScript syntax
+        run: node --check app/static/app.js

@@ -15,6 +15,7 @@ from app.routers.query_history import compare_query_versions, report_query_histo
 from app.scanner import pg_deps, runner
 from app.scanner.tmdl_parser import ParsedTable, SourceInfo
 from app.scanner.walker import DiscoveredReport
+from app.source_identity import upsert_postgres_identity
 
 
 @pytest.fixture
@@ -301,6 +302,15 @@ def test_mv_definition_change_alerts_the_tracked_mv(query_db, monkeypatch):
         db.execute(
             "INSERT INTO report_tables (report_id, table_name, source_id) VALUES (1, 'Sales', 10)"
         )
+        upsert_postgres_identity(
+            db,
+            source_id=10,
+            server=pg_deps.PGHOST,
+            database=pg_deps.PGDATABASE,
+            schema="public",
+            relation="sales_mv",
+            relation_kind="materialized_view",
+        )
 
     dependencies = [("public", "sales_mv", "public", "sales", "r")]
     first_connection = _CatalogConnection(
@@ -353,6 +363,24 @@ def test_upstream_mv_uses_linked_report_owner_and_impact_context(query_db, monke
         )
         db.execute(
             "INSERT INTO report_tables (report_id, table_name, source_id) VALUES (1, 'Consumer', 10)"
+        )
+        upsert_postgres_identity(
+            db,
+            source_id=10,
+            server=pg_deps.PGHOST,
+            database=pg_deps.PGDATABASE,
+            schema="public",
+            relation="consumer_mv",
+            relation_kind="materialized_view",
+        )
+        upsert_postgres_identity(
+            db,
+            source_id=11,
+            server=pg_deps.PGHOST,
+            database=pg_deps.PGDATABASE,
+            schema="public",
+            relation="sales_mv",
+            relation_kind="materialized_view",
         )
 
     dependencies = [("public", "consumer_mv", "public", "sales_mv", "m")]

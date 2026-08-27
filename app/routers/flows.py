@@ -29,7 +29,7 @@ from app.flow_local_runner import (
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
-from app.source_identity import exact_identity_rows, flow_link_status
+from app.source_identity import exact_identity_rows, flow_link_status, normalize_server
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
@@ -970,9 +970,21 @@ def _flow_out(db, flow_id: int) -> dict:
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
     link = flow_link_status(db, row, server=UPLOAD_PGHOST)
-    result["sql_target_source_id"] = link.get("source_id")
+    # Keep persisted diagnostic evidence separate from the exact target a
+    # preview or run may safely use.
+    result["sql_target_source_id"] = link.get("persisted_source_id")
+    result["sql_target_effective_source_id"] = link.get("effective_source_id")
     result["sql_target_link_status"] = link["status"]
     result["sql_target_match_source_ids"] = link.get("matches", [])
+    match_ids = result["sql_target_match_source_ids"]
+    result["sql_target_exact_candidates"] = []
+    if match_ids:
+        placeholders = ",".join("?" * len(match_ids))
+        exact_rows = db.execute(
+            f"SELECT id, name FROM sources WHERE id IN ({placeholders}) ORDER BY id",
+            match_ids,
+        ).fetchall()
+        result["sql_target_exact_candidates"] = [dict(item) for item in exact_rows]
     result["sql_target_legacy_suggestions"] = []
     if result["sql_handoff_enabled"] and link["status"] != "confirmed":
         display_target = f"{result.get('sql_schema')}.{result.get('sql_table')}".casefold()
@@ -1098,7 +1110,12 @@ def _validate_sql_target(db, body: FlowWrite):
         raise HTTPException(400, "Choose a database, schema, and table from the latest SQL catalog scan.")
 
 
-def _resolve_sql_target_source(db, body: FlowWrite) -> int | None:
+def _resolve_sql_target_source(
+    db,
+    body: FlowWrite,
+    *,
+    preserve_invalid_source_id: int | None = None,
+) -> int | None:
     """Resolve or confirm the Flow's executable target identity."""
     if not body.sql_handoff_enabled:
         return None
@@ -1112,11 +1129,18 @@ def _resolve_sql_target_source(db, body: FlowWrite) -> int | None:
     match_ids = [int(row["source_id"]) for row in matches]
     if body.sql_target_source_id is not None:
         if body.sql_target_source_id not in match_ids:
+            if (
+                preserve_invalid_source_id is not None
+                and int(body.sql_target_source_id) == int(preserve_invalid_source_id)
+            ):
+                return match_ids[0] if len(match_ids) == 1 else int(preserve_invalid_source_id)
             raise HTTPException(
                 400,
                 "The confirmed source does not exactly match this SQL server, database, schema, and table.",
             )
         return int(body.sql_target_source_id)
+    if preserve_invalid_source_id is not None:
+        return match_ids[0] if len(match_ids) == 1 else int(preserve_invalid_source_id)
     return match_ids[0] if len(match_ids) == 1 else None
 
 
@@ -1260,6 +1284,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         },
         "sql_handoff": {
             "enabled": bool(flow.get("sql_handoff_enabled")),
+            "server": normalize_server(UPLOAD_PGHOST),
             "mode": flow.get("sql_mode"),
             "uppercase": bool(flow.get("sql_uppercase")),
             "database": flow.get("sql_database"),
@@ -1289,6 +1314,11 @@ def queue_flow_run_service(
     if active:
         raise HTTPException(409, "This flow already has an active run.")
     job = _build_job(db, flow_id)
+    from app.routers.pipelines import (
+        assert_no_active_flow_target_run,
+        flow_target_resource_key_from_job,
+    )
+    assert_no_active_flow_target_run(db, flow_target_resource_key_from_job(job))
     cursor = db.execute(
         """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1300,11 +1330,20 @@ def queue_flow_run_service(
 
 def queue_due_flows() -> dict:
     """Queue due scheduled flows without executing browser work in the API process."""
+    from app.routers.pipelines import (
+        assert_flow_target_available,
+        assert_resource_unlocked,
+        flow_target_resource_key_from_job,
+    )
+
     now = _now()
     now_text = _iso(now)
     queued = []
     modes = set()
     with get_db() as db:
+        # Serialize target inspection and run creation with manual/resume/retry
+        # callers, preventing two distinct Flows from claiming one relation.
+        db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             """SELECT * FROM flows
                WHERE enabled=1 AND schedule_type != 'manual'
@@ -1313,12 +1352,13 @@ def queue_due_flows() -> dict:
             (now_text,),
         ).fetchall()
         for row in rows:
-            locked = db.execute(
-                """SELECT run_id FROM pipeline_resource_locks
-                   WHERE resource_type='flow' AND resource_key=?""",
-                (str(row["id"]),),
-            ).fetchone()
-            if locked:
+            try:
+                # Covers both the Flow itself and another Flow writing the
+                # same exact SQL target during a governed pipeline run.
+                assert_resource_unlocked(db, "flow", str(row["id"]))
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
                 continue
             active = db.execute(
                 "SELECT id FROM flow_runs WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1",
@@ -1335,6 +1375,14 @@ def queue_due_flows() -> dict:
             if active:
                 continue
             job = _build_job(db, row["id"])
+            try:
+                assert_flow_target_available(
+                    db, flow_target_resource_key_from_job(job)
+                )
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                continue
             cursor = db.execute(
                 """INSERT INTO flow_runs
                    (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1639,6 +1687,7 @@ def retry_run_sql(run_id: int, request: Request):
     """Queue SQL only from a terminal run's saved SQL-ready CSV artifacts."""
     now = _iso(_now())
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         source = db.execute(
             """SELECT r.*, f.name AS flow_name FROM flow_runs r
                JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
@@ -1646,7 +1695,11 @@ def retry_run_sql(run_id: int, request: Request):
         ).fetchone()
         if not source:
             raise HTTPException(404, "Source flow run not found.")
-        from app.routers.pipelines import assert_resource_unlocked
+        from app.routers.pipelines import (
+            assert_flow_target_available,
+            assert_resource_unlocked,
+            flow_target_resource_key_from_job,
+        )
         assert_resource_unlocked(db, "flow", str(source["flow_id"]))
         if source["status"] not in RUN_TERMINAL:
             raise HTTPException(409, "Wait for the source run to finish before retrying SQL.")
@@ -1711,6 +1764,7 @@ def retry_run_sql(run_id: int, request: Request):
         )
         if source_receipt:
             job["outlook_source_receipt"] = source_receipt
+        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
         cursor = db.execute(
             """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1757,6 +1811,7 @@ def resume_run(run_id: int, request: Request):
     """
     now = _iso(_now())
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         source = db.execute(
             """SELECT r.*, f.name AS flow_name, f.source_type FROM flow_runs r
                JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
@@ -1764,7 +1819,11 @@ def resume_run(run_id: int, request: Request):
         ).fetchone()
         if not source:
             raise HTTPException(404, "Source flow run not found.")
-        from app.routers.pipelines import assert_resource_unlocked
+        from app.routers.pipelines import (
+            assert_flow_target_available,
+            assert_resource_unlocked,
+            flow_target_resource_key_from_job,
+        )
         assert_resource_unlocked(db, "flow", str(source["flow_id"]))
         if source["status"] not in {"failed", "cancelled"}:
             raise HTTPException(409, "Only a failed or cancelled run can be resumed.")
@@ -1820,6 +1879,7 @@ def resume_run(run_id: int, request: Request):
             )
         job = _build_job(db, source["flow_id"])
         job["resume"] = {"from_run_id": run_id, "completed": completed}
+        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
         cursor = db.execute(
             """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                VALUES (?, 'resume', 'queued', ?, ?, ?)""",
@@ -2021,7 +2081,8 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
     )) if body.enabled else None
     with get_db() as db:
         existing = db.execute(
-            """SELECT source_type, sql_database, sql_schema, sql_table
+            """SELECT source_type, sql_database, sql_schema, sql_table,
+                      sql_target_source_id
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
@@ -2041,7 +2102,18 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         )
         if target_changed:
             body.sql_target_source_id = None
-        sql_target_source_id = _resolve_sql_target_source(db, body)
+        preserve_invalid_source_id = (
+            int(existing["sql_target_source_id"])
+            if not target_changed
+            and body.sql_handoff_enabled
+            and existing["sql_target_source_id"] is not None
+            else None
+        )
+        sql_target_source_id = _resolve_sql_target_source(
+            db,
+            body,
+            preserve_invalid_source_id=preserve_invalid_source_id,
+        )
         cursor = db.execute(
             """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
                export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
@@ -2099,10 +2171,15 @@ def queue_run(flow_id: int, request: Request):
     now = _iso(_now())
     resumed = False
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
         flow = db.execute("SELECT id, name, source_type FROM flows WHERE id = ?", (flow_id,)).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
-        from app.routers.pipelines import assert_resource_unlocked
+        from app.routers.pipelines import (
+            assert_flow_target_available,
+            assert_resource_unlocked,
+            flow_target_resource_key_from_job,
+        )
         assert_resource_unlocked(db, "flow", str(flow_id))
         active = db.execute(
             """SELECT id, status, job_json FROM flow_runs
@@ -2123,6 +2200,11 @@ def queue_run(flow_id: int, request: Request):
                        WHERE id=?""",
                     (get_actor(request), _json(job), run_id),
                 )
+            assert_flow_target_available(
+                db,
+                flow_target_resource_key_from_job(job),
+                exclude_run_id=int(run_id),
+            )
             resumed = True
             log_event(
                 db, "flow", flow_id, flow["name"], "worker_restart_requested",
@@ -2133,6 +2215,7 @@ def queue_run(flow_id: int, request: Request):
                 db, flow_id,
                 force_reprocess=(flow["source_type"] or "portal") == "outlook",
             )
+            assert_flow_target_available(db, flow_target_resource_key_from_job(job))
             cursor = db.execute(
                 """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                    VALUES (?, 'manual', 'queued', ?, ?, ?)""",

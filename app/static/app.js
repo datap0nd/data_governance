@@ -8941,11 +8941,11 @@ function _flowSiteIsGscm(catalog, siteId) {
 
 function _flowSqlLinkHtml(existing) {
     if (!existing?.sql_handoff_enabled) return "";
+    const effectiveSourceId = existing.sql_target_effective_source_id ?? existing.sql_target_source_id;
     if (existing.sql_target_link_status === "confirmed") {
-        return `<div class="flow-span-2 flow-dialog-help pipeline-ready">Exact pipeline link confirmed for source #${esc(existing.sql_target_source_id)}.</div>`;
+        return `<div class="flow-span-2 flow-dialog-help pipeline-ready">Exact pipeline link confirmed for source #${esc(effectiveSourceId)}.</div>`;
     }
-    const exactIds = new Set(existing.sql_target_match_source_ids || []);
-    const candidates = (existing.sql_target_legacy_suggestions || []).filter(item => exactIds.has(item.id));
+    const candidates = existing.sql_target_exact_candidates || [];
     if (candidates.length) {
         return `<label class="flow-span-2"><span>Confirm exact pipeline source</span><select id="flow-sql-target-source"><option value="">Choose the exact source...</option>${candidates.map(item => `<option value="${item.id}">${esc(item.name)} · source #${item.id}</option>`).join("")}</select><small>Required because more than one structured source identity matches this SQL target.</small></label>`;
     }

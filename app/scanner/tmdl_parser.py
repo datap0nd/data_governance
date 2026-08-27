@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from app.source_identity import normalize_server
+
 
 @dataclass
 class SourceInfo:
@@ -41,6 +43,16 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return f"{self.source_type}::{self.file_path.lower()}"
         elif self.source_type in self.DB_TYPES and self.server:
+            if self.source_type == "postgresql":
+                # PostgreSQL hosts are case-insensitive, but quoted database,
+                # schema, and relation spelling is part of the physical
+                # identity and must survive source deduplication unchanged.
+                parts = [self.source_type, normalize_server(self.server)]
+                if self.database:
+                    parts.append(self.database.strip())
+                if self.sql_table:
+                    parts.append(self.sql_table.strip())
+                return "::".join(parts)
             parts = [self.source_type, self.server.lower()]
             if self.database:
                 parts.append(self.database.lower())

@@ -1,9 +1,10 @@
 import re
 
 from fastapi import APIRouter, HTTPException
-from app.config import PBI_WORKSPACE
+from app.config import PBI_WORKSPACE, UPLOAD_PGHOST
 from app.database import get_db
 from app.models import LineageEdge
+from app.source_identity import inspect_flow_target
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
@@ -321,8 +322,9 @@ def get_lineage_diagram(report_id: int):
             ).fetchall()
             for row in flow_rows:
                 flow = dict(row)
-                confirmed_source_id = flow.get("sql_target_source_id")
-                if confirmed_source_id not in source_ids:
+                resolution = inspect_flow_target(db, flow, server=UPLOAD_PGHOST)
+                effective_source_id = resolution.get("effective_source_id")
+                if effective_source_id not in source_ids:
                     suggested_source_ids = [
                         source["id"] for source in sources
                         if _source_matches_flow_target(source, flow)
@@ -338,7 +340,7 @@ def get_lineage_diagram(report_id: int):
                             "reason": "Legacy display-name suggestion; confirm the exact SQL target in the Flow editor.",
                         })
                     continue
-                target_source_ids = [int(confirmed_source_id)]
+                target_source_ids = [int(effective_source_id)]
                 last_success_at = flow.get("last_success_at")
                 if not last_success_at and flow.get("last_status") == "succeeded":
                     last_success_at = flow.get("last_run_at")
@@ -354,7 +356,8 @@ def get_lineage_diagram(report_id: int):
                     "last_status": flow.get("last_status"),
                     "last_error": flow.get("last_error"),
                     "has_active_run": bool(flow.get("has_active_run")),
-                    "sql_target_link_status": "confirmed",
+                    "sql_target_link_status": resolution["status"],
+                    "sql_target_persisted": bool(resolution.get("persisted_valid")),
                     "executable": True,
                 })
 

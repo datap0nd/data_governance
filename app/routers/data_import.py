@@ -37,7 +37,7 @@ from app.config import (
 from app.database import get_db
 from app.routers.eventlog import get_actor, log_event
 from app.settings import get_setting, set_setting
-from app.source_identity import normalize_server
+from app.source_identity import exact_identity_rows, normalize_server
 
 logger = logging.getLogger(__name__)
 
@@ -348,14 +348,25 @@ def _materialized_views(engine) -> list[dict]:
     try:
         with get_db() as db:
             for view in views:
-                full_name = view["display_name"]
+                matches = exact_identity_rows(
+                    db,
+                    server=UPLOAD_PGHOST,
+                    database=UPLOAD_PGDATABASE,
+                    schema=view["schema"],
+                    relation=view["name"],
+                )
+                if len(matches) != 1:
+                    if len(matches) > 1:
+                        logger.warning(
+                            "Materialized view identity is ambiguous: %s.%s.%s",
+                            UPLOAD_PGDATABASE,
+                            view["schema"],
+                            view["name"],
+                        )
+                    continue
                 source = db.execute(
-                    """SELECT id, refresh_schedule
-                       FROM sources
-                       WHERE archived = 0
-                         AND (name LIKE ? OR connection_info LIKE ?)
-                       LIMIT 1""",
-                    (f"%{full_name}", f"%{full_name}%"),
+                    "SELECT id, refresh_schedule FROM sources WHERE id=?",
+                    (int(matches[0]["source_id"]),),
                 ).fetchone()
                 if source:
                     view["source_id"] = source["id"]

@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from app import database
 from app import flow_local_runner
 from app import flow_worker
-from app.routers import flows
+from app.routers import flows, pipelines
 
 
 @pytest.fixture()
@@ -1014,7 +1014,8 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
         "worker_id": "bi-desktop-headless",
     }
     assert queued["job"]["sql_handoff"] == {
-        "enabled": False, "mode": None, "uppercase": False,
+        "enabled": False, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
+        "mode": None, "uppercase": False,
         "database": None, "schema": None, "table": None,
     }
 
@@ -1312,7 +1313,8 @@ def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
     )
     job = flows.queue_run(saved["id"], _request())["job"]
     assert job["sql_handoff"] == {
-        "enabled": True, "mode": "replace", "uppercase": False,
+        "enabled": True, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
+        "mode": "replace", "uppercase": False,
         "database": "warehouse", "schema": "reporting", "table": "inflow",
     }
 
@@ -1338,7 +1340,8 @@ def test_sql_managed_snapshot_allows_new_table_name_in_discovered_schema(flow_db
 
     assert saved["sql_table"] == "new_managed_target"
     assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
-        "enabled": True, "mode": "replace", "uppercase": False,
+        "enabled": True, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
+        "mode": "replace", "uppercase": False,
         "database": "warehouse", "schema": "reporting", "table": "new_managed_target",
     }
 
@@ -1384,7 +1387,8 @@ def test_sql_uppercase_option_is_persisted_and_reaches_the_job(flow_db):
     )
     assert saved["sql_uppercase"] is True
     assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
-        "enabled": True, "mode": "append", "uppercase": True,
+        "enabled": True, "server": flows.normalize_server(flows.UPLOAD_PGHOST),
+        "mode": "append", "uppercase": True,
         "database": "warehouse", "schema": "reporting", "table": "inflow",
     }
 
@@ -3109,6 +3113,101 @@ def test_manual_run_launches_bi_desktop_worker(flow_db, monkeypatch):
     assert queued["worker"] == {"status": "launched", "mode": "headless"}
 
 
+def test_manual_runs_block_cross_flow_target_using_frozen_job_snapshot(
+    flow_db, monkeypatch
+):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(flows, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode}
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'shared_target', CURRENT_TIMESTAMP, 0)"""
+        )
+    common = {
+        "sql_handoff_enabled": True,
+        "sql_mode": "append",
+        "sql_database": "warehouse",
+        "sql_schema": "reporting",
+        "sql_table": "shared_target",
+    }
+    first = flows.create_flow(
+        _flow(site["id"], report["id"], name="First writer", **common), _request()
+    )
+    second = flows.create_flow(
+        _flow(site["id"], report["id"], name="Second writer", **common), _request()
+    )
+    first_run = flows.queue_run(first["id"], _request())
+
+    # A running job keeps its original target even if the mutable Flow record
+    # is later changed. Collision detection must use the frozen job_json.
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flows SET sql_handoff_enabled=0, sql_table='different_target'
+               WHERE id=?""",
+            (first["id"],),
+        )
+    with pytest.raises(HTTPException, match="First writer"):
+        flows.queue_run(second["id"], _request())
+
+    with database.get_db() as db:
+        runs = db.execute(
+            "SELECT id, flow_id, status FROM flow_runs ORDER BY id"
+        ).fetchall()
+    assert [(row["id"], row["flow_id"], row["status"]) for row in runs] == [
+        (first_run["id"], first["id"], "queued")
+    ]
+
+
+def test_scheduler_queues_only_one_flow_per_physical_sql_target(flow_db, monkeypatch):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(flows, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode}
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'shared_target', CURRENT_TIMESTAMP, 0)"""
+        )
+    common = {
+        "sql_handoff_enabled": True,
+        "sql_mode": "append",
+        "sql_database": "warehouse",
+        "sql_schema": "reporting",
+        "sql_table": "shared_target",
+    }
+    first = flows.create_flow(
+        _flow(site["id"], report["id"], name="First schedule", **common), _request()
+    )
+    second = flows.create_flow(
+        _flow(site["id"], report["id"], name="Second schedule", **common), _request()
+    )
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flows SET next_run_at='2020-01-01T08:00:00' WHERE id IN (?, ?)",
+            (first["id"], second["id"]),
+        )
+
+    result = flows.queue_due_flows()
+
+    assert result["count"] == 1
+    with database.get_db() as db:
+        active = db.execute(
+            """SELECT flow_id FROM flow_runs
+               WHERE status IN ('queued','claimed','running') ORDER BY id"""
+        ).fetchall()
+    assert [row["flow_id"] for row in active] == [first["id"]]
+
+
 def test_terminal_run_can_retry_sql_without_browser_or_download(flow_db, tmp_path, monkeypatch):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
@@ -3144,6 +3243,112 @@ def test_terminal_run_can_retry_sql_without_browser_or_download(flow_db, tmp_pat
     with database.get_db() as db:
         row = db.execute("SELECT trigger_type, status FROM flow_runs WHERE id=?", (retried["id"],)).fetchone()
     assert dict(row) == {"trigger_type": "sql_retry", "status": "queued"}
+
+
+def test_sql_retry_uses_saved_target_for_cross_flow_collision(
+    flow_db, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(flows, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode}
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'shared_target', CURRENT_TIMESTAMP, 0)"""
+        )
+    common = {
+        "sql_handoff_enabled": True,
+        "sql_mode": "append",
+        "sql_database": "warehouse",
+        "sql_schema": "reporting",
+        "sql_table": "shared_target",
+    }
+    first = flows.create_flow(
+        _flow(site["id"], report["id"], name="Retry writer", **common), _request()
+    )
+    second = flows.create_flow(
+        _flow(site["id"], report["id"], name="Active writer", **common), _request()
+    )
+    first_run = flows.queue_run(first["id"], _request())
+    artifact = tmp_path / "retry.csv"
+    artifact.write_text("value\n1\n", encoding="utf-8")
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flow_runs SET status='failed', artifact_json=?, finished_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (
+                json.dumps([{
+                    "file_path": str(artifact), "filename": artifact.name,
+                    "status": "saved",
+                }]),
+                first_run["id"],
+            ),
+        )
+        # Retry SQL keeps the source run's target, not this mutable Flow target.
+        db.execute(
+            """UPDATE flows SET sql_handoff_enabled=0, sql_table='different_target'
+               WHERE id=?""",
+            (first["id"],),
+        )
+    flows.queue_run(second["id"], _request())
+
+    with pytest.raises(HTTPException, match="Active writer"):
+        flows.retry_run_sql(first_run["id"], _request())
+
+
+def test_resume_blocks_another_flow_writing_current_physical_target(
+    flow_db, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(flows, "UPLOAD_PGHOST", "warehouse.example.test")
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode}
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'shared_target', CURRENT_TIMESTAMP, 0)"""
+        )
+    common = {
+        "sql_handoff_enabled": True,
+        "sql_mode": "append",
+        "sql_database": "warehouse",
+        "sql_schema": "reporting",
+        "sql_table": "shared_target",
+    }
+    first = flows.create_flow(
+        _flow(site["id"], report["id"], name="Resume writer", **common), _request()
+    )
+    second = flows.create_flow(
+        _flow(site["id"], report["id"], name="Active writer", **common), _request()
+    )
+    first_run = flows.queue_run(first["id"], _request())
+    artifact = tmp_path / "resume.csv"
+    artifact.write_text("value\n1\n", encoding="utf-8")
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flow_runs SET status='failed', artifact_json=?, finished_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (
+                json.dumps([{
+                    "file_path": str(artifact), "filename": artifact.name,
+                    "status": "saved", "period_key": "2026-W30",
+                }]),
+                first_run["id"],
+            ),
+        )
+    flows.queue_run(second["id"], _request())
+
+    with pytest.raises(HTTPException, match="Active writer"):
+        flows.resume_run(first_run["id"], _request())
 
 
 def test_sql_retry_rejects_missing_saved_artifact(flow_db, tmp_path, monkeypatch):

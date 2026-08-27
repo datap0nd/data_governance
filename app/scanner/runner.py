@@ -34,7 +34,12 @@ from app.query_history import (
     observe_query,
     report_artifact_key,
 )
-from app.source_identity import exact_identity_rows, reconcile_flow_target, split_relation, upsert_postgres_identity
+from app.source_identity import (
+    exact_identity_rows,
+    reconcile_all_flow_targets,
+    split_relation,
+    upsert_postgres_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +237,29 @@ def run_scan(
             #   2. "database.schema.table" -> "schema.table"
             # Canonical form is just schema.table.
             def _merge_source(db, old_id, new_id, old_name, new_name, log_lines):
-                """Migrate all FK references from old_id to new_id, then delete old."""
+                """Merge only sources with the same structured identity state.
+
+                Legacy display-name cleanup must never move references between
+                two different physical PostgreSQL relations, or from an
+                unidentified legacy source onto an identified source.
+                """
+                identity_columns = (
+                    "server_name, database_name, schema_name, relation_name"
+                )
+                old_identity = db.execute(
+                    f"SELECT {identity_columns} FROM source_postgres_identities WHERE source_id=?",
+                    (old_id,),
+                ).fetchone()
+                new_identity = db.execute(
+                    f"SELECT {identity_columns} FROM source_postgres_identities WHERE source_id=?",
+                    (new_id,),
+                ).fetchone()
+                if old_identity is not None or new_identity is not None:
+                    log_lines.append(
+                        f"SKIPPED MERGE: {old_name} -> {new_name} "
+                        "(structured PostgreSQL identity is authoritative)"
+                    )
+                    return False
                 db.execute("UPDATE report_tables SET source_id = ? WHERE source_id = ?",
                            (new_id, old_id))
                 db.execute("UPDATE script_tables SET source_id = ? WHERE source_id = ?",
@@ -253,6 +280,7 @@ def run_scan(
                 db.execute("DELETE FROM source_probes WHERE source_id = ?", (old_id,))
                 db.execute("DELETE FROM sources WHERE id = ?", (old_id,))
                 log_lines.append(f"MERGED: {old_name} -> {new_name} (source {old_id} into {new_id})")
+                return True
 
             # Pass 1: Strip "PGHOST/PGDATABASE/" prefix
             if PGHOST:
@@ -260,7 +288,12 @@ def run_scan(
                 if PGDATABASE:
                     prefix += f"{PGDATABASE}/"
                 old_rows = db.execute(
-                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    """SELECT s.id, s.name FROM sources s
+                       WHERE s.name LIKE ? AND s.type = 'postgresql'
+                         AND NOT EXISTS (
+                             SELECT 1 FROM source_postgres_identities spi
+                             WHERE spi.source_id=s.id
+                         )""",
                     (f"{PGHOST}/%",),
                 ).fetchall()
                 for row in old_rows:
@@ -268,7 +301,9 @@ def run_scan(
                     dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
                                     (new_name, row["id"])).fetchone()
                     if dup:
-                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
+                        _merge_source(
+                            db, row["id"], dup["id"], row["name"], new_name, log_lines
+                        )
                     else:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
@@ -277,7 +312,12 @@ def run_scan(
             if PGDATABASE:
                 db_prefix = f"{PGDATABASE}."
                 old_rows = db.execute(
-                    "SELECT id, name FROM sources WHERE name LIKE ? AND type = 'postgresql'",
+                    """SELECT s.id, s.name FROM sources s
+                       WHERE s.name LIKE ? AND s.type = 'postgresql'
+                         AND NOT EXISTS (
+                             SELECT 1 FROM source_postgres_identities spi
+                             WHERE spi.source_id=s.id
+                         )""",
                     (f"{PGDATABASE}.%",),
                 ).fetchall()
                 for row in old_rows:
@@ -287,7 +327,9 @@ def run_scan(
                     dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
                                     (new_name, row["id"])).fetchone()
                     if dup:
-                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
+                        _merge_source(
+                            db, row["id"], dup["id"], row["name"], new_name, log_lines
+                        )
                     else:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
@@ -297,7 +339,12 @@ def run_scan(
             # Also strips internal parens like "foo(bar)baz" -> "foobaz"
             import re as _re
             paren_rows = db.execute(
-                "SELECT id, name FROM sources WHERE name LIKE '%(%' OR name LIKE '%)%'"
+                """SELECT s.id, s.name FROM sources s
+                   WHERE (s.name LIKE '%(%' OR s.name LIKE '%)%')
+                     AND NOT EXISTS (
+                         SELECT 1 FROM source_postgres_identities spi
+                         WHERE spi.source_id=s.id
+                     )"""
             ).fetchall()
             for row in paren_rows:
                 # Strip all parenthesised groups, including internal ones
@@ -308,7 +355,9 @@ def run_scan(
                     dup = db.execute("SELECT id FROM sources WHERE name = ? AND id != ?",
                                     (new_name, row["id"])).fetchone()
                     if dup:
-                        _merge_source(db, row["id"], dup["id"], row["name"], new_name, log_lines)
+                        _merge_source(
+                            db, row["id"], dup["id"], row["name"], new_name, log_lines
+                        )
                     else:
                         db.execute("UPDATE sources SET name = ? WHERE id = ?",
                                    (new_name, row["id"]))
@@ -320,7 +369,12 @@ def run_scan(
             # Archive rather than delete so nothing is lost.
             from app.scanner.tmdl_parser import _validate_table_name
             pg_rows = db.execute(
-                "SELECT id, name FROM sources WHERE type = 'postgresql' AND archived = 0"
+                """SELECT s.id, s.name FROM sources s
+                   WHERE s.type = 'postgresql' AND s.archived = 0
+                     AND NOT EXISTS (
+                         SELECT 1 FROM source_postgres_identities spi
+                         WHERE spi.source_id=s.id
+                     )"""
             ).fetchall()
             archived_count = 0
             for row in pg_rows:
@@ -360,25 +414,26 @@ def run_scan(
                         schema=pg_parts[0],
                         relation=pg_parts[1],
                     )
+                    if len(identity_matches) > 1:
+                        match_ids = ", ".join(
+                            str(int(row["source_id"])) for row in identity_matches
+                        )
+                        raise RuntimeError(
+                            "Ambiguous PostgreSQL identity for "
+                            f"{source_info.database}.{pg_parts[0]}.{pg_parts[1]}: "
+                            f"sources {match_ids}"
+                        )
                     if len(identity_matches) == 1:
                         existing = db.execute(
                             "SELECT id, source_query, owner FROM sources WHERE id=?",
                             (identity_matches[0]["source_id"],),
                         ).fetchone()
-                if not existing:
+                if not existing and not (pg_parts and source_info.database):
                     candidate = db.execute(
                         "SELECT id, source_query, owner FROM sources WHERE name = ?",
                         (source_info.display_name,),
                     ).fetchone()
-                    if candidate and pg_parts:
-                        claimed = db.execute(
-                            "SELECT 1 FROM source_postgres_identities WHERE source_id=?",
-                            (candidate["id"],),
-                        ).fetchone()
-                        if not claimed:
-                            existing = candidate
-                    else:
-                        existing = candidate
+                    existing = candidate
 
                 if existing:
                     source_id = existing["id"]
@@ -396,10 +451,17 @@ def run_scan(
                         "SELECT 1 FROM sources WHERE name=?", (source_name,)
                     ).fetchone()
                     if name_taken and pg_parts:
-                        source_name = (
+                        base_name = (
                             f"{source_info.display_name} "
                             f"[{source_info.database}@{source_info.server}]"
                         )
+                        source_name = base_name
+                        suffix = 2
+                        while db.execute(
+                            "SELECT 1 FROM sources WHERE name=?", (source_name,)
+                        ).fetchone():
+                            source_name = f"{base_name} #{suffix}"
+                            suffix += 1
                     cursor = db.execute(
                         """INSERT INTO sources (name, type, connection_info, source_query, discovered_by, created_at, updated_at)
                            VALUES (?, ?, ?, ?, 'scan', ?, ?)""",
@@ -416,9 +478,8 @@ def run_scan(
                     new_sources += 1
                     table_info = f" -> {source_info.sql_table}" if source_info.sql_table else ""
                     log_lines.append(f"NEW: {source_info.display_name} ({source_info.source_type}){table_info}")
-                source_ids_by_key[key] = int(source_id)
                 if pg_parts and source_info.database:
-                    upsert_postgres_identity(
+                    identity_claim = upsert_postgres_identity(
                         db,
                         source_id=int(source_id),
                         server=source_info.server,
@@ -428,11 +489,60 @@ def run_scan(
                         relation_kind="table",
                         verified_at=now,
                     )
+                    if identity_claim["status"] == "conflict":
+                        # A source ID is one immutable physical relation. If a
+                        # legacy/display-name match points elsewhere, create a
+                        # database-qualified source instead of overwriting its
+                        # identity and silently moving existing lineage.
+                        base_name = (
+                            f"{source_info.display_name} "
+                            f"[{source_info.database}@{source_info.server}]"
+                        )
+                        source_name = base_name
+                        suffix = 2
+                        while db.execute(
+                            "SELECT 1 FROM sources WHERE name=?", (source_name,)
+                        ).fetchone():
+                            source_name = f"{base_name} #{suffix}"
+                            suffix += 1
+                        cursor = db.execute(
+                            """INSERT INTO sources
+                                   (name, type, connection_info, source_query,
+                                    discovered_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, 'scan', ?, ?)""",
+                            (
+                                source_name,
+                                source_info.source_type,
+                                source_info.connection_info,
+                                source_info.raw_expression,
+                                now,
+                                now,
+                            ),
+                        )
+                        source_id = int(cursor.lastrowid)
+                        replacement_claim = upsert_postgres_identity(
+                            db,
+                            source_id=source_id,
+                            server=source_info.server,
+                            database=source_info.database,
+                            schema=pg_parts[0],
+                            relation=pg_parts[1],
+                            relation_kind="table",
+                            verified_at=now,
+                        )
+                        if replacement_claim["status"] == "conflict":
+                            raise RuntimeError(
+                                f"Could not claim PostgreSQL identity for {source_name}."
+                            )
+                        new_sources += 1
+                        log_lines.append(
+                            f"NEW: {source_name} (postgresql) -> {source_info.sql_table}"
+                        )
+                source_ids_by_key[key] = int(source_id)
 
             # Exact links are safe to backfill only after every source identity
             # from this scan has landed. Ambiguous targets remain null.
-            for flow_row in db.execute("SELECT id FROM flows ORDER BY id").fetchall():
-                reconcile_flow_target(db, int(flow_row["id"]), server=UPLOAD_PGHOST)
+            reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
 
             # After the upsert so sources first seen this scan are archived
             # before the follow-up probe runs.
