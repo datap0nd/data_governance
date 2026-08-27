@@ -19,11 +19,12 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from app.config import DB_PATH
-from app.database import init_db
+from app.config import DB_PATH, UPLOAD_PGHOST
+from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
+from app.source_identity import reconcile_all_flow_targets
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -456,10 +457,26 @@ def _configure_scheduler_jobs() -> dict:
     return refresh_time
 
 
+def _reconcile_startup_flow_targets() -> dict:
+    """Repair uniquely resolvable legacy Flow links after schema migration."""
+    with get_db() as db:
+        return reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    reconciliation = _reconcile_startup_flow_targets()
+    logging.getLogger(__name__).info(
+        "Flow target reconciliation: total=%d changed=%d confirmed=%d "
+        "ambiguous=%d unresolved=%d",
+        reconciliation["total"],
+        reconciliation["changed"],
+        reconciliation["confirmed"],
+        reconciliation["ambiguous"],
+        reconciliation["unresolved"],
+    )
 
     # Daily backup plus a user-configurable overall refresh.
     refresh_time = _configure_scheduler_jobs()

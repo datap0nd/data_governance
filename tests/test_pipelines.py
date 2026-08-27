@@ -101,6 +101,17 @@ def _seed_pipeline(pipeline_db, monkeypatch):
     )
 
 
+def _sql_job(table: str, *, database_name: str = "analytics", schema: str = "bi_reporting"):
+    return pipelines._json({
+        "sql_handoff": {
+            "enabled": True,
+            "database": database_name,
+            "schema": schema,
+            "table": table,
+        }
+    })
+
+
 def test_exact_identity_keeps_quoted_case_and_database_collisions(pipeline_db):
     now = datetime.now(timezone.utc).isoformat()
     with get_db() as db:
@@ -167,6 +178,146 @@ def test_inflow_outflow_plan_selects_both_flows_and_orders_mv(pipeline_db, monke
     assert plan["powerbi"]["dataset_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_plan_uses_unique_effective_flow_target_without_mutating(pipeline_db, monkeypatch):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    original_timestamp = "2001-02-03T04:05:06+00:00"
+    with get_db() as db:
+        db.execute(
+            "UPDATE flows SET sql_target_source_id=NULL, updated_at=? WHERE id=20",
+            (original_timestamp,),
+        )
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    inflow = next(flow for flow in plan["flows"] if flow["id"] == 20)
+    assert inflow["target_source_id"] == 11
+    assert inflow["persisted_target_source_id"] is None
+    assert inflow["target_resource_key"] == (
+        "warehouse.example.test|analytics|bi_reporting|inflow"
+    )
+    with get_db() as db:
+        row = db.execute(
+            "SELECT sql_target_source_id, updated_at FROM flows WHERE id=20"
+        ).fetchone()
+    assert row["sql_target_source_id"] is None
+    assert row["updated_at"] == original_timestamp
+
+
+def test_plan_preserves_valid_stored_selection_when_exact_identity_is_duplicated(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO sources(id, name, type, archived) VALUES (13, 'duplicate inflow', 'postgresql', 0)"
+        )
+        upsert_postgres_identity(
+            db, source_id=13, server="warehouse.example.test", database="analytics",
+            schema="bi_reporting", relation="inflow", verified_at=now,
+        )
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert plan["blockers"] == []
+    inflow = next(flow for flow in plan["flows"] if flow["id"] == 20)
+    assert inflow["target_source_id"] == 11
+    assert inflow["persisted_target_source_id"] == 11
+
+
+def test_plan_detects_duplicate_physical_target_across_distinct_source_ids(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO sources(id, name, type, archived) VALUES (13, 'duplicate inflow', 'postgresql', 0)"
+        )
+        upsert_postgres_identity(
+            db, source_id=13, server="warehouse.example.test", database="analytics",
+            schema="bi_reporting", relation="inflow", verified_at=now,
+        )
+        db.execute("INSERT INTO source_dependencies(source_id, depends_on_id) VALUES (10, 13)")
+        db.execute(
+            """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table,
+                    sql_target_source_id, browser_mode)
+               VALUES (23, 'inflow duplicate writer', 10, 10, 'C:\\Exports', 'x.csv',
+                       1, 'append', 'analytics', 'bi_reporting', 'inflow', 13, 'headless')"""
+        )
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert any(
+        "Multiple selected Flows write one target" in blocker
+        for blocker in plan["blockers"]
+    )
+
+
+def test_plan_blocks_standalone_run_on_same_physical_target(pipeline_db, monkeypatch):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO sources(id, name, type, archived) VALUES (13, 'duplicate inflow', 'postgresql', 0)"
+        )
+        upsert_postgres_identity(
+            db, source_id=13, server="warehouse.example.test", database="analytics",
+            schema="bi_reporting", relation="inflow", verified_at=now,
+        )
+        db.execute(
+            """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table,
+                    sql_target_source_id, browser_mode)
+               VALUES (23, 'standalone inflow writer', 10, 10, 'C:\\Exports', 'x.csv',
+                       1, 'append', 'analytics', 'bi_reporting', 'inflow', 13, 'headless')"""
+        )
+        cursor = db.execute(
+            """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json)
+               VALUES (23, 'manual', 'running', ?)""",
+            (_sql_job("inflow"),),
+        )
+        active_run_id = int(cursor.lastrowid)
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert any(
+        f"standalone inflow writer' run #{active_run_id}" in blocker
+        for blocker in plan["blockers"]
+    )
+
+
+def test_plan_uses_active_run_job_target_after_flow_configuration_changes(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table,
+                    browser_mode)
+               VALUES (23, 'reconfigured writer', 10, 10, 'C:\\Exports', 'x.csv',
+                       0, 'append', 'analytics', 'bi_reporting', 'outflow', 'headless')"""
+        )
+        cursor = db.execute(
+            """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json)
+               VALUES (23, 'manual', 'running', ?)""",
+            (_sql_job("inflow"),),
+        )
+        active_run_id = int(cursor.lastrowid)
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert any(
+        f"reconfigured writer' run #{active_run_id}" in blocker
+        for blocker in plan["blockers"]
+    )
+
+
 def test_topological_sort_is_upstream_first_and_blocks_cycle():
     ordered, cycle = pipelines._topological_mvs({1, 2, 3}, [(1, 2), (2, 3)])
     assert ordered == [3, 2, 1]
@@ -177,8 +328,17 @@ def test_topological_sort_is_upstream_first_and_blocks_cycle():
 
 def test_preview_confirmation_persists_steps_and_reserves_resources(pipeline_db, monkeypatch):
     _seed_pipeline(pipeline_db, monkeypatch)
+    with get_db() as db:
+        db.execute(
+            "UPDATE flows SET sql_target_source_id=NULL, updated_at='2001-01-01' WHERE id=20"
+        )
+        db.execute("UPDATE flows SET updated_at='2002-02-02' WHERE id=21")
     request = SimpleNamespace(state=SimpleNamespace(actor="Requester"))
     preview = pipelines.refresh_plan(1, request)
+    with get_db() as db:
+        assert db.execute(
+            "SELECT sql_target_source_id FROM flows WHERE id=20"
+        ).fetchone()[0] is None
     run = pipelines.create_pipeline_run(
         1, pipelines.RunCreate(plan_token=preview["plan_token"]), request
     )
@@ -187,12 +347,123 @@ def test_preview_confirmation_persists_steps_and_reserves_resources(pipeline_db,
         "flow", "flow", "mv", "powerbi", "notification"
     ]
     assert {lock["resource_type"] for lock in run["resource_locks"]} == {
-        "report", "dataset", "flow", "mv"
+        "report", "dataset", "flow", "flow_target", "mv"
+    }
+    inflow_step = next(
+        step for step in run["steps"]
+        if step["step_type"] == "flow" and step["entity_id"] == "20"
+    )
+    assert inflow_step["details"]["target_source_id"] == 11
+    assert inflow_step["details"]["target"] == {
+        "server": "warehouse.example.test",
+        "database": "analytics",
+        "schema": "bi_reporting",
+        "table": "inflow",
     }
     with get_db() as db:
+        flow = db.execute(
+            "SELECT sql_target_source_id, updated_at FROM flows WHERE id=20"
+        ).fetchone()
+        assert flow["sql_target_source_id"] == 11
+        assert flow["updated_at"] != "2001-01-01"
+        assert db.execute(
+            "SELECT updated_at FROM flows WHERE id=21"
+        ).fetchone()[0] == "2002-02-02"
         with pytest.raises(HTTPException) as exc:
             pipelines.assert_resource_unlocked(db, "flow", "20")
     assert exc.value.status_code == 409
+
+
+def test_run_confirmation_rolls_back_if_effective_target_cannot_be_persisted(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    request = SimpleNamespace(state=SimpleNamespace(actor="Requester"))
+    preview = pipelines.refresh_plan(1, request)
+    original_reconcile = pipelines.reconcile_flow_target
+
+    def conflicting_reconcile(db, flow_id, *, server):
+        if flow_id == 20:
+            db.execute("UPDATE flows SET sql_target_source_id=12 WHERE id=20")
+            return {"status": "target_changed", "source_id": 11, "matches": [11]}
+        return original_reconcile(db, flow_id, server=server)
+
+    monkeypatch.setattr(pipelines, "reconcile_flow_target", conflicting_reconcile)
+    with pytest.raises(HTTPException) as exc:
+        pipelines.create_pipeline_run(
+            1, pipelines.RunCreate(plan_token=preview["plan_token"]), request
+        )
+    assert exc.value.status_code == 409
+    with get_db() as db:
+        assert db.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT sql_target_source_id FROM flows WHERE id=20"
+        ).fetchone()[0] == 11
+
+
+def test_run_confirmation_rechecks_active_target_inside_write_transaction(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    request = SimpleNamespace(state=SimpleNamespace(actor="Requester"))
+    preview = pipelines.refresh_plan(1, request)
+    original_build = pipelines.build_refresh_plan
+    inserted = []
+
+    def build_then_queue_racing_flow(*args, **kwargs):
+        plan = original_build(*args, **kwargs)
+        if not inserted:
+            with get_db() as db:
+                db.execute(
+                    """INSERT INTO flows
+                           (id, name, site_id, report_id, target_folder, filename_template,
+                            sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table,
+                            browser_mode)
+                       VALUES (23, 'racing writer', 10, 10, 'C:\\Exports', 'x.csv',
+                               0, 'append', 'analytics', 'bi_reporting', 'outflow', 'headless')"""
+                )
+                cursor = db.execute(
+                    """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json)
+                       VALUES (23, 'manual', 'queued', ?)""",
+                    (_sql_job("inflow"),),
+                )
+                inserted.append(int(cursor.lastrowid))
+        return plan
+
+    monkeypatch.setattr(pipelines, "build_refresh_plan", build_then_queue_racing_flow)
+    with pytest.raises(HTTPException) as exc:
+        pipelines.create_pipeline_run(
+            1, pipelines.RunCreate(plan_token=preview["plan_token"]), request
+        )
+
+    assert exc.value.status_code == 409
+    assert "racing writer" in str(exc.value.detail)
+    with get_db() as db:
+        assert db.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT status FROM flow_runs WHERE id=?", (inserted[0],)
+        ).fetchone()[0] == "queued"
+
+
+def test_flow_resource_check_honors_physical_target_lock(pipeline_db, monkeypatch):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    with get_db() as db:
+        cursor = db.execute(
+            """INSERT INTO pipeline_runs(report_id, status, stage, plan_hash, plan_json, dataset_id)
+               VALUES (1, 'queued', 'queued', 'hash', '{}', 'dataset')"""
+        )
+        run_id = int(cursor.lastrowid)
+        target_key = pipelines._flow_target_key_for_id(db, 20)
+        db.execute(
+            """INSERT INTO pipeline_resource_locks(resource_type, resource_key, run_id)
+               VALUES ('flow_target', ?, ?)""",
+            (target_key, run_id),
+        )
+        with pytest.raises(HTTPException) as exc:
+            pipelines.assert_resource_unlocked(db, "flow", "20")
+        pipelines.assert_resource_unlocked(db, "flow", "21")
+    assert exc.value.status_code == 409
+    assert "SQL target" in str(exc.value.detail)
 
 
 def test_recipient_falls_back_only_to_unique_valid_requester(pipeline_db):

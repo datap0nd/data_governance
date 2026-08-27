@@ -50,9 +50,11 @@ if "fastapi" not in sys.modules:
 
 from app.database import get_db, init_db
 import app.database as database
+from app.config import UPLOAD_PGHOST
 from app.routers.lineage import get_lineage_diagram
 from app.routers.sources import list_sources
 import app.scanner.pg_deps as pg_deps
+from app.source_identity import upsert_postgres_identity
 
 
 _SCAN_PG_DEPENDENCIES = pg_deps.scan_pg_dependencies
@@ -234,6 +236,15 @@ class LineageDepthTests(unittest.TestCase):
                    (2, 'Unrelated', 90, 1, '/tmp', 'other.csv', 1, 'postgres',
                     'other_schema', 'other_table', NULL, NULL, NULL, NULL)"""
             )
+            upsert_postgres_identity(
+                db,
+                source_id=10,
+                server=UPLOAD_PGHOST,
+                database="postgres",
+                schema="BI_REPORTING",
+                relation="ASAP_FOTA_OUTPUT",
+                relation_kind="materialized_view",
+            )
 
         result = get_lineage_diagram(1)
 
@@ -268,6 +279,15 @@ class LineageDepthTests(unittest.TestCase):
                 """INSERT INTO source_probes
                    (source_id, probed_at, status)
                    VALUES (10, '2026-07-10T10:00:00+00:00', 'fresh')"""
+            )
+            upsert_postgres_identity(
+                db,
+                source_id=10,
+                server=pg_deps.PGHOST,
+                database=pg_deps.PGDATABASE,
+                schema="public",
+                relation="z_report_mv",
+                relation_kind="materialized_view",
             )
             db.execute(
                 "INSERT INTO reports (id, name, archived) VALUES (1, 'Lineage Report', 0)"

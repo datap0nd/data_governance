@@ -21,34 +21,116 @@ from app.query_history import (
 )
 from app.scanner.prober import _get_pg_connection
 from app.config import PGHOST, PGDATABASE, UPLOAD_PGHOST
-from app.source_identity import exact_identity_rows, reconcile_flow_target, upsert_postgres_identity
+from app.source_identity import (
+    exact_identity_rows,
+    normalize_server,
+    reconcile_all_flow_targets,
+    upsert_postgres_identity,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _find_or_create_source(
-    db, schema: str, table: str, now: str, relation_kind: str = "table"
-) -> int | None:
-    """Find existing source by schema.table pattern or create a new one.
+class PostgresIdentityResolutionError(RuntimeError):
+    """Raised when a physical PostgreSQL relation cannot be mapped safely."""
 
-    Returns source ID.
-    """
-    full_name = f"{schema}.{table}"
 
-    exact = exact_identity_rows(
+def _one_exact_identity(
+    db, *, server: str, database: str, schema: str, relation: str
+):
+    matches = exact_identity_rows(
         db,
-        server=PGHOST,
-        database=PGDATABASE,
+        server=server,
+        database=database,
+        schema=schema,
+        relation=relation,
+    )
+    if len(matches) > 1:
+        source_ids = ", ".join(str(int(row["source_id"])) for row in matches)
+        raise PostgresIdentityResolutionError(
+            f"Ambiguous PostgreSQL identity for {database}.{schema}.{relation} "
+            f"on {normalize_server(server) or '<unknown server>'}: sources {source_ids}"
+        )
+    return matches[0] if matches else None
+
+
+def _claim_identity(
+    db,
+    *,
+    source_id: int,
+    server: str,
+    database: str,
+    schema: str,
+    relation: str,
+    relation_kind: str,
+    verified_at: str,
+) -> None:
+    result = upsert_postgres_identity(
+        db,
+        source_id=source_id,
+        server=server,
+        database=database,
+        schema=schema,
+        relation=relation,
+        relation_kind=relation_kind,
+        verified_at=verified_at,
+    )
+    if result and result.get("status") == "conflict":
+        raise PostgresIdentityResolutionError(
+            f"Source {source_id} already belongs to a different PostgreSQL relation"
+        )
+
+
+def _new_source_name(
+    db, *, server: str, database: str, schema: str, relation: str
+) -> str:
+    """Choose a readable unique label while the structured identity stays authoritative."""
+    full_name = f"{schema}.{relation}"
+    if not db.execute("SELECT 1 FROM sources WHERE name=?", (full_name,)).fetchone():
+        return full_name
+
+    host = normalize_server(server) or "unknown-host"
+    qualified = f"{full_name} [{database}@{host}]"
+    if not db.execute("SELECT 1 FROM sources WHERE name=?", (qualified,)).fetchone():
+        return qualified
+
+    suffix = 2
+    while db.execute(
+        "SELECT 1 FROM sources WHERE name=?", (f"{qualified} #{suffix}",)
+    ).fetchone():
+        suffix += 1
+    return f"{qualified} #{suffix}"
+
+
+def _find_or_create_source(
+    db,
+    *,
+    server: str,
+    database: str,
+    schema: str,
+    table: str,
+    now: str,
+    relation_kind: str = "table",
+) -> int:
+    """Resolve one exact physical relation or create a newly identified source.
+
+    Display names and connection-info suffixes are deliberately ignored. They
+    cannot distinguish identical schema/table names in different databases.
+    """
+    exact = _one_exact_identity(
+        db,
+        server=server,
+        database=database,
         schema=schema,
         relation=table,
     )
-    if len(exact) == 1:
-        source_id = int(exact[0]["source_id"])
-        upsert_postgres_identity(
+    if exact is not None:
+        source_id = int(exact["source_id"])
+        _claim_identity(
             db,
             source_id=source_id,
-            server=PGHOST,
-            database=PGDATABASE,
+            server=server,
+            database=database,
             schema=schema,
             relation=table,
             relation_kind=relation_kind,
@@ -56,72 +138,34 @@ def _find_or_create_source(
         )
         return source_id
 
-    # Try exact match on name ending with schema.table
-    row = db.execute(
-        """SELECT s.id FROM sources s
-           WHERE s.name LIKE ? AND s.archived = 0
-             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
-           ORDER BY s.id LIMIT 1""",
-        (f"%{full_name}",),
-    ).fetchone()
-    if row:
-        source_id = int(row["id"])
-        upsert_postgres_identity(
-            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
-            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
-        )
-        return source_id
-
-    # Try matching just the table part in connection_info
-    row = db.execute(
-        """SELECT s.id FROM sources s
-           WHERE s.connection_info LIKE ? AND s.archived = 0
-             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
-           ORDER BY s.id LIMIT 1""",
-        (f"%{full_name}%",),
-    ).fetchone()
-    if row:
-        source_id = int(row["id"])
-        upsert_postgres_identity(
-            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
-            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
-        )
-        return source_id
-
-    # Try matching just the table name (scanner may use db.table instead of schema.table)
-    row = db.execute(
-        """SELECT s.id FROM sources s
-           WHERE (s.name LIKE ? OR s.connection_info LIKE ?) AND s.archived = 0
-             AND NOT EXISTS (SELECT 1 FROM source_postgres_identities spi WHERE spi.source_id=s.id)
-           ORDER BY s.id LIMIT 1""",
-        (f"%.{table}", f"%.{table}%"),
-    ).fetchone()
-    if row:
-        source_id = int(row["id"])
-        upsert_postgres_identity(
-            db, source_id=source_id, server=PGHOST, database=PGDATABASE,
-            schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
-        )
-        return source_id
-
-    # Create new source for this upstream table
-    source_name = full_name
-    if db.execute("SELECT 1 FROM sources WHERE name=?", (source_name,)).fetchone():
-        source_name = f"{full_name} [{PGDATABASE}@{PGHOST}]"
+    full_name = f"{schema}.{table}"
+    source_name = _new_source_name(
+        db,
+        server=server,
+        database=database,
+        schema=schema,
+        relation=table,
+    )
+    connection_info = f"{normalize_server(server)}/{database}/{full_name}"
     cursor = db.execute(
         """INSERT INTO sources (name, type, connection_info, discovered_by, created_at, updated_at)
            VALUES (?, 'postgresql', ?, 'pg_deps', ?, ?)""",
-        (source_name, full_name, now, now),
-    )
-    # Insert initial unknown probe
-    db.execute(
-        "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-        (cursor.lastrowid, now, "Discovered as MV dependency"),
+        (source_name, connection_info, now, now),
     )
     source_id = int(cursor.lastrowid)
-    upsert_postgres_identity(
-        db, source_id=source_id, server=PGHOST, database=PGDATABASE,
-        schema=schema, relation=table, relation_kind=relation_kind, verified_at=now,
+    db.execute(
+        "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
+        (source_id, now, "Discovered as MV dependency"),
+    )
+    _claim_identity(
+        db,
+        source_id=source_id,
+        server=server,
+        database=database,
+        schema=schema,
+        relation=table,
+        relation_kind=relation_kind,
+        verified_at=now,
     )
     return source_id
 
@@ -230,30 +274,28 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                 progressed = False
                 for full_mv_name in sorted(pending_mvs):
                     refs = mv_deps[full_mv_name]
+                    mv_schema, mv_name = full_mv_name.split(".", 1)
 
-                    # Find this MV in our sources table. A downstream MV may
-                    # have registered it during an earlier fixed-point pass.
-                    mv_source = db.execute(
-                        "SELECT id FROM sources WHERE name LIKE ? AND archived = 0",
-                        (f"%{full_mv_name}",),
-                    ).fetchone()
-                    if not mv_source:
-                        mv_source = db.execute(
-                            "SELECT id FROM sources WHERE connection_info LIKE ? AND archived = 0",
-                            (f"%{full_mv_name}%",),
-                        ).fetchone()
-
-                    if not mv_source:
+                    # Only an exact structured identity can anchor a tracked
+                    # MV. An upstream MV created while processing a downstream
+                    # relation becomes eligible on the next fixed-point pass.
+                    mv_identity = _one_exact_identity(
+                        db,
+                        server=PGHOST,
+                        database=PGDATABASE,
+                        schema=mv_schema,
+                        relation=mv_name,
+                    )
+                    if mv_identity is None:
                         continue
 
                     pending_mvs.remove(full_mv_name)
                     progressed = True
-                    mv_source_id = mv_source["id"]
+                    mv_source_id = int(mv_identity["source_id"])
                     mvs_found += 1
-                    mv_schema, mv_name = full_mv_name.split(".", 1)
-                    upsert_postgres_identity(
+                    _claim_identity(
                         db,
-                        source_id=int(mv_source_id),
+                        source_id=mv_source_id,
                         server=PGHOST,
                         database=PGDATABASE,
                         schema=mv_schema,
@@ -267,7 +309,13 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                             dep_kind, "table"
                         )
                         dep_source_id = _find_or_create_source(
-                            db, dep_schema, dep_table, now, relation_kind=kind
+                            db,
+                            server=PGHOST,
+                            database=PGDATABASE,
+                            schema=dep_schema,
+                            table=dep_table,
+                            now=now,
+                            relation_kind=kind,
                         )
                         if dep_source_id and dep_source_id != mv_source_id:
                             try:
@@ -291,18 +339,28 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
             # while unrelated database objects remain invisible.
             active_source_ids = get_active_source_ids(db)
             for full_mv_name, definition in sorted(mv_definitions.items()):
-                mv_source = db.execute(
-                    """SELECT id, name, owner FROM sources
-                       WHERE COALESCE(archived, 0) = 0
-                         AND (name = ? OR connection_info = ? OR connection_info LIKE ?)
-                       ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END, id
-                       LIMIT 1""",
-                    (full_mv_name, full_mv_name, f"%/{full_mv_name}", full_mv_name),
-                ).fetchone()
-                if not mv_source or int(mv_source["id"]) not in active_source_ids:
+                mv_schema, mv_name = full_mv_name.split(".", 1)
+                mv_identity = _one_exact_identity(
+                    db,
+                    server=PGHOST,
+                    database=PGDATABASE,
+                    schema=mv_schema,
+                    relation=mv_name,
+                )
+                if mv_identity is None:
+                    continue
+                source_id = int(mv_identity["source_id"])
+                if source_id not in active_source_ids:
                     continue
 
-                source_id = int(mv_source["id"])
+                mv_source = db.execute(
+                    "SELECT id, name, owner FROM sources WHERE id=?",
+                    (source_id,),
+                ).fetchone()
+                if not mv_source:
+                    raise PostgresIdentityResolutionError(
+                        f"PostgreSQL identity references missing source {source_id}"
+                    )
                 observation = observe_query(
                     db,
                     artifact_kind=MATERIALIZED_VIEW_KIND,
@@ -386,8 +444,9 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                   AND id NOT IN (SELECT source_id FROM query_versions WHERE source_id IS NOT NULL)
             """)
 
-            for flow_row in db.execute("SELECT id FROM flows ORDER BY id").fetchall():
-                reconcile_flow_target(db, int(flow_row["id"]), server=UPLOAD_PGHOST)
+            # Identity discovery is one transaction. Reconcile only after the
+            # complete batch exists so Flows never observe a partial catalog.
+            reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
 
             sources_created = db.execute(
                 "SELECT COUNT(*) FROM sources WHERE discovered_by = 'pg_deps' AND created_at = ?",

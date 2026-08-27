@@ -31,7 +31,7 @@ from app.scanner.pbi_fetch import (
     trigger_dataset_refresh,
 )
 from app.settings import get_setting, set_setting
-from app.source_identity import normalize_server
+from app.source_identity import inspect_flow_target, normalize_server, reconcile_flow_target
 
 logger = logging.getLogger(__name__)
 
@@ -289,9 +289,106 @@ def _probe_materialized_views(mvs: list[dict]) -> tuple[list[str], list[str]]:
     return blockers, warnings
 
 
+def _flow_target_resource_key(
+    *, server: str | None = None, database: str | None, schema: str | None, relation: str | None
+) -> str | None:
+    """Return the canonical lock key for one physical Flow SQL target."""
+    coordinates = (
+        normalize_server(server if server is not None else UPLOAD_PGHOST),
+        (database or "").strip(),
+        (schema or "").strip(),
+        (relation or "").strip(),
+    )
+    if not all(coordinates[1:]):
+        return None
+    return "|".join(coordinates)
+
+
+def _flow_target_key_for_id(db, flow_id: int | str) -> str | None:
+    row = db.execute(
+        """SELECT sql_handoff_enabled, sql_database, sql_schema, sql_table
+           FROM flows WHERE id=?""",
+        (flow_id,),
+    ).fetchone()
+    if not row or not row["sql_handoff_enabled"]:
+        return None
+    return _flow_target_resource_key(
+        database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
+    )
+
+
+def flow_target_resource_key_from_job(job_or_json) -> str | None:
+    """Return the physical target frozen into a durable Flow job snapshot."""
+    job = _loads(job_or_json, {}) if isinstance(job_or_json, str) else (job_or_json or {})
+    target = job.get("sql_handoff") or {}
+    if not target.get("enabled"):
+        return None
+    return _flow_target_resource_key(
+        server=target.get("server") if "server" in target else UPLOAD_PGHOST,
+        database=target.get("database"),
+        schema=target.get("schema"),
+        relation=target.get("table"),
+    )
+
+
+def active_flow_target_run(
+    db, target_resource_key: str | None, *, exclude_run_id: int | None = None
+):
+    """Find an active run whose immutable job writes the physical target."""
+    if not target_resource_key:
+        return None
+    rows = db.execute(
+        """SELECT fr.id, fr.flow_id, fr.job_json, f.name AS flow_name
+           FROM flow_runs fr
+           JOIN flows f ON f.id=fr.flow_id
+           WHERE fr.status IN ('queued','claimed','running')
+           ORDER BY fr.id"""
+    ).fetchall()
+    for row in rows:
+        if exclude_run_id is not None and int(row["id"]) == int(exclude_run_id):
+            continue
+        if flow_target_resource_key_from_job(row["job_json"]) == target_resource_key:
+            return row
+    return None
+
+
+def assert_flow_target_available(
+    db, target_resource_key: str | None, *, exclude_run_id: int | None = None
+) -> None:
+    """Block pipeline locks and active Flow jobs for one physical SQL target."""
+    if not target_resource_key:
+        return
+    owner = resource_lock_owner(db, "flow_target", target_resource_key)
+    if owner is not None:
+        raise HTTPException(409, f"Flow SQL target is reserved by full-pipeline run #{owner}.")
+    assert_no_active_flow_target_run(
+        db, target_resource_key, exclude_run_id=exclude_run_id
+    )
+
+
+def assert_no_active_flow_target_run(
+    db, target_resource_key: str | None, *, exclude_run_id: int | None = None
+) -> None:
+    """Block an existing direct/pipeline Flow job without inspecting pipeline locks."""
+    active = active_flow_target_run(
+        db, target_resource_key, exclude_run_id=exclude_run_id
+    )
+    if active is not None:
+        raise HTTPException(
+            409,
+            f"Flow SQL target is already being written by Flow "
+            f"'{active['flow_name']}' run #{active['id']}.",
+        )
+
+
 def _resource_specs(plan: dict) -> list[tuple[str, str]]:
     resources = [("report", str(plan["report"]["id"])), ("dataset", plan["powerbi"]["dataset_id"])]
     resources.extend(("flow", str(flow["id"])) for flow in plan["flows"])
+    resources.extend(
+        ("flow_target", flow["target_resource_key"])
+        for flow in plan["flows"]
+        if flow.get("target_resource_key")
+    )
     resources.extend(("mv", mv["resource_key"]) for mv in plan["materialized_views"])
     return resources
 
@@ -308,6 +405,18 @@ def assert_resource_unlocked(db, resource_type: str, resource_key: str) -> None:
     owner = resource_lock_owner(db, resource_type, resource_key)
     if owner is not None:
         raise HTTPException(409, f"Resource is reserved by full-pipeline run #{owner}.")
+    # Every existing manual Flow mutation/start path calls this helper with the
+    # Flow ID. Also honor a full-pipeline lock held by another Flow that writes
+    # the same physical PostgreSQL relation.
+    if resource_type == "flow":
+        target_key = _flow_target_key_for_id(db, resource_key)
+        if target_key:
+            target_owner = resource_lock_owner(db, "flow_target", target_key)
+            if target_owner is not None:
+                raise HTTPException(
+                    409,
+                    f"Flow SQL target is reserved by full-pipeline run #{target_owner}.",
+                )
 
 
 def _plan_snapshot(plan: dict) -> dict:
@@ -388,47 +497,53 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
             materialized_views.append(item)
 
         flow_rows = db.execute(
-            """SELECT id, name, browser_mode, sql_database, sql_schema, sql_table,
-                      sql_target_source_id, updated_at
+            """SELECT id, name, browser_mode, sql_handoff_enabled, sql_database,
+                      sql_schema, sql_table, sql_target_source_id, updated_at
                FROM flows WHERE sql_handoff_enabled=1 ORDER BY id"""
         ).fetchall()
         flows = []
         closure = set(source_ids)
         for row in flow_rows:
-            exact_ids = [
-                source_id for source_id, identity in identities.items()
-                if identity["server"] == normalize_server(UPLOAD_PGHOST)
-                and identity["database"] == (row["sql_database"] or "").strip()
-                and identity["schema"] == (row["sql_schema"] or "").strip()
-                and identity["relation"] == (row["sql_table"] or "").strip()
-            ]
-            linked = row["sql_target_source_id"]
-            if linked is None and set(exact_ids) & closure:
+            inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
+            exact_ids = {int(source_id) for source_id in inspection.get("matches", [])}
+            effective = inspection.get("effective_source_id")
+            effective_id = int(effective) if effective is not None else None
+            if effective_id is None and exact_ids & closure:
                 blockers.append(f"Flow '{row['name']}' has an unresolved or ambiguous SQL target.")
-            if linked is not None and int(linked) in closure:
-                if int(linked) not in exact_ids:
-                    blockers.append(f"Flow '{row['name']}' target link is stale or changed.")
-                    continue
-                active = db.execute(
-                    """SELECT id FROM flow_runs WHERE flow_id=?
-                       AND status IN ('queued','claimed','running') LIMIT 1""",
-                    (row["id"],),
-                ).fetchone()
+            if effective_id is not None and effective_id in closure:
+                target = {
+                    "server": normalize_server(UPLOAD_PGHOST),
+                    "database": (row["sql_database"] or "").strip(),
+                    "schema": (row["sql_schema"] or "").strip(),
+                    "table": (row["sql_table"] or "").strip(),
+                }
+                target_resource_key = _flow_target_resource_key(
+                    server=target["server"], database=target["database"],
+                    schema=target["schema"], relation=target["table"],
+                )
+                active = active_flow_target_run(db, target_resource_key)
                 if active:
-                    blockers.append(f"Flow '{row['name']}' already has active run #{active['id']}.")
+                    if int(active["flow_id"]) == int(row["id"]):
+                        blockers.append(
+                            f"Flow '{row['name']}' already has active run #{active['id']}."
+                        )
+                    else:
+                        blockers.append(
+                            f"Flow '{row['name']}' SQL target is already being written by "
+                            f"Flow '{active['flow_name']}' run #{active['id']}."
+                        )
                 flows.append({
                     "id": int(row["id"]), "name": row["name"],
                     "browser_mode": row["browser_mode"],
-                    "target_source_id": int(linked),
-                    "target": {
-                        "database": row["sql_database"], "schema": row["sql_schema"],
-                        "table": row["sql_table"],
-                    },
+                    "target_source_id": effective_id,
+                    "persisted_target_source_id": inspection.get("persisted_source_id"),
+                    "target": target,
+                    "target_resource_key": target_resource_key,
                     "updated_at": row["updated_at"],
                 })
-        by_target: dict[int, list[str]] = {}
+        by_target: dict[str, list[str]] = {}
         for flow in flows:
-            by_target.setdefault(flow["target_source_id"], []).append(flow["name"])
+            by_target.setdefault(flow["target_resource_key"], []).append(flow["name"])
         for names in by_target.values():
             if len(names) > 1:
                 blockers.append("Multiple selected Flows write one target: " + ", ".join(names) + ".")
@@ -461,6 +576,10 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         # Power BI is resolved below; check Flow/MV/report locks now.
         provisional_resources = [("report", str(report_id))]
         provisional_resources += [("flow", str(flow["id"])) for flow in flows]
+        provisional_resources += [
+            ("flow_target", flow["target_resource_key"])
+            for flow in flows if flow.get("target_resource_key")
+        ]
         provisional_resources += [("mv", mv["resource_key"]) for mv in materialized_views]
         for resource_type, resource_key in provisional_resources:
             owner = resource_lock_owner(db, resource_type, resource_key)
@@ -1258,6 +1377,55 @@ def refresh_plan(report_id: int, request: Request):
     return plan
 
 
+def _confirm_flow_targets_for_run(db, plan: dict) -> None:
+    """Revalidate and persist the previewed exact targets in the run transaction."""
+    for expected in plan["flows"]:
+        row = db.execute(
+            """SELECT id, sql_handoff_enabled, sql_database, sql_schema, sql_table,
+                      sql_target_source_id
+               FROM flows WHERE id=?""",
+            (expected["id"],),
+        ).fetchone()
+        if not row:
+            raise HTTPException(409, "A selected Flow no longer exists. Preview the pipeline again.")
+
+        target_key = _flow_target_resource_key(
+            database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
+        ) if row["sql_handoff_enabled"] else None
+        inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
+        effective = inspection.get("effective_source_id")
+        effective_id = int(effective) if effective is not None else None
+        expected_id = int(expected["target_source_id"])
+        if effective_id != expected_id or target_key != expected.get("target_resource_key"):
+            raise HTTPException(
+                409,
+                f"Flow '{expected['name']}' SQL target changed. Preview the pipeline again.",
+            )
+
+        # The preview checked this too, but a direct Flow can be queued in the
+        # gap before this BEGIN IMMEDIATE transaction acquires the write slot.
+        # Recheck its frozen job target before creating governed locks.
+        assert_flow_target_available(db, target_key)
+
+        # This is the only point in the preview/confirmation path that mutates
+        # a Flow link. The reconciler updates updated_at only when the FK changes.
+        reconcile_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
+        confirmed = inspect_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
+        confirmed_effective = confirmed.get("effective_source_id")
+        confirmed_persisted = confirmed.get("persisted_source_id")
+        if (
+            confirmed_effective is None
+            or int(confirmed_effective) != expected_id
+            or confirmed_persisted is None
+            or int(confirmed_persisted) != expected_id
+        ):
+            raise HTTPException(
+                409,
+                f"Flow '{expected['name']}' SQL target could not be confirmed. "
+                "Preview the pipeline again.",
+            )
+
+
 @router.post("/reports/{report_id}/runs", status_code=201)
 def create_pipeline_run(report_id: int, body: RunCreate, request: Request):
     requester = get_actor(request)
@@ -1279,6 +1447,10 @@ def create_pipeline_run(report_id: int, body: RunCreate, request: Request):
     now = _iso()
     try:
         with get_db() as db:
+            # Reserve the SQLite write slot before re-resolving targets so link
+            # confirmation, run creation, steps, and locks are one atomic unit.
+            db.execute("BEGIN IMMEDIATE")
+            _confirm_flow_targets_for_run(db, plan)
             cursor = db.execute(
                 """INSERT INTO pipeline_runs
                        (report_id, status, stage, requested_by, recipient_name, recipient_email,
@@ -1299,11 +1471,17 @@ def create_pipeline_run(report_id: int, body: RunCreate, request: Request):
                 )
             sequence = 0
             for flow in plan["flows"]:
+                details = {
+                    "browser_mode": flow["browser_mode"],
+                    "target_source_id": flow["target_source_id"],
+                    "target_resource_key": flow["target_resource_key"],
+                    "target": flow["target"],
+                }
                 db.execute(
                     """INSERT INTO pipeline_run_steps
                            (run_id, step_type, sequence_no, entity_type, entity_id, entity_name, details_json)
                        VALUES (?, 'flow', ?, 'flow', ?, ?, ?)""",
-                    (run_id, sequence, str(flow["id"]), flow["name"], _json({"browser_mode": flow["browser_mode"], "target": flow["target"]})),
+                    (run_id, sequence, str(flow["id"]), flow["name"], _json(details)),
                 )
                 sequence += 1
             for mv in plan["materialized_views"]:
