@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1301,16 +1302,38 @@ def test_sql_managed_snapshot_allows_new_table_name_in_discovered_schema(flow_db
         _flow(
             site["id"], report["id"], sql_handoff_enabled=True,
             sql_mode="replace", sql_database="warehouse",
-            sql_schema="reporting", sql_table="new managed target",
+            sql_schema="reporting", sql_table="NEW Managed Target",
         ),
         _request(),
     )
 
-    assert saved["sql_table"] == "new managed target"
+    assert saved["sql_table"] == "new_managed_target"
     assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
         "enabled": True, "mode": "replace", "uppercase": False,
-        "database": "warehouse", "schema": "reporting", "table": "new managed target",
+        "database": "warehouse", "schema": "reporting", "table": "new_managed_target",
     }
+
+
+def test_sql_replace_keeps_the_exact_name_of_an_existing_discovered_table(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'Reporting Area', 'Import First and Second Activation', CURRENT_TIMESTAMP, 0)"""
+        )
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], sql_handoff_enabled=True,
+            sql_mode="replace", sql_database="warehouse",
+            sql_schema="Reporting Area", sql_table="Import First and Second Activation",
+        ),
+        _request(),
+    )
+
+    assert saved["sql_table"] == "Import First and Second Activation"
 
 
 def test_sql_uppercase_option_is_persisted_and_reaches_the_job(flow_db):
@@ -2343,7 +2366,9 @@ def test_every_active_flow_renders_a_stop_button():
     assert '${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop"' in source
     assert 'activeRun.job?.execution?.browser_mode === "headed"' not in source
     index = Path(__file__).parents[1].joinpath("app", "static", "index.html").read_text()
-    assert '/static/app.js?v=60' in index
+    # The exact number is irrelevant; the ?v=<digits> shape is what the
+    # server's mtime-based cache-buster rewrite in main.py matches on.
+    assert re.search(r"/static/app\.js\?v=\d+", index)
 
 
 def test_flow_builder_names_the_write_modes_in_plain_language():
