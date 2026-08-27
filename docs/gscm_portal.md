@@ -47,9 +47,11 @@ tab's bookmarks and lists them. Activating the tab matters because GSCM loads
 a scope's rows on selection; the application-level `gds_bookmark` dataset read
 at portal load holds only what has loaded so far, and trusting it without the
 walk is what once reported a user's Public bookmarks missing. Once a tab is
-active, its records are catalogued from that dataset when the runtime exposes
-it — tab, folder path, bookmark id, menu id, scope, and owner metadata — and
-from the rendered Favorite grid otherwise.
+active, the dataset is authoritative for tab, folder path, bookmark id, menu
+id, scope, and owner metadata when the runtime exposes it. The rendered
+Favorite grid is also inventoried whenever it binds, then explicitly
+reconciled with those dataset records; it remains the identity fallback when
+the dataset is unavailable.
 
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
@@ -114,17 +116,20 @@ const ds = nexacro.getApplication().gds_bookmark;
 `userreportid` is the stable bookmark identity, `publicscope` identifies the
 Private/Public/Custom tab, `scope` identifies the module, `menugroupname` and
 `menuname` reconstruct the category path, and `userreportname` is the leaf.
-This avoids scrolling, expansion, geometry, and concatenated ancestor text, so
-per activated tab the dataset is preferred over sweeping the grid. Reading the
-dataset **without** activating the tabs is trusted only when the Setting gear
-cannot be reached at all, and the scan says so in its progress log.
+The dataset is the authoritative source for stable ids and scope, but discovery
+also waits for and inventories any rendered rows. That second source provides
+grid-bound telemetry and lets the scanner explicitly reconcile an id-less grid
+observation with exactly one dataset row. Dataset rows remain valid when the
+grid never binds; the scan logs that contract failure with grid ids, row counts,
+raw scope counts, and Setting-shell state instead of discarding the bookmarks.
+Reading the dataset **without** activating the tabs is used only when the
+Setting gear cannot be reached at all, and that scan is marked incomplete.
 
-If a deployment does not expose `gds_bookmark` (or the dataset lists nothing
-under a tab whose grid does show rows), the grid sweep is deliberately
-restricted to the Setting dialog's `div_favorite.form.grd_bookmark` grid (the
-dialog frame's index varies by build: `Setting0` on the current portal,
-`Setting1` on an earlier one, so only the dialog-local tail is matched). It reads
-only `GridRowControl` labels in that grid and treats a visible
+Every grid sweep is deliberately restricted to the Setting dialog's
+`div_favorite.form.grd_bookmark` grid (the dialog frame's index varies by build:
+`Setting0` on the current portal, `Setting1` on an earlier one, so only the
+dialog-local tail is matched). It reads only `GridRowControl` labels in that
+grid and treats a visible
 `treeitembutton` as the folder signal. It never queries the whole page. This
 scope matters because reading the global TopFrame container's `textContent`
 concatenates labels such as `Biz Info`, `AX`, `SCM`, and `Channel` into one
@@ -139,6 +144,32 @@ The Setting gear has no text and is found by id shape (`btn_setting`,
 or stale Favorite grid cannot leak into the next attempt. Every failure includes
 a compact screen inventory so a changed control can be diagnosed from evidence.
 
+## Deterministic control resolution
+
+GSCM control lookup is deterministic and effect-verified. The current adapter
+tries known component paths, frame-number-agnostic DOM shapes, scoped labels,
+and guarded positional fallbacks; the Go control also uses the live Nexacro
+component tree. A candidate is accepted only when the expected state change
+occurs, such as the Setting shell mounting or the Favorite panel becoming
+visible. Bookmark identity and selection prefer `userreportid` in the
+application or grid-bound dataset, with rendered tree navigation kept as the
+fallback.
+
+After the deterministic repair passes a headed live run, the planned
+per-profile recipe layer can generalize component-tree lookup and preserve the
+last verified strategy as a preference. It will validate loaded component
+references, continue through alternatives when a preference fails, and write
+back a newly verified fallback. The recipe does not introduce AI into flow
+runs.
+
+Scrapling is intentionally not used for this adapter. Nexacro renders
+absolute-positioned `div` elements whose ids are full component paths, while
+the Favorite grid virtualizes and recycles its rendered row slots. CSS or
+HTML-structure similarity therefore has no stable semantic object to match.
+The Nexacro component tree and bound datasets expose the actual controls,
+records, stable bookmark ids, and native event targets, so they are stronger
+and safer primitives than generalized page scraping for this portal.
+
 ## Run lifecycle
 
 ```
@@ -150,8 +181,8 @@ worker claims the scan                  worker claims the run
   ↓ flow_gscm.discover_catalog            ↓ flow_gscm.open_bookmark
   open Setting > Favorite, activate       open Setting > Favorite, pick the tab
   each tab like a run, read its rows      select the row, press Go >>
-  (gds_bookmark preferred, grid sweep
-  otherwise)
+  (dataset ids/scopes authoritative;
+  rendered grid inventoried/reconciled)
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
 flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
                                           click btn_exceldown
@@ -167,10 +198,11 @@ the SQL handoff inserts. That is the same contract ASAP's XLSX exports use, so
 `sql_mode`, `sql_database/schema/table`, and the transformation script hook all
 behave identically for GSCM.
 
-## Scoped DOM fallback
+## Scoped rendered-grid inventory and fallback
 
-The per-tab dataset read is the normal discovery path. The grid sweep handles
-the two ways the rendered grid hides bookmarks:
+The per-tab dataset read supplies authoritative identity while the grid sweep
+supplies rendered-state telemetry and the fallback identity source. The sweep
+handles the two ways the rendered grid hides bookmarks:
 
 * **The grid virtualizes.** Only rows in view exist in the DOM, so the sweep
   pages the tree down and re-reads until nothing new appears. Because a row's
