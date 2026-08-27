@@ -9001,7 +9001,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                             <label class="flow-check flow-span-2"><input id="flow-sql-uppercase" type="checkbox" ${existing?.sql_uppercase ? "checked" : ""}><span>Uppercase all text values</span></label>
                             <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
-                            <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist></label>
+                            <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
                             ${_flowSqlLinkHtml(existing)}
                             <button type="button" class="btn-secondary" id="flow-sql-refresh">Refresh SQL targets</button>
                         </div>
@@ -9127,7 +9127,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                                 <label class="flow-check flow-span-2"><input id="flow-sql-uppercase" type="checkbox" ${existing?.sql_uppercase ? "checked" : ""}><span>Uppercase all text values</span><small>Every value below the header row is uppercased on the way into SQL (ABC123 stays ABC123, "Berlin" becomes "BERLIN"). Numbers are unaffected. Original casing is not stored.</small></label>
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
-                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema.</small></label>
+                                <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema. New table names are lowercased with spaces converted to underscores automatically; existing tables keep their exact names.</small></label>
                                 ${_flowSqlLinkHtml(existing)}
                             </div>
                             <div class="flow-span-2 flow-dialog-help">${sqlCatalog.configured ? `SQL catalog: ${sqlCatalog.targets.length} table(s), last scan ${sqlCatalog.scan?.last_scan_at ? esc(timeAgo(sqlCatalog.scan.last_scan_at)) : "not run"}${Number.isFinite(Number(sqlCatalog.scan?.duration_ms)) ? ` (${_flowDuration(sqlCatalog.scan.duration_ms)})` : ""}.` : `SQL handoff unavailable. ${esc((sqlCatalog.missing || []).join(", "))}`} <button type="button" class="btn-sm" id="flow-sql-refresh" ${!sqlCatalog.configured ? "disabled" : ""}>Refresh SQL targets</button></div>
@@ -9820,6 +9820,22 @@ function _bindFlowWorkspace() {
     $("#flow-sql-enabled")?.addEventListener("change", updateSqlFields);
     $("#flow-sql-uppercase")?.addEventListener("change", updateSqlFields);
     $("#flow-sql-mode")?.addEventListener("change", () => { updateSqlFields(); repopulateSql(); });
+    $("#flow-sql-table")?.addEventListener("input", () => {
+        // New table names are normalized live: lowercase, spaces -> underscores.
+        // A value exactly matching a discovered table is left untouched so
+        // existing tables with spaces or uppercase stay selectable for append.
+        const input = $("#flow-sql-table");
+        const matchesExisting = [...document.querySelectorAll("#flow-sql-table-options option")]
+            .some(option => option.value === input.value);
+        if (matchesExisting) return;
+        const normalized = input.value.replace(/\s/g, "_").toLowerCase();
+        if (normalized !== input.value) {
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            input.value = normalized;
+            input.setSelectionRange(start, end);
+        }
+    });
     $("#flow-sql-database")?.addEventListener("change", repopulateSql);
     $("#flow-sql-schema")?.addEventListener("change", repopulateSql);
     $("#flow-sql-refresh")?.addEventListener("click", async event => { event.currentTarget.disabled = true; try { await apiPost("/api/flows/sql/catalog/refresh"); toast("SQL targets refreshed"); await navigate("flows"); } catch (err) { toast("SQL targets not refreshed: " + err.message); event.currentTarget.disabled = false; } });

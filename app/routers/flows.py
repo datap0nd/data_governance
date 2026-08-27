@@ -1060,6 +1060,16 @@ def _validate_owner(db, body: FlowWrite):
         raise HTTPException(400, "Choose a flow owner from Tools > Create Artifacts > People.")
 
 
+def _normalize_new_sql_table(name: str) -> str:
+    """Lowercase a new table name and convert whitespace to underscores.
+
+    Applied only to tables Metronome will create itself. Existing discovered
+    tables keep their exact catalog names, which can legitimately contain
+    spaces and mixed case.
+    """
+    return re.sub(r"\s+", "_", (name or "").strip()).lower()
+
+
 def _validate_sql_target(db, body: FlowWrite):
     if not body.sql_handoff_enabled:
         return
@@ -1071,6 +1081,13 @@ def _validate_sql_target(db, body: FlowWrite):
         ).fetchone()
         if not row:
             raise HTTPException(400, "Choose a database and schema from the latest SQL catalog scan.")
+        existing = db.execute(
+            """SELECT 1 FROM flow_sql_catalog
+               WHERE database_name=? AND schema_name=? AND table_name=? AND stale=0""",
+            (body.sql_database, body.sql_schema, body.sql_table),
+        ).fetchone()
+        if not existing:
+            body.sql_table = _normalize_new_sql_table(body.sql_table)
         return
     row = db.execute(
         """SELECT 1 FROM flow_sql_catalog
