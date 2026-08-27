@@ -368,11 +368,13 @@ def _probe_file_source(db, source_id: int, file_path: str, now: str,
 # NEVER add INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, or TRUNCATE here.
 # ---------------------------------------------------------------------------
 
-def _get_pg_connection():
+def _get_pg_connection(database: str | None = None):
     """Get a PostgreSQL connection using environment credentials.
 
     Returns None if credentials are not configured.
     Connection is opened in READ-ONLY mode via SET default_transaction_read_only.
+    Callers may select another database on the same configured server; omitting
+    the argument preserves the historical PGDATABASE behavior.
     """
     if not PGHOST or not PGUSER or not PGPASSWORD:
         return None
@@ -383,7 +385,7 @@ def _get_pg_connection():
             host=PGHOST,
             user=PGUSER,
             password=PGPASSWORD,
-            database=PGDATABASE,
+            database=(database or PGDATABASE),
             connect_timeout=10,
         )
         # Force read-only at the session level as an extra safeguard
@@ -1216,11 +1218,17 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         logger.exception("Data-quality checks failed after source probe")
         quality_result = {"status": "failed", "error": str(exc)}
 
+    quality_status = str(quality_result.get("status") or "completed").casefold()
+    probe_status = (
+        "completed_with_warnings"
+        if quality_status in {"failed", "skipped", "completed_with_warnings"}
+        else "completed"
+    )
     final_log = "\n".join(log_lines) if log_lines else log_text
     with get_db() as db:
         db.execute(
-            "UPDATE probe_runs SET log = ? WHERE id = ?",
-            (final_log, probe_run_id),
+            "UPDATE probe_runs SET log = ?, status = ? WHERE id = ?",
+            (final_log, probe_status, probe_run_id),
         )
 
     summary = {
@@ -1231,7 +1239,7 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         "skipped": skipped,
         "statuses": statuses,
         "data_quality": quality_result,
-        "status": "completed",
+        "status": probe_status,
         "log": final_log,
     }
     logger.info("Probe completed: %s", summary)

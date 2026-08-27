@@ -233,6 +233,8 @@ function _bindArchiveButtons(reloadFn) {
 function statusBadge(status) {
     if (!status) return '<span class="badge badge-yellow">not probed</span>';
     const s = status.toLowerCase();
+    if (s === "completed_with_warnings")
+        return '<span class="badge badge-yellow">completed with warnings</span>';
     if (s === "fresh" || s === "healthy" || s === "current" || s === "pass" || s === "completed")
         return `<span class="badge badge-green">healthy</span>`;
     if (s === "stale" || s === "at risk" || s === "stale sources" || s === "warn" || s === "warning")
@@ -248,6 +250,68 @@ function statusBadge(status) {
     if (s === "unknown")
         return '<span class="badge badge-yellow">not probed</span>';
     return `<span class="badge badge-muted">${status}</span>`;
+}
+
+function _scanComponentLabel(key) {
+    const labels = {
+        core: "core discovery",
+        postgres_dependencies: "PostgreSQL dependencies",
+        postgres_schedules: "PostgreSQL schedules",
+        usage: "usage synchronization",
+        probe: "source probe",
+        governance: "governance checks",
+    };
+    return labels[key] || String(key || "scan component").replaceAll("_", " ");
+}
+
+function _scanStatusHasWarning(status) {
+    return ["completed_with_warnings", "warning", "warn", "failed", "error", "skipped"].includes(
+        String(status || "").toLowerCase(),
+    );
+}
+
+function _scanWarningLabels(scan) {
+    const components = scan?.components;
+    if (!components || typeof components !== "object" || Array.isArray(components)) return [];
+    const affected = [];
+    for (const [key, component] of Object.entries(components)) {
+        if (!component || typeof component !== "object" || Array.isArray(component)) continue;
+        const databaseWarnings = [];
+        if (component.databases && typeof component.databases === "object" && !Array.isArray(component.databases)) {
+            for (const [database, result] of Object.entries(component.databases)) {
+                if (result && typeof result === "object" && _scanStatusHasWarning(result.status)) {
+                    databaseWarnings.push(String(database));
+                }
+            }
+        }
+        if (databaseWarnings.length) {
+            for (const database of databaseWarnings) {
+                affected.push(`${_scanComponentLabel(key)} (${database})`);
+            }
+        } else if (_scanStatusHasWarning(component.status)) {
+            affected.push(_scanComponentLabel(key));
+        }
+    }
+    return [...new Set(affected)];
+}
+
+function _scanRunStatusHtml(scan) {
+    const affected = _scanWarningLabels(scan);
+    const detail = affected.length
+        ? `<small style="display:block;color:var(--text-dim);margin-top:0.2rem">${affected.map(esc).join(", ")}</small>`
+        : "";
+    return `${statusBadge(scan?.status)}${detail}`;
+}
+
+function _scanCompletionToast(result, pbiMessage = "") {
+    const counts = `${result?.reports_scanned ?? 0} reports, ${result?.sources_found ?? 0} sources`;
+    const suffix = pbiMessage ? `; ${pbiMessage}` : "";
+    if (String(result?.status || "").toLowerCase() === "completed_with_warnings") {
+        const affected = _scanWarningLabels(result);
+        const warning = affected.length ? affected.join(", ") : "one or more scan components";
+        return `Scan completed with warnings (${warning}): ${counts}${suffix}`;
+    }
+    return `Scan complete: ${counts}${suffix}`;
 }
 
 function actionStatusBadge(status) {
@@ -1986,10 +2050,10 @@ async function renderDashboard() {
                 <div class="stat-value">${data.alerts_active}</div>
                 <div class="stat-card-link">View &darr;</div>
             </div>
-            <div class="stat-card card-green stat-card-clickable" data-navigate="scanner" role="button" tabindex="0" aria-label="Last Scan: ${scan ? timeAgo(scan.started_at) : 'never'}" title="Click to view scanner details and trigger new scans">
+            <div class="stat-card ${scan?.status === "completed_with_warnings" ? "card-yellow" : "card-green"} stat-card-clickable" data-navigate="scanner" role="button" tabindex="0" aria-label="Last Scan: ${scan ? timeAgo(scan.started_at) : 'never'}" title="Click to view scanner details and trigger new scans">
                 <div class="stat-label">Last Scan</div>
                 <div class="stat-value" style="font-size:1.1rem">${scan ? timeAgo(scan.started_at) : "never"}</div>
-                ${scan ? `<div class="stat-breakdown">${scan.reports_scanned} reports &middot; ${scan.sources_found} sources</div>` : ""}
+                ${scan ? `<div class="stat-breakdown">${_scanRunStatusHtml(scan)} &middot; ${scan.reports_scanned} reports &middot; ${scan.sources_found} sources</div>` : ""}
                 <div class="stat-card-link">View &rarr;</div>
             </div>
         </div>
@@ -3410,7 +3474,7 @@ async function renderScanner() {
             <button id="btn-diagnose" class="btn-outline">Diagnose</button>
             <button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop Refresh Work</button>
             <span style="color:var(--text-dim);font-size:0.78rem">
-                ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)}` : "No scans yet"}
+                ${lastRun ? `Last scan: ${timeAgo(lastRun.started_at)} ${_scanRunStatusHtml(lastRun)}` : "No scans yet"}
                 ${lastProbe ? ` · Last probe: ${timeAgo(lastProbe.started_at)}` : ""}
             </span>
         </div>
@@ -3438,7 +3502,7 @@ async function renderScanner() {
                 <h2>Scan History</h2>
                 ${dataTable("dt-scans", [
                     { key: "started_at", label: "When", width: COL_W.md, render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>`, sortVal: r => r.started_at || "" },
-                    { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
+                    { key: "status", label: "Status", width: COL_W.sm, render: r => _scanRunStatusHtml(r) },
                     { key: "reports_scanned", label: "Reports", width: COL_W.sm, render: r => `${r.reports_scanned ?? "-"}`, sortVal: r => r.reports_scanned ?? 0 },
                     { key: "sources_found", label: "Sources", width: COL_W.sm, render: r => `${r.sources_found ?? "-"}`, sortVal: r => r.sources_found ?? 0 },
                     { key: "new_sources", label: "New", width: COL_W.sm, render: r => r.new_sources ? `<span style="color:var(--green)">+${r.new_sources}</span>` : '-', sortVal: r => r.new_sources ?? 0 },
@@ -10576,7 +10640,7 @@ function bindScannerButtons() {
                 const pbiMsg = pbi.status === "completed"
                     ? "PBI sync completed"
                     : `PBI sync ${pbi.status || "not launched"}`;
-                toast(`Scan complete: ${result.reports_scanned} reports, ${result.sources_found} sources; ${pbiMsg}`);
+                toast(_scanCompletionToast(result, pbiMsg));
                 navigate("scanner");
             } catch (err) {
                 toast("Scan failed: " + err.message);

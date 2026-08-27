@@ -30,6 +30,7 @@ from app.scanner.pbi_sync import (
 )
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
+from app.scanner.lifecycle import parse_components, redact_component_payload
 from app.usage import sync_usage_from_csv
 
 logger = logging.getLogger(__name__)
@@ -63,19 +64,14 @@ def do_scan(request: Request):
                 "stop": stop_result,
             }
 
-        result = run_scan(cancel_generation=generation, run_followup_probe=False)
-        if result.get("status") == "stopped":
-            result["pbi_sync"] = pbi_result
-            result["stop"] = stop_result
-            return result
-
-        probe_result = run_probe(cancel_generation=generation)
-        result["probe"] = probe_result
+        result = run_scan(cancel_generation=generation, run_followup_probe=True)
     except ScannerWorkCancelled as e:
         return {"status": "stopped", "message": str(e), "stop": stop_result}
     except Exception as e:
         logger.exception("Scanner refresh failed")
-        return {"status": "failed", "error": str(e), "stop": stop_result}
+        return redact_component_payload(
+            {"status": "failed", "error": str(e), "stop": stop_result}
+        )
     result["pbi_sync"] = pbi_result
     result["stop"] = stop_result
     return result
@@ -88,7 +84,7 @@ def do_probe(request: Request):
     stop_result = stop_pbi_sync_processes("New source probe started.")
     generation = (stop_result.get("scanner") or {}).get("generation")
     try:
-        result = run_probe(cancel_generation=generation)
+        result = redact_component_payload(run_probe(cancel_generation=generation))
         result["stop"] = stop_result
         return result
     except ScannerWorkCancelled as e:
@@ -174,6 +170,12 @@ def do_pbi_import(request: Request, data: dict = fastapi.Body(...)):
     return import_pbi_data(data)
 
 
+def _scan_run_out(row) -> ScanRunOut:
+    data = dict(row)
+    data["components"] = parse_components(data.pop("components_json", None))
+    return ScanRunOut(**data)
+
+
 @router.get("/runs", response_model=list[ScanRunOut])
 def list_scan_runs():
     """List all scan runs, most recent first."""
@@ -181,7 +183,7 @@ def list_scan_runs():
         rows = db.execute(
             "SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 20"
         ).fetchall()
-    return [ScanRunOut(**dict(r)) for r in rows]
+    return [_scan_run_out(r) for r in rows]
 
 
 @router.get("/diagnose")
@@ -196,7 +198,7 @@ def get_scan_run(run_id: int):
         r = db.execute("SELECT * FROM scan_runs WHERE id = ?", (run_id,)).fetchone()
     if not r:
         return {"error": "Scan run not found"}
-    return ScanRunOut(**dict(r))
+    return _scan_run_out(r)
 
 
 @router.post("/pg-deps")
@@ -204,7 +206,7 @@ def do_pg_deps(request: Request):
     """Scan PostgreSQL for materialized view dependencies."""
     _require_scan_access(request)
     from app.scanner.pg_deps import scan_pg_dependencies
-    return scan_pg_dependencies()
+    return redact_component_payload(scan_pg_dependencies())
 
 
 @router.post("/pg-cron")
@@ -212,7 +214,7 @@ def do_pg_cron(request: Request):
     """Scan pg_cron for MV refresh schedules."""
     _require_scan_access(request)
     from app.scanner.pg_cron import scan_pg_cron
-    return scan_pg_cron()
+    return redact_component_payload(scan_pg_cron())
 
 
 class OpenPathRequest(BaseModel):

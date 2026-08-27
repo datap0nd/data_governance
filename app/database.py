@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     changed_queries INTEGER,
     broken_refs     INTEGER,
     status          TEXT,
+    components_json TEXT,
     log             TEXT
 );
 
@@ -1363,6 +1364,8 @@ MIGRATIONS = [
          AND site_id IN (SELECT id FROM flow_sites WHERE adapter='outlook_attachment')
          AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='outlook')""",
     "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
+    # Per-component scan lifecycle details (NULL for legacy scan rows).
+    "ALTER TABLE scan_runs ADD COLUMN components_json TEXT",
 ]
 
 

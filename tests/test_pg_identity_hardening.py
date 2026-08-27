@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -281,8 +282,8 @@ def test_pg_scan_reconciles_once_after_the_complete_identity_batch(
     reconciliations = []
     monkeypatch.setattr(
         pg_deps,
-        "reconcile_all_flow_targets",
-        lambda db, *, server: reconciliations.append(server) or [],
+        "_reconcile_database_flows",
+        lambda db, database: reconciliations.append(database) or {},
     )
 
     with get_db() as db:
@@ -300,7 +301,7 @@ def test_pg_scan_reconciles_once_after_the_complete_identity_batch(
     assert result["status"] == "completed"
     assert result["mvs_found"] == 1
     assert result["deps_created"] == 1
-    assert reconciliations == ["db.internal"]
+    assert reconciliations == ["warehouse"]
     assert connection.closed
     with get_db() as db:
         dependency = db.execute(
@@ -582,7 +583,18 @@ def test_tmdl_scan_rolls_back_on_ambiguous_exact_identity(identity_db, monkeypat
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "failed"
-    assert "Ambiguous PostgreSQL identity" in result["error"]
+    assert result["error"] == "Redacted; review server logs."
+    assert result["components"]["core"]["status"] == "failed"
+    assert result["components"]["core"]["error"] == "Redacted; review server logs."
     with get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 2
+        scan = db.execute(
+            "SELECT status, components_json, log FROM scan_runs WHERE id=?",
+            (result["scan_id"],),
+        ).fetchone()
+    persisted_components = json.loads(scan["components_json"])
+    assert scan["status"] == "failed"
+    assert scan["log"] == "Core discovery failed; review server logs."
+    assert persisted_components["core"]["status"] == "failed"
+    assert persisted_components["core"]["error"] == "Redacted; review server logs."

@@ -25,6 +25,11 @@ from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.source_identity import reconcile_all_flow_targets
+from app.scanner.lifecycle import (
+    is_successful_scan_status,
+    recover_interrupted_scan_runs,
+    redact_component_payload,
+)
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -219,7 +224,6 @@ def _scheduled_backup():
 def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = True):
     """Run a full report scan and source probe."""
     from app.scanner.runner import run_scan
-    from app.scanner.prober import run_probe
     from app.scanner.control import ScannerWorkCancelled
     from app.scanner.pbi_sync import stop_pbi_sync_processes
     log = logging.getLogger("scheduler")
@@ -230,19 +234,17 @@ def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = 
         stop_result = stop_pbi_sync_processes("New scheduled scan started.")
         generation = (stop_result.get("scanner") or {}).get("generation")
     try:
-        result = run_scan(cancel_generation=generation, run_followup_probe=False)
+        result = run_scan(cancel_generation=generation, run_followup_probe=True)
         log.info("Scan result: %s", result.get("status"))
-        if result.get("status") == "stopped":
-            return {**result, "stop": stop_result}
-        probe_result = run_probe(cancel_generation=generation)
-        log.info("Probe result: %s", probe_result.get("statuses"))
-        return {**result, "probe": probe_result, "stop": stop_result}
+        return {**result, "stop": stop_result}
     except ScannerWorkCancelled as e:
         log.info("Scheduled scan stopped: %s", e)
         return {"status": "stopped", "message": str(e), "stop": stop_result}
     except Exception as e:
         log.exception("Scheduled scan failed: %s", e)
-        return {"status": "failed", "error": str(e), "stop": stop_result}
+        return redact_component_payload(
+            {"status": "failed", "error": str(e), "stop": stop_result}
+        )
 
 
 def _scheduled_pbi_sync(
@@ -306,7 +308,7 @@ def _scheduled_overall_refresh():
             return {"status": "pbi_sync_not_completed", "pbi_sync": pbi_result, "stop": stop_result}
         scan_result = _scheduled_scan(cancel_generation=generation, stop_existing=False)
         usage_result = None
-        if scan_result.get("status") == "completed":
+        if is_successful_scan_status(scan_result.get("status")):
             try:
                 from app.scanner.pbi_sync import trigger_pbi_usage_sync
 
@@ -463,10 +465,21 @@ def _reconcile_startup_flow_targets() -> dict:
         return reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
 
 
+def _recover_startup_scan_runs() -> int:
+    """Close scan rows left running when the prior service process ended."""
+    with get_db() as db:
+        return recover_interrupted_scan_runs(db)
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    interrupted_scans = _recover_startup_scan_runs()
+    if interrupted_scans:
+        logging.getLogger(__name__).warning(
+            "Recovered %d scan run(s) interrupted by restart", interrupted_scans
+        )
     reconciliation = _reconcile_startup_flow_targets()
     logging.getLogger(__name__).info(
         "Flow target reconciliation: total=%d changed=%d confirmed=%d "

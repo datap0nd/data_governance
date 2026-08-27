@@ -118,6 +118,7 @@ class ScanRunOut(BaseModel):
     changed_queries: int | None = None
     broken_refs: int | None = None
     status: str | None = None
+    components: dict | None = None
     log: str | None = None
 
 

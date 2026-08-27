@@ -222,7 +222,8 @@ def get_health_trend():
             SELECT DATE(started_at) AS day, sources_probed, fresh, stale, outdated,
                    unknown, COALESCE(no_rule, 0) AS no_rule
             FROM probe_runs
-            WHERE started_at >= date('now', '-30 days') AND status = 'completed'
+            WHERE started_at >= date('now', '-30 days')
+              AND status IN ('completed', 'completed_with_warnings')
             ORDER BY started_at
         """).fetchall()
 

@@ -4,6 +4,7 @@ from app.models import DashboardStats, ScanRunOut
 from app.routers.actions import list_actions
 from app.routers.sources import list_sources
 from app.routers.reports import list_reports
+from app.scanner.lifecycle import SUCCESSFUL_SCAN_STATUSES, parse_components
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -33,12 +34,20 @@ def get_dashboard():
 
     with get_db() as db:
         reports_total = len(visible_reports)
+        successful_statuses = tuple(sorted(SUCCESSFUL_SCAN_STATUSES))
+        status_placeholders = ", ".join("?" for _ in successful_statuses)
         last_scan_row = db.execute(
-            """SELECT * FROM scan_runs
-               WHERE status = 'completed'
-               ORDER BY started_at DESC LIMIT 1"""
+            f"""SELECT * FROM scan_runs
+                WHERE status IN ({status_placeholders})
+                ORDER BY started_at DESC LIMIT 1""",
+            successful_statuses,
         ).fetchone()
-        last_scan = ScanRunOut(**dict(last_scan_row)) if last_scan_row else None
+        if last_scan_row:
+            scan_data = dict(last_scan_row)
+            scan_data["components"] = parse_components(scan_data.pop("components_json", None))
+            last_scan = ScanRunOut(**scan_data)
+        else:
+            last_scan = None
         check_rows = db.execute(
             """SELECT c.id, cr.status
                FROM checks c
