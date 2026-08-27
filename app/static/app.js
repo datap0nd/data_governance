@@ -10177,6 +10177,16 @@ function bindDataImportPage() {
     document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", invalidateScript));
     tableSelect.addEventListener("change", invalidateScript);
     newName.addEventListener("input", () => {
+        // Show the normalized name as it is typed: lowercase, spaces -> underscores.
+        // The 1:1 character mapping keeps the caret position valid; run collapsing
+        // and trimming still happen in normalizeTableName on submit.
+        const live = newName.value.replace(/\s/g, "_").toLowerCase();
+        if (live !== newName.value) {
+            const start = newName.selectionStart;
+            const end = newName.selectionEnd;
+            newName.value = live;
+            newName.setSelectionRange(start, end);
+        }
         createResult.textContent = "";
         invalidateScript();
     });
