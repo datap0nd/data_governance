@@ -626,6 +626,7 @@ class FlowWrite(BaseModel):
     transform_script_path: str | None = Field(default=None, max_length=2000)
     sql_handoff_enabled: bool = False
     sql_mode: str | None = None
+    sql_uppercase: bool = False
     sql_database: str | None = Field(default=None, max_length=63)
     sql_schema: str | None = Field(default=None, max_length=63)
     sql_table: str | None = Field(default=None, max_length=63)
@@ -763,6 +764,7 @@ class FlowWrite(BaseModel):
         else:
             self.sql_mode = self.sql_database = self.sql_schema = self.sql_table = None
             self.sql_target_source_id = None
+            self.sql_uppercase = False
         return self
 
 
@@ -961,6 +963,7 @@ def _flow_out(db, flow_id: int) -> dict:
     result = dict(row)
     result["enabled"] = bool(result["enabled"])
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
+    result["sql_uppercase"] = bool(result.get("sql_uppercase"))
     result["transform_enabled"] = bool(result.get("transform_enabled"))
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
@@ -1241,6 +1244,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         "sql_handoff": {
             "enabled": bool(flow.get("sql_handoff_enabled")),
             "mode": flow.get("sql_mode"),
+            "uppercase": bool(flow.get("sql_uppercase")),
             "database": flow.get("sql_database"),
             "schema": flow.get("sql_schema"),
             "table": flow.get("sql_table"),
@@ -1941,15 +1945,15 @@ def create_flow(body: FlowWrite, request: Request):
                     export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, excel_trim, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
-                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_uppercase, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.source_type, body.site_id, body.report_id,
                  body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
-                 body.sql_handoff_enabled, body.sql_mode,
+                 body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
                  body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
                  body.owner_person_id, get_actor(request), now, now),
             )
@@ -2027,14 +2031,14 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
-               sql_handoff_enabled=?, sql_mode=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
+               sql_handoff_enabled=?, sql_mode=?, sql_uppercase=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
             (body.name, body.source_type, body.site_id, body.report_id,
              body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
-             body.sql_handoff_enabled, body.sql_mode,
+             body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
              body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
              body.owner_person_id, now, flow_id),
         )

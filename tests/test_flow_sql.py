@@ -1334,3 +1334,111 @@ def test_the_csv_normalizer_refuses_binary_outright(tmp_path):
     with pytest.raises(RuntimeError) as excinfo:
         flow_worker._normalize_csv(source)
     assert "Refusing to read" in str(excinfo.value)
+
+
+def test_sql_uppercase_option_uppercases_data_values_in_the_copy_stream(tmp_path, monkeypatch):
+    path = tmp_path / "normalized.csv"
+    path.write_text(
+        'Region,City,Units\nEurope,"Sao Paulo, sp",10\nmena,Dubai,7\n',
+        encoding="utf-8-sig",
+    )
+    executed = []
+    copied = []
+    transaction = SimpleNamespace(
+        commit=lambda: executed.append("commit"),
+        rollback=lambda: executed.append("rollback"),
+    )
+
+    class Result:
+        def fetchall(self):
+            return [
+                ("region", "NO", None, "NO", "NEVER"),
+                ("city", "NO", None, "NO", "NEVER"),
+                ("units", "NO", None, "NO", "NEVER"),
+            ]
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied.append((statement, stream.read()))
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            executed.append(str(statement))
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    result = flow_sql.load_artifacts(
+        [{"file_path": str(path)}],
+        {
+            "database": "db", "schema": "reporting", "table": "inflow",
+            "mode": "append", "uppercase": True,
+        },
+    )
+
+    # CSV framing survives: the quoted field keeps its embedded comma, and
+    # every data character is uppercased. COPY discards the (also uppercased)
+    # header line via HEADER TRUE.
+    assert copied[0][1] == 'REGION,CITY,UNITS\nEUROPE,"SAO PAULO, SP",10\nMENA,DUBAI,7\n'
+    assert result["uppercase"] is True
+    assert result["rows_written"] == 2
+    assert executed[-1] == "commit"
+
+
+def test_sql_copy_stream_is_unchanged_without_the_uppercase_option(tmp_path, monkeypatch):
+    path = tmp_path / "normalized.csv"
+    path.write_text("Region,Units\nEurope,10\n", encoding="utf-8-sig")
+    copied = []
+    transaction = SimpleNamespace(commit=lambda: None, rollback=lambda: None)
+
+    class Result:
+        def fetchall(self):
+            return [
+                ("region", "NO", None, "NO", "NEVER"),
+                ("units", "NO", None, "NO", "NEVER"),
+            ]
+
+    class Cursor:
+        def copy_expert(self, statement, stream):
+            copied.append(stream.read())
+
+        def close(self):
+            return None
+
+    class Connection:
+        connection = SimpleNamespace(cursor=lambda: Cursor())
+
+        def begin(self):
+            return transaction
+
+        def execute(self, statement, *_args, **_kwargs):
+            return None if str(statement).startswith("SET LOCAL") else Result()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_sql, "_engine",
+        lambda _database: SimpleNamespace(connect=lambda: Connection(), dispose=lambda: None),
+    )
+
+    flow_sql.load_artifacts(
+        [{"file_path": str(path)}],
+        {"database": "db", "schema": "reporting", "table": "inflow", "mode": "append"},
+    )
+
+    assert copied == ["Region,Units\nEurope,10\n"]

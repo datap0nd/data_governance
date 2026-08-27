@@ -231,7 +231,26 @@ def _read_artifact(path: Path, known_row_count: int | None = None) -> dict:
     }
 
 
-def _copy_artifact(connection, artifact: dict, qualified: str) -> None:
+class _UppercaseStream:
+    """Uppercase a CSV text stream on the way into PostgreSQL COPY.
+
+    str.upper() is character-for-character safe for CSV framing: quotes,
+    commas, and newlines have no uppercase form, so field boundaries and
+    quoting are preserved while every data character inside them is raised.
+    The header line is uppercased too, but COPY ... HEADER TRUE discards it.
+    """
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    def read(self, size=-1):
+        return self._handle.read(size).upper()
+
+    def readline(self, size=-1):
+        return self._handle.readline(size).upper()
+
+
+def _copy_artifact(connection, artifact: dict, qualified: str, uppercase: bool = False) -> None:
     """Stream one normalized CSV directly through PostgreSQL COPY."""
     target_columns = artifact.get("copy_columns") or artifact["columns"]
     columns = ", ".join(_quote_identifier(str(column)) for column in target_columns)
@@ -246,7 +265,7 @@ def _copy_artifact(connection, artifact: dict, qualified: str) -> None:
         # stream on Windows and Unix. The CSV parser still inspects the source
         # with newline="" above, but COPY does not need to preserve CRLF bytes.
         with artifact["path"].open("r", encoding="utf-8-sig", newline=None) as stream:
-            cursor.copy_expert(statement, stream)
+            cursor.copy_expert(statement, _UppercaseStream(stream) if uppercase else stream)
     finally:
         cursor.close()
 
@@ -289,6 +308,7 @@ def load_artifacts(
     mode = str(target.get("mode") or "append").casefold()
     if mode not in {"append", "replace"}:
         raise ValueError("SQL write mode must be append or replace.")
+    uppercase = bool(target.get("uppercase"))
     qualified = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
     target_name = f"{database}.{schema}.{table}"
     if not artifacts:
@@ -459,7 +479,7 @@ def load_artifacts(
                 file_index=index, files=len(inspected), rows=artifact["row_count"],
                 bytes=artifact["file_size"], timeout_seconds=SQL_STATEMENT_TIMEOUT_SECONDS,
             )
-            _copy_artifact(connection, artifact, copy_destination)
+            _copy_artifact(connection, artifact, copy_destination, uppercase=uppercase)
             rows_written += artifact["row_count"]
             _emit(
                 progress, "sql_copy", f"COPY {index} of {len(inspected)} completed: {artifact['filename']}.",
@@ -561,6 +581,7 @@ def load_artifacts(
         "rows_written": rows_written,
         "files_loaded": len(inspected),
         "mode": mode,
+        "uppercase": uppercase,
         "target": target_name,
         "schema_replaced": False,
         "snapshot_refreshed": mode == "replace",
