@@ -8998,6 +8998,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                         <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert the normalized CSV into SQL</span></label>
                         <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
                             <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select></label>
+                            <label class="flow-check flow-span-2"><input id="flow-sql-uppercase" type="checkbox" ${existing?.sql_uppercase ? "checked" : ""}><span>Uppercase all text values</span></label>
                             <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                             <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist></label>
@@ -9123,6 +9124,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label class="flow-check flow-span-2"><input id="flow-sql-enabled" type="checkbox" ${existing?.sql_handoff_enabled ? "checked" : ""} ${!sqlCatalog.configured ? "disabled" : ""}><span>Insert downloaded file into SQL after download</span></label>
                             <div id="flow-sql-fields" class="flow-form-grid flow-span-2">
                                 <label><span>Write behavior</span><select id="flow-sql-mode"><option value="append" ${existing?.sql_mode !== "replace" ? "selected" : ""}>Append rows</option><option value="replace" ${existing?.sql_mode === "replace" ? "selected" : ""}>Replace all rows</option></select><small>Replace all rows deletes every row in the table and loads the file from this run instead. The table itself is kept, with its grants, indexes, and constraints; a table that does not exist yet is created. New CSV columns are added as nullable TEXT and older target columns remain. The SQL account needs USAGE and CREATE on the schema, and ownership of an existing target.</small></label>
+                                <label class="flow-check flow-span-2"><input id="flow-sql-uppercase" type="checkbox" ${existing?.sql_uppercase ? "checked" : ""}><span>Uppercase all text values</span><small>Every value below the header row is uppercased on the way into SQL (ABC123 stays ABC123, "Berlin" becomes "BERLIN"). Numbers are unaffected. Original casing is not stored.</small></label>
                                 <label><span>Database</span><select id="flow-sql-database">${sqlDatabases.map(value => `<option ${value === selectedDatabase ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Schema</span><select id="flow-sql-schema">${sqlSchemas.map(value => `<option ${value === selectedSchema ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>
                                 <label><span>Table</span><input id="flow-sql-table" list="flow-sql-table-options" maxlength="63" value="${esc(existing?.sql_table || sqlTables[0] || "")}" placeholder="Existing or new table name"><datalist id="flow-sql-table-options">${sqlTables.map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><small>Append rows requires an existing table. Replace all rows may create this name in the selected schema.</small></label>
@@ -9417,6 +9419,7 @@ function _flowCollectBuilder() {
         transform_script_path: transformEnabled ? $("#flow-transform-script").value.trim() : null,
         sql_handoff_enabled: sqlEnabled,
         sql_mode: sqlEnabled ? $("#flow-sql-mode").value : null,
+        sql_uppercase: sqlEnabled ? ($("#flow-sql-uppercase")?.checked || false) : false,
         sql_database: sqlEnabled ? $("#flow-sql-database").value : null,
         sql_schema: sqlEnabled ? $("#flow-sql-schema").value : null,
         sql_table: sqlEnabled ? $("#flow-sql-table").value : null,
@@ -9797,7 +9800,11 @@ function _bindFlowWorkspace() {
         const fields = $("#flow-sql-fields");
         const summary = $("#flow-sql-summary");
         if (fields) fields.hidden = !enabled;
-        if (summary) summary.textContent = enabled ? ($("#flow-sql-mode").value === "replace" ? "Replace all rows" : "Append rows") : "Disabled";
+        if (summary) {
+            const modeText = $("#flow-sql-mode").value === "replace" ? "Replace all rows" : "Append rows";
+            const upper = $("#flow-sql-uppercase")?.checked ? " · uppercased values" : "";
+            summary.textContent = enabled ? modeText + upper : "Disabled";
+        }
     };
     const repopulateSql = () => {
         const targets = state.sqlCatalog.targets || [];
@@ -9811,6 +9818,7 @@ function _bindFlowWorkspace() {
         if ($("#flow-sql-mode").value === "append" && !tables.includes($("#flow-sql-table").value)) $("#flow-sql-table").value = tables[0] || "";
     };
     $("#flow-sql-enabled")?.addEventListener("change", updateSqlFields);
+    $("#flow-sql-uppercase")?.addEventListener("change", updateSqlFields);
     $("#flow-sql-mode")?.addEventListener("change", () => { updateSqlFields(); repopulateSql(); });
     $("#flow-sql-database")?.addEventListener("change", repopulateSql);
     $("#flow-sql-schema")?.addEventListener("change", repopulateSql);

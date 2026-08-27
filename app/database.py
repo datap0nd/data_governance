@@ -513,6 +513,7 @@ CREATE TABLE IF NOT EXISTS flows (
     sql_database        TEXT,
     sql_schema          TEXT,
     sql_table           TEXT,
+    sql_uppercase       INTEGER NOT NULL DEFAULT 0,
     owner_person_id     INTEGER REFERENCES people(id) ON DELETE SET NULL,
     created_by          TEXT,
     created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1361,6 +1362,7 @@ MIGRATIONS = [
        WHERE source_kind='system'
          AND site_id IN (SELECT id FROM flow_sites WHERE adapter='outlook_attachment')
          AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='outlook')""",
+    "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
 ]
 
 

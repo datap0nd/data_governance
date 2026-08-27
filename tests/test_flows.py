@@ -984,7 +984,8 @@ def test_one_per_period_job_is_expanded_without_delete_or_overwrite(flow_db):
         "worker_id": "bi-desktop-headless",
     }
     assert queued["job"]["sql_handoff"] == {
-        "enabled": False, "mode": None, "database": None, "schema": None, "table": None,
+        "enabled": False, "mode": None, "uppercase": False,
+        "database": None, "schema": None, "table": None,
     }
 
 
@@ -1281,8 +1282,8 @@ def test_sql_handoff_target_is_persisted_without_executing_insert(flow_db):
     )
     job = flows.queue_run(saved["id"], _request())["job"]
     assert job["sql_handoff"] == {
-        "enabled": True, "mode": "replace", "database": "warehouse",
-        "schema": "reporting", "table": "inflow",
+        "enabled": True, "mode": "replace", "uppercase": False,
+        "database": "warehouse", "schema": "reporting", "table": "inflow",
     }
 
 
@@ -1307,9 +1308,43 @@ def test_sql_managed_snapshot_allows_new_table_name_in_discovered_schema(flow_db
 
     assert saved["sql_table"] == "new managed target"
     assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
-        "enabled": True, "mode": "replace", "database": "warehouse",
-        "schema": "reporting", "table": "new managed target",
+        "enabled": True, "mode": "replace", "uppercase": False,
+        "database": "warehouse", "schema": "reporting", "table": "new managed target",
     }
+
+
+def test_sql_uppercase_option_is_persisted_and_reaches_the_job(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'inflow', CURRENT_TIMESTAMP, 0)"""
+        )
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], sql_handoff_enabled=True,
+            sql_mode="append", sql_uppercase=True, sql_database="warehouse",
+            sql_schema="reporting", sql_table="inflow",
+        ),
+        _request(),
+    )
+    assert saved["sql_uppercase"] is True
+    assert flows.queue_run(saved["id"], _request())["job"]["sql_handoff"] == {
+        "enabled": True, "mode": "append", "uppercase": True,
+        "database": "warehouse", "schema": "reporting", "table": "inflow",
+    }
+
+
+def test_sql_uppercase_option_is_cleared_when_handoff_is_disabled(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], sql_handoff_enabled=False, sql_uppercase=True),
+        _request(),
+    )
+    assert saved["sql_uppercase"] is False
 
 
 def test_flow_activation_is_separate_from_editor(flow_db):
