@@ -518,6 +518,47 @@ def test_an_empty_first_tab_activation_is_flipped_and_reselected_like_a_run():
     assert "MENA_Actual_sales" in {item["name"] for item in reports}
 
 
+def test_a_bookmark_read_from_a_grid_and_the_dataset_is_catalogued_once():
+    # The live failure this pins: the dataset served a bookmark under one tab
+    # while another tab's rendered grid showed the same row. Grid rows carry
+    # no bookmark id, so id-keyed dedupe never fired: every such bookmark
+    # landed twice and every catalog name gained a "(2)" twin. The dataset
+    # builds its folder path to mirror the rendered tree, so (folder path,
+    # name) identifies the bookmark across both sources.
+    page = FakeGscmPage(
+        trees={
+            "Private": [
+                _label("SCM", ROOT_X, 560),
+                _label("Actual Sales", FOLDER_X, 584),
+                _label("MX B2B Actual Sales", LEAF_X, 608),
+            ],
+            "Public": [],
+            "Custom": [],
+        },
+        dataset_rows=[{
+            "userreportid": "RC_777001", "userid": "external.user",
+            "originuserid": "external.user", "userreportname": "MX B2B Actual Sales",
+            "menuscope": "MP", "gbm": "MOBILE", "menuid": "AS470",
+            "menuname": "Actual Sales", "menugroupid": "AS313",
+            "menugroupname": "Actual Sales", "scope": "AS",
+            "publicscope": "PUBLIC", "publicscopevalue": "",
+        }],
+    )
+
+    reports, _complete = flow_gscm.discover_catalog(
+        page, _scan_job(), _collect_progress()[1],
+    )
+
+    names = [item["name"] for item in reports]
+    assert names.count("MX B2B Actual Sales") == 1
+    assert not any("(2)" in name for name in names)
+    # First seen wins: the scan proved the row is on the Private tab's grid.
+    survivor = next(
+        item for item in reports if item["name"] == "MX B2B Actual Sales"
+    )
+    assert survivor["automation"]["favorite_tab"] == "Private"
+
+
 def test_a_tab_the_dataset_does_not_cover_is_read_from_its_grid():
     # A rendered Private row missing from gds_bookmark must not vanish just
     # because the dataset serves the other tabs.

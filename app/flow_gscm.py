@@ -2060,17 +2060,33 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
     entries: list[dict] = []
     seen: set = set()
 
+    def _identities(entry: dict) -> list[tuple]:
+        # The same bookmark can surface twice in one walk with two shapes
+        # that cannot see each other: from gds_bookmark with a stable
+        # bookmark id, and from another tab's rendered grid with no id at
+        # all. The dataset builds its folder path to mirror the rendered
+        # tree, so the tab-independent (folder path, name) pair identifies
+        # the bookmark across both sources; the id remains a second key so
+        # dataset rows re-read under another tab still collapse. Keying on
+        # tab as well is what once counted every bookmark twice and
+        # suffixed every catalog name with "(2)".
+        keys: list[tuple] = [(
+            "path",
+            tuple(str(part).casefold() for part in entry.get("folder_path") or ()),
+            entry["name"].casefold(),
+        )]
+        bookmark_id = str(entry.get("bookmark_id") or "").strip()
+        if bookmark_id:
+            keys.append(("id", bookmark_id.casefold()))
+        return keys
+
     def absorb(tab_entries: list[dict]) -> int:
         added = 0
         for entry in tab_entries:
-            identity = entry.get("bookmark_id") or (
-                str(entry.get("tab") or ""),
-                tuple(entry.get("folder_path") or []),
-                entry["name"].casefold(),
-            )
-            if identity in seen:
+            keys = _identities(entry)
+            if any(key in seen for key in keys):
                 continue
-            seen.add(identity)
+            seen.update(keys)
             entries.append(entry)
             added += 1
         return added
