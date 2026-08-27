@@ -842,6 +842,35 @@ def _asap_site():
     )
 
 
+def _gscm_site():
+    return flows.SiteWrite(
+        name="GSCM Test Portal",
+        adapter="gscm_portal",
+        auth_url="https://gscm.example.test/login",
+        base_url="https://gscm.example.test",
+        discovery_enabled=True,
+    )
+
+
+def _gscm_discovered_report(category_path, bookmark_id=None, *, favorite_name=None):
+    catalog_name = category_path[-1]
+    favorite_name = favorite_name or re.sub(r" \(\d+\)$", "", catalog_name)
+    return flows.DiscoveredReport(
+        discovery_key=" > ".join(category_path),
+        name=catalog_name,
+        report_url="https://gscm.example.test",
+        download_text="Export Excel",
+        automation={
+            "kind": "gscm_favorite",
+            "category_path": category_path,
+            "favorite_tab": category_path[0],
+            "favorite_name": favorite_name,
+            "favorite_folder_path": category_path[1:-1],
+            "favorite_bookmark_id": bookmark_id,
+        },
+    )
+
+
 def _report(site_id):
     return flows.ReportWrite(
         site_id=site_id,
@@ -1487,7 +1516,999 @@ def test_targeted_report_scan_queues_one_path_without_deleting_other_catalog_ent
         scan = db.execute("SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)).fetchone()
     job = json.loads(scan["job_json"])
     assert job["discovery"]["report_paths"] == [["Mobile", "Installed Base", "Installed Base (MENA)"]]
+    assert job["target_report"] == {
+        "id": report_id,
+        "catalog_name": "Installed Base (MENA)",
+        "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+        "favorite_bookmark_id": None,
+    }
     assert job["discovery"]["delete_missing"] is False
+
+
+def test_gscm_targeted_scan_queues_stable_bookmark_identity_and_legacy_path(flow_db, monkeypatch):
+    site = flows.create_site(_gscm_site(), _request())
+    bookmark = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast (2)"], "user-report-22",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [bookmark], "2026-08-27T09:00:00", complete=False,
+        )
+        report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+    monkeypatch.setattr(flows, "launch_local_worker", lambda mode="headless": {"status": "online"})
+
+    queued = flows.queue_report_scan(report_id, _request())
+
+    with database.get_db() as db:
+        scan = db.execute(
+            "SELECT job_json FROM flow_catalog_scans WHERE id=?", (queued["id"],)
+        ).fetchone()
+    job = json.loads(scan["job_json"])
+    assert job["target_report"] == {
+        "id": report_id,
+        "catalog_name": "Inventory Forecast (2)",
+        "category_path": ["Public", "Planning", "Inventory Forecast (2)"],
+        "favorite_bookmark_id": "user-report-22",
+    }
+    assert job["discovery"]["report_paths"] == [
+        ["Public", "Planning", "Inventory Forecast (2)"]
+    ]
+
+
+def test_queue_scan_target_report_falls_back_to_report_name_without_path(flow_db):
+    site, report = _seed_catalog()
+    with database.get_db() as db:
+        site_row = db.execute("SELECT * FROM flow_sites WHERE id=?", (site["id"],)).fetchone()
+        report_row = db.execute(
+            "SELECT * FROM flow_reports WHERE id=?", (report["id"],)
+        ).fetchone()
+        scan_id, _browser_mode = flows._queue_scan(
+            db, site_row, "report", "Analyst", report_row,
+        )
+        job = json.loads(db.execute(
+            "SELECT job_json FROM flow_catalog_scans WHERE id=?", (scan_id,)
+        ).fetchone()["job_json"])
+
+    assert job["target_report"] == {
+        "id": report["id"],
+        "catalog_name": "Weekly movement",
+        "category_path": [],
+        "favorite_bookmark_id": None,
+    }
+    assert job["discovery"]["report_paths"] == [[]]
+
+
+def test_gscm_discovery_updates_existing_row_by_bookmark_id_before_path(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    original = _gscm_discovered_report(
+        ["Private", "Legacy Folder", "Inventory Forecast (2)"], "stable-42",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [original], "2026-08-20T09:00:00", complete=False,
+        )
+        original_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+        flows._store_timings(
+            db, [{"phase": "stable_id", "duration_ms": 900}],
+            operation_type="catalog_scan", site_id=site["id"], report_id=original_id,
+        )
+
+        corrected = _gscm_discovered_report(
+            ["Public", "Current Folder", "Inventory Forecast"], "stable-42",
+        )
+        result = flows._apply_discovery(
+            db, site["id"], [corrected], "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            "SELECT id, name, discovery_key, automation_json FROM flow_reports"
+        ).fetchall()
+        timing = db.execute(
+            "SELECT report_id FROM flow_operation_timings WHERE phase='stable_id'"
+        ).fetchone()
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == original_id
+    assert rows[0]["name"] == "Public > Current Folder > Inventory Forecast"
+    assert rows[0]["discovery_key"] == corrected.discovery_key
+    assert json.loads(rows[0]["automation_json"])["favorite_bookmark_id"] == "stable-42"
+    assert timing["report_id"] == original_id
+    assert result["reset_report_count"] == 0
+    assert result["preserved_referenced_report_count"] == 0
+
+
+def test_gscm_unique_tabless_legacy_migration_preserves_referenced_report(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = _gscm_discovered_report(
+        ["Private", "Planning", "Inventory Forecast"], None,
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [legacy], "2026-08-20T09:00:00", complete=False,
+        )
+        legacy_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], legacy_id, name="Legacy scope bookmark",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="legacy.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    corrected = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast"], "stable-public-id",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [corrected], "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            """SELECT id, name, discovery_key, stale, enabled, automation_json
+               FROM flow_reports WHERE site_id=?""",
+            (site["id"],),
+        ).fetchall()
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == legacy_id
+    assert saved_flow["report_id"] == legacy_id
+    assert rows[0]["name"] == "Public > Planning > Inventory Forecast"
+    assert rows[0]["discovery_key"] == "Public > Planning > Inventory Forecast"
+    assert (rows[0]["stale"], rows[0]["enabled"]) == (0, 1)
+    assert json.loads(rows[0]["automation_json"])["favorite_bookmark_id"] == (
+        "stable-public-id"
+    )
+    assert result["preserved_referenced_report_count"] == 0
+
+
+def test_gscm_tabless_legacy_migration_refuses_multiple_scope_candidates(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = [
+        _gscm_discovered_report(
+            ["Private", "Planning", "Inventory Forecast"], None,
+        ),
+        _gscm_discovered_report(
+            ["Custom", "Planning", "Inventory Forecast"], None,
+        ),
+    ]
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], legacy, "2026-08-20T09:00:00", complete=False,
+        )
+
+    corrected = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast"], "stable-public-id",
+    )
+    with database.get_db() as db:
+        with pytest.raises(RuntimeError, match="more than one compatible legacy bookmark"):
+            flows._apply_discovery(
+                db, site["id"], [corrected], "2026-08-27T09:00:00", complete=True,
+            )
+        rows = db.execute(
+            "SELECT name, stale, enabled FROM flow_reports WHERE site_id=? ORDER BY id",
+            (site["id"],),
+        ).fetchall()
+
+    assert [row["name"] for row in rows] == [
+        "Private > Planning > Inventory Forecast",
+        "Custom > Planning > Inventory Forecast",
+    ]
+    assert all((row["stale"], row["enabled"]) == (0, 1) for row in rows)
+
+
+@pytest.mark.parametrize("private_first", [False, True])
+def test_gscm_full_scope_reservation_precedes_tabless_fallback_in_both_orders(
+    flow_db, private_first,
+):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = _gscm_discovered_report(
+        ["Private", "Planning", "Inventory Forecast"], None,
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [legacy], "2026-08-20T09:00:00", complete=False,
+        )
+        legacy_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], legacy_id, name=f"Legacy scope {private_first}",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="legacy-order.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    first_tab = "Private" if private_first else "Public"
+    second_tab = "Public" if private_first else "Private"
+    first = _gscm_discovered_report(
+        [first_tab, "Planning", "Inventory Forecast"], f"{first_tab.lower()}-id",
+    )
+    second = _gscm_discovered_report(
+        [second_tab, "Planning", "Inventory Forecast (2)"],
+        f"{second_tab.lower()}-id",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [first, second], "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            """SELECT id, stale, enabled, automation_json FROM flow_reports
+               WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()
+
+    by_bookmark = {
+        json.loads(row["automation_json"])["favorite_bookmark_id"]: row for row in rows
+    }
+    assert set(by_bookmark) == {"private-id", "public-id"}
+    assert by_bookmark["private-id"]["id"] == legacy_id
+    assert by_bookmark["public-id"]["id"] != legacy_id
+    assert saved_flow["report_id"] == legacy_id
+    assert all((row["stale"], row["enabled"]) == (0, 1) for row in rows)
+    assert result["report_count"] == 2
+
+
+def test_gscm_duplicate_bookmark_ids_prefer_referenced_row_and_rewire_all_flows(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    paths = [
+        ["Private", "Old", "Inventory Forecast"],
+        ["Public", "Saved", "Inventory Forecast (2)"],
+        ["Custom", "Duplicate", "Inventory Forecast (3)"],
+    ]
+    report_ids = []
+    with database.get_db() as db:
+        for index, path in enumerate(paths):
+            report = _gscm_discovered_report(path, "duplicate-stable-id")
+            cursor = db.execute(
+                """INSERT INTO flow_reports
+                   (site_id, name, report_url, download_text, automation_json,
+                    discovery_key, source_kind, last_seen_at, stale, enabled,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)""",
+                (
+                    site["id"], " > ".join(path), report.report_url,
+                    report.download_text, json.dumps(report.automation),
+                    report.discovery_key, f"2026-08-{20 + index}T09:00:00",
+                    f"2026-08-{20 + index}T09:00:00",
+                    f"2026-08-{20 + index}T09:00:00",
+                ),
+            )
+            report_ids.append(cursor.lastrowid)
+
+    flow_options = {
+        "selections": {}, "download_mode": "single", "period_strategy": "none",
+        "start_week": None, "end_week": None, "file_format": "xlsx",
+        "filename_template": "bookmark.xlsx", "browser_mode": "headed",
+    }
+    first_flow = flows.create_flow(
+        _flow(site["id"], report_ids[1], name="Referenced bookmark", **flow_options),
+        _request(),
+    )
+    second_flow = flows.create_flow(
+        _flow(site["id"], report_ids[2], name="Duplicate bookmark", **flow_options),
+        _request(),
+    )
+
+    incoming = _gscm_discovered_report(
+        ["Public", "Canonical", "Inventory Forecast"], "duplicate-stable-id",
+    )
+    with database.get_db() as db:
+        flows._store_timings(
+            db, [{"phase": "total", "duration_ms": 1250}],
+            operation_type="catalog_scan", site_id=site["id"], report_id=report_ids[2],
+        )
+        result = flows._apply_discovery(
+            db, site["id"], [incoming], "2026-08-27T09:00:00", complete=True,
+        )
+        reports = db.execute("SELECT id, name FROM flow_reports ORDER BY id").fetchall()
+        saved_flows = db.execute(
+            "SELECT id, report_id FROM flows WHERE id IN (?, ?) ORDER BY id",
+            (first_flow["id"], second_flow["id"]),
+        ).fetchall()
+        timing = db.execute(
+            "SELECT report_id FROM flow_operation_timings WHERE phase='total'"
+        ).fetchone()
+
+    canonical_id = report_ids[1]
+    assert [(row["id"], row["name"]) for row in reports] == [
+        (canonical_id, "Public > Canonical > Inventory Forecast")
+    ]
+    assert {row["report_id"] for row in saved_flows} == {canonical_id}
+    assert timing["report_id"] == canonical_id
+    assert result["reset_report_count"] == 0
+    assert result["preserved_referenced_report_count"] == 0
+
+
+def test_gscm_complete_snapshot_cleans_only_missing_unreferenced_rows(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    current = _gscm_discovered_report(
+        ["Public", "Planning", "Current Bookmark"], "current-id",
+    )
+    missing = _gscm_discovered_report(
+        ["Private", "Planning", "Missing Bookmark"], "missing-id",
+    )
+    referenced_missing = _gscm_discovered_report(
+        ["Custom", "Planning", "Referenced Missing Bookmark"], "referenced-id",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [current, missing, referenced_missing],
+            "2026-08-20T09:00:00", complete=False,
+        )
+        ids = {
+            json.loads(row["automation_json"])["favorite_bookmark_id"]: row["id"]
+            for row in db.execute(
+                "SELECT id, automation_json FROM flow_reports WHERE site_id=?", (site["id"],)
+            ).fetchall()
+        }
+        flows._store_timings(
+            db,
+            [
+                {"phase": "current", "duration_ms": 1000},
+                {"phase": "missing", "duration_ms": 1100, "report_id": ids["missing-id"]},
+            ],
+            operation_type="catalog_scan", site_id=site["id"], report_id=ids["current-id"],
+        )
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], ids["referenced-id"], name="Referenced missing bookmark",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="bookmark.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    refreshed = _gscm_discovered_report(
+        ["Public", "Planning", "Current Bookmark Renamed"], "current-id",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [refreshed], "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            "SELECT id, stale, enabled, automation_json FROM flow_reports WHERE site_id=?",
+            (site["id"],),
+        ).fetchall()
+        states = {
+            json.loads(row["automation_json"])["favorite_bookmark_id"]: row
+            for row in rows
+        }
+        timings = {
+            row["phase"]: row["report_id"]
+            for row in db.execute(
+                "SELECT phase, report_id FROM flow_operation_timings WHERE site_id=?",
+                (site["id"],),
+            ).fetchall()
+        }
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],)
+        ).fetchone()
+
+    assert set(states) == {"current-id", "referenced-id"}
+    assert states["current-id"]["id"] == ids["current-id"]
+    assert (states["current-id"]["stale"], states["current-id"]["enabled"]) == (0, 1)
+    assert states["referenced-id"]["id"] == ids["referenced-id"]
+    assert (states["referenced-id"]["stale"], states["referenced-id"]["enabled"]) == (1, 0)
+    assert saved_flow["report_id"] == ids["referenced-id"]
+    assert timings == {"current": ids["current-id"], "missing": None}
+    assert result["reset_report_count"] == 1
+    assert result["preserved_referenced_report_count"] == 1
+
+
+def test_gscm_legacy_number_suffix_merges_without_creating_duplicate(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast (2)"], None,
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [legacy], "2026-08-20T09:00:00", complete=False,
+        )
+        legacy_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+
+        current = _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "newly-visible-id",
+        )
+        flows._apply_discovery(
+            db, site["id"], [current], "2026-08-27T09:00:00", complete=False,
+        )
+        rows = db.execute(
+            "SELECT id, name, automation_json FROM flow_reports"
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == legacy_id
+    assert rows[0]["name"] == "Public > Planning > Inventory Forecast"
+    assert json.loads(rows[0]["automation_json"])["favorite_bookmark_id"] == "newly-visible-id"
+
+
+def test_gscm_no_id_rows_in_one_batch_are_never_legacy_matches_for_each_other(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    reports = [
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast"], None),
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast (2)"], None),
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], reports, "2026-08-27T09:00:00", complete=True,
+        )
+        names = [row["name"] for row in db.execute(
+            "SELECT name FROM flow_reports WHERE site_id=? ORDER BY id", (site["id"],)
+        ).fetchall()]
+
+    assert result["report_count"] == 2
+    assert names == [
+        "Public > Planning > Inventory Forecast",
+        "Public > Planning > Inventory Forecast (2)",
+    ]
+
+
+def test_gscm_literal_number_suffix_is_not_treated_as_generated_catalog_copy(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    original = _gscm_discovered_report(
+        ["Public", "Planning", "Budget"], None, favorite_name="Budget",
+    )
+    literal = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], None, favorite_name="Budget (2)",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [original, literal], "2026-08-27T09:00:00", complete=True,
+        )
+        names = [row["name"] for row in db.execute(
+            "SELECT name FROM flow_reports WHERE site_id=? ORDER BY id", (site["id"],)
+        ).fetchall()]
+
+    assert result["report_count"] == 2
+    assert names == [
+        "Public > Planning > Budget",
+        "Public > Planning > Budget (2)",
+    ]
+
+
+def test_gscm_new_stable_id_does_not_migrate_text_equal_synthetic_suffix(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    synthetic = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], None, favorite_name="Budget",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [synthetic], "2026-08-20T09:00:00", complete=False,
+        )
+        synthetic_id = db.execute(
+            "SELECT id FROM flow_reports WHERE site_id=?", (site["id"],)
+        ).fetchone()["id"]
+
+    literal = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], "literal-stable-id",
+        favorite_name="Budget (2)",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [literal], "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            "SELECT id, name, automation_json FROM flow_reports WHERE site_id=?",
+            (site["id"],),
+        ).fetchall()
+
+    assert result["report_count"] == 1
+    assert result["reset_report_count"] == 1
+    assert len(rows) == 1
+    assert rows[0]["id"] != synthetic_id
+    assert rows[0]["name"] == "Public > Planning > Budget (2)"
+    automation = json.loads(rows[0]["automation_json"])
+    assert automation["favorite_name"] == "Budget (2)"
+    assert automation["favorite_bookmark_id"] == "literal-stable-id"
+
+
+def test_gscm_planner_does_not_treat_two_null_discovery_keys_as_equal():
+    candidates = []
+    for report_id, leaf in [(1, "Alpha"), (2, "Beta")]:
+        candidates.append({
+            "id": report_id,
+            "name": f"Public > Planning > {leaf}",
+            "discovery_key": None,
+            "automation": {
+                "kind": "gscm_favorite",
+                "category_path": ["Public", "Planning", leaf],
+                "favorite_name": leaf,
+            },
+            "source_kind": "discovered",
+            "referenced": False,
+        })
+    incoming = _gscm_discovered_report(
+        ["Public", "Planning", "Alpha"], None,
+    ).model_copy(update={"discovery_key": None})
+
+    plans, duplicate_groups = flows._plan_gscm_existing_reports(
+        candidates, [(incoming, "Public > Planning > Alpha")],
+    )
+
+    assert plans[0]["id"] == 1
+    assert duplicate_groups == {}
+
+
+def test_gscm_incomplete_subset_preserves_stable_catalog_assignments(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    full_snapshot = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "bookmark-a",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-b",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast (3)"], "bookmark-c",
+        ),
+    ]
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], full_snapshot, "2026-08-20T09:00:00", complete=True,
+        )
+
+    # The incomplete a/c subset renumbers c to ``(2)`` locally. That subset
+    # assignment must not replace c's authoritative pre-scan ``(3)`` slot.
+    incomplete = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "bookmark-a",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-c",
+        ),
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], incomplete, "2026-08-27T09:00:00", complete=False,
+        )
+        rows = db.execute(
+            """SELECT name, discovery_key, automation_json FROM flow_reports
+               WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+
+    by_bookmark = {
+        json.loads(row["automation_json"])["favorite_bookmark_id"]: row for row in rows
+    }
+    expected = {
+        "bookmark-a": "Public > Planning > Inventory Forecast",
+        "bookmark-b": "Public > Planning > Inventory Forecast (2)",
+        "bookmark-c": "Public > Planning > Inventory Forecast (3)",
+    }
+    assert set(by_bookmark) == set(expected)
+    for bookmark_id, catalog_name in expected.items():
+        row = by_bookmark[bookmark_id]
+        assert row["name"] == catalog_name
+        assert row["discovery_key"] == catalog_name
+        assert json.loads(row["automation_json"])["category_path"] == catalog_name.split(" > ")
+    assert result["discovery_keys"] == [expected["bookmark-a"], expected["bookmark-c"]]
+
+
+def test_gscm_incomplete_stable_id_applies_unoccupied_path_correction(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    prior = _gscm_discovered_report(
+        ["Private", "Old Folder", "Inventory Forecast (2)"], "bookmark-a",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [prior], "2026-08-20T09:00:00", complete=True,
+        )
+        report_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+
+    corrected = _gscm_discovered_report(
+        ["Public", "Current Folder", "Inventory Forecast"], "bookmark-a",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [corrected], "2026-08-27T09:00:00", complete=False,
+        )
+        row = db.execute(
+            "SELECT id, name, discovery_key, automation_json FROM flow_reports"
+        ).fetchone()
+
+    corrected_name = "Public > Current Folder > Inventory Forecast"
+    assert row["id"] == report_id
+    assert row["name"] == corrected_name
+    assert row["discovery_key"] == corrected_name
+    assert json.loads(row["automation_json"])["category_path"] == corrected_name.split(" > ")
+    assert result["discovery_keys"] == [corrected_name]
+
+
+def test_gscm_incomplete_new_id_allocates_around_omitted_catalog_row(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    prior = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "bookmark-a",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-b",
+        ),
+    ]
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], prior, "2026-08-20T09:00:00", complete=True,
+        )
+
+    incomplete = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "bookmark-a",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-new",
+        ),
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], incomplete, "2026-08-27T09:00:00", complete=False,
+        )
+        rows = db.execute(
+            """SELECT name, discovery_key, automation_json FROM flow_reports
+               WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+
+    by_bookmark = {
+        json.loads(row["automation_json"])["favorite_bookmark_id"]: row for row in rows
+    }
+    allocated = "Public > Planning > Inventory Forecast (3)"
+    assert by_bookmark["bookmark-b"]["name"] == "Public > Planning > Inventory Forecast (2)"
+    assert by_bookmark["bookmark-new"]["name"] == allocated
+    assert by_bookmark["bookmark-new"]["discovery_key"] == allocated
+    assert json.loads(by_bookmark["bookmark-new"]["automation_json"])["category_path"] == (
+        allocated.split(" > ")
+    )
+    assert result["discovery_keys"] == [
+        "Public > Planning > Inventory Forecast", allocated,
+    ]
+
+
+def test_gscm_no_id_synthetic_suffix_does_not_bind_literal_text_owner(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    synthetic = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (3)"], "synthetic-id", favorite_name="Budget",
+    )
+    literal = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], "literal-id", favorite_name="Budget (2)",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [synthetic, literal], "2026-08-20T09:00:00", complete=True,
+        )
+        synthetic_id = db.execute(
+            "SELECT id FROM flow_reports WHERE discovery_key=?",
+            ("Public > Planning > Budget (3)",),
+        ).fetchone()["id"]
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], synthetic_id, name="Synthetic budget bookmark",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="budget.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    incoming = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], None, favorite_name="Budget",
+    )
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], [incoming], "2026-08-27T09:00:00", complete=False,
+        )
+        rows = db.execute(
+            """SELECT id, name, discovery_key, automation_json, last_seen_at
+               FROM flow_reports WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()
+
+    by_bookmark = {
+        json.loads(row["automation_json"])["favorite_bookmark_id"]: row for row in rows
+    }
+    assert saved_flow["report_id"] == synthetic_id
+    assert by_bookmark["synthetic-id"]["id"] == synthetic_id
+    assert by_bookmark["synthetic-id"]["name"] == "Public > Planning > Budget (3)"
+    assert by_bookmark["synthetic-id"]["last_seen_at"] == "2026-08-27T09:00:00"
+    assert by_bookmark["literal-id"]["name"] == "Public > Planning > Budget (2)"
+    assert by_bookmark["literal-id"]["last_seen_at"] == "2026-08-20T09:00:00"
+    assert result["discovery_keys"] == ["Public > Planning > Budget (3)"]
+
+
+def test_gscm_complete_no_id_synthetic_rows_do_not_repoint_sole_literal_owner(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    literal = _gscm_discovered_report(
+        ["Public", "Planning", "Budget (2)"], "literal-id", favorite_name="Budget (2)",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [literal], "2026-08-20T09:00:00", complete=True,
+        )
+        literal_id = db.execute("SELECT id FROM flow_reports").fetchone()["id"]
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], literal_id, name="Literal budget bookmark",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="literal-budget.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    incoming = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Budget"], None, favorite_name="Budget",
+        ),
+        _gscm_discovered_report(
+            ["Public", "Planning", "Budget (2)"], None, favorite_name="Budget",
+        ),
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], incoming, "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            """SELECT id, name, discovery_key, stale, enabled, automation_json
+               FROM flow_reports WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()
+
+    tombstone = next(row for row in rows if row["id"] == literal_id)
+    active = [row for row in rows if row["id"] != literal_id]
+    assert saved_flow["report_id"] == literal_id
+    assert (tombstone["stale"], tombstone["enabled"]) == (1, 0)
+    assert "missing bookmark" in tombstone["name"]
+    assert tombstone["discovery_key"] is None
+    assert json.loads(tombstone["automation_json"])["favorite_name"] == "Budget (2)"
+    assert [row["name"] for row in active] == [
+        "Public > Planning > Budget", "Public > Planning > Budget (2)",
+    ]
+    assert all(json.loads(row["automation_json"])["favorite_bookmark_id"] is None for row in active)
+    assert result["preserved_referenced_report_count"] == 1
+
+
+def test_gscm_rejects_duplicate_nonblank_bookmark_id_in_one_batch(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    reports = [
+        _gscm_discovered_report(
+            ["Public", "Planning", "Inventory Forecast"], "duplicate-id",
+        ),
+        _gscm_discovered_report(
+            ["Private", "Planning", "Supply Forecast"], "duplicate-id",
+        ),
+    ]
+    with database.get_db() as db:
+        with pytest.raises(RuntimeError, match="same favorite_bookmark_id more than once"):
+            flows._apply_discovery(
+                db, site["id"], reports, "2026-08-27T09:00:00", complete=False,
+            )
+        count = db.execute(
+            "SELECT COUNT(*) AS count FROM flow_reports WHERE site_id=?", (site["id"],)
+        ).fetchone()["count"]
+
+    assert count == 0
+
+
+@pytest.mark.parametrize("stable_first", [False, True])
+def test_gscm_stable_legacy_migration_is_ambiguous_in_both_input_orders(
+    flow_db, stable_first,
+):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast"], None,
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [legacy], "2026-08-20T09:00:00", complete=False,
+        )
+
+    no_id = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast"], None,
+    )
+    stable = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast (2)"], "new-stable-id",
+    )
+    reports = [stable, no_id] if stable_first else [no_id, stable]
+    with database.get_db() as db:
+        with pytest.raises(RuntimeError, match="more than one compatible legacy bookmark"):
+            flows._apply_discovery(
+                db, site["id"], reports, "2026-08-27T09:00:00", complete=False,
+            )
+        rows = db.execute(
+            "SELECT automation_json FROM flow_reports WHERE site_id=?", (site["id"],)
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert json.loads(rows[0]["automation_json"])["favorite_bookmark_id"] is None
+
+
+def test_gscm_stable_id_migration_refuses_ambiguous_legacy_suffix_rows(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    legacy = [
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast"], None),
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast (2)"], None),
+    ]
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], legacy, "2026-08-20T09:00:00", complete=False,
+        )
+
+    migration = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast (2)"], "new-stable-id",
+    )
+    with database.get_db() as db:
+        with pytest.raises(RuntimeError, match="more than one compatible legacy bookmark"):
+            flows._apply_discovery(
+                db, site["id"], [migration], "2026-08-27T09:00:00", complete=True,
+            )
+        rows = db.execute(
+            "SELECT name, automation_json FROM flow_reports WHERE site_id=? ORDER BY id",
+            (site["id"],),
+        ).fetchall()
+
+    assert [row["name"] for row in rows] == [
+        "Public > Planning > Inventory Forecast",
+        "Public > Planning > Inventory Forecast (2)",
+    ]
+    assert all(json.loads(row["automation_json"])["favorite_bookmark_id"] is None for row in rows)
+
+
+def test_gscm_legacy_suffix_never_merges_different_stable_ids(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    original = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast"], "bookmark-one",
+    )
+    distinct = _gscm_discovered_report(
+        ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-two",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [original], "2026-08-20T09:00:00", complete=False,
+        )
+        flows._apply_discovery(
+            db, site["id"], [distinct], "2026-08-27T09:00:00", complete=False,
+        )
+        rows = db.execute(
+            "SELECT name, automation_json FROM flow_reports ORDER BY id"
+        ).fetchall()
+
+    assert [row["name"] for row in rows] == [
+        "Public > Planning > Inventory Forecast",
+        "Public > Planning > Inventory Forecast (2)",
+    ]
+    assert [json.loads(row["automation_json"])["favorite_bookmark_id"] for row in rows] == [
+        "bookmark-one", "bookmark-two",
+    ]
+
+
+def test_gscm_complete_snapshot_swaps_suffix_assignments_without_unique_collision(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    initial = [
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast"], "bookmark-a"),
+        _gscm_discovered_report(["Public", "Planning", "Inventory Forecast (2)"], "bookmark-b"),
+    ]
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], initial, "2026-08-20T09:00:00", complete=True,
+        )
+        original_ids = {
+            json.loads(row["automation_json"])["favorite_bookmark_id"]: row["id"]
+            for row in db.execute(
+                "SELECT id, automation_json FROM flow_reports WHERE site_id=?", (site["id"],)
+            ).fetchall()
+        }
+
+        swapped = [
+            _gscm_discovered_report(
+                ["Public", "Planning", "Inventory Forecast"], "bookmark-b",
+            ),
+            _gscm_discovered_report(
+                ["Public", "Planning", "Inventory Forecast (2)"], "bookmark-a",
+            ),
+        ]
+        result = flows._apply_discovery(
+            db, site["id"], swapped, "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            "SELECT id, name, automation_json FROM flow_reports WHERE site_id=? ORDER BY name",
+            (site["id"],),
+        ).fetchall()
+
+    by_bookmark = {
+        json.loads(row["automation_json"])["favorite_bookmark_id"]: row
+        for row in rows
+    }
+    assert by_bookmark["bookmark-a"]["id"] == original_ids["bookmark-a"]
+    assert by_bookmark["bookmark-a"]["name"].endswith("Inventory Forecast (2)")
+    assert by_bookmark["bookmark-b"]["id"] == original_ids["bookmark-b"]
+    assert by_bookmark["bookmark-b"]["name"].endswith("Inventory Forecast")
+    assert result["reset_report_count"] == 0
+
+
+def test_gscm_complete_snapshot_replaces_reused_paths_and_preserves_referenced_tombstone(flow_db):
+    site = flows.create_site(_gscm_site(), _request())
+    old_referenced = _gscm_discovered_report(
+        ["Public", "Planning", "Shared Path"], "old-referenced-id",
+    )
+    old_disposable = _gscm_discovered_report(
+        ["Private", "Planning", "Reusable Path"], "old-disposable-id",
+    )
+    with database.get_db() as db:
+        flows._apply_discovery(
+            db, site["id"], [old_referenced, old_disposable],
+            "2026-08-20T09:00:00", complete=False,
+        )
+        old_ids = {
+            json.loads(row["automation_json"])["favorite_bookmark_id"]: row["id"]
+            for row in db.execute(
+                "SELECT id, automation_json FROM flow_reports WHERE site_id=?", (site["id"],)
+            ).fetchall()
+        }
+        flows._store_timings(
+            db, [{"phase": "replaced", "duration_ms": 700}],
+            operation_type="catalog_scan", site_id=site["id"],
+            report_id=old_ids["old-disposable-id"],
+        )
+
+    saved = flows.create_flow(
+        _flow(
+            site["id"], old_ids["old-referenced-id"], name="Missing referenced bookmark",
+            selections={}, download_mode="single", period_strategy="none",
+            start_week=None, end_week=None, file_format="xlsx",
+            filename_template="bookmark.xlsx", browser_mode="headed",
+        ),
+        _request(),
+    )
+    replacements = [
+        _gscm_discovered_report(["Public", "Planning", "Shared Path"], "new-referenced-id"),
+        _gscm_discovered_report(["Private", "Planning", "Reusable Path"], "new-disposable-id"),
+    ]
+    with database.get_db() as db:
+        result = flows._apply_discovery(
+            db, site["id"], replacements, "2026-08-27T09:00:00", complete=True,
+        )
+        rows = db.execute(
+            """SELECT id, name, discovery_key, stale, enabled, automation_json
+               FROM flow_reports WHERE site_id=? ORDER BY id""",
+            (site["id"],),
+        ).fetchall()
+        by_bookmark = {
+            json.loads(row["automation_json"])["favorite_bookmark_id"]: row
+            for row in rows
+        }
+        saved_flow = db.execute(
+            "SELECT report_id FROM flows WHERE id=?", (saved["id"],)
+        ).fetchone()
+        timing = db.execute(
+            "SELECT report_id FROM flow_operation_timings WHERE phase='replaced'"
+        ).fetchone()
+
+    assert set(by_bookmark) == {
+        "old-referenced-id", "new-referenced-id", "new-disposable-id",
+    }
+    tombstone = by_bookmark["old-referenced-id"]
+    assert tombstone["id"] == old_ids["old-referenced-id"]
+    assert (tombstone["stale"], tombstone["enabled"]) == (1, 0)
+    assert "missing bookmark" in tombstone["name"]
+    assert tombstone["discovery_key"] is None
+    assert saved_flow["report_id"] == tombstone["id"]
+    assert by_bookmark["new-referenced-id"]["name"] == "Public > Planning > Shared Path"
+    assert by_bookmark["new-disposable-id"]["name"] == "Private > Planning > Reusable Path"
+    assert timing["report_id"] is None
+    assert result["reset_report_count"] == 1
+    assert result["preserved_referenced_report_count"] == 1
 
 
 def test_targeted_manual_report_scan_queues_explicit_path_and_is_promoted_by_discovery(flow_db, monkeypatch):
@@ -2308,7 +3329,12 @@ def test_stop_cancels_queued_catalog_scan_without_stopping_worker(flow_db, monke
     assert stopped == []
     scan = next(item for item in flows.list_scans(limit=50) if item["id"] == queued["id"])
     assert scan["status"] == "cancelled"
-    assert scan["job"]["target_report"] == {"id": report["id"], "name": report["name"]}
+    assert scan["job"]["target_report"] == {
+        "id": report["id"],
+        "catalog_name": "Installed Base (MENA)",
+        "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+        "favorite_bookmark_id": None,
+    }
     assert flows.list_scan_events(queued["id"], after_id=0, limit=400)["events"][-1]["stage"] == "cancelled"
 
 

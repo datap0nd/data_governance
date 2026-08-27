@@ -22,9 +22,10 @@ bookmarks and lists them instead. Activating each tab matters because GSCM
 loads a scope's rows on selection; the application-level ``gds_bookmark``
 dataset read at portal load holds only what has loaded so far, and trusting
 it without the walk is what once reported a user's Public bookmarks missing.
-Once a tab is activated, its rows are read from that dataset when the runtime
-exposes it (stable bookmark ids, no scrolling), and otherwise from the Setting
-dialog's ``grd_bookmark`` grid - never from anywhere wider.
+Once a tab is activated, the dataset supplies authoritative stable ids and
+scope when the runtime exposes it. The Setting dialog's ``grd_bookmark`` grid
+is also inventoried when it binds, reconciled explicitly with dataset rows,
+and retained as the fallback identity source - nothing wider is scanned.
 
 **The framework fights automation.** Nexacro parks a full-screen wait overlay
 over the page and floats un-anchored popup cards above everything else. Both
@@ -155,6 +156,9 @@ MAX_INVENTORY_ITEMS = 120
 #: Failure messages travel through run events into the log UI; an unbounded
 #: inventory once produced 100,000-character errors nobody could read.
 MAX_INVENTORY_CHARS = 1_800
+#: Compact enough to travel with the existing run-event error messages while
+#: still exposing the three independent pieces of the Favorite contract.
+MAX_FAVORITE_STATE_CHARS = 400
 #: How long a headed worker waits for a human to finish SSO and Knox MFA in
 #: the visible window before giving up on the run.
 MANUAL_LOGIN_WAIT_MS = 5 * 60_000
@@ -252,6 +256,245 @@ _BOOKMARK_DATASET_JS = """(columns) => {
         rows.push(row);
     }
     return {available: true, rows};
+}"""
+
+#: One bounded snapshot of the contract between the Nexacro application
+#: dataset and the rendered Favorite grid.  It deliberately reports raw
+#: ``publicscope`` values: an unknown value is evidence to map later, never a
+#: reason to guess that the bookmark is Public.
+_FAVORITE_STATE_JS = r"""(gridSuffix) => {
+    const visible = element => {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(element);
+        return style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const grids = [];
+    let settingShell = false;
+    for (const element of document.querySelectorAll('[id]')) {
+        const id = String(element.id || '');
+        if (/TopFrame\.Setting\d+(?:\.|$)/i.test(id)) settingShell = true;
+        if (!id.endsWith(gridSuffix) || !visible(element)) continue;
+        const rows = Array.from(element.querySelectorAll('[id*=".body.gridrow_"]'))
+            .filter(row => /\.body\.gridrow_\d+$/.test(String(row.id || '')) && visible(row));
+        grids.push({id, rows: rows.length});
+    }
+    let dataset = null;
+    try {
+        if (typeof nexacro !== 'undefined' && nexacro
+                && typeof nexacro.getApplication === 'function') {
+            const app = nexacro.getApplication();
+            const ds = app && app.gds_bookmark;
+            if (ds && typeof ds.getRowCount === 'function'
+                    && typeof ds.getColumn === 'function') {
+                const scopes = {};
+                const count = ds.getRowCount();
+                for (let index = 0; index < count; index++) {
+                    const raw = String(ds.getColumn(index, 'publicscope') ?? '').trim() || '(blank)';
+                    scopes[raw] = (scopes[raw] || 0) + 1;
+                }
+                dataset = {available: true, rows: count, scopes};
+            }
+        }
+    } catch (error) { dataset = {available: false, error: String(error)}; }
+    return {grids, dataset, setting_shell: settingShell};
+}"""
+
+#: Match a mounted component path without relying on a hard-coded Setting0 or
+#: Setting1 frame number.  ``visibleOnly`` is false for the shell predicate:
+#: mounting the frame is the effect of the gear click even while Nexacro is
+#: still painting its children.
+_COMPONENT_PATH_MATCH_JS = r"""(options) => {
+    const pattern = new RegExp(options.pattern, 'i');
+    for (const element of document.querySelectorAll('[id]')) {
+        if (!pattern.test(String(element.id || ''))) continue;
+        if (!options.visibleOnly) return true;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const style = window.getComputedStyle(element);
+        if (style.visibility !== 'hidden' && style.display !== 'none') return true;
+    }
+    return false;
+}"""
+
+#: Select an exact bookmark id through the dataset actually bound to the
+#: Favorite grid.  Every transition is verified.  A runtime that hides the
+#: binding, vetoes ``rowposition``, or lands on another id returns a reason and
+#: the Python caller falls through to the visual tree without assuming success.
+_SELECT_BOOKMARK_ROW_JS = r"""(request) => {
+    if (typeof nexacro === 'undefined' || !nexacro
+            || typeof nexacro.getApplication !== 'function') {
+        return {selected: false, reason: 'nexacro-unavailable'};
+    }
+    const wanted = String(request.bookmark_id || '').trim();
+    if (!wanted) return {selected: false, reason: 'empty-bookmark-id'};
+    const app = nexacro.getApplication();
+    const seen = new Set();
+    const grids = [];
+    const localName = component => {
+        try {
+            const value = String(component.name || component.id || '');
+            return value.split('.').pop();
+        } catch (error) { return ''; }
+    };
+    const diagnosticId = (component, trail) => {
+        try {
+            const handle = component._control_element && component._control_element.handle;
+            if (handle && handle.id) return String(handle.id);
+        } catch (error) {}
+        try { if (component._unique_id) return String(component._unique_id); } catch (error) {}
+        return trail.filter(Boolean).join('.');
+    };
+    const visit = (component, depth, trail) => {
+        if (!component || typeof component !== 'object' || depth > 18 || seen.has(component)) return;
+        seen.add(component);
+        const local = localName(component);
+        const nextTrail = local ? [...trail, local] : trail;
+        const context = nextTrail.join('.').toLowerCase();
+        if (local.toLowerCase() === 'grd_bookmark' && context.includes('div_favorite')) {
+            grids.push({component, trail: nextTrail, id: diagnosticId(component, nextTrail)});
+        }
+        for (const key of ['components', 'frames']) {
+            let children = null;
+            try { children = component[key]; } catch (error) { continue; }
+            if (!children || typeof children.length !== 'number') continue;
+            for (let index = 0; index < children.length && index < 400; index++) {
+                try { visit(children[index], depth + 1, nextTrail); } catch (error) {}
+            }
+        }
+        try { if (component.form) visit(component.form, depth + 1, nextTrail); } catch (error) {}
+    };
+    try { visit(app.mainframe || app, 0, []); } catch (error) {}
+    if (!grids.length) return {selected: false, reason: 'favorite-grid-component-missing'};
+
+    const resolveDataset = grid => {
+        let dataset = null;
+        let binding = null;
+        try { if (typeof grid.getBindDataset === 'function') dataset = grid.getBindDataset(); }
+        catch (error) { /* try the other supported forms */ }
+        try { if (!dataset && grid._binddataset) dataset = grid._binddataset; }
+        catch (error) {}
+        try { if (!dataset && grid.binddataset) binding = grid.binddataset; }
+        catch (error) {}
+        try {
+            if (!binding && typeof grid.get_binddataset === 'function') binding = grid.get_binddataset();
+        } catch (error) {}
+        if (typeof dataset === 'string') { binding = dataset; dataset = null; }
+        if (!dataset && binding) {
+            const name = String(binding).replace(/^@/, '');
+            let owner = grid;
+            for (let depth = 0; owner && depth < 12 && !dataset; depth++) {
+                try {
+                    dataset = owner[name]
+                        || (owner.datasets && (owner.datasets[name]
+                            || (typeof owner.datasets.get_item === 'function'
+                                && owner.datasets.get_item(name))))
+                        || (owner.form && owner.form[name]);
+                } catch (error) {}
+                try { owner = owner.parent; } catch (error) { owner = null; }
+            }
+            try { dataset = dataset || app[name]; } catch (error) {}
+        }
+        return dataset;
+    };
+    const visibilityScore = candidate => {
+        let score = 0;
+        try {
+            if (typeof candidate.component.get_visible === 'function'
+                    && candidate.component.get_visible()) score += 1;
+            else if (candidate.component.visible !== false) score += 1;
+        } catch (error) {}
+        try {
+            const handle = candidate.component._control_element
+                && candidate.component._control_element.handle;
+            if (handle) {
+                const rect = handle.getBoundingClientRect();
+                const style = window.getComputedStyle(handle);
+                if (rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden' && style.display !== 'none') score += 4;
+            }
+        } catch (error) {}
+        return score;
+    };
+    let boundDatasetSeen = false;
+    const selectable = [];
+    for (const candidate of grids) {
+        const dataset = resolveDataset(candidate.component);
+        if (!dataset || typeof dataset.getRowCount !== 'function'
+                || typeof dataset.getColumn !== 'function'
+                || typeof dataset.set_rowposition !== 'function') continue;
+        boundDatasetSeen = true;
+        for (let index = 0; index < dataset.getRowCount(); index++) {
+            if (String(dataset.getColumn(index, 'userreportid') ?? '').trim() === wanted) {
+                selectable.push({candidate, dataset, rowIndex: index, score: visibilityScore(candidate)});
+                break;
+            }
+        }
+    }
+    if (!selectable.length) {
+        return {
+            selected: false,
+            reason: boundDatasetSeen
+                ? 'bookmark-id-not-in-bound-dataset' : 'bound-dataset-unavailable',
+            grid_id: grids[0].id,
+        };
+    }
+    selectable.sort((left, right) => right.score - left.score);
+    if (selectable.length > 1 && selectable[0].score === selectable[1].score) {
+        return {
+            selected: false,
+            reason: 'ambiguous-favorite-grid',
+            grid_id: selectable.slice(0, 4).map(item => item.candidate.id).join(' | '),
+        };
+    }
+    const chosen = selectable[0];
+    const grid = chosen.candidate.component;
+    const dataset = chosen.dataset;
+    const rowIndex = chosen.rowIndex;
+    const gridId = chosen.candidate.id;
+    try { dataset.set_rowposition(rowIndex); }
+    catch (error) {
+        return {selected: false, reason: 'rowposition-error', grid_id: gridId};
+    }
+    let actual = null;
+    try {
+        actual = typeof dataset.get_rowposition === 'function'
+            ? dataset.get_rowposition() : dataset.rowposition;
+    } catch (error) {}
+    if (Number(actual) !== rowIndex) {
+        return {selected: false, reason: 'rowposition-rejected', grid_id: gridId};
+    }
+    const selectedId = String(dataset.getColumn(rowIndex, 'userreportid') ?? '').trim();
+    if (selectedId !== wanted) {
+        return {selected: false, reason: 'selected-id-mismatch', grid_id: gridId};
+    }
+    try {
+        const selectType = String(
+            typeof grid.get_selecttype === 'function' ? grid.get_selecttype() : (grid.selecttype || '')
+        ).toLowerCase();
+        if (typeof grid.selectRow === 'function'
+                && ['row', 'multirow', 'area', 'multiarea'].includes(selectType)) {
+            grid.selectRow(rowIndex);
+        }
+    } catch (error) { /* rowposition + id verification is the proof */ }
+    // Re-read after optional selection: handlers are allowed to change the row.
+    let verifiedPosition = null;
+    try {
+        verifiedPosition = typeof dataset.get_rowposition === 'function'
+            ? dataset.get_rowposition() : dataset.rowposition;
+    } catch (error) {}
+    const verifiedId = Number(verifiedPosition) === rowIndex
+        ? String(dataset.getColumn(rowIndex, 'userreportid') ?? '').trim() : '';
+    if (Number(verifiedPosition) !== rowIndex || verifiedId !== wanted) {
+        return {selected: false, reason: 'post-selection-id-mismatch', grid_id: gridId};
+    }
+    return {
+        selected: true,
+        strategy: 'bound-dataset-rowposition',
+        grid_id: gridId,
+        row_index: rowIndex,
+        bookmark_id: wanted,
+    };
 }"""
 
 #: DOM fallback for older or differently packaged Nexacro deployments. This
@@ -638,6 +881,17 @@ def _component_visible(page, *fragments: str) -> bool:
     )
 
 
+def _component_path_matches(page, pattern: str, *, visible_only: bool = False) -> bool:
+    """Whether a DOM component id matches one frame-number-agnostic pattern."""
+    options = {"pattern": pattern, "visibleOnly": bool(visible_only)}
+    return any(
+        bool(value)
+        for _root, value in _evaluate_everywhere(
+            page, _COMPONENT_PATH_MATCH_JS, options,
+        )
+    )
+
+
 def _dedupe(items: list[tuple[Any, dict]]) -> list[tuple[Any, dict]]:
     """The page and its main frame report the same elements twice."""
     seen: set[tuple] = set()
@@ -691,12 +945,62 @@ def bookmark_dataset_rows(page) -> list[dict] | None:
     return [] if available_empty else None
 
 
+def favorite_state_report(page) -> str:
+    """Describe the Favorite shell, rendered grid, and source dataset together.
+
+    The report is diagnostic telemetry for one browser session.  It is never
+    copied into bookmark automation metadata, where it would become stale.
+    """
+    grid_counts: dict[str, int] = {}
+    setting_shell = False
+    datasets: list[dict] = []
+    for _root, state in _evaluate_everywhere(page, _FAVORITE_STATE_JS, FAVORITE_GRID_ID_SUFFIX):
+        if not isinstance(state, dict):
+            continue
+        setting_shell = setting_shell or bool(state.get("setting_shell"))
+        for grid in state.get("grids") or []:
+            if not isinstance(grid, dict):
+                continue
+            identifier = str(grid.get("id") or "")
+            if identifier:
+                grid_counts[identifier] = max(
+                    grid_counts.get(identifier, 0), int(grid.get("rows") or 0),
+                )
+        dataset = state.get("dataset")
+        if isinstance(dataset, dict):
+            datasets.append(dataset)
+
+    grid_text = ", ".join(
+        f"{_short_id(identifier, segments=5)}:{count} row(s)"
+        for identifier, count in sorted(grid_counts.items())
+    ) or "none"
+    available = next(
+        (item for item in datasets if item.get("available") is True), None,
+    )
+    if available is None:
+        dataset_text = "unavailable"
+    else:
+        scopes = available.get("scopes") or {}
+        scope_text = ",".join(
+            f"{str(scope)[:40]}={int(count or 0)}"
+            for scope, count in sorted(scopes.items(), key=lambda item: str(item[0]))
+        ) or "none"
+        dataset_text = f"{int(available.get('rows') or 0)} row(s) [{scope_text}]"
+    report = (
+        f"Favorite state: grids={grid_text}; gds_bookmark={dataset_text}; "
+        f"Setting shell={'mounted' if setting_shell else 'absent'}."
+    )
+    if len(report) > MAX_FAVORITE_STATE_CHARS:
+        report = report[: MAX_FAVORITE_STATE_CHARS - 1] + "…"
+    return report
+
+
 def _scope_tab(value: Any) -> str:
     normalized = _clean_name(value).casefold()
     for tab in SCOPE_TABS:
         if normalized == tab.casefold():
             return tab
-    return _clean_name(value).title() or "Public"
+    return ""
 
 
 def _append_distinct(parts: list[str], value: Any) -> None:
@@ -724,6 +1028,7 @@ def bookmark_dataset_entries(page) -> list[dict] | None:
             "name": name,
             "folder_path": folder_path,
             "tab": _scope_tab(row.get("publicscope")),
+            "scope_raw": _clean_name(row.get("publicscope")),
             "bookmark_id": _clean_name(row.get("userreportid")),
             "menu_id": _clean_name(row.get("menuid")),
             "scope": scope,
@@ -734,16 +1039,51 @@ def bookmark_dataset_entries(page) -> list[dict] | None:
     return entries
 
 
-def wait_for_bookmark_dataset(page, timeout_ms: int = BOOKMARK_DATASET_READY_TIMEOUT_MS) -> list[dict] | None:
-    """Wait for Nexacro to populate gds_bookmark after the portal shell loads."""
+def wait_for_bookmark_dataset(
+    page, timeout_ms: int = BOOKMARK_DATASET_READY_TIMEOUT_MS, *, bookmark_id: str | None = None,
+) -> list[dict] | None:
+    """Wait for gds_bookmark, optionally until one stable id is present."""
     last_value: list[dict] | None = None
+    wanted = _clean_name(bookmark_id).casefold()
     poll_count = max(1, timeout_ms // IDLE_POLL_INTERVAL_MS)
     for _poll in range(poll_count):
         last_value = bookmark_dataset_entries(page)
-        if last_value:
+        if last_value and (
+            not wanted or any(
+                _clean_name(entry.get("bookmark_id")).casefold() == wanted
+                for entry in last_value
+            )
+        ):
             return last_value
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
     return last_value
+
+
+def _select_bookmark_dataset_row(page, bookmark_id: str) -> dict | None:
+    """Select ``bookmark_id`` in the dataset bound to the Favorite grid.
+
+    Only a browser result that verified both rowposition and the stable id is
+    success.  Reasons remain browser-session diagnostics; callers intentionally
+    treat every other result as a normal request to use the visual tree.
+    """
+    wanted = _clean_name(bookmark_id)
+    if not wanted:
+        return None
+    request = {
+        "bookmark_id": wanted,
+        "grid_suffix": FAVORITE_GRID_ID_SUFFIX,
+    }
+    # This script mutates rowposition.  Unlike read-only inventories, do not
+    # fan it out eagerly across every frame: stop after the first root that
+    # verifies the requested stable id.
+    for root in _roots(page):
+        try:
+            result = root.evaluate(_SELECT_BOOKMARK_ROW_JS, request)
+        except Exception:
+            continue
+        if isinstance(result, dict) and result.get("selected") is True:
+            return result
+    return None
 
 
 def _is_icon_chrome(element_id: str) -> bool:
@@ -1398,15 +1738,29 @@ def wait_for_calculation(
 
 
 def favorites_dialog_open(page) -> bool:
-    """The Favorite panel is up when its component or scope tabs are visible."""
-    if _component_visible(
+    """Whether the Setting dialog's Favorite panel, specifically, is visible."""
+    if _component_path_matches(
         page,
-        "TopFrame.Setting0.form.div_favorite",
-        "TopFrame.Setting1.form.div_favorite",
+        r"TopFrame\.Setting\d+\.form\.div_favorite(?:\.|$)",
+        visible_only=True,
     ):
         return True
-    visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
-    return any(_normalize_label(tab) in visible for tab in SCOPE_TABS)
+    if _component_visible(page, FAVORITE_GRID_ID_SUFFIX):
+        return True
+    # Some Nexacro builds expose the panel labels a beat before the grid
+    # container.  Accept that only when the label's own component path proves
+    # it belongs to Setting > Favorite.  A Public label elsewhere on the page
+    # is unrelated and must not skip the gear or invalidate a successful Go.
+    wanted = {_normalize_label(tab) for tab in SCOPE_TABS}
+    for _root, record in visible_text(page):
+        identifier = str(record.get("id") or "").casefold()
+        if (
+            re.search(r"topframe\.setting\d+(?:\.|$)", identifier)
+            and "div_favorite" in identifier
+            and _normalize_label(record.get("text")) in wanted
+        ):
+            return True
+    return False
 
 
 def _wait_for_dialog_state(page, predicate, *, timeout_ms: int) -> bool:
@@ -1467,19 +1821,24 @@ def _reach_favorite_panel(page) -> bool:
 
 
 def _activate_setting_record(
-    page, root, record: dict, tried_ids: set[str], *, ready_timeout_ms: int,
+    page, root_index: int, root, record: dict,
+    tried: set[tuple[int, str]], spent_ids: set[str], *, ready_timeout_ms: int,
 ) -> bool:
     """Try one unique gear candidate and verify that Setting really opened."""
     component_ids = _component_element_ids(record.get("id"))
     if not component_ids:
         return False
     component_id = component_ids[0]
-    if component_id in tried_ids or is_forbidden(component_id):
+    attempt_key = (root_index, component_id)
+    if attempt_key in tried or component_id in spent_ids or is_forbidden(component_id):
         return False
-    tried_ids.add(component_id)
+    tried.add(attempt_key)
     clicked_id = _click_record(page, root, record, timeout_ms=15_000)
     if clicked_id is None:
         return False
+    # Only a dispatched click spends the id globally.  A root that did not
+    # contain it must never prevent the same known id being tried in a frame.
+    spent_ids.add(component_id)
     if _wait_for_dialog_state(
         page, _setting_dialog_open, timeout_ms=ready_timeout_ms,
     ):
@@ -1500,21 +1859,28 @@ def _open_setting(page) -> bool:
     and each is checked, so a wrong guess costs one harmless icon click rather
     than a failed scan. Nothing on the forbidden list is ever a candidate.
     """
-    tried_ids: set[str] = set()
-    for root in _roots(page):
+    tried: set[tuple[int, str]] = set()
+    spent_ids: set[str] = set()
+    for root_index, root in enumerate(_roots(page)):
         if _activate_setting_record(
-            page, root, {"id": SETTING_BUTTON_ID}, tried_ids,
+            page, root_index, root, {"id": SETTING_BUTTON_ID}, tried, spent_ids,
             ready_timeout_ms=DIALOG_READY_TIMEOUT_MS,
         ):
             return True
+    # The component can exist in Nexacro's tree without a reachable DOM node.
+    # Mirror the Go button's last resort before widening the search.
+    if _native_click(page, SETTING_BUTTON_ID) and _wait_for_dialog_state(
+        page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
+    ):
+        return True
     hinted = click_by_id_hint(
-        page, SETTING_BUTTON_HINTS, exclude_ids=tried_ids,
+        page, SETTING_BUTTON_HINTS, exclude_ids=spent_ids,
     )
     if hinted is not None:
         hinted_id = _component_element_ids(
             hinted.get("clicked_id") or hinted.get("id"),
         )[0]
-        tried_ids.add(hinted_id)
+        spent_ids.add(hinted_id)
         if _wait_for_dialog_state(
             page, _setting_dialog_open, timeout_ms=DIALOG_READY_TIMEOUT_MS,
         ):
@@ -1547,13 +1913,15 @@ def _open_setting(page) -> bool:
     candidates.sort(key=lambda item: (
         0 if item[1].get("x", 0) >= TOP_BAR_MIN_X else 1, -item[1].get("x", 0),
     ))
+    root_indexes = {id(root): index for index, root in enumerate(_roots(page))}
     for root, record in candidates[:MAX_GEAR_TRIES]:
         if _component_element_ids(record.get("id"))[:1] and (
-            _component_element_ids(record.get("id"))[0] in tried_ids
+            _component_element_ids(record.get("id"))[0] in spent_ids
         ):
             continue
         if _activate_setting_record(
-            page, root, record, tried_ids, ready_timeout_ms=TAB_SETTLE_MS,
+            page, root_indexes.get(id(root), 0), root, record, tried, spent_ids,
+            ready_timeout_ms=TAB_SETTLE_MS,
         ):
             return True
         _dismiss_stray_panel(page)
@@ -1561,12 +1929,8 @@ def _open_setting(page) -> bool:
 
 
 def _setting_dialog_open(page) -> bool:
-    """The Setting dialog is up when its left rail is on screen."""
-    if _component_visible(page, "TopFrame.Setting0", "TopFrame.Setting1"):
-        return True
-    visible = {_normalize_label(record.get("text")) for _root, record in visible_text(page)}
-    rail = {"favorite", "layout", "dashboard", "installation"}
-    return len(rail & visible) >= 2 or favorites_dialog_open(page)
+    """The gear click is proven by a numbered Setting shell being mounted."""
+    return _component_path_matches(page, r"TopFrame\.Setting\d+(?:\.|$)")
 
 
 def _dismiss_stray_panel(page) -> None:
@@ -1802,20 +2166,117 @@ def _tree_row_signature(page) -> tuple[tuple[str, str, int], ...]:
     )
 
 
+def _normalized_bookmark_path(path: list[str] | tuple[str, ...]) -> list[str]:
+    normalized: list[str] = []
+    for index, part in enumerate(path or []):
+        cleaned = _clean_name(part)
+        if not cleaned:
+            continue
+        if index == 0:
+            cleaned = BOOKMARK_SCOPE_NAMES.get(cleaned.upper(), cleaned)
+        normalized.append(cleaned.casefold())
+    return normalized
+
+
+def _ordered_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    if not needle:
+        return True
+    position = 0
+    for item in haystack:
+        if item == needle[position]:
+            position += 1
+            if position == len(needle):
+                return True
+    return False
+
+
+def _paths_compatible(stored: list[str], rendered: list[str]) -> bool:
+    """Tolerate harmless path detail drift without guessing across branches."""
+    left = _normalized_bookmark_path(stored)
+    right = _normalized_bookmark_path(rendered)
+    return left == right or _ordered_subsequence(left, right) or _ordered_subsequence(right, left)
+
+
 def _find_tree_entry(
     page, name: str, folder_path: list[str], *, max_passes: int = 40,
 ) -> dict | None:
     """Find one exact tree row while it is still rendered and clickable."""
     reset_tree(page)
     seed: list[tuple[int, str]] = []
-    expected_path = [part.casefold() for part in folder_path]
+    matches: dict[tuple, dict] = {}
+    active_match_identities: set[tuple] = set()
+    occurrence_blocks: dict[tuple, int] = {}
     for page_index in range(max_passes):
         entries = read_favorite_tree(page, seed if page_index else None)
-        for entry in entries:
-            if entry["name"].casefold() != name.casefold():
-                continue
-            if [part.casefold() for part in entry["folder_path"]] == expected_path:
-                return entry
+        screen_matches = [
+            entry for entry in entries
+            if entry["name"].casefold() == name.casefold()
+            and _paths_compatible(folder_path, entry["folder_path"])
+        ]
+        if len(screen_matches) > 1:
+            choices = "; ".join(
+                " > ".join([*entry.get("folder_path", []), entry["name"]])
+                for entry in screen_matches
+            )
+            raise RuntimeError(
+                f"GSCM rendered {len(screen_matches)} compatible rows named "
+                f"{name!r} at once ({choices}); refusing to choose one."
+            )
+        screen_identities: set[tuple] = set()
+        for entry in screen_matches:
+            identity = (
+                tuple(_normalized_bookmark_path(entry.get("folder_path") or [])),
+                entry["name"].casefold(),
+            )
+            screen_identities.add(identity)
+            matches.setdefault(identity, entry)
+        for identity in screen_identities - active_match_identities:
+            occurrence_blocks[identity] = occurrence_blocks.get(identity, 0) + 1
+            if occurrence_blocks[identity] > 1:
+                rendered_path = " > ".join(identity[0])
+                raise RuntimeError(
+                    f"GSCM rendered more than one separate row named {name!r} "
+                    f"under {rendered_path}; refusing to choose by path."
+                )
+        active_match_identities = screen_identities
+        seed = list(entries[-1]["stack"]) if entries else seed
+        if not scroll_tree(page):
+            break
+        page.wait_for_timeout(250)
+    if len(matches) > 1:
+        choices = "; ".join(
+            " > ".join([*entry.get("folder_path", []), entry["name"]])
+            for entry in matches.values()
+        )
+        raise RuntimeError(
+            f"GSCM lists {len(matches)} compatible rows named {name!r} "
+            f"({choices}); refusing to choose the first rendered row."
+        )
+    if not matches:
+        return None
+
+    # The first pass is an inventory, not a clickable result: virtualized
+    # ``gridrow_*`` ids are recycled while scrolling and the saved id may now
+    # address a different bottom-page row. Reset and locate the one proven path
+    # again, returning immediately while its DOM record is live.
+    chosen = next(iter(matches.values()))
+    chosen_path = _normalized_bookmark_path(chosen.get("folder_path") or [])
+    reset_tree(page)
+    seed = []
+    for page_index in range(max_passes):
+        entries = read_favorite_tree(page, seed if page_index else None)
+        live = [
+            entry for entry in entries
+            if entry["name"].casefold() == name.casefold()
+            and _normalized_bookmark_path(entry.get("folder_path") or []) == chosen_path
+        ]
+        if len(live) > 1:
+            raise RuntimeError(
+                f"GSCM rendered duplicate bookmark rows named {name!r} under "
+                f"{' > '.join(chosen.get('folder_path') or [])}."
+            )
+        if live:
+            return live[0]
         seed = list(entries[-1]["stack"]) if entries else seed
         if not scroll_tree(page):
             break
@@ -1960,7 +2421,12 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
     """
     name = entry["name"]
     catalog_name = catalog_name or name
-    tab = entry.get("tab") or "Public"
+    tab = str(entry.get("tab") or "").strip()
+    if tab not in SCOPE_TABS:
+        raise ValueError(
+            f"GSCM bookmark {name!r} has unknown scope "
+            f"{entry.get('scope_raw')!r}; refusing to make it runnable."
+        )
     return {
         "discovery_key": f"{tab} > {' > '.join([*entry.get('folder_path', []), catalog_name])}",
         "name": catalog_name,
@@ -1977,6 +2443,7 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
             "favorite_bookmark_id": entry.get("bookmark_id") or None,
             "favorite_menu_id": entry.get("menu_id") or None,
             "favorite_scope": entry.get("scope") or None,
+            "favorite_scope_raw": entry.get("scope_raw") or None,
             "favorite_owner_id": entry.get("owner_id") or None,
             "favorite_origin_owner_id": entry.get("origin_owner_id") or None,
             "excel_btn_id": FALLBACK_EXCEL_BUTTON_ID,
@@ -1988,21 +2455,21 @@ def discovered_report(entry: dict, report_url: str, catalog_name: str | None = N
 def _tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
     """One scope tab, activated the way a flow run activates it, then read.
 
-    Returns ``None`` when the tab is not on this screen at all. Activation
-    mirrors ``open_bookmark``: the tab is selected with ``require_rows`` so a
-    caption click that never rebinds the virtual grid is re-fired natively,
-    and a tab that still lists nothing is flipped away from and re-selected
-    once - the same refresh a run uses - before it is accepted as empty.
+    Returns ``None`` when the tab is not on this screen at all.  Dataset rows
+    are accepted before rendered-grid readiness: that is the contract a run
+    now uses as well, and it prevents a healthy dataset from being hidden by a
+    Nexacro grid that failed to bind in this browser session.
 
-    Reading prefers the ``gds_bookmark`` dataset that backs the dialog once
-    the tab is active (stable bookmark ids, no scrolling). The rendered grid
-    is swept when the runtime does not expose the dataset, or when the grid
-    shows rows the dataset does not list under this tab. An exposed dataset
-    with nothing under the tab, agreeing with an empty grid, is proof of a
-    genuinely empty tab and skips the retry.
+    The ``gds_bookmark`` dataset supplies authoritative stable ids and scope
+    once the tab is active. The rendered grid is also inventoried whenever it
+    binds, then explicitly reconciled with the dataset; it remains the fallback
+    identity source when the runtime does not expose the dataset. An exposed
+    dataset with nothing under the tab, agreeing with an empty grid, is proof
+    of a genuinely empty tab and skips the retry.
     """
     if not find_by_label(page, [tab]):
         return None
+    activated_once = False
     for attempt in range(2):
         if attempt:
             notify(
@@ -2016,23 +2483,219 @@ def _tab_bookmarks(page, tab: str, notify) -> list[dict] | None:
             )
             if alternate:
                 select_scope_tab(page, alternate)
-        rows_bound = select_scope_tab(page, tab, require_rows=True)
+        activated = select_scope_tab(page, tab, require_rows=False)
+        if not activated:
+            continue
+        activated_once = True
         dataset = bookmark_dataset_entries(page)
+        # Readiness is telemetry during a scan, not a prerequisite for trusting
+        # stable dataset rows.  Still use the full bind budget before calling
+        # the grid "never bound" so a merely slow portal is not misreported.
+        # Re-read afterward because gds_bookmark often populates during this
+        # wait even when the rendered grid never binds.
+        rows_bound = wait_for_favorite_rows(page)
+        refreshed_dataset = bookmark_dataset_entries(page)
+        if refreshed_dataset is not None:
+            dataset = refreshed_dataset
         scoped = [
             entry for entry in dataset or []
             if str(entry.get("tab") or "").casefold() == tab.casefold()
         ]
-        if scoped:
-            return scoped
+        rendered: list[dict] = []
         if rows_bound:
             leaves = _leaf_entries(collect_favorite_tree(
                 page, lambda message: notify(f"{tab}: {message}"),
             ))
             if leaves:
-                return [{**entry, "tab": tab} for entry in leaves]
+                rendered = [
+                    {**entry, "tab": tab, "scope_raw": tab, "source": "favorite_grid"}
+                    for entry in leaves
+                ]
+        if scoped and not rows_bound:
+            notify(
+                f"GSCM's {tab} dataset contains {len(scoped)} bookmark(s), but "
+                f"the Favorite grid never bound. {favorite_state_report(page)}"
+            )
+        if scoped or rendered:
+            return [*scoped, *rendered]
         if dataset is not None:
             return []
-    return []
+    # A tab that was present and successfully activated is a valid empty scope
+    # even on portal deployments that do not expose the backing dataset.  Only
+    # a missing or unactivatable tab makes the scan incomplete.
+    return [] if activated_once else None
+
+
+def _entry_path_identity(entry: dict, *, include_tab: bool) -> tuple:
+    path = tuple(_normalized_bookmark_path(entry.get("folder_path") or []))
+    base = (path, _clean_name(entry.get("name")).casefold())
+    if include_tab:
+        return (_clean_name(entry.get("tab")).casefold(), *base)
+    return base
+
+
+def _reconcile_bookmark_entries(raw_entries: list[dict]) -> list[dict]:
+    """Reconcile grid observations with authoritative dataset identities.
+
+    A grid row has no stable id, while a dataset row can carry a scope that is
+    different from the tab where a stale rendered row appeared.  Reconciliation
+    is therefore explicit; a mere key collision is never treated as proof.
+    """
+    dataset_entries: list[dict] = []
+    dataset_seen: set[tuple] = set()
+    for entry in raw_entries:
+        if entry.get("source") != "gds_bookmark":
+            continue
+        unique = (
+            _clean_name(entry.get("bookmark_id")).casefold(),
+            _entry_path_identity(entry, include_tab=True),
+        )
+        if unique in dataset_seen:
+            continue
+        dataset_seen.add(unique)
+        dataset_entries.append(entry)
+
+    by_path: dict[tuple, list[dict]] = {}
+    for entry in dataset_entries:
+        by_path.setdefault(_entry_path_identity(entry, include_tab=False), []).append(entry)
+
+    reconciled_grid: list[dict] = []
+    for entry in raw_entries:
+        if entry.get("source") == "gds_bookmark":
+            continue
+        matches = by_path.get(_entry_path_identity(entry, include_tab=False), [])
+        logical_matches: dict[tuple, dict] = {}
+        for match in matches:
+            stable_id = _clean_name(match.get("bookmark_id")).casefold()
+            key = ("id", stable_id) if stable_id else (
+                "row", _entry_path_identity(match, include_tab=True),
+            )
+            logical_matches.setdefault(key, match)
+        matches = list(logical_matches.values())
+        # Multiple dataset rows can legitimately share one visual path/name in
+        # different scopes.  In that case the observed tab is the only fact the
+        # grid proves, so do not borrow either id.
+        if len(matches) == 1:
+            authority = matches[0]
+            entry = {
+                **entry,
+                # Empty is authoritative too: an unknown publicscope must not
+                # be converted into the grid's observed tab and made runnable.
+                "tab": authority.get("tab") or "",
+                "bookmark_id": authority.get("bookmark_id") or None,
+                "menu_id": authority.get("menu_id") or None,
+                "scope": authority.get("scope") or None,
+                # Preserve even a blank raw scope: blank is diagnostic evidence
+                # of an unmapped value, not permission to borrow the grid tab.
+                "scope_raw": (
+                    authority.get("scope_raw")
+                    if "scope_raw" in authority else entry.get("scope_raw")
+                ),
+                "owner_id": authority.get("owner_id") or None,
+                "origin_owner_id": authority.get("origin_owner_id") or None,
+                "source": "reconciled",
+            }
+        reconciled_grid.append(entry)
+
+    entries: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_unidentified_paths: set[tuple] = set()
+    dataset_path_keys = {
+        _entry_path_identity(entry, include_tab=True) for entry in dataset_entries
+    }
+    # Dataset rows go first because their stable id and raw scope are the
+    # authoritative catalog representation.  Reconciled grid rows then collapse
+    # into them by id/path while ambiguous rows retain their observed tab.
+    for entry in [*dataset_entries, *reconciled_grid]:
+        bookmark_id = _clean_name(entry.get("bookmark_id")).casefold()
+        if bookmark_id:
+            if bookmark_id in seen_ids:
+                continue
+            seen_ids.add(bookmark_id)
+        else:
+            path_key = _entry_path_identity(entry, include_tab=True)
+            # Explicit reconciliation already proved that this observation's
+            # path is represented by one or more authoritative dataset rows.
+            # When several ids share it we cannot enrich the grid row, but
+            # retaining it would manufacture a third runnable bookmark.
+            if entry.get("source") != "gds_bookmark" and path_key in dataset_path_keys:
+                continue
+            if path_key in seen_unidentified_paths:
+                continue
+            seen_unidentified_paths.add(path_key)
+        entries.append(entry)
+    return entries
+
+
+_CATALOG_COPY_SUFFIX_RE = re.compile(r"^(.*?)(?: \((\d+)\))?$")
+
+
+def _target_catalog_request(job: dict) -> dict | None:
+    """Normalize current and one-release legacy targeted-scan payloads."""
+    discovery = job.get("discovery") or {}
+    target = job.get("target_report")
+    target = dict(target) if isinstance(target, dict) else {}
+    category_path = target.get("category_path")
+    category_path = list(category_path) if isinstance(category_path, list) else []
+    legacy_paths = [
+        list(path) for path in discovery.get("report_paths") or []
+        if isinstance(path, list) and path
+    ]
+    if not category_path and legacy_paths:
+        category_path = legacy_paths[0]
+    catalog_name = _clean_name(
+        target.get("catalog_name")
+        or (category_path[-1] if category_path else "")
+    )
+    bookmark_id = _clean_name(target.get("favorite_bookmark_id"))
+    if not (catalog_name or bookmark_id or legacy_paths):
+        return None
+    parsed = _CATALOG_COPY_SUFFIX_RE.fullmatch(catalog_name)
+    source_name = _clean_name(parsed.group(1) if parsed else catalog_name)
+    return {
+        "bookmark_id": bookmark_id,
+        "catalog_name": catalog_name or source_name,
+        "source_name": source_name,
+        "category_path": category_path,
+    }
+
+
+def _target_entries(entries: list[dict], target: dict) -> list[dict]:
+    """Resolve one requested bookmark by stable id, then legacy name/path."""
+    bookmark_id = _clean_name(target.get("bookmark_id")).casefold()
+    if bookmark_id:
+        by_id = [
+            entry for entry in entries
+            if _clean_name(entry.get("bookmark_id")).casefold() == bookmark_id
+        ]
+        if by_id:
+            return by_id
+
+    source_name = _clean_name(target.get("source_name")).casefold()
+    by_name = [
+        entry for entry in entries
+        if _clean_name(entry.get("name")).casefold() == source_name
+    ]
+    category_path = target.get("category_path") or []
+    if len(by_name) > 1 and category_path:
+        requested_tab = _clean_name(category_path[0]).casefold()
+        requested_folders = [_clean_name(part) for part in category_path[1:-1]]
+        narrowed = [
+            entry for entry in by_name
+            if (
+                not requested_tab
+                or _clean_name(entry.get("tab")).casefold() == requested_tab
+            ) and _paths_compatible(requested_folders, entry.get("folder_path") or [])
+        ]
+        if narrowed:
+            by_name = narrowed
+    if len(by_name) > 1:
+        raise RuntimeError(
+            f"The requested GSCM bookmark {target.get('catalog_name')!r} matches "
+            "more than one saved bookmark and has no matching stable id. Run a "
+            "full scan so the catalog can store favorite_bookmark_id."
+        )
+    return by_name
 
 
 def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool]:
@@ -2057,41 +2720,10 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
             "stage": "report_discovery", "message": message,
         })
 
-    entries: list[dict] = []
-    seen: set = set()
-
-    def _identities(entry: dict) -> list[tuple]:
-        # The same bookmark can surface twice in one walk with two shapes
-        # that cannot see each other: from gds_bookmark with a stable
-        # bookmark id, and from another tab's rendered grid with no id at
-        # all. The dataset builds its folder path to mirror the rendered
-        # tree, so the tab-independent (folder path, name) pair identifies
-        # the bookmark across both sources; the id remains a second key so
-        # dataset rows re-read under another tab still collapse. Keying on
-        # tab as well is what once counted every bookmark twice and
-        # suffixed every catalog name with "(2)".
-        keys: list[tuple] = [(
-            "path",
-            tuple(str(part).casefold() for part in entry.get("folder_path") or ()),
-            entry["name"].casefold(),
-        )]
-        bookmark_id = str(entry.get("bookmark_id") or "").strip()
-        if bookmark_id:
-            keys.append(("id", bookmark_id.casefold()))
-        return keys
-
-    def absorb(tab_entries: list[dict]) -> int:
-        added = 0
-        for entry in tab_entries:
-            keys = _identities(entry)
-            if any(key in seen for key in keys):
-                continue
-            seen.update(keys)
-            entries.append(entry)
-            added += 1
-        return added
+    raw_entries: list[dict] = []
 
     dialog_error: RuntimeError | None = None
+    incomplete_walk = False
     try:
         open_favorites_dialog(page, lambda message: report_progress(
             "running", {"stage": "navigation", "message": message},
@@ -2105,11 +2737,20 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
         for tab in SCOPE_TABS:
             tab_entries = _tab_bookmarks(page, tab, notify_discovery)
             if tab_entries is None:
+                incomplete_walk = True
                 notify_discovery(
-                    f"GSCM has no {tab} bookmark tab on this screen; skipping it.",
+                    f"GSCM's {tab} bookmark tab could not be found or activated; "
+                    "the scan is incomplete and the prior snapshot will be preserved.",
                 )
                 continue
-            added = absorb(tab_entries)
+            raw_entries.extend(tab_entries)
+            # Unknown publicscope rows do not belong to a known tab and would
+            # otherwise disappear behind the per-tab filter. Preserve them as
+            # evidence so the fail-closed warning below makes the scan partial.
+            raw_entries.extend(
+                entry for entry in (bookmark_dataset_entries(page) or [])
+                if entry.get("tab") not in SCOPE_TABS
+            )
             source = (
                 " from GSCM's in-memory gds_bookmark dataset"
                 if any(item.get("source") == "gds_bookmark" for item in tab_entries)
@@ -2117,8 +2758,8 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
             )
             report_progress("running", {
                 "stage": "report_discovery",
-                "message": f"{tab}: {added} bookmark(s){source}.",
-                "item_count": added,
+                "message": f"{tab}: {len(tab_entries)} bookmark observation(s){source}.",
+                "item_count": len(tab_entries),
             })
     else:
         # The Setting gear could not be reached on this build, so the walk a
@@ -2132,36 +2773,77 @@ def discover_catalog(page, job: dict, report_progress) -> tuple[list[dict], bool
             "the in-memory gds_bookmark dataset without activating its tabs, "
             "which can miss scopes GSCM loads on selection.",
         )
-        absorb(dataset_entries)
+        raw_entries.extend(dataset_entries)
+        incomplete_walk = True
 
-    if not entries:
+    if not raw_entries:
         _fail_with_screen(
             page,
             "GSCM exposed no bookmark rows in gds_bookmark or its Setting > "
             "Favorite tabs (Private, Public, Custom).",
         )
 
-    discovery = job.get("discovery") or {}
-    requested = {
-        str(path[-1]).strip().casefold()
-        for path in discovery.get("report_paths") or []
-        if isinstance(path, list) and path
-    }
-    complete = not requested
-    if requested:
-        entries = [item for item in entries if item["name"].casefold() in requested]
+    # Preserve fail-closed evidence before stable-id reconciliation. A corrupt
+    # dataset can list the same id once under Public and once under an unmapped
+    # scope; final id dedupe must not let input order erase that ambiguity.
+    raw_unknown_scope = [
+        entry for entry in raw_entries
+        if entry.get("source") == "gds_bookmark"
+        and entry.get("tab") not in SCOPE_TABS
+    ]
+    entries = _reconcile_bookmark_entries(raw_entries)
+    reconciled_unknown_scope = [
+        entry for entry in entries if entry.get("tab") not in SCOPE_TABS
+    ]
+    unknown_by_identity: dict[tuple, dict] = {}
+    for entry in [*raw_unknown_scope, *reconciled_unknown_scope]:
+        bookmark_id = _clean_name(entry.get("bookmark_id")).casefold()
+        raw_scope = _clean_name(entry.get("scope_raw")).casefold()
+        identity = (
+            ("id", bookmark_id, raw_scope) if bookmark_id
+            else (
+                "path", _entry_path_identity(entry, include_tab=False), raw_scope,
+            )
+        )
+        unknown_by_identity.setdefault(identity, entry)
+    unknown_scope = list(unknown_by_identity.values())
+    if unknown_scope:
+        raw_values = sorted({
+            _clean_name(entry.get("scope_raw")) or "(blank)"
+            for entry in unknown_scope
+        })
+        notify_discovery(
+            f"Skipped {len(unknown_scope)} GSCM bookmark(s) whose publicscope "
+            f"is not mapped ({', '.join(raw_values)}). The scan is incomplete; "
+            "the prior runnable snapshot will be preserved."
+        )
+        entries = [entry for entry in entries if entry.get("tab") in SCOPE_TABS]
+
+    target = _target_catalog_request(job)
+    complete = target is None and not unknown_scope and not incomplete_walk
+    if target is not None:
+        entries = _target_entries(entries, target)
         if not entries:
             raise RuntimeError(
                 "The requested GSCM bookmark is no longer listed. "
                 "Run a full scan to refresh the catalog."
             )
 
+    if not entries:
+        # Unknown-scope rows are evidence, not runnable reports.  Returning an
+        # incomplete empty result keeps the last good server snapshot intact.
+        return [], False
+
     report_progress("running", {
         "stage": "report_discovery",
         "message": f"Discovered {len(entries)} GSCM bookmark(s).",
         "item_count": len(entries),
     })
-    names = _catalog_names(entries)
+    names = (
+        [target["catalog_name"] for _entry in entries]
+        if target is not None
+        else _catalog_names(entries)
+    )
     return [
         discovered_report(entry, url, catalog_name)
         for entry, catalog_name in zip(entries, names)
@@ -2175,65 +2857,213 @@ def _catalog_names(entries: list[dict]) -> list[str]:
     common when the same report is filed under several folders - would collapse
     into one catalog row and quietly drop one of them.
     """
-    seen: dict[str, int] = {}
-    names = []
+    # Reserve every literal label up front. Otherwise `[Budget, Budget,
+    # Budget (2)]` gives the synthetic duplicate and the literal bookmark the
+    # same catalog name, and the server's unique row constraint rejects the
+    # whole scan.
+    reserved = {_clean_name(entry.get("name")).casefold() for entry in entries}
+    used: set[str] = set()
+    next_suffix: dict[str, int] = {}
+    names: list[str] = []
     for entry in entries:
-        key = entry["name"].casefold()
-        seen[key] = seen.get(key, 0) + 1
-        names.append(entry["name"] if seen[key] == 1 else f"{entry['name']} ({seen[key]})")
+        raw_name = _clean_name(entry.get("name"))
+        key = raw_name.casefold()
+        if key not in used:
+            catalog_name = raw_name
+        else:
+            suffix = next_suffix.get(key, 2)
+            while True:
+                candidate = f"{raw_name} ({suffix})"
+                candidate_key = candidate.casefold()
+                suffix += 1
+                if candidate_key not in reserved and candidate_key not in used:
+                    catalog_name = candidate
+                    break
+            next_suffix[key] = suffix
+        names.append(catalog_name)
+        used.add(catalog_name.casefold())
     return names
 
 
 # ── Download ──
 
 
-def open_bookmark(page, job: dict, report_progress=None) -> str:
-    """Open one bookmark: select its row in the Favorite tree and press Go."""
-    automation = (job.get("report") or {}).get("automation") or {}
-    name = str(automation.get("favorite_name") or "").strip()
-    tab = str(automation.get("favorite_tab") or "Public").strip() or "Public"
-    folder_path = [str(part) for part in (automation.get("favorite_folder_path") or [])]
-    if not name:
-        raise RuntimeError(
-            "This GSCM report has no bookmark reference. Scan the GSCM catalog again."
-        )
-
-    open_portal(page, portal_url(job))
-    open_favorites_dialog(page, report_progress)
+def _require_rendered_scope_rows(
+    page, job: dict, tab: str, report_progress=None,
+) -> None:
+    """Run the legacy rebind recovery only for the visual-tree fallback."""
     for scope_attempt in range(3):
-        if not find_by_label(page, [tab]):
-            _fail_with_screen(page, f"GSCM's {tab} bookmark tab was not on screen.")
         if select_scope_tab(page, tab, require_rows=True):
-            break
-        # A real refresh changes scope before returning.  Re-clicking the same
-        # caption three times leaves Nexacro's empty binding untouched.
+            return
         if scope_attempt < 2:
             alternate = next(
-                (candidate for candidate in SCOPE_TABS if candidate.casefold() != tab.casefold()),
+                (candidate for candidate in SCOPE_TABS
+                 if candidate.casefold() != tab.casefold()),
                 None,
             )
             if alternate:
                 select_scope_tab(page, alternate)
             if scope_attempt == 1:
-                # Flipping scope twice did not force a rebind, so the stalled
-                # bookmark request is stuck in this client. Rebuild the whole
-                # Nexacro component tree before the final attempt.
                 reload_portal(page, job)
                 open_favorites_dialog(page, report_progress)
-    else:
-        if on_login_page(page):
-            raise _not_signed_in_error()
+    if on_login_page(page):
+        raise _not_signed_in_error()
+    raise RuntimeError(
+        f"GSCM's {tab} bookmark tab stayed empty after three activation and "
+        "rebind attempts. The portal did not finish rendering its bookmark grid. "
+        f"{favorite_state_report(page)}"
+    )
+
+
+def _bookmark_fail_with_screen(page, message: str) -> NoReturn:
+    _fail_with_screen(page, f"{message} {favorite_state_report(page)}")
+
+
+def _authoritative_bookmark_entry(
+    page, dataset: list[dict] | None, bookmark_id: str, name: str,
+) -> dict | None:
+    """One fail-closed stable-id row from an application dataset snapshot."""
+    matches = [
+        entry for entry in dataset or []
+        if _clean_name(entry.get("bookmark_id")).casefold() == bookmark_id.casefold()
+    ]
+    unknown_matches = [
+        entry for entry in matches if entry.get("tab") not in SCOPE_TABS
+    ]
+    if unknown_matches:
+        raw_values = sorted({
+            _clean_name(entry.get("scope_raw")) or "(blank)"
+            for entry in unknown_matches
+        })
         raise RuntimeError(
-            f"GSCM's {tab} bookmark tab stayed empty after three activation and "
-            "rebind attempts. The portal did not finish rendering its bookmark grid."
+            f"GSCM bookmark {name!r} has unknown publicscope "
+            f"{', '.join(raw_values)}; refusing to choose Public. "
+            f"{favorite_state_report(page)}"
+        )
+    known_tabs = {
+        entry.get("tab") for entry in matches
+        if entry.get("tab") in SCOPE_TABS
+    }
+    if len(known_tabs) > 1:
+        raise RuntimeError(
+            f"GSCM's gds_bookmark dataset listed stable id {bookmark_id!r} "
+            "under more than one scope; refusing to choose one. "
+            f"{favorite_state_report(page)}"
+        )
+    return matches[0] if matches else None
+
+
+def open_bookmark(page, job: dict, report_progress=None) -> str:
+    """Open one bookmark: select its row in the Favorite tree and press Go."""
+    automation = (job.get("report") or {}).get("automation") or {}
+    name = str(automation.get("favorite_name") or "").strip()
+    stored_tab_raw = str(automation.get("favorite_tab") or "").strip()
+    tab = _scope_tab(stored_tab_raw)
+    stored_scope_raw = _clean_name(automation.get("favorite_scope_raw"))
+    folder_path = [str(part) for part in (automation.get("favorite_folder_path") or [])]
+    bookmark_id = _clean_name(automation.get("favorite_bookmark_id"))
+    if not name:
+        raise RuntimeError(
+            "This GSCM report has no bookmark reference. Scan the GSCM catalog again."
+        )
+    if stored_scope_raw and _scope_tab(stored_scope_raw) not in SCOPE_TABS:
+        raise RuntimeError(
+            f"GSCM bookmark {name!r} has unmapped stored publicscope "
+            f"{stored_scope_raw!r}; refusing to execute it as {stored_tab_raw or 'Public'}. "
+            "Run a fresh scan after the scope mapping is verified."
         )
 
-    entry = _resolve_entry(page, name, folder_path, tab)
+    open_portal(page, portal_url(job))
+    open_favorites_dialog(page, report_progress)
+    authoritative: dict | None = None
+    if bookmark_id:
+        # The portal populates gds_bookmark asynchronously after the Setting
+        # shell appears.  Scope must be chosen from the stable-id row, so use
+        # the existing bounded readiness poll rather than one racy snapshot.
+        dataset = wait_for_bookmark_dataset(page, bookmark_id=bookmark_id)
+        authoritative = _authoritative_bookmark_entry(
+            page, dataset, bookmark_id, name,
+        )
+        if authoritative:
+            authoritative_tab = authoritative.get("tab") or ""
+            if tab != authoritative_tab and report_progress:
+                report_progress(
+                    f"GSCM bookmark {name!r} moved from {stored_tab_raw or '(unknown)'} "
+                    f"to {authoritative_tab}; using the scope recorded for stable id "
+                    f"{bookmark_id}."
+                )
+            tab = authoritative_tab
+
+    if tab not in SCOPE_TABS:
+        raise RuntimeError(
+            f"GSCM bookmark {name!r} has no known Favorite scope "
+            f"({stored_tab_raw or 'blank'}). Re-scan the catalog; the runner will "
+            "not silently choose Public."
+        )
+    if not find_by_label(page, [tab]):
+        _bookmark_fail_with_screen(page, f"GSCM's {tab} bookmark tab was not on screen.")
+    if not select_scope_tab(page, tab, require_rows=False):
+        _bookmark_fail_with_screen(page, f"GSCM's {tab} bookmark tab could not be activated.")
+
+    selected = _select_bookmark_dataset_row(page, bookmark_id) if bookmark_id else None
+    if bookmark_id and (not selected or authoritative is None):
+        # A scope can be absent from gds_bookmark until its tab is activated.
+        # Poll the exact id again before trusting even a successful native
+        # selection: a row that appeared late may expose an unknown or moved
+        # scope. This also repairs dataset-ready/grid-empty sessions before
+        # falling through to the rendered tree.
+        late_dataset = wait_for_bookmark_dataset(page, bookmark_id=bookmark_id)
+        late_authoritative = _authoritative_bookmark_entry(
+            page, late_dataset, bookmark_id, name,
+        )
+        if late_authoritative:
+            late_tab = late_authoritative.get("tab") or ""
+            if late_tab != tab:
+                if report_progress:
+                    report_progress(
+                        f"GSCM bookmark {name!r} loaded under {late_tab} after "
+                        f"activating {tab}; correcting the scope for stable id "
+                        f"{bookmark_id}."
+                    )
+                tab = late_tab
+                if not find_by_label(page, [tab]) or not select_scope_tab(
+                    page, tab, require_rows=False,
+                ):
+                    _bookmark_fail_with_screen(
+                        page,
+                        f"GSCM's corrected {tab} bookmark tab could not be activated.",
+                    )
+                corrected_dataset = wait_for_bookmark_dataset(
+                    page, bookmark_id=bookmark_id,
+                )
+                corrected = _authoritative_bookmark_entry(
+                    page, corrected_dataset, bookmark_id, name,
+                )
+                if corrected and corrected.get("tab") != tab:
+                    raise RuntimeError(
+                        f"GSCM stable id {bookmark_id!r} changed scope again while "
+                        "the runner was correcting its tab; refusing to guess. "
+                        f"{favorite_state_report(page)}"
+                    )
+            selected = _select_bookmark_dataset_row(page, bookmark_id)
     if report_progress:
         report_progress(f"Opening GSCM bookmark {' > '.join([*folder_path, name])}.")
-    _click_entry(page, entry)
+    if selected:
+        if report_progress:
+            report_progress(
+                f"Selected GSCM bookmark {name!r} by stable id {bookmark_id} "
+                f"using {selected.get('strategy')}."
+            )
+        entry = {
+            "name": name,
+            "element_id": selected.get("grid_id") or bookmark_id,
+        }
+    else:
+        _require_rendered_scope_rows(page, job, tab, report_progress)
+        entry = _resolve_entry(page, name, folder_path, tab)
+        _click_entry(page, entry)
     if not _click_go_button(page):
-        _fail_with_screen(
+        _bookmark_fail_with_screen(
             page,
             "GSCM's Go button could not be activated after selecting the "
             "bookmark: it was missing, or clicking it (DOM and native) left "
@@ -2374,24 +3204,41 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
     distinguishes them. Matching on name alone would silently download a
     different report than the flow was built for.
     """
-    if folder_path:
-        for attempt in range(3):
-            if attempt:
-                # Re-selecting the scope resets Nexacro's virtual grid after a
-                # pass that ended with recycled rows or a retained scroll
-                # position. The catalog identity is stable, so retry the exact
-                # path before falling back to a full tree inventory.
-                select_scope_tab(page, tab)
-                wait_for_favorite_rows(page)
-            exact = _find_tree_entry(page, name, folder_path)
-            if exact and exact.get("is_folder") is not True:
-                return exact
-            if _reveal_tree_path(page, folder_path, name):
-                exact = _find_tree_entry(page, name, folder_path)
-                if exact and exact.get("is_folder") is not True:
-                    return exact
+    last_leaves: list[dict] = []
+    search_path = list(folder_path)
+    for attempt in range(2):
+        if attempt:
+            # One clean reset is enough.  Repeated per-level reveal passes turn
+            # a harmless path drift into dozens of virtual-grid scroll storms.
+            select_scope_tab(page, tab)
+            wait_for_favorite_rows(page)
+        exact = _find_tree_entry(page, name, search_path)
+        if exact and exact.get("is_folder") is not True:
+            return exact
+        last_leaves = _leaf_entries(collect_favorite_tree(page))
+        compatible = [
+            item for item in last_leaves
+            if item["name"].casefold() == name.casefold()
+            and _paths_compatible(folder_path, item.get("folder_path") or [])
+        ]
+        if len(compatible) > 1:
+            rendered = "; ".join(
+                " > ".join([*item.get("folder_path", []), item["name"]])
+                for item in compatible[:10]
+            )
+            raise RuntimeError(
+                f"GSCM lists {len(compatible)} compatible bookmarks named {name!r} "
+                f"in the {tab} tab ({rendered}). The stable bookmark id did not "
+                "resolve, so choosing one by name would be unsafe. Re-scan the catalog."
+            )
+        if len(compatible) == 1:
+            # The first inventory may have expanded a collapsed branch or
+            # exposed harmless path detail drift. Spend the one remaining
+            # resolution attempt on that proven path; never add a post-loop
+            # third sweep.
+            search_path = list(compatible[0].get("folder_path") or [])
 
-    leaves = _leaf_entries(collect_favorite_tree(page))
+    leaves = last_leaves or _leaf_entries(collect_favorite_tree(page))
     by_name = [item for item in leaves if item["name"].casefold() == name.casefold()]
     if not by_name:
         available = ", ".join(sorted({item["name"] for item in leaves})[:30]) or "none"
@@ -2399,15 +3246,20 @@ def _resolve_entry(page, name: str, folder_path: list[str], tab: str) -> dict:
             f"GSCM bookmark {name!r} is no longer in the {tab} tab. "
             f"Listed there: {available}. Re-scan the GSCM catalog."
         )
-    if folder_path:
-        exact = [
-            item for item in by_name
-            if [part.casefold() for part in item["folder_path"]]
-            == [part.casefold() for part in folder_path]
-        ]
-        if exact:
-            return exact[0]
-    return by_name[0]
+    compatible = [
+        item for item in by_name
+        if _paths_compatible(folder_path, item.get("folder_path") or [])
+    ]
+    choices = compatible or by_name
+    rendered = "; ".join(
+        " > ".join([*item.get("folder_path", []), item["name"]])
+        for item in choices[:10]
+    )
+    raise RuntimeError(
+        f"GSCM could not safely distinguish {len(choices)} bookmark row(s) named "
+        f"{name!r} in the {tab} tab ({rendered}). Re-scan to restore a stable "
+        "favorite_bookmark_id."
+    )
 
 
 def _click_entry(page, entry: dict) -> None:

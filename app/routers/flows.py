@@ -2290,6 +2290,14 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         )
         return active["id"], active_mode
     browser_mode = _scan_browser_mode(db, site)
+    report_automation = _loads(report["automation_json"], {}) if report else {}
+    raw_category_path = report_automation.get("category_path", [])
+    category_path = list(raw_category_path) if isinstance(raw_category_path, list) else []
+    catalog_name = (
+        str(category_path[-1]).strip()
+        if category_path and str(category_path[-1]).strip()
+        else str(report["name"]).strip() if report else ""
+    )
     job = {
         "schema_version": 1,
         "job_type": "catalog_scan",
@@ -2301,12 +2309,17 @@ def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=No
         "discovery": {
             "scope": ["*"], "delete_missing": False, "max_duration_minutes": 90,
             "mode": mode if mode in SCAN_MODES else "full",
-            "report_paths": [
-                _loads(report["automation_json"], {}).get("category_path", [])
-            ] if report else [],
+            # Kept for one release so workers predating target_report can still
+            # execute a targeted refresh.
+            "report_paths": [category_path] if report else [],
         },
         "target_report": (
-            {"id": report["id"], "name": report["name"]}
+            {
+                "id": report["id"],
+                "catalog_name": catalog_name,
+                "category_path": category_path,
+                "favorite_bookmark_id": report_automation.get("favorite_bookmark_id"),
+            }
             if report else None
         ),
     }
@@ -2547,7 +2560,7 @@ def queue_due_catalog_scans() -> dict:
 
 
 def _reset_gscm_discovery_snapshot(db, site_id: int) -> dict:
-    """Remove the prior unreferenced GSCM bookmark snapshot.
+    """Remove GSCM rows still stale after the incoming snapshot was upserted.
 
     A bookmark referenced by an existing Flow cannot be deleted without
     breaking that Flow's foreign key. Those rows remain available as stale,
@@ -2558,7 +2571,7 @@ def _reset_gscm_discovery_snapshot(db, site_id: int) -> dict:
         """SELECT r.id,
                   EXISTS(SELECT 1 FROM flows f WHERE f.report_id=r.id) AS referenced
            FROM flow_reports r
-           WHERE r.site_id=? AND r.source_kind='discovered'""",
+           WHERE r.site_id=? AND r.source_kind='discovered' AND r.stale=1""",
         (site_id,),
     ).fetchall()
     disposable = [row["id"] for row in rows if not row["referenced"]]
@@ -2583,12 +2596,498 @@ def _reset_gscm_discovery_snapshot(db, site_id: int) -> dict:
     }
 
 
+_GSCM_CATALOG_SUFFIX_RE = re.compile(r"^(.*?)(?: \((\d+)\))?$")
+
+
+def _gscm_bookmark_id(automation: dict[str, Any]) -> str:
+    """Comparable form of GSCM's stable ``userreportid`` value."""
+    value = automation.get("favorite_bookmark_id")
+    if value is None or isinstance(value, bool):
+        return ""
+    return str(value).strip().casefold()
+
+
+def _gscm_catalog_identity(
+    automation: dict[str, Any], discovery_key: str | None, name: str,
+) -> tuple[str, ...]:
+    """Path identity used only to migrate legacy ``Name (2)`` rows.
+
+    A numeric suffix was historically added to make duplicate bookmark labels
+    fit the catalog's unique name constraint. It is not a stable identity, so
+    callers may use this value only when exactly one candidate matches.
+    """
+    raw_path = automation.get("category_path")
+    if isinstance(raw_path, list):
+        path = [str(part).strip() for part in raw_path if str(part).strip()]
+    else:
+        path = []
+    if not path and discovery_key:
+        path = [part.strip() for part in str(discovery_key).split(" > ") if part.strip()]
+    if not path and str(name).strip():
+        path = [str(name).strip()]
+    if path:
+        leaf = path[-1]
+        match = _GSCM_CATALOG_SUFFIX_RE.fullmatch(path[-1])
+        favorite_name = str(automation.get("favorite_name") or "").strip()
+        base_name = match.group(1).strip() if match else ""
+        # Only strip a suffix that catalog naming added. A real bookmark named
+        # ``Budget (2)`` records that exact favorite_name; a synthetic copy
+        # named ``Budget (2)`` still records favorite_name ``Budget``.
+        if (
+            match and match.group(2) and base_name and favorite_name
+            and favorite_name.casefold() == base_name.casefold()
+            and favorite_name.casefold() != leaf.casefold()
+        ):
+            path[-1] = base_name
+    return tuple(part.casefold() for part in path)
+
+
+def _gscm_tabless_catalog_identity(
+    automation: dict[str, Any], discovery_key: str | None, name: str,
+) -> tuple[str, ...]:
+    """Legacy folder/name identity for rows whose historical scope was wrong."""
+    identity = _gscm_catalog_identity(automation, discovery_key, name)
+    return identity[1:] if len(identity) > 1 else identity
+
+
+def _remove_duplicate_gscm_reports(
+    db, canonical_id: int, duplicate_ids: list[int], seen_at: str,
+) -> None:
+    """Rewire references and delete rows proven equal by stable bookmark id."""
+    if not duplicate_ids:
+        return
+    placeholders = ", ".join("?" for _item in duplicate_ids)
+    db.execute(
+        f"UPDATE flows SET report_id=?, updated_at=? WHERE report_id IN ({placeholders})",
+        (canonical_id, seen_at, *duplicate_ids),
+    )
+    # Timings describe the same stable bookmark, so retain them on the
+    # canonical row rather than discarding historical evidence.
+    db.execute(
+        f"UPDATE flow_operation_timings SET report_id=? WHERE report_id IN ({placeholders})",
+        (canonical_id, *duplicate_ids),
+    )
+    db.execute(
+        f"DELETE FROM flow_report_filters WHERE report_id IN ({placeholders})",
+        duplicate_ids,
+    )
+    db.execute(
+        f"DELETE FROM flow_reports WHERE id IN ({placeholders})",
+        duplicate_ids,
+    )
+
+
+def _gscm_report_candidates(db, site_id: int) -> list[dict[str, Any]]:
+    """Immutable pre-scan view used to plan every GSCM catalog upsert."""
+    rows = db.execute(
+        """SELECT r.id, r.name, r.discovery_key, r.automation_json, r.source_kind,
+                  EXISTS(SELECT 1 FROM flows f WHERE f.report_id=r.id) AS referenced
+           FROM flow_reports r WHERE r.site_id=? ORDER BY r.id""",
+        (site_id,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "discovery_key": row["discovery_key"],
+            "automation": _loads(row["automation_json"], {}),
+            "source_kind": row["source_kind"],
+            "referenced": bool(row["referenced"]),
+        }
+        for row in rows
+    ]
+
+
+def _ambiguous_gscm_migration(catalog_name: str) -> RuntimeError:
+    return RuntimeError(
+        f"GSCM catalog row {catalog_name!r} has more than one compatible legacy "
+        "bookmark and cannot be assigned a stable favorite_bookmark_id safely. "
+        "Keep the prior catalog and resolve the duplicate bookmark names first."
+    )
+
+
+def _plan_gscm_existing_reports(
+    candidates: list[dict[str, Any]],
+    reports: list[tuple[DiscoveredReport, str]],
+) -> tuple[list[dict[str, Any] | None], dict[int, list[int]]]:
+    """Resolve a whole GSCM batch against pre-scan rows without mutating it."""
+    plans: list[dict[str, Any] | None] = [None] * len(reports)
+    duplicate_groups: dict[int, list[int]] = {}
+    claimed_ids: set[int] = set()
+    unavailable_ids: set[int] = set()
+
+    incoming_bookmark_ids: set[str] = set()
+    for item, _catalog_name in reports:
+        bookmark_id = _gscm_bookmark_id(item.automation)
+        if not bookmark_id:
+            continue
+        if bookmark_id in incoming_bookmark_ids:
+            raise RuntimeError(
+                "GSCM discovery returned the same favorite_bookmark_id more than once; "
+                "refusing to create ambiguous catalog rows."
+            )
+        incoming_bookmark_ids.add(bookmark_id)
+
+    existing_by_bookmark: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        bookmark_id = _gscm_bookmark_id(candidate["automation"])
+        if bookmark_id:
+            existing_by_bookmark.setdefault(bookmark_id, []).append(candidate)
+
+    # Stable ids are authoritative and are planned first, independent of scan
+    # ordering. Duplicate database rows with one id share one canonical target.
+    for index, (item, _catalog_name) in enumerate(reports):
+        bookmark_id = _gscm_bookmark_id(item.automation)
+        if not bookmark_id:
+            continue
+        matches = existing_by_bookmark.get(bookmark_id, [])
+        if not matches:
+            continue
+        matches = sorted(
+            matches, key=lambda candidate: (not candidate["referenced"], candidate["id"]),
+        )
+        canonical = matches[0]
+        plans[index] = canonical
+        claimed_ids.add(canonical["id"])
+        unavailable_ids.update(candidate["id"] for candidate in matches)
+        duplicate_groups[canonical["id"]] = [
+            candidate["id"] for candidate in matches[1:]
+        ]
+
+    incoming_identity_counts: dict[tuple[str, ...], int] = {}
+    for item, catalog_name in reports:
+        identity = _gscm_catalog_identity(
+            item.automation, item.discovery_key, catalog_name,
+        )
+        if identity:
+            incoming_identity_counts[identity] = incoming_identity_counts.get(identity, 0) + 1
+
+    def compatible_candidates(index: int) -> list[dict[str, Any]]:
+        item, _catalog_name = reports[index]
+        bookmark_id = _gscm_bookmark_id(item.automation)
+        return [
+            candidate for candidate in candidates
+            if candidate["id"] not in claimed_ids
+            and candidate["id"] not in unavailable_ids
+            and (not bookmark_id or not _gscm_bookmark_id(candidate["automation"]))
+        ]
+
+    def normalized_candidates(
+        index: int, compatible: list[dict[str, Any]],
+    ) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
+        item, catalog_name = reports[index]
+        identity = _gscm_catalog_identity(
+            item.automation, item.discovery_key, catalog_name,
+        )
+        normalized = [
+            candidate for candidate in compatible
+            if identity and _gscm_catalog_identity(
+                candidate["automation"], candidate["discovery_key"], candidate["name"],
+            ) == identity
+        ]
+        return identity, normalized
+
+    # Phase 1: every unresolved stable row gets a chance to reserve its unique
+    # full-scope legacy match before a different scope can attempt tabless repair.
+    stable_unresolved = [
+        index for index, plan in enumerate(plans)
+        if plan is None and _gscm_bookmark_id(reports[index][0].automation)
+    ]
+    for index in stable_unresolved:
+        item, catalog_name = reports[index]
+        compatible = compatible_candidates(index)
+        incoming_identity, normalized = normalized_candidates(index, compatible)
+        if not normalized:
+            continue
+        if (
+            len(normalized) > 1
+            or incoming_identity_counts.get(incoming_identity, 0) > 1
+        ):
+            raise _ambiguous_gscm_migration(catalog_name)
+        plans[index] = normalized[0]
+        claimed_ids.add(normalized[0]["id"])
+
+    # Phase 2: only stable rows still unresolved may repair a historical wrong
+    # scope tab. Count only reports still competing after full-scope reservations.
+    still_unresolved = [index for index, plan in enumerate(plans) if plan is None]
+    remaining_tabless_counts: dict[tuple[str, ...], int] = {}
+    for index in still_unresolved:
+        item, catalog_name = reports[index]
+        identity = _gscm_tabless_catalog_identity(
+            item.automation, item.discovery_key, catalog_name,
+        )
+        if identity:
+            remaining_tabless_counts[identity] = remaining_tabless_counts.get(identity, 0) + 1
+    for index in still_unresolved:
+        item, catalog_name = reports[index]
+        if not _gscm_bookmark_id(item.automation):
+            continue
+        compatible = compatible_candidates(index)
+        tabless_identity = _gscm_tabless_catalog_identity(
+            item.automation, item.discovery_key, catalog_name,
+        )
+        tabless = [
+            candidate for candidate in compatible
+            if tabless_identity and _gscm_tabless_catalog_identity(
+                candidate["automation"], candidate["discovery_key"], candidate["name"],
+            ) == tabless_identity
+        ]
+        if not tabless:
+            continue
+        if (
+            len(tabless) > 1
+            or remaining_tabless_counts.get(tabless_identity, 0) > 1
+        ):
+            raise _ambiguous_gscm_migration(catalog_name)
+        plans[index] = tabless[0]
+        claimed_ids.add(tabless[0]["id"])
+
+    # Phase 3: no-id rows may use only full synthetic-aware identity. Stable
+    # migrations have already reserved every candidate they can safely own.
+    no_id_unresolved = [
+        index for index, plan in enumerate(plans)
+        if plan is None and not _gscm_bookmark_id(reports[index][0].automation)
+    ]
+    for index in no_id_unresolved:
+        item, catalog_name = reports[index]
+        compatible = compatible_candidates(index)
+        incoming_identity, normalized = normalized_candidates(index, compatible)
+        migration_identity_count = incoming_identity_counts.get(incoming_identity, 0)
+        exact = [
+            candidate for candidate in compatible
+            if (item.discovery_key is not None
+                and candidate["discovery_key"] == item.discovery_key)
+            or (candidate["discovery_key"] is None and candidate["name"] == catalog_name)
+        ]
+        if incoming_identity:
+            # Matching text is not enough when synthetic-aware path evidence is
+            # available. A literal ``Budget (2)`` and a generated second copy
+            # share text but have different favorite_name identities.
+            exact = [candidate for candidate in exact if candidate in normalized]
+        if len(exact) > 1:
+            raise _ambiguous_gscm_migration(catalog_name)
+        existing = exact[0] if exact else None
+        if existing is None and normalized:
+            if len(normalized) > 1 or migration_identity_count > 1:
+                raise _ambiguous_gscm_migration(catalog_name)
+            existing = normalized[0]
+        if existing is not None:
+            plans[index] = existing
+            claimed_ids.add(existing["id"])
+
+    return plans, duplicate_groups
+
+
+def _gscm_assignment_path(
+    automation: dict[str, Any], discovery_key: str | None, name: str,
+) -> list[str]:
+    """Catalog path retained or allocated for one incomplete-scan row."""
+    raw_path = automation.get("category_path")
+    if isinstance(raw_path, list):
+        path = [str(part).strip() for part in raw_path if str(part).strip()]
+        if path:
+            return path
+    for value in (discovery_key, name):
+        if value:
+            path = [part.strip() for part in str(value).split(" > ") if part.strip()]
+            if path:
+                return path
+    return []
+
+
+def _gscm_incomplete_assignments(
+    candidates: list[dict[str, Any]],
+    reports: list[DiscoveredReport],
+    desired_names: list[str],
+    plans: list[dict[str, Any] | None],
+) -> list[tuple[str, str | None, list[str]]]:
+    """Keep stored identities and allocate new rows without subset collisions."""
+    planned_ids = {existing["id"] for existing in plans if existing is not None}
+    omitted = [candidate for candidate in candidates if candidate["id"] not in planned_ids]
+    occupied_names = {candidate["name"] for candidate in omitted}
+    occupied_keys = {
+        candidate["discovery_key"] for candidate in omitted
+        if candidate["discovery_key"] is not None
+    }
+    assignments: list[tuple[str, str | None, list[str]] | None] = [None] * len(reports)
+
+    def allocate(
+        item: DiscoveredReport, path: list[str], assigned_name: str,
+        assigned_key: str | None,
+    ) -> tuple[str, str | None, list[str]]:
+        if assigned_name not in occupied_names and assigned_key not in occupied_keys:
+            return assigned_name, assigned_key, path
+        leaf = path[-1] if path else item.name.strip()
+        match = _GSCM_CATALOG_SUFFIX_RE.fullmatch(leaf)
+        favorite_name = str(item.automation.get("favorite_name") or "").strip()
+        base_name = match.group(1).strip() if match else leaf
+        if not (
+            match and match.group(2) and base_name and favorite_name
+            and favorite_name.casefold() == base_name.casefold()
+            and favorite_name.casefold() != leaf.casefold()
+        ):
+            base_name = leaf
+        parent_path = path[:-1]
+        suffix = 2
+        while True:
+            allocated_path = [*parent_path, f"{base_name} ({suffix})"]
+            allocated_name = " > ".join(allocated_path)
+            if allocated_name not in occupied_names and allocated_name not in occupied_keys:
+                return allocated_name, allocated_name, allocated_path
+            suffix += 1
+
+    # Resolve planned rows first. Omitted rows are hard blockers; planned rows
+    # may exchange or correct assignments because they are staged before write.
+    planned: list[tuple[int, bool, tuple[str, str | None, list[str]]]] = []
+    for index, (item, desired_name, existing) in enumerate(
+        zip(reports, desired_names, plans)
+    ):
+        if existing is None:
+            continue
+        desired_key = item.discovery_key
+        desired_path = _gscm_assignment_path(item.automation, desired_key, desired_name)
+        blocked = desired_name in occupied_names or desired_key in occupied_keys
+        if blocked:
+            assignment = (
+                existing["name"], existing["discovery_key"],
+                _gscm_assignment_path(
+                    existing["automation"], existing["discovery_key"], existing["name"],
+                ),
+            )
+        else:
+            assignment = (desired_name, desired_key, desired_path)
+        retained = (
+            assignment[0] == existing["name"]
+            and assignment[1] == existing["discovery_key"]
+        )
+        planned.append((index, retained, assignment))
+
+    # Rows retaining their old slot reserve it before another planned row can
+    # request that same slot; swaps among moving rows remain available.
+    for index, _retained, assignment in sorted(planned, key=lambda value: not value[1]):
+        item = reports[index]
+        assigned_name, assigned_key, path = allocate(item, assignment[2], *assignment[:2])
+        occupied_names.add(assigned_name)
+        if assigned_key is not None:
+            occupied_keys.add(assigned_key)
+        assignments[index] = (assigned_name, assigned_key, path)
+
+    # New rows come last and can never displace omitted or effective planned rows.
+    for index, (item, desired_name, existing) in enumerate(
+        zip(reports, desired_names, plans)
+    ):
+        if existing is not None:
+            continue
+        desired_key = item.discovery_key
+        path = _gscm_assignment_path(item.automation, desired_key, desired_name)
+        assigned_name, assigned_key, path = allocate(
+            item, path, desired_name, desired_key,
+        )
+        occupied_names.add(assigned_name)
+        if assigned_key is not None:
+            occupied_keys.add(assigned_key)
+        assignments[index] = (assigned_name, assigned_key, path)
+
+    return [assignment for assignment in assignments if assignment is not None]
+
+
+def _stage_gscm_incomplete_rows(
+    db, site_id: int, candidates: list[dict[str, Any]], planned_ids: set[int],
+    desired_names: list[str],
+) -> None:
+    """Temporarily free only rows participating in an incomplete update."""
+    occupied = {candidate["name"] for candidate in candidates} | set(desired_names)
+    for candidate in candidates:
+        if candidate["id"] not in planned_ids:
+            continue
+        base = f"__gscm_incomplete_pending__{site_id}__{candidate['id']}__"
+        staged_name = base
+        suffix = 2
+        while staged_name in occupied:
+            staged_name = f"{base}{suffix}"
+            suffix += 1
+        occupied.add(staged_name)
+        db.execute(
+            "UPDATE flow_reports SET name=?, discovery_key=NULL WHERE id=?",
+            (staged_name, candidate["id"]),
+        )
+
+
+def _stage_gscm_snapshot_rows(
+    db, site_id: int, candidates: list[dict[str, Any]], desired_names: list[str],
+    planned_ids: set[int],
+) -> None:
+    """Free complete-snapshot names and keys before collision-safe upserts."""
+    occupied = {candidate["name"] for candidate in candidates} | set(desired_names)
+    for candidate in candidates:
+        if candidate["source_kind"] != "discovered" and candidate["id"] not in planned_ids:
+            continue
+        base = f"__gscm_snapshot_pending__{site_id}__{candidate['id']}__"
+        staged_name = base
+        suffix = 2
+        while staged_name in occupied:
+            staged_name = f"{base}{suffix}"
+            suffix += 1
+        occupied.add(staged_name)
+        db.execute(
+            "UPDATE flow_reports SET name=?, discovery_key=NULL WHERE id=?",
+            (staged_name, candidate["id"]),
+        )
+
+
+def _restore_gscm_missing_tombstones(
+    db, site_id: int, candidates: list[dict[str, Any]],
+) -> None:
+    """Restore missing referenced rows after staged names have served their purpose."""
+    originals = {
+        candidate["id"]: candidate
+        for candidate in candidates if candidate["source_kind"] == "discovered"
+    }
+    rows = db.execute(
+        """SELECT r.id, r.name FROM flow_reports r
+           WHERE r.site_id=? AND r.source_kind='discovered' AND r.stale=1
+             AND EXISTS(SELECT 1 FROM flows f WHERE f.report_id=r.id)
+           ORDER BY r.id""",
+        (site_id,),
+    ).fetchall()
+    occupied = {
+        row["name"] for row in db.execute(
+            "SELECT name FROM flow_reports WHERE site_id=?", (site_id,),
+        ).fetchall()
+    }
+    for row in rows:
+        original = originals.get(row["id"])
+        if original is None:
+            continue
+        occupied.discard(row["name"])
+        restored_name = original["name"]
+        if restored_name in occupied:
+            base = f"{restored_name} [missing bookmark #{row['id']}]"
+            restored_name = base
+            suffix = 2
+            while restored_name in occupied:
+                restored_name = f"{base} ({suffix})"
+                suffix += 1
+        occupied.add(restored_name)
+        restored_key = original["discovery_key"]
+        if restored_key and db.execute(
+            "SELECT 1 FROM flow_reports WHERE site_id=? AND discovery_key=? AND id<>?",
+            (site_id, restored_key, row["id"]),
+        ).fetchone():
+            restored_key = None
+        db.execute(
+            "UPDATE flow_reports SET name=?, discovery_key=? WHERE id=?",
+            (restored_name, restored_key, row["id"]),
+        )
+
+
 def _apply_discovery(
     db, site_id: int, reports: list[DiscoveredReport], seen_at: str, *, complete: bool = True,
 ) -> dict:
     keys = {item.discovery_key for item in reports}
     reset_result = {}
     site = db.execute("SELECT adapter FROM flow_sites WHERE id=?", (site_id,)).fetchone()
+    is_gscm = bool(site and site["adapter"] == GSCM_PORTAL_ADAPTER)
     incoming_path_counts: dict[tuple[str, str], int] = {}
     if site and site["adapter"] == ASAP_PORTAL_ADAPTER:
         for item in reports:
@@ -2599,34 +3098,88 @@ def _apply_discovery(
             if len(path) >= 2:
                 identity = (path[0].casefold(), path[-1].casefold())
                 incoming_path_counts[identity] = incoming_path_counts.get(identity, 0) + 1
-    is_gscm_snapshot = bool(site and site["adapter"] == GSCM_PORTAL_ADAPTER and complete)
+    is_gscm_snapshot = bool(is_gscm and complete)
     if is_gscm_snapshot and not reports:
         return {
             "report_count": 0, "filter_count": 0, "discovery_keys": [],
             "complete": False, "ignored_empty_snapshot": True,
         }
-    if is_gscm_snapshot:
-        # Apply an authoritative GSCM bookmark snapshot only after the worker
-        # has successfully returned a non-empty result. A failed or empty scan
-        # must never erase the last usable catalog.
-        reset_result = _reset_gscm_discovery_snapshot(db, site_id)
+    gscm_catalog_names = [
+        " > ".join(
+            str(part).strip()
+            for part in (item.automation.get("category_path") or [])
+            if str(part).strip()
+        ) or item.name.strip()
+        for item in reports
+    ] if is_gscm else []
+    gscm_candidates = _gscm_report_candidates(db, site_id) if is_gscm else []
+    if is_gscm:
+        gscm_plans, gscm_duplicate_groups = _plan_gscm_existing_reports(
+            gscm_candidates, list(zip(reports, gscm_catalog_names)),
+        )
+        gscm_assignments = (
+            list(zip(
+                gscm_catalog_names,
+                [item.discovery_key for item in reports],
+                [
+                    _gscm_assignment_path(
+                        item.automation, item.discovery_key, gscm_catalog_names[index],
+                    )
+                    for index, item in enumerate(reports)
+                ],
+            ))
+            if complete else _gscm_incomplete_assignments(
+                gscm_candidates, reports, gscm_catalog_names, gscm_plans,
+            )
+        )
+        if not complete:
+            keys = {
+                discovery_key for _name, discovery_key, _path in gscm_assignments
+                if discovery_key is not None
+            }
+    else:
+        gscm_plans, gscm_duplicate_groups, gscm_assignments = [], {}, []
     if complete:
         db.execute(
             "UPDATE flow_reports SET stale=1, enabled=0, updated_at=? WHERE site_id=? AND source_kind='discovered'",
             (seen_at, site_id),
         )
+    if is_gscm:
+        for canonical_id, duplicate_ids in gscm_duplicate_groups.items():
+            _remove_duplicate_gscm_reports(db, canonical_id, duplicate_ids, seen_at)
+        if complete:
+            _stage_gscm_snapshot_rows(
+                db, site_id, gscm_candidates, gscm_catalog_names,
+                {plan["id"] for plan in gscm_plans if plan is not None},
+            )
+        else:
+            _stage_gscm_incomplete_rows(
+                db, site_id, gscm_candidates,
+                {plan["id"] for plan in gscm_plans if plan is not None},
+                [name for name, _key, _path in gscm_assignments],
+            )
     report_ids = []
     filter_count = 0
-    for item in reports:
-        category_path = item.automation.get("category_path") or []
-        catalog_name = " > ".join(
-            str(part).strip() for part in category_path if str(part).strip()
-        ) or item.name.strip()
-        existing = db.execute(
-            """SELECT id FROM flow_reports WHERE site_id=?
-               AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
-            (site_id, item.discovery_key, catalog_name),
-        ).fetchone()
+    for index, item in enumerate(reports):
+        automation = dict(item.automation)
+        discovery_key = item.discovery_key
+        if is_gscm:
+            catalog_name, discovery_key, assigned_path = gscm_assignments[index]
+            if not complete:
+                automation["category_path"] = assigned_path
+            existing = gscm_plans[index]
+        else:
+            catalog_name = " > ".join(
+                str(part).strip()
+                for part in (automation.get("category_path") or [])
+                if str(part).strip()
+            ) or item.name.strip()
+            existing = db.execute(
+                """SELECT id FROM flow_reports WHERE site_id=?
+                   AND (discovery_key=? OR (discovery_key IS NULL AND name=?)) ORDER BY id LIMIT 1""",
+                (site_id, item.discovery_key, catalog_name),
+            ).fetchone()
+        category_path = automation.get("category_path") or []
         relocated = None
         if site and site["adapter"] == ASAP_PORTAL_ADAPTER and len(category_path) >= 2:
             identity = (
@@ -2673,7 +3226,10 @@ def _apply_discovery(
                 # new. Uniqueness on root + leaf prevents merging same-named
                 # reports that legitimately live in different menu columns.
                 existing = relocated
-        if not existing and category_path:
+        if (
+            not existing and category_path
+            and not (site and site["adapter"] == GSCM_PORTAL_ADAPTER)
+        ):
             for candidate in db.execute(
                 """SELECT id, automation_json FROM flow_reports
                    WHERE site_id=? AND source_kind='manual' ORDER BY id""",
@@ -2685,27 +3241,37 @@ def _apply_discovery(
                     break
         if existing:
             report_id = existing["id"]
-            automation = dict(item.automation)
             ready_text = item.ready_text
             download_text = item.download_text
-            if automation.get("scan_mode") == "partial":
-                # Merge over what a full scan already knows: export views,
-                # report tab, and download text can only come from opening
-                # the report, and flows depend on them.
+            stored = None
+            if automation.get("scan_mode") == "partial" or (
+                site and site["adapter"] == GSCM_PORTAL_ADAPTER
+                and not _gscm_bookmark_id(automation)
+            ):
                 stored = db.execute(
                     "SELECT ready_text, download_text, automation_json FROM flow_reports WHERE id=?",
                     (report_id,),
                 ).fetchone()
+            if automation.get("scan_mode") == "partial":
+                # Merge over what a full scan already knows: export views,
+                # report tab, and download text can only come from opening
+                # the report, and flows depend on them.
                 automation = {**_loads(stored["automation_json"], {}), **automation}
                 ready_text = item.ready_text or stored["ready_text"]
                 download_text = stored["download_text"] or item.download_text
+            elif stored:
+                stable_id = _loads(stored["automation_json"], {}).get(
+                    "favorite_bookmark_id"
+                )
+                if stable_id is not None:
+                    automation["favorite_bookmark_id"] = stable_id
             db.execute(
                 """UPDATE flow_reports SET name=?, report_url=?, ready_text=?, download_text=?,
                    automation_json=?, discovery_key=?, source_kind='discovered', last_seen_at=?,
                    stale=0, enabled=1, updated_at=?
                    WHERE id=?""",
                 (catalog_name, item.report_url, ready_text, download_text,
-                 _json(automation), item.discovery_key, seen_at, seen_at, report_id),
+                 _json(automation), discovery_key, seen_at, seen_at, report_id),
             )
         else:
             cursor = db.execute(
@@ -2714,7 +3280,7 @@ def _apply_discovery(
                     discovery_key, source_kind, last_seen_at, stale, enabled, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, 0, 1, ?, ?)""",
                 (site_id, catalog_name, item.report_url, item.ready_text, item.download_text,
-                 _json(item.automation), item.discovery_key, seen_at, seen_at, seen_at),
+                 _json(automation), discovery_key, seen_at, seen_at, seen_at),
             )
             report_id = cursor.lastrowid
         report_ids.append(report_id)
@@ -2750,6 +3316,13 @@ def _apply_discovery(
                  definition.required, definition.position, seen_at, seen_at, seen_at),
             )
             filter_count += 1
+    if is_gscm_snapshot:
+        # Stable-id matching must see the prior rows before cleanup. Anything
+        # rediscovered is active again by this point; only genuinely missing
+        # rows remain stale. Referenced rows become tombstones, while disposable
+        # rows and their filters are removed and their timings detached.
+        reset_result = _reset_gscm_discovery_snapshot(db, site_id)
+        _restore_gscm_missing_tombstones(db, site_id, gscm_candidates)
     return {
         "report_count": len(report_ids), "filter_count": filter_count,
         "discovery_keys": sorted(keys), "complete": complete, **reset_result,
