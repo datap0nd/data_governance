@@ -8623,7 +8623,7 @@ async function renderDataImport() {
                 <button class="btn-export" id="di-create-table" type="button" style="float:none">Create table now</button>
                 <span id="di-create-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
             </div>
-            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">lowercase letters, numbers and underscores; column types are inferred from this upload. No scheduled script is created in this step.</div>
+            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">lowercase letters, numbers and underscores (uppercase is lowered and spaces become underscores automatically); column types are inferred from this upload. No scheduled script is created in this step.</div>
         </div>
     </fieldset>
     <fieldset id="di-schedule" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
@@ -9890,7 +9890,9 @@ function bindDataImportPage() {
 
     const targetType = () => document.querySelector('input[name="di-targettype"]:checked').value;
     const mode = () => document.querySelector('input[name="di-mode"]:checked').value;
-    const tableName = () => targetType() === "new" ? newName.value.trim().toLowerCase() : tableSelect.value;
+    // Table names are normalized before SQL: lowercase, spaces -> underscores.
+    const normalizeTableName = v => (v || "").trim().replace(/\s+/g, "_").toLowerCase();
+    const tableName = () => targetType() === "new" ? normalizeTableName(newName.value) : tableSelect.value;
     const mvKey = v => `${v.schema}.${v.name}`;
     const selectedMaterializedViews = () => materializedViews
         .filter(v => selectedMvKeys.has(mvKey(v)))
@@ -10200,7 +10202,7 @@ function bindDataImportPage() {
 
     createTableBtn.addEventListener("click", async () => {
         if (!staged) return;
-        const t = newName.value.trim().toLowerCase();
+        const t = normalizeTableName(newName.value);
         if (!t) {
             toast("Enter a new table name");
             return;

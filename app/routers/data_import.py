@@ -185,7 +185,13 @@ def _current_script_dir() -> Path:
 
 
 def _clean_table_name(table: str) -> str:
-    table = table.strip().lower()
+    """Normalize a user-supplied table name before it reaches SQL.
+
+    Table names are always lowercased and any whitespace is converted to
+    underscores, so "My Table" becomes "my_table". Anything else that is not
+    a plain lowercase identifier is rejected.
+    """
+    table = re.sub(r"\s+", "_", (table or "").strip()).lower()
     if not NAME_RE.match(table):
         raise HTTPException(400, f"Invalid table name: {table} (letters, numbers, underscores; start with a letter)")
     return table
