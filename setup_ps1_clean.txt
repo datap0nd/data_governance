@@ -61,13 +61,30 @@ $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop;\\MX-SHARE\Users\meto.mx\Desktop;\\METO-MX02\Users\METOMX\Desktop"
 $Port        = 8000
 $GitHubToken = $env:DG_GITHUB_TOKEN
-$ZipUrl      = if ($GitHubToken) {
-    "https://api.github.com/repos/datap0nd/data_governance/zipball/main"
+# Resolve the latest main commit first and download that exact commit's
+# archive. The branch URL (.../main.zip) is the same every time, so a
+# corporate proxy can cache it and silently install yesterday's code while
+# the version badge (which asks the GitHub API live) claims to be current.
+# A per-commit URL is unique per update and can never be served stale.
+$LatestSha = $null
+try {
+    $ShaHeaders = @{ "User-Agent" = "Metronome-Setup"; "Accept" = "application/vnd.github+json" }
+    if ($GitHubToken) { $ShaHeaders["Authorization"] = "Bearer $GitHubToken" }
+    $LatestSha = (Invoke-RestMethod -Uri "https://api.github.com/repos/datap0nd/data_governance/commits/main" -Headers $ShaHeaders -TimeoutSec 15).sha
+    Write-Host "  Latest main commit: $LatestSha" -ForegroundColor DarkGray
+} catch {
+    Write-Host "  Could not resolve the latest commit ($($_.Exception.Message)). Falling back to the branch archive, which a proxy may serve stale." -ForegroundColor Yellow
+}
+$ZipUrl = if ($GitHubToken) {
+    if ($LatestSha) { "https://api.github.com/repos/datap0nd/data_governance/zipball/$LatestSha" }
+    else            { "https://api.github.com/repos/datap0nd/data_governance/zipball/main" }
 } else {
-    "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
+    if ($LatestSha) { "https://github.com/datap0nd/data_governance/archive/$LatestSha.zip" }
+    else            { "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip" }
 }
 if ($env:DG_UPDATE_ZIP_URL) {
     $ZipUrl = $env:DG_UPDATE_ZIP_URL
+    $LatestSha = $null
 }
 $ZipHeaders = @{}
 if ($GitHubToken) {
@@ -162,6 +179,9 @@ Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 # --- Download latest code ---
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
+# A leftover zip from an earlier (possibly failed) run must never be extracted.
+Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
+
 try {
     Invoke-WebRequestWithRetry -Uri $ZipUrl -OutFile $ZipPath -Headers $ZipHeaders
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
@@ -175,7 +195,8 @@ try {
     }
     Write-Host "  Trying via Edge..." -ForegroundColor Yellow
 
-    $BrowserZip = "$env:USERPROFILE\Downloads\data_governance-main.zip"
+    $BrowserZipName = if ($LatestSha) { "data_governance-$LatestSha.zip" } else { "data_governance-main.zip" }
+    $BrowserZip = "$env:USERPROFILE\Downloads\$BrowserZipName"
 
     Start-Process "msedge" $ZipUrl
     $timeout = 300
@@ -266,8 +287,11 @@ if ($Inner) {
 }
 Write-Host "  Files updated in: $CodeDir" -ForegroundColor Green
 
-# --- Stamp VERSION with download timestamp ---
+# --- Stamp VERSION with download timestamp and the installed commit ---
+# The trailing sha is what /api/version reports as the deployed commit, so
+# the app's badge reflects the files actually installed, not just the time.
 $ver = (Get-Date -Format "yyyyMMdd-HHmmss")
+if ($LatestSha) { $ver = "$ver-$LatestSha" }
 Set-Content "$CodeDir\VERSION" $ver
 Write-Host "  Version: $ver" -ForegroundColor DarkGray
 
