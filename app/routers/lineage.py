@@ -1,39 +1,14 @@
-import re
-
 from fastapi import APIRouter, HTTPException
 from app.config import PBI_WORKSPACE, UPLOAD_PGHOST
 from app.database import get_db
+from app.flow_diagnostics import (
+    build_flow_diagnostics,
+    included_flow_ids,
+    legacy_flow_suggestions as build_legacy_flow_suggestions,
+)
 from app.models import LineageEdge
-from app.source_identity import inspect_flow_target
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
-
-
-def _normalized_object_name(value: str | None) -> str:
-    value = (value or "").strip().casefold()
-    value = value.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
-    return re.sub(r"[\\/]+", ".", value).strip(".")
-
-
-def _source_matches_flow_target(source: dict, flow: dict) -> bool:
-    """Match a governed source to a Flow SQL handoff target."""
-    table = _normalized_object_name(flow.get("sql_table"))
-    schema = _normalized_object_name(flow.get("sql_schema"))
-    if not table:
-        return False
-    target = f"{schema}.{table}" if schema else table
-    candidates = {
-        _normalized_object_name(source.get("name")),
-        _normalized_object_name(source.get("connection_info")),
-    }
-    for candidate in candidates:
-        if not candidate:
-            continue
-        if candidate == target or candidate.endswith(f".{target}"):
-            return True
-        if not schema and candidate.rsplit(".", 1)[-1] == table:
-            return True
-    return False
 
 
 def _postgres_ref(source_name: str | None) -> dict | None:
@@ -305,9 +280,18 @@ def get_lineage_diagram(report_id: int):
 
         # 8. Flows that load a SQL target represented anywhere in this report
         # pipeline. A Flow is upstream of its target source.
+        flow_diagnostics = build_flow_diagnostics(
+            db,
+            source_ids,
+            server=UPLOAD_PGHOST,
+            report_sources=sources,
+        )
+        diagnostic_by_id = {
+            int(item["id"]): item for item in flow_diagnostics["items"]
+        }
+        included_ids = included_flow_ids(flow_diagnostics)
         flows = []
-        legacy_flow_suggestions = []
-        if sources:
+        if included_ids:
             flow_rows = db.execute(
                 """SELECT f.*,
                           EXISTS(
@@ -317,37 +301,21 @@ def get_lineage_diagram(report_id: int):
                           ) AS has_active_run
                    FROM flows f
                    WHERE f.sql_handoff_enabled=1
-                     AND NULLIF(TRIM(f.sql_table), '') IS NOT NULL
                    ORDER BY f.name"""
             ).fetchall()
             for row in flow_rows:
                 flow = dict(row)
-                resolution = inspect_flow_target(db, flow, server=UPLOAD_PGHOST)
-                effective_source_id = resolution.get("effective_source_id")
-                if effective_source_id not in source_ids:
-                    suggested_source_ids = [
-                        source["id"] for source in sources
-                        if _source_matches_flow_target(source, flow)
-                    ]
-                    if suggested_source_ids:
-                        legacy_flow_suggestions.append({
-                            "id": flow["id"], "name": flow["name"],
-                            "target_source_ids": suggested_source_ids,
-                            "sql_database": flow.get("sql_database"),
-                            "sql_schema": flow.get("sql_schema"),
-                            "sql_table": flow.get("sql_table"),
-                            "executable": False,
-                            "reason": "Legacy display-name suggestion; confirm the exact SQL target in the Flow editor.",
-                        })
+                if int(flow["id"]) not in included_ids:
                     continue
-                target_source_ids = [int(effective_source_id)]
+                diagnostic = diagnostic_by_id[int(flow["id"])]
+                effective_source_id = int(diagnostic["effective_source_id"])
                 last_success_at = flow.get("last_success_at")
                 if not last_success_at and flow.get("last_status") == "succeeded":
                     last_success_at = flow.get("last_run_at")
                 flows.append({
                     "id": flow["id"],
                     "name": flow["name"],
-                    "target_source_ids": target_source_ids,
+                    "target_source_ids": [effective_source_id],
                     "sql_database": flow.get("sql_database"),
                     "sql_schema": flow.get("sql_schema"),
                     "sql_table": flow.get("sql_table"),
@@ -356,10 +324,11 @@ def get_lineage_diagram(report_id: int):
                     "last_status": flow.get("last_status"),
                     "last_error": flow.get("last_error"),
                     "has_active_run": bool(flow.get("has_active_run")),
-                    "sql_target_link_status": resolution["status"],
-                    "sql_target_persisted": bool(resolution.get("persisted_valid")),
+                    "sql_target_link_status": diagnostic["link_status"],
+                    "sql_target_persisted": diagnostic["persisted_source_id"] == effective_source_id,
                     "executable": True,
                 })
+        legacy_flow_suggestions = build_legacy_flow_suggestions(flow_diagnostics)
 
     return {
         "report": {
@@ -377,5 +346,6 @@ def get_lineage_diagram(report_id: int):
         "source_deps": source_deps,
         "flows": flows,
         "legacy_flow_suggestions": legacy_flow_suggestions,
+        "flow_diagnostics": flow_diagnostics,
         "upstreams": upstreams,
     }

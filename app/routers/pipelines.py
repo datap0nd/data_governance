@@ -20,6 +20,12 @@ from pydantic import BaseModel, Field
 
 from app.config import PBI_WORKSPACE, UPLOAD_PGHOST
 from app.database import get_db
+from app.flow_diagnostics import (
+    build_flow_diagnostics,
+    diagnostic_blocker_messages,
+    included_flow_ids,
+    legacy_flow_suggestions,
+)
 from app.flow_local_runner import HEADED_WORKER_ID, WORKER_ID, launch_local_worker
 from app.flow_sql import _engine, _quote_identifier, configuration_status
 from app.routers.eventlog import get_actor, log_event
@@ -426,6 +432,8 @@ def _plan_snapshot(plan: dict) -> dict:
         "source_ids": plan["source_ids"],
         "source_edges": plan["source_edges"],
         "flows": plan["flows"],
+        "flow_diagnostics": plan["flow_diagnostics"],
+        "legacy_flow_suggestions": plan["legacy_flow_suggestions"],
         "materialized_views": plan["materialized_views"],
         "powerbi": plan["powerbi"],
         "configuration_versions": plan["configuration_versions"],
@@ -496,21 +504,26 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
             )
             materialized_views.append(item)
 
+        flow_diagnostics = build_flow_diagnostics(
+            db,
+            source_ids,
+            server=UPLOAD_PGHOST,
+        )
+        blockers.extend(diagnostic_blocker_messages(flow_diagnostics))
+        executable_flow_ids = included_flow_ids(flow_diagnostics)
         flow_rows = db.execute(
             """SELECT id, name, browser_mode, sql_handoff_enabled, sql_database,
                       sql_schema, sql_table, sql_target_source_id, updated_at
                FROM flows WHERE sql_handoff_enabled=1 ORDER BY id"""
         ).fetchall()
         flows = []
-        closure = set(source_ids)
         for row in flow_rows:
+            if int(row["id"]) not in executable_flow_ids:
+                continue
             inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
-            exact_ids = {int(source_id) for source_id in inspection.get("matches", [])}
             effective = inspection.get("effective_source_id")
             effective_id = int(effective) if effective is not None else None
-            if effective_id is None and exact_ids & closure:
-                blockers.append(f"Flow '{row['name']}' has an unresolved or ambiguous SQL target.")
-            if effective_id is not None and effective_id in closure:
+            if effective_id is not None:
                 target = {
                     "server": normalize_server(UPLOAD_PGHOST),
                     "database": (row["sql_database"] or "").strip(),
@@ -619,6 +632,8 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         "source_ids": source_ids,
         "source_edges": source_edges,
         "flows": flows,
+        "flow_diagnostics": flow_diagnostics,
+        "legacy_flow_suggestions": legacy_flow_suggestions(flow_diagnostics),
         "materialized_views": materialized_views,
         "powerbi": powerbi,
         "worker_readiness": workers,

@@ -7054,6 +7054,7 @@ const LINEAGE_COLS = [
 ];
 
 const LINEAGE_COL_STORAGE_KEY = "lineage_cols_v2";
+const LINEAGE_FLOW_DIAGNOSTIC_DISMISSALS_KEY = "lineage_flow_diagnostic_dismissals_v1";
 
 function _getLineageCols() {
     const defaults = Object.fromEntries(LINEAGE_COLS.map(c => [c.key, true]));
@@ -7076,6 +7077,292 @@ function _lineageColumnDefs(colState, upstreamColumnDefs = []) {
         }
     }
     return columnDefs;
+}
+
+function _flowDiagnosticDismissalKey(reportId, item) {
+    const target = item?.target || {};
+    // PostgreSQL database/schema/relation spelling is exact and can be
+    // case-sensitive. Only the host is normalized; even a case-only target
+    // edit must resurface a previously dismissed diagnostic.
+    const fingerprint = JSON.stringify([
+        String(target.server || "").trim().toLowerCase(),
+        String(target.database || "").trim(),
+        String(target.schema || "").trim(),
+        String(target.table || "").trim(),
+    ]);
+    return `${reportId || "unknown"}|${item?.id || "unknown"}|${fingerprint}`;
+}
+
+function _flowDiagnosticDismissals() {
+    try {
+        const stored = JSON.parse(sessionStorage.getItem(LINEAGE_FLOW_DIAGNOSTIC_DISMISSALS_KEY) || "[]");
+        return new Set(Array.isArray(stored) ? stored : []);
+    } catch (_) {
+        return new Set();
+    }
+}
+
+function _dismissFlowDiagnostic(reportId, item) {
+    const dismissed = _flowDiagnosticDismissals();
+    dismissed.add(_flowDiagnosticDismissalKey(reportId, item));
+    try {
+        sessionStorage.setItem(LINEAGE_FLOW_DIAGNOSTIC_DISMISSALS_KEY, JSON.stringify([...dismissed]));
+    } catch (_) {}
+}
+
+function _legacyFlowDiagnostic(suggestion) {
+    return {
+        id: suggestion.id,
+        name: suggestion.name,
+        target: {
+            server: suggestion.sql_server || null,
+            database: suggestion.sql_database || null,
+            schema: suggestion.sql_schema || null,
+            table: suggestion.sql_table || null,
+        },
+        persisted_source_id: null,
+        effective_source_id: null,
+        candidate_source_ids: suggestion.target_source_ids || [],
+        link_status: "legacy",
+        scope_status: "candidate_in_report",
+        severity: "warning",
+        reason_code: "legacy_display_match",
+        message: suggestion.reason || "A display-name match may refer to this report, but it is not executable.",
+        recommended_action: "edit_flow",
+        executable: false,
+    };
+}
+
+function _lineageFlowPayloadWarnings(flows, renderedSourceIds) {
+    const rendered = new Set([...renderedSourceIds].map(id => String(id)));
+    const warnings = [];
+    for (const flow of (flows || [])) {
+        const missing = (flow.target_source_ids || []).filter(id => !rendered.has(String(id)));
+        if (!missing.length) continue;
+        warnings.push({
+            id: flow.id,
+            name: flow.name,
+            severity: "warning",
+            reason_code: "payload_consistency",
+            message: `Flow '${flow.name}' was returned as connected, but its source ${missing.map(id => `#${id}`).join(", ")} is missing from the rendered lineage payload.`,
+            recommended_action: "recheck_lineage",
+            executable: false,
+        });
+    }
+    return warnings;
+}
+
+function _flowPostgresDiagnostic(postgres) {
+    if (!postgres || ["completed", "not_requested"].includes(postgres.status)) return null;
+    const databases = Object.entries(postgres.databases || {})
+        .filter(([, result]) => !["completed", "not_requested"].includes(result?.status))
+        .map(([database]) => database);
+    const status = String(postgres.status || "unknown").replaceAll("_", " ");
+    return `PostgreSQL dependency scan: ${status}${databases.length ? ` (${databases.join(", ")})` : ""}.`;
+}
+
+function _flowDiagnosticsModel(data, payloadWarnings = []) {
+    const reportId = data?.report?.id;
+    const raw = data?.flow_diagnostics || {};
+    const rawItems = Array.isArray(raw.items) ? [...raw.items] : [];
+    const seenLegacy = new Set(rawItems
+        .filter(item => item.reason_code === "legacy_display_match")
+        .map(item => String(item.id)));
+    for (const suggestion of (data?.legacy_flow_suggestions || [])) {
+        const legacy = _legacyFlowDiagnostic(suggestion);
+        if (!seenLegacy.has(String(legacy.id))) rawItems.push(legacy);
+    }
+
+    const dismissed = _flowDiagnosticDismissals();
+    const dismissedLegacyCount = rawItems.filter(item =>
+        item.reason_code === "legacy_display_match"
+        && dismissed.has(_flowDiagnosticDismissalKey(reportId, item))
+    ).length;
+    const items = [...rawItems, ...payloadWarnings].filter(item => {
+        if (!["warning", "blocker"].includes(item.severity)) return false;
+        if (item.reason_code !== "legacy_display_match") return true;
+        return !dismissed.has(_flowDiagnosticDismissalKey(reportId, item));
+    });
+    const numeric = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+    const includedCount = numeric(raw.included_count, (data?.flows || []).length);
+    const downloadOnlyCount = numeric(raw.download_only_count, 0);
+    const excludedCount = Math.max(0,
+        numeric(raw.excluded_count, rawItems.filter(item => item.severity !== "none").length)
+        - dismissedLegacyCount
+    );
+    return {
+        reportId,
+        includedCount,
+        excludedCount,
+        downloadOnlyCount,
+        items,
+        postgres: raw.postgres_dependencies || null,
+        postgresMessage: _flowPostgresDiagnostic(raw.postgres_dependencies),
+        payloadWarningCount: payloadWarnings.length,
+    };
+}
+
+function _flowDiagnosticsHasRelevantInfo(data, model = _flowDiagnosticsModel(data)) {
+    return (data?.flows || []).length > 0
+        || model.includedCount > 0
+        || model.excludedCount > 0
+        || model.downloadOnlyCount > 0
+        || model.items.length > 0
+        || !!model.postgresMessage;
+}
+
+function _flowDiagnosticTargetText(item) {
+    const target = item.target || {};
+    return [target.database, target.schema, target.table].filter(Boolean).join(".");
+}
+
+function _flowDiagnosticsHtml(data, { payloadWarnings = [] } = {}) {
+    const model = _flowDiagnosticsModel(data, payloadWarnings);
+    const hasBanner = model.excludedCount > 0
+        || model.downloadOnlyCount > 0
+        || model.items.length > 0
+        || !!model.postgresMessage;
+    if (!hasBanner) return "";
+
+    const blockerCount = model.items.filter(item => item.severity === "blocker").length;
+    const summary = [`${model.includedCount} connected`];
+    if (model.excludedCount) summary.push(`${model.excludedCount} excluded`);
+    if (model.downloadOnlyCount) {
+        summary.push(`${model.downloadOnlyCount} download-only Flow${model.downloadOnlyCount === 1 ? "" : "s"} excluded`);
+    }
+    if (model.payloadWarningCount) summary.push(`${model.payloadWarningCount} payload warning${model.payloadWarningCount === 1 ? "" : "s"}`);
+    if (model.postgresMessage) summary.push("PostgreSQL scan needs attention");
+
+    const itemHtml = model.items.map(item => {
+        const target = _flowDiagnosticTargetText(item);
+        const legacy = item.reason_code === "legacy_display_match";
+        const key = legacy ? _flowDiagnosticDismissalKey(model.reportId, item) : "";
+        const actions = [];
+        if (item.id != null && item.reason_code !== "payload_consistency") {
+            actions.push(`<button class="btn-sm btn-outline" type="button" data-flow-diagnostic-edit="${esc(item.id)}">Edit Flow</button>`);
+        }
+        if (legacy) {
+            actions.push(`<button class="btn-sm btn-outline" type="button" data-flow-diagnostic-dismiss="${esc(key)}">Dismiss</button>`);
+        }
+        return `<li class="pipeline-${item.severity === "blocker" ? "blocked" : "warning"}" data-flow-diagnostic-item="${esc(item.id)}">
+            <strong>${esc(item.name || "Flow lineage")}</strong>
+            <span>${esc(item.message || String(item.reason_code || "Flow target needs attention").replaceAll("_", " "))}${target ? ` · ${esc(target)}` : ""}</span>
+            ${actions.length ? `<span class="pipeline-diagnostic-actions">${actions.join("")}</span>` : ""}
+        </li>`;
+    }).join("");
+    const details = [
+        model.downloadOnlyCount
+            ? `<p class="pipeline-empty">${model.downloadOnlyCount} download-only Flow${model.downloadOnlyCount === 1 ? " is" : "s are"} intentionally excluded because ${model.downloadOnlyCount === 1 ? "it does" : "they do"} not hand data to SQL.</p>`
+            : "",
+        model.postgresMessage ? `<p class="pipeline-warning">${esc(model.postgresMessage)}</p>` : "",
+        itemHtml ? `<ul>${itemHtml}</ul>` : "",
+    ].join("");
+
+    return `<div class="pipeline-message ${blockerCount ? "pipeline-blocked" : "pipeline-warning"} lineage-flow-diagnostics" role="status">
+        <details ${blockerCount || model.payloadWarningCount || model.postgresMessage ? "open" : ""}>
+            <summary><strong>Flow lineage</strong> · ${esc(summary.join(" · "))}</summary>
+            ${details}
+        </details>
+        <div class="pipeline-diagnostic-actions">
+            <button class="btn-sm btn-outline" type="button" data-flow-diagnostic-recheck>Recheck lineage</button>
+            <button class="btn-sm btn-outline" type="button" data-flow-diagnostic-scanner>Open Scanner</button>
+        </div>
+    </div>`;
+}
+
+function _flowsHiddenWarningHtml(data, model = _flowDiagnosticsModel(data)) {
+    if (!_flowDiagnosticsHasRelevantInfo(data, model)) return "";
+    return `<div class="pipeline-message pipeline-warning lineage-flows-hidden">Flows are hidden—<button class="btn-link" type="button" data-lineage-show-flows>Show Flows</button></div>`;
+}
+
+async function _recheckFlowLineage(reportId, button) {
+    const original = button?.textContent || "Recheck lineage";
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Rechecking...";
+    }
+    try {
+        const result = await apiPost("/api/scanner/pg-deps");
+        const status = result?.status || "completed";
+        if (status === "completed") toast("PostgreSQL lineage rechecked.");
+        else toast(`PostgreSQL lineage recheck ${String(status).replaceAll("_", " ")}. Open Scanner for details.`);
+        if (reportId) {
+            const updated = await api(`/api/lineage/report/${reportId}/diagram`);
+            window._lineageData = updated;
+            if (document.getElementById("lineage-container")) _renderLineageDiagram(updated);
+            return updated;
+        }
+        return null;
+    } catch (err) {
+        toast("Lineage was not rechecked: " + err.message);
+        return null;
+    } finally {
+        if (button?.isConnected) {
+            button.disabled = false;
+            button.textContent = original;
+        }
+    }
+}
+
+function _bindLineageFlowDiagnosticActions(root, data, { afterRecheck = null, payloadWarnings = [] } = {}) {
+    if (!root) return;
+    const reportId = data?.report?.id;
+    const model = _flowDiagnosticsModel(data);
+    root.querySelectorAll("[data-lineage-show-flows]").forEach(button => {
+        button.addEventListener("click", () => {
+            const state = _getLineageCols();
+            state.flows = true;
+            _setLineageCols(state);
+            document.querySelector('.lineage-col-toggle[data-col="flows"]')?.classList.add("active");
+            if (window._lineageData) _renderLineageDiagram(window._lineageData);
+        });
+    });
+    root.querySelectorAll("[data-flow-diagnostic-recheck]").forEach(button => {
+        button.addEventListener("click", async () => {
+            const updated = await _recheckFlowLineage(reportId, button);
+            if (updated && afterRecheck) afterRecheck(updated);
+        });
+    });
+    root.querySelectorAll("[data-flow-diagnostic-scanner]").forEach(button => {
+        button.addEventListener("click", async () => {
+            button.closest(".task-modal-overlay")?.remove();
+            await navigate("scanner");
+        });
+    });
+    root.querySelectorAll("[data-flow-diagnostic-edit]").forEach(button => {
+        button.addEventListener("click", async () => {
+            const flowId = Number(button.dataset.flowDiagnosticEdit);
+            button.closest(".task-modal-overlay")?.remove();
+            await navigate("flows");
+            const flow = (window._flowsState?.flows || []).find(item => Number(item.id) === flowId);
+            if (!flow) {
+                toast("That Flow is no longer available.");
+                return;
+            }
+            _flowShowView("builder", flow);
+        });
+    });
+    root.querySelectorAll("[data-flow-diagnostic-dismiss]").forEach(button => {
+        button.addEventListener("click", () => {
+            const key = button.dataset.flowDiagnosticDismiss;
+            const item = model.items.find(candidate =>
+                candidate.reason_code === "legacy_display_match"
+                && _flowDiagnosticDismissalKey(reportId, candidate) === key
+            );
+            if (item) _dismissFlowDiagnostic(reportId, item);
+            const banner = button.closest(".lineage-flow-diagnostics");
+            const replacementHtml = _flowDiagnosticsHtml(data, { payloadWarnings });
+            if (!banner || !replacementHtml) {
+                banner?.remove();
+                return;
+            }
+            const holder = document.createElement("div");
+            holder.innerHTML = replacementHtml;
+            const replacement = holder.firstElementChild;
+            banner.replaceWith(replacement);
+            _bindLineageFlowDiagnosticActions(replacement, data, { afterRecheck, payloadWarnings });
+        });
+    });
 }
 
 async function renderLineageDiagram() {
@@ -7434,15 +7721,14 @@ function _renderLineageDiagram(data) {
     const { layers: sourceLayers } = _lineageSourceLayers(data, usedSourceIds);
     const sourceNodes = sourceLayers[0] || [];
     const allSourceNodes = sourceLayers.flatMap(layer => layer || []);
-    const allSourceIds = new Set(allSourceNodes.map(s => s.id));
+    const allSourceIds = new Set(allSourceNodes.map(s => String(s.id)));
     const usedUpstreamIds = new Set(allSourceNodes.map(s => s.upstream_id).filter(Boolean));
     const upstreamNodes = [...upstreamMap.values()].filter(u => usedUpstreamIds.has(u.id));
-    const flowNodes = (data.flows || []).filter(flow =>
-        (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
-    );
-    const legacyFlowNodes = (data.legacy_flow_suggestions || []).filter(flow =>
-        (flow.target_source_ids || []).some(sourceId => allSourceIds.has(sourceId))
-    );
+    // The API has already resolved report scope and exact target identity. Keep
+    // its confirmed Flow list authoritative; a partial payload is diagnosed
+    // visibly below instead of silently filtering the Flow out a second time.
+    const flowNodes = [...(data.flows || [])];
+    const flowPayloadWarnings = _lineageFlowPayloadWarnings(flowNodes, allSourceIds);
 
     if (visualNodes.length === 0 && tableNodes.length === 0) {
         container.innerHTML = '<div class="lineage-placeholder">No visual lineage data. Run a layout scan from Scanner.</div>';
@@ -7593,13 +7879,6 @@ function _renderLineageDiagram(data) {
             <div class="lin-card-facts">${loaded}${target ? `<span class="lin-card-sep">-</span><span title="Target table">${esc(target)}</span>` : ""}</div>
         </div>`;
     }
-    for (const flow of legacyFlowNodes) {
-        const target = [flow.sql_database, flow.sql_schema, flow.sql_table].filter(Boolean).join(".");
-        flowH += `<div class="lin-card lin-flow lin-st-warn lin-flow-suggestion" title="${esc(flow.reason)}">
-            <div class="lin-card-hdr"><span class="lin-card-lbl">${esc(flow.name)}</span><span class="lin-flow-status">suggested</span></div>
-            <div class="lin-card-facts"><span>Not executable · confirm in Flow editor</span>${target ? `<span class="lin-card-sep">-</span><span>${esc(target)}</span>` : ""}</div>
-        </div>`;
-    }
     colHtml.flows = flowH;
 
     // -- Upstreams --
@@ -7609,14 +7888,14 @@ function _renderLineageDiagram(data) {
     }
     colHtml.upstreams = upH;
 
-    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length + legacyFlowNodes.length, upstreams: upstreamNodes.length };
+    const colCounts = { visuals: visCount, tables: tableNodes.length, sources: sourceNodes.length, flows: flowNodes.length, upstreams: upstreamNodes.length };
     for (let depth = 1; depth < sourceLayers.length; depth++) {
         colCounts[`mv_upstream_${depth}`] = (sourceLayers[depth] || []).length;
     }
 
     // Build grid
     const columnDefs = _lineageColumnDefs(colState, upstreamColumnDefs);
-    const activeCols = columnDefs.filter(col => colHtml[col.key] || col.key === "visuals" || col.key === "tables");
+    const activeCols = columnDefs.filter(col => colHtml[col.key] || ["flows", "visuals", "tables"].includes(col.key));
     const gridCols = activeCols.map(() => "minmax(180px, 1fr)").join(" ");
     let gridH = "";
     for (const col of activeCols) {
@@ -7625,6 +7904,8 @@ function _renderLineageDiagram(data) {
     }
 
     const stLabel = data.report.archived ? "archived" : (data.report.status || "unknown");
+    const flowDiagnostics = _flowDiagnosticsHtml(data, { payloadWarnings: flowPayloadWarnings });
+    const flowsHiddenWarning = colState.flows ? "" : _flowsHiddenWarningHtml(data);
     if (_linSettleTimer !== null) {
         clearTimeout(_linSettleTimer);
         _linSettleTimer = null;
@@ -7639,6 +7920,8 @@ function _renderLineageDiagram(data) {
             <span class="lineage-report-status lineage-report-status-${stLabel.replace(/\s+/g, "-")}">${stLabel}</span>
             ${data.report.owner ? `<span class="lineage-report-owner">${esc(data.report.owner)}</span>` : ""}
         </div>
+        ${flowsHiddenWarning}
+        ${flowDiagnostics}
         <div class="lin-wrap" id="lin-wrap">
             <div class="lin-grid" id="lin-grid" style="grid-template-columns:${gridCols}">${gridH}</div>
             <svg class="lin-svg" id="lin-svg"></svg>
@@ -7647,6 +7930,7 @@ function _renderLineageDiagram(data) {
     `;
 
     _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, allSourceNodes, upstreamNodes);
+    _bindLineageFlowDiagnosticActions(container, data, { payloadWarnings: flowPayloadWarnings });
     window._lineageBindTimer = setTimeout(() => {
         window._lineageBindTimer = null;
         _drawLinEdges();
@@ -9537,6 +9821,7 @@ function _openPipelinePreview(plan, onConfirm) {
     const blockers = plan.blockers || [];
     const warnings = plan.warnings || [];
     const recipient = plan.recipient;
+    const flowDiagnostics = _flowDiagnosticsHtml(plan);
     overlay.innerHTML = `
         <div class="task-modal pipeline-preview" role="dialog" aria-modal="true" aria-labelledby="pipeline-preview-title">
             <h2 id="pipeline-preview-title">Refresh full pipeline</h2>
@@ -9546,6 +9831,7 @@ function _openPipelinePreview(plan, onConfirm) {
                 <div><dt>Power BI</dt><dd>${esc(plan.powerbi?.workspace_name || "Unavailable")}<small>${esc(plan.powerbi?.dataset_id || "Dataset unresolved")}</small></dd></div>
                 <div><dt>Estimate</dt><dd>${esc(_pipelineDuration(plan.estimated_duration_seconds))}<small>Based on conservative stage defaults</small></dd></div>
             </dl>
+            ${flowDiagnostics}
             <section><h3>1. Flows (${plan.flows.length})</h3>${plan.flows.length ? `<ol>${plan.flows.map(flow => `<li><strong>${esc(flow.name)}</strong><span>${esc(flow.browser_mode)} · ${esc(flow.target.database)}.${esc(flow.target.schema)}.${esc(flow.target.table)}</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No explicitly linked upstream Flows.</p>'}</section>
             <section><h3>2. Materialized views (${plan.materialized_views.length})</h3>${plan.materialized_views.length ? `<ol>${plan.materialized_views.map(mv => `<li><strong>${esc(mv.database)}.${esc(mv.schema)}.${esc(mv.relation)}</strong><span>commits before the next MV · exact row count after commit</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No materialized views in the report closure.</p>'}</section>
             <section><h3>Worker readiness</h3>${plan.worker_readiness.length ? `<ul>${plan.worker_readiness.map(worker => `<li class="${worker.ready ? "pipeline-ready" : "pipeline-warning"}"><strong>${esc(worker.mode)}</strong><span>${worker.ready ? `ready · heartbeat ${esc(formatDate(worker.last_seen_at))}` : "will be started; must register within 60 seconds"}</span></li>`).join("")}</ul>` : '<p class="pipeline-empty">No Flow workers are required.</p>'}</section>
@@ -9556,6 +9842,7 @@ function _openPipelinePreview(plan, onConfirm) {
         </div>`;
     document.body.appendChild(overlay);
     const close = () => { overlay.remove(); restoreFocus?.focus?.(); };
+    _bindLineageFlowDiagnosticActions(overlay, plan, { afterRecheck: close });
     overlay.querySelector(".pipeline-cancel").addEventListener("click", close);
     overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
     overlay.querySelector(".pipeline-confirm").addEventListener("click", async event => {
