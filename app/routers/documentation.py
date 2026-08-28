@@ -386,7 +386,7 @@ def _ai_suggest_doc(report_id: int, ai_settings):
 
 @router.post("/ai-suggest/{report_id}")
 def ai_suggest_doc(report_id: int):
-    """Generate one report suggestion only with a connected Qwen model."""
+    """Generate one report suggestion only with a connected local model."""
     from app.ai.runtime_config import load_runtime_settings
 
     ai_settings = load_runtime_settings()
@@ -396,7 +396,7 @@ def ai_suggest_doc(report_id: int):
     ):
         raise HTTPException(
             status_code=503,
-            detail="AI documentation suggestions require Qwen mode in System > AI.",
+            detail="AI documentation suggestions require Local AI mode in System > AI.",
         )
     return _ai_suggest_doc(report_id, ai_settings)
 
@@ -415,7 +415,7 @@ def ai_suggest_all(request: Request):
     ):
         raise HTTPException(
             status_code=503,
-            detail="AI documentation suggestions require Qwen mode in System > AI.",
+            detail="AI documentation suggestions require Local AI mode in System > AI.",
         )
 
     actor = get_actor(request)

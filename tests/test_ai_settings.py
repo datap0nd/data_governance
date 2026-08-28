@@ -1,13 +1,21 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import config, database
-from app.ai import operations_agent, router as ai_router, run_store, runtime_config
+from app.ai import (
+    model_catalog,
+    operations_agent,
+    router as ai_router,
+    run_store,
+    runtime_config,
+)
 from app.ai.protocol import AssistantTurn, ToolCall
 from app.routers import email
 
@@ -227,6 +235,330 @@ def test_connection_test_sends_only_nonce_and_requires_native_tool_call(
         "tool_calls_compatible": True,
     }
     assert "connection-secret" not in result.text
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("http://models.example.test", "http://models.example.test/v1/models"),
+        ("http://models.example.test/v1", "http://models.example.test/v1/models"),
+        (
+            "https://models.example.test/openai/v1/chat/completions",
+            "https://models.example.test/openai/v1/models",
+        ),
+    ],
+)
+def test_model_catalog_derives_openai_compatible_models_endpoint(endpoint, expected):
+    assert model_catalog.models_endpoint(endpoint) == expected
+
+
+def test_model_catalog_fetches_bounded_sorted_ids_with_candidate_credentials(
+    ai_settings_db,
+):
+    secret = "catalog-secret-never-return"
+    settings = replace(
+        runtime_config.load_runtime_settings(),
+        endpoint="http://models.example.test/v1/chat/completions",
+        api_key=secret,
+    )
+
+    def handler(request: httpx.Request):
+        assert request.method == "GET"
+        assert request.url.path == "/v1/models"
+        assert request.headers["authorization"] == f"Bearer {secret}"
+        assert request.headers["accept-encoding"] == "identity"
+        assert request.content == b""
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "zeta-model", "object": "model"},
+                    {"id": "Alpha-model", "object": "model"},
+                    {"id": "zeta-model", "object": "model"},
+                    {"id": f"malformed-{secret}", "object": "model"},
+                    {"object": "model"},
+                ],
+            },
+        )
+
+    models = model_catalog.list_available_models(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert models == ["Alpha-model", "zeta-model"]
+    assert secret not in json.dumps(models)
+
+
+def test_model_catalog_route_uses_unsaved_values_without_persisting_key(
+    ai_settings_db, monkeypatch
+):
+    client = ai_settings_db
+    secret = "unsaved-catalog-secret"
+    observed = {}
+
+    def fake_list(settings):
+        observed["settings"] = settings
+        return ["Qwen/model-a", "other/model-b"]
+
+    monkeypatch.setattr(ai_router, "list_available_models", fake_list)
+    result = client.post(
+        "/api/ai/settings/models",
+        json={
+            "endpoint": "http://models.example.test/v1",
+            "api_key": secret,
+        },
+    )
+
+    assert result.status_code == 200, result.text
+    assert result.json() == {"models": ["Qwen/model-a", "other/model-b"]}
+    assert observed["settings"].endpoint == (
+        "http://models.example.test/v1/chat/completions"
+    )
+    assert observed["settings"].api_key == secret
+    assert secret not in result.text
+    with database.get_db() as db:
+        assert db.execute(
+            "SELECT value FROM app_settings WHERE key=?", (runtime_config.API_KEY_KEY,)
+        ).fetchone() is None
+
+
+def test_non_ascii_api_key_is_rejected_before_any_provider_request(ai_settings_db):
+    client = ai_settings_db
+    body = {
+        "endpoint": "http://models.example.test/v1",
+        "api_key": "clé-non-ascii",
+    }
+
+    catalog = client.post("/api/ai/settings/models", json=body)
+    saved = client.put("/api/ai/settings", json={"api_key": body["api_key"]})
+
+    assert catalog.status_code == 422
+    assert saved.status_code == 422
+    assert "ASCII" in catalog.text
+    assert "ASCII" in saved.text
+
+
+def test_model_catalog_route_reuses_saved_key_when_form_key_is_blank(
+    ai_settings_db, monkeypatch
+):
+    client = ai_settings_db
+    secret = "saved-catalog-secret-never-return"
+    assert _put_qwen(client, api_key=secret).status_code == 200
+    observed = {}
+
+    def fake_list(settings):
+        observed["settings"] = settings
+        return ["local/model-a"]
+
+    monkeypatch.setattr(ai_router, "list_available_models", fake_list)
+    result = client.post(
+        "/api/ai/settings/models",
+        json={
+            "endpoint": "http://qwen.example.test:8000/v1",
+        },
+    )
+
+    assert result.status_code == 200, result.text
+    assert result.json() == {"models": ["local/model-a"]}
+    assert observed["settings"].api_key == secret
+    assert secret not in result.text
+
+
+def test_model_catalog_route_never_reuses_saved_key_for_a_new_origin(
+    ai_settings_db, monkeypatch
+):
+    client = ai_settings_db
+    secret = "saved-key-must-not-reach-edited-host"
+    assert _put_qwen(client, api_key=secret).status_code == 200
+    observed = {}
+
+    def fake_list(settings):
+        observed["settings"] = settings
+        return ["local/model-a"]
+
+    monkeypatch.setattr(ai_router, "list_available_models", fake_list)
+    result = client.post(
+        "/api/ai/settings/models",
+        json={"endpoint": "http://different-provider.example.test/v1"},
+    )
+
+    assert result.status_code == 200, result.text
+    assert observed["settings"].api_key == ""
+    assert secret not in result.text
+
+
+def test_endpoint_origin_change_does_not_carry_saved_key_into_test_or_save(
+    ai_settings_db, monkeypatch
+):
+    client = ai_settings_db
+    secret = "saved-key-must-stay-on-original-origin"
+    assert _put_qwen(client, api_key=secret).status_code == 200
+    observed = {}
+
+    class CompatibleProvider:
+        def __init__(self, *args, settings=None, **kwargs):
+            observed["settings"] = settings
+
+        def complete(self, messages, _tools, **_kwargs):
+            nonce = messages[-1]["content"].split("Nonce: ", 1)[1]
+            return AssistantTurn(
+                tool_calls=(ToolCall(
+                    "connection-check",
+                    "metronome_connection_check",
+                    {"nonce": nonce},
+                ),)
+            )
+
+    monkeypatch.setattr(ai_router, "OpenAIChatProvider", CompatibleProvider)
+    candidate = client.post(
+        "/api/ai/settings/test",
+        json={
+            "mode": "qwen",
+            "endpoint": "http://different-provider.example.test/v1",
+            "model": "local/model-a",
+        },
+    )
+    assert candidate.status_code == 200, candidate.text
+    assert candidate.json()["ok"] is True
+    assert observed["settings"].api_key == ""
+
+    saved = client.put(
+        "/api/ai/settings",
+        json={"endpoint": "http://different-provider.example.test/v1"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["api_key_configured"] is False
+    with database.get_db() as db:
+        tombstone = db.execute(
+            "SELECT value FROM app_settings WHERE key=?", (runtime_config.API_KEY_KEY,)
+        ).fetchone()
+    assert tombstone["value"] == ""
+    assert secret not in candidate.text + saved.text
+
+
+def test_legacy_stored_endpoint_never_inherits_environment_key_from_new_origin(
+    ai_settings_db, monkeypatch
+):
+    secret = "environment-key-must-stay-with-environment-origin"
+    monkeypatch.setattr(config, "AI_MOCK", False)
+    monkeypatch.setattr(
+        config,
+        "AI_API_URL",
+        "http://environment-provider.example.test/v1/chat/completions",
+    )
+    monkeypatch.setattr(config, "AI_API_KEY", secret)
+    fallback = runtime_config.environment_settings()
+    legacy_stored = replace(
+        fallback,
+        endpoint="http://stored-provider.example.test/v1/chat/completions",
+    )
+    with database.get_db() as db:
+        db.execute(
+            "INSERT INTO app_settings(key, value) VALUES (?, ?)",
+            (
+                runtime_config.SETTINGS_KEY,
+                json.dumps(legacy_stored.stored_dict()),
+            ),
+        )
+        assert db.execute(
+            "SELECT 1 FROM app_settings WHERE key=?",
+            (runtime_config.API_KEY_KEY,),
+        ).fetchone() is None
+
+    resolved = runtime_config.load_runtime_settings()
+
+    assert resolved.endpoint == legacy_stored.endpoint
+    assert resolved.api_key == ""
+    assert resolved.api_key_source == "none"
+    assert secret not in json.dumps(resolved.public_dict())
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_model_catalog_rejects_credentials_without_reflecting_key(
+    ai_settings_db, status_code
+):
+    secret = "rejected-catalog-secret-never-return"
+    settings = replace(
+        runtime_config.load_runtime_settings(),
+        endpoint="http://models.example.test/v1/chat/completions",
+        api_key=secret,
+    )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(status_code, text=f"rejected {secret}")
+    )
+
+    with pytest.raises(model_catalog.AIConfigurationError) as error:
+        model_catalog.list_available_models(settings, transport=transport)
+
+    assert secret not in str(error.value)
+
+
+def test_model_catalog_bounds_timeout_and_response_size(ai_settings_db):
+    settings = replace(
+        runtime_config.load_runtime_settings(),
+        endpoint="http://models.example.test/v1/chat/completions",
+    )
+    timeout_transport = httpx.MockTransport(
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=request))
+    )
+    with pytest.raises(model_catalog.AITransportTimeout):
+        model_catalog.list_available_models(settings, transport=timeout_transport)
+
+    oversized_transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            content=b"x" * (model_catalog.MAX_MODELS_RESPONSE_BYTES + 1),
+        )
+    )
+    with pytest.raises(model_catalog.AIProtocolError, match="oversized"):
+        model_catalog.list_available_models(settings, transport=oversized_transport)
+
+    encoded_transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip"},
+            stream=httpx.ByteStream(b"encoded-content-must-not-be-decoded"),
+        )
+    )
+    with pytest.raises(model_catalog.AIProtocolError, match="encoded response"):
+        model_catalog.list_available_models(settings, transport=encoded_transport)
+
+
+def test_model_catalog_rejects_non_openai_response(ai_settings_db):
+    settings = replace(
+        runtime_config.load_runtime_settings(),
+        endpoint="http://models.example.test/v1/chat/completions",
+    )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, json={"models": ["not-data"]})
+    )
+
+    with pytest.raises(model_catalog.AIProtocolError, match="OpenAI-compatible"):
+        model_catalog.list_available_models(settings, transport=transport)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"data":[{"id":"\\ud800"}]}',
+        (b'{"data":' + (b"[" * 1100) + b"null" + (b"]" * 1100) + b"}"),
+    ],
+)
+def test_model_catalog_rejects_malformed_unicode_and_excessive_nesting(
+    ai_settings_db, body
+):
+    settings = replace(
+        runtime_config.load_runtime_settings(),
+        endpoint="http://models.example.test/v1/chat/completions",
+    )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, content=body)
+    )
+
+    with pytest.raises(model_catalog.AIProtocolError):
+        model_catalog.list_available_models(settings, transport=transport)
 
 
 def test_chat_and_operations_never_log_or_persist_configured_key(

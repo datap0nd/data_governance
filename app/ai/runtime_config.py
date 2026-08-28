@@ -63,6 +63,28 @@ def normalize_endpoint(value: str | None) -> str:
     return urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", ""))
 
 
+def _endpoint_origin(value: str | None) -> tuple[str, str] | None:
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    return parsed.scheme.casefold(), parsed.netloc.casefold()
+
+
+def _submitted_api_key(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("The API key must be a string.")
+    key = value.strip()
+    if key and (len(key) > 4096 or any(ord(char) < 32 for char in key)):
+        raise ValueError("The API key is invalid.")
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("The API key must contain only ASCII characters.") from exc
+    return key
+
+
 class AISettingsUpdate(BaseModel):
     """Partial write/test payload. Omitted fields retain their current value."""
 
@@ -90,11 +112,20 @@ class AISettingsUpdate(BaseModel):
     clear_api_key: bool = False
 
     def submitted_api_key(self) -> str:
-        if self.api_key is None:
-            return ""
-        if not isinstance(self.api_key, str):
-            raise ValueError("The API key must be a string.")
-        return self.api_key.strip()
+        return _submitted_api_key(self.api_key)
+
+
+class AIModelCatalogRequest(BaseModel):
+    """Minimal, write-only connection candidate used only for model discovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str | None = Field(default=None, max_length=2048)
+    api_key: Any = Field(default=None, exclude=True)
+    clear_api_key: bool = False
+
+    def submitted_api_key(self) -> str:
+        return _submitted_api_key(self.api_key)
 
 
 class _StoredAISettings(BaseModel):
@@ -334,6 +365,21 @@ def _settings_from_rows(settings_row, key_row) -> AIRuntimeSettings:
             updated_at=settings_row["updated_at"],
         )
 
+    if (
+        key_row is None
+        and stored_settings is not None
+        and _endpoint_origin(fallback.endpoint) != _endpoint_origin(resolved.endpoint)
+    ):
+        # Legacy settings rows may predate write-only key storage. An
+        # environment key belongs only to its environment endpoint origin and
+        # must not follow an independently stored endpoint to another host.
+        resolved = replace(
+            resolved,
+            api_key="",
+            api_key_source="none",
+            api_key_updated_at=None,
+        )
+
     if key_row is not None:
         # Row presence is authoritative. An explicit empty tombstone prevents
         # `clear_api_key` from silently resurrecting DG_AI_API_KEY on reload.
@@ -375,23 +421,28 @@ def _merge_settings(
     if "model" in values:
         values["model"] = str(values["model"]).strip()
     merged = replace(current, **values)
+    endpoint_origin_changed = (
+        _endpoint_origin(current.endpoint) != _endpoint_origin(merged.endpoint)
+    )
     if merged.mode == "qwen" and not merged.endpoint:
-        raise ValueError("A Qwen endpoint is required in Qwen mode.")
+        raise ValueError("An AI endpoint is required in Local AI mode.")
     if merged.mode == "qwen" and not merged.model:
-        raise ValueError("A model name is required in Qwen mode.")
+        raise ValueError("A model name is required in Local AI mode.")
 
     submitted_key = update.submitted_api_key()
     if submitted_key and update.clear_api_key:
         raise ValueError("Supply a new API key or clear it, not both.")
     if submitted_key:
-        if len(submitted_key) > 4096 or any(ord(char) < 32 for char in submitted_key):
-            raise ValueError("The API key is invalid.")
         merged = replace(
             merged,
             api_key=submitted_key,
             api_key_source="candidate" if for_test else "system",
         )
     elif update.clear_api_key:
+        merged = replace(merged, api_key="", api_key_source="none", api_key_updated_at=None)
+    elif endpoint_origin_changed:
+        # A write-only saved credential belongs to the provider origin where
+        # it was entered. Editing the host must never forward it implicitly.
         merged = replace(merged, api_key="", api_key_source="none", api_key_updated_at=None)
     return merged
 
@@ -401,10 +452,51 @@ def candidate_runtime_settings(update: AISettingsUpdate) -> AIRuntimeSettings:
     return _merge_settings(load_runtime_settings(), update, for_test=True)
 
 
+def candidate_model_catalog_settings(
+    request: AIModelCatalogRequest,
+) -> AIRuntimeSettings:
+    """Resolve model discovery without leaking a saved key to a new origin."""
+    current = load_runtime_settings()
+    endpoint = normalize_endpoint(
+        current.endpoint if request.endpoint is None else request.endpoint
+    )
+    if not endpoint:
+        raise ValueError("Enter an AI endpoint before loading models.")
+
+    submitted_key = request.submitted_api_key()
+    if submitted_key and request.clear_api_key:
+        raise ValueError("Supply a new API key or clear it, not both.")
+    current_origin = _endpoint_origin(current.endpoint)
+    candidate_origin = _endpoint_origin(endpoint)
+    if submitted_key:
+        api_key = submitted_key
+        api_key_source = "candidate"
+    elif request.clear_api_key:
+        api_key = ""
+        api_key_source = "none"
+    elif current_origin == candidate_origin:
+        api_key = current.api_key
+        api_key_source = current.api_key_source
+    else:
+        # A blank write-only field means "reuse" only for the saved provider
+        # origin. It must never forward that credential to an edited host.
+        api_key = ""
+        api_key_source = "none"
+    return replace(
+        current,
+        endpoint=endpoint,
+        api_key=api_key,
+        api_key_source=api_key_source,
+    )
+
+
 def save_runtime_settings(conn, update: AISettingsUpdate) -> AIRuntimeSettings:
     """Atomically persist validated settings and an optional write-only key."""
     current = load_runtime_settings(conn)
     merged = _merge_settings(current, update)
+    endpoint_origin_changed = (
+        _endpoint_origin(current.endpoint) != _endpoint_origin(merged.endpoint)
+    )
     encoded = json.dumps(
         merged.stored_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -424,7 +516,7 @@ def save_runtime_settings(conn, update: AISettingsUpdate) -> AIRuntimeSettings:
                    value=excluded.value, updated_at=CURRENT_TIMESTAMP""",
             (API_KEY_KEY, submitted_key),
         )
-    elif update.clear_api_key:
+    elif update.clear_api_key or endpoint_origin_changed:
         conn.execute(
             """INSERT INTO app_settings(key, value, updated_at)
                VALUES (?, '', CURRENT_TIMESTAMP)

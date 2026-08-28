@@ -5134,7 +5134,7 @@ function _emailAlertLine(alert) {
     const nextAction = _emailNextAction(alert);
     const assessment = _emailAiAssessmentText(alert);
     const assessmentLabel = alert.ai_assessment?.provider_mode === "qwen"
-        ? "Qwen assessment"
+        ? "AI assessment"
         : alert.ai_assessment?.provider_mode === "mock"
             ? "Deterministic preview"
             : "Automated assessment";
@@ -9038,16 +9038,19 @@ function bindPremiumViewersPage() {
 const _AI_MODE_LABELS = {
     disabled: "Disabled",
     preview: "Preview",
-    qwen: "Qwen",
+    qwen: "Local AI",
 };
+
+let _aiModelDiscoveryGeneration = 0;
+const _AI_CUSTOM_MODEL_VALUE = "__metronome_custom_model__";
 
 function _aiSettingsEffectiveLabel(settings) {
     const state = settings?.effective_state;
     if (typeof state === "string" && state.trim()) {
         const labels = {
             disabled: "No new AI work will run",
-            deterministic_preview: "Deterministic preview; Qwen is not called",
-            configured: "Qwen is configured for enabled features",
+            deterministic_preview: "Deterministic preview; no model is called",
+            configured: "Local AI is configured for enabled features",
         };
         return labels[state.trim()] || state.trim().replaceAll("_", " ");
     }
@@ -9056,7 +9059,7 @@ function _aiSettingsEffectiveLabel(settings) {
             if (typeof state[key] === "string" && state[key].trim()) return state[key].trim();
         }
     }
-    if (settings?.mode === "qwen") return "Qwen is selected for enabled features";
+    if (settings?.mode === "qwen") return "Local AI is selected for enabled features";
     if (settings?.mode === "preview") return "Deterministic preview only";
     return "No new AI work will run";
 }
@@ -9071,6 +9074,156 @@ function _aiSettingsOption(value, current, label) {
     return `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(label)}</option>`;
 }
 
+function _aiSettingsModelIds(payload) {
+    const raw = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.models)
+            ? payload.models
+            : Array.isArray(payload?.data)
+                ? payload.data
+                : [];
+    const seen = new Set();
+    const models = [];
+    raw.forEach(item => {
+        const id = String(
+            typeof item === "string" ? item : item?.id ?? item?.model ?? item?.name ?? ""
+        ).trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        models.push(id);
+    });
+    return models;
+}
+
+function _aiSettingsModelOptions(models, current, { catalogLoaded = false, customSelected = false } = {}) {
+    const selected = String(current || "").trim();
+    const available = _aiSettingsModelIds(models);
+    const options = [];
+    if (selected && !customSelected && !available.includes(selected)) {
+        const suffix = catalogLoaded ? "current; not advertised" : "current selection";
+        options.push(`<option value="${esc(selected)}" selected>${esc(selected)} (${suffix})</option>`);
+    }
+    available.forEach(model => {
+        options.push(`<option value="${esc(model)}" ${!customSelected && model === selected ? "selected" : ""}>${esc(model)}</option>`);
+    });
+    if (!options.length) {
+        options.push('<option value="" selected disabled>Choose or load a model</option>');
+    }
+    options.push(`<option value="${_AI_CUSTOM_MODEL_VALUE}" ${customSelected ? "selected" : ""}>Custom model ID…</option>`);
+    return options.join("");
+}
+
+function _aiSettingsSelectedModel() {
+    const select = document.getElementById("ai-model");
+    if (select?.value === _AI_CUSTOM_MODEL_VALUE) {
+        return document.getElementById("ai-model-custom")?.value.trim() || "";
+    }
+    return select?.value.trim() || "";
+}
+
+function _aiSettingsModelsPayload() {
+    const payload = {
+        endpoint: document.getElementById("ai-endpoint")?.value.trim() || "",
+        clear_api_key: Boolean(document.getElementById("ai-clear-api-key")?.checked),
+    };
+    const apiKey = document.getElementById("ai-api-key")?.value || "";
+    if (apiKey && !payload.clear_api_key) payload.api_key = apiKey;
+    return payload;
+}
+
+function _syncAISettingsCustomModel() {
+    const select = document.getElementById("ai-model");
+    const custom = document.getElementById("ai-model-custom");
+    if (!select || !custom) return;
+    const visible = select.value === _AI_CUSTOM_MODEL_VALUE;
+    custom.hidden = !visible;
+    custom.disabled = !visible || select.disabled;
+}
+
+function _invalidateAISettingsModels() {
+    ++_aiModelDiscoveryGeneration;
+    const select = document.getElementById("ai-model");
+    const button = document.getElementById("btn-refresh-ai-models");
+    const status = document.getElementById("ai-models-status");
+    if (!select || !button || !status) return;
+    const customSelected = select.value === _AI_CUSTOM_MODEL_VALUE;
+    const current = _aiSettingsSelectedModel();
+    select.innerHTML = _aiSettingsModelOptions(
+        [],
+        current,
+        { customSelected },
+    );
+    select.disabled = false;
+    button.disabled = false;
+    button.textContent = "Refresh models";
+    status.dataset.status = "warning";
+    status.textContent = "Connection details changed. Refresh models to verify the available list.";
+    _syncAISettingsCustomModel();
+}
+
+async function _loadAISettingsModels({ quiet = false } = {}) {
+    // Invalidate any older lookup before every early return. Clearing the
+    // endpoint while a request is in flight must not let stale models win.
+    const generation = ++_aiModelDiscoveryGeneration;
+    const select = document.getElementById("ai-model");
+    const custom = document.getElementById("ai-model-custom");
+    const button = document.getElementById("btn-refresh-ai-models");
+    const status = document.getElementById("ai-models-status");
+    const endpoint = document.getElementById("ai-endpoint")?.value.trim() || "";
+    if (!select || !button || !status) return;
+    if (!endpoint) {
+        select.disabled = false;
+        button.disabled = false;
+        button.textContent = "Refresh models";
+        _syncAISettingsCustomModel();
+        status.dataset.status = "failed";
+        status.textContent = "Enter the provider endpoint, then load its models.";
+        return;
+    }
+
+    const customSelected = select.value === _AI_CUSTOM_MODEL_VALUE;
+    const current = _aiSettingsSelectedModel();
+    select.disabled = true;
+    if (custom) custom.disabled = true;
+    button.disabled = true;
+    button.textContent = "Loading...";
+    status.dataset.status = "working";
+    status.textContent = "Reading the provider's /models list...";
+    try {
+        const result = await apiPostJson("/api/ai/settings/models", _aiSettingsModelsPayload());
+        if (generation !== _aiModelDiscoveryGeneration || !select.isConnected) return;
+        const models = _aiSettingsModelIds(result);
+        select.innerHTML = _aiSettingsModelOptions(
+            models,
+            current,
+            { catalogLoaded: true, customSelected },
+        );
+        _syncAISettingsCustomModel();
+        if (models.length) {
+            const unavailable = current && !customSelected && !models.includes(current);
+            status.dataset.status = unavailable ? "warning" : "passed";
+            status.textContent = unavailable
+                ? `${models.length} model${models.length === 1 ? "" : "s"} available; the current selection is not advertised. Choose a listed model or use Custom model ID.`
+                : `${models.length} model${models.length === 1 ? "" : "s"} available from /models.`;
+        } else {
+            status.dataset.status = "failed";
+            status.textContent = "The provider returned no models. The currently saved model is still available.";
+        }
+    } catch (err) {
+        if (generation !== _aiModelDiscoveryGeneration || !select.isConnected) return;
+        status.dataset.status = "failed";
+        status.textContent = `Could not load /models: ${err.message}`;
+        if (!quiet) toast("Model list was not loaded: " + err.message);
+    } finally {
+        if (generation === _aiModelDiscoveryGeneration && button.isConnected) {
+            select.disabled = false;
+            button.disabled = false;
+            button.textContent = "Refresh models";
+            _syncAISettingsCustomModel();
+        }
+    }
+}
+
 function _aiSettingsNumber(id, fallback) {
     const value = Number(document.getElementById(id)?.value);
     return Number.isFinite(value) ? value : fallback;
@@ -9081,7 +9234,7 @@ function _aiSettingsPayload() {
     const payload = {
         mode,
         endpoint: document.getElementById("ai-endpoint")?.value.trim() || "",
-        model: document.getElementById("ai-model")?.value.trim() || "",
+        model: _aiSettingsSelectedModel(),
         provider_profile: document.getElementById("ai-provider-profile")?.value || "auto",
         reasoning_effort: document.getElementById("ai-reasoning-effort")?.value || "medium",
         max_tool_calls: _aiSettingsNumber("ai-max-tool-calls", 8),
@@ -9104,18 +9257,26 @@ function _aiSettingsPayload() {
 
 function _syncAISettingsMode() {
     const mode = document.querySelector('input[name="ai-mode"]:checked')?.value || "disabled";
+    const connectionReady = Boolean(
+        document.getElementById("ai-endpoint")?.value.trim()
+        && _aiSettingsSelectedModel()
+    );
     document.querySelectorAll(".ai-mode-card").forEach(card => {
         card.classList.toggle("selected", card.querySelector("input")?.checked === true);
     });
     const testButton = document.getElementById("btn-test-ai-settings");
     if (testButton) {
-        testButton.disabled = mode !== "qwen";
-        testButton.title = mode === "qwen" ? "Send an empty-context connection check" : "Select Qwen mode to test the model connection";
+        testButton.disabled = mode !== "qwen" || !connectionReady;
+        testButton.title = mode !== "qwen"
+            ? "Select Local AI mode to test the model connection"
+            : connectionReady
+                ? "Send an empty-context connection check"
+                : "Enter an endpoint and choose a model first";
     }
     const note = document.getElementById("ai-mode-note");
     if (note) {
         note.textContent = mode === "qwen"
-            ? "Enabled features use the configured local Qwen endpoint."
+            ? "Enabled features use the configured local AI provider."
             : mode === "preview"
                 ? "Enabled features show deterministic platform facts without calling a model."
                 : "No new AI analyses run. Your connection and feature choices remain saved.";
@@ -9174,11 +9335,11 @@ async function renderAISettings() {
                         </label>
                         <label class="ai-mode-card ${mode === "preview" ? "selected" : ""}">
                             <input type="radio" name="ai-mode" value="preview" ${mode === "preview" ? "checked" : ""}>
-                            <span><strong>Preview</strong><small>Use deterministic facts; do not call Qwen.</small></span>
+                            <span><strong>Preview</strong><small>Use deterministic facts; do not call a model.</small></span>
                         </label>
                         <label class="ai-mode-card ${mode === "qwen" ? "selected" : ""}">
                             <input type="radio" name="ai-mode" value="qwen" ${mode === "qwen" ? "checked" : ""}>
-                            <span><strong>Qwen</strong><small>Use the configured local model.</small></span>
+                            <span><strong>Local AI</strong><small>Use the configured local model provider.</small></span>
                         </label>
                     </div>
                     <p class="ai-mode-note" id="ai-mode-note"></p>
@@ -9186,30 +9347,35 @@ async function renderAISettings() {
 
                 <section class="settings-panel" aria-labelledby="ai-connection-heading">
                     <div class="section-header">
-                        <div><h2 id="ai-connection-heading">Connection</h2><p>OpenAI-compatible endpoint used by every Qwen-backed function.</p></div>
+                        <div><h2 id="ai-connection-heading">AI provider</h2><p>OpenAI-compatible endpoint used by every model-backed function.</p></div>
                     </div>
                     <div class="ai-settings-grid">
                         <label class="ai-setting-field ai-setting-wide">
                             <span>Endpoint</span>
                             <input id="ai-endpoint" type="url" value="${esc(settings.endpoint || "")}" placeholder="http://localhost:11434/v1/chat/completions" spellcheck="false">
-                            <small>Use the complete chat-completions URL. Saving does not test it.</small>
+                            <small>Use the complete chat-completions URL. Metronome derives and reads the provider's /models endpoint without sending platform data.</small>
                         </label>
-                        <label class="ai-setting-field">
-                            <span>Model</span>
-                            <input id="ai-model" value="${esc(settings.model || "Qwen/Qwen3.8-27B")}" spellcheck="false">
-                        </label>
+                        <div class="ai-setting-field">
+                            <span id="ai-model-label">Model</span>
+                            <div class="ai-model-picker">
+                                <select id="ai-model" aria-labelledby="ai-model-label">${_aiSettingsModelOptions([], settings.model)}</select>
+                                <button type="button" class="btn-outline" id="btn-refresh-ai-models">Refresh models</button>
+                            </div>
+                            <input id="ai-model-custom" class="ai-model-custom" value="" placeholder="Enter the exact model ID" spellcheck="false" hidden disabled>
+                            <small id="ai-models-status" class="ai-test-result" role="status" aria-live="polite">Available models load automatically from /models.</small>
+                        </div>
                         <label class="ai-setting-field">
                             <span>Provider profile</span>
                             <select id="ai-provider-profile">
                                 ${_aiSettingsOption("auto", settings.provider_profile, "Auto-detect")}
-                                ${_aiSettingsOption("qwen_vllm", settings.provider_profile, "Qwen / vLLM")}
+                                ${_aiSettingsOption("qwen_vllm", settings.provider_profile, "Qwen on vLLM")}
                                 ${_aiSettingsOption("openai_compatible", settings.provider_profile, "OpenAI-compatible")}
                             </select>
                         </label>
                         <label class="ai-setting-field ai-setting-wide">
                             <span>API key</span>
                             <input id="ai-api-key" type="password" value="" placeholder="${settings.api_key_configured ? "Saved key is configured — leave blank to keep it" : "Optional for endpoints that do not require a key"}" autocomplete="new-password" spellcheck="false">
-                            <small>The saved key is never returned to this page. Blank keeps the existing value.</small>
+                            <small>The saved key is never returned. Blank keeps it only for the same endpoint host; changing host never forwards the old key, so enter a new one only if required.</small>
                         </label>
                         <label class="ai-clear-key">
                             <input id="ai-clear-api-key" type="checkbox">
@@ -9241,7 +9407,7 @@ async function renderAISettings() {
                         </label>
                         <label class="ai-feature-row">
                             <input id="ai-feature-documentation" type="checkbox" ${checked(settings.documentation_suggestions_enabled)}>
-                            <span><strong>Documentation suggestions</strong><small>Let Qwen propose missing documentation; preview placeholders are never saved as suggestions.</small></span>
+                            <span><strong>Documentation suggestions</strong><small>Let the local model propose missing documentation; preview placeholders are never saved as suggestions.</small></span>
                         </label>
                     </div>
                 </section>
@@ -9282,16 +9448,40 @@ function bindAISettingsPage() {
     const form = document.getElementById("ai-settings-form");
     const apiKey = document.getElementById("ai-api-key");
     const clearKey = document.getElementById("ai-clear-api-key");
+    const endpoint = document.getElementById("ai-endpoint");
+    const model = document.getElementById("ai-model");
+    const customModel = document.getElementById("ai-model-custom");
+    const refreshModels = document.getElementById("btn-refresh-ai-models");
     const testButton = document.getElementById("btn-test-ai-settings");
     const testResult = document.getElementById("ai-test-result");
 
     document.querySelectorAll('input[name="ai-mode"]').forEach(input => input.addEventListener("change", _syncAISettingsMode));
     _syncAISettingsMode();
+    _syncAISettingsCustomModel();
+
+    refreshModels?.addEventListener("click", () => _loadAISettingsModels());
+    endpoint?.addEventListener("input", () => {
+        _syncAISettingsMode();
+        _invalidateAISettingsModels();
+    });
+    endpoint?.addEventListener("change", () => {
+        _syncAISettingsMode();
+        _loadAISettingsModels();
+    });
+    model?.addEventListener("change", () => {
+        _syncAISettingsCustomModel();
+        _syncAISettingsMode();
+        if (model.value === _AI_CUSTOM_MODEL_VALUE) customModel?.focus();
+    });
+    customModel?.addEventListener("input", _syncAISettingsMode);
+    apiKey?.addEventListener("input", _invalidateAISettingsModels);
+    _loadAISettingsModels({ quiet: true });
 
     clearKey?.addEventListener("change", () => {
         if (!apiKey) return;
         if (clearKey.checked) apiKey.value = "";
         apiKey.disabled = clearKey.checked;
+        _invalidateAISettingsModels();
     });
 
     testButton?.addEventListener("click", async () => {
@@ -12351,7 +12541,7 @@ function _aiResultHtml(run) {
     return `
         <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${alertAssessment}${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
         ${staleness.stale ? `<div class="ai-stale-analysis" role="status"><strong>Stale analysis</strong><span>${esc(staleness.reason)} Recommendations from this snapshot are hidden.</span></div>` : ""}
-        ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Qwen is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
+        ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Local AI is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
         <section class="ai-result-section"><h4>Conclusion</h4><p>${esc(result.conclusion)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(result.conclusion_evidence_refs, evidenceMap)}</div></section>
         <section class="ai-result-section"><h4>Observed facts</h4><ul>${claims(result.observed_facts)}</ul></section>
         ${(result.inferences || []).length ? `<section class="ai-result-section"><h4>Inference</h4><ul>${claims(result.inferences)}</ul></section>` : ""}

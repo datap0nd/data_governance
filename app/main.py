@@ -463,7 +463,7 @@ def _scheduled_recurrence_dispatch():
 
 @_tracked_scheduled_start("Alert AI enrichment")
 def _scheduled_alert_ai_enrichment():
-    """Attach advisory Qwen analysis to new canonical Alert revisions."""
+    """Attach advisory local-model analysis to new canonical Alert revisions."""
     from app.ai.operations_agent import enrich_active_alerts
     log = logging.getLogger("scheduler")
     try:

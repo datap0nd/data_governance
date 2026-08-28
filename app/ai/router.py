@@ -9,6 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.ai.mock_provider import mock_chat, mock_briefing, mock_report_risk
+from app.ai.model_catalog import list_available_models
 from app.ai.openai_provider import OpenAIChatProvider
 from app.ai.protocol import (
     AIConfigurationError,
@@ -18,7 +19,9 @@ from app.ai.protocol import (
     AIUpstreamError,
 )
 from app.ai.runtime_config import (
+    AIModelCatalogRequest,
     AISettingsUpdate,
+    candidate_model_catalog_settings,
     candidate_runtime_settings,
     load_runtime_settings,
     sanitize_ai_error,
@@ -95,17 +98,21 @@ def update_ai_settings(body: AISettingsUpdate, request: Request):
     try:
         with get_db() as db:
             db.execute("BEGIN IMMEDIATE")
+            previous = load_runtime_settings(db)
             updated = save_runtime_settings(db, body)
             changed = sorted(
                 field
                 for field in body.model_fields_set
                 if field not in {"api_key", "clear_api_key"}
             )
-            key_action = (
-                "configured"
-                if body.submitted_api_key()
-                else "cleared" if body.clear_api_key else "unchanged"
-            )
+            if body.submitted_api_key():
+                key_action = "configured"
+            elif body.clear_api_key:
+                key_action = "cleared"
+            elif previous.api_key and not updated.api_key:
+                key_action = "cleared_for_endpoint_change"
+            else:
+                key_action = "unchanged"
             log_event(
                 db,
                 "system",
@@ -123,9 +130,32 @@ def update_ai_settings(body: AISettingsUpdate, request: Request):
     return updated.public_dict()
 
 
+@router.post("/settings/models")
+def get_available_ai_models(body: AIModelCatalogRequest):
+    """List model IDs from an unsaved or saved OpenAI-compatible endpoint."""
+    try:
+        candidate = candidate_model_catalog_settings(body)
+        models = list_available_models(candidate)
+    except ValueError as exc:
+        raise HTTPException(422, sanitize_ai_error(exc)) from exc
+    except AIConfigurationError as exc:
+        raise HTTPException(
+            422, sanitize_ai_error(exc, body.submitted_api_key())
+        ) from exc
+    except AITransportTimeout as exc:
+        raise HTTPException(
+            504, sanitize_ai_error(exc, candidate.api_key)
+        ) from exc
+    except (AITransportError, AIUpstreamError, AIProtocolError) as exc:
+        raise HTTPException(
+            502, sanitize_ai_error(exc, candidate.api_key)
+        ) from exc
+    return {"models": models}
+
+
 @router.post("/settings/test")
 def test_ai_settings(body: AISettingsUpdate):
-    """Test native Qwen tool-call compatibility without sending app data."""
+    """Test native model tool-call compatibility without sending app data."""
     try:
         candidate = candidate_runtime_settings(body)
     except ValueError as exc:
@@ -134,7 +164,7 @@ def test_ai_settings(body: AISettingsUpdate):
         return {
             "ok": False,
             "status": "not_configured",
-            "message": "Choose Qwen mode to test a model endpoint.",
+            "message": "Choose Local AI mode to test a model endpoint.",
             "latency_ms": None,
             "model": candidate.model,
             "tool_calls_compatible": False,
@@ -183,7 +213,8 @@ def test_ai_settings(body: AISettingsUpdate):
                 "status": "tool_calls_incompatible",
                 "message": (
                     "The endpoint responded, but it did not return the required native tool call. "
-                    "Enable the Qwen reasoning and tool-call parsers on the model server."
+                    "Enable native reasoning and tool-call parsers on the model server; "
+                    "Qwen on vLLM requires the Qwen parsers."
                 ),
                 "latency_ms": round((time.monotonic() - started) * 1000),
                 "model": candidate.model,

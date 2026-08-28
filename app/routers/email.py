@@ -633,7 +633,7 @@ def _build_alert_summary(
         assessment = alert.get("ai_assessment") or {}
         provider_mode = assessment.get("provider_mode")
         if provider_mode == "qwen":
-            return "Qwen assessment"
+            return "AI assessment"
         if provider_mode == "mock":
             return "Deterministic preview"
         return "Automated assessment"

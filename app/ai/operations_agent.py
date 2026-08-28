@@ -217,7 +217,7 @@ def _validate_terminal_result(
 
 
 def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentResult:
-    """Truthful deterministic preview used when no Qwen endpoint is configured."""
+    """Truthful deterministic preview used when no local model is configured."""
     ref = f"{focus_type}:{focus_id}"
     if focus_type == "flow_run":
         run = seed.data["run"]
@@ -247,7 +247,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
             })
         action_type = "inspect"
         title = "Inspect the recorded run evidence"
-        rationale = "Qwen is not configured, so Metronome is showing only its deterministic run preflight."
+        rationale = "Local AI is not configured, so Metronome is showing only its deterministic run preflight."
         if run["status"] in {"queued", "claimed", "running"}:
             action_type, title = "wait", "Wait for the active run"
             rationale = "The run is still active; do not queue overlapping work."
@@ -266,7 +266,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
         return AgentResult.model_validate({
             "conclusion": (
                 f"Flow run #{focus_id} is {run['status']}. This is a read-only deterministic "
-                "preview; connect Qwen3.8-27B for model-assisted investigation."
+                "preview; connect a compatible local model for model-assisted investigation."
             ),
             "conclusion_evidence_refs": [ref],
             "alert_assessment": "confirmed",
@@ -279,7 +279,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
                 "rationale": rationale,
                 "evidence_refs": [ref],
             }],
-            "unknowns": ["No Qwen endpoint is configured, so no model inference was performed."],
+            "unknowns": ["No local AI endpoint is configured, so no model inference was performed."],
         })
 
     if focus_type == "alert":
@@ -298,7 +298,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
             "conclusion": _bounded_result_text(
                 f"{asset_name} has an active {alert['type']} Alert. "
                 "Metronome has current recorded evidence, but no model judgment "
-                "was made because Qwen is not configured. This is a deterministic preview."
+                "was made because Local AI is not configured. This is a deterministic preview."
             ),
             "conclusion_evidence_refs": [ref],
             "alert_assessment": "uncertain",
@@ -315,12 +315,12 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
                 "action_type": "inspect",
                 "title": "Review the current Alert evidence",
                 "rationale": (
-                    "Qwen is not configured, so Metronome is not making a model-assisted diagnosis. "
+                    "Local AI is not configured, so Metronome is not making a model-assisted diagnosis. "
                     "Use the linked operational evidence to confirm the next action."
                 ),
                 "evidence_refs": [ref],
             }],
-            "unknowns": ["No Qwen endpoint is configured, so no model inference was performed."],
+            "unknowns": ["No local AI endpoint is configured, so no model inference was performed."],
         })
 
     run = seed.data["run"]
@@ -340,7 +340,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
     return AgentResult.model_validate({
         "conclusion": (
             f"Pipeline run #{focus_id} is {run['status']}. This is a read-only deterministic "
-            "preview; connect Qwen3.8-27B for model-assisted investigation."
+            "preview; connect a compatible local model for model-assisted investigation."
         ),
         "conclusion_evidence_refs": [ref],
         "alert_assessment": "confirmed",
@@ -353,7 +353,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
             "rationale": "The durable Pipeline state remains authoritative.",
             "evidence_refs": [ref],
         }],
-        "unknowns": ["No Qwen endpoint is configured, so no model inference was performed."],
+        "unknowns": ["No local AI endpoint is configured, so no model inference was performed."],
     })
 
 
@@ -460,7 +460,7 @@ def execute_run(
             if not turn.tool_calls:
                 if prose_repairs >= 1:
                     raise AIProtocolError(
-                        "Qwen returned prose instead of the required structured result."
+                        "The model returned prose instead of the required structured result."
                     )
                 prose_repairs += 1
                 messages.append({
@@ -469,7 +469,7 @@ def execute_run(
                 })
                 continue
             if len(turn.tool_calls) > MAX_CALLS_PER_TURN:
-                raise AgentBudgetExceeded("Qwen requested too many tools in one turn.")
+                raise AgentBudgetExceeded("The model requested too many tools in one turn.")
 
             terminal_calls = [call for call in turn.tool_calls if call.name == "submit_agent_result"]
             if terminal_calls:
@@ -484,7 +484,7 @@ def execute_run(
                             ),
                         ))
                     if protocol_errors > MAX_PROTOCOL_ERRORS:
-                        raise AIProtocolError("Qwen repeatedly mixed final and read tool calls.")
+                        raise AIProtocolError("The model repeatedly mixed final and read tool calls.")
                     continue
                 call = terminal_calls[0]
                 step_id, _ = run_store.start_step(
@@ -519,7 +519,7 @@ def execute_run(
                         _tool_error("invalid_final_result", run_store.safe_error(exc, 800)),
                     ))
                     if protocol_errors > MAX_PROTOCOL_ERRORS:
-                        raise AIProtocolError("Qwen repeatedly returned an invalid final result.")
+                        raise AIProtocolError("The model repeatedly returned an invalid final result.")
                     continue
                 except Exception as exc:
                     # Cancellation, evidence supersession, or a deadline can
@@ -548,7 +548,7 @@ def execute_run(
                 signature = f"{call.name}:{_json(call.arguments)}"
                 identical[signature] = identical.get(signature, 0) + 1
                 if identical[signature] > MAX_IDENTICAL_CALLS:
-                    raise AgentBudgetExceeded("Qwen repeated the same read tool call too many times.")
+                    raise AgentBudgetExceeded("The model repeated the same read tool call too many times.")
                 try:
                     envelope = _run_tool(
                         run_id,
@@ -572,7 +572,7 @@ def execute_run(
                         _tool_error("invalid_tool_call", run_store.safe_error(exc, 800)),
                     ))
                     if protocol_errors > MAX_PROTOCOL_ERRORS:
-                        raise AIProtocolError("Qwen repeatedly requested invalid read tools.")
+                        raise AIProtocolError("The model repeatedly requested invalid read tools.")
                 _check_boundary(run_id, deadline, snapshot)
 
         raise AgentBudgetExceeded("The investigation reached its model-turn limit.")

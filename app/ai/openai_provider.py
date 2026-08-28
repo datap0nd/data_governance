@@ -1,4 +1,4 @@
-"""Strict OpenAI-compatible transport for Qwen and compatible endpoints."""
+"""Strict transport for OpenAI-compatible model endpoints."""
 
 from __future__ import annotations
 
@@ -160,10 +160,10 @@ class OpenAIChatProvider:
         deadline_monotonic: float | None = None,
     ) -> AssistantTurn:
         if not self.settings.qwen_enabled or not self.settings.endpoint:
-            raise AIConfigurationError("Qwen is not configured for this Metronome instance.")
+            raise AIConfigurationError("A local AI provider is not configured for this Metronome instance.")
 
         if deadline_monotonic is not None and deadline_monotonic <= time.monotonic():
-            raise AITransportTimeout("The Qwen request deadline has already expired.")
+            raise AITransportTimeout("The AI request deadline has already expired.")
 
         remaining = (
             max(0.1, deadline_monotonic - time.monotonic())
@@ -183,14 +183,14 @@ class OpenAIChatProvider:
                 json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
             )
         except (RecursionError, TypeError, ValueError) as exc:
-            raise AIProtocolError("The Qwen request transcript is not valid JSON.") from exc
+            raise AIProtocolError("The AI request transcript is not valid JSON.") from exc
         if payload_size > MAX_REQUEST_BYTES:
-            raise AIProtocolError("The Qwen request transcript exceeded its safe context limit.")
+            raise AIProtocolError("The AI request transcript exceeded its safe context limit.")
         for attempt in range(attempts):
             if deadline_monotonic is not None:
                 remaining = deadline_monotonic - time.monotonic()
                 if remaining <= 0:
-                    raise AITransportTimeout("The Qwen request deadline has expired.")
+                    raise AITransportTimeout("The AI request deadline has expired.")
             else:
                 remaining = self.settings.http_timeout_seconds
             timeout = httpx.Timeout(
@@ -207,12 +207,12 @@ class OpenAIChatProvider:
                         headers=headers,
                     )
             except httpx.TimeoutException as exc:
-                raise AITransportTimeout("The Qwen endpoint did not respond before the deadline.") from exc
+                raise AITransportTimeout("The AI endpoint did not respond before the deadline.") from exc
             except httpx.HTTPError as exc:
                 if attempt == 0 and time.monotonic() + 0.25 < (deadline_monotonic or float("inf")):
                     time.sleep(0.25)
                     continue
-                raise AITransportError("Metronome could not reach the Qwen endpoint.") from exc
+                raise AITransportError("Metronome could not reach the AI endpoint.") from exc
 
             if response.status_code not in RETRYABLE_STATUS or attempt == attempts - 1:
                 break
@@ -227,47 +227,47 @@ class OpenAIChatProvider:
                 "AI endpoint returned HTTP %s after %sms", response.status_code, elapsed_ms
             )
             if response.status_code in {401, 403}:
-                raise AIConfigurationError("The Qwen endpoint rejected its configured credentials.")
+                raise AIConfigurationError("The AI endpoint rejected its configured credentials.")
             raise AIUpstreamError(
-                f"The Qwen endpoint returned HTTP {response.status_code}."
+                f"The AI endpoint returned HTTP {response.status_code}."
             )
         if len(response.content) > MAX_RESPONSE_BYTES:
-            raise AIProtocolError("The Qwen endpoint returned an oversized response.")
+            raise AIProtocolError("The AI endpoint returned an oversized response.")
         try:
             data = response.json()
         except ValueError as exc:
-            raise AIProtocolError("The Qwen endpoint returned a non-JSON response.") from exc
+            raise AIProtocolError("The AI endpoint returned a non-JSON response.") from exc
         if not isinstance(data, dict):
-            raise AIProtocolError("The Qwen endpoint returned an invalid response object.")
+            raise AIProtocolError("The AI endpoint returned an invalid response object.")
         choices = data.get("choices")
         if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-            raise AIProtocolError("The Qwen endpoint must return exactly one completion choice.")
+            raise AIProtocolError("The AI endpoint must return exactly one completion choice.")
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
         if finish_reason in {"length", "content_filter"}:
-            raise AIProtocolError("The Qwen response was truncated or filtered before completion.")
+            raise AIProtocolError("The AI response was truncated or filtered before completion.")
         message = choice.get("message")
         if not isinstance(message, dict):
-            raise AIProtocolError("The Qwen endpoint omitted the assistant message.")
+            raise AIProtocolError("The AI endpoint omitted the assistant message.")
         content = _content_text(message.get("content"))
         if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
-            raise AIProtocolError("The Qwen endpoint returned oversized assistant content.")
+            raise AIProtocolError("The AI endpoint returned oversized assistant content.")
         folded_content = content.casefold()
         if "<tool_call>" in folded_content or "<think>" in folded_content:
             raise AIProtocolError(
-                "The Qwen server returned raw reasoning/tool markup. Configure its native Qwen reasoning and tool-call parsers."
+                "The model server returned raw reasoning/tool markup. Configure its native reasoning and tool-call parsers; Qwen on vLLM requires the Qwen parsers."
             )
 
         raw_calls = message.get("tool_calls", [])
         if raw_calls is None:
             raw_calls = []
         if not isinstance(raw_calls, list):
-            raise AIProtocolError("The Qwen endpoint returned malformed tool calls.")
+            raise AIProtocolError("The AI endpoint returned malformed tool calls.")
         calls = []
         seen_ids = set()
         for index, item in enumerate(raw_calls):
             if not isinstance(item, dict) or item.get("type", "function") != "function":
-                raise AIProtocolError("The Qwen endpoint returned an unsupported tool call.")
+                raise AIProtocolError("The AI endpoint returned an unsupported tool call.")
             function = item.get("function")
             name = function.get("name") if isinstance(function, dict) else None
             if (
@@ -276,7 +276,7 @@ class OpenAIChatProvider:
                 or not name
                 or len(name) > 100
             ):
-                raise AIProtocolError("The Qwen endpoint returned a malformed function call.")
+                raise AIProtocolError("The AI endpoint returned a malformed function call.")
             call_id = item.get("id")
             if (
                 not isinstance(call_id, str)
@@ -284,7 +284,7 @@ class OpenAIChatProvider:
                 or len(call_id) > 200
                 or call_id in seen_ids
             ):
-                raise AIProtocolError("The Qwen endpoint returned an invalid or duplicate tool-call ID.")
+                raise AIProtocolError("The AI endpoint returned an invalid or duplicate tool-call ID.")
             seen_ids.add(call_id)
             calls.append(
                 ToolCall(
@@ -295,7 +295,7 @@ class OpenAIChatProvider:
             )
 
         if not content and not calls:
-            raise AIProtocolError("The Qwen endpoint returned neither text nor a tool call.")
+            raise AIProtocolError("The AI endpoint returned neither text nor a tool call.")
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
         safe_usage = None
         if usage:
@@ -310,7 +310,7 @@ class OpenAIChatProvider:
         if reasoning is not None and not isinstance(reasoning, str):
             reasoning = None
         if reasoning is not None and len(reasoning.encode("utf-8")) > MAX_REASONING_BYTES:
-            raise AIProtocolError("The Qwen endpoint returned oversized reasoning content.")
+            raise AIProtocolError("The AI endpoint returned oversized reasoning content.")
         response_id = (
             sanitize_ai_error(data.get("id"), self.settings.api_key, limit=200)
             if data.get("id")

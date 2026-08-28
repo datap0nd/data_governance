@@ -6217,6 +6217,22 @@ tr.row-archived td:last-child {
     outline-offset: 1px;
 }
 
+.ai-model-picker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.45rem;
+    align-items: stretch;
+}
+
+.ai-model-picker .btn-outline {
+    min-height: 38px;
+    white-space: nowrap;
+}
+
+.ai-model-custom {
+    margin-top: 0.45rem;
+}
+
 .ai-setting-field small {
     display: block;
     margin-top: 0.3rem;
@@ -6247,6 +6263,7 @@ tr.row-archived td:last-child {
 
 .ai-test-result[data-status="working"] { color: var(--accent); }
 .ai-test-result[data-status="passed"] { color: var(--green); }
+.ai-test-result[data-status="warning"] { color: var(--yellow); }
 .ai-test-result[data-status="failed"] { color: var(--red); }
 
 .ai-feature-list {
@@ -6324,6 +6341,10 @@ tr.row-archived td:last-child {
     .ai-setting-field.ai-setting-wide,
     .ai-clear-key {
         grid-column: auto;
+    }
+
+    .ai-model-picker {
+        grid-template-columns: 1fr;
     }
 
     .ai-save-bar {

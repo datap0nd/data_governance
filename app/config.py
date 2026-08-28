@@ -32,8 +32,8 @@ TMDL_ROOT = _tmdl_root_raw
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
 CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))
 
-# AI configuration. Qwen is reached through an OpenAI-compatible endpoint; the
-# application itself never loads the 27B checkpoint into the web process.
+# AI configuration. Local models are reached through an OpenAI-compatible
+# endpoint; the application itself never loads the checkpoint into the web process.
 AI_MODEL = os.environ.get("DG_AI_MODEL", "Qwen/Qwen3.8-27B")
 AI_API_KEY = os.environ.get("DG_AI_API_KEY", "")
 
