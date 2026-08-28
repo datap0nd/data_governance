@@ -342,6 +342,79 @@ function _scannerJobFailureDetails(job) {
         .map(([database, detail]) => `${database} · ${detail.stage || "scan"}`);
 }
 
+function _scannerJobRepairDetails(job) {
+    const postgres = job?.result?.components?.postgres_dependencies || job?.result || {};
+    const repair = postgres?.report_identity_reconciliation;
+    const issues = Array.isArray(repair?.issues) ? repair.issues : [];
+    const labels = issues.slice(0, 5).map(issue => {
+        const reason = String(issue?.reason_code || "unknown");
+        if (reason === "unconfigured_catalog_endpoint") {
+            const endpoint = [issue.server, issue.database].filter(Boolean).join("/");
+            return `No catalog connection is configured for ${endpoint || "the report endpoint"}`;
+        }
+        const table = issue?.report_table_id != null ? `Report table #${issue.report_table_id}: ` : "";
+        const reasons = {
+            nonliteral_postgres_connection: "server or database is dynamic, so it was not matched",
+            invalid_postgres_endpoint: "the PostgreSQL host or port is invalid",
+            missing_report_source_expression: "its own source expression is missing from shared metadata",
+            unresolved_postgres_relation: "the exact schema and table could not be read",
+            ambiguous_exact_identity: "more than one exact catalog source exists",
+            report_table_changed: "the report source changed during the recheck",
+            deferred_relink_stale: "the exact target changed before it could be attached",
+            catalog_not_completed: "the required catalog was not successfully scanned",
+        };
+        return table + (reasons[reason] || reason.replaceAll("_", " "));
+    });
+    if (issues.length > labels.length) {
+        labels.push(`${issues.length - labels.length} more report source issue(s)`);
+    }
+    const issueEndpoints = new Set(issues
+        .filter(issue => issue?.reason_code === "unconfigured_catalog_endpoint")
+        .map(issue => [issue.server, issue.database].filter(Boolean).join("/")));
+    for (const target of (Array.isArray(postgres?.unconfigured_catalog_targets)
+        ? postgres.unconfigured_catalog_targets : []).slice(0, 3)) {
+        const endpoint = [target?.server, target?.database].filter(Boolean).join("/");
+        if (!issueEndpoints.has(endpoint)) {
+            labels.push(`No catalog connection is configured for active source ${endpoint || "endpoint"}`);
+        }
+    }
+    const unattempted = Array.isArray(postgres?.unattempted_catalog_targets)
+        ? postgres.unattempted_catalog_targets : [];
+    if (unattempted.length) {
+        const target = unattempted[0];
+        const endpoint = [target?.server, target?.database].filter(Boolean).join("/");
+        labels.push(`Catalog target ${endpoint || "endpoint"} became active during this scan; rerun lineage`);
+        if (unattempted.length > 1) labels.push(`${unattempted.length - 1} more new catalog target(s)`);
+    }
+    const cleanupFailures = Array.isArray(postgres?.superseded_cleanup_failures)
+        ? postgres.superseded_cleanup_failures : [];
+    if (cleanupFailures.length) {
+        const target = cleanupFailures[0];
+        const endpoint = [target?.server, target?.database].filter(Boolean).join("/");
+        labels.push(`Obsolete query-change alerts could not be retired for ${endpoint || "a superseded catalog"}`);
+    }
+    const databases = postgres?.databases;
+    if (databases && typeof databases === "object" && !Array.isArray(databases)) {
+        const flowWarnings = Object.entries(databases).flatMap(([database, detail]) => {
+            if (String(detail?.status || "").toLowerCase() === "superseded") return [];
+            if (detail?.flow_reconciliation_error) {
+                return [`Final Flow target matching failed in ${database}`];
+            }
+            const counts = detail?.flow_reconciliation;
+            if (!counts || typeof counts !== "object" || Array.isArray(counts)) return [];
+            const unresolved = Object.entries(counts)
+                .filter(([status, count]) => !["confirmed", "disabled"].includes(status) && Number(count) > 0)
+                .map(([status, count]) => `${Number(count)} ${status.replaceAll("_", " ")}`);
+            return unresolved.length ? [`Flow targets in ${database}: ${unresolved.join(", ")}`] : [];
+        });
+        labels.push(...flowWarnings.slice(0, 3));
+        if (flowWarnings.length > 3) {
+            labels.push(`${flowWarnings.length - 3} more database(s) with unresolved Flow targets`);
+        }
+    }
+    return labels;
+}
+
 function _scannerJobsHtml(jobs) {
     const rows = Array.isArray(jobs) ? jobs : [];
     const active = rows.filter(job => job.active);
@@ -358,6 +431,7 @@ function _scannerJobsHtml(jobs) {
         const hasProgress = Number.isFinite(current) && Number.isFinite(total) && total > 0;
         const progress = hasProgress ? ` · ${Math.max(0, current)}/${total}` : "";
         const failures = _scannerJobFailureDetails(job);
+        const repairDetails = _scannerJobRepairDetails(job);
         const stale = job.is_stale
             ? `<div class="scanner-job-stale">No heartbeat for ${Math.max(1, Math.floor((job.heartbeat_age_seconds || 0) / 60))} minutes. This operation may be stuck; use Stop Refresh Work before retrying.</div>`
             : "";
@@ -370,6 +444,7 @@ function _scannerJobsHtml(jobs) {
             <div class="scanner-job-step">${esc(job.current_step || "Waiting for status")}${esc(progress)}</div>
             ${job.message ? `<div class="scanner-job-message">${esc(job.message)}</div>` : ""}
             ${failures.length ? `<div class="scanner-job-failures">Affected: ${failures.map(esc).join(", ")}</div>` : ""}
+            ${repairDetails.length ? `<div class="scanner-job-repair">Lineage details: ${repairDetails.map(esc).join(" · ")}</div>` : ""}
             ${stale}
         </div>`;
     }).join("");
@@ -7354,12 +7429,37 @@ function _lineageFlowPayloadWarnings(flows, renderedSourceIds) {
 }
 
 function _flowPostgresDiagnostic(postgres) {
-    if (!postgres || ["completed", "not_requested"].includes(postgres.status)) return null;
+    if (!postgres) return null;
+    const repair = postgres.report_identity_reconciliation || null;
+    const repairNeedsAttention = repair
+        && !["completed", "not_requested"].includes(repair.status);
+    if (["completed", "not_requested"].includes(postgres.status) && !repairNeedsAttention) return null;
     const databases = Object.entries(postgres.databases || {})
-        .filter(([, result]) => !["completed", "not_requested"].includes(result?.status))
+        .filter(([, result]) => !["completed", "not_requested", "superseded"].includes(result?.status))
         .map(([database]) => database);
     const status = String(postgres.status || "unknown").replaceAll("_", " ");
-    return `PostgreSQL dependency scan: ${status}${databases.length ? ` (${databases.join(", ")})` : ""}.`;
+    const issues = Array.isArray(repair?.issues) ? repair.issues : [];
+    const issueCount = issues.length;
+    const unconfigured = issues.find(issue => issue?.reason_code === "unconfigured_catalog_endpoint");
+    const globalUnconfigured = Array.isArray(postgres?.unconfigured_catalog_targets)
+        ? postgres.unconfigured_catalog_targets[0] : null;
+    const unattempted = Array.isArray(postgres?.unattempted_catalog_targets)
+        ? postgres.unattempted_catalog_targets[0] : null;
+    const cleanupFailure = Array.isArray(postgres?.superseded_cleanup_failures)
+        ? postgres.superseded_cleanup_failures[0] : null;
+    const repairMessage = repairNeedsAttention
+        ? (unconfigured
+            ? ` This report reads ${[unconfigured.server, unconfigured.database].filter(Boolean).join("/")}, but Scanner has no configured catalog connection for that endpoint.`
+            : ` Report source repair needs attention${issueCount ? ` for ${issueCount} table${issueCount === 1 ? "" : "s"}` : ""}; open Scanner for the exact reason or run a Full Scan to reread Power BI metadata.`)
+        : "";
+    const globalMessage = globalUnconfigured && !unconfigured
+        ? ` Scanner has no configured catalog connection for active source ${[globalUnconfigured.server, globalUnconfigured.database].filter(Boolean).join("/")}.`
+        : unattempted
+            ? " A catalog target became active during the scan; rerun lineage to cover the final target set."
+            : cleanupFailure
+                ? " An obsolete query-change alert could not be retired; open Scanner for details."
+            : "";
+    return `PostgreSQL dependency scan: ${status}${databases.length ? ` (${databases.join(", ")})` : ""}.${repairMessage}${globalMessage}`;
 }
 
 function _flowDiagnosticsModel(data, payloadWarnings = []) {
@@ -7456,9 +7556,18 @@ function _flowsHiddenWarningHtml(data, model = _flowDiagnosticsModel(data)) {
     return `<div class="pipeline-message pipeline-warning lineage-flows-hidden">Flows are hidden—<button class="btn-link" type="button" data-lineage-show-flows>Show Flows</button></div>`;
 }
 
-async function _recheckFlowLineage(reportId, button) {
+let _lineageRecheckSequence = 0;
+
+async function _recheckFlowLineage(
+    reportId,
+    button,
+    shouldApply = () => true,
+    shouldEnable = () => true,
+) {
     const original = button?.textContent || "Recheck lineage";
+    const operationToken = button ? String(++_lineageRecheckSequence) : null;
     if (button) {
+        button.dataset.lineageRecheckOperation = operationToken;
         button.disabled = true;
         button.textContent = "Rechecking...";
     }
@@ -7466,9 +7575,12 @@ async function _recheckFlowLineage(reportId, button) {
         const reportQuery = reportId ? `?report_id=${encodeURIComponent(reportId)}` : "";
         const start = await apiPost(`/api/scanner/jobs/postgres-lineage${reportQuery}`);
         toast(start.message || "PostgreSQL lineage recheck started. Progress is available in Scanner.");
-        const compatible = start.job?.job_type === "postgres_lineage" || start.job?.job_type === "full_scan";
+        const compatible = start.accepted === true || start.reused === true;
         if (!compatible) return null;
-        const result = await _waitForScannerJob(start.job_id, () => !button || button.isConnected);
+        const result = await _waitForScannerJob(
+            start.job_id,
+            () => (!button || button.isConnected) && shouldApply(),
+        );
         if (!result) return null;
         const status = result.display_status || result.status || "failed";
         if (status === "stale") {
@@ -7480,8 +7592,9 @@ async function _recheckFlowLineage(reportId, button) {
             return null;
         }
         toast(result.message || (status === "completed" ? "PostgreSQL lineage rechecked." : "PostgreSQL lineage rechecked with warnings."));
-        if (reportId) {
+        if (reportId && shouldApply()) {
             const updated = await api(`/api/lineage/report/${reportId}/diagram`);
+            if (!shouldApply()) return null;
             window._lineageData = updated;
             if (document.getElementById("lineage-container")) _renderLineageDiagram(updated);
             return updated;
@@ -7491,8 +7604,12 @@ async function _recheckFlowLineage(reportId, button) {
         toast("Lineage was not rechecked: " + err.message);
         return null;
     } finally {
-        if (button?.isConnected) {
-            button.disabled = false;
+        if (
+            button?.isConnected
+            && button.dataset.lineageRecheckOperation === operationToken
+        ) {
+            delete button.dataset.lineageRecheckOperation;
+            button.disabled = !shouldEnable();
             button.textContent = original;
         }
     }
@@ -7573,6 +7690,7 @@ async function renderLineageDiagram() {
                 <option value="">Select a report...</option>
                 ${reports.map(r => `<option value="${r.id}">${esc(r.name)}${r.archived ? " (archived)" : ""}${r.status === "degraded" ? " \u26a0" : ""}</option>`).join("")}
             </select>
+            <button class="btn-outline lineage-refresh-report" id="lineage-recheck" type="button" disabled>Recheck lineage</button>
             <button class="btn-outline lineage-refresh-report" id="lineage-report-refresh" type="button" disabled>Refresh report</button>
             <button class="btn-primary lineage-refresh-report" id="lineage-full-refresh" type="button" disabled>Refresh full pipeline</button>
             <label class="lineage-archive-toggle"><input type="checkbox" id="lineage-show-archived" ${showArchived ? "checked" : ""}> Show archived reports</label>
@@ -7589,6 +7707,7 @@ async function renderLineageDiagram() {
 
 function bindLineageDiagramPage() {
     const sel = document.getElementById("lineage-report-select");
+    const lineageRecheck = document.getElementById("lineage-recheck");
     const reportRefresh = document.getElementById("lineage-report-refresh");
     const fullRefresh = document.getElementById("lineage-full-refresh");
     if (!sel) return;
@@ -7607,6 +7726,7 @@ function bindLineageDiagramPage() {
             pipelineStatus.hidden = true;
             pipelineStatus.innerHTML = "";
         }
+        lineageRecheck.disabled = !id || !!lineageRecheck.dataset.lineageRecheckOperation;
         reportRefresh.disabled = true;
         fullRefresh.disabled = !id;
         reportRefresh.dataset.canRefresh = "0";
@@ -7643,6 +7763,16 @@ function bindLineageDiagramPage() {
             document.getElementById("lineage-container").innerHTML =
                 `<div class="lineage-placeholder" style="color:var(--red)">Error: ${e.message}</div>`;
         }
+    });
+    lineageRecheck?.addEventListener("click", async () => {
+        const reportId = sel.value;
+        if (!reportId || lineageRecheck.disabled) return;
+        await _recheckFlowLineage(
+            reportId,
+            lineageRecheck,
+            () => sel.value === reportId,
+            () => !!sel.value,
+        );
     });
     reportRefresh?.addEventListener("click", async () => {
         const reportId = sel.value;

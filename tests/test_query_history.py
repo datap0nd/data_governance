@@ -348,6 +348,142 @@ def test_mv_definition_change_alerts_the_tracked_mv(query_db, monkeypatch):
     assert versions[-1]["action_id"] == action["id"]
 
 
+def test_mv_revert_to_expected_fingerprint_resolves_intermediate_alert(
+    query_db,
+    monkeypatch,
+):
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, discovered_by, archived)
+               VALUES (10, 'public.sales_mv', 'postgresql',
+                       'public.sales_mv', 'scan', 0)"""
+        )
+        db.execute("INSERT INTO reports (id, name, archived) VALUES (1, 'MV Report', 0)")
+        db.execute(
+            "INSERT INTO report_tables (report_id, table_name, source_id) VALUES (1, 'Sales', 10)"
+        )
+        upsert_postgres_identity(
+            db,
+            source_id=10,
+            server=pg_deps.PGHOST,
+            database=pg_deps.PGDATABASE,
+            schema="public",
+            relation="sales_mv",
+            relation_kind="materialized_view",
+        )
+
+    dependencies = [("public", "sales_mv", "public", "sales", "r")]
+
+    def scan(sql):
+        connection = _CatalogConnection(
+            dependencies,
+            [("public", "sales_mv", sql)],
+        )
+        monkeypatch.setattr(pg_deps, "_get_pg_connection", lambda: connection)
+        return pg_deps.scan_pg_dependencies()
+
+    assert scan("SELECT id FROM public.sales")["changed_queries"] == 0
+    assert scan("SELECT id, amount FROM public.sales")["changed_queries"] == 1
+    with database.get_db() as db:
+        expected_id = int(
+            db.execute(
+                """SELECT id FROM actions
+                    WHERE type='changed_query' AND status='open'"""
+            ).fetchone()["id"]
+        )
+        db.execute(
+            """UPDATE actions
+                  SET status='expected', resolved_at=CURRENT_TIMESTAMP
+                WHERE id=?""",
+            (expected_id,),
+        )
+
+    assert scan("SELECT id, amount, region FROM public.sales")["changed_queries"] == 1
+    assert scan("SELECT id, amount FROM public.sales")["changed_queries"] == 1
+
+    with database.get_db() as db:
+        actions = db.execute(
+            """SELECT id, status FROM actions
+                WHERE type='changed_query' ORDER BY id"""
+        ).fetchall()
+    assert [(row["id"], row["status"]) for row in actions] == [
+        (expected_id, "expected"),
+        (expected_id + 1, "resolved"),
+    ]
+
+
+def test_mv_action_resolves_when_source_leaves_active_dependency_closure(
+    query_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(pg_deps, "PGHOST", "db.internal")
+    monkeypatch.setattr(pg_deps, "PGPORT", 5432)
+    monkeypatch.setattr(pg_deps, "PGDATABASE", "warehouse")
+    monkeypatch.setattr(pg_deps, "UPLOAD_PGHOST", "db.internal")
+    monkeypatch.setattr(pg_deps, "UPLOAD_PGPORT", 5432)
+    with database.get_db() as db:
+        for source_id, relation in ((10, "consumer_mv"), (11, "upstream_mv")):
+            db.execute(
+                """INSERT INTO sources
+                       (id, name, type, connection_info, discovered_by, archived)
+                   VALUES (?, ?, 'postgresql', ?, 'scan', 0)""",
+                (source_id, f"public.{relation}", f"public.{relation}"),
+            )
+            upsert_postgres_identity(
+                db,
+                source_id=source_id,
+                server=pg_deps.PGHOST,
+                database=pg_deps.PGDATABASE,
+                schema="public",
+                relation=relation,
+                relation_kind="materialized_view",
+            )
+        db.execute("INSERT INTO reports (id, name, archived) VALUES (1, 'MV Report', 0)")
+        db.execute(
+            """INSERT INTO report_tables(report_id, table_name, source_id)
+               VALUES (1, 'Consumer', 10)"""
+        )
+
+    dependency = [
+        ("public", "consumer_mv", "public", "upstream_mv", "m"),
+    ]
+
+    def scan(dependencies, upstream_sql):
+        connection = _CatalogConnection(
+            dependencies,
+            [
+                ("public", "consumer_mv", "SELECT * FROM public.upstream_mv"),
+                ("public", "upstream_mv", upstream_sql),
+            ],
+        )
+        monkeypatch.setattr(pg_deps, "_get_pg_connection", lambda: connection)
+        return pg_deps.scan_pg_dependencies()
+
+    assert scan(dependency, "SELECT id FROM public.orders")["changed_queries"] == 0
+    assert scan(dependency, "SELECT id, amount FROM public.orders")["changed_queries"] == 1
+    with database.get_db() as db:
+        action_id = int(
+            db.execute(
+                """SELECT id FROM actions
+                    WHERE source_id=11 AND type='changed_query' AND status='open'"""
+            ).fetchone()["id"]
+        )
+
+    removed = scan([], "SELECT id, amount FROM public.orders")
+
+    assert removed["status"] == "completed"
+    assert removed["databases"][pg_deps.PGDATABASE][
+        "inactive_changed_query_actions_resolved"
+    ] == 1
+    with database.get_db() as db:
+        status = db.execute(
+            "SELECT status FROM actions WHERE id=?",
+            (action_id,),
+        ).fetchone()["status"]
+    assert status == "resolved"
+
+
 def test_upstream_mv_uses_linked_report_owner_and_impact_context(query_db, monkeypatch):
     with database.get_db() as db:
         db.execute(

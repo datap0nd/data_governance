@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import Future
 from pathlib import Path
+import json
 import tempfile
 
 import pytest
@@ -124,6 +125,246 @@ def test_lineage_start_reuses_existing_job_and_never_overlaps(monkeypatch):
         temp_dir.cleanup()
 
 
+def test_lineage_start_does_not_reuse_another_reports_recheck(monkeypatch):
+    temp_dir = _fresh_database(monkeypatch)
+    submitted = []
+    try:
+        monkeypatch.setattr(scanner, "_require_scan_access", lambda request: None)
+        monkeypatch.setattr(
+            scanner,
+            "_submit_job",
+            lambda job_id, worker, *args: submitted.append((job_id, worker, args)),
+        )
+
+        first = scanner.start_postgres_lineage_job(object(), report_id=42)
+        second = scanner.start_postgres_lineage_job(object(), report_id=43)
+
+        assert first["accepted"] is True
+        assert second["accepted"] is False
+        assert second["reused"] is False
+        assert "another report" in second["message"]
+        assert second["job"]["context"] == {"report_id": 42}
+        assert len(submitted) == 1
+    finally:
+        temp_dir.cleanup()
+
+
+def test_lineage_worker_forwards_selected_report_to_identity_repair(monkeypatch):
+    temp_dir = _fresh_database(monkeypatch)
+    calls = []
+    try:
+        job_id = jobs.create_job(
+            "postgres_lineage",
+            context={"report_id": 42},
+        )
+        monkeypatch.setattr(
+            pg_deps,
+            "scan_pg_dependencies",
+            lambda **kwargs: calls.append(kwargs) or {"status": "completed"},
+        )
+
+        scanner._execute_postgres_lineage_job(job_id, 9)
+
+        assert calls == [
+            {
+                "report_id": 42,
+                "operation_id": job_id,
+                "cancel_generation": 9,
+            }
+        ]
+        assert jobs.get_job(job_id)["status"] == "completed"
+    finally:
+        temp_dir.cleanup()
+
+
+def test_lineage_job_message_reports_repaired_report_sources():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed",
+        {
+            "mvs_found": 1,
+            "deps_created": 2,
+            "report_identity_reconciliation": {"claimed": 0, "relinked": 1},
+        },
+    )
+
+    assert message == (
+        "Lineage refreshed: 1 materialized views, 2 dependencies, "
+        "1 report source repaired."
+    )
+
+
+def test_lineage_job_warning_message_names_unconfigured_report_endpoint():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed_with_warnings",
+        {
+            "databases": {},
+            "report_identity_reconciliation": {
+                "issues": [{
+                    "reason_code": "unconfigured_catalog_endpoint",
+                    "server": "other.internal:5433",
+                    "database": "warehouse",
+                }],
+            },
+        },
+    )
+
+    assert message == (
+        "Lineage needs attention: no configured catalog connection for "
+        "other.internal:5433/warehouse."
+    )
+
+
+def test_lineage_job_warning_message_names_unresolved_flow_targets():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed_with_warnings",
+        {
+            "databases": {
+                "flow_db": {
+                    "status": "completed_with_warnings",
+                    "flow_targets_needing_attention": 1,
+                    "flow_reconciliation": {"unresolved": 1},
+                }
+            },
+            "report_identity_reconciliation": {"issues": []},
+        },
+    )
+
+    assert message == (
+        "Lineage refreshed, but 1 Flow SQL target is still not connected "
+        "to an exact catalog source (flow_db)."
+    )
+
+
+def test_lineage_job_warning_names_global_unconfigured_endpoint():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed_with_warnings",
+        {
+            "databases": {},
+            "report_identity_reconciliation": {"issues": []},
+            "unconfigured_catalog_targets": [{
+                "server": "other.internal:5433",
+                "database": "legacy",
+                "reason_code": "unconfigured_catalog_endpoint",
+            }],
+        },
+    )
+
+    assert message == (
+        "Lineage needs attention: no configured catalog connection for active "
+        "source other.internal:5433/legacy."
+    )
+
+
+def test_lineage_job_warning_ignores_superseded_flow_counts():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed_with_warnings",
+        {
+            "databases": {
+                "legacy": {
+                    "status": "superseded",
+                    "flow_targets_needing_attention": 2,
+                    "flow_reconciliation": {"unresolved": 2},
+                },
+                "current": {
+                    "status": "completed_with_warnings",
+                    "flow_targets_needing_attention": 1,
+                    "flow_reconciliation": {"unresolved": 1},
+                },
+            },
+            "report_identity_reconciliation": {"issues": []},
+        },
+    )
+
+    assert message == (
+        "Lineage refreshed, but 1 Flow SQL target is still not connected "
+        "to an exact catalog source (current)."
+    )
+
+
+def test_lineage_job_warning_requests_rerun_for_new_target():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed_with_warnings",
+        {
+            "databases": {"warehouse": {"status": "completed"}},
+            "report_identity_reconciliation": {"issues": []},
+            "unattempted_catalog_targets": [{
+                "server": "db.internal",
+                "database": "new_db",
+            }],
+        },
+    )
+
+    assert message == (
+        "Lineage targets changed while the recheck was running; rerun lineage "
+        "to scan the final target set."
+    )
+
+
+def test_oversized_job_result_keeps_structured_lineage_diagnostics():
+    payload = {
+        "status": "completed_with_warnings",
+        "databases": {
+            "warehouse": {
+                "status": "completed_with_warnings",
+                "warning_stage": "flow_reconciliation",
+                "flow_targets_needing_attention": 1,
+                "flow_reconciliation": {"unresolved": 1},
+                "log": "catalog detail\n" * 5000,
+            },
+            **{
+                f"padding_{index}": {
+                    "status": "completed",
+                    "log": (f"database {index} detail\n" * 5000),
+                }
+                for index in range(8)
+            },
+        },
+        "report_identity_reconciliation": {
+            "status": "completed_with_warnings",
+            "report_id": 7,
+            "unresolved": 1,
+            "issues": [{
+                "reason_code": "nonliteral_postgres_connection",
+                "report_table_id": 22,
+            }],
+        },
+        "unconfigured_catalog_targets": [{
+            "server": "other.internal:5433",
+            "database": "legacy",
+            "reason_code": "unconfigured_catalog_endpoint",
+        }],
+        "unattempted_catalog_targets": [{
+            "server": "db.internal",
+            "database": "new_db",
+            "reason_code": "catalog_target_became_active_during_scan",
+        }],
+    }
+
+    encoded = jobs._json(payload)
+    decoded = json.loads(encoded)
+
+    assert len(encoded) <= jobs.MAX_RESULT_CHARS
+    assert decoded["truncated"] is True
+    assert decoded["status"] == "completed_with_warnings"
+    assert decoded["databases"]["warehouse"]["flow_reconciliation"] == {
+        "unresolved": 1,
+    }
+    assert decoded["report_identity_reconciliation"]["issues"][0][
+        "reason_code"
+    ] == "nonliteral_postgres_connection"
+    assert decoded["unconfigured_catalog_targets"][0]["server"] == (
+        "other.internal:5433"
+    )
+    assert decoded["unattempted_catalog_targets"][0]["database"] == "new_db"
+    assert "log" not in decoded["databases"]["warehouse"]
+
+
 def test_full_scan_job_covers_pre_scan_power_bi_failure(monkeypatch):
     temp_dir = _fresh_database(monkeypatch)
     observed = []
@@ -172,9 +413,13 @@ def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
     monkeypatch.setattr(
         pg_deps,
         "_required_databases",
-        lambda: (["staging", "warehouse"], {"staging": ["configured"], "warehouse": ["flow"]}, set()),
+        lambda *args: (["staging", "warehouse"], {"staging": ["configured"], "warehouse": ["flow"]}, set()),
     )
-    monkeypatch.setattr(pg_deps, "_fetch_database_catalog", lambda database: catalog)
+    monkeypatch.setattr(
+        pg_deps,
+        "_fetch_database_catalog",
+        lambda database, **kwargs: catalog,
+    )
     monkeypatch.setattr(
         pg_deps,
         "_apply_database_catalog",
@@ -191,6 +436,21 @@ def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
     )
     monkeypatch.setattr(
         pg_deps,
+        "_refresh_final_flow_reconciliation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pg_deps,
+        "_publish_staged_changed_query_actions",
+        lambda **kwargs: {
+            "published": 0,
+            "reused": 0,
+            "discarded": 0,
+            "superseded_resolved": 0,
+        },
+    )
+    monkeypatch.setattr(
+        pg_deps,
         "scanner_job_heartbeat",
         lambda job_id, **kwargs: calls.append((job_id, kwargs)),
     )
@@ -202,7 +462,7 @@ def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
     assert calls[0][1]["current_step"] == "Discovering PostgreSQL databases"
     assert any(
         values["current_step"] == "Reading PostgreSQL catalog"
-        and values["message"] == "Scanning database staging."
+        and values["message"] == "Scanning staging on the configured server."
         and values["progress_current"] == 0
         for _, values in calls
     )

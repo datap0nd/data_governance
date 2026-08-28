@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.config import PBI_WORKSPACE, UPLOAD_PGHOST
+from app.config import PBI_WORKSPACE, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_diagnostics import (
     build_flow_diagnostics,
@@ -42,6 +42,7 @@ from app.source_identity import (
     file_flow_target,
     inspect_flow_target,
     normalize_server,
+    postgres_server_identity,
     reconcile_flow_target,
 )
 
@@ -65,6 +66,10 @@ _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="pipeline-opera
 _futures: dict[str, Future] = {}
 _future_lock = threading.Lock()
 _shutdown_event = threading.Event()
+
+
+def _flow_server_identity() -> str:
+    return postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
 
 
 class RunCreate(BaseModel):
@@ -322,7 +327,7 @@ def _flow_target_resource_key(
 ) -> str | None:
     """Return the canonical lock key for one physical Flow SQL target."""
     coordinates = (
-        normalize_server(server if server is not None else UPLOAD_PGHOST),
+        normalize_server(server if server is not None else _flow_server_identity()),
         (database or "").strip(),
         (schema or "").strip(),
         (relation or "").strip(),
@@ -330,6 +335,26 @@ def _flow_target_resource_key(
     if not all(coordinates[1:]):
         return None
     return "|".join(coordinates)
+
+
+def _flow_job_server_identity(target: dict) -> str:
+    """Normalize a durable job's endpoint, including pre-port-aware jobs.
+
+    Older jobs stored only the normalized hostname even when the configured
+    Flow connection used a non-default port.  The SQL worker uses the current
+    configured endpoint, so those still-active jobs must contend for the same
+    lock as newly queued work on that endpoint.  An explicit port in a newer
+    job remains authoritative.
+    """
+    configured = _flow_server_identity()
+    if "server" not in target:
+        return configured
+    frozen = normalize_server(target.get("server"))
+    if not frozen:
+        return configured
+    if postgres_server_identity(target.get("server"), UPLOAD_PGPORT) == configured:
+        return configured
+    return frozen
 
 
 def _flow_target_key_for_id(db, flow_id: int | str) -> str | None:
@@ -360,7 +385,7 @@ def flow_target_resource_key_from_job(job_or_json) -> str | None:
     target = job.get("sql_handoff") or {}
     if target.get("enabled"):
         return _flow_target_resource_key(
-            server=target.get("server") if "server" in target else UPLOAD_PGHOST,
+            server=_flow_job_server_identity(target),
             database=target.get("database"),
             schema=target.get("schema"),
             relation=target.get("table"),
@@ -543,6 +568,16 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
             if not identity:
                 blockers.append(f"Materialized-view identity is missing for source #{source_id}.")
                 continue
+            identity_server = normalize_server(identity["server"])
+            writable_server = _flow_server_identity()
+            if not writable_server or identity_server != writable_server:
+                blockers.append(
+                    f"Materialized view '{identity['source_name']}' is on "
+                    f"{identity_server or 'an unknown PostgreSQL endpoint'}, but the "
+                    "Pipeline refresh connection targets "
+                    f"{writable_server or 'no configured PostgreSQL endpoint'}."
+                )
+                continue
             item = dict(identity)
             item["resource_key"] = "|".join(
                 [identity["server"], identity["database"], identity["schema"], identity["relation"]]
@@ -552,8 +587,9 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         flow_diagnostics = build_flow_diagnostics(
             db,
             source_ids,
-            server=UPLOAD_PGHOST,
+            server=_flow_server_identity(),
             report_root_source_ids=direct_source_ids,
+            report_id=report_id,
         )
         blockers.extend(diagnostic_blocker_messages(flow_diagnostics))
         executable_flow_ids = included_flow_ids(flow_diagnostics)
@@ -585,9 +621,13 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                         "it cannot run automatically in this Pipeline."
                     )
                     continue
-                inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
+                inspection = inspect_flow_target(
+                    db,
+                    row,
+                    server=_flow_server_identity(),
+                )
                 target = {
-                    "server": normalize_server(UPLOAD_PGHOST),
+                    "server": _flow_server_identity(),
                     "database": (row["sql_database"] or "").strip(),
                     "schema": (row["sql_schema"] or "").strip(),
                     "table": (row["sql_table"] or "").strip(),
@@ -1049,6 +1089,22 @@ def _run_mv_stage(run_id: int) -> None:
             if _shutdown_event.is_set():
                 return
             details = _loads(step["details_json"], {})
+            frozen_server = normalize_server(details.get("server"))
+            current_server = _flow_server_identity()
+            if not frozen_server or frozen_server != current_server:
+                error = (
+                    "Materialized-view endpoint changed after this Pipeline was queued; "
+                    "preview and start the Pipeline again."
+                )
+                with get_db() as db:
+                    db.execute(
+                        """UPDATE pipeline_run_steps
+                              SET status='failed', error=?, finished_at=?
+                            WHERE id=?""",
+                        (error, _iso(), step["id"]),
+                    )
+                _fail_pipeline(run_id, error)
+                return
             database = details["database"]
             schema = details["schema"]
             relation = details["relation"]
@@ -1549,7 +1605,7 @@ def _confirm_flow_targets_for_run(db, plan: dict) -> None:
         target_key = _flow_target_resource_key(
             database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
         )
-        inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
+        inspection = inspect_flow_target(db, row, server=_flow_server_identity())
         effective = inspection.get("effective_source_id")
         effective_id = int(effective) if effective is not None else None
         expected_id = int(expected["target_source_id"])
@@ -1566,8 +1622,16 @@ def _confirm_flow_targets_for_run(db, plan: dict) -> None:
 
         # SQL target links are persisted only after the exact physical
         # coordinates have been revalidated in this transaction.
-        reconcile_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
-        confirmed = inspect_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
+        reconcile_flow_target(
+            db,
+            int(row["id"]),
+            server=_flow_server_identity(),
+        )
+        confirmed = inspect_flow_target(
+            db,
+            int(row["id"]),
+            server=_flow_server_identity(),
+        )
         confirmed_effective = confirmed.get("effective_source_id")
         confirmed_persisted = confirmed.get("persisted_source_id")
         if (

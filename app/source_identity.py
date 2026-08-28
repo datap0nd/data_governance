@@ -14,15 +14,66 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 
-def normalize_server(value: str | None) -> str:
-    """Return a stable host identity without altering database identifiers."""
+def _postgres_server_parts(value: str | None) -> tuple[str, int | None]:
     raw = (value or "").strip()
     if not raw:
-        return ""
+        return "", None
+    # ``urlsplit`` requires IPv6 literals to be bracketed.  libpq also accepts
+    # a bare address in PGHOST, so preserve that form as one host rather than
+    # misreading its colons as a hostname/port separator.  A port paired with
+    # IPv6 must use brackets (or the separate ``port`` argument), because an
+    # unbracketed trailing number is indistinguishable from the address itself.
+    if "://" not in raw and not raw.startswith("[") and raw.count(":") >= 2:
+        return raw.rstrip(".").casefold(), None
     candidate = raw if "://" in raw else f"postgresql://{raw}"
     parsed = urlsplit(candidate)
     host = parsed.hostname or raw.split("/", 1)[0].split(":", 1)[0]
-    return host.rstrip(".").casefold()
+    try:
+        port = parsed.port
+    except ValueError:
+        # A malformed or out-of-range explicit port is not equivalent to the
+        # default PostgreSQL endpoint. Returning no identity prevents a typo
+        # from attaching lineage to a different physical cluster.
+        return "", None
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    if authority.endswith(":"):
+        return "", None
+    if port is not None and not 1 <= port <= 65535:
+        return "", None
+    return host.rstrip(".").casefold(), port
+
+
+def postgres_server_identity(
+    value: str | None,
+    port: str | int | None = None,
+) -> str:
+    """Return a stable physical PostgreSQL endpoint identity.
+
+    The default PostgreSQL port remains equivalent to an omitted port for
+    compatibility with existing identities. Non-default ports are retained so
+    two clusters on the same hostname can never be merged into false lineage.
+    An explicit port in ``value`` takes precedence over the separate setting.
+    """
+    host, explicit_port = _postgres_server_parts(value)
+    if not host:
+        return ""
+    selected_port = explicit_port
+    if selected_port is None and port not in (None, ""):
+        try:
+            selected_port = int(port)
+        except (TypeError, ValueError):
+            return ""
+    if selected_port is not None and not 1 <= selected_port <= 65535:
+        return ""
+    formatted_host = f"[{host}]" if ":" in host else host
+    if selected_port in (None, 5432):
+        return formatted_host
+    return f"{formatted_host}:{selected_port}"
+
+
+def normalize_server(value: str | None) -> str:
+    """Return a stable PostgreSQL endpoint without altering DB identifiers."""
+    return postgres_server_identity(value)
 
 
 def normalize_file_path(value: str | None) -> str:
@@ -266,6 +317,7 @@ def upsert_postgres_identity(
     relation: str,
     relation_kind: str = "table",
     verified_at: str | None = None,
+    preserve_existing_relation_kind: bool = False,
 ) -> dict:
     """Claim or refresh a source identity without ever changing coordinates.
 
@@ -324,17 +376,27 @@ def upsert_postgres_identity(
             "requested": requested,
         }
 
+    effective_relation_kind = (
+        str(existing["relation_kind"] or "table")
+        if preserve_existing_relation_kind
+        else relation_kind
+    )
     db.execute(
         """UPDATE source_postgres_identities
            SET relation_kind=?, verified_at=?
            WHERE source_id=?""",
-        (relation_kind, verified_at, int(source_id)),
+        (effective_relation_kind, verified_at, int(source_id)),
     )
     return {
         "status": "refreshed",
         "source_id": int(source_id),
         "existing": _identity_dict(existing),
         "requested": requested,
+        "relation_kind": effective_relation_kind,
+        "relation_kind_preserved": bool(
+            preserve_existing_relation_kind
+            and effective_relation_kind != relation_kind
+        ),
     }
 
 

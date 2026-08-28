@@ -98,6 +98,26 @@ def test_component_serialization_redacts_errors_and_preserves_database_results()
     assert failed["definition_error"] == "Redacted; review server logs."
 
 
+def test_superseded_catalog_attempt_does_not_rewarn_full_scan_component():
+    component = lifecycle.component_result(
+        {
+            "status": "completed",
+            "databases": {
+                "legacy": {
+                    "status": "superseded",
+                    "attempt_status": "failed",
+                    "superseded_after_report_relink": True,
+                },
+                "warehouse": {"status": "completed", "deps_created": 2},
+            },
+        },
+        required=True,
+    )
+
+    assert component["status"] == "completed"
+    assert component["databases"]["legacy"]["status"] == "superseded"
+
+
 def test_stop_request_leaves_scan_running_for_atomic_runner_finalization(monkeypatch):
     temp_dir, _ = _fresh_database(monkeypatch)
     try:
@@ -291,6 +311,84 @@ def test_pg_skips_are_neutral_only_without_active_postgres_work(monkeypatch):
         assert required["components"]["postgres_dependencies"]["status"] == "skipped"
         assert required["components"]["postgres_dependencies"]["required"] is True
         assert required["components"]["postgres_schedules"]["status"] == "skipped"
+    finally:
+        temp_dir.cleanup()
+
+
+def test_pg_not_requested_stays_warning_for_active_unidentified_source(monkeypatch):
+    temp_dir, _ = _fresh_database(monkeypatch)
+    try:
+        _stub_scan_components(
+            monkeypatch,
+            {"status": "not_requested", "databases": {}},
+            cron_result={"status": "not_requested"},
+        )
+        with database.get_db() as db:
+            db.execute(
+                """INSERT INTO sources(name, type, discovered_by, archived)
+                   VALUES ('unidentified_postgres', 'postgresql', 'manual', 0)"""
+            )
+
+        result = runner.run_scan("unused", run_followup_probe=False)
+
+        assert result["status"] == "completed_with_warnings"
+        dependencies = result["components"]["postgres_dependencies"]
+        schedules = result["components"]["postgres_schedules"]
+        assert dependencies["status"] == "not_requested"
+        assert dependencies["requested"] is True
+        assert dependencies["required"] is True
+        assert schedules["status"] == "not_requested"
+        assert schedules["requested"] is True
+        assert schedules["required"] is True
+    finally:
+        temp_dir.cleanup()
+
+
+def test_final_inactive_pg_target_makes_not_requested_components_neutral(monkeypatch):
+    from app.scanner import pg_deps
+
+    temp_dir, _ = _fresh_database(monkeypatch)
+    try:
+        _stub_scan_components(
+            monkeypatch,
+            {"status": "not_requested"},
+            cron_result={"status": "not_requested"},
+        )
+        with database.get_db() as db:
+            cursor = db.execute(
+                """INSERT INTO sources(name, type, discovered_by, archived)
+                   VALUES ('superseded postgres', 'postgresql', 'manual', 0)"""
+            )
+            source_id = int(cursor.lastrowid)
+
+        def finalize_to_no_target(scan_run_id=None, **_kwargs):
+            with database.get_db() as db:
+                db.execute("UPDATE sources SET archived=1 WHERE id=?", (source_id,))
+            return {
+                "status": "not_requested",
+                "required_databases": [],
+                "catalog_targets": [],
+                "databases": {
+                    "legacy": {
+                        "status": "superseded",
+                        "attempt_status": "completed",
+                    }
+                },
+            }
+
+        monkeypatch.setattr(pg_deps, "scan_pg_dependencies", finalize_to_no_target)
+
+        result = runner.run_scan("unused", run_followup_probe=False)
+
+        assert result["status"] == "completed"
+        dependencies = result["components"]["postgres_dependencies"]
+        schedules = result["components"]["postgres_schedules"]
+        assert dependencies["status"] == "not_requested"
+        assert dependencies["requested"] is False
+        assert dependencies["required"] is False
+        assert schedules["status"] == "not_requested"
+        assert schedules["requested"] is False
+        assert schedules["required"] is False
     finally:
         temp_dir.cleanup()
 

@@ -108,6 +108,92 @@ assert.equal((html.match(/Legacy suffix collision/g) || []).length, 1,
     "The compatibility legacy list must not duplicate an item already in flow_diagnostics");
 assert.match(html, /pipeline-blocked/, "An exact in-scope ambiguity must receive blocker presentation");
 
+const repairWarningHtml = context.html({
+    report: { id: 77, name: "Orders report" },
+    flows: [],
+    flow_diagnostics: {
+        items: [],
+        postgres_dependencies: {
+            status: "completed_with_warnings",
+            databases: { warehouse: { status: "completed" } },
+            report_identity_reconciliation: {
+                status: "completed_with_warnings",
+                issues: [{ report_table_id: 5, reason_code: "parameterized_connection" }],
+            },
+        },
+    },
+});
+assert.match(repairWarningHtml, /Report source repair needs attention for 1 table/,
+    "A focused recheck that cannot repair the selected report must explain why Flows may remain absent");
+assert.match(repairWarningHtml, /Full Scan/,
+    "Unresolved stored metadata must have an actionable recovery path");
+
+const unconfiguredEndpointHtml = context.html({
+    report: { id: 77, name: "Orders report" },
+    flows: [],
+    flow_diagnostics: {
+        items: [],
+        postgres_dependencies: {
+            status: "completed_with_warnings",
+            databases: {},
+            report_identity_reconciliation: {
+                status: "completed_with_warnings",
+                issues: [{
+                    reason_code: "unconfigured_catalog_endpoint",
+                    server: "other.internal:5433",
+                    database: "warehouse",
+                }],
+            },
+        },
+    },
+});
+assert.match(
+    unconfiguredEndpointHtml,
+    /reads other\.internal:5433\/warehouse, but Scanner has no configured catalog connection/,
+    "An exact but unscannable endpoint must be visible in Pipelines instead of looking complete",
+);
+
+const globalEndpointHtml = context.html({
+    report: { id: 77, name: "Orders report" },
+    flows: [],
+    flow_diagnostics: {
+        items: [],
+        postgres_dependencies: {
+            status: "completed_with_warnings",
+            databases: { warehouse: { status: "completed" } },
+            report_identity_reconciliation: {
+                status: "completed",
+                report_id: 77,
+                issues: [],
+            },
+            unconfigured_catalog_targets: [{
+                server: "other.internal:5433",
+                database: "legacy",
+            }],
+        },
+    },
+});
+assert.match(
+    globalEndpointHtml,
+    /no configured catalog connection for active source other\.internal:5433\/legacy/,
+    "Pipelines must retain a global endpoint warning without attributing it to selected-report repair",
+);
+
+const changedTargetHtml = context.html({
+    report: { id: 77, name: "Orders report" },
+    flows: [],
+    flow_diagnostics: {
+        items: [],
+        postgres_dependencies: {
+            status: "completed_with_warnings",
+            databases: { warehouse: { status: "completed" } },
+            unattempted_catalog_targets: [{ server: "db.internal", database: "new_db" }],
+        },
+    },
+});
+assert.match(changedTargetHtml, /catalog target became active during the scan; rerun lineage/i,
+    "Pipelines must explain why a changed final target set needs another recheck");
+
 const aliasGapHtml = context.html({
     report: { id: 77, name: "Orders report" },
     flows: [],
@@ -198,8 +284,19 @@ assert.match(source, /const flowDiagnostics = _flowDiagnosticsHtml\(plan\)/,
     "The full-refresh preview must use the same Flow diagnostic summary");
 assert.match(source, /apiPost\(`\/api\/scanner\/jobs\/postgres-lineage\$\{reportQuery\}`\)/,
     "Recheck lineage must start the durable focused PostgreSQL lineage job");
-assert.match(source, /_waitForScannerJob\(start\.job_id/,
+assert.match(source, /id="lineage-recheck"[^>]*>Recheck lineage<\/button>/,
+    "Pipelines must always expose a selected-report lineage repair action");
+assert.match(
+    source,
+    /_recheckFlowLineage\(\s*reportId,\s*lineageRecheck,\s*\(\) => sel\.value === reportId,\s*\(\) => !!sel\.value,\s*\)/,
+    "The permanent recheck control must remain scoped to the selected report",
+);
+assert.match(source, /lineageRecheck\.dataset\.lineageRecheckOperation/,
+    "Changing reports must not enable a second recheck while the first job is being released");
+assert.match(source, /_waitForScannerJob\(\s*start\.job_id/,
     "Recheck lineage must wait for the durable job instead of holding one request open");
+assert.match(source, /start\.accepted === true \|\| start\.reused === true/,
+    "A report recheck must not wait on an incompatible job owned by another report");
 assert.match(source, /flow\.executable === false/,
     "Filename-only Flow candidates must be visibly distinguished from executable SQL lineage");
 assert.match(source, /Possible file link/,

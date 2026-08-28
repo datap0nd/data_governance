@@ -306,14 +306,26 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
 def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
     from app.scanner.pg_deps import scan_pg_dependencies
 
+    job = scanner_jobs.get_job(job_id) or {}
+    context = job.get("context") if isinstance(job.get("context"), dict) else {}
+    report_id = context.get("report_id")
+    try:
+        report_id = int(report_id) if report_id is not None else None
+    except (TypeError, ValueError):
+        report_id = None
     scanner_jobs.mark_running(
         job_id,
         current_step="Preparing PostgreSQL lineage recheck",
-        message="Resolving the databases required by reports and Flow targets.",
+        message=(
+            f"Repairing report #{report_id}'s source identity before catalog discovery."
+            if report_id is not None
+            else "Resolving the databases required by reports and Flow targets."
+        ),
     )
     try:
         result = redact_component_payload(
             scan_pg_dependencies(
+                report_id=report_id,
                 operation_id=job_id,
                 cancel_generation=generation,
             )
@@ -546,7 +558,21 @@ def start_postgres_lineage_job(request: Request, report_id: int | None = None):
         context={"report_id": report_id} if report_id is not None else {},
     )
     if not created:
-        compatible = job["job_type"] in {"full_scan", "postgres_lineage"}
+        existing_context = (
+            job.get("context") if isinstance(job.get("context"), dict) else {}
+        )
+        existing_report_id = existing_context.get("report_id")
+        try:
+            existing_report_id = (
+                int(existing_report_id) if existing_report_id is not None else None
+            )
+        except (TypeError, ValueError):
+            existing_report_id = None
+        requested_report_id = int(report_id) if report_id is not None else None
+        compatible = job["job_type"] == "full_scan" or (
+            job["job_type"] == "postgres_lineage"
+            and existing_report_id == requested_report_id
+        )
         return _job_start_response(
             job,
             accepted=False,
@@ -554,7 +580,12 @@ def start_postgres_lineage_job(request: Request, report_id: int | None = None):
             message=(
                 "Existing full scan will refresh PostgreSQL lineage."
                 if job["job_type"] == "full_scan"
-                else "PostgreSQL lineage recheck is already running."
+                else "This report's PostgreSQL lineage recheck is already running."
+                if compatible
+                else (
+                    "A PostgreSQL lineage recheck for another report is active. "
+                    "Wait for it to finish, then recheck this report."
+                )
                 if job["job_type"] == "postgres_lineage"
                 else "A source probe is active; wait for it or stop it before rechecking lineage."
             ),

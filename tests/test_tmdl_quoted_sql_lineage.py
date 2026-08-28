@@ -5,8 +5,9 @@ import pytest
 import app.database as database
 from app.database import get_db
 from app.flow_diagnostics import build_flow_diagnostics, included_flow_ids
-from app.routers import pipelines
+from app.routers import lineage, pipelines
 from app.scanner import pg_deps
+from app.scanner.report_source_identities import reconcile_report_postgres_identities
 from app.scanner.tmdl_parser import (
     SourceInfo,
     _extract_table_navigation,
@@ -265,7 +266,7 @@ class _CatalogCursor:
 
     def execute(self, query):
         if "FROM pg_depend" in query:
-            assert "c_dep.relkind IN ('r', 'p', 'm', 'v')" in query
+            assert "c_dep.relkind IN ('r', 'p', 'm', 'v', 'f')" in query
             self.rows = [
                 (
                     "bi_reporting",
@@ -329,14 +330,6 @@ def test_quoted_report_source_connects_flow_through_view_and_partitioned_table(
             "VALUES (10, ?, 'postgresql', ?, ?)",
             (parsed.display_name, parsed.connection_info, expression),
         )
-        upsert_postgres_identity(
-            db,
-            source_id=10,
-            server=parsed.server,
-            database=parsed.database,
-            schema=schema,
-            relation=relation,
-        )
         db.execute(
             "INSERT INTO report_tables(report_id, table_name, source_id, source_expression) "
             "VALUES (1, 'Model', 10, ?)",
@@ -360,18 +353,27 @@ def test_quoted_report_source_connects_flow_through_view_and_partitioned_table(
         )
 
     monkeypatch.setattr(pg_deps, "PGHOST", server)
+    monkeypatch.setattr(pg_deps, "PGPORT", 5432)
     monkeypatch.setattr(pg_deps, "UPLOAD_PGHOST", server)
+    monkeypatch.setattr(pg_deps, "UPLOAD_PGPORT", 5432)
     monkeypatch.setattr(pg_deps, "PGDATABASE", database_name)
+    monkeypatch.setattr(lineage, "UPLOAD_PGHOST", server)
+    monkeypatch.setattr(lineage, "UPLOAD_PGPORT", 5432)
     monkeypatch.setattr(
         pg_deps,
         "_get_pg_connection",
         lambda *, database: _CatalogConnection(),
     )
 
-    result = pg_deps.scan_pg_dependencies()
+    # This deliberately begins with the pre-upgrade state: the report points
+    # at a PostgreSQL source whose exact identity has not been claimed yet.
+    # The report-scoped Pipeline recheck must repair that root before reading
+    # pg_depend; requiring a separate Full Scan was the production bug.
+    result = pg_deps.scan_pg_dependencies(report_id=1)
 
     assert result["status"] == "completed"
     assert result["deps_created"] == 2
+    assert result["report_identity_reconciliation"]["claimed"] == 1
     with get_db() as db:
         source_ids, edges = pipelines._source_closure(db, 1)
         identities = {
@@ -398,3 +400,68 @@ def test_quoted_report_source_connects_flow_through_view_and_partitioned_table(
     assert identities["asap_import"][0] in source_ids
     assert saved_target == identities["asap_import"][0]
     assert included_flow_ids(diagnostics) == {20}
+    diagram = lineage.get_lineage_diagram(1)
+    assert [flow["name"] for flow in diagram["flows"]] == ["ASAP import"]
+    assert diagram["flows"][0]["target_source_ids"] == [identities["asap_import"][0]]
+
+
+def test_report_scoped_recheck_repairs_only_the_selected_legacy_report(
+    tmp_path, monkeypatch
+):
+    db_path = str(tmp_path / "selected-report-repair.db")
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    database.init_db()
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Rows = Value.NativeQuery(Source, '
+        '"SELECT * FROM ""bi_reporting"".""inflow_outflow_mv""") in Rows'
+    )
+
+    with get_db() as db:
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Selected')")
+        db.execute("INSERT INTO reports(id, name) VALUES (2, 'Other')")
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, source_query)
+               VALUES (10, 'legacy_wrong_root', 'postgresql', 'legacy', ?)""",
+            (expression,),
+        )
+        upsert_postgres_identity(
+            db,
+            source_id=10,
+            server="db.internal",
+            database="warehouse",
+            schema="bi_reporting",
+            relation="legacy_wrong_root",
+        )
+        for report_id in (1, 2):
+            db.execute(
+                """INSERT INTO report_tables
+                       (report_id, table_name, source_id, source_expression)
+                   VALUES (?, 'Model', 10, ?)""",
+                (report_id, expression),
+            )
+
+    result = reconcile_report_postgres_identities(1)
+
+    assert result["created"] == 1
+    assert result["relinked"] == 1
+    with get_db() as db:
+        selected_source = db.execute(
+            "SELECT source_id FROM report_tables WHERE report_id=1"
+        ).fetchone()[0]
+        other_source = db.execute(
+            "SELECT source_id FROM report_tables WHERE report_id=2"
+        ).fetchone()[0]
+        old_identity = db.execute(
+            "SELECT relation_name FROM source_postgres_identities WHERE source_id=10"
+        ).fetchone()[0]
+        new_identity = db.execute(
+            "SELECT relation_name FROM source_postgres_identities WHERE source_id=?",
+            (selected_source,),
+        ).fetchone()[0]
+
+    assert selected_source != 10
+    assert other_source == 10
+    assert old_identity == "legacy_wrong_root"
+    assert new_identity == "inflow_outflow_mv"

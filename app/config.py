@@ -151,6 +151,7 @@ USAGE_FILES_PATH = (
 # WARNING: These credentials must ONLY be used for SELECT queries.
 # NEVER use them for INSERT, UPDATE, DELETE, DROP, or any write operation.
 PGHOST = os.environ.get("PGHOST", "")
+PGPORT = os.environ.get("PGPORT", "") or "5432"
 PGUSER = os.environ.get("PGUSER", "")
 PGPASSWORD = os.environ.get("PGPASSWORD", "")
 PGDATABASE = os.environ.get("PGDATABASE", "postgres")
@@ -166,7 +167,7 @@ PG_SCAN_STATEMENT_TIMEOUT_SECONDS = _bounded_int_env(
 # user and password have no fallback, while host/port/database may reuse the
 # probing connection's location.
 UPLOAD_PGHOST = os.environ.get("DG_UPLOAD_PGHOST", "") or PGHOST
-UPLOAD_PGPORT = os.environ.get("DG_UPLOAD_PGPORT", "") or os.environ.get("PGPORT", "") or "5432"
+UPLOAD_PGPORT = os.environ.get("DG_UPLOAD_PGPORT", "") or PGPORT
 UPLOAD_PGDATABASE = os.environ.get("DG_UPLOAD_PGDATABASE", "") or PGDATABASE
 UPLOAD_PGUSER = os.environ.get("DG_UPLOAD_PGUSER", "")
 UPLOAD_PGPASSWORD = os.environ.get("DG_UPLOAD_PGPASSWORD", "")

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from app.source_identity import normalize_server
+from app.source_identity import normalize_server, split_relation
 
 
 @dataclass
@@ -28,11 +28,36 @@ class SourceInfo:
     sheet_or_table: str | None = None  # for excel (sheet/table name)
     delimiter: str | None = None       # for csv
     raw_expression: str = ""           # the full M expression
+    # Directly constructed SourceInfo objects are trusted by default for
+    # backwards compatibility. The M parser explicitly sets these false for
+    # nonliteral PostgreSQL arguments until expressions.tmdl resolves them.
+    postgres_server_exact: bool = True
+    postgres_database_exact: bool = True
+    postgres_single_connector: bool = True
+    postgres_single_native_query: bool = True
+    postgres_native_query_exact: bool = True
+    postgres_relation_exact: bool = True
+    postgres_conditional_output_exact: bool = True
 
     # Source types that are database connections
     DB_TYPES = {"sql", "postgresql", "mysql", "oracle", "odbc", "oledb", "ssas", "redshift", "snowflake", "bigquery"}
     # Source types that use file paths
     FILE_TYPES = {"excel", "sharepoint", "web"}
+
+    @property
+    def postgres_identity_is_exact(self) -> bool:
+        return bool(
+            self.source_type == "postgresql"
+            and self.postgres_server_exact
+            and self.postgres_database_exact
+            and self.postgres_single_connector
+            and self.postgres_single_native_query
+            and self.postgres_native_query_exact
+            and self.postgres_relation_exact
+            and self.postgres_conditional_output_exact
+            and normalize_server(self.server)
+            and (self.database or "").strip()
+        )
 
     @property
     def unresolved_fingerprint(self) -> str:
@@ -61,6 +86,8 @@ class SourceInfo:
         """
         if self.source_type in self.FILE_TYPES and self.file_path:
             return f"{self.source_type}::{self.file_path.lower()}"
+        if self.source_type == "postgresql" and not self.postgres_identity_is_exact:
+            return f"postgresql::unresolved-{self.unresolved_fingerprint}"
         elif self.source_type in self.DB_TYPES and self.server:
             if self.source_type == "postgresql":
                 # PostgreSQL hosts are case-insensitive, but quoted database,
@@ -87,6 +114,8 @@ class SourceInfo:
         """Human-readable name for this source."""
         if self.source_type in self.FILE_TYPES and self.file_path:
             return Path(self.file_path).name
+        if self.source_type == "postgresql" and not self.postgres_identity_is_exact:
+            return f"unresolved_pg_query_{self.unresolved_fingerprint}"
         elif self.source_type in self.DB_TYPES and self.server:
             # For PostgreSQL, just show schema.table (skip server IP and database name)
             if self.source_type == "postgresql":
@@ -112,6 +141,8 @@ class SourceInfo:
         if self.source_type in self.FILE_TYPES and self.file_path:
             return self.file_path
         elif self.source_type in self.DB_TYPES:
+            if self.source_type == "postgresql" and not self.postgres_identity_is_exact:
+                return f"unresolved/{self.unresolved_fingerprint}"
             parts = [_clean_identifier(self.server) or "?"]
             if self.database:
                 parts.append(_clean_identifier(self.database))
@@ -450,25 +481,103 @@ def _parse_m_expression(expr: str) -> SourceInfo:
         (r'GoogleBigQuery\.Database\s*\(', "GoogleBigQuery.Database", "bigquery"),
     ]
 
-    for pattern, func_name, source_type in DB_CONNECTORS:
-        if re.search(pattern, expr):
-            source.source_type = source_type
-            args = _extract_function_args(expr, func_name)
-            if args and len(args) >= 1:
-                source.server = _unquote(args[0])
-            if args and len(args) >= 2:
-                source.database = _unquote(args[1])
-            # Power Query M escapes a quote inside a string as ``""`` (not
-            # with a backslash). Decode the M literal before parsing SQL so a
-            # query such as schema_.""table_name"" retains its real relation.
-            source.sql_query = _extract_m_query(expr)
-            # Extract the specific table being accessed
-            source.sql_table = _extract_table_navigation(
+    connector_calls: list[tuple[int, str, str]] = []
+    for _pattern, connector_name, connector_type in DB_CONNECTORS:
+        connector_calls.extend(
+            (offset, connector_name, connector_type)
+            for offset in _m_function_call_offsets(expr, connector_name)
+        )
+    connector_calls.sort(key=lambda item: item[0])
+    if len(connector_calls) > 1:
+        # Multiple live database connectors represent a branch/composition
+        # that one SourceInfo cannot identify safely. Preserve PostgreSQL's
+        # unresolved diagnostics when every branch is PostgreSQL; mixed
+        # connector expressions remain generically unknown.
+        if all(item[2] == "postgresql" for item in connector_calls):
+            source.source_type = "postgresql"
+            source.postgres_server_exact = False
+            source.postgres_database_exact = False
+            source.postgres_single_connector = False
+            source.postgres_relation_exact = False
+        return source
+    if connector_calls:
+        connector_offset, func_name, source_type = connector_calls[0]
+        source.source_type = source_type
+        if source_type == "postgresql":
+            source.postgres_server_exact = False
+            source.postgres_database_exact = False
+            source.postgres_relation_exact = False
+            source.postgres_single_connector = True
+            native_query_offsets = _m_function_call_offsets(
+                expr,
+                "Value.NativeQuery",
+            )
+            source.postgres_conditional_output_exact = not _m_has_conditional_output(
+                expr
+            )
+        else:
+            native_query_offsets = []
+        args = _extract_function_args(expr[connector_offset:], func_name)
+        if args and len(args) >= 1:
+            source.server = _unquote(args[0])
+            if source_type == "postgresql":
+                source.postgres_server_exact = (
+                    _decode_m_string_literal(args[0]) is not None
+                )
+        if args and len(args) >= 2:
+            source.database = _unquote(args[1])
+            if source_type == "postgresql":
+                source.postgres_database_exact = (
+                    _decode_m_string_literal(args[1]) is not None
+                )
+        # Power Query M escapes a quote inside a string as ``""`` (not
+        # with a backslash). Decode the M literal before parsing SQL so a
+        # query such as schema_.""table_name"" retains its real relation.
+        source.sql_query = _extract_m_query(expr, connector_args=args)
+        if source_type == "postgresql":
+            connector_query_option_present = bool(
+                len(args) >= 3
+                and _m_assignment_value_offset(args[2], "Query") is not None
+            )
+            query_mechanism_count = len(native_query_offsets) + int(
+                connector_query_option_present
+            )
+            conditional_query_navigation = bool(
+                query_mechanism_count
+                and _m_navigation_records(expr)
+                and _m_has_conditional_output(expr)
+            )
+            source.postgres_single_native_query = query_mechanism_count <= 1
+            source.postgres_native_query_exact = (
+                not conditional_query_navigation
+                and (
+                    query_mechanism_count == 0
+                    or (
+                        query_mechanism_count == 1
+                        and source.sql_query is not None
+                    )
+                )
+            )
+        # Extract the specific table being accessed
+        source.sql_table = (
+            _extract_table_navigation(
                 expr,
                 decoded_sql=source.sql_query,
                 source_type=source_type,
+                allow_plain_sql=False,
             )
-            return source
+            if source_type != "postgresql"
+            or (
+                source.postgres_single_native_query
+                and source.postgres_native_query_exact
+            )
+            else None
+        )
+        if source_type == "postgresql":
+            source.postgres_relation_exact = _postgres_relation_is_exact(
+                source.sql_table,
+            )
+        return source
 
     # Detect SharePoint sources
     if re.search(r'SharePoint\.Files\s*\(', expr) or re.search(r'SharePoint\.Tables\s*\(', expr):
@@ -633,6 +742,22 @@ def _read_m_string(text: str, quote_index: int) -> tuple[str, int] | None:
     return None
 
 
+def _postgres_relation_is_exact(
+    relation: str | None,
+) -> bool:
+    """Return whether a parsed PostgreSQL relation has a stable schema.
+
+    Explicit Power BI Schema/Item navigation is already resolved; qualified
+    native SQL is exact too. A bare Name navigation or SQL relation does not
+    identify a schema and must never be guessed as ``public`` locally.
+    """
+    if not relation:
+        return False
+    sentinel = "__metronome_unqualified_native_relation__"
+    parts = split_relation(relation, default_schema=sentinel)
+    return bool(parts and parts[0] != sentinel)
+
+
 def _decode_m_string_literal(value: str) -> str | None:
     raw = (value or "").strip()
     if not raw.startswith('"'):
@@ -643,25 +768,493 @@ def _decode_m_string_literal(value: str) -> str | None:
     return decoded[0]
 
 
+def _m_assignment_value_offset(expr: str, name: str) -> int | None:
+    """Locate an M assignment value outside strings and nested comments."""
+    index = 0
+    line_comment = False
+    block_depth = 0
+    while index < len(expr):
+        if line_comment:
+            if expr[index] in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_depth:
+            if expr.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif expr.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if expr.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if expr.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+        if expr[index] == '"':
+            decoded = _read_m_string(expr, index)
+            index = decoded[1] if decoded is not None else len(expr)
+            continue
+        if expr.startswith(name, index):
+            before_ok = index == 0 or not (
+                expr[index - 1].isalnum() or expr[index - 1] == "_"
+            )
+            after_name = index + len(name)
+            after_ok = after_name >= len(expr) or not (
+                expr[after_name].isalnum() or expr[after_name] == "_"
+            )
+            if before_ok and after_ok:
+                cursor = after_name
+                while cursor < len(expr) and expr[cursor].isspace():
+                    cursor += 1
+                if cursor < len(expr) and expr[cursor] == "=":
+                    cursor += 1
+                    while cursor < len(expr) and expr[cursor].isspace():
+                        cursor += 1
+                    return cursor
+        index += 1
+    return None
+
+
 def _extract_m_assignment_string(expr: str, name: str) -> str | None:
-    match = re.search(rf"\b{re.escape(name)}\s*=\s*", expr, re.IGNORECASE)
-    if not match:
+    """Read one literal M assignment outside strings and nested comments."""
+    value_offset = _m_assignment_value_offset(expr, name)
+    if value_offset is None or value_offset >= len(expr):
         return None
-    quote_index = match.end()
-    if quote_index >= len(expr) or expr[quote_index] != '"':
+    if expr[value_offset] != '"':
         return None
-    decoded = _read_m_string(expr, quote_index)
+    decoded = _read_m_string(expr, value_offset)
     return decoded[0] if decoded is not None else None
 
 
-def _extract_m_query(expr: str) -> str | None:
+def _mask_m_noncode(expr: str) -> str:
+    """Mask M strings/comments while preserving offsets and delimiters."""
+    code = list(expr)
+    index = 0
+    line_comment = False
+    block_depth = 0
+    while index < len(expr):
+        if line_comment:
+            if expr[index] in "\r\n":
+                line_comment = False
+            else:
+                code[index] = " "
+            index += 1
+            continue
+        if block_depth:
+            if expr.startswith("/*", index):
+                code[index:index + 2] = [" ", " "]
+                block_depth += 1
+                index += 2
+            elif expr.startswith("*/", index):
+                code[index:index + 2] = [" ", " "]
+                block_depth -= 1
+                index += 2
+            else:
+                if expr[index] not in "\r\n":
+                    code[index] = " "
+                index += 1
+            continue
+        if expr.startswith("//", index):
+            code[index:index + 2] = [" ", " "]
+            line_comment = True
+            index += 2
+            continue
+        if expr.startswith("/*", index):
+            code[index:index + 2] = [" ", " "]
+            block_depth = 1
+            index += 2
+            continue
+        if expr[index] == '"':
+            decoded = _read_m_string(expr, index)
+            end = decoded[1] if decoded is not None else len(expr)
+            for masked in range(index, end):
+                if expr[masked] not in "\r\n":
+                    code[masked] = " "
+            index = end
+            continue
+        index += 1
+    return "".join(code)
+
+
+def _m_keyword_at(code: str, index: int, keyword: str) -> bool:
+    if code[index:index + len(keyword)].casefold() != keyword.casefold():
+        return False
+    before = code[index - 1] if index else ""
+    after_index = index + len(keyword)
+    after = code[after_index] if after_index < len(code) else ""
+    return not (before.isalnum() or before == "_") and not (
+        after.isalnum() or after == "_"
+    )
+
+
+_M_BINDING_RE = re.compile(
+    r'^\s*(?P<name>#"(?:[^"]|"")*"|[A-Za-z_][\w]*)\s*=',
+)
+
+
+def _m_identifier_value(raw: str) -> str | None:
+    token = str(raw or "").strip()
+    if token.startswith('#"'):
+        decoded = _read_m_string(token, 1)
+        if decoded is None or token[decoded[1]:].strip():
+            return None
+        return decoded[0]
+    return token or None
+
+
+def _m_top_level_let_parts(expr: str) -> tuple[dict[str, str], str] | None:
+    """Split one top-level M let expression into bindings and output."""
+    code = _mask_m_noncode(expr)
+    opening = re.match(r"\s*let\b", code, flags=re.IGNORECASE)
+    if opening is None:
+        return None
+    start = opening.end()
+    segment_start = start
+    segments: list[str] = []
+    stack: list[str] = []
+    closers = {"(": ")", "[": "]", "{": "}"}
+    nested_lets = 0
+    index = start
+    output: str | None = None
+    while index < len(code):
+        char = code[index]
+        if char in closers:
+            stack.append(closers[char])
+            index += 1
+            continue
+        if stack and char == stack[-1]:
+            stack.pop()
+            index += 1
+            continue
+        if stack:
+            index += 1
+            continue
+        if _m_keyword_at(code, index, "let"):
+            nested_lets += 1
+            index += 3
+            continue
+        if _m_keyword_at(code, index, "in"):
+            if nested_lets:
+                nested_lets -= 1
+                index += 2
+                continue
+            segments.append(expr[segment_start:index])
+            output = expr[index + 2:]
+            break
+        if char == "," and nested_lets == 0:
+            segments.append(expr[segment_start:index])
+            segment_start = index + 1
+        index += 1
+    if output is None:
+        return None
+    bindings: dict[str, str] = {}
+    for segment in segments:
+        match = _M_BINDING_RE.match(segment)
+        if match is None:
+            continue
+        name = _m_identifier_value(match.group("name"))
+        if name:
+            bindings[name] = segment[match.end():]
+    return bindings, output
+
+
+def _m_root_is_conditional(expr: str) -> bool:
+    code = _mask_m_noncode(expr)
+    return bool(
+        re.match(
+            r"\s*(?:\(\s*)*(?:if|try)\b",
+            code,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+_SAFE_SCALAR_TABLE_CALLBACK_ARGS = {
+    "Table.AddColumn": {2},
+    "Table.ReplaceValue": {1, 2, 3},
+    "Table.SelectRows": {1},
+    "Table.TransformColumns": {1},
+}
+
+
+def _m_safe_lambda_body_ranges(expr: str) -> list[tuple[int, int]]:
+    """Locate callbacks that cannot select a replacement output table.
+
+    Lambdas under generic invocation/list operators remain visible so a
+    table-producing callback cannot hide a PostgreSQL-vs-local branch.
+    """
+    code = list(_mask_m_noncode(expr))
+    code_text = "".join(code)
+    closers = {"(": ")", "[": "]", "{": "}"}
+    stack: list[tuple[str, str | None, int]] = []
+    ranges: list[tuple[int, int]] = []
+
+    def call_name(opener: int) -> str | None:
+        prefix = code_text[:opener]
+        match = re.search(r"([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\s*$", prefix)
+        return match.group(1) if match else None
+
+    def body_end(start: int, base_stack: list[tuple[str, str | None, int]]) -> int:
+        local = list(base_stack)
+        base_depth = len(local)
+        cursor = start
+        while cursor < len(code):
+            char = code[cursor]
+            if char in closers:
+                local.append(
+                    (closers[char], call_name(cursor) if char == "(" else None, cursor)
+                )
+            elif local and char == local[-1][0]:
+                if len(local) == base_depth:
+                    return cursor
+                local.pop()
+            elif char == "," and len(local) == base_depth:
+                return cursor
+            cursor += 1
+        return len(code)
+
+    def argument_index(opener: int, position: int) -> int:
+        nested: list[str] = []
+        argument = 0
+        cursor = opener + 1
+        while cursor < position:
+            char = code[cursor]
+            if char in closers:
+                nested.append(closers[char])
+            elif nested and char == nested[-1]:
+                nested.pop()
+            elif char == "," and not nested:
+                argument += 1
+            cursor += 1
+        return argument
+
+    index = 0
+    while index < len(code):
+        char = code[index]
+        if char in closers:
+            stack.append(
+                (closers[char], call_name(index) if char == "(" else None, index)
+            )
+            index += 1
+            continue
+        if stack and char == stack[-1][0]:
+            stack.pop()
+            index += 1
+            continue
+        is_each = _m_keyword_at(code_text, index, "each") and (
+            index == 0 or code[index - 1] != "."
+        )
+        is_arrow = index + 1 < len(code) and code[index:index + 2] == ["=", ">"]
+        if is_each or is_arrow:
+            start = index + (4 if is_each else 2)
+            containing = next(
+                (
+                    (name, opener)
+                    for closer, name, opener in reversed(stack)
+                    if closer == ")" and name
+                ),
+                None,
+            )
+            if containing is None:
+                index = start
+                continue
+            containing_call, containing_opener = containing
+            allowed_arguments = _SAFE_SCALAR_TABLE_CALLBACK_ARGS.get(containing_call)
+            if (
+                allowed_arguments is None
+                or argument_index(containing_opener, index) not in allowed_arguments
+            ):
+                index = start
+                continue
+            end = body_end(start, stack)
+            body = expr[start:end]
+            source_calls = (
+                "Value.NativeQuery",
+                "PostgreSQL.Database",
+                "Sql.Database",
+                "Sql.Databases",
+                "MySQL.Database",
+                "Oracle.Database",
+                "Odbc.DataSource",
+                "OleDb.DataSource",
+                "AnalysisServices.Database",
+                "AmazonRedshift.Database",
+                "Snowflake.Databases",
+                "GoogleBigQuery.Database",
+            )
+            if any(_m_function_call_offsets(body, name) for name in source_calls) or (
+                _m_navigation_records(body)
+            ):
+                index = start
+                continue
+            ranges.append((start, end))
+            for masked in range(start, end):
+                if code[masked] not in "\r\n":
+                    code[masked] = " "
+            index = end
+            continue
+        index += 1
+    return ranges
+
+
+def _mask_m_lambda_bodies(expr: str) -> str:
+    """Mask only proven scalar/row callbacks, never generic table lambdas."""
+    code = list(_mask_m_noncode(expr))
+    for start, end in _m_safe_lambda_body_ranges(expr):
+        for index in range(start, end):
+            if code[index] not in "\r\n":
+                code[index] = " "
+    return "".join(code)
+
+
+def _m_expression_has_conditional_selection(expr: str) -> bool:
+    searchable = _mask_m_lambda_bodies(expr)
+    return bool(
+        re.search(
+            r"(?:\bif\b[\s\S]*\bthen\b[\s\S]*\belse\b|"
+            r"\btry\b[\s\S]*\b(?:otherwise|catch)\b)",
+            searchable,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _m_referenced_identifiers(expr: str) -> set[str]:
+    """Return code identifiers, including Power Query's #"step name" form."""
+    identifiers: set[str] = set()
+    lambda_ranges = iter(_m_safe_lambda_body_ranges(expr))
+    current_lambda = next(lambda_ranges, None)
+    index = 0
+    line_comment = False
+    block_depth = 0
+    while index < len(expr):
+        while current_lambda is not None and index >= current_lambda[1]:
+            current_lambda = next(lambda_ranges, None)
+        if current_lambda is not None and current_lambda[0] <= index < current_lambda[1]:
+            index = current_lambda[1]
+            continue
+        if line_comment:
+            if expr[index] in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_depth:
+            if expr.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif expr.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if expr.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if expr.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+        if expr.startswith('#"', index):
+            decoded = _read_m_string(expr, index + 1)
+            if decoded is None:
+                break
+            identifiers.add(decoded[0])
+            index = decoded[1]
+            continue
+        if expr[index] == '"':
+            decoded = _read_m_string(expr, index)
+            index = decoded[1] if decoded is not None else len(expr)
+            continue
+        match = re.match(r"[A-Za-z_][\w]*", expr[index:])
+        if match:
+            identifiers.add(match.group(0))
+            index += len(match.group(0))
+            continue
+        index += 1
+    return identifiers
+
+
+def _m_has_conditional_output(expr: str) -> bool:
+    """Return whether a root conditional can select the reported output.
+
+    This follows top-level let bindings used by the final ``in`` expression,
+    but intentionally ignores nested row lambdas such as ``each if ...``.
+    Those transform one already identified source and must not hide normal
+    Power Query lineage.
+    """
+    parts = _m_top_level_let_parts(expr)
+    if parts is None:
+        return _m_root_is_conditional(expr)
+    bindings, output = parts
+
+    def depends_on_conditional(value: str, visited: set[str]) -> bool:
+        nested = _m_top_level_let_parts(value)
+        if nested is not None:
+            return _m_has_conditional_output(value)
+        if _m_expression_has_conditional_selection(value):
+            return True
+        for name in _m_referenced_identifiers(value):
+            if name in visited or name not in bindings:
+                continue
+            if depends_on_conditional(bindings[name], {*visited, name}):
+                return True
+        return False
+
+    return depends_on_conditional(output, set())
+
+
+def _extract_m_query(
+    expr: str,
+    *,
+    connector_args: list[str] | None = None,
+) -> str | None:
     """Return decoded native SQL from Value.NativeQuery or a Query option."""
-    native_args = _extract_function_args(expr, "Value.NativeQuery")
-    if len(native_args) >= 2:
-        native_query = _decode_m_string_literal(native_args[1])
-        if native_query is not None:
-            return native_query
-    return _extract_m_assignment_string(expr, "Query")
+    native_offsets = _m_function_call_offsets(expr, "Value.NativeQuery")
+    if native_offsets:
+        if len(native_offsets) != 1:
+            return None
+        native_args = _extract_function_args(
+            expr[native_offsets[0]:],
+            "Value.NativeQuery",
+        )
+        if len(native_args) >= 2:
+            return _decode_m_string_literal(native_args[1])
+        return None
+    if connector_args and len(connector_args) >= 3:
+        return _extract_m_assignment_string(connector_args[2], "Query")
+    if connector_args is None:
+        scoped_queries: list[str] = []
+        for connector_name in (
+            "PostgreSQL.Database",
+            "Sql.Database",
+            "MySQL.Database",
+            "Oracle.Database",
+            "AmazonRedshift.Database",
+        ):
+            offsets = _m_function_call_offsets(expr, connector_name)
+            if len(offsets) != 1:
+                continue
+            args = _extract_function_args(
+                expr[offsets[0]:],
+                connector_name,
+            )
+            if len(args) < 3:
+                continue
+            query = _extract_m_assignment_string(args[2], "Query")
+            if query is not None:
+                scoped_queries.append(query)
+        if len(scoped_queries) == 1:
+            return scoped_queries[0]
+    return None
 
 
 _SQL_IDENTIFIER = (
@@ -935,11 +1528,187 @@ def _extract_sql_relation(
     return next(iter(candidates.values()), None)
 
 
+def _m_matching_delimiter(text: str, opener_index: int) -> int | None:
+    """Return the matching M delimiter while ignoring strings/comments."""
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    if opener_index < 0 or opener_index >= len(text):
+        return None
+    opener = text[opener_index]
+    if opener not in pairs:
+        return None
+    stack = [pairs[opener]]
+    index = opener_index + 1
+    line_comment = False
+    block_depth = 0
+    while index < len(text):
+        if line_comment:
+            if text[index] in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_depth:
+            if text.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif text.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if text.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if text.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+        if text[index] == '"':
+            decoded = _read_m_string(text, index)
+            if decoded is None:
+                return None
+            index = decoded[1]
+            continue
+        if text[index] in pairs:
+            stack.append(pairs[text[index]])
+        elif text[index] == stack[-1]:
+            stack.pop()
+            if not stack:
+                return index
+        index += 1
+    return None
+
+
+def _m_navigation_records(expr: str) -> list[str | None]:
+    """Return executable ``{[...]}[Data]`` selector records only.
+
+    Scanning starts outside strings and comments, so a removed/commented
+    navigation step cannot become the report's physical source identity.
+    """
+    records: list[str | None] = []
+    index = 0
+    line_comment = False
+    block_depth = 0
+    while index < len(expr):
+        if line_comment:
+            if expr[index] in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_depth:
+            if expr.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif expr.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if expr.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if expr.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+        if expr[index] == '"':
+            decoded = _read_m_string(expr, index)
+            if decoded is None:
+                break
+            index = decoded[1]
+            continue
+        if expr[index] != "{":
+            index += 1
+            continue
+        selector_end = _m_matching_delimiter(expr, index)
+        if selector_end is None:
+            index += 1
+            continue
+        after = selector_end + 1
+        while after < len(expr) and expr[after].isspace():
+            after += 1
+        field_end = (
+            _m_matching_delimiter(expr, after)
+            if after < len(expr) and expr[after] == "["
+            else None
+        )
+        field_name = (
+            expr[after + 1:field_end].strip()
+            if field_end is not None
+            else ""
+        )
+        if field_name.casefold() == "data":
+            cursor = index + 1
+            while cursor < selector_end and expr[cursor].isspace():
+                cursor += 1
+            record_end = (
+                _m_matching_delimiter(expr, cursor)
+                if cursor < selector_end and expr[cursor] == "["
+                else None
+            )
+            record_tail = record_end + 1 if record_end is not None else cursor
+            while record_tail < selector_end and expr[record_tail].isspace():
+                record_tail += 1
+            records.append(
+                expr[cursor + 1:record_end]
+                if record_end is not None and record_tail == selector_end
+                else None
+            )
+            index = field_end + 1
+            continue
+        index += 1
+    return records
+
+
+def _extract_m_navigation_relation(expr: str) -> str | None:
+    """Return one distinct executable M navigation relation, or fail closed."""
+    candidates: dict[str, str] = {}
+    for record in _m_navigation_records(expr):
+        if record is None:
+            return None
+        schema_present = _m_assignment_value_offset(record, "Schema") is not None
+        item_present = _m_assignment_value_offset(record, "Item") is not None
+        name_present = _m_assignment_value_offset(record, "Name") is not None
+        schema = _extract_m_assignment_string(record, "Schema")
+        item = _extract_m_assignment_string(record, "Item")
+        name = _extract_m_assignment_string(record, "Name")
+        candidate = None
+        if schema_present or item_present:
+            # A selector with a dynamic or incomplete physical coordinate is
+            # a live unresolved branch. It must invalidate the whole source,
+            # not be ignored in favour of another literal selector.
+            if schema is None or item is None:
+                return None
+            schema_value = _navigation_identifier(schema)
+            relation_value = _navigation_identifier(item)
+            candidate = (
+                f"{schema_value}.{relation_value}"
+                if schema_value and relation_value
+                else None
+            )
+        elif name_present:
+            if name is None:
+                return None
+            candidate = _navigation_identifier(name)
+        validated = _validate_table_name(candidate)
+        if (schema_present or item_present or name_present) and not validated:
+            return None
+        if validated:
+            candidates[validated] = validated
+        if len(candidates) > 1:
+            return None
+    return next(iter(candidates.values()), None)
+
+
 def _extract_table_navigation(
     expr: str,
     *,
     decoded_sql: str | None = None,
     source_type: str | None = None,
+    allow_plain_sql: bool = True,
 ) -> str | None:
     """Extract the schema and table name from M navigation patterns.
 
@@ -956,42 +1725,23 @@ def _extract_table_navigation(
     never a parenthesised blob or filename. Callers treat None as
     "couldn't find a clean table" and degrade gracefully.
     """
-    # Pattern 1: Schema + Item (most common for SQL Server, PostgreSQL)
-    match = re.search(r'Schema\s*=\s*"([^"]+)"\s*,\s*Item\s*=\s*"([^"]+)"', expr)
-    if match:
-        schema = _navigation_identifier(match.group(1))
-        relation = _navigation_identifier(match.group(2))
-        candidate = f"{schema}.{relation}" if schema and relation else None
-        if (v := _validate_table_name(candidate)):
-            return v
+    # A decoded native query is the executable relation source. Do not let an
+    # unrelated navigation step elsewhere in the M expression override it.
+    if decoded_sql is not None:
+        return _extract_sql_relation(decoded_sql, source_type=source_type)
 
-    # Pattern 2: Item + Schema (reversed order)
-    match = re.search(r'Item\s*=\s*"([^"]+)"\s*,\s*Schema\s*=\s*"([^"]+)"', expr)
-    if match:
-        schema = _navigation_identifier(match.group(2))
-        relation = _navigation_identifier(match.group(1))
-        candidate = f"{schema}.{relation}" if schema and relation else None
-        if (v := _validate_table_name(candidate)):
-            return v
-
-    # Pattern 3: Name + Kind="Table" (PostgreSQL often uses this; Kind gate
-    # keeps us from matching navigation into views, functions, or columns)
-    match = re.search(r'Name\s*=\s*"([^"]+)"\s*,\s*Kind\s*=\s*"Table"', expr)
-    if match:
-        if (v := _validate_table_name(_navigation_identifier(match.group(1)))):
-            return v
-
-    # Pattern 4: Just Name= - only accept if it passes strict validation.
-    # Name="..." is too generic in M (it can reference parameters, columns,
-    # Power Query steps, etc.), so we lean hard on the validator here.
-    for m in re.finditer(r'Name\s*=\s*"([^"]+)"', expr):
-        if (v := _validate_table_name(m.group(1))):
-            return v
+    # Executable navigation selectors are scanned lexically. Multiple
+    # distinct live targets are conditional/ambiguous and therefore return
+    # no physical identity; repeated references to one target remain safe.
+    if relation := _extract_m_navigation_relation(expr):
+        return relation
 
     # Pattern 5: Native SQL. Prefer the already decoded query, then decode it
     # here for direct helper callers, and finally allow plain SQL test/import
     # callers. Parsing raw M first would misread doubled quote delimiters.
-    sql_candidates = [decoded_sql, _extract_m_query(expr), expr]
+    sql_candidates = [_extract_m_query(expr)]
+    if allow_plain_sql:
+        sql_candidates.append(expr)
     seen: set[str] = set()
     for sql in sql_candidates:
         if not sql or sql in seen:
@@ -1004,48 +1754,178 @@ def _extract_table_navigation(
 
 
 def _extract_function_args(expr: str, func_name: str) -> list[str]:
-    """Extract top-level arguments from a function call in M expression."""
-    pattern = re.escape(func_name) + r"\s*\("
-    match = re.search(pattern, expr)
-    if not match:
+    """Extract top-level arguments from one real M function call.
+
+    M function arguments can contain records (``[]``), lists (``{}``),
+    nested calls, strings, and comments. Only a comma whose sole open
+    delimiter is the function's outer parenthesis separates arguments.
+    """
+    offsets = _m_function_call_offsets(expr, func_name)
+    if not offsets:
+        return []
+    call_offset = offsets[0]
+    i = call_offset + len(func_name)
+    while i < len(expr) and expr[i].isspace():
+        i += 1
+    if i >= len(expr) or expr[i] != "(":
         return []
 
-    start = match.end()
-    depth = 1
-    args = []
-    current = []
-
-    i = start
-    while i < len(expr) and depth > 0:
+    closers = {"(": ")", "[": "]", "{": "}"}
+    stack = [")"]
+    args: list[str] = []
+    current: list[str] = []
+    line_comment = False
+    block_depth = 0
+    i += 1
+    while i < len(expr) and stack:
         ch = expr[i]
-        if ch == "(":
-            depth += 1
+        if line_comment:
             current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                args.append("".join(current).strip())
+            if ch in "\r\n":
+                line_comment = False
+            i += 1
+            continue
+        if block_depth:
+            if expr.startswith("/*", i):
+                current.append("/*")
+                block_depth += 1
+                i += 2
+            elif expr.startswith("*/", i):
+                current.append("*/")
+                block_depth -= 1
+                i += 2
             else:
                 current.append(ch)
-        elif ch == "," and depth == 1:
-            args.append("".join(current).strip())
-            current = []
-        elif ch == '"':
+                i += 1
+            continue
+        if expr.startswith("//", i):
+            current.append("//")
+            line_comment = True
+            i += 2
+            continue
+        if expr.startswith("/*", i):
+            current.append("/*")
+            block_depth = 1
+            i += 2
+            continue
+        if ch == '"':
             # Preserve the raw literal for callers while skipping commas and
-            # parentheses inside it according to M's doubled-quote rules.
+            # delimiters inside it according to M's doubled-quote rules.
             decoded = _read_m_string(expr, i)
             if decoded is None:
                 current.append(expr[i:])
-                i = len(expr)
                 break
             end = decoded[1]
             current.append(expr[i:end])
-            i = end - 1
+            i = end
+            continue
+        if ch in closers:
+            stack.append(closers[ch])
+            current.append(ch)
+        elif ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                args.append("".join(current).strip())
+                break
+            current.append(ch)
+        elif ch == "," and len(stack) == 1:
+            args.append("".join(current).strip())
+            current = []
         else:
             current.append(ch)
         i += 1
 
     return args
+
+
+def _m_function_call_offsets(expression: str, needle: str) -> list[int]:
+    """Locate real M function calls outside strings and nested comments."""
+    offsets: list[int] = []
+    index = 0
+    in_string = False
+    line_comment = False
+    block_depth = 0
+    while index < len(expression):
+        if line_comment:
+            if expression[index] in "\r\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_depth:
+            if expression.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif expression.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if in_string:
+            if expression[index] == '"':
+                if index + 1 < len(expression) and expression[index + 1] == '"':
+                    index += 2
+                    continue
+                in_string = False
+            index += 1
+            continue
+        if expression.startswith("//", index):
+            line_comment = True
+            index += 2
+            continue
+        if expression.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+        if expression[index] == '"':
+            in_string = True
+            index += 1
+            continue
+        if expression.startswith(needle, index):
+            before_ok = index == 0 or not (
+                expression[index - 1].isalnum()
+                or expression[index - 1] in {"_", "."}
+            )
+            if not before_ok:
+                index += 1
+                continue
+            after = index + len(needle)
+            cursor = after
+            while cursor < len(expression) and expression[cursor].isspace():
+                cursor += 1
+            if cursor < len(expression) and expression[cursor] == "(":
+                offsets.append(index)
+            index = after
+            continue
+        index += 1
+    return offsets
+
+
+def _postgres_call_offsets(expression: str) -> list[int]:
+    """Locate real PostgreSQL connector calls outside M strings/comments."""
+    return _m_function_call_offsets(expression, "PostgreSQL.Database")
+
+
+def literal_postgres_connection(expression: str) -> tuple[str, str] | None:
+    """Return one literal PostgreSQL server/database pair, never a branch."""
+    offsets = _postgres_call_offsets(str(expression or ""))
+    if len(offsets) != 1:
+        return None
+    args = _extract_function_args(
+        str(expression or "")[offsets[0]:],
+        "PostgreSQL.Database",
+    )
+    if len(args) < 2:
+        return None
+    server = _decode_m_string_literal(args[0])
+    database = _decode_m_string_literal(args[1])
+    if server is None or database is None:
+        return None
+    server = server.strip()
+    database = database.strip()
+    if not server or not database:
+        return None
+    return server, database
 
 
 def _unquote(s: str) -> str:
@@ -1085,6 +1965,10 @@ def resolve_parameters(source: SourceInfo, params: dict[str, str]) -> SourceInfo
     if source.source_type in source.DB_TYPES:
         if source.server and source.server in params:
             source.server = params[source.server]
+            if source.source_type == "postgresql":
+                source.postgres_server_exact = True
         if source.database and source.database in params:
             source.database = params[source.database]
+            if source.source_type == "postgresql":
+                source.postgres_database_exact = True
     return source

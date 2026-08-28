@@ -138,7 +138,8 @@ def component_result(
         definition_status = normalize_scan_status(payload.get("definition_status"))
         database_results = payload.get("databases")
         database_warning = isinstance(database_results, Mapping) and any(
-            normalize_scan_status(item.get("status")) not in {"completed", "not_requested"}
+            normalize_scan_status(item.get("status"))
+            not in {"completed", "not_requested", "superseded"}
             for item in database_results.values()
             if isinstance(item, Mapping)
         )

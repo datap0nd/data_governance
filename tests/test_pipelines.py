@@ -178,6 +178,32 @@ def test_inflow_outflow_plan_selects_both_flows_and_orders_mv(pipeline_db, monke
     assert plan["powerbi"]["dataset_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_plan_never_refreshes_materialized_view_on_same_named_wrong_endpoint(
+    pipeline_db,
+    monkeypatch,
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    monkeypatch.setattr(pipelines, "UPLOAD_PGPORT", "5433")
+    with get_db() as db:
+        # Flow outputs are genuinely on the configured non-default endpoint;
+        # the report MV remains on the same hostname's default-port cluster.
+        db.execute(
+            """UPDATE source_postgres_identities
+                  SET server_name='warehouse.example.test:5433'
+                WHERE source_id IN (11, 12, 99)"""
+        )
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert plan["materialized_views"] == []
+    assert any(
+        "Materialized view 'bi_reporting.inflow_outflow_mv' is on "
+        "warehouse.example.test, but the Pipeline refresh connection targets "
+        "warehouse.example.test:5433" in blocker
+        for blocker in plan["blockers"]
+    )
+
+
 def test_ordinary_view_in_report_lineage_is_not_refreshed_as_mv(
     pipeline_db, monkeypatch
 ):
@@ -318,6 +344,57 @@ def test_plan_blocks_standalone_run_on_same_physical_target(pipeline_db, monkeyp
         f"standalone inflow writer' run #{active_run_id}" in blocker
         for blocker in plan["blockers"]
     )
+
+
+def test_legacy_host_only_active_job_matches_current_non_default_port(
+    pipeline_db,
+    monkeypatch,
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    monkeypatch.setattr(pipelines, "UPLOAD_PGPORT", "5433")
+    legacy_job = pipelines._json(
+        {
+            "sql_handoff": {
+                "enabled": True,
+                "server": "warehouse.example.test",
+                "database": "analytics",
+                "schema": "bi_reporting",
+                "table": "inflow",
+            }
+        }
+    )
+    current_key = pipelines._flow_target_resource_key(
+        database="analytics",
+        schema="bi_reporting",
+        relation="inflow",
+    )
+
+    with get_db() as db:
+        cursor = db.execute(
+            """INSERT INTO flow_runs(flow_id, trigger_type, status, job_json)
+               VALUES (20, 'manual', 'running', ?)""",
+            (legacy_job,),
+        )
+        active_run_id = int(cursor.lastrowid)
+        active = pipelines.active_flow_target_run(db, current_key)
+
+    assert current_key == "warehouse.example.test:5433|analytics|bi_reporting|inflow"
+    assert pipelines.flow_target_resource_key_from_job(legacy_job) == current_key
+    assert active is not None
+    assert int(active["id"]) == active_run_id
+
+    explicit_other_port = pipelines.flow_target_resource_key_from_job(
+        {
+            "sql_handoff": {
+                "enabled": True,
+                "server": "warehouse.example.test:5434",
+                "database": "analytics",
+                "schema": "bi_reporting",
+                "table": "inflow",
+            }
+        }
+    )
+    assert explicit_other_port != current_key
 
 
 def test_plan_uses_active_run_job_target_after_flow_configuration_changes(
@@ -622,6 +699,7 @@ def test_recipient_falls_back_only_to_unique_valid_requester(pipeline_db):
 
 
 def test_mv_stage_commits_each_view_and_reports_partial_success(pipeline_db, monkeypatch):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "warehouse.example.test")
     with get_db() as db:
         db.execute("INSERT INTO reports(id, name) VALUES (1, 'MV test')")
         cursor = db.execute(
@@ -637,7 +715,12 @@ def test_mv_stage_commits_each_view_and_reports_partial_success(pipeline_db, mon
                    VALUES (?, 'mv', ?, ?, ?)""",
                 (
                     run_id, sequence, relation,
-                    pipelines._json({"database": "analytics", "schema": "bi", "relation": relation}),
+                    pipelines._json({
+                        "server": "warehouse.example.test",
+                        "database": "analytics",
+                        "schema": "bi",
+                        "relation": relation,
+                    }),
                 ),
             )
 
@@ -688,6 +771,60 @@ def test_mv_stage_commits_each_view_and_reports_partial_success(pipeline_db, mon
     assert "lock timeout" in steps[1]["error"]
     assert events.count("COMMIT") == 2  # first refresh commit, then its separate COUNT(*)
     assert "ROLLBACK" in events
+
+
+def test_mv_stage_refuses_queued_job_after_physical_endpoint_changes(
+    pipeline_db,
+    monkeypatch,
+):
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "new.internal")
+    monkeypatch.setattr(pipelines, "UPLOAD_PGPORT", "5433")
+    with get_db() as db:
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'MV endpoint test')")
+        cursor = db.execute(
+            """INSERT INTO pipeline_runs
+                   (report_id, status, stage, plan_hash, plan_json, dataset_id)
+               VALUES (1, 'refreshing_mvs', 'refreshing_mvs', 'hash', '{}', 'dataset')"""
+        )
+        run_id = int(cursor.lastrowid)
+        db.execute(
+            """INSERT INTO pipeline_run_steps
+                   (run_id, step_type, sequence_no, entity_name, details_json)
+               VALUES (?, 'mv', 0, 'inflow_outflow_mv', ?)""",
+            (
+                run_id,
+                pipelines._json({
+                    "server": "old.internal",
+                    "database": "analytics",
+                    "schema": "bi",
+                    "relation": "inflow_outflow_mv",
+                }),
+            ),
+        )
+
+    monkeypatch.setattr(
+        pipelines,
+        "_engine",
+        lambda _database: (_ for _ in ()).throw(
+            AssertionError("wrong endpoint must never be opened")
+        ),
+    )
+
+    pipelines._run_mv_stage(run_id)
+
+    with get_db() as db:
+        run = db.execute(
+            "SELECT status, error FROM pipeline_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        step = db.execute(
+            "SELECT status, error FROM pipeline_run_steps WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+    assert run["status"] == "failed"
+    assert step["status"] == "failed"
+    assert "endpoint changed" in run["error"]
+    assert "endpoint changed" in step["error"]
 
 
 def test_restart_during_mv_marks_unknown_and_never_replays(pipeline_db, monkeypatch):

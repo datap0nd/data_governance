@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from app.config import DB_PATH, UPLOAD_PGHOST
+from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
@@ -32,7 +32,7 @@ from app.settings import (
     set_overall_refresh_time,
     set_setting,
 )
-from app.source_identity import reconcile_all_flow_targets
+from app.source_identity import postgres_server_identity, reconcile_all_flow_targets
 from app.scanner.lifecycle import (
     recover_interrupted_scan_runs,
 )
@@ -616,7 +616,10 @@ def _configure_scheduler_jobs() -> dict:
 def _reconcile_startup_flow_targets() -> dict:
     """Repair uniquely resolvable legacy Flow links after schema migration."""
     with get_db() as db:
-        return reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
+        return reconcile_all_flow_targets(
+            db,
+            server=postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT),
+        )
 
 
 def _recover_startup_scan_runs() -> int:

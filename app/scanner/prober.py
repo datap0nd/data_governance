@@ -24,15 +24,22 @@ from xml.etree import ElementTree as ET
 
 from app.config import (
     PGHOST,
+    PGPORT,
     PGUSER,
     PGPASSWORD,
     PGDATABASE,
     PG_SCAN_STATEMENT_TIMEOUT_SECONDS,
+    UPLOAD_PGDATABASE,
+    UPLOAD_PGHOST,
+    UPLOAD_PGPASSWORD,
+    UPLOAD_PGPORT,
+    UPLOAD_PGUSER,
 )
 from app.database import get_db
 from app.scanner import jobs as scanner_jobs
 from app.scanner.control import assert_not_cancelled, current_cancel_generation
 from app.scanner.tmdl_parser import LOCAL_USER_PATH
+from app.source_identity import normalize_server, postgres_server_identity
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +397,7 @@ def _get_pg_connection(database: str | None = None):
         import psycopg2
         conn = psycopg2.connect(
             host=PGHOST,
+            port=int(PGPORT),
             user=PGUSER,
             password=PGPASSWORD,
             database=(database or PGDATABASE),
@@ -404,6 +412,41 @@ def _get_pg_connection(database: str | None = None):
         return conn
     except Exception as e:
         logger.warning("PostgreSQL connection failed: %s", e)
+        return None
+
+
+def _get_flow_pg_connection(database: str | None = None):
+    """Get the Flow endpoint in a forced read-only PostgreSQL session."""
+    if not UPLOAD_PGHOST:
+        return None
+    connection = None
+    try:
+        import psycopg2
+
+        kwargs = {
+            "host": UPLOAD_PGHOST,
+            "port": int(UPLOAD_PGPORT),
+            "database": database or UPLOAD_PGDATABASE,
+            "connect_timeout": 10,
+            "options": (
+                f"-c statement_timeout={int(PG_SCAN_STATEMENT_TIMEOUT_SECONDS) * 1000} "
+                "-c lock_timeout=30000"
+            ),
+        }
+        if UPLOAD_PGUSER:
+            kwargs["user"] = UPLOAD_PGUSER
+        if UPLOAD_PGPASSWORD:
+            kwargs["password"] = UPLOAD_PGPASSWORD
+        connection = psycopg2.connect(**kwargs)
+        connection.set_session(readonly=True, autocommit=True)
+        return connection
+    except Exception as e:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        logger.warning("Flow PostgreSQL probe connection failed: %s", e)
         return None
 
 
@@ -433,6 +476,34 @@ def _parse_pg_table_ref(connection_info: str, source_name: str):
     return None
 
 
+def _pg_source_value(source, key: str, default=None):
+    try:
+        value = source[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def _record_unknown_pg_probe(
+    db,
+    source,
+    now: str,
+    statuses: dict,
+    log_lines: list[str],
+    message: str,
+    log_reason: str,
+) -> None:
+    db.execute(
+        """INSERT INTO source_probes
+               (source_id, probed_at, status, message)
+           VALUES (?, ?, 'unknown', ?)""",
+        (int(_pg_source_value(source, "id")), now, message),
+    )
+    statuses["unknown"] = statuses.get("unknown", 0) + 1
+    short = str(_pg_source_value(source, "name", "PostgreSQL source"))
+    log_lines.append(f"PG: {short} - unknown ({log_reason})")
+
+
 def _probe_pg_sources(
     db,
     pg_sources,
@@ -453,175 +524,249 @@ def _probe_pg_sources(
     Returns dict of status counts.
     """
     statuses = {"fresh": 0, "outdated": 0, "unknown": 0, "no_rule": 0}
-    pg_conn = _get_pg_connection()
-    # track_commit_timestamp is a server-wide setting that is off by default.
-    # Once one probe reports it disabled, every other table on this server
-    # would fail the same way, so fall back to row-count-only probing.
-    commit_timestamps_available = True
+    total_sources = len(pg_sources)
+    primary_server = postgres_server_identity(PGHOST, PGPORT)
+    flow_server = postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
+    groups: dict[tuple[str, str, str], list] = {}
+    unassigned: list[tuple[object, str, str]] = []
 
-    if pg_conn is None:
-        for index, src in enumerate(pg_sources, start=1):
-            assert_not_cancelled(cancel_generation, "Source probe")
-            scanner_jobs.heartbeat(
-                operation_id,
-                current_step="Probing PostgreSQL sources",
-                message=f"PostgreSQL credentials unavailable for {src['name']}.",
-                progress_current=index,
-                progress_total=len(pg_sources),
-                db=db,
+    for source in pg_sources:
+        server = normalize_server(_pg_source_value(source, "server_name", ""))
+        database = str(_pg_source_value(source, "database_name", "")).strip()
+        schema = str(_pg_source_value(source, "schema_name", "")).strip()
+        relation = str(_pg_source_value(source, "relation_name", "")).strip()
+        if not server or not database or not schema or not relation:
+            unassigned.append(
+                (
+                    source,
+                    "Structured PostgreSQL identity is unavailable; source was not probed.",
+                    "missing exact identity",
+                )
             )
-            db.execute(
-                "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-                (src["id"], now, "PostgreSQL credentials not configured"),
+            continue
+        if primary_server and server == primary_server:
+            profile = "primary"
+        elif flow_server and server == flow_server:
+            profile = "flow"
+        else:
+            unassigned.append(
+                (
+                    source,
+                    "PostgreSQL endpoint is not configured for exact read-only probing.",
+                    "unconfigured endpoint",
+                )
             )
-            statuses["unknown"] += 1
-            short = src["name"].replace("\\", "/").split("/")[-1]
-            log_lines.append(f"PG: {short} - unknown (no credentials)")
-            db.commit()
-        return statuses
+            continue
+        groups.setdefault((profile, server, database), []).append(source)
+
+    progress = 0
+    for source, message, reason in unassigned:
+        assert_not_cancelled(cancel_generation, "Source probe")
+        _record_unknown_pg_probe(
+            db,
+            source,
+            now,
+            statuses,
+            log_lines,
+            message,
+            reason,
+        )
+        progress += 1
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Probing PostgreSQL sources",
+            message=f"Skipped {_pg_source_value(source, 'name', 'PostgreSQL source')} safely.",
+            progress_current=progress,
+            progress_total=total_sources,
+            db=db,
+        )
+        db.commit()
 
     from psycopg2 import sql
 
-    try:
-        pg_cur = pg_conn.cursor()
+    for (profile, server, database), sources in groups.items():
+        assert_not_cancelled(cancel_generation, "Source probe")
+        if profile == "primary":
+            pg_conn = _get_pg_connection(database=database)
+            if pg_conn is None and flow_server and server == flow_server:
+                pg_conn = _get_flow_pg_connection(database=database)
+        else:
+            pg_conn = _get_flow_pg_connection(database=database)
 
-        for index, src in enumerate(pg_sources, start=1):
-            assert_not_cancelled(cancel_generation, "Source probe")
-            scanner_jobs.heartbeat(
-                operation_id,
-                current_step="Probing PostgreSQL sources",
-                message=f"Checking {src['name']} (read-only).",
-                progress_current=index - 1,
-                progress_total=len(pg_sources),
-                db=db,
-            )
-            # Publish the phase before the bounded PostgreSQL statement begins.
-            db.commit()
-            rule = _rule_for_source(src)
-            parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
-
-            if not parsed:
-                db.execute(
-                    "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-                    (src["id"], now, f"Cannot parse table reference: {src['connection_info']}"),
+        if pg_conn is None:
+            for source in sources:
+                _record_unknown_pg_probe(
+                    db,
+                    source,
+                    now,
+                    statuses,
+                    log_lines,
+                    "PostgreSQL credentials are unavailable for this exact endpoint/database.",
+                    "no exact credentials",
                 )
-                statuses["unknown"] += 1
-                short = src["name"].replace("\\", "/").split("/")[-1]
-                log_lines.append(f"PG: {short} - unknown (bad ref)")
-                continue
-
-            schema, table = parsed
-            short = f"{schema}.{table}"
-            previous_row_count = _latest_source_row_count(db, src["id"])
-
-            try:
-                # READ-ONLY: get last write time via track_commit_timestamp.
-                # Identifiers come from scanned report metadata, so they are
-                # composed with sql.Identifier rather than interpolated.
-                table_ref = sql.SQL("{}.{}").format(
-                    sql.Identifier(schema), sql.Identifier(table),
+                progress += 1
+                scanner_jobs.heartbeat(
+                    operation_id,
+                    current_step="Probing PostgreSQL sources",
+                    message=f"Credentials unavailable for {_pg_source_value(source, 'name', 'PostgreSQL source')}.",
+                    progress_current=progress,
+                    progress_total=total_sources,
+                    db=db,
                 )
-                row = None
-                if commit_timestamps_available:
-                    try:
-                        pg_cur.execute(
-                            sql.SQL(
-                                "SELECT MAX(pg_xact_commit_timestamp(xmin)) AS last_write, "
-                                "COUNT(*) AS row_count FROM {}"
-                            ).format(table_ref)
-                        )
-                        row = pg_cur.fetchone()
-                    except Exception as e:
-                        if "track_commit_timestamp" not in str(e):
-                            raise
-                        commit_timestamps_available = False
-                        log_lines.append(
-                            "PG: track_commit_timestamp is disabled on the server; "
-                            "probing row counts only"
-                        )
-                if not commit_timestamps_available:
-                    # READ-ONLY fallback: no per-row commit timestamps, but the
-                    # row count still powers empty-source alerts and history.
-                    pg_cur.execute(
-                        sql.SQL("SELECT COUNT(*) AS row_count FROM {}").format(table_ref)
-                    )
-                    count_row = pg_cur.fetchone()
-                    row = None if count_row is None else (None, count_row[0])
+                db.commit()
+            continue
 
-                if row is None:
-                    db.execute(
-                        "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-                        (src["id"], now, f"Table not found: {short}"),
-                    )
-                    statuses["unknown"] += 1
-                    log_lines.append(f"PG: {short} - unknown (not found)")
-                    continue
+        # track_commit_timestamp is server-wide, but keep the fallback scoped
+        # to this exact connection rather than leaking it across endpoints.
+        commit_timestamps_available = True
+        try:
+            pg_cur = pg_conn.cursor()
+            for source in sources:
+                assert_not_cancelled(cancel_generation, "Source probe")
+                source_id = int(_pg_source_value(source, "id"))
+                source_name = str(_pg_source_value(source, "name", "PostgreSQL source"))
+                schema = str(_pg_source_value(source, "schema_name"))
+                table = str(_pg_source_value(source, "relation_name"))
+                short = f"{schema}.{table}"
+                scanner_jobs.heartbeat(
+                    operation_id,
+                    current_step="Probing PostgreSQL sources",
+                    message=f"Checking {source_name} in {database} (read-only).",
+                    progress_current=progress,
+                    progress_total=total_sources,
+                    db=db,
+                )
+                db.commit()
+                rule = _rule_for_source(source)
+                previous_row_count = _latest_source_row_count(db, source_id)
 
-                last_write, row_count = row
-
-                if last_write:
-                    if last_write.tzinfo is None:
-                        last_write = last_write.replace(tzinfo=timezone.utc)
-                    latest_iso = last_write.isoformat()
-                    status = _compute_status_for_rule(latest_iso, rule)
-                    msg = f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} ({row_count:,} rows)"
-                    if status == "no_rule":
-                        msg += " (no freshness rule set)"
-                    elif rule.get("description"):
-                        msg += f" ({rule['description']})"
-                    db.execute(
-                        "INSERT INTO source_probes (source_id, probed_at, last_data_at, row_count, status, message) VALUES (?, ?, ?, ?, ?, ?)",
-                        (src["id"], now, latest_iso, row_count, status, msg),
+                try:
+                    table_ref = sql.SQL("{}.{}").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(table),
                     )
-                    _create_empty_source_alert(db, src["id"], previous_row_count, row_count, now)
-                else:
-                    # Table exists but empty or no commit timestamps
-                    status = "unknown"
+                    row = None
                     if commit_timestamps_available:
-                        msg = f"No commit timestamps ({row_count:,} rows)"
-                    else:
-                        msg = (
-                            "track_commit_timestamp disabled on server; "
-                            f"row count only ({row_count:,} rows)"
+                        try:
+                            pg_cur.execute(
+                                sql.SQL(
+                                    "SELECT MAX(pg_xact_commit_timestamp(xmin)) AS last_write, "
+                                    "COUNT(*) AS row_count FROM {}"
+                                ).format(table_ref)
+                            )
+                            row = pg_cur.fetchone()
+                        except Exception as e:
+                            if "track_commit_timestamp" not in str(e):
+                                raise
+                            commit_timestamps_available = False
+                            log_lines.append(
+                                f"PG: {server}/{database} has track_commit_timestamp "
+                                "disabled; probing row counts only"
+                            )
+                    if not commit_timestamps_available:
+                        pg_cur.execute(
+                            sql.SQL("SELECT COUNT(*) AS row_count FROM {}").format(
+                                table_ref
+                            )
                         )
-                    db.execute(
-                        "INSERT INTO source_probes (source_id, probed_at, row_count, status, message) VALUES (?, ?, ?, 'unknown', ?)",
-                        (src["id"], now, row_count, msg),
+                        count_row = pg_cur.fetchone()
+                        row = None if count_row is None else (None, count_row[0])
+
+                    if row is None:
+                        _record_unknown_pg_probe(
+                            db,
+                            source,
+                            now,
+                            statuses,
+                            log_lines,
+                            f"Table not found on exact target: {short}",
+                            "not found",
+                        )
+                    else:
+                        last_write, row_count = row
+                        if last_write:
+                            if last_write.tzinfo is None:
+                                last_write = last_write.replace(tzinfo=timezone.utc)
+                            latest_iso = last_write.isoformat()
+                            status = _compute_status_for_rule(latest_iso, rule)
+                            msg = (
+                                f"Last write: {last_write.strftime('%Y-%m-%d %H:%M')} "
+                                f"({row_count:,} rows)"
+                            )
+                            if status == "no_rule":
+                                msg += " (no freshness rule set)"
+                            elif rule.get("description"):
+                                msg += f" ({rule['description']})"
+                            db.execute(
+                                """INSERT INTO source_probes
+                                       (source_id, probed_at, last_data_at, row_count,
+                                        status, message)
+                                   VALUES (?, ?, ?, ?, ?, ?)""",
+                                (source_id, now, latest_iso, row_count, status, msg),
+                            )
+                        else:
+                            status = "unknown"
+                            msg = (
+                                f"No commit timestamps ({row_count:,} rows)"
+                                if commit_timestamps_available
+                                else "track_commit_timestamp disabled on server; "
+                                f"row count only ({row_count:,} rows)"
+                            )
+                            db.execute(
+                                """INSERT INTO source_probes
+                                       (source_id, probed_at, row_count, status, message)
+                                   VALUES (?, ?, ?, 'unknown', ?)""",
+                                (source_id, now, row_count, msg),
+                            )
+                        _create_empty_source_alert(
+                            db,
+                            source_id,
+                            previous_row_count,
+                            row_count,
+                            now,
+                        )
+                        statuses[status] = statuses.get(status, 0) + 1
+                        _create_action_and_alert(
+                            db,
+                            source_id,
+                            status,
+                            now,
+                            rule.get("description"),
+                        )
+                        log_lines.append(f"PG: {database}/{short} - {status} ({msg})")
+                except Exception as e:
+                    logger.warning(
+                        "PG probe failed for %s/%s: %s",
+                        database,
+                        short,
+                        e,
                     )
-                    _create_empty_source_alert(db, src["id"], previous_row_count, row_count, now)
+                    _record_unknown_pg_probe(
+                        db,
+                        source,
+                        now,
+                        statuses,
+                        log_lines,
+                        f"Query failed on exact target: {e}",
+                        "query failed",
+                    )
 
-                statuses[status] = statuses.get(status, 0) + 1
-                _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
-                log_lines.append(f"PG: {short} - {status} ({msg})")
-
-            except Exception as e:
-                logger.warning("PG probe failed for %s: %s", short, e)
-                db.execute(
-                    "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
-                    (src["id"], now, f"Query failed: {e}"),
+                assert_not_cancelled(cancel_generation, "Source probe")
+                progress += 1
+                scanner_jobs.heartbeat(
+                    operation_id,
+                    current_step="Probing PostgreSQL sources",
+                    message=f"Finished {database}/{short}.",
+                    progress_current=progress,
+                    progress_total=total_sources,
+                    db=db,
                 )
-                statuses["unknown"] += 1
-                log_lines.append(f"PG: {short} - unknown (error: {e})")
+                db.commit()
+        finally:
+            pg_conn.close()
 
-            assert_not_cancelled(cancel_generation, "Source probe")
-            scanner_jobs.heartbeat(
-                operation_id,
-                current_step="Probing PostgreSQL sources",
-                message=f"Finished {short}.",
-                progress_current=index,
-                progress_total=len(pg_sources),
-                db=db,
-            )
-            db.commit()
-
-    finally:
-        pg_conn.close()
-
-    # Publish a final source result even when its branch used an early continue,
-    # but never after Stop was requested during the last PostgreSQL query.
     assert_not_cancelled(cancel_generation, "Source probe")
     db.commit()
-
     return statuses
 
 
@@ -1200,10 +1345,15 @@ def run_probe(
 
         # 2. Probe PostgreSQL sources (READ-ONLY)
         pg_sources = db.execute(
-            """SELECT id, name, type, connection_info, custom_fresh_days,
-                      freshness_rule_type, freshness_schedule_days
-               FROM sources WHERE type = 'postgresql'
-                 AND COALESCE(archived, 0) = 0"""
+            """SELECT s.id, s.name, s.type, s.connection_info,
+                      s.custom_fresh_days, s.freshness_rule_type,
+                      s.freshness_schedule_days,
+                      spi.server_name, spi.database_name, spi.schema_name,
+                      spi.relation_name, spi.relation_kind
+                 FROM sources s
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE s.type = 'postgresql'
+                  AND COALESCE(s.archived, 0) = 0"""
         ).fetchall()
 
         if pg_sources:

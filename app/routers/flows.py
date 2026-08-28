@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app.config import DB_PATH, UPLOAD_PGHOST
+from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
 from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
@@ -29,7 +29,16 @@ from app.flow_local_runner import (
 from app.flow_sql import configuration_status as sql_configuration_status, discover_catalog as discover_sql_catalog
 from app.routers.eventlog import get_actor, log_event
 from app.scanner.findings import sync_managed_actions
-from app.source_identity import exact_identity_rows, flow_link_status, normalize_server
+from app.source_identity import (
+    exact_identity_rows,
+    flow_link_status,
+    normalize_server,
+    postgres_server_identity,
+)
+
+
+def _flow_server_identity() -> str:
+    return postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
@@ -999,7 +1008,7 @@ def _flow_out(db, flow_id: int) -> dict:
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
-    link = flow_link_status(db, row, server=UPLOAD_PGHOST)
+    link = flow_link_status(db, row, server=_flow_server_identity())
     # Keep persisted diagnostic evidence separate from the exact target a
     # preview or run may safely use.
     result["sql_target_source_id"] = link.get("persisted_source_id")
@@ -1151,7 +1160,7 @@ def _resolve_sql_target_source(
         return None
     matches = exact_identity_rows(
         db,
-        server=UPLOAD_PGHOST,
+        server=_flow_server_identity(),
         database=body.sql_database,
         schema=body.sql_schema,
         relation=body.sql_table,
@@ -1314,7 +1323,7 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
         },
         "sql_handoff": {
             "enabled": bool(flow.get("sql_handoff_enabled")),
-            "server": normalize_server(UPLOAD_PGHOST),
+            "server": _flow_server_identity(),
             "mode": flow.get("sql_mode"),
             "uppercase": bool(flow.get("sql_uppercase")),
             "database": flow.get("sql_database"),

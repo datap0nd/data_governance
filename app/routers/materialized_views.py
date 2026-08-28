@@ -5,10 +5,10 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from app import flow_sql
-from app.config import UPLOAD_PGHOST
+from app.config import UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.routers.eventlog import get_actor, log_event
-from app.source_identity import normalize_server
+from app.source_identity import normalize_server, postgres_server_identity
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,10 @@ def _materialized_view_identity(source_id: int) -> dict:
         )
     if row["relation_kind"] != "materialized_view":
         raise HTTPException(400, "The selected source is not a materialized view.")
-    if normalize_server(row["server_name"]) != normalize_server(UPLOAD_PGHOST):
+    if normalize_server(row["server_name"]) != postgres_server_identity(
+        UPLOAD_PGHOST,
+        UPLOAD_PGPORT,
+    ):
         raise HTTPException(
             400,
             "This materialized view is on a different PostgreSQL server than the configured Flow SQL connection.",

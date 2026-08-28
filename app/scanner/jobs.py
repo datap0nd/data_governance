@@ -39,6 +39,7 @@ STALE_AFTER_SECONDS = _bounded_int_env(
 )
 MAX_MESSAGE_CHARS = 1000
 MAX_RESULT_CHARS = 24000
+_VERBOSE_RESULT_KEYS = frozenset({"log", "query_change_log"})
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -57,23 +58,95 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
 
-def _json(value: Any, *, max_chars: int = MAX_RESULT_CHARS) -> str:
-    encoded = json.dumps(
-        redact_component_payload(value),
+def _compact_result_value(
+    value: Any,
+    *,
+    map_limit: int,
+    list_limit: int,
+    string_limit: int,
+) -> Any:
+    """Drop verbose logs while retaining bounded operational structure."""
+    if isinstance(value, Mapping):
+        compact = {}
+        for index, (raw_key, item) in enumerate(value.items()):
+            if index >= map_limit:
+                break
+            key = str(raw_key)
+            if key in _VERBOSE_RESULT_KEYS:
+                continue
+            compact[key] = _compact_result_value(
+                item,
+                map_limit=map_limit,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+        return compact
+    if isinstance(value, (list, tuple, set)):
+        return [
+            _compact_result_value(
+                item,
+                map_limit=map_limit,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+            for item in list(value)[:list_limit]
+        ]
+    if isinstance(value, str):
+        return value[:string_limit]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:string_limit]
+
+
+def _encode_json(value: Any) -> str:
+    return json.dumps(
+        value,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
         default=str,
     )
+
+
+def _json(value: Any, *, max_chars: int = MAX_RESULT_CHARS) -> str:
+    safe_value = redact_component_payload(value)
+    encoded = _encode_json(safe_value)
     if len(encoded) <= max_chars:
         return encoded
-    return json.dumps(
-        {
-            "truncated": True,
-            "message": "Result details were too large; review the component history.",
-        },
-        separators=(",", ":"),
-    )
+
+    # A large MV log must never erase the exact endpoint/repair reason that the
+    # Scanner and Pipelines use. Progressively compact strings and collections;
+    # the normal 24KB budget retains dozens of databases and repair issues.
+    for map_limit, list_limit, string_limit in (
+        (100, 50, 500),
+        (50, 25, 240),
+        (20, 10, 120),
+        (10, 5, 80),
+    ):
+        compact = _compact_result_value(
+            safe_value,
+            map_limit=map_limit,
+            list_limit=list_limit,
+            string_limit=string_limit,
+        )
+        if isinstance(compact, dict):
+            compact["truncated"] = True
+            compact["truncation_message"] = (
+                "Verbose result fields were shortened; operational status and "
+                "lineage diagnostics were retained."
+            )
+        candidate = _encode_json(compact)
+        if len(candidate) <= max_chars:
+            return candidate
+
+    # This is reachable only with an unusually tiny caller-provided budget or
+    # enormous key names. Preserve status rather than returning an empty shell.
+    minimal = {
+        "status": safe_value.get("status") if isinstance(safe_value, Mapping) else None,
+        "truncated": True,
+        "truncation_message": "Result exceeded the storage budget.",
+    }
+    return _encode_json(minimal)
 
 
 def _loads(value: Any) -> dict:
@@ -262,10 +335,108 @@ def _result_message(job_type: str, status: str, result: Mapping[str, Any]) -> st
             ]
             if failed:
                 return "Lineage could not be refreshed for: " + ", ".join(failed)
+        reconciliation = result.get("report_identity_reconciliation")
+        if status == "completed_with_warnings" and isinstance(reconciliation, Mapping):
+            issues = reconciliation.get("issues")
+            issues = issues if isinstance(issues, list) else []
+            unconfigured = next(
+                (
+                    issue
+                    for issue in issues
+                    if isinstance(issue, Mapping)
+                    and issue.get("reason_code") == "unconfigured_catalog_endpoint"
+                ),
+                None,
+            )
+            if unconfigured is not None:
+                endpoint = "/".join(
+                    str(value)
+                    for value in (
+                        unconfigured.get("server"),
+                        unconfigured.get("database"),
+                    )
+                    if value
+                )
+                return (
+                    "Lineage needs attention: no configured catalog connection "
+                    f"for {endpoint or 'the report endpoint'}."
+                )
+            if issues:
+                count = len(issues)
+                return (
+                    f"Lineage rechecked with warnings: {count} report source "
+                    f"issue{'s' if count != 1 else ''} need attention."
+                )
+        if status == "completed_with_warnings":
+            unconfigured_targets = result.get("unconfigured_catalog_targets")
+            if isinstance(unconfigured_targets, list) and unconfigured_targets:
+                target = unconfigured_targets[0]
+                if isinstance(target, Mapping):
+                    endpoint = "/".join(
+                        str(value)
+                        for value in (target.get("server"), target.get("database"))
+                        if value
+                    )
+                    return (
+                        "Lineage needs attention: no configured catalog connection "
+                        f"for active source {endpoint or 'endpoint'}."
+                    )
+            unattempted_targets = result.get("unattempted_catalog_targets")
+            if isinstance(unattempted_targets, list) and unattempted_targets:
+                return (
+                    "Lineage targets changed while the recheck was running; "
+                    "rerun lineage to scan the final target set."
+                )
+            cleanup_failures = result.get("superseded_cleanup_failures")
+            if isinstance(cleanup_failures, list) and cleanup_failures:
+                return (
+                    "Lineage refreshed, but obsolete query-change alerts could not "
+                    "be retired; rerun lineage or review Scanner details."
+                )
+        if status == "completed_with_warnings" and isinstance(databases, Mapping):
+            flow_attention = []
+            total_flow_targets = 0
+            for name, details in databases.items():
+                if not isinstance(details, Mapping):
+                    continue
+                if normalize_scan_status(details.get("status")) == "superseded":
+                    continue
+                if details.get("flow_reconciliation_error"):
+                    return (
+                        "Lineage refreshed, but final Flow target matching could not "
+                        f"be completed for {name}."
+                    )
+                try:
+                    count = int(details.get("flow_targets_needing_attention") or 0)
+                except (TypeError, ValueError):
+                    count = 0
+                if count > 0:
+                    total_flow_targets += count
+                    flow_attention.append(str(name))
+            if total_flow_targets:
+                locations = ", ".join(flow_attention)
+                return (
+                    "Lineage refreshed, but "
+                    f"{total_flow_targets} Flow SQL target"
+                    f"{'s are' if total_flow_targets != 1 else ' is'} still not connected "
+                    "to an exact catalog source"
+                    f" ({locations})."
+                )
         if status == "completed":
+            repaired = 0
+            if isinstance(reconciliation, Mapping):
+                repaired = int(reconciliation.get("claimed") or 0) + int(
+                    reconciliation.get("relinked") or 0
+                )
+            repair_message = (
+                f", {repaired} report source{'s' if repaired != 1 else ''} repaired"
+                if repaired
+                else ""
+            )
             return (
                 f"Lineage refreshed: {int(result.get('mvs_found') or 0)} materialized "
-                f"views, {int(result.get('deps_created') or 0)} dependencies."
+                f"views, {int(result.get('deps_created') or 0)} dependencies"
+                f"{repair_message}."
             )
     explicit = result.get("message")
     if explicit:

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.config import PBI_WORKSPACE, UPLOAD_PGHOST
+from app.config import PBI_WORKSPACE, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_diagnostics import (
     build_flow_diagnostics,
@@ -7,6 +7,7 @@ from app.flow_diagnostics import (
     legacy_flow_suggestions as build_legacy_flow_suggestions,
 )
 from app.models import LineageEdge
+from app.source_identity import postgres_server_identity
 
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
@@ -269,9 +270,10 @@ def get_lineage_diagram(report_id: int):
         flow_diagnostics = build_flow_diagnostics(
             db,
             source_ids,
-            server=UPLOAD_PGHOST,
+            server=postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT),
             report_sources=sources,
             report_root_source_ids=direct_source_ids,
+            report_id=report_id,
         )
         diagnostic_by_id = {
             int(item["id"]): item for item in flow_diagnostics["items"]

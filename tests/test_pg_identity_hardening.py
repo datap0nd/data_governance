@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -10,13 +13,63 @@ from fastapi import HTTPException
 import app.database as database
 from app.database import get_db, init_db
 from app.routers import materialized_views
-from app.scanner import pg_deps, runner
+from app.scanner import pg_deps, prober, runner
 from app.scanner.tmdl_parser import ParsedTable, SourceInfo, _parse_m_expression
 from app.scanner.walker import DiscoveredReport
-from app.source_identity import exact_identity_rows, upsert_postgres_identity
+from app.source_identity import (
+    exact_identity_rows,
+    normalize_server,
+    postgres_server_identity,
+    upsert_postgres_identity,
+)
 
 
 NOW = "2026-08-27T12:00:00+00:00"
+
+
+def test_postgres_server_identity_keeps_non_default_ports_distinct():
+    assert postgres_server_identity("DB.INTERNAL:5432") == "db.internal"
+    assert postgres_server_identity("db.internal") == "db.internal"
+    assert postgres_server_identity("DB.INTERNAL", 5433) == "db.internal:5433"
+    assert postgres_server_identity("db.internal:5433") == "db.internal:5433"
+    assert postgres_server_identity("db.internal:5433") != postgres_server_identity(
+        "db.internal:5434"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["db.internal:abc", "db.internal:99999", "db.internal:", "[::1]:abc"],
+)
+def test_postgres_server_identity_rejects_invalid_explicit_ports(value):
+    assert postgres_server_identity(value) == ""
+
+
+@pytest.mark.parametrize("port", ["abc", 0, 65536])
+def test_postgres_server_identity_rejects_invalid_separate_ports(port):
+    assert postgres_server_identity("db.internal", port) == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "port", "expected"),
+    [
+        ("[::1]", None, "[::1]"),
+        ("[::1]:5432", None, "[::1]"),
+        ("::1", None, "[::1]"),
+        ("::1", 5433, "[::1]:5433"),
+        ("postgresql://[2001:db8::10]:5433/warehouse", None, "[2001:db8::10]:5433"),
+    ],
+)
+def test_postgres_ipv6_server_identity_is_canonical_and_idempotent(
+    value,
+    port,
+    expected,
+):
+    identity = postgres_server_identity(value, port)
+
+    assert identity == expected
+    assert normalize_server(identity) == expected
+    assert postgres_server_identity(identity) == expected
 
 
 @pytest.fixture()
@@ -119,6 +172,112 @@ def test_source_resolution_fails_on_ambiguous_exact_identity(identity_db):
             )
 
         assert db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == before
+
+
+def test_probe_routes_same_relation_to_each_exact_database_and_endpoint(
+    identity_db,
+    monkeypatch,
+):
+    from app.checks import data_quality
+
+    monkeypatch.setattr(prober, "PGHOST", "primary.internal")
+    monkeypatch.setattr(prober, "PGPORT", 5432)
+    monkeypatch.setattr(prober, "UPLOAD_PGHOST", "flow.internal")
+    monkeypatch.setattr(prober, "UPLOAD_PGPORT", 5432)
+    monkeypatch.setattr(data_quality, "run_quality_checks", lambda: {})
+
+    class SqlExpression:
+        def __init__(self, value=""):
+            self.value = value
+
+        def format(self, *_args):
+            return self
+
+    fake_sql = SimpleNamespace(
+        SQL=lambda value: SqlExpression(value),
+        Identifier=lambda value: SqlExpression(value),
+    )
+    monkeypatch.setitem(sys.modules, "psycopg2", SimpleNamespace(sql=fake_sql))
+
+    class Cursor:
+        def __init__(self, row_count):
+            self.row_count = row_count
+
+        def execute(self, _query):
+            return None
+
+        def fetchone(self):
+            return (datetime.now(timezone.utc), self.row_count)
+
+    class Connection:
+        def __init__(self, row_count):
+            self.row_count = row_count
+            self.closed = False
+
+        def cursor(self):
+            return Cursor(self.row_count)
+
+        def close(self):
+            self.closed = True
+
+    primary_counts = {"warehouse": 101, "staging": 202}
+    flow_counts = {"flow_db": 303}
+    calls = []
+
+    def primary_connection(*, database=None):
+        calls.append(("primary", database))
+        return Connection(primary_counts[database])
+
+    def flow_connection(*, database=None):
+        calls.append(("flow", database))
+        return Connection(flow_counts[database])
+
+    monkeypatch.setattr(prober, "_get_pg_connection", primary_connection)
+    monkeypatch.setattr(prober, "_get_flow_pg_connection", flow_connection)
+
+    identities = (
+        (1, "primary.internal", "warehouse"),
+        (2, "primary.internal", "staging"),
+        (3, "flow.internal", "flow_db"),
+        (4, "other.internal", "other_db"),
+    )
+    with get_db() as db:
+        for source_id, server, database_name in identities:
+            _source(db, source_id, f"sales.orders [{database_name}]")
+            result = upsert_postgres_identity(
+                db,
+                source_id=source_id,
+                server=server,
+                database=database_name,
+                schema="sales",
+                relation="orders",
+                relation_kind="table",
+                verified_at=NOW,
+            )
+            assert result["status"] in {"claimed", "refreshed"}
+
+    result = prober.run_probe()
+
+    assert result["probed"] == 4
+    assert set(calls) == {
+        ("primary", "warehouse"),
+        ("primary", "staging"),
+        ("flow", "flow_db"),
+    }
+    with get_db() as db:
+        probes = {
+            int(row["source_id"]): (row["status"], row["row_count"], row["message"])
+            for row in db.execute(
+                """SELECT source_id, status, row_count, message
+                     FROM source_probes ORDER BY source_id, id"""
+            ).fetchall()
+        }
+    assert probes[1][1] == 101
+    assert probes[2][1] == 202
+    assert probes[3][1] == 303
+    assert probes[4][0] == "unknown"
+    assert probes[4][1] is None
+    assert "not configured" in probes[4][2]
 
 
 def test_guarded_claim_never_overwrites_an_existing_physical_identity(identity_db):
@@ -234,7 +393,7 @@ def test_pg_scan_reconciles_once_after_the_complete_identity_batch(
     monkeypatch.setattr(
         pg_deps,
         "_reconcile_database_flows",
-        lambda db, database: reconciliations.append(database) or {},
+        lambda db, database, **kwargs: reconciliations.append(database) or {},
     )
 
     with get_db() as db:
@@ -245,6 +404,19 @@ def test_pg_scan_reconciles_once_after_the_complete_identity_batch(
             database_name="warehouse",
             relation="report_mv",
             kind="materialized_view",
+        )
+        db.execute("INSERT INTO flow_sites(id, name) VALUES (9011, 'Portal')")
+        db.execute(
+            """INSERT INTO flow_reports(id, site_id, name, report_url)
+               VALUES (9011, 9011, 'Orders', 'https://example.test/orders')"""
+        )
+        db.execute(
+            """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder,
+                    filename_template, sql_handoff_enabled, sql_database,
+                    sql_schema, sql_table)
+               VALUES (9011, 'Orders', 9011, 9011, '.', 'orders.csv', 1,
+                       'warehouse', 'sales', 'orders')"""
         )
 
     result = pg_deps.scan_pg_dependencies()
@@ -421,6 +593,750 @@ def test_full_scan_reparses_quoted_native_query_and_remaps_generic_report_source
     assert old_source is not None
 
 
+def test_full_scan_never_assumes_public_for_unqualified_native_postgres_sql(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Rows = Value.NativeQuery(Source, '
+        '"SELECT * FROM inflow_outflow_mv") in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table == "inflow_outflow_mv"
+    assert parsed.postgres_relation_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Search path report",
+        tmdl_path="C:/Search path report",
+        tables=[
+            ParsedTable(
+                table_name="Model",
+                m_expression=expression,
+                source=parsed,
+            )
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, s.connection_info, spi.source_id,
+                      rt.source_expression
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Search path report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["connection_info"].startswith("unresolved/")
+    assert row["source_id"] is None
+    assert row["source_expression"] == expression
+
+
+def test_full_scan_never_assumes_public_for_unqualified_postgres_navigation(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Rows = Source{[Name="orders", Kind="Table"]}[Data] in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table == "orders"
+    assert parsed.sql_query is None
+    assert parsed.postgres_relation_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Bare navigation report",
+        tmdl_path="C:/Bare navigation report",
+        tables=[
+            ParsedTable(
+                table_name="Model",
+                m_expression=expression,
+                source=parsed,
+            )
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Bare navigation report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_never_chooses_one_of_multiple_native_postgres_queries(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+        'B = Value.NativeQuery(Source, "SELECT * FROM finance.orders"), '
+        'Rows = if UseSales then A else B in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_single_native_query is False
+    assert parsed.postgres_identity_is_exact is False
+    assert parsed.sql_table is None
+    report = DiscoveredReport(
+        name="Branched native report",
+        tmdl_path="C:/Branched native report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Branched native report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_never_uses_navigation_fallback_for_dynamic_connector_query(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse", '
+        '[Query=SqlParameter]), '
+        'Fallback = Source{[Schema="sales", Item="orders"]}[Data] '
+        'in if UseFallback then Fallback else Source'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_query is None
+    assert parsed.sql_table is None
+    assert parsed.postgres_native_query_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Dynamic connector query report",
+        tmdl_path="C:/Dynamic connector query report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Dynamic connector query report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_reads_query_after_another_connector_option(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse", '
+        '[CreateNavigationProperties=false, Query="SELECT * FROM sales.orders"]), '
+        'Fallback = Source{[Schema="fallback", Item="wrong"]}[Data] '
+        'in Source'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_query == "SELECT * FROM sales.orders"
+    assert parsed.sql_table == "sales.orders"
+    assert parsed.postgres_identity_is_exact is True
+    report = DiscoveredReport(
+        name="Multi-option query report",
+        tmdl_path="C:/Multi-option query report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Multi-option query report'"""
+        ).fetchone()
+    assert tuple(identity) == ("sales", "orders")
+
+
+def test_full_scan_ignores_commented_navigation_target(identity_db, monkeypatch):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"),\n'
+        '// old: Source{[Schema="wrong", Item="orders"]}[Data]\n'
+        'Real = Source{[Schema="sales", Item="orders"]}[Data]\n'
+        'in Real'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table == "sales.orders"
+    assert parsed.postgres_identity_is_exact is True
+    report = DiscoveredReport(
+        name="Commented navigation report",
+        tmdl_path="C:/Commented navigation report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Commented navigation report'"""
+        ).fetchone()
+    assert tuple(identity) == ("sales", "orders")
+
+
+def test_full_scan_leaves_conditional_navigation_targets_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Source{[Schema="sales", Item="orders"]}[Data], '
+        'B = Source{[Schema="sales", Item="customers"]}[Data] '
+        'in if UseA then A else B'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table is None
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Conditional navigation report",
+        tmdl_path="C:/Conditional navigation report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Conditional navigation report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_dynamic_navigation_branch_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Source{[Schema="sales", Item="orders"]}[Data], '
+        'B = Source{[Schema=SchemaParam, Item=TableParam]}[Data] '
+        'in if UseA then A else B'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table is None
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Dynamic navigation branch report",
+        tmdl_path="C:/Dynamic navigation branch report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Dynamic navigation branch report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_dynamic_navigation_key_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Source{[Schema="sales", Item="orders"]}[Data], '
+        'B = Source{NavigationKey}[Data], '
+        'Choice = if UseA then A else B in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table is None
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Dynamic navigation key report",
+        tmdl_path="C:/Dynamic navigation key report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Dynamic navigation key report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_ignores_commented_connector_when_selecting_postgres(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let\n// old: Sql.Database("legacy", "old")\n'
+        'Source = PostgreSQL.Database("db.internal", "warehouse"),\n'
+        'Real = Source{[Schema="sales", Item="orders"]}[Data]\n'
+        'in Real'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.source_type == "postgresql"
+    assert parsed.postgres_identity_is_exact is True
+    report = DiscoveredReport(
+        name="Commented connector report",
+        tmdl_path="C:/Commented connector report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.server_name, spi.database_name,
+                      spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Commented connector report'"""
+        ).fetchone()
+    assert tuple(identity) == ("db.internal", "warehouse", "sales", "orders")
+
+
+def test_full_scan_never_treats_commented_plain_sql_as_live(identity_db, monkeypatch):
+    expression = (
+        'let\nSource = PostgreSQL.Database("db.internal", "warehouse"),\n'
+        '// removed native query: SELECT * FROM wrong.orders\n'
+        'Result = Table.FirstN(Source, 10)\n'
+        'in Result'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_query is None
+    assert parsed.sql_table is None
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Commented SQL report",
+        tmdl_path="C:/Commented SQL report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Commented SQL report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_native_postgres_sql_wins_over_navigation_step(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Nav = Source{[Schema="finance", Item="orders"]}[Data], '
+        'Rows = Value.NativeQuery(Source, "SELECT * FROM sales.orders") in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_query == "SELECT * FROM sales.orders"
+    assert parsed.sql_table == "sales.orders"
+    assert parsed.postgres_identity_is_exact is True
+    report = DiscoveredReport(
+        name="Mixed navigation report",
+        tmdl_path="C:/Mixed navigation report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Mixed navigation report'"""
+        ).fetchone()
+    assert tuple(identity) == ("sales", "orders")
+
+
+def test_full_scan_leaves_conditional_native_and_navigation_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+        'B = Source{[Schema="finance", Item="orders"]}[Data] '
+        'in if UseNative then A else B'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_native_query_exact is False
+    assert parsed.sql_table is None
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Mixed query mechanism report",
+        tmdl_path="C:/Mixed query mechanism report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Mixed query mechanism report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_assigned_conditional_query_mechanisms_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+        'B = Source{[Schema="finance", Item="orders"]}[Data], '
+        'Choice = if UseNative then A else B in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_native_query_exact is False
+    assert parsed.sql_table is None
+    report = DiscoveredReport(
+        name="Assigned mixed mechanism report",
+        tmdl_path="C:/Assigned mixed mechanism report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Assigned mixed mechanism report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_try_fallback_query_mechanisms_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+        'B = Source{[Schema="finance", Item="orders"]}[Data], '
+        'Choice = try A otherwise B in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_native_query_exact is False
+    assert parsed.sql_table is None
+    report = DiscoveredReport(
+        name="Try fallback mechanism report",
+        tmdl_path="C:/Try fallback mechanism report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Try fallback mechanism report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_try_catch_query_mechanisms_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'A = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+        'B = Source{[Schema="finance", Item="orders"]}[Data], '
+        'Choice = try A catch ()=>B in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_native_query_exact is False
+    assert parsed.sql_table is None
+    report = DiscoveredReport(
+        name="Try catch mechanism report",
+        tmdl_path="C:/Try catch mechanism report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Try catch mechanism report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_ignores_query_decoys_outside_connector_options(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Note = "Query = ""SELECT * FROM finance.orders""", '
+        '// Query = "SELECT * FROM finance.orders"\n'
+        'Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Rows = Source{[Schema="sales", Item="orders"]}[Data] in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_query is None
+    assert parsed.sql_table == "sales.orders"
+    report = DiscoveredReport(
+        name="Comment decoy report",
+        tmdl_path="C:/Comment decoy report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Comment decoy report'"""
+        ).fetchone()
+    assert tuple(identity) == ("sales", "orders")
+
+
+@pytest.mark.parametrize("resolve_parameters", [False, True])
+def test_full_scan_never_persists_unresolved_postgres_parameters_as_identity(
+    identity_db,
+    monkeypatch,
+    resolve_parameters,
+):
+    expression = (
+        "let Source = PostgreSQL.Database(ServerParameter, DatabaseParameter), "
+        'Rows = Value.NativeQuery(Source, "SELECT * FROM sales.orders") in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Parameterized report",
+        tmdl_path="C:/Parameterized report",
+        expressions=(
+            {
+                "ServerParameter": "db.internal",
+                "DatabaseParameter": "warehouse",
+            }
+            if resolve_parameters
+            else {}
+        ),
+        tables=[
+            ParsedTable(
+                table_name="Orders",
+                m_expression=expression,
+                source=parsed,
+            )
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, s.connection_info, spi.server_name,
+                      spi.database_name, spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Parameterized report'"""
+        ).fetchone()
+
+    if resolve_parameters:
+        assert parsed.postgres_identity_is_exact is True
+        assert tuple(row) == (
+            "sales.orders",
+            "db.internal/warehouse/sales.orders",
+            "db.internal",
+            "warehouse",
+            "sales",
+            "orders",
+        )
+    else:
+        assert row["name"].startswith("unresolved_pg_query_")
+        assert row["connection_info"].startswith("unresolved/")
+        assert row["server_name"] is None
+        assert row["database_name"] is None
+        assert row["schema_name"] is None
+        assert row["relation_name"] is None
+
+
+@pytest.mark.parametrize(
+    ("expression", "parameters"),
+    [
+        (
+            "let Source = if UseProd then "
+            'PostgreSQL.Database("prod.internal", "warehouse") else '
+            'PostgreSQL.Database("dev.internal", "warehouse"), '
+            'Rows = Value.NativeQuery(Source, "SELECT * FROM sales.orders") in Rows',
+            {},
+        ),
+        (
+            "let Source = if UseProd then "
+            "PostgreSQL.Database(ServerParameter, DatabaseParameter) else "
+            'PostgreSQL.Database("dev.internal", "warehouse"), '
+            'Rows = Value.NativeQuery(Source, "SELECT * FROM sales.orders") in Rows',
+            {
+                "ServerParameter": "prod.internal",
+                "DatabaseParameter": "warehouse",
+            },
+        ),
+    ],
+)
+def test_full_scan_never_chooses_one_branch_of_conditional_postgres_connection(
+    identity_db,
+    monkeypatch,
+    expression,
+    parameters,
+):
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Conditional endpoint report",
+        tmdl_path="C:/Conditional endpoint report",
+        expressions=parameters,
+        tables=[
+            ParsedTable(
+                table_name="Orders",
+                m_expression=expression,
+                source=parsed,
+            )
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Conditional endpoint report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
 def test_runner_legacy_cleanup_preserves_identified_database_sources(
     identity_db, monkeypatch
 ):
@@ -536,6 +1452,58 @@ def _pg_report(name: str, database_name: str) -> DiscoveredReport:
     )
 
 
+def test_full_scan_metadata_refresh_preserves_mv_kind_when_catalog_fails(
+    identity_db,
+    monkeypatch,
+):
+    reports = [_pg_report("MV report", "warehouse")]
+    _stub_runner_followups(monkeypatch, reports)
+    monkeypatch.setattr(
+        pg_deps,
+        "scan_pg_dependencies",
+        lambda scan_run_id=None, **_kwargs: {
+            "status": "failed",
+            "databases": {
+                "warehouse": {"status": "failed", "stage": "fetch"},
+            },
+            "changed_queries": 0,
+            "query_change_log": "",
+        },
+    )
+    with get_db() as db:
+        _source(db, 1, "sales.orders")
+        _identity(
+            db,
+            1,
+            database_name="warehouse",
+            relation="orders",
+            kind="materialized_view",
+        )
+        _source(db, 2, "sales.raw_orders")
+        _identity(db, 2, database_name="warehouse", relation="raw_orders")
+        db.execute(
+            """INSERT INTO source_dependencies
+                   (source_id, depends_on_id, discovered_by, created_at)
+               VALUES (1, 2, 'pg_matviews', ?)""",
+            (NOW,),
+        )
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["components"]["postgres_dependencies"]["status"] == "failed"
+    with get_db() as db:
+        kind = db.execute(
+            """SELECT relation_kind FROM source_postgres_identities
+                WHERE source_id=1"""
+        ).fetchone()[0]
+        edge = db.execute(
+            """SELECT source_id, depends_on_id FROM source_dependencies
+                WHERE source_id=1 AND discovered_by='pg_matviews'"""
+        ).fetchone()
+    assert kind == "materialized_view"
+    assert tuple(edge) == (1, 2)
+
+
 def test_tmdl_scan_does_not_claim_unidentified_same_display_source(
     identity_db, monkeypatch
 ):
@@ -619,3 +1587,196 @@ def test_tmdl_scan_rolls_back_on_ambiguous_exact_identity(identity_db, monkeypat
     assert scan["log"] == "Core discovery failed; review server logs."
     assert persisted_components["core"]["status"] == "failed"
     assert persisted_components["core"]["error"] == "Redacted; review server logs."
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        (
+            'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+            'Pg = Value.NativeQuery(Source, "SELECT * FROM sales.orders"), '
+            'Local = #table({"id"}, {{1}}), '
+            'Choice = if UsePg then Pg else Local in Choice'
+        ),
+        (
+            'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+            'Pg = Source{[Schema="sales", Item="orders"]}[Data], '
+            'Local = #table({"id"}, {{1}}), '
+            'Choice = try Pg otherwise Local in Choice'
+        ),
+    ],
+)
+def test_full_scan_leaves_postgres_or_local_output_unresolved(
+    identity_db,
+    monkeypatch,
+    expression,
+):
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_conditional_output_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Postgres or local report",
+        tmdl_path="C:/Postgres or local report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Postgres or local report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_keeps_lineage_for_conditional_row_transform(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Orders = Source{[Schema="sales", Item="orders"]}[Data], '
+        'Added = Table.AddColumn(Orders, "Flag", '
+        'each if [amount] > 0 then "positive" else "other") in Added'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table == "sales.orders"
+    assert parsed.postgres_conditional_output_exact is True
+    assert parsed.postgres_identity_is_exact is True
+    report = DiscoveredReport(
+        name="Conditional column report",
+        tmdl_path="C:/Conditional column report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        identity = db.execute(
+            """SELECT spi.schema_name, spi.relation_name
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE r.name='Conditional column report'"""
+        ).fetchone()
+    assert tuple(identity) == ("sales", "orders")
+
+
+def test_full_scan_leaves_wrapped_postgres_or_local_conditional_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Pg = Source{[Schema="sales", Item="orders"]}[Data], '
+        'Local = #table({"id"}, {{1}}), '
+        'Choice = Table.Buffer(if UsePg then Pg else Local) in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_conditional_output_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Wrapped conditional report",
+        tmdl_path="C:/Wrapped conditional report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Wrapped conditional report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_invoked_table_lambda_conditional_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Pg = Source{[Schema="sales", Item="orders"]}[Data], '
+        'Local = #table({"id"}, {{1}}), '
+        'Choice = Function.Invoke((x) => if x then Pg else Local, {UsePg}) '
+        'in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_conditional_output_exact is False
+    assert parsed.postgres_identity_is_exact is False
+    report = DiscoveredReport(
+        name="Invoked table lambda report",
+        tmdl_path="C:/Invoked table lambda report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Invoked table lambda report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None
+
+
+def test_full_scan_leaves_conditional_table_input_unresolved(
+    identity_db,
+    monkeypatch,
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Pg = Source{[Schema="sales", Item="orders"]}[Data], '
+        'Local = #table({"id"}, {{1}}), '
+        'Choice = Table.AddColumn('
+        '(() => if UsePg then Pg else Local)(), '
+        '"Flag", each 1) in Choice'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.postgres_conditional_output_exact is False
+    report = DiscoveredReport(
+        name="Conditional table input report",
+        tmdl_path="C:/Conditional table input report",
+        tables=[ParsedTable(table_name="Model", m_expression=expression, source=parsed)],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT s.name, spi.source_id
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                 JOIN sources s ON s.id=rt.source_id
+                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                WHERE r.name='Conditional table input report'"""
+        ).fetchone()
+    assert row["name"].startswith("unresolved_pg_query_")
+    assert row["source_id"] is None

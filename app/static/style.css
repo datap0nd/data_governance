@@ -5968,8 +5968,10 @@ tr.row-archived td:last-child {
 .scanner-job-heading > span:last-child { color: var(--text-dim); font-size: 0.72rem; }
 .scanner-job-step { margin-top: 0.3rem; color: var(--text); font-size: 0.8rem; }
 .scanner-job-message,
-.scanner-job-failures { margin-top: 0.2rem; color: var(--text-muted); font-size: 0.75rem; }
+.scanner-job-failures,
+.scanner-job-repair { margin-top: 0.2rem; color: var(--text-muted); font-size: 0.75rem; }
 .scanner-job-failures { color: var(--red); }
+.scanner-job-repair { color: var(--yellow); }
 .scanner-job-stale {
     margin-top: 0.45rem;
     padding: 0.45rem 0.6rem;

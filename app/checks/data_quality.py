@@ -6,8 +6,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from app.config import PGHOST, PGPORT, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
-from app.scanner.prober import _get_pg_connection, _parse_pg_table_ref, _source_alert_owner
+from app.scanner.prober import _get_flow_pg_connection, _get_pg_connection, _source_alert_owner
+from app.source_identity import normalize_server, postgres_server_identity
 
 logger = logging.getLogger(__name__)
 
@@ -181,17 +183,60 @@ def _run_probe_check(db, source_id: int, check_type: str, config: dict) -> tuple
     )
 
 
-def _run_postgres_check(pg_conn, source, check_type: str, config: dict) -> tuple[str, float | None, str]:
+def _postgres_check_connection(source: dict, connections: dict):
+    """Return a connection for one exact PostgreSQL identity, or an error.
+
+    Quality checks must never infer executable coordinates from source display
+    text.  A missing identity, an endpoint without configured read-only
+    credentials, or a failed exact connection therefore fails closed.
+    """
+    server = normalize_server(source.get("server_name"))
+    database = str(source.get("database_name") or "").strip()
+    schema = str(source.get("schema_name") or "").strip()
+    relation = str(source.get("relation_name") or "").strip()
+    if not server or not database or not schema or not relation:
+        return None, "Structured PostgreSQL identity is unavailable; no query was run"
+
+    primary_server = postgres_server_identity(PGHOST, PGPORT)
+    flow_server = postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT)
+    if primary_server and server == primary_server:
+        profile = "primary"
+    elif flow_server and server == flow_server:
+        profile = "flow"
+    else:
+        return None, "PostgreSQL endpoint is not configured for exact read-only checks; no query was run"
+
+    key = (profile, server, database)
+    if key not in connections:
+        if profile == "primary":
+            connection = _get_pg_connection(database=database)
+            # Preserve the scanner's credential policy when Flow and the
+            # primary catalogue point at the same physical endpoint.
+            if connection is None and flow_server and server == flow_server:
+                connection = _get_flow_pg_connection(database=database)
+        else:
+            connection = _get_flow_pg_connection(database=database)
+        connections[key] = connection
+
+    connection = connections[key]
+    if connection is None:
+        return None, "Read-only credentials failed for this exact PostgreSQL endpoint/database; no query was run"
+    return connection, None
+
+
+def _run_postgres_check(
+    pg_conn,
+    schema: str,
+    relation: str,
+    check_type: str,
+    config: dict,
+) -> tuple[str, float | None, str]:
     if pg_conn is None:
         return "error", None, "PostgreSQL read-only credentials are not configured or the connection failed"
-    parsed = _parse_pg_table_ref(source["connection_info"], source["name"])
-    if not parsed:
-        return "error", None, "The source table reference could not be parsed"
 
     from psycopg2 import sql
 
-    schema, table = parsed
-    table_ref = sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
+    table_ref = sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(relation))
     cursor = pg_conn.cursor()
 
     if check_type == "null_rate":
@@ -311,15 +356,17 @@ def run_quality_checks(check_ids: list[int] | None = None) -> dict:
             params.extend(check_ids)
         rows = db.execute(
             f"""SELECT c.*, s.name AS source_name, s.type AS source_type,
-                       s.connection_info, s.owner AS source_owner, s.archived AS source_archived
+                       s.connection_info, s.owner AS source_owner, s.archived AS source_archived,
+                       spi.server_name, spi.database_name, spi.schema_name,
+                       spi.relation_name, spi.relation_kind
                 FROM checks c JOIN sources s ON s.id = c.source_id
+                LEFT JOIN source_postgres_identities spi ON spi.source_id = s.id
                 {where} ORDER BY c.id""",
             params,
         ).fetchall()
         checks = [dict(row) for row in rows]
 
-    needs_pg = any(CHECK_TYPES.get(check["type"], {}).get("uses_postgres") for check in checks)
-    pg_conn = _get_pg_connection() if needs_pg else None
+    pg_connections = {}
     counts = {"pass": 0, "fail": 0, "error": 0, "skipped": 0}
     created = 0
     resolved = 0
@@ -334,13 +381,28 @@ def run_quality_checks(check_ids: list[int] | None = None) -> dict:
                     "type": check["source_type"],
                     "connection_info": check["connection_info"],
                     "owner": check["source_owner"],
+                    "server_name": check["server_name"],
+                    "database_name": check["database_name"],
+                    "schema_name": check["schema_name"],
+                    "relation_name": check["relation_name"],
+                    "relation_kind": check["relation_kind"],
                 }
                 try:
                     config = validate_config(check["type"], json.loads(check["config"] or "{}"))
                     if CHECK_TYPES[check["type"]]["uses_postgres"]:
                         if source["type"] != "postgresql":
                             raise CheckDefinitionError("This check type requires a PostgreSQL source")
-                        status, value, message = _run_postgres_check(pg_conn, source, check["type"], config)
+                        pg_conn, connection_error = _postgres_check_connection(source, pg_connections)
+                        if connection_error:
+                            status, value, message = "error", None, connection_error
+                        else:
+                            status, value, message = _run_postgres_check(
+                                pg_conn,
+                                source["schema_name"],
+                                source["relation_name"],
+                                check["type"],
+                                config,
+                            )
                     else:
                         status, value, message = _run_probe_check(db, source["id"], check["type"], config)
                 except Exception as exc:
@@ -360,7 +422,11 @@ def run_quality_checks(check_ids: list[int] | None = None) -> dict:
                     resolved += _resolve_check_incident(db, check["id"], now, "data-quality check passed")
                 results.append({"check_id": check["id"], "status": status, "value": value, "message": message})
     finally:
-        if pg_conn is not None:
+        closed = set()
+        for pg_conn in pg_connections.values():
+            if pg_conn is None or id(pg_conn) in closed:
+                continue
+            closed.add(id(pg_conn))
             pg_conn.close()
 
     return {

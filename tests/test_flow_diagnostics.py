@@ -496,23 +496,185 @@ def test_focused_lineage_job_becomes_latest_diagnostic_evidence(tmp_path, monkey
         db.execute(
             """INSERT INTO scanner_jobs
                    (job_type, trigger_source, status, current_step, result_json,
-                    created_at, heartbeat_at, finished_at)
+                    context_json, created_at, heartbeat_at, finished_at)
                VALUES ('postgres_lineage', 'pipeline_recheck', 'completed',
-                       'Finished', ?, '2026-08-28T09:00:00+00:00',
+                       'Finished', ?, ?, '2026-08-28T09:00:00+00:00',
                        '2026-08-28T09:03:00+00:00', '2026-08-28T09:03:00+00:00')""",
-            (json.dumps({
-                "status": "completed",
-                "databases": {"warehouse": {"status": "completed"}},
-            }),),
+            (
+                json.dumps({
+                    "status": "completed",
+                    "databases": {"warehouse": {"status": "completed"}},
+                    "report_identity_reconciliation": {
+                        "status": "completed",
+                        "report_id": 7,
+                        "relinked": 1,
+                    },
+                }),
+                json.dumps({"report_id": 7}),
+            ),
         )
-        diagnostics = build_flow_diagnostics(db, [], server="db")
+        diagnostics = build_flow_diagnostics(db, [], server="db", report_id=7)
 
     assert diagnostics["postgres_dependencies"] == {
         "status": "completed",
         "scan_run_id": None,
         "scanner_job_id": 1,
         "databases": {"warehouse": {"status": "completed"}},
+        "report_identity_reconciliation": {
+            "status": "completed",
+            "report_id": 7,
+            "relinked": 1,
+        },
     }
+
+
+def test_focused_lineage_diagnostics_keep_top_level_endpoint_warnings(
+    tmp_path,
+    monkeypatch,
+):
+    path = str(tmp_path / "focused-lineage-endpoints.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+    result = {
+        "status": "completed_with_warnings",
+        "databases": {"warehouse": {"status": "completed"}},
+        "report_identity_reconciliation": {
+            "status": "completed",
+            "report_id": 7,
+        },
+        "unconfigured_catalog_targets": [{
+            "server": "other.internal:5433",
+            "database": "legacy",
+            "reason_code": "unconfigured_catalog_endpoint",
+        }],
+        "unattempted_catalog_targets": [{
+            "server": "db.internal",
+            "database": "new_db",
+            "reason_code": "catalog_target_became_active_during_scan",
+        }],
+    }
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO scanner_jobs
+                   (job_type, trigger_source, status, current_step, result_json,
+                    context_json, created_at, heartbeat_at, finished_at)
+               VALUES ('postgres_lineage', 'pipeline_recheck',
+                       'completed_with_warnings', 'Finished', ?, ?,
+                       '2026-08-28T09:00:00+00:00', '2026-08-28T09:01:00+00:00',
+                       '2026-08-28T09:01:00+00:00')""",
+            (json.dumps(result), json.dumps({"report_id": 7})),
+        )
+        diagnostics = build_flow_diagnostics(db, [], server="db", report_id=7)
+
+    postgres = diagnostics["postgres_dependencies"]
+    assert postgres["unconfigured_catalog_targets"] == result[
+        "unconfigured_catalog_targets"
+    ]
+    assert postgres["unattempted_catalog_targets"] == result[
+        "unattempted_catalog_targets"
+    ]
+
+
+def test_focused_lineage_diagnostics_never_borrow_another_reports_job(
+    tmp_path, monkeypatch
+):
+    path = str(tmp_path / "report-scoped-lineage-diagnostics.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+
+    def focused_result(report_id: int, status: str) -> str:
+        return json.dumps({
+            "status": status,
+            "databases": {
+                f"warehouse_{report_id}": {"status": status},
+            },
+            "report_identity_reconciliation": {
+                "status": status,
+                "report_id": report_id,
+            },
+        })
+
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO scanner_jobs
+                   (job_type, trigger_source, status, current_step, result_json,
+                    context_json, created_at, heartbeat_at, finished_at)
+               VALUES ('postgres_lineage', 'pipeline_recheck', 'completed',
+                       'Finished A', ?, ?, '2026-08-28T09:00:00+00:00',
+                       '2026-08-28T09:01:00+00:00', '2026-08-28T09:01:00+00:00')""",
+            (focused_result(7, "completed"), json.dumps({"report_id": 7})),
+        )
+        db.execute(
+            """INSERT INTO scanner_jobs
+                   (job_type, trigger_source, status, current_step, result_json,
+                    context_json, created_at, heartbeat_at, finished_at)
+               VALUES ('postgres_lineage', 'pipeline_recheck',
+                       'completed_with_warnings', 'Finished B', ?, ?,
+                       '2026-08-28T10:00:00+00:00', '2026-08-28T10:01:00+00:00',
+                       '2026-08-28T10:01:00+00:00')""",
+            (
+                focused_result(8, "completed_with_warnings"),
+                json.dumps({"report_id": 8}),
+            ),
+        )
+
+        report_a = build_flow_diagnostics(db, [], server="db", report_id=7)
+        report_b = build_flow_diagnostics(db, [], server="db", report_id=8)
+        unscoped = build_flow_diagnostics(db, [], server="db")
+
+    assert report_a["postgres_dependencies"]["scanner_job_id"] == 1
+    assert report_a["postgres_dependencies"]["status"] == "completed"
+    assert report_a["postgres_dependencies"]["report_identity_reconciliation"][
+        "report_id"
+    ] == 7
+    assert report_b["postgres_dependencies"]["scanner_job_id"] == 2
+    assert report_b["postgres_dependencies"]["status"] == "completed_with_warnings"
+    assert report_b["postgres_dependencies"]["report_identity_reconciliation"][
+        "report_id"
+    ] == 8
+    assert unscoped["postgres_dependencies"] == {
+        "status": "not_scanned",
+        "scan_run_id": None,
+        "databases": {},
+    }
+
+
+def test_global_full_scan_repair_warning_is_not_attributed_to_selected_report(
+    tmp_path,
+    monkeypatch,
+):
+    path = str(tmp_path / "global-lineage-warning.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+    component = {
+        "status": "completed_with_warnings",
+        "databases": {"alpha": {"status": "completed"}},
+        "report_identity_reconciliation": {
+            "status": "completed_with_warnings",
+            "report_id": None,
+            "issues": [{
+                "reason_code": "unconfigured_catalog_endpoint",
+                "server": "other.internal",
+                "database": "beta",
+            }],
+        },
+    }
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO scan_runs(status, finished_at, components_json)
+               VALUES ('completed_with_warnings', '2026-08-28T11:00:00+00:00', ?)""",
+            (serialize_components({"postgres_dependencies": component}),),
+        )
+        selected = build_flow_diagnostics(db, [], server="db", report_id=7)
+        unscoped = build_flow_diagnostics(db, [], server="db")
+
+    assert "report_identity_reconciliation" not in selected["postgres_dependencies"]
+    assert unscoped["postgres_dependencies"]["report_identity_reconciliation"] == (
+        component["report_identity_reconciliation"]
+    )
 
 
 def test_file_flow_uses_exact_path_then_unique_static_basename(tmp_path, monkeypatch):

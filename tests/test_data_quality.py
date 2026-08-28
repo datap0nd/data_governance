@@ -127,3 +127,113 @@ def test_managed_finding_updates_resolves_and_reopens(quality_db):
     assert reopened["created"] == 1
     assert [row["status"] for row in rows] == ["resolved", "open"]
     assert rows[-1]["notes"] == "updated observation"
+
+
+def test_postgres_checks_route_by_exact_endpoint_database_and_relation(quality_db, monkeypatch):
+    from app.checks import data_quality
+
+    exact_sources = [
+        (10, "Primary warehouse orders", "primary.internal", "warehouse"),
+        (11, "Primary staging orders", "primary.internal", "staging"),
+        (12, "Flow orders", "flow.internal", "flow_db"),
+        (13, "Unconfigured orders", "other.internal", "other_db"),
+    ]
+    check_ids = []
+    with database.get_db() as db:
+        for source_id, name, server, database_name in exact_sources:
+            db.execute(
+                """INSERT INTO sources
+                   (id, name, type, connection_info, owner, discovered_by, archived)
+                   VALUES (?, ?, 'postgresql', 'misleading/default/wrong.relation',
+                           'Data Owner', 'scanner', 0)""",
+                (source_id, name),
+            )
+            db.execute(
+                """INSERT INTO source_postgres_identities
+                   (source_id, server_name, database_name, schema_name, relation_name, relation_kind)
+                   VALUES (?, ?, ?, 'sales', 'orders', 'table')""",
+                (source_id, server, database_name),
+            )
+            cursor = db.execute(
+                """INSERT INTO checks
+                   (name, source_id, type, config, severity, enabled)
+                   VALUES (?, ?, 'null_rate', ?, 'critical', 1)""",
+                (f"Check {source_id}", source_id, json.dumps({"column": "id", "max_null_pct": 0})),
+            )
+            check_ids.append(cursor.lastrowid)
+
+        # A PostgreSQL source without structured coordinates must also fail
+        # closed instead of borrowing the configured default database.
+        db.execute(
+            """INSERT INTO sources
+               (id, name, type, connection_info, owner, discovered_by, archived)
+               VALUES (14, 'Identity-less orders', 'postgresql',
+                       'primary.internal/warehouse/sales.orders',
+                       'Data Owner', 'scanner', 0)"""
+        )
+        cursor = db.execute(
+            """INSERT INTO checks
+               (name, source_id, type, config, severity, enabled)
+               VALUES ('Check 14', 14, 'null_rate', ?, 'critical', 1)""",
+            (json.dumps({"column": "id", "max_null_pct": 0}),),
+        )
+        check_ids.append(cursor.lastrowid)
+
+    class FakeConnection:
+        def __init__(self, profile, database_name):
+            self.profile = profile
+            self.database_name = database_name
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection_calls = []
+    opened = []
+
+    def primary_connection(database=None):
+        connection_calls.append(("primary", database))
+        connection = FakeConnection("primary", database)
+        opened.append(connection)
+        return connection
+
+    def flow_connection(database=None):
+        connection_calls.append(("flow", database))
+        connection = FakeConnection("flow", database)
+        opened.append(connection)
+        return connection
+
+    executions = []
+
+    def exact_check(connection, schema, relation, check_type, config):
+        executions.append(
+            (connection.profile, connection.database_name, schema, relation, check_type, config["column"])
+        )
+        return "pass", 0.0, "Exact relation passed"
+
+    monkeypatch.setattr(data_quality, "PGHOST", "primary.internal")
+    monkeypatch.setattr(data_quality, "PGPORT", "5432")
+    monkeypatch.setattr(data_quality, "UPLOAD_PGHOST", "flow.internal")
+    monkeypatch.setattr(data_quality, "UPLOAD_PGPORT", "5432")
+    monkeypatch.setattr(data_quality, "_get_pg_connection", primary_connection)
+    monkeypatch.setattr(data_quality, "_get_flow_pg_connection", flow_connection)
+    monkeypatch.setattr(data_quality, "_run_postgres_check", exact_check)
+
+    result = data_quality.run_quality_checks(check_ids)
+
+    assert connection_calls == [
+        ("primary", "warehouse"),
+        ("primary", "staging"),
+        ("flow", "flow_db"),
+    ]
+    assert executions == [
+        ("primary", "warehouse", "sales", "orders", "null_rate", "id"),
+        ("primary", "staging", "sales", "orders", "null_rate", "id"),
+        ("flow", "flow_db", "sales", "orders", "null_rate", "id"),
+    ]
+    assert result["pass"] == 3
+    assert result["error"] == 2
+    errors = {item["check_id"]: item["message"] for item in result["results"] if item["status"] == "error"}
+    assert "not configured" in errors[check_ids[3]]
+    assert "identity is unavailable" in errors[check_ids[4]]
+    assert all(connection.closed for connection in opened)

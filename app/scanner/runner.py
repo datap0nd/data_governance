@@ -16,7 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.archive_ops import archive_source
-from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, UPLOAD_PGHOST
+from app.config import (
+    TMDL_ROOT,
+    DB_PATH,
+    PGHOST,
+    PGDATABASE,
+    UPLOAD_PGHOST,
+    UPLOAD_PGPORT,
+)
 from app.database import get_db
 from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled, current_cancel_generation
 from app.scanner.lifecycle import (
@@ -43,6 +50,7 @@ from app.query_history import (
     report_artifact_key,
 )
 from app.source_identity import (
+    postgres_server_identity,
     exact_identity_rows,
     reconcile_all_flow_targets,
     split_relation,
@@ -52,6 +60,29 @@ from app.source_identity import (
 logger = logging.getLogger(__name__)
 
 _FILE_SOURCE_DB_TYPES = {"csv", "excel", "folder", "file"}
+
+
+def _postgres_work_is_required(db) -> bool:
+    """Return the current, not start-snapshot, PostgreSQL obligation."""
+    active_source_ids = get_active_source_ids(db)
+    postgres_source_ids = {
+        int(row["id"])
+        for row in db.execute(
+            """SELECT id FROM sources
+               WHERE LOWER(COALESCE(type, '')) = 'postgresql'
+                 AND COALESCE(archived, 0) = 0"""
+        ).fetchall()
+    }
+    active_postgres_sources = bool(active_source_ids & postgres_source_ids)
+    sql_flow_targets = bool(
+        db.execute(
+            """SELECT EXISTS(
+                   SELECT 1 FROM flows
+                   WHERE COALESCE(sql_handoff_enabled, 0) = 1
+               ) AS required"""
+        ).fetchone()["required"]
+    )
+    return bool(active_postgres_sources or sql_flow_targets)
 
 
 def _backup_db() -> None:
@@ -463,7 +494,8 @@ def run_scan(
             for key, source_info in all_sources.items():
                 pg_parts = (
                     split_relation(source_info.sql_table)
-                    if source_info.source_type == "postgresql" and source_info.server
+                    if source_info.source_type == "postgresql"
+                    and source_info.postgres_identity_is_exact
                     else None
                 )
                 existing = None
@@ -549,6 +581,7 @@ def run_scan(
                         relation=pg_parts[1],
                         relation_kind="table",
                         verified_at=now,
+                        preserve_existing_relation_kind=True,
                     )
                     if identity_claim["status"] == "conflict":
                         # A source ID is one immutable physical relation. If a
@@ -590,6 +623,7 @@ def run_scan(
                             relation=pg_parts[1],
                             relation_kind="table",
                             verified_at=now,
+                            preserve_existing_relation_kind=True,
                         )
                         if replacement_claim["status"] == "conflict":
                             raise RuntimeError(
@@ -603,7 +637,10 @@ def run_scan(
 
             # Exact links are safe to backfill only after every source identity
             # from this scan has landed. Ambiguous targets remain null.
-            reconcile_all_flow_targets(db, server=UPLOAD_PGHOST)
+            reconcile_all_flow_targets(
+                db,
+                server=postgres_server_identity(UPLOAD_PGHOST, UPLOAD_PGPORT),
+            )
 
             # After the upsert so sources first seen this scan are archived
             # before the follow-up probe runs.
@@ -902,22 +939,7 @@ def run_scan(
             ).fetchone()["count"]
             active_source_ids = get_active_source_ids(db)
             active_source_count = len(active_source_ids)
-            postgres_source_ids = {
-                int(row["id"])
-                for row in db.execute(
-                    """SELECT id FROM sources
-                       WHERE LOWER(COALESCE(type, '')) = 'postgresql'
-                         AND COALESCE(archived, 0) = 0"""
-                ).fetchall()
-            }
-            active_postgres_sources = bool(active_source_ids & postgres_source_ids)
-            sql_flow_targets = db.execute(
-                """SELECT EXISTS(
-                       SELECT 1 FROM flows
-                       WHERE COALESCE(sql_handoff_enabled, 0) = 1
-                   ) AS required"""
-            ).fetchone()["required"]
-            postgres_required = bool(active_postgres_sources or sql_flow_targets)
+            postgres_required = _postgres_work_is_required(db)
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
 
         components["core"] = component_result(
@@ -955,6 +977,12 @@ def run_scan(
             dep_result = {"status": "failed", "error": str(e)}
             logger.exception("PG dependency scan failed: %s", e)
         dep_status = normalize_scan_status(dep_result.get("status"))
+        # Deferred report relinks can make the core-stage snapshot stale, while
+        # an unidentified active PostgreSQL source can still require attention
+        # even when pg_deps has no catalog target. Recompute actual final work
+        # instead of trusting either snapshot or status in isolation.
+        with get_db() as db:
+            postgres_required = _postgres_work_is_required(db)
         dep_requested = not (
             not postgres_required and dep_status in {"skipped", "not_requested"}
         )

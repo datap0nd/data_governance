@@ -176,21 +176,57 @@ def _server_alias_lineage_gaps(
     return gaps
 
 
-def _latest_postgres_dependencies(db) -> dict:
+def _latest_postgres_dependencies(db, *, report_id: int | None = None) -> dict:
     row = db.execute(
         """SELECT id, finished_at, components_json
            FROM scan_runs
            ORDER BY id DESC
            LIMIT 1"""
     ).fetchone()
-    job = db.execute(
+    job_rows = db.execute(
         """SELECT id, status, result_json, finished_at
+                       , context_json
              FROM scanner_jobs
             WHERE job_type='postgres_lineage'
               AND status IN ('completed','completed_with_warnings','failed','stopped')
             ORDER BY finished_at DESC, id DESC
-            LIMIT 1"""
-    ).fetchone()
+            LIMIT 500"""
+    ).fetchall()
+
+    def mapping(value) -> Mapping:
+        try:
+            parsed = json.loads(value or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+
+    def matching_report_id(candidate) -> int | None:
+        context = mapping(candidate["context_json"])
+        value = context.get("report_id")
+        if value in (None, ""):
+            # Compatibility with focused jobs created before report_id was
+            # stored in context_json. Their durable result still identifies
+            # the exact report whose repair evidence they contain.
+            result = mapping(candidate["result_json"])
+            reconciliation = result.get("report_identity_reconciliation")
+            if isinstance(reconciliation, Mapping):
+                value = reconciliation.get("report_id")
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    requested_report_id = int(report_id) if report_id is not None else None
+    job = next(
+        (
+            candidate
+            for candidate in job_rows
+            if matching_report_id(candidate) == requested_report_id
+        ),
+        None,
+    )
 
     def timestamp(value) -> datetime:
         if not value:
@@ -209,19 +245,40 @@ def _latest_postgres_dependencies(db) -> dict:
     if job is not None and (
         row is None or timestamp(job["finished_at"]) >= timestamp(row["finished_at"])
     ):
-        try:
-            result = json.loads(job["result_json"] or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            result = {}
-        if not isinstance(result, Mapping):
-            result = {}
+        result = mapping(job["result_json"])
         databases = result.get("databases")
-        return {
+        reconciliation = result.get("report_identity_reconciliation")
+        payload = {
             "status": normalize_scan_status(result.get("status") or job["status"]),
             "scan_run_id": None,
             "scanner_job_id": int(job["id"]),
             "databases": dict(databases) if isinstance(databases, Mapping) else {},
         }
+        for key in (
+            "unconfigured_catalog_targets",
+            "unattempted_catalog_targets",
+            "superseded_cleanup_failures",
+        ):
+            values = result.get(key)
+            if isinstance(values, list):
+                payload[key] = [dict(item) for item in values if isinstance(item, Mapping)]
+        reconciliation_report_id = (
+            reconciliation.get("report_id")
+            if isinstance(reconciliation, Mapping)
+            else None
+        )
+        try:
+            reconciliation_report_id = int(reconciliation_report_id)
+        except (TypeError, ValueError):
+            reconciliation_report_id = None
+        if (
+            isinstance(reconciliation, Mapping)
+            and report_id is not None
+            and reconciliation_report_id is not None
+            and reconciliation_report_id == int(report_id)
+        ):
+            payload["report_identity_reconciliation"] = dict(reconciliation)
+        return payload
     if row is None:
         return {"status": "not_scanned", "scan_run_id": None, "databases": {}}
     components = parse_components(row["components_json"]) or {}
@@ -229,11 +286,35 @@ def _latest_postgres_dependencies(db) -> dict:
     if not isinstance(component, Mapping):
         return {"status": "unknown", "scan_run_id": int(row["id"]), "databases": {}}
     databases = component.get("databases")
-    return {
+    reconciliation = component.get("report_identity_reconciliation")
+    payload = {
         "status": normalize_scan_status(component.get("status")),
         "scan_run_id": int(row["id"]),
         "databases": dict(databases) if isinstance(databases, Mapping) else {},
     }
+    for key in (
+        "unconfigured_catalog_targets",
+        "unattempted_catalog_targets",
+        "superseded_cleanup_failures",
+    ):
+        values = component.get(key)
+        if isinstance(values, list):
+            payload[key] = [dict(item) for item in values if isinstance(item, Mapping)]
+    reconciliation_report_id = None
+    if isinstance(reconciliation, Mapping):
+        try:
+            reconciliation_report_id = int(reconciliation.get("report_id"))
+        except (TypeError, ValueError):
+            reconciliation_report_id = None
+    if isinstance(reconciliation, Mapping) and (
+        report_id is None
+        or (
+            reconciliation_report_id is not None
+            and reconciliation_report_id == int(report_id)
+        )
+    ):
+        payload["report_identity_reconciliation"] = dict(reconciliation)
+    return payload
 
 
 def _diagnostic_message(reason_code: str | None, flow_name: str) -> str:
@@ -279,6 +360,7 @@ def build_flow_diagnostics(
     server: str,
     report_sources: Iterable[Mapping] | None = None,
     report_root_source_ids: Iterable[int] | None = None,
+    report_id: int | None = None,
 ) -> dict:
     """Build one pure, additive Flow diagnostic contract for a report.
 
@@ -505,7 +587,10 @@ def build_flow_diagnostics(
         # candidates rather than globally counted exclusions.
         "download_only_count": 0,
         "items": items,
-        "postgres_dependencies": _latest_postgres_dependencies(db),
+        "postgres_dependencies": _latest_postgres_dependencies(
+            db,
+            report_id=report_id,
+        ),
     }
 
 
