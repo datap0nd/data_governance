@@ -220,30 +220,6 @@ fetch("/api/scanner/probe/debug").then(r=>r.json()).then(d=>console.log(d))
 
 This shows `csv_samples` (what the CSV has) and `postgresql_sources` (what's in the database) side-by-side so you can spot the mismatch.
 
-## Offline sandbox (fake data for local testing / UI work)
-
-To run the app completely offline with realistic fake data — no Power BI, no
-network shares, no production PostgreSQL — build the disposable sandbox:
-
-```bash
-python tools/seed_sandbox.py        # builds <repo>/local_sandbox
-python tools/run_sandbox.py         # starts the app on http://localhost:8000
-```
-
-The sandbox is one self-contained folder (`local_sandbox/`, gitignored)
-holding random Excel/CSV files, six TMDL report exports that reference them,
-30 days of usage CSVs, a seeded `governance.db` (people, tasks, website flow
-catalog, two flows with run history, docs), and — when PostgreSQL server
-binaries are available — a private throwaway PostgreSQL cluster with random
-`bi_reporting` tables, a materialized view, and `track_commit_timestamp=on`
-so freshness probing works for real. The seeder also runs the first scan and
-probe, so the dashboard opens fully populated (one source is deliberately
-stale to exercise alerts).
-
-Useful options: `--force` rebuilds from scratch, `--skip-postgres` skips the
-database, `--pg-port`/`--port` change ports. To remove every trace:
-`python tools/run_sandbox.py --stop`, then delete the `local_sandbox` folder.
-
 ## Running Tests
 
 ```bash
