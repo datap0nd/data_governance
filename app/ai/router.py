@@ -1,13 +1,31 @@
 """FastAPI router for AI-powered insights endpoints."""
 
+import json
 import logging
+import time
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator, model_validator
-from app.config import AI_MOCK
 from app.ai.mock_provider import mock_chat, mock_briefing, mock_report_risk
-from app.routers.eventlog import get_actor
+from app.ai.openai_provider import OpenAIChatProvider
+from app.ai.protocol import (
+    AIConfigurationError,
+    AIProtocolError,
+    AITransportError,
+    AITransportTimeout,
+    AIUpstreamError,
+)
+from app.ai.runtime_config import (
+    AISettingsUpdate,
+    candidate_runtime_settings,
+    load_runtime_settings,
+    sanitize_ai_error,
+    save_runtime_settings,
+)
+from app.database import get_db
+from app.routers.eventlog import get_actor, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +83,171 @@ class OperationsRunCreate(BaseModel):
         return self
 
 
+@router.get("/settings")
+def get_ai_settings():
+    """Return live AI settings through an API-key-free public projection."""
+    return load_runtime_settings().public_dict()
+
+
+@router.put("/settings")
+def update_ai_settings(body: AISettingsUpdate, request: Request):
+    """Atomically save live settings. A blank/omitted key keeps the current key."""
+    try:
+        with get_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            updated = save_runtime_settings(db, body)
+            changed = sorted(
+                field
+                for field in body.model_fields_set
+                if field not in {"api_key", "clear_api_key"}
+            )
+            key_action = (
+                "configured"
+                if body.submitted_api_key()
+                else "cleared" if body.clear_api_key else "unchanged"
+            )
+            log_event(
+                db,
+                "system",
+                None,
+                "AI settings",
+                "settings_updated",
+                json.dumps(
+                    {"changed_fields": changed, "api_key": key_action},
+                    separators=(",", ":"),
+                ),
+                get_actor(request),
+            )
+    except ValueError as exc:
+        raise HTTPException(422, sanitize_ai_error(exc)) from exc
+    return updated.public_dict()
+
+
+@router.post("/settings/test")
+def test_ai_settings(body: AISettingsUpdate):
+    """Test native Qwen tool-call compatibility without sending app data."""
+    try:
+        candidate = candidate_runtime_settings(body)
+    except ValueError as exc:
+        raise HTTPException(422, sanitize_ai_error(exc)) from exc
+    if not candidate.qwen_enabled:
+        return {
+            "ok": False,
+            "status": "not_configured",
+            "message": "Choose Qwen mode to test a model endpoint.",
+            "latency_ms": None,
+            "model": candidate.model,
+            "tool_calls_compatible": False,
+        }
+
+    nonce = uuid.uuid4().hex
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "metronome_connection_check",
+            "description": "Return the supplied nonce to verify native tool-call support.",
+            "parameters": {
+                "type": "object",
+                "properties": {"nonce": {"type": "string"}},
+                "required": ["nonce"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    started = time.monotonic()
+    failure: Exception | None = None
+    try:
+        turn = OpenAIChatProvider(settings=candidate).complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "This is a connection test. Call metronome_connection_check "
+                        "exactly once with the nonce. Do not answer in prose."
+                    ),
+                },
+                {"role": "user", "content": f"Nonce: {nonce}"},
+            ],
+            [tool],
+            deadline_monotonic=time.monotonic()
+            + min(30.0, candidate.http_timeout_seconds),
+        )
+        compatible = bool(
+            len(turn.tool_calls) == 1
+            and turn.tool_calls[0].name == "metronome_connection_check"
+            and turn.tool_calls[0].arguments == {"nonce": nonce}
+        )
+        if not compatible:
+            return {
+                "ok": False,
+                "status": "tool_calls_incompatible",
+                "message": (
+                    "The endpoint responded, but it did not return the required native tool call. "
+                    "Enable the Qwen reasoning and tool-call parsers on the model server."
+                ),
+                "latency_ms": round((time.monotonic() - started) * 1000),
+                "model": candidate.model,
+                "tool_calls_compatible": False,
+            }
+        return {
+            "ok": True,
+            "status": "connected",
+            "message": "Endpoint, model, and native tool calls are ready.",
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "model": candidate.model,
+            "tool_calls_compatible": True,
+        }
+    except AIConfigurationError as exc:
+        failure = exc
+        status_key = (
+            "credentials_rejected"
+            if "credential" in str(exc).casefold()
+            else "not_configured"
+        )
+    except AITransportTimeout as exc:
+        failure = exc
+        status_key = "timeout"
+    except AITransportError as exc:
+        failure = exc
+        status_key = "unreachable"
+    except AIUpstreamError as exc:
+        failure = exc
+        status_key = "upstream_error"
+    except AIProtocolError as exc:
+        failure = exc
+        status_key = "tool_calls_incompatible"
+    except Exception as exc:
+        failure = exc
+        logger.error(
+            "Unexpected AI connection-test failure: %s",
+            sanitize_ai_error(exc, candidate.api_key),
+        )
+        status_key = "test_failed"
+    return {
+        "ok": False,
+        "status": status_key,
+        "message": sanitize_ai_error(failure, candidate.api_key),
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "model": candidate.model,
+        "tool_calls_compatible": False,
+    }
+
+
 @router.post("/chat", response_model=ChatResponse)
 def ai_chat(req: ChatRequest):
     """Chat with the AI assistant about your data ecosystem."""
+    snapshot = None
     try:
+        snapshot = load_runtime_settings()
+        if not snapshot.enabled:
+            raise HTTPException(503, "AI is disabled in System > AI.")
         from app.ai.context_builder import get_full_context
         ctx = get_full_context()
-        if AI_MOCK:
+        if snapshot.mock_mode:
             result = mock_chat(req.message, ctx)
             return ChatResponse(**result)
         else:
             from app.ai.llm_provider import call_llm
-            import json
 
             system_prompt = (
                 "You are the MX Analytics assistant. You help BI managers understand "
@@ -90,30 +261,42 @@ def ai_chat(req: ChatRequest):
                 }, indent=None)
             )
 
-            response_text = call_llm(system_prompt, req.message)
+            response_text = call_llm(system_prompt, req.message, settings=snapshot)
             return ChatResponse(response=response_text)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception("AI chat error")
-        raise HTTPException(status_code=500, detail=str(e))
+        safe_message = sanitize_ai_error(
+            e,
+            snapshot.api_key if snapshot is not None else "",
+        )
+        logger.error("AI chat error: %s", safe_message)
+        raise HTTPException(status_code=502, detail=safe_message)
 
 
 @router.get("/briefing", response_model=BriefingResponse)
 def ai_briefing():
     """Get an AI-generated dashboard briefing."""
     try:
+        if not load_runtime_settings().enabled:
+            raise HTTPException(503, "AI is disabled in System > AI.")
         from app.ai.context_builder import get_dashboard_summary
         summary = get_dashboard_summary()
         result = mock_briefing(summary)
         return BriefingResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("AI briefing error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=sanitize_ai_error(e))
 
 
 @router.get("/report-risk/{report_id}", response_model=ReportRiskResponse)
 def ai_report_risk(report_id: int):
     """Get AI risk assessment for a specific report."""
     try:
+        if not load_runtime_settings().enabled:
+            raise HTTPException(503, "AI is disabled in System > AI.")
         from app.ai.context_builder import get_report_context
         ctx = get_report_context(report_id)
         if not ctx:
@@ -124,7 +307,7 @@ def ai_report_risk(report_id: int):
         raise
     except Exception as e:
         logger.exception("AI report risk error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=sanitize_ai_error(e))
 
 
 @router.post("/operations/runs", status_code=status.HTTP_202_ACCEPTED)
@@ -132,6 +315,9 @@ def create_operations_run(body: OperationsRunCreate, request: Request):
     """Queue one exact, read-only Flow or Pipeline investigation."""
     from app.ai import operations_agent, run_store
 
+    snapshot = load_runtime_settings()
+    if not snapshot.feature_enabled("operations_investigator"):
+        raise HTTPException(503, "Operations Investigator is disabled in System > AI.")
     actor = get_actor(request)
     try:
         run_id, created = run_store.create_or_reuse_run(
@@ -141,6 +327,7 @@ def create_operations_run(body: OperationsRunCreate, request: Request):
             action_id=body.action_id,
             occurrence_id=body.occurrence_id,
             actor=actor,
+            settings=snapshot,
         )
     except run_store.RunBindingNotFound as exc:
         raise HTTPException(404, str(exc)) from exc

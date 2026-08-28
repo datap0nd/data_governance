@@ -8,8 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from app import config
 from app.database import get_db
+from app.ai.runtime_config import AIRuntimeSettings, load_runtime_settings
 
 PROMPT_VERSION = "operations-incident-v1"
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -265,6 +265,7 @@ def _insert_run(
     binding: dict[str, Any],
     actor: str | None,
     now: str,
+    settings: AIRuntimeSettings,
     mode: str = "incident",
     alert_context_hash: str | None = None,
 ) -> int:
@@ -272,21 +273,23 @@ def _insert_run(
         """INSERT INTO agent_runs
            (mode, question, focus_type, focus_id, status, actor, model,
             reasoning_effort, provider_mode, prompt_version, action_id,
-            action_evidence_revision, alert_context_hash, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            action_evidence_revision, alert_context_hash, config_fingerprint,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             mode,
             question,
             binding["focus_type"],
             str(binding["focus_id"]),
             actor,
-            config.AI_MODEL,
-            config.AI_REASONING_EFFORT,
-            "mock" if config.AI_MOCK else "qwen",
+            settings.model,
+            settings.reasoning_effort,
+            settings.provider_mode,
             PROMPT_VERSION,
             binding["action_id"],
             binding["action_evidence_revision"],
             alert_context_hash,
+            settings.fingerprint,
             now,
             now,
         ),
@@ -299,6 +302,7 @@ def create_or_reuse_auto_alert_run(
     *,
     max_active: int = 10,
     retry_after_seconds: int = AUTO_ALERT_RETRY_SECONDS,
+    settings: AIRuntimeSettings | None = None,
 ) -> tuple[int | None, bool]:
     """Create one automatic advisory analysis for an active Alert revision.
 
@@ -307,6 +311,9 @@ def create_or_reuse_auto_alert_run(
     retried at a bounded cadence and attempt count. The model remains unable to
     mutate the Alert; this function only appends its own audit rows.
     """
+    snapshot = settings or load_runtime_settings()
+    if not snapshot.feature_enabled("automatic_alert_review"):
+        return None, False
     now = _iso()
     context_hash = _current_alert_context_hash(action_id)
     cutoff = datetime.fromtimestamp(
@@ -336,14 +343,34 @@ def create_or_reuse_auto_alert_run(
                   AND superseded_at IS NULL""",
             (now, now, action_id, context_hash),
         )
+        db.execute(
+            """UPDATE agent_runs
+                  SET superseded_at=COALESCE(superseded_at, ?),
+                      superseded_reason=COALESCE(
+                          superseded_reason, 'ai_configuration_changed'
+                      ), updated_at=?
+                WHERE action_id=? AND focus_type='alert'
+                  AND COALESCE(config_fingerprint, '') != ?
+                  AND status != 'running'
+                  AND superseded_at IS NULL""",
+            (now, now, action_id, snapshot.fingerprint),
+        )
         existing = db.execute(
             """SELECT id, status, created_at FROM agent_runs
                 WHERE action_id=? AND action_evidence_revision=?
                   AND focus_type='alert'
                   AND alert_context_hash=?
+                  AND config_fingerprint=?
+                  AND prompt_version=?
                   AND superseded_at IS NULL
                 ORDER BY id DESC""",
-            (action_id, revision, context_hash),
+            (
+                action_id,
+                revision,
+                context_hash,
+                snapshot.fingerprint,
+                PROMPT_VERSION,
+            ),
         ).fetchall()
         for row in existing:
             if row["status"] in {"queued", "running", "completed"}:
@@ -372,6 +399,7 @@ def create_or_reuse_auto_alert_run(
                 binding=binding,
                 actor=AUTO_ALERT_ACTOR,
                 now=now,
+                settings=snapshot,
                 mode="alert_auto",
                 alert_context_hash=context_hash,
             ),
@@ -387,7 +415,9 @@ def create_run(
     actor: str | None,
     action_id: int | None = None,
     occurrence_id: int | None = None,
+    settings: AIRuntimeSettings | None = None,
 ) -> int:
+    snapshot = settings or load_runtime_settings()
     now = _iso()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -398,7 +428,14 @@ def create_run(
             action_id=action_id,
             occurrence_id=occurrence_id,
         )
-        return _insert_run(db, question=question, binding=binding, actor=actor, now=now)
+        return _insert_run(
+            db,
+            question=question,
+            binding=binding,
+            actor=actor,
+            now=now,
+            settings=snapshot,
+        )
 
 
 def create_or_reuse_run(
@@ -410,8 +447,10 @@ def create_or_reuse_run(
     action_id: int | None = None,
     occurrence_id: int | None = None,
     max_active: int = 10,
+    settings: AIRuntimeSettings | None = None,
 ) -> tuple[int | None, bool]:
     """Resolve linkage and deduplicate one exact immutable evidence snapshot."""
+    snapshot = settings or load_runtime_settings()
     now = _iso()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -445,10 +484,25 @@ def create_or_reuse_run(
         ).fetchone()
         if int(count["count"] if count else 0) >= max_active:
             return None, False
-        return _insert_run(db, question=question, binding=binding, actor=actor, now=now), True
+        return (
+            _insert_run(
+                db,
+                question=question,
+                binding=binding,
+                actor=actor,
+                now=now,
+                settings=snapshot,
+            ),
+            True,
+        )
 
 
-def _supersession_reason_for_row(db, row: dict[str, Any]) -> str | None:
+def _supersession_reason_for_row(
+    db,
+    row: dict[str, Any],
+    *,
+    current_config_fingerprint: str | None = None,
+) -> str | None:
     """Return a durable reason when a linked run is no longer current."""
     if row.get("superseded_at"):
         return str(row.get("superseded_reason") or "alert_superseded")
@@ -476,6 +530,13 @@ def _supersession_reason_for_row(db, row: dict[str, Any]) -> str | None:
     if int(action["evidence_revision"] or 0) != int(revision):
         return "alert_evidence_changed"
     if row.get("focus_type") == "alert":
+        if (
+            current_config_fingerprint is not None
+            and row.get("status") != "running"
+            and str(row.get("config_fingerprint") or "")
+            != current_config_fingerprint
+        ):
+            return "ai_configuration_changed"
         stored_context_hash = str(row.get("alert_context_hash") or "")
         if (
             not stored_context_hash
@@ -485,8 +546,18 @@ def _supersession_reason_for_row(db, row: dict[str, Any]) -> str | None:
     return None
 
 
-def _refresh_supersession(db, row: dict[str, Any], *, now: str | None = None) -> str | None:
-    reason = _supersession_reason_for_row(db, row)
+def _refresh_supersession(
+    db,
+    row: dict[str, Any],
+    *,
+    now: str | None = None,
+    current_config_fingerprint: str | None = None,
+) -> str | None:
+    reason = _supersession_reason_for_row(
+        db,
+        row,
+        current_config_fingerprint=current_config_fingerprint,
+    )
     if not reason or row.get("superseded_at"):
         return reason
     marked_at = now or _iso()
@@ -502,17 +573,29 @@ def _refresh_supersession(db, row: dict[str, Any], *, now: str | None = None) ->
     return reason
 
 
-def superseded_reason(run_id: int) -> str | None:
+def superseded_reason(
+    run_id: int,
+    settings: AIRuntimeSettings | None = None,
+) -> str | None:
     """Refresh and return a run's supersession reason at an execution boundary."""
+    snapshot = settings or load_runtime_settings()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         selected = db.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
         if not selected:
             return None
-        return _refresh_supersession(db, dict(selected))
+        return _refresh_supersession(
+            db,
+            dict(selected),
+            current_config_fingerprint=snapshot.fingerprint,
+        )
 
 
-def claim_run(run_id: int) -> dict | None:
+def claim_run(
+    run_id: int,
+    settings: AIRuntimeSettings | None = None,
+) -> dict | None:
+    snapshot = settings or load_runtime_settings()
     now = _iso()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -520,21 +603,41 @@ def claim_run(run_id: int) -> dict | None:
         if not selected:
             return None
         row = dict(selected)
-        reason = _refresh_supersession(db, row, now=now)
+        reason = _refresh_supersession(
+            db,
+            row,
+            now=now,
+            current_config_fingerprint=snapshot.fingerprint,
+        )
         if reason and row["status"] == "queued":
+            message = (
+                "The AI configuration changed before this Alert analysis started."
+                if reason == "ai_configuration_changed"
+                else "The linked alert changed or closed before analysis started."
+            )
             db.execute(
                 """UPDATE agent_runs
                       SET status='failed', error_code='agent_evidence_superseded',
-                          error='The linked alert changed or closed before analysis started.',
+                          error=?,
                           finished_at=?, updated_at=?
                     WHERE id=? AND status='queued'""",
-                (now, now, run_id),
+                (message, now, now, run_id),
             )
             return None
         cursor = db.execute(
-            """UPDATE agent_runs SET status='running', started_at=?, updated_at=?
+            """UPDATE agent_runs
+                  SET status='running', started_at=?, updated_at=?, model=?,
+                      reasoning_effort=?, provider_mode=?, config_fingerprint=?
                WHERE id=? AND status='queued' AND cancel_requested=0""",
-            (now, now, run_id),
+            (
+                now,
+                now,
+                snapshot.model,
+                snapshot.reasoning_effort,
+                snapshot.provider_mode,
+                snapshot.fingerprint,
+                run_id,
+            ),
         )
         if not cursor.rowcount:
             return None
@@ -706,6 +809,7 @@ def fail_run(run_id: int, *, error_code: str, error: Exception | str) -> None:
 
 def recover_interrupted_runs() -> list[int]:
     """Fail interrupted work and return durable queued rows for resubmission."""
+    snapshot = load_runtime_settings()
     now = _iso()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -713,7 +817,12 @@ def recover_interrupted_runs() -> list[int]:
             "SELECT * FROM agent_runs WHERE status IN ('queued','running')"
         ).fetchall()
         for selected in active:
-            _refresh_supersession(db, dict(selected), now=now)
+            _refresh_supersession(
+                db,
+                dict(selected),
+                now=now,
+                current_config_fingerprint=snapshot.fingerprint,
+            )
         db.execute(
             """UPDATE agent_steps SET status='failed', error='Interrupted by service restart.',
                       finished_at=?
@@ -804,13 +913,20 @@ def _alert_binding_details(db, row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def get_run(run_id: int) -> dict | None:
+    # Resolve before taking SQLite's write lock; the settings loader uses the
+    # same database and must not open a nested connection under BEGIN IMMEDIATE.
+    snapshot = load_runtime_settings()
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         selected = db.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
         if not selected:
             return None
         row = dict(selected)
-        _refresh_supersession(db, row)
+        _refresh_supersession(
+            db,
+            row,
+            current_config_fingerprint=snapshot.fingerprint,
+        )
         selected = db.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
         if not selected:
             return None

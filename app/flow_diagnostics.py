@@ -85,6 +85,97 @@ def _server_mismatch_ids(db, target: Mapping) -> list[int]:
     ]
 
 
+def _server_alias_lineage_gaps(
+    db,
+    report_root_source_ids: set[int],
+    *,
+    catalog_server: str,
+) -> list[dict]:
+    """Find report sources disconnected from catalog edges by an exact host split.
+
+    This is diagnostic only. Matching database/schema/relation names on two
+    hosts is not proof that they are the same physical server, so Metronome
+    must never merge the identities automatically. The narrow signal here is
+    a report-scoped identity with no dependency edges while an otherwise equal
+    identity on another host owns catalog-discovered dependency edges.
+    """
+    wanted_catalog_server = normalize_server(catalog_server)
+    if not report_root_source_ids or not wanted_catalog_server:
+        return []
+    placeholders = ",".join("?" for _ in report_root_source_ids)
+    rows = db.execute(
+        f"""SELECT report_identity.source_id AS report_source_id,
+                   report_source.name AS report_source_name,
+                   report_identity.server_name AS report_server,
+                   report_identity.database_name,
+                   report_identity.schema_name,
+                   report_identity.relation_name,
+                   catalog_identity.source_id AS catalog_source_id,
+                   catalog_identity.server_name AS catalog_server,
+                   COUNT(catalog_edge.depends_on_id) AS dependency_count
+              FROM source_postgres_identities report_identity
+              JOIN sources report_source
+                ON report_source.id=report_identity.source_id
+              JOIN source_postgres_identities catalog_identity
+                ON catalog_identity.source_id!=report_identity.source_id
+               AND catalog_identity.database_name=report_identity.database_name
+               AND catalog_identity.schema_name=report_identity.schema_name
+               AND catalog_identity.relation_name=report_identity.relation_name
+              JOIN sources catalog_source
+                ON catalog_source.id=catalog_identity.source_id
+              JOIN source_dependencies catalog_edge
+                ON catalog_edge.source_id=catalog_identity.source_id
+               AND catalog_edge.discovered_by='pg_matviews'
+              LEFT JOIN source_dependencies report_edge
+                ON report_edge.source_id=report_identity.source_id
+               AND report_edge.discovered_by='pg_matviews'
+             WHERE report_identity.source_id IN ({placeholders})
+               AND report_edge.source_id IS NULL
+               AND COALESCE(report_source.archived, 0)=0
+               AND COALESCE(catalog_source.archived, 0)=0
+             GROUP BY report_identity.source_id, report_source.name,
+                      report_identity.server_name, report_identity.database_name,
+                      report_identity.schema_name, report_identity.relation_name,
+                      catalog_identity.source_id, catalog_identity.server_name
+             ORDER BY report_source.name, report_identity.source_id,
+                      catalog_identity.source_id""",
+        sorted(report_root_source_ids),
+    ).fetchall()
+    gaps = []
+    seen: set[tuple[int, str]] = set()
+    for row in rows:
+        report_source_id = int(row["report_source_id"])
+        catalog_source_id = int(row["catalog_source_id"])
+        report_server = normalize_server(row["report_server"])
+        discovered_catalog_server = normalize_server(row["catalog_server"])
+        if (
+            not report_server
+            or not discovered_catalog_server
+            or report_server == discovered_catalog_server
+            or discovered_catalog_server != wanted_catalog_server
+            or catalog_source_id in report_root_source_ids
+        ):
+            continue
+        key = (report_source_id, discovered_catalog_server)
+        if key in seen:
+            continue
+        seen.add(key)
+        gaps.append(
+            {
+                "report_source_id": report_source_id,
+                "report_source_name": row["report_source_name"],
+                "report_server": report_server,
+                "catalog_source_id": catalog_source_id,
+                "catalog_server": discovered_catalog_server,
+                "database": row["database_name"],
+                "schema": row["schema_name"],
+                "table": row["relation_name"],
+                "dependency_count": int(row["dependency_count"] or 0),
+            }
+        )
+    return gaps
+
+
 def _latest_postgres_dependencies(db) -> dict:
     row = db.execute(
         """SELECT id, finished_at, components_json
@@ -187,6 +278,7 @@ def build_flow_diagnostics(
     *,
     server: str,
     report_sources: Iterable[Mapping] | None = None,
+    report_root_source_ids: Iterable[int] | None = None,
 ) -> dict:
     """Build one pure, additive Flow diagnostic contract for a report.
 
@@ -335,6 +427,7 @@ def build_flow_diagnostics(
             continue
 
         item = {
+            "diagnostic_kind": "flow",
             "id": int(flow["id"]),
             "name": flow["name"],
             "target": target,
@@ -353,9 +446,61 @@ def build_flow_diagnostics(
         }
         items.append(item)
 
+    # Host-alias gaps are meaningful only for the report's direct Power BI
+    # sources. Running this check across the recursive closure can falsely
+    # flag a legitimate upstream leaf that merely shares a name with an
+    # unrelated object on another server. Callers that cannot identify direct
+    # roots omit the diagnostic rather than risk a false blocker.
+    roots = (
+        {int(source_id) for source_id in report_root_source_ids if source_id is not None}
+        if report_root_source_ids is not None
+        else set()
+    )
+    for gap in _server_alias_lineage_gaps(
+        db,
+        roots & closure,
+        catalog_server=server,
+    ):
+        relation = ".".join(
+            value for value in (gap["database"], gap["schema"], gap["table"]) if value
+        )
+        items.append(
+            {
+                "diagnostic_kind": "lineage_gap",
+                "id": None,
+                "name": gap["report_source_name"] or "PostgreSQL source",
+                "target": {
+                    "server": gap["report_server"],
+                    "database": gap["database"],
+                    "schema": gap["schema"],
+                    "table": gap["table"],
+                },
+                "target_kind": "postgresql",
+                "match_strategy": None,
+                "persisted_source_id": gap["report_source_id"],
+                "effective_source_id": None,
+                "candidate_source_ids": [gap["catalog_source_id"]],
+                "link_status": "disconnected",
+                "scope_status": "candidate_in_report",
+                "reason_code": "server_alias_lineage_gap",
+                "severity": "blocker",
+                "message": (
+                    f"This report uses PostgreSQL server '{gap['report_server']}', but "
+                    f"the dependency graph for {relation} was discovered under "
+                    f"'{gap['catalog_server']}'. If these are aliases for one server, "
+                    "make the Power BI connection and PGHOST use the same canonical host, "
+                    "then run a Full Scan. Metronome did not merge them automatically."
+                ),
+                "recommended_action": "canonicalize_server",
+                "executable": False,
+            }
+        )
+
     return {
         "included_count": included_count,
-        "excluded_count": len(items) - included_count,
+        "excluded_count": sum(
+            1 for item in items if item.get("diagnostic_kind") == "flow"
+        ) - included_count,
         # Retained for older clients. File-producing Flows are report-scoped
         # candidates rather than globally counted exclusions.
         "download_only_count": 0,
@@ -394,7 +539,11 @@ def legacy_flow_suggestions(flow_diagnostics: Mapping) -> list[dict]:
 def diagnostic_blocker_messages(flow_diagnostics: Mapping) -> list[str]:
     """Translate blocker diagnostics into pipeline preflight messages."""
     return [
-        f"Flow '{item['name']}': {item['message']}"
+        (
+            item["message"]
+            if item.get("diagnostic_kind") == "lineage_gap"
+            else f"Flow '{item['name']}': {item['message']}"
+        )
         for item in flow_diagnostics.get("items", [])
         if item.get("severity") == "blocker"
     ]

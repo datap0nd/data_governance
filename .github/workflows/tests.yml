@@ -34,9 +34,15 @@ jobs:
         run: node tests/test_lineage_layers.mjs
       - name: Run scan status display tests
         run: node tests/test_scan_status_display.mjs
+      - name: Run scanner job display tests
+        run: node tests/test_scanner_job_display.mjs
       - name: Run Flow diagnostics display tests
         run: node tests/test_flow_diagnostics_display.mjs
       - name: Run AI Operations Investigator display tests
         run: node tests/test_ai_operations_display.mjs
+      - name: Run AI settings display tests
+        run: node tests/test_ai_settings_display.mjs
+      - name: Run Updates display tests
+        run: node tests/test_updates_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js

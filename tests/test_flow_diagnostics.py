@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import app.database as database
 import app.settings as settings
 from app.database import get_db
-from app.flow_diagnostics import build_flow_diagnostics
+from app.flow_diagnostics import build_flow_diagnostics, diagnostic_blocker_messages
 from app.routers import lineage, pipelines
 from app.scanner.lifecycle import serialize_components
 from app.source_identity import upsert_postgres_identity
@@ -271,6 +271,179 @@ def test_lineage_and_refresh_plan_share_diagnostics_and_legacy_is_not_blocking(
     assert "Legacy" not in blockers
     assert "Outside" not in blockers
     assert "Unknown" not in blockers
+
+
+def test_report_scoped_server_alias_gap_is_visible_but_never_auto_merged(
+    tmp_path, monkeypatch
+):
+    path = str(tmp_path / "server-alias-gap.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db() as db:
+        db.execute(
+            "UPDATE app_settings SET value='1' WHERE key='pipeline_full_refresh_enabled'"
+        )
+        db.execute(
+            "INSERT INTO people(id, name, role, email) "
+            "VALUES (1, 'Owner', 'owner', 'owner@example.test')"
+        )
+        db.execute(
+            """INSERT INTO reports(id, name, owner, pbi_dataset_id)
+               VALUES (1, 'Alias Gap Report', 'Owner',
+                       '33333333-3333-3333-3333-333333333333')"""
+        )
+        _insert_source(db, 1, "inflow_outflow_mv")
+        _insert_source(db, 2, "inflow_outflow_mv catalog")
+        _insert_source(db, 3, "asap_import")
+        for source_id, server, relation, kind in (
+            (1, "powerbi-alias.internal", "inflow_outflow_mv", "table"),
+            (2, "10.20.30.40", "inflow_outflow_mv", "materialized_view"),
+            (3, "10.20.30.40", "asap_import", "table"),
+        ):
+            upsert_postgres_identity(
+                db,
+                source_id=source_id,
+                server=server,
+                database="warehouse",
+                schema="reporting",
+                relation=relation,
+                relation_kind=kind,
+                verified_at=now,
+            )
+        db.execute(
+            "INSERT INTO source_dependencies(source_id, depends_on_id) VALUES (2, 3)"
+        )
+        db.execute(
+            "INSERT INTO report_tables(report_id, table_name, source_id) "
+            "VALUES (1, 'Model', 1)"
+        )
+
+        diagnostics = build_flow_diagnostics(
+            db,
+            [1],
+            server="10.20.30.40",
+            report_root_source_ids=[1],
+        )
+
+    assert len(diagnostics["items"]) == 1
+    gap = diagnostics["items"][0]
+    assert gap["diagnostic_kind"] == "lineage_gap"
+    assert gap["reason_code"] == "server_alias_lineage_gap"
+    assert gap["severity"] == "blocker"
+    assert gap["persisted_source_id"] == 1
+    assert gap["candidate_source_ids"] == [2]
+    assert gap["target"] == {
+        "server": "powerbi-alias.internal",
+        "database": "warehouse",
+        "schema": "reporting",
+        "table": "inflow_outflow_mv",
+    }
+    assert "Power BI connection and PGHOST" in gap["message"]
+    assert "did not merge them automatically" in gap["message"]
+    assert diagnostic_blocker_messages(diagnostics) == [gap["message"]]
+
+    # The synthetic diagnostic has no Flow ID. Both consumers must preserve it
+    # as a visible blocker without trying to coerce its null ID to an integer.
+    monkeypatch.setattr(lineage, "UPLOAD_PGHOST", "10.20.30.40")
+    monkeypatch.setattr(pipelines, "UPLOAD_PGHOST", "10.20.30.40")
+    monkeypatch.setattr(
+        pipelines,
+        "configuration_status",
+        lambda: {
+            "configured": True,
+            "missing": [],
+            "host": "10.20.30.40",
+            "default_database": "warehouse",
+        },
+    )
+    monkeypatch.setattr(
+        pipelines,
+        "resolve_report_dataset",
+        lambda _workspace, name: {
+            "workspace": {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Workspace",
+            },
+            "report_id": "22222222-2222-2222-2222-222222222222",
+            "report_name": name,
+            "dataset_id": "33333333-3333-3333-3333-333333333333",
+            "web_url": "https://app.powerbi.test/report",
+        },
+    )
+
+    diagram = lineage.get_lineage_diagram(1)
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert diagram["flow_diagnostics"]["items"] == [gap]
+    assert plan["flow_diagnostics"]["items"] == [gap]
+    assert diagram["flows"] == []
+    assert plan["flows"] == []
+    assert gap["message"] in plan["blockers"]
+
+
+def test_server_alias_gap_ignores_upstream_leaves_archived_catalog_and_other_hosts(
+    tmp_path, monkeypatch
+):
+    path = str(tmp_path / "server-alias-gap-scope.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db() as db:
+        for source_id, name, archived in (
+            (1, "report_mv", 0),
+            (2, "shared_leaf", 0),
+            (3, "unrelated_shared_leaf", 0),
+            (4, "unrelated_dependency", 0),
+            (5, "archived_candidate_root", 0),
+            (6, "archived_catalog_object", 1),
+            (7, "catalog_dependency", 0),
+            (8, "other_host_root", 0),
+            (9, "other_host_catalog_object", 0),
+        ):
+            _insert_source(db, source_id, name, archived=archived)
+
+        for source_id, host, relation, kind in (
+            (1, "10.20.30.40", "report_mv", "materialized_view"),
+            (2, "10.20.30.40", "shared_leaf", "table"),
+            (3, "dev.example.test", "shared_leaf", "view"),
+            (4, "dev.example.test", "leaf_input", "table"),
+            (5, "powerbi-alias.internal", "archived_root", "table"),
+            (6, "10.20.30.40", "archived_root", "materialized_view"),
+            (7, "10.20.30.40", "catalog_input", "table"),
+            (8, "powerbi-alias.internal", "wrong_host_root", "table"),
+            (9, "dev.example.test", "wrong_host_root", "materialized_view"),
+        ):
+            upsert_postgres_identity(
+                db,
+                source_id=source_id,
+                server=host,
+                database="warehouse",
+                schema="reporting",
+                relation=relation,
+                relation_kind=kind,
+                verified_at=now,
+            )
+
+        for source_id, depends_on_id in ((1, 2), (3, 4), (6, 7), (9, 4)):
+            db.execute(
+                """INSERT INTO source_dependencies(source_id, depends_on_id)
+                   VALUES (?, ?)""",
+                (source_id, depends_on_id),
+            )
+
+        diagnostics = build_flow_diagnostics(
+            db,
+            [1, 2, 5, 8],
+            server="10.20.30.40",
+            report_root_source_ids=[1, 5, 8],
+        )
+
+    assert diagnostics["items"] == []
 
 
 def test_diagnostics_are_safe_for_empty_and_legacy_scan_databases(tmp_path, monkeypatch):

@@ -200,7 +200,7 @@ _DEPENDENCY_SQL = """
     WHERE c_mv.relkind IN ('m', 'v')
       AND d.deptype = 'n'
       AND d.classid = 'pg_rewrite'::regclass
-      AND c_dep.relkind IN ('r', 'm', 'v')
+      AND c_dep.relkind IN ('r', 'p', 'm', 'v')
       AND c_dep.oid != c_mv.oid
       AND ns_dep.nspname NOT IN ('pg_catalog', 'information_schema')
     ORDER BY ns_mv.nspname, c_mv.relname, ns_dep.nspname, c_dep.relname
@@ -698,7 +698,12 @@ def _apply_database_catalog(
                     mvs_found += 1
 
                 for dep_schema, dep_table, dep_kind in refs:
-                    kind = {"m": "materialized_view", "v": "view", "r": "table"}.get(
+                    kind = {
+                        "m": "materialized_view",
+                        "v": "view",
+                        "r": "table",
+                        "p": "table",
+                    }.get(
                         dep_kind, "table"
                     )
                     dep_source_id = _find_or_create_source(

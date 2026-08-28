@@ -759,16 +759,19 @@ def test_completed_alert_result_becomes_historical_when_alert_closes(
     assert historical["result"]["historical_recommendations"][0]["action_type"] == "inspect"
 
 
-def test_openai_provider_parses_native_qwen_tools_and_bounds_arguments(monkeypatch):
+def test_openai_provider_parses_native_qwen_tools_and_bounds_arguments(
+    monkeypatch, caplog
+):
     requests = []
+    api_key = "qwen-test-secret-never-log"
 
     def handler(request):
         requests.append(json.loads(request.content))
         if len(requests) == 1:
             return httpx.Response(503, json={"error": "busy"})
         return httpx.Response(200, json={
-            "id": "response-1",
-            "model": "Qwen/Qwen3.8-27B",
+            "id": f"response-{api_key}",
+            "model": f"Qwen/{api_key}",
             "choices": [{
                 "index": 0,
                 "finish_reason": "tool_calls",
@@ -789,8 +792,10 @@ def test_openai_provider_parses_native_qwen_tools_and_bounds_arguments(monkeypat
 
     monkeypatch.setattr(config, "AI_MOCK", False)
     monkeypatch.setattr(config, "AI_API_URL", "https://qwen.example.test/v1/chat/completions")
+    monkeypatch.setattr(config, "AI_API_KEY", api_key)
     monkeypatch.setattr(config, "AI_PROVIDER_PROFILE", "qwen_vllm")
     monkeypatch.setattr(openai_provider.time, "sleep", lambda _seconds: None)
+    caplog.set_level("INFO", logger="app.ai.openai_provider")
     provider = OpenAIChatProvider(transport=httpx.MockTransport(handler))
     turn = provider.complete(
         [{"role": "user", "content": "inspect"}],
@@ -802,6 +807,9 @@ def test_openai_provider_parses_native_qwen_tools_and_bounds_arguments(monkeypat
     assert turn.reasoning_content == "opaque reasoning"
     assert turn.tool_calls[0].arguments == {"run_id": 7}
     assert turn.usage == {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+    assert turn.response_id == "response-[redacted]"
+    assert turn.model == "Qwen/[redacted]"
+    assert api_key not in caplog.text
 
     with pytest.raises(AIProtocolError, match="oversized"):
         openai_provider._json_object({"payload": "x" * (33 * 1024)})

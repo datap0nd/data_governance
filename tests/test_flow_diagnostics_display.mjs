@@ -108,6 +108,33 @@ assert.equal((html.match(/Legacy suffix collision/g) || []).length, 1,
     "The compatibility legacy list must not duplicate an item already in flow_diagnostics");
 assert.match(html, /pipeline-blocked/, "An exact in-scope ambiguity must receive blocker presentation");
 
+const aliasGapHtml = context.html({
+    report: { id: 77, name: "Orders report" },
+    flows: [],
+    flow_diagnostics: {
+        items: [{
+            diagnostic_kind: "lineage_gap",
+            id: null,
+            name: "inflow_outflow_mv",
+            target: { database: "warehouse", schema: "reporting", table: "inflow_outflow_mv" },
+            severity: "blocker",
+            reason_code: "server_alias_lineage_gap",
+            message: "Power BI uses db-alias but catalog dependencies use 10.20.30.40. Metronome did not merge them automatically.",
+        }],
+    },
+});
+assert.match(aliasGapHtml, /inflow_outflow_mv/);
+assert.match(aliasGapHtml, /did not merge them automatically/,
+    "A report-specific host split must be visible instead of silently disconnecting lineage");
+assert.doesNotMatch(aliasGapHtml, /data-flow-diagnostic-edit/,
+    "A server identity gap is not a Flow edit and must not offer the wrong action");
+assert.doesNotMatch(aliasGapHtml, />Recheck lineage</,
+    "A focused PostgreSQL recheck cannot reparse the Power BI source identity");
+assert.match(aliasGapHtml, /Open Scanner · Run Scan Now \(full scan\)/,
+    "A server identity gap must direct the user to the full scanner operation that can fix it");
+assert.match(aliasGapHtml, /pipeline-blocked/,
+    "A disconnected catalog graph must block an incomplete full-pipeline plan");
+
 context.dismiss(77, legacy);
 const dismissedHtml = context.html(data);
 assert.doesNotMatch(dismissedHtml, /Legacy suffix collision/,

@@ -5105,7 +5105,7 @@ function _emailFixLinks(alert) {
 
 function _emailNextAction(alert) {
     const assessment = alert.ai_assessment || {};
-    if (assessment.recommendation_title) {
+    if (alert.ai_analysis_enabled !== false && assessment.recommendation_title) {
         return assessment.recommendation_rationale
             ? `${assessment.recommendation_title} — ${assessment.recommendation_rationale}`
             : assessment.recommendation_title;
@@ -5115,6 +5115,9 @@ function _emailNextAction(alert) {
 
 function _emailAiAssessmentText(alert) {
     const assessment = alert.ai_assessment || {};
+    if (alert.ai_analysis_enabled === false) {
+        return alert.ai_analysis_reason || "AI analysis is disabled in System > AI.";
+    }
     if (!alert.ai_assessment) {
         return "Pending or unavailable; the deterministic Alert remains active and email delivery is not blocked.";
     }
@@ -5135,6 +5138,9 @@ function _emailAlertLine(alert) {
         : alert.ai_assessment?.provider_mode === "mock"
             ? "Deterministic preview"
             : "Automated assessment";
+    const assessmentHtml = alert.ai_analysis_enabled === false
+        ? ""
+        : `<div class="email-ai-assessment"><strong>${esc(assessmentLabel)}:</strong> ${esc(assessment)}</div>`;
     const links = _emailFixLinks(alert).slice(0, 3).join("");
     return `<tr>
         <td><span class="email-artifact email-artifact-${esc(alert.artifact_kind || "data")}">${esc(alert.artifact_label || "Data")}</span></td>
@@ -5142,7 +5148,7 @@ function _emailAlertLine(alert) {
             <div class="email-alert-title"><strong>${esc(alert.issue_label || alert.type)}</strong></div>
             <div>${esc(alert.asset_name || "Unknown asset")}</div>
             ${alert.pbi_refresh_error ? `<div class="email-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(alert.pbi_refresh_error)}</div>` : ""}
-            <div class="email-ai-assessment"><strong>${esc(assessmentLabel)}:</strong> ${esc(assessment)}</div>
+            ${assessmentHtml}
             <div class="email-next-action"><strong>Next:</strong> ${esc(nextAction)}</div>
             ${links ? `<div class="email-fix-links">${links}</div>` : ""}
         </td>
@@ -5158,8 +5164,15 @@ async function renderEmail() {
         api("/api/email-schedules/people"),
     ]);
     const alertSummaries = alertData.summaries || [];
+    const aiAnalysis = alertData.ai_analysis || {
+        enabled: true,
+        state: "enabled",
+        reason: null,
+        mode: "qwen",
+    };
     window._emailPeople = people;
     window._emailAlertSummaries = alertSummaries;
+    window._emailAIAnalysis = aiAnalysis;
     window._emailSchedulesByPerson = new Map((emailSchedules || []).map(s => [String(s.person_id), s]));
 
     const biPeople = people.filter(p => p.role === "BI");
@@ -5190,7 +5203,12 @@ async function renderEmail() {
 
     const alertCards = alertSummaries.length ? alertSummaries.map(s => {
         const missingEmail = !s.email;
-        const previewAlerts = (s.alerts || []).slice(0, 4).map(_emailAlertLine).join("");
+        const aiEnabled = s.ai_analysis_enabled ?? aiAnalysis.enabled;
+        const previewAlerts = (s.alerts || []).slice(0, 4).map(alert => _emailAlertLine({
+            ...alert,
+            ai_analysis_enabled: aiEnabled,
+            ai_analysis_reason: aiAnalysis.reason,
+        })).join("");
         return `
             <div class="email-summary-panel" data-owner="${esc(s.owner_name)}">
                 <div class="email-summary-head">
@@ -5249,6 +5267,9 @@ async function renderEmail() {
                         <button class="btn-outline btn-danger-outline" id="email-alert-send-selected">Send Selected Now</button>
                     </div>
                 </div>
+                <p class="email-ai-mode-note ${aiAnalysis.enabled ? "enabled" : "disabled"}">${aiAnalysis.enabled
+                    ? `AI analysis is enabled in ${esc(_AI_MODE_LABELS[aiAnalysis.mode] || aiAnalysis.mode)} mode. Current assessments are included when available.`
+                    : `${esc(aiAnalysis.reason || "AI analysis is disabled in System > AI.")} Outlook summaries use deterministic Alert facts and next steps.`}</p>
                 <p class="email-send-note">Nothing is selected by default. Review the ranked preview, select recipients, then create drafts or send.</p>
                 <div class="email-summary-list">${alertCards}</div>
             </section>
@@ -7392,6 +7413,9 @@ function _flowDiagnosticsHtml(data, { payloadWarnings = [] } = {}) {
         summary.push(`${model.items.length} issue${model.items.length === 1 ? "" : "s"} for this report`);
     }
     if (model.postgresMessage) summary.push("PostgreSQL scan needs attention");
+    const needsFullScan = model.items.some(
+        item => item.reason_code === "server_alias_lineage_gap"
+    );
 
     const itemHtml = model.items.map(item => {
         const target = _flowDiagnosticTargetText(item);
@@ -7421,8 +7445,8 @@ function _flowDiagnosticsHtml(data, { payloadWarnings = [] } = {}) {
             ${details}
         </details>
         <div class="pipeline-diagnostic-actions">
-            <button class="btn-sm btn-outline" type="button" data-flow-diagnostic-recheck>Recheck lineage</button>
-            <button class="btn-sm btn-outline" type="button" data-flow-diagnostic-scanner>Open Scanner</button>
+            ${needsFullScan ? "" : '<button class="btn-sm btn-outline" type="button" data-flow-diagnostic-recheck>Recheck lineage</button>'}
+            <button class="btn-sm btn-outline" type="button" data-flow-diagnostic-scanner>${needsFullScan ? "Open Scanner · Run Scan Now (full scan)" : "Open Scanner"}</button>
         </div>
     </div>`;
 }
@@ -9009,6 +9033,776 @@ function bindPremiumViewersPage() {
     }
 }
 
+// ── System > AI settings ──
+
+const _AI_MODE_LABELS = {
+    disabled: "Disabled",
+    preview: "Preview",
+    qwen: "Qwen",
+};
+
+function _aiSettingsEffectiveLabel(settings) {
+    const state = settings?.effective_state;
+    if (typeof state === "string" && state.trim()) {
+        const labels = {
+            disabled: "No new AI work will run",
+            deterministic_preview: "Deterministic preview; Qwen is not called",
+            configured: "Qwen is configured for enabled features",
+        };
+        return labels[state.trim()] || state.trim().replaceAll("_", " ");
+    }
+    if (state && typeof state === "object") {
+        for (const key of ["label", "status", "reason", "mode"]) {
+            if (typeof state[key] === "string" && state[key].trim()) return state[key].trim();
+        }
+    }
+    if (settings?.mode === "qwen") return "Qwen is selected for enabled features";
+    if (settings?.mode === "preview") return "Deterministic preview only";
+    return "No new AI work will run";
+}
+
+function _aiSettingsModeBadge(mode) {
+    if (mode === "qwen") return "badge-green";
+    if (mode === "preview") return "badge-yellow";
+    return "badge-muted";
+}
+
+function _aiSettingsOption(value, current, label) {
+    return `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(label)}</option>`;
+}
+
+function _aiSettingsNumber(id, fallback) {
+    const value = Number(document.getElementById(id)?.value);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function _aiSettingsPayload() {
+    const mode = document.querySelector('input[name="ai-mode"]:checked')?.value || "disabled";
+    const payload = {
+        mode,
+        endpoint: document.getElementById("ai-endpoint")?.value.trim() || "",
+        model: document.getElementById("ai-model")?.value.trim() || "",
+        provider_profile: document.getElementById("ai-provider-profile")?.value || "auto",
+        reasoning_effort: document.getElementById("ai-reasoning-effort")?.value || "medium",
+        max_tool_calls: _aiSettingsNumber("ai-max-tool-calls", 8),
+        max_model_turns: _aiSettingsNumber("ai-max-model-turns", 6),
+        max_seconds: _aiSettingsNumber("ai-max-seconds", 180),
+        http_timeout_seconds: _aiSettingsNumber("ai-http-timeout-seconds", 90),
+        max_output_tokens: _aiSettingsNumber("ai-max-output-tokens", 4096),
+        temperature: _aiSettingsNumber("ai-temperature", 1),
+        top_p: _aiSettingsNumber("ai-top-p", 0.95),
+        operations_investigator_enabled: Boolean(document.getElementById("ai-feature-operations")?.checked),
+        automatic_alert_review_enabled: Boolean(document.getElementById("ai-feature-alert-review")?.checked),
+        alert_email_analysis_enabled: Boolean(document.getElementById("ai-feature-alert-email")?.checked),
+        documentation_suggestions_enabled: Boolean(document.getElementById("ai-feature-documentation")?.checked),
+        clear_api_key: Boolean(document.getElementById("ai-clear-api-key")?.checked),
+    };
+    const apiKey = document.getElementById("ai-api-key")?.value || "";
+    if (apiKey && !payload.clear_api_key) payload.api_key = apiKey;
+    return payload;
+}
+
+function _syncAISettingsMode() {
+    const mode = document.querySelector('input[name="ai-mode"]:checked')?.value || "disabled";
+    document.querySelectorAll(".ai-mode-card").forEach(card => {
+        card.classList.toggle("selected", card.querySelector("input")?.checked === true);
+    });
+    const testButton = document.getElementById("btn-test-ai-settings");
+    if (testButton) {
+        testButton.disabled = mode !== "qwen";
+        testButton.title = mode === "qwen" ? "Send an empty-context connection check" : "Select Qwen mode to test the model connection";
+    }
+    const note = document.getElementById("ai-mode-note");
+    if (note) {
+        note.textContent = mode === "qwen"
+            ? "Enabled features use the configured local Qwen endpoint."
+            : mode === "preview"
+                ? "Enabled features show deterministic platform facts without calling a model."
+                : "No new AI analyses run. Your connection and feature choices remain saved.";
+    }
+}
+
+async function renderAISettings() {
+    const settings = await api("/api/ai/settings");
+    window._aiSettings = settings;
+    const mode = settings.mode || "disabled";
+    const features = [
+        settings.operations_investigator_enabled,
+        settings.automatic_alert_review_enabled,
+        settings.alert_email_analysis_enabled,
+        settings.documentation_suggestions_enabled,
+    ];
+    const enabledCount = features.filter(Boolean).length;
+    const source = settings.configuration_source || "defaults";
+    const keySource = settings.api_key_configured
+        ? (settings.api_key_source ? `configured via ${settings.api_key_source}` : "configured")
+        : "not configured";
+    const checked = value => value ? "checked" : "";
+
+    return `
+        <div class="page-header ai-settings-header">
+            <div>
+                <h1>AI</h1>
+                <span class="subtitle">One place to control every model-backed feature in Metronome</span>
+            </div>
+            <span class="badge ${_aiSettingsModeBadge(mode)}">${esc(_AI_MODE_LABELS[mode] || mode)}</span>
+        </div>
+
+        <div class="ai-settings-shell">
+            <section class="settings-panel ai-settings-status" aria-labelledby="ai-status-heading">
+                <div class="section-header">
+                    <div><h2 id="ai-status-heading">Current status</h2><p>${esc(_aiSettingsEffectiveLabel(settings))}</p></div>
+                </div>
+                <div class="ai-status-grid">
+                    <div><span>Mode</span><strong>${esc(_AI_MODE_LABELS[mode] || mode)}</strong></div>
+                    <div><span>Model</span><strong>${esc(settings.model || "Not set")}</strong></div>
+                    <div><span>API key</span><strong>${esc(keySource)}</strong></div>
+                    <div><span>Features</span><strong>${enabledCount} of 4 enabled</strong></div>
+                </div>
+                <p class="ai-settings-source">Configuration source: ${esc(source)}. New work uses the latest saved settings; an analysis already running keeps the settings snapshot it started with.</p>
+            </section>
+
+            <form id="ai-settings-form" class="ai-settings-form" autocomplete="off">
+                <section class="settings-panel" aria-labelledby="ai-mode-heading">
+                    <div class="section-header">
+                        <div><h2 id="ai-mode-heading">Operating mode</h2><p>This master control applies before every feature-specific switch.</p></div>
+                    </div>
+                    <div class="ai-mode-grid">
+                        <label class="ai-mode-card ${mode === "disabled" ? "selected" : ""}">
+                            <input type="radio" name="ai-mode" value="disabled" ${mode === "disabled" ? "checked" : ""}>
+                            <span><strong>Disabled</strong><small>Do not start new AI work.</small></span>
+                        </label>
+                        <label class="ai-mode-card ${mode === "preview" ? "selected" : ""}">
+                            <input type="radio" name="ai-mode" value="preview" ${mode === "preview" ? "checked" : ""}>
+                            <span><strong>Preview</strong><small>Use deterministic facts; do not call Qwen.</small></span>
+                        </label>
+                        <label class="ai-mode-card ${mode === "qwen" ? "selected" : ""}">
+                            <input type="radio" name="ai-mode" value="qwen" ${mode === "qwen" ? "checked" : ""}>
+                            <span><strong>Qwen</strong><small>Use the configured local model.</small></span>
+                        </label>
+                    </div>
+                    <p class="ai-mode-note" id="ai-mode-note"></p>
+                </section>
+
+                <section class="settings-panel" aria-labelledby="ai-connection-heading">
+                    <div class="section-header">
+                        <div><h2 id="ai-connection-heading">Connection</h2><p>OpenAI-compatible endpoint used by every Qwen-backed function.</p></div>
+                    </div>
+                    <div class="ai-settings-grid">
+                        <label class="ai-setting-field ai-setting-wide">
+                            <span>Endpoint</span>
+                            <input id="ai-endpoint" type="url" value="${esc(settings.endpoint || "")}" placeholder="http://localhost:11434/v1/chat/completions" spellcheck="false">
+                            <small>Use the complete chat-completions URL. Saving does not test it.</small>
+                        </label>
+                        <label class="ai-setting-field">
+                            <span>Model</span>
+                            <input id="ai-model" value="${esc(settings.model || "Qwen/Qwen3.8-27B")}" spellcheck="false">
+                        </label>
+                        <label class="ai-setting-field">
+                            <span>Provider profile</span>
+                            <select id="ai-provider-profile">
+                                ${_aiSettingsOption("auto", settings.provider_profile, "Auto-detect")}
+                                ${_aiSettingsOption("qwen_vllm", settings.provider_profile, "Qwen / vLLM")}
+                                ${_aiSettingsOption("openai_compatible", settings.provider_profile, "OpenAI-compatible")}
+                            </select>
+                        </label>
+                        <label class="ai-setting-field ai-setting-wide">
+                            <span>API key</span>
+                            <input id="ai-api-key" type="password" value="" placeholder="${settings.api_key_configured ? "Saved key is configured — leave blank to keep it" : "Optional for endpoints that do not require a key"}" autocomplete="new-password" spellcheck="false">
+                            <small>The saved key is never returned to this page. Blank keeps the existing value.</small>
+                        </label>
+                        <label class="ai-clear-key">
+                            <input id="ai-clear-api-key" type="checkbox">
+                            <span>Explicitly remove the saved API key</span>
+                        </label>
+                    </div>
+                    <div class="ai-connection-actions">
+                        <button type="button" class="btn-outline" id="btn-test-ai-settings">Test model connection</button>
+                        <span id="ai-test-result" class="ai-test-result" role="status" aria-live="polite">The test sends no report, Flow, Pipeline, or Alert data.</span>
+                    </div>
+                </section>
+
+                <section class="settings-panel" aria-labelledby="ai-features-heading">
+                    <div class="section-header">
+                        <div><h2 id="ai-features-heading">Features</h2><p>Choose exactly where Metronome may use the selected operating mode.</p></div>
+                    </div>
+                    <div class="ai-feature-list">
+                        <label class="ai-feature-row">
+                            <input id="ai-feature-operations" type="checkbox" ${checked(settings.operations_investigator_enabled)}>
+                            <span><strong>Operations Investigator</strong><small>Analyze one selected Flow, Pipeline run, or Alert using bounded read-only evidence.</small></span>
+                        </label>
+                        <label class="ai-feature-row">
+                            <input id="ai-feature-alert-review" type="checkbox" ${checked(settings.automatic_alert_review_enabled)}>
+                            <span><strong>Automatic Alert review</strong><small>Check each current Alert, assess whether the evidence supports it, and suggest a next step.</small></span>
+                        </label>
+                        <label class="ai-feature-row">
+                            <input id="ai-feature-alert-email" type="checkbox" ${checked(settings.alert_email_analysis_enabled)}>
+                            <span><strong>Alert email analysis</strong><small>Include the current concise Alert assessment and suggestion in Outlook summaries.</small></span>
+                        </label>
+                        <label class="ai-feature-row">
+                            <input id="ai-feature-documentation" type="checkbox" ${checked(settings.documentation_suggestions_enabled)}>
+                            <span><strong>Documentation suggestions</strong><small>Let Qwen propose missing documentation; preview placeholders are never saved as suggestions.</small></span>
+                        </label>
+                    </div>
+                </section>
+
+                <details class="settings-panel ai-advanced-settings">
+                    <summary>Advanced model limits</summary>
+                    <p>Bound how much time and work one model request may consume.</p>
+                    <div class="ai-settings-grid">
+                        <label class="ai-setting-field"><span>Reasoning effort</span><select id="ai-reasoning-effort">
+                            ${_aiSettingsOption("low", settings.reasoning_effort, "Low")}
+                            ${_aiSettingsOption("medium", settings.reasoning_effort, "Medium")}
+                            ${_aiSettingsOption("xhigh", settings.reasoning_effort, "Extra high")}
+                        </select></label>
+                        <label class="ai-setting-field"><span>Tool calls</span><input id="ai-max-tool-calls" type="number" min="1" max="12" value="${esc(settings.max_tool_calls ?? 8)}"></label>
+                        <label class="ai-setting-field"><span>Model turns</span><input id="ai-max-model-turns" type="number" min="1" max="8" value="${esc(settings.max_model_turns ?? 6)}"></label>
+                        <label class="ai-setting-field"><span>Total seconds</span><input id="ai-max-seconds" type="number" min="30" max="300" value="${esc(settings.max_seconds ?? 180)}"></label>
+                        <label class="ai-setting-field"><span>HTTP timeout seconds</span><input id="ai-http-timeout-seconds" type="number" min="10" max="180" step="0.5" value="${esc(settings.http_timeout_seconds ?? 90)}"></label>
+                        <label class="ai-setting-field"><span>Maximum output tokens</span><input id="ai-max-output-tokens" type="number" min="512" max="8192" step="128" value="${esc(settings.max_output_tokens ?? 4096)}"></label>
+                        <label class="ai-setting-field"><span>Temperature</span><input id="ai-temperature" type="number" min="0" max="1.5" step="0.05" value="${esc(settings.temperature ?? 1)}"></label>
+                        <label class="ai-setting-field"><span>Top P</span><input id="ai-top-p" type="number" min="0.1" max="1" step="0.05" value="${esc(settings.top_p ?? 0.95)}"></label>
+                    </div>
+                </details>
+
+                <aside class="ai-readonly-note">
+                    <strong>Read-only by design.</strong> The model can receive the platform evidence needed for the selected feature and can return an assessment. It cannot edit data, retry runs, refresh reports, or send email. Endpoint and API-key values are connection settings and are never added to model prompt context.
+                </aside>
+
+                <div class="ai-save-bar">
+                    <span>Changes affect new AI work immediately after saving.</span>
+                    <button type="submit" id="btn-save-ai-settings">Save AI settings</button>
+                </div>
+            </form>
+        </div>
+    `;
+}
+
+function bindAISettingsPage() {
+    const form = document.getElementById("ai-settings-form");
+    const apiKey = document.getElementById("ai-api-key");
+    const clearKey = document.getElementById("ai-clear-api-key");
+    const testButton = document.getElementById("btn-test-ai-settings");
+    const testResult = document.getElementById("ai-test-result");
+
+    document.querySelectorAll('input[name="ai-mode"]').forEach(input => input.addEventListener("change", _syncAISettingsMode));
+    _syncAISettingsMode();
+
+    clearKey?.addEventListener("change", () => {
+        if (!apiKey) return;
+        if (clearKey.checked) apiKey.value = "";
+        apiKey.disabled = clearKey.checked;
+    });
+
+    testButton?.addEventListener("click", async () => {
+        testButton.disabled = true;
+        testButton.textContent = "Testing...";
+        if (testResult) {
+            testResult.dataset.status = "working";
+            testResult.textContent = "Contacting the configured model without business context...";
+        }
+        try {
+            const result = await apiPostJson("/api/ai/settings/test", _aiSettingsPayload());
+            const failed = result.ok === false || result.success === false || ["error", "failed"].includes(String(result.status || "").toLowerCase());
+            const latency = Number.isFinite(Number(result.latency_ms)) ? ` (${Math.round(Number(result.latency_ms))} ms)` : "";
+            const message = result.message || result.detail || (failed ? "Connection failed" : "Connection succeeded");
+            if (testResult) {
+                testResult.dataset.status = failed ? "failed" : "passed";
+                testResult.textContent = `${message}${latency}`;
+            }
+        } catch (err) {
+            if (testResult) {
+                testResult.dataset.status = "failed";
+                testResult.textContent = "Connection test failed: " + err.message;
+            }
+        } finally {
+            testButton.textContent = "Test model connection";
+            _syncAISettingsMode();
+        }
+    });
+
+    form?.addEventListener("submit", async event => {
+        event.preventDefault();
+        const saveButton = document.getElementById("btn-save-ai-settings");
+        saveButton.disabled = true;
+        saveButton.textContent = "Saving...";
+        try {
+            const updated = await apiPut("/api/ai/settings", _aiSettingsPayload());
+            window._aiSettings = updated;
+            toast("AI settings saved for new work");
+            await navigate("ai");
+        } catch (err) {
+            toast("AI settings were not saved: " + err.message);
+            saveButton.disabled = false;
+            saveButton.textContent = "Save AI settings";
+        }
+    });
+}
+
+// ── System > Updates ──
+
+const _UPDATE_ACTIVE_STATES = new Set([
+    "reserved", "queued", "pending", "launching", "launched", "running",
+    "updating", "restarting", "verifying",
+]);
+
+function _updatesRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function _updatesHumanize(value) {
+    return String(value || "unknown")
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function _updatesShortCommit(value) {
+    const commit = String(value || "").trim();
+    return commit ? commit.slice(0, 9) : "Not available";
+}
+
+function _updatesAttemptStatus(attempt) {
+    return String(_updatesRecord(attempt).status || _updatesRecord(attempt).state || "").toLowerCase();
+}
+
+function _updatesAttemptActive(attempt) {
+    return _UPDATE_ACTIVE_STATES.has(_updatesAttemptStatus(attempt));
+}
+
+function _updatesAttemptId(attempt) {
+    const data = _updatesRecord(attempt);
+    return data.attempt_id || data.id || null;
+}
+
+function _updatesAttemptTarget(attempt) {
+    const data = _updatesRecord(attempt);
+    return String(data.target_commit || data.commit || "").trim();
+}
+
+function _updatesReadiness(value, fallbackReason = null) {
+    if (typeof value === "boolean") {
+        return { ready: value, reason: value ? null : (fallbackReason || "The unattended updater task is not ready.") };
+    }
+    const data = _updatesRecord(value);
+    const status = String(data.status || "").toLowerCase();
+    const ready = Boolean(data.ready ?? data.configured ?? data.available ?? (status === "ready"));
+    const reasons = Array.isArray(data.reasons) ? data.reasons.filter(Boolean).join(" ") : null;
+    return {
+        ready,
+        reason: data.reason || data.message || reasons || (ready ? null : (fallbackReason || "The unattended updater task is not ready.")),
+    };
+}
+
+function _updatesBlockers(value) {
+    if (!value) return [];
+    if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+    if (Array.isArray(value)) {
+        return value.flatMap(item => {
+            if (typeof item === "string") return item.trim() ? [item.trim()] : [];
+            const data = _updatesRecord(item);
+            const label = data.label || data.name || data.job_type || data.type;
+            const count = Number(data.count ?? data.active ?? 0);
+            if (label && Number.isFinite(count) && count > 0) return [`${label}: ${count}`];
+            return data.message ? [String(data.message)] : [];
+        });
+    }
+    const data = _updatesRecord(value);
+    if (Array.isArray(data.blockers)) return _updatesBlockers(data.blockers);
+    if (data.idle === true || data.has_active_work === false || data.busy === false) return [];
+    const ignored = new Set(["idle", "busy", "has_active_work", "total", "blockers", "checked_at"]);
+    const blockers = [];
+    for (const [key, raw] of Object.entries(data)) {
+        if (ignored.has(key) || raw === null || raw === undefined || raw === false || raw === 0 || raw === "") continue;
+        const label = _updatesHumanize(key);
+        if (typeof raw === "number") blockers.push(`${label}: ${raw}`);
+        else if (raw === true) blockers.push(label);
+        else if (Array.isArray(raw) && raw.length) blockers.push(`${label}: ${raw.length}`);
+        else if (typeof raw === "string") blockers.push(raw);
+        else if (typeof raw === "object" && Number(raw.count || 0) > 0) blockers.push(`${label}: ${raw.count}`);
+    }
+    return [...new Set(blockers)];
+}
+
+function _normalizeUpdateStatus(rawValue) {
+    const raw = _updatesRecord(rawValue);
+    const auto = _updatesRecord(raw.auto_update);
+    const testsRaw = _updatesRecord(raw.tests_gate);
+    const testsState = String(testsRaw.state || "not_checked").toLowerCase();
+    const activeCandidate = Object.keys(_updatesRecord(raw.active_attempt)).length
+        ? raw.active_attempt
+        : raw.attempt;
+    const activeAttempt = _updatesAttemptActive(activeCandidate) ? activeCandidate : null;
+    const latestAttempt = Object.keys(_updatesRecord(raw.latest_attempt)).length ? raw.latest_attempt : null;
+    const currentCommit = String(raw.current_commit || auto.deployed_commit || "").trim();
+    const latestCommit = String(raw.latest_commit || auto.latest_commit || "").trim();
+    const upToDate = typeof raw.up_to_date === "boolean" ? raw.up_to_date : null;
+    const updateAvailable = Boolean(auto.update_available ?? (upToDate === false));
+    const status = String(auto.status || raw.status || (
+        _updatesAttemptActive(activeAttempt) ? _updatesAttemptStatus(activeAttempt)
+            : updateAvailable ? "update_available"
+                : upToDate === true ? "up_to_date" : "unknown"
+    )).toLowerCase();
+    return {
+        raw,
+        auto,
+        enabled: Boolean(auto.enabled),
+        branch: auto.branch || "main",
+        intervalMinutes: Number(auto.interval_minutes || 5),
+        taskName: auto.task_name || "Metronome update task",
+        version: raw.version || "Unknown",
+        currentCommit,
+        latestCommit,
+        upToDate,
+        updateAvailable,
+        checkError: auto.check_error || null,
+        status,
+        lastCheckedAt: auto.last_checked_at || null,
+        lastAttemptAt: auto.last_attempt_at || null,
+        lastAttemptCommit: auto.last_attempt_commit || null,
+        lastError: auto.last_error || null,
+        testsGate: {
+            state: testsState,
+            workflow: testsRaw.workflow || "Tests",
+            targetCommit: String(testsRaw.target_commit || latestCommit || "").trim(),
+            status: testsRaw.status || null,
+            conclusion: testsRaw.conclusion || null,
+            checkedAt: testsRaw.checked_at || null,
+            message: testsRaw.message || "The Tests workflow has not been checked yet.",
+            error: testsRaw.error || null,
+            url: testsRaw.url || null,
+        },
+        readiness: _updatesReadiness(raw.updater_ready, raw.updater_error),
+        blockers: _updatesBlockers(raw.active_work),
+        activeAttempt,
+        latestAttempt,
+        canApply: Boolean(raw.can_apply),
+    };
+}
+
+function _updatesStatusBadge(status) {
+    if (["up_to_date", "succeeded", "completed", "ready"].includes(status)) return "badge-green";
+    if (["failed", "error", "blocked", "tests_failed", "tests_check_failed"].includes(status)) return "badge-red";
+    if (_UPDATE_ACTIVE_STATES.has(status)) return "badge-blue";
+    if (["update_available", "deferred", "check_failed", "waiting_for_tests", "main_changed_during_tests_check"].includes(status)) return "badge-yellow";
+    return "badge-muted";
+}
+
+function _updatesWhen(value) {
+    if (!value) return "Never";
+    return `<span title="${esc(formatDate(value))}">${esc(timeAgo(value))}</span>`;
+}
+
+function _updatesAttemptHtml(attemptValue, fallback = {}) {
+    const attempt = _updatesRecord(attemptValue);
+    const status = String(attempt.status || attempt.state || fallback.status || "none").toLowerCase();
+    const target = attempt.target_commit || attempt.commit || fallback.commit;
+    const when = attempt.finished_at || attempt.started_at || attempt.launched_at || attempt.created_at || fallback.when;
+    const trigger = attempt.trigger_source || attempt.trigger || fallback.trigger;
+    const message = attempt.message || attempt.stage || fallback.message;
+    const error = attempt.error_message || attempt.error || fallback.error;
+    if (!Object.keys(attempt).length && !target && !when && !error) {
+        return '<div class="updates-empty">No update attempt has been recorded yet.</div>';
+    }
+    return `
+        <div class="updates-attempt-head">
+            <span class="badge ${_updatesStatusBadge(status)}">${esc(_updatesHumanize(status))}</span>
+            ${target ? `<code title="${esc(target)}">${esc(_updatesShortCommit(target))}</code>` : ""}
+            ${when ? `<span>${_updatesWhen(when)}</span>` : ""}
+        </div>
+        ${trigger ? `<p>Triggered by <strong>${esc(_updatesHumanize(trigger))}</strong>.</p>` : ""}
+        ${message ? `<p>${esc(message)}</p>` : ""}
+        ${error ? `<div class="updates-error"><strong>Last error:</strong> ${esc(error)}</div>` : ""}
+    `;
+}
+
+function _updatesSettingsPayload() {
+    return { enabled: Boolean(document.getElementById("updates-auto-enabled")?.checked) };
+}
+
+async function renderUpdates() {
+    const raw = await api("/api/system/updates");
+    const status = _normalizeUpdateStatus(raw);
+    window._updatesStatus = status;
+    const active = _updatesAttemptActive(status.activeAttempt) || _UPDATE_ACTIVE_STATES.has(status.status);
+    const testsPassed = status.testsGate.state === "passed";
+    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !testsPassed || !status.readiness.ready || status.blockers.length > 0 || active;
+    const installReason = active
+        ? "An update attempt is already active."
+        : status.upToDate === true
+            ? "This installation already matches GitHub main."
+            : status.checkError
+                ? "Resolve the latest GitHub check failure before installing."
+            : !status.updateAvailable
+                ? "Check GitHub main before installing."
+                : !testsPassed
+                    ? status.testsGate.error || status.testsGate.message
+            : !status.readiness.ready
+                ? status.readiness.reason
+                : status.blockers.length
+                    ? "Wait for active production work to finish."
+                    : "Install the latest exact main-branch commit.";
+    const lastAttempt = status.activeAttempt || status.latestAttempt;
+    const latestLabel = status.latestCommit ? _updatesShortCommit(status.latestCommit) : "Check required";
+    const testsReleaseStatus = {
+        pending: "waiting_for_tests",
+        failed: "tests_failed",
+        unavailable: "tests_check_failed",
+    }[status.testsGate.state];
+    const releaseStatus = status.updateAvailable
+        ? testsPassed ? "update_available" : (testsReleaseStatus || status.status)
+        : status.upToDate === true ? "up_to_date" : status.status;
+    const overallLabel = _updatesHumanize(releaseStatus);
+    const fallbackAttempt = status.lastAttemptAt || status.lastAttemptCommit
+        ? {
+            status: status.lastError ? "failed" : "none",
+            commit: status.lastAttemptCommit,
+            when: status.lastAttemptAt,
+            error: status.lastError,
+        }
+        : {};
+
+    return `
+        <div class="page-header updates-header">
+            <div>
+                <h1>Updates</h1>
+                <span class="subtitle">Watch GitHub main and apply one exact, idle-safe release</span>
+            </div>
+            <span class="badge ${_updatesStatusBadge(releaseStatus)}">${esc(overallLabel)}</span>
+        </div>
+
+        <div class="updates-shell">
+            <section class="settings-panel updates-overview" aria-labelledby="updates-overview-heading">
+                <div class="section-header">
+                    <div><h2 id="updates-overview-heading">Release status</h2><p>The watcher checks the fixed <strong>${esc(status.branch)}</strong> branch every ${esc(status.intervalMinutes)} minutes.</p></div>
+                </div>
+                <div class="updates-status-grid">
+                    <article>
+                        <span>Current install</span>
+                        <strong>${esc(status.version)}</strong>
+                        <code title="${esc(status.currentCommit)}">${esc(_updatesShortCommit(status.currentCommit))}</code>
+                    </article>
+                    <article>
+                        <span>Latest on ${esc(status.branch)}</span>
+                        <strong>${esc(latestLabel)}</strong>
+                        <small>${status.updateAvailable ? "Newer than this install" : status.upToDate === true ? "Matches this install" : "Waiting for an authoritative check"}</small>
+                    </article>
+                    <article>
+                        <span>Watcher</span>
+                        <strong>${status.enabled ? "Automatic updates on" : "Automatic updates off"}</strong>
+                        <small>Last checked: ${_updatesWhen(status.lastCheckedAt)}</small>
+                    </article>
+                    <article>
+                        <span>Updater task</span>
+                        <strong>${status.readiness.ready ? "Ready" : "Not ready"}</strong>
+                        <small>${esc(status.taskName)}</small>
+                    </article>
+                    <article>
+                        <span>Main tests</span>
+                        <strong>${esc(_updatesHumanize(status.testsGate.state))}</strong>
+                        <small>${esc(status.testsGate.workflow)}${status.testsGate.checkedAt ? ` · ${_updatesWhen(status.testsGate.checkedAt)}` : ""}</small>
+                    </article>
+                </div>
+                ${status.checkError ? `<div class="updates-warning"><strong>Latest check failed:</strong> ${esc(status.checkError)}</div>` : ""}
+                ${!status.readiness.ready ? `<div class="updates-warning"><strong>Automatic install unavailable:</strong> ${esc(status.readiness.reason)}</div>` : ""}
+                ${status.updateAvailable && !testsPassed ? `<div class="${status.testsGate.state === "failed" || status.testsGate.state === "unavailable" ? "updates-error" : "updates-warning"}"><strong>Tests gate:</strong> ${esc(status.testsGate.error || status.testsGate.message)}</div>` : ""}
+            </section>
+
+            <section class="settings-panel updates-control" aria-labelledby="updates-control-heading">
+                <div class="section-header">
+                    <div><h2 id="updates-control-heading">Automatic main updates</h2><p>When enabled, a fresh update is installed only after Metronome confirms production work is idle.</p></div>
+                </div>
+                <form id="updates-settings-form">
+                    <label class="updates-toggle">
+                        <input id="updates-auto-enabled" type="checkbox" ${status.enabled ? "checked" : ""}>
+                        <span><strong>Automatically watch and install GitHub main</strong><small>Checks every ${esc(status.intervalMinutes)} minutes. The branch and interval are fixed by the server.</small></span>
+                    </label>
+                    <div class="updates-save-row">
+                        <span>Disabling this does not remove manual Check now or Install now.</span>
+                        <button type="submit" id="btn-save-update-settings">Save update setting</button>
+                    </div>
+                </form>
+            </section>
+
+            <section class="settings-panel updates-blockers" aria-labelledby="updates-blockers-heading">
+                <div class="section-header">
+                    <div><h2 id="updates-blockers-heading">Production readiness</h2><p>Automatic and manual installs fail closed while active work could be interrupted.</p></div>
+                </div>
+                ${status.blockers.length
+                    ? `<ul>${status.blockers.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`
+                    : '<div class="updates-ready"><span class="status-dot"></span><strong>No active-work blockers reported.</strong></div>'}
+            </section>
+
+            <section class="settings-panel updates-history" aria-labelledby="updates-history-heading">
+                <div class="section-header">
+                    <div><h2 id="updates-history-heading">Latest attempt</h2><p>Install progress survives the service restart and is reconciled when Metronome returns.</p></div>
+                </div>
+                ${_updatesAttemptHtml(lastAttempt, fallbackAttempt)}
+            </section>
+
+            <section class="settings-panel updates-actions" aria-labelledby="updates-actions-heading">
+                <div class="section-header">
+                    <div><h2 id="updates-actions-heading">Manual actions</h2><p>Check now refreshes GitHub state. Install now reserves the latest exact commit and restarts the service.</p></div>
+                </div>
+                <div class="updates-action-row">
+                    <button type="button" class="btn-outline" id="btn-check-updates" ${active ? "disabled" : ""}>Check now</button>
+                    <button type="button" id="btn-install-update" ${installDisabled ? "disabled" : ""} title="${esc(installReason)}">Install now</button>
+                    <span id="updates-live-status" class="updates-live-status" role="status" aria-live="polite">${active ? "An update is in progress. This page will reconnect after the restart." : esc(installReason)}</span>
+                </div>
+            </section>
+        </div>
+    `;
+}
+
+function _updatesCommitMatches(current, target) {
+    const deployed = String(current || "").toLowerCase();
+    const expected = String(target || "").toLowerCase();
+    return Boolean(deployed && expected && (deployed.startsWith(expected) || expected.startsWith(deployed)));
+}
+
+function _stopUpdateReconnect() {
+    if (window._updateReconnectTimer) clearTimeout(window._updateReconnectTimer);
+    window._updateReconnectTimer = null;
+    window._updateReconnect = null;
+}
+
+function _startUpdateReconnect(initialValue) {
+    const initial = _normalizeUpdateStatus(initialValue);
+    const initialRaw = _updatesRecord(initialValue);
+    const activeAttempt = initial.activeAttempt || initialRaw.active_attempt || initialRaw;
+    const targetCommit = _updatesAttemptTarget(activeAttempt) || initial.latestCommit || String(initialRaw.target_commit || "");
+    const attemptId = _updatesAttemptId(activeAttempt) || initialRaw.attempt_id || null;
+    _stopUpdateReconnect();
+    window._updateReconnect = {
+        targetCommit,
+        attemptId,
+        deadline: Date.now() + 10 * 60 * 1000,
+        sawDisconnect: false,
+    };
+
+    const updateMessage = message => {
+        const element = document.getElementById("updates-live-status");
+        if (element) element.textContent = message;
+    };
+
+    const poll = async () => {
+        const reconnect = window._updateReconnect;
+        if (!reconnect) return;
+        if (Date.now() >= reconnect.deadline) {
+            updateMessage("The restart is taking longer than expected. Refresh later to see the durable update status.");
+            toast("Update status timed out; the server-side attempt remains authoritative");
+            _stopUpdateReconnect();
+            return;
+        }
+        try {
+            const raw = await api("/api/system/updates");
+            const status = _normalizeUpdateStatus(raw);
+            const latestAttempt = _updatesRecord(status.latestAttempt);
+            const latestId = _updatesAttemptId(latestAttempt);
+            const latestState = _updatesAttemptStatus(latestAttempt);
+            const targetMatches = reconnect.targetCommit
+                ? _updatesCommitMatches(status.currentCommit, reconnect.targetCommit)
+                : status.upToDate === true;
+            const attemptMatches = !reconnect.attemptId || !latestId || String(latestId) === String(reconnect.attemptId);
+            if (attemptMatches && ["failed", "error", "stopped", "cancelled"].includes(latestState)) {
+                const error = latestAttempt.error_message || latestAttempt.error || status.lastError || "The updater reported a failed attempt.";
+                updateMessage(`Update failed: ${error}`);
+                toast("Update failed: " + error);
+                _stopUpdateReconnect();
+                return;
+            }
+            if (targetMatches && attemptMatches && !_updatesAttemptActive(status.activeAttempt)) {
+                updateMessage("Update completed. Reloading Metronome...");
+                toast(`Metronome updated to ${_updatesShortCommit(status.currentCommit)}`);
+                _stopUpdateReconnect();
+                setTimeout(() => window.location.reload(), 700);
+                return;
+            }
+            updateMessage(reconnect.sawDisconnect
+                ? "Metronome is back. Verifying the installed commit..."
+                : "Update launched. Waiting for the service restart...");
+        } catch (_) {
+            reconnect.sawDisconnect = true;
+            updateMessage("Service is restarting. Reconnecting automatically...");
+        }
+        window._updateReconnectTimer = setTimeout(poll, reconnect.sawDisconnect ? 3000 : 2000);
+    };
+
+    updateMessage("Update launched. Waiting for the service restart...");
+    window._updateReconnectTimer = setTimeout(poll, 1200);
+}
+
+async function _runUpdateAction(kind) {
+    const button = document.getElementById(kind === "check" ? "btn-check-updates" : "btn-install-update");
+    const live = document.getElementById("updates-live-status");
+    if (button) {
+        button.disabled = true;
+        button.textContent = kind === "check" ? "Checking..." : "Launching...";
+    }
+    if (live) live.textContent = kind === "check" ? "Checking GitHub main..." : "Reserving the latest commit...";
+    try {
+        const endpoint = kind === "check" ? "/api/system/updates/check" : "/api/system/updates/apply";
+        const result = await apiPost(endpoint);
+        const status = _normalizeUpdateStatus(result);
+        const launched = _updatesAttemptActive(status.activeAttempt)
+            || _UPDATE_ACTIVE_STATES.has(status.status)
+            || ["launched", "launching", "updating"].includes(String(result.status || "").toLowerCase());
+        if (launched) {
+            toast("Update launched; Metronome will reconnect after the restart");
+            _startUpdateReconnect(result);
+            return;
+        }
+        toast(kind === "check"
+            ? status.updateAvailable ? "Update available on GitHub main" : "Metronome is up to date"
+            : "Update request completed");
+        await navigate("updates");
+    } catch (error) {
+        if (kind === "apply" && [409, 503].includes(Number(error.status))) {
+            toast("Update not started: " + error.message);
+            await navigate("updates");
+            return;
+        }
+        if (live) live.textContent = `${kind === "check" ? "Check" : "Install"} failed: ${error.message}`;
+        toast(`${kind === "check" ? "Update check" : "Update install"} failed: ${error.message}`);
+        if (button) {
+            button.disabled = false;
+            button.textContent = kind === "check" ? "Check now" : "Install now";
+        }
+    }
+}
+
+function bindUpdatesPage() {
+    const form = document.getElementById("updates-settings-form");
+    form?.addEventListener("submit", async event => {
+        event.preventDefault();
+        const button = document.getElementById("btn-save-update-settings");
+        if (button) {
+            button.disabled = true;
+            button.textContent = "Saving...";
+        }
+        try {
+            await apiPut("/api/system/updates", _updatesSettingsPayload());
+            toast("Automatic main updates setting saved");
+            await navigate("updates");
+        } catch (error) {
+            toast("Update setting was not saved: " + error.message);
+            if (button) {
+                button.disabled = false;
+                button.textContent = "Save update setting";
+            }
+        }
+    });
+    document.getElementById("btn-check-updates")?.addEventListener("click", () => _runUpdateAction("check"));
+    document.getElementById("btn-install-update")?.addEventListener("click", () => {
+        const status = window._updatesStatus || {};
+        const target = _updatesShortCommit(status.latestCommit);
+        if (!confirm(`Install GitHub main commit ${target} now? Metronome will restart after confirming production work is idle.`)) return;
+        _runUpdateAction("apply");
+    });
+    if (_updatesAttemptActive(window._updatesStatus?.activeAttempt) && !window._updateReconnectTimer) {
+        _startUpdateReconnect(window._updatesStatus.raw);
+    }
+}
+
 async function renderRefreshSchedule() {
     const [schedule, pipelineSettings] = await Promise.all([
         api("/api/system/refresh-schedule"),
@@ -10335,6 +11129,8 @@ const pages = {
     flows: renderFlows,
     eventlog: renderEventLog,
     faq: renderFaq,
+    ai: renderAISettings,
+    updates: renderUpdates,
     refreshschedule: renderRefreshSchedule,
     premiumviewers: renderPremiumViewers,
 };
@@ -10471,6 +11267,8 @@ async function navigate(page) {
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
+        if (page === "ai") bindAISettingsPage();
+        if (page === "updates") bindUpdatesPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
@@ -11954,29 +12752,12 @@ document.addEventListener("DOMContentLoaded", () => {
             el.style.opacity = "1";
             el.title = "A newer version is on GitHub ("
                 + String(v.latest_commit || "").slice(0, 9)
-                + "). Use Update App or run setup.ps1.";
+                + "). Open System > Updates or run setup.ps1.";
         } else {
             el.title = "Update check unavailable"
                 + (v.update_check_error ? ": " + v.update_check_error : "");
         }
     }).catch(() => {});
-
-    // Update App button
-    const updateBtn = document.getElementById("btn-update-app");
-    if (updateBtn) {
-        updateBtn.addEventListener("click", async (e) => {
-            e.preventDefault();
-            if (!confirm("This will download the latest version and restart the service. Continue?")) return;
-            try {
-                await apiPost("/api/update");
-                window.close();
-                // window.close() may be blocked by the browser - show fallback
-                document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:inherit;color:var(--text)"><div style="text-align:center"><h2>Updating...</h2><p style="color:var(--text-muted);margin-top:0.5rem">Setup is running. You can close this tab.</p></div></div>';
-            } catch (err) {
-                toast("Update failed: " + err.message);
-            }
-        });
-    }
 
     // Theme toggle
     const themeToggle = document.getElementById("theme-toggle");

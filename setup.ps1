@@ -54,6 +54,7 @@ function Invoke-WebRequestWithRetry {
 $ServiceName = "MXAnalytics"
 $FlowServiceName = "MXFlowsWorker"
 $HeadedFlowTaskName = "Metronome_Flows_Headed"
+$AutoUpdateTaskName = "Metronome_Auto_Update"
 $CodeDir     = $PSScriptRoot
 $ProjectDir  = Split-Path $CodeDir
 $DbPath      = "$ProjectDir\governance.db"
@@ -437,6 +438,27 @@ $HeadedTaskSettings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
     -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
+
+# Register one fixed, non-interactive update task while setup already has the
+# service account credential. The web app only writes an exact-SHA request and
+# starts this task; later updates never recreate services or ask for a password.
+$AutoUpdateScript = Join-Path $CodeDir "tools\apply_update.ps1"
+$AutoUpdateRoot = Join-Path $ProjectDir "updates"
+$AutoUpdateRequest = Join-Path $AutoUpdateRoot "pending_update.json"
+if (-not (Test-Path $AutoUpdateScript -PathType Leaf)) {
+    throw "Unattended update worker is missing: $AutoUpdateScript"
+}
+New-Item -ItemType Directory -Path $AutoUpdateRoot -Force | Out-Null
+$AutoUpdatePowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$AutoUpdateArguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$AutoUpdateScript`" -RequestPath `"$AutoUpdateRequest`""
+$AutoUpdateAction = New-ScheduledTaskAction -Execute $AutoUpdatePowerShell -Argument $AutoUpdateArguments
+$AutoUpdateSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $AutoUpdateTaskName -Action $AutoUpdateAction `
+    -Settings $AutoUpdateSettings -Description "Apply a pinned Metronome update with backup, health check, and rollback" `
+    -User "$env:USERDOMAIN\$env:USERNAME" -Password $ServicePassword -RunLevel Highest -Force | Out-Null
+Write-Host "  Unattended auto-update task registered." -ForegroundColor Green
 
 if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     Write-Host "Installing RDP console guard..." -ForegroundColor Yellow

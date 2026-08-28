@@ -271,9 +271,11 @@ def get_lineage_diagram(report_id: int):
             source_ids,
             server=UPLOAD_PGHOST,
             report_sources=sources,
+            report_root_source_ids=direct_source_ids,
         )
         diagnostic_by_id = {
             int(item["id"]): item for item in flow_diagnostics["items"]
+            if item.get("id") is not None
         }
         included_ids = included_flow_ids(flow_diagnostics)
         # File-output matches are useful evidence in the diagram, but the

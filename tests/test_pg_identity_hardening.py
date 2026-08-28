@@ -11,7 +11,7 @@ import app.database as database
 from app.database import get_db, init_db
 from app.routers import materialized_views
 from app.scanner import pg_deps, runner
-from app.scanner.tmdl_parser import ParsedTable, SourceInfo
+from app.scanner.tmdl_parser import ParsedTable, SourceInfo, _parse_m_expression
 from app.scanner.walker import DiscoveredReport
 from app.source_identity import exact_identity_rows, upsert_postgres_identity
 
@@ -349,6 +349,76 @@ def _stub_runner_followups(monkeypatch, reports=None) -> None:
         "sync_documentation_completeness_actions",
         lambda: {"status": "completed"},
     )
+
+
+def test_full_scan_reparses_quoted_native_query_and_remaps_generic_report_source(
+    identity_db, monkeypatch
+):
+    expression = (
+        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
+        'Rows = Value.NativeQuery(Source, '
+        '"SELECT * FROM ""bi_reporting"".""inflow_outflow_mv""") in Rows'
+    )
+    parsed = _parse_m_expression(expression)
+    assert parsed.sql_table == "bi_reporting.inflow_outflow_mv"
+    report = DiscoveredReport(
+        name="Inflow outflow",
+        tmdl_path="C:/Inflow outflow",
+        tables=[
+            ParsedTable(
+                table_name="Model",
+                m_expression=expression,
+                source=parsed,
+            )
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [report])
+    monkeypatch.setattr(runner, "PGHOST", "db.internal")
+    monkeypatch.setattr(runner, "PGDATABASE", "warehouse")
+
+    with get_db() as db:
+        # This represents the pre-fix parse: the report was attached to a
+        # generic PostgreSQL connection with no physical relation identity.
+        _source(db, 1, "unresolved_pg_query_legacy")
+        db.execute(
+            "INSERT INTO reports(id, name, archived) VALUES (1, 'Inflow outflow', 0)"
+        )
+        db.execute(
+            """INSERT INTO report_tables
+                   (report_id, table_name, source_id, source_expression)
+               VALUES (1, 'Model', 1, 'legacy truncated query')"""
+        )
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "completed"
+    with get_db() as db:
+        mapped = db.execute(
+            """SELECT rt.source_id, rt.source_expression,
+                      spi.server_name, spi.database_name,
+                      spi.schema_name, spi.relation_name
+                 FROM report_tables rt
+                 JOIN source_postgres_identities spi ON spi.source_id=rt.source_id
+                WHERE rt.report_id=1 AND rt.table_name='Model'"""
+        ).fetchone()
+        old_source = db.execute("SELECT id FROM sources WHERE id=1").fetchone()
+
+    assert int(mapped["source_id"]) != 1
+    assert mapped["source_expression"] == expression
+    assert (
+        mapped["server_name"],
+        mapped["database_name"],
+        mapped["schema_name"],
+        mapped["relation_name"],
+    ) == (
+        "db.internal",
+        "warehouse",
+        "bi_reporting",
+        "inflow_outflow_mv",
+    )
+    # A full scan safely remaps this report table; it does not need to delete
+    # the old generic source to repair current lineage.
+    assert old_source is not None
 
 
 def test_runner_legacy_cleanup_preserves_identified_database_sources(

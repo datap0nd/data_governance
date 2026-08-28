@@ -44,6 +44,31 @@ For other people on the network to access it, they go to `http://YOUR_COMPUTER_I
 
 All registered users have the same application access, including remote PCs on the network. There is no app-level admin allowlist or IP toggle.
 
+### Automatic main updates
+
+Production installs watch the GitHub `main` branch every five minutes by
+default. When a new commit appears, Metronome first waits for that exact
+commit's GitHub Actions **Tests** workflow to pass. It then pauses new work
+starts, lets active scans, Flows, Pipelines, AI runs, Power BI work, and Outlook
+hand-offs finish, and asks one pre-registered elevated Windows task to install
+that exact 40-character commit. The updater stages and compiles the release, proves
+its dependencies can install offline, takes a WAL-aware SQLite backup and a
+code snapshot, restarts the existing services without changing their service
+identity, and verifies `/api/version`. A failed health check restores the prior
+code and database snapshot. The updater retains the current and two prior
+attempt snapshots; a host power loss or forced process kill during replacement
+can still require manual recovery from those artifacts.
+
+Run `setup.ps1` interactively once after deploying this version so it can
+register the fixed `Metronome_Auto_Update` task using the existing service
+account. After that, use **System > Updates** to enable/disable automatic
+installs, force a check, install manually, or inspect blockers and the latest
+durable attempt. Private-repository installs must expose `DG_GITHUB_TOKEN` to
+the service account. Automatic installation deliberately refuses a folder
+containing `.git`; develop and merge in a Git working copy, then run the service
+and `setup.ps1` from a separate release-style folder without `.git` so local
+source changes cannot be overwritten.
+
 ### Read-only Operations Investigator
 
 **Alerts is the operational inbox.** Every active Alert evidence revision is automatically queued for an overall read-only review. Expanding an Alert shows whether the current evidence confirms, likely supports, contradicts, or is insufficient to judge the Alert, followed by a concise explanation and suggested next step. Flow and Pipeline failures also retain immutable run occurrences and optional exact-run analysis under evidence history.

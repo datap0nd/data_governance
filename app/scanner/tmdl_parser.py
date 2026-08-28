@@ -8,6 +8,7 @@ Parses .tmdl files from Power BI semantic model exports to extract:
 - Source details (file path, server, database, etc.)
 """
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -34,6 +35,24 @@ class SourceInfo:
     FILE_TYPES = {"excel", "sharepoint", "web"}
 
     @property
+    def unresolved_fingerprint(self) -> str:
+        """Return a stable, non-reversible label for an unresolved query source.
+
+        A PostgreSQL connector expression without a resolved relation must not
+        collapse into every other query on the same server/database.  Keep the
+        raw expression out of names and keys while retaining a deterministic
+        identity for repeat scans.
+        """
+        material = "\0".join(
+            (
+                normalize_server(self.server),
+                (self.database or "").strip(),
+                self.raw_expression or self.sql_query or "postgresql-source",
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+    @property
     def connection_key(self) -> str:
         """Unique key to identify this source for deduplication.
 
@@ -52,6 +71,8 @@ class SourceInfo:
                     parts.append(self.database.strip())
                 if self.sql_table:
                     parts.append(self.sql_table.strip())
+                else:
+                    parts.append(f"unresolved-query-{self.unresolved_fingerprint}")
                 return "::".join(parts)
             parts = [self.source_type, self.server.lower()]
             if self.database:
@@ -68,8 +89,13 @@ class SourceInfo:
             return Path(self.file_path).name
         elif self.source_type in self.DB_TYPES and self.server:
             # For PostgreSQL, just show schema.table (skip server IP and database name)
-            if self.source_type == "postgresql" and self.sql_table:
-                return _clean_identifier(self.sql_table)
+            if self.source_type == "postgresql":
+                if self.sql_table:
+                    return _clean_identifier(self.sql_table)
+                # This is intentionally a clean identifier: runner cleanup
+                # must retain the distinct unresolved source so the UI can
+                # diagnose it, rather than merging or archiving it by name.
+                return f"unresolved_pg_query_{self.unresolved_fingerprint}"
             parts = []
             if self.database:
                 parts.append(_clean_identifier(self.database))
@@ -432,16 +458,16 @@ def _parse_m_expression(expr: str) -> SourceInfo:
                 source.server = _unquote(args[0])
             if args and len(args) >= 2:
                 source.database = _unquote(args[1])
-            # Check for native query in options
-            query_match = re.search(r'Query\s*=\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
-            if query_match:
-                source.sql_query = query_match.group(1)
-            # Also check Value.NativeQuery pattern
-            native_match = re.search(r'Value\.NativeQuery\s*\([^,]+,\s*"((?:[^"\\]|\\.)*)"', expr, re.DOTALL)
-            if native_match:
-                source.sql_query = native_match.group(1)
+            # Power Query M escapes a quote inside a string as ``""`` (not
+            # with a backslash). Decode the M literal before parsing SQL so a
+            # query such as schema_.""table_name"" retains its real relation.
+            source.sql_query = _extract_m_query(expr)
             # Extract the specific table being accessed
-            source.sql_table = _extract_table_navigation(expr)
+            source.sql_table = _extract_table_navigation(
+                expr,
+                decoded_sql=source.sql_query,
+                source_type=source_type,
+            )
             return source
 
     # Detect SharePoint sources
@@ -550,7 +576,371 @@ def _navigation_identifier(value: str) -> str | None:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _extract_table_navigation(expr: str) -> str | None:
+def _read_m_string(text: str, quote_index: int) -> tuple[str, int] | None:
+    """Decode one M string literal starting at ``quote_index``.
+
+    M represents an embedded quote as two double quotes. Common ``#(...)``
+    character escapes are decoded as well so multi-line native SQL remains
+    parseable after TMDL serialization.
+    """
+    if quote_index < 0 or quote_index >= len(text) or text[quote_index] != '"':
+        return None
+    result: list[str] = []
+    index = quote_index + 1
+    simple_escapes = {
+        "cr": "\r",
+        "lf": "\n",
+        "tab": "\t",
+        "quote": '"',
+        "#": "#",
+    }
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            if index + 1 < len(text) and text[index + 1] == '"':
+                result.append('"')
+                index += 2
+                continue
+            return "".join(result), index + 1
+        if char == "#" and index + 1 < len(text) and text[index + 1] == "(":
+            close = text.find(")", index + 2)
+            if close != -1:
+                body = text[index + 2:close]
+                decoded: list[str] = []
+                valid = True
+                for token in (part.strip() for part in body.split(",")):
+                    lowered = token.casefold()
+                    if lowered in simple_escapes:
+                        decoded.append(simple_escapes[lowered])
+                    elif re.fullmatch(r"[0-9A-Fa-f]{4,8}", token):
+                        try:
+                            codepoint = int(token, 16)
+                            if codepoint > 0x10FFFF:
+                                raise ValueError
+                            decoded.append(chr(codepoint))
+                        except ValueError:
+                            valid = False
+                            break
+                    else:
+                        valid = False
+                        break
+                if valid and decoded:
+                    result.extend(decoded)
+                    index = close + 1
+                    continue
+        result.append(char)
+        index += 1
+    return None
+
+
+def _decode_m_string_literal(value: str) -> str | None:
+    raw = (value or "").strip()
+    if not raw.startswith('"'):
+        return None
+    decoded = _read_m_string(raw, 0)
+    if decoded is None or raw[decoded[1]:].strip():
+        return None
+    return decoded[0]
+
+
+def _extract_m_assignment_string(expr: str, name: str) -> str | None:
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*", expr, re.IGNORECASE)
+    if not match:
+        return None
+    quote_index = match.end()
+    if quote_index >= len(expr) or expr[quote_index] != '"':
+        return None
+    decoded = _read_m_string(expr, quote_index)
+    return decoded[0] if decoded is not None else None
+
+
+def _extract_m_query(expr: str) -> str | None:
+    """Return decoded native SQL from Value.NativeQuery or a Query option."""
+    native_args = _extract_function_args(expr, "Value.NativeQuery")
+    if len(native_args) >= 2:
+        native_query = _decode_m_string_literal(native_args[1])
+        if native_query is not None:
+            return native_query
+    return _extract_m_assignment_string(expr, "Query")
+
+
+_SQL_IDENTIFIER = (
+    r'(?:(?:"(?:[^"]|"")*")'
+    r'|(?:\[(?:[^\]]|\]\])*\])'
+    r'|(?:`(?:[^`]|``)*`)'
+    r'|(?:[A-Za-z_][\w$]*))'
+)
+_SQL_RELATION_RE = re.compile(
+    rf'\b(?:FROM|JOIN)\s+'
+    rf'(?:ONLY\s+)?'
+    rf'(?P<first>{_SQL_IDENTIFIER})'
+    rf'(?:\s*\.\s*(?P<second>{_SQL_IDENTIFIER}))?'
+    rf'(?![\w$"\[\]`]|\s*\.)',
+    re.IGNORECASE,
+)
+_SQL_IDENTIFIER_RE = re.compile(_SQL_IDENTIFIER)
+_SQL_FROM_RE = re.compile(r"\bFROM\b", re.IGNORECASE)
+_SQL_FROM_CLAUSE_END = re.compile(
+    r"\b(?:WHERE|GROUP|HAVING|ORDER|LIMIT|OFFSET|FETCH|FOR|WINDOW|QUALIFY|"
+    r"UNION|EXCEPT|INTERSECT|RETURNING|CONNECT|START)\b",
+    re.IGNORECASE,
+)
+
+
+def _mask_sql_noncode(sql: str) -> str:
+    """Mask SQL comments and string bodies while preserving character offsets."""
+    masked = list(sql)
+    index = 0
+    length = len(sql)
+
+    def hide(start: int, end: int) -> None:
+        for position in range(start, min(end, length)):
+            if masked[position] not in {"\r", "\n"}:
+                masked[position] = " "
+
+    while index < length:
+        if sql.startswith("--", index):
+            end = sql.find("\n", index + 2)
+            end = length if end == -1 else end
+            hide(index, end)
+            index = end
+            continue
+        if sql.startswith("/*", index):
+            start = index
+            index += 2
+            depth = 1
+            while index < length and depth:
+                if sql.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif sql.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            hide(start, index)
+            continue
+        if sql[index] == "'":
+            start = index
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                # Backslash escaping is not standard SQL, but accepting it
+                # here prevents an E'...' or MySQL literal from exposing fake
+                # FROM text to the conservative identity parser.
+                if sql[index] == "\\" and index + 1 < length:
+                    index += 2
+                else:
+                    index += 1
+            hide(start, index)
+            continue
+        if sql[index] == "$" and (
+            index == 0 or not re.match(r"[\w$]", sql[index - 1])
+        ):
+            delimiter_match = re.match(r"\$(?:[A-Za-z_][\w$]*)?\$", sql[index:])
+            if delimiter_match:
+                delimiter = delimiter_match.group(0)
+                end = sql.find(delimiter, index + len(delimiter))
+                end = length if end == -1 else end + len(delimiter)
+                hide(index, end)
+                index = end
+                continue
+        index += 1
+    return "".join(masked)
+
+
+def _skip_sql_parenthesized(sql: str, start: int) -> int | None:
+    if start >= len(sql) or sql[start] != "(":
+        return None
+    depth = 0
+    index = start
+    while index < len(sql):
+        char = sql[index]
+        if char in {'"', "[", "`"}:
+            token = _SQL_IDENTIFIER_RE.match(sql, index)
+            if token:
+                index = token.end()
+                continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _from_clause_has_top_level_comma(sql: str, start: int) -> bool:
+    """Return whether one FROM clause uses a comma-separated source list.
+
+    ``sql`` has already had comments and string literals masked. Parentheses
+    are tracked relative to this FROM clause so commas inside function calls,
+    derived tables, row constructors, and alias column lists do not count.
+    """
+    depth = 0
+    index = start
+    while index < len(sql):
+        char = sql[index]
+        if char in {'"', "[", "`"}:
+            token = _SQL_IDENTIFIER_RE.match(sql, index)
+            if token:
+                index = token.end()
+                continue
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            if depth == 0:
+                return False
+            depth -= 1
+            index += 1
+            continue
+        if depth == 0:
+            if char == ",":
+                return True
+            if char == ";" or _SQL_FROM_CLAUSE_END.match(sql, index):
+                return False
+        index += 1
+    return False
+
+
+def _has_comma_separated_from(sql: str) -> bool:
+    """Reject SQL whose physical inputs cannot fit one SourceInfo identity."""
+    return any(
+        _from_clause_has_top_level_comma(sql, match.end())
+        for match in _SQL_FROM_RE.finditer(sql)
+    )
+
+
+def _sql_cte_names(sql: str, *, source_type: str | None = None) -> set[str]:
+    """Return top-level CTE aliases so they are not mistaken for relations."""
+    start = re.match(r"\s*WITH\s+(?:RECURSIVE\s+)?", sql, re.IGNORECASE)
+    if not start:
+        return set()
+    names: set[str] = set()
+    index = start.end()
+    while index < len(sql):
+        index += len(sql[index:]) - len(sql[index:].lstrip())
+        token = _SQL_IDENTIFIER_RE.match(sql, index)
+        if not token:
+            break
+        alias = _sql_identifier_value(token.group(0), source_type=source_type)
+        index = token.end()
+        index += len(sql[index:]) - len(sql[index:].lstrip())
+        if index < len(sql) and sql[index] == "(":
+            end = _skip_sql_parenthesized(sql, index)
+            if end is None:
+                break
+            index = end
+            index += len(sql[index:]) - len(sql[index:].lstrip())
+        as_match = re.match(
+            r"AS\s+(?:(?:NOT\s+)?MATERIALIZED\s+)?",
+            sql[index:],
+            re.IGNORECASE,
+        )
+        if not as_match:
+            break
+        index += as_match.end()
+        if index >= len(sql) or sql[index] != "(":
+            break
+        end = _skip_sql_parenthesized(sql, index)
+        if end is None:
+            break
+        names.add(alias)
+        index = end
+        index += len(sql[index:]) - len(sql[index:].lstrip())
+        if index >= len(sql) or sql[index] != ",":
+            break
+        index += 1
+    return names
+
+
+def _sql_identifier_value(
+    token: str,
+    *,
+    source_type: str | None = None,
+) -> str:
+    token = token.strip()
+    if token.startswith('"') and token.endswith('"'):
+        return token[1:-1].replace('""', '"')
+    if token.startswith("[") and token.endswith("]"):
+        return token[1:-1].replace("]]", "]")
+    if token.startswith("`") and token.endswith("`"):
+        return token[1:-1].replace("``", "`")
+    if source_type == "postgresql":
+        # PostgreSQL folds unquoted SQL identifiers to lowercase. Preserve
+        # quoted tokens above exactly, and do this only for parsed SQL: TMDL
+        # navigation values already contain the catalog's resolved spelling.
+        return re.sub(r"[A-Z]", lambda match: match.group(0).lower(), token)
+    return token
+
+
+def _extract_sql_relation(
+    sql: str | None,
+    *,
+    source_type: str | None = None,
+) -> str | None:
+    if not sql:
+        return None
+    searchable = _mask_sql_noncode(sql)
+    if _has_comma_separated_from(searchable):
+        # SourceInfo can represent one exact relation only. A comma join is a
+        # multi-input query even when both inputs happen to share a name; do
+        # not claim the first relation and create executable false lineage.
+        return None
+    cte_names = _sql_cte_names(searchable, source_type=source_type)
+    candidates: dict[str, str] = {}
+    reserved = {"lateral", "only", "select", "table", "unnest", "values"}
+    for match in _SQL_RELATION_RE.finditer(searchable):
+        first_token = match.group("first")
+        first_value = _sql_identifier_value(first_token, source_type=source_type)
+        if (
+            first_token[:1] not in {'"', "[", "`"}
+            and first_value.casefold() in reserved
+        ):
+            continue
+        second_token = match.group("second")
+        if second_token is None and first_value in cte_names:
+            continue
+        after = match.end()
+        while after < len(searchable) and searchable[after].isspace():
+            after += 1
+        # A FROM/JOIN function is not a table identity. Leave it unresolved.
+        if after < len(searchable) and searchable[after] == "(":
+            continue
+
+        first = _navigation_identifier(first_value)
+        if second_token is None:
+            candidate = _validate_table_name(first)
+        else:
+            second = _navigation_identifier(
+                _sql_identifier_value(second_token, source_type=source_type)
+            )
+            candidate = _validate_table_name(
+                f"{first}.{second}" if first and second else None
+            )
+        if candidate:
+            candidates[candidate] = candidate
+        if len(candidates) > 1:
+            # SourceInfo can hold only one exact relation. Claiming the first
+            # of multiple inputs would create false executable lineage.
+            return None
+    return next(iter(candidates.values()), None)
+
+
+def _extract_table_navigation(
+    expr: str,
+    *,
+    decoded_sql: str | None = None,
+    source_type: str | None = None,
+) -> str | None:
     """Extract the schema and table name from M navigation patterns.
 
     Handles multiple patterns used by different connectors:
@@ -598,30 +988,17 @@ def _extract_table_navigation(expr: str) -> str | None:
         if (v := _validate_table_name(m.group(1))):
             return v
 
-    # Pattern 5: Native query: FROM/JOIN "schema"."table"
-    match = re.search(
-        r'(?:FROM|JOIN)\s+"((?:[^"]|"")+)"\s*\.\s*"((?:[^"]|"")+)"',
-        expr,
-        re.IGNORECASE,
-    )
-    if match:
-        schema = _navigation_identifier(match.group(1).replace('""', '"'))
-        relation = _navigation_identifier(match.group(2).replace('""', '"'))
-        candidate = f"{schema}.{relation}" if schema and relation else None
-        if (v := _validate_table_name(candidate)):
-            return v
-
-    match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s*\.\s*["\[]?(\w+)["\]]?', expr, re.IGNORECASE)
-    if match:
-        candidate = f"{match.group(1)}.{match.group(2)}"
-        if (v := _validate_table_name(candidate)):
-            return v
-
-    # Pattern 6: Simple FROM table (bare table name, no schema)
-    match = re.search(r'(?:FROM|JOIN)\s+["\[]?(\w+)["\]]?\s', expr, re.IGNORECASE)
-    if match:
-        if (v := _validate_table_name(match.group(1))):
-            return v
+    # Pattern 5: Native SQL. Prefer the already decoded query, then decode it
+    # here for direct helper callers, and finally allow plain SQL test/import
+    # callers. Parsing raw M first would misread doubled quote delimiters.
+    sql_candidates = [decoded_sql, _extract_m_query(expr), expr]
+    seen: set[str] = set()
+    for sql in sql_candidates:
+        if not sql or sql in seen:
+            continue
+        seen.add(sql)
+        if (relation := _extract_sql_relation(sql, source_type=source_type)):
+            return relation
 
     return None
 
@@ -654,14 +1031,16 @@ def _extract_function_args(expr: str, func_name: str) -> list[str]:
             args.append("".join(current).strip())
             current = []
         elif ch == '"':
-            # Read string literal
-            current.append(ch)
-            i += 1
-            while i < len(expr) and expr[i] != '"':
-                current.append(expr[i])
-                i += 1
-            if i < len(expr):
-                current.append(expr[i])
+            # Preserve the raw literal for callers while skipping commas and
+            # parentheses inside it according to M's doubled-quote rules.
+            decoded = _read_m_string(expr, i)
+            if decoded is None:
+                current.append(expr[i:])
+                i = len(expr)
+                break
+            end = decoded[1]
+            current.append(expr[i:end])
+            i = end - 1
         else:
             current.append(ch)
         i += 1
@@ -670,10 +1049,12 @@ def _extract_function_args(expr: str, func_name: str) -> list[str]:
 
 
 def _unquote(s: str) -> str:
-    """Remove surrounding double quotes from a string."""
+    """Decode a surrounding Power Query M string literal when present."""
     s = s.strip()
-    if s.startswith('"') and s.endswith('"'):
-        return s[1:-1]
+    if s.startswith('"'):
+        decoded = _decode_m_string_literal(s)
+        if decoded is not None:
+            return decoded
     return s
 
 

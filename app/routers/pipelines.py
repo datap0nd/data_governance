@@ -493,6 +493,16 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
             blockers.append(recipient_error)
 
         source_ids, source_edges = _source_closure(db, report_id)
+        direct_source_ids = [
+            int(row[0])
+            for row in db.execute(
+                """SELECT DISTINCT source_id
+                     FROM report_tables
+                    WHERE report_id=? AND source_id IS NOT NULL
+                    ORDER BY source_id""",
+                (report_id,),
+            ).fetchall()
+        ]
         identities: dict[int, dict] = {}
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
@@ -543,11 +553,13 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
             db,
             source_ids,
             server=UPLOAD_PGHOST,
+            report_root_source_ids=direct_source_ids,
         )
         blockers.extend(diagnostic_blocker_messages(flow_diagnostics))
         executable_flow_ids = included_flow_ids(flow_diagnostics)
         diagnostic_by_id = {
             int(item["id"]): item for item in flow_diagnostics.get("items", [])
+            if item.get("id") is not None
         }
         flow_rows = db.execute(
             """SELECT id, name, browser_mode, target_folder, filename_template,

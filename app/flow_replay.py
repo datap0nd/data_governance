@@ -264,7 +264,17 @@ def _save_all(profile_dir: Path, data: dict[str, dict]) -> None:
         json.dumps(data, ensure_ascii=False, sort_keys=True, indent=1),
         encoding="utf-8",
     )
-    staged.replace(path)
+    # Office antivirus/indexing can hold a just-written file for a few
+    # milliseconds on Windows. Retry only that transient sharing violation so
+    # an expired/broken replay recipe is actually removed from durable state.
+    for attempt in range(5):
+        try:
+            staged.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.025 * (attempt + 1))
 
 
 def recipe_key(job: dict, task_key: str) -> str:

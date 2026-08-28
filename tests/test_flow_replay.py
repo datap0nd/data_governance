@@ -234,6 +234,24 @@ def test_expired_recipes_are_dropped_on_load(tmp_path):
     assert key not in remaining
 
 
+def test_recipe_save_retries_a_transient_windows_replace_lock(tmp_path, monkeypatch):
+    original_replace = Path.replace
+    attempts = 0
+
+    def briefly_locked(path, target):
+        nonlocal attempts
+        if path.name.endswith(".json.tmp") and attempts == 0:
+            attempts += 1
+            raise PermissionError("file is momentarily held by an indexer")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", briefly_locked)
+
+    assert _capture(tmp_path)
+    assert attempts == 1
+    assert flow_replay.load_recipe(tmp_path, JOB, TASK_KEY) is not None
+
+
 def test_forget_recipe_removes_only_the_named_task(tmp_path):
     assert _capture(tmp_path)
     flow_replay.forget_recipe(tmp_path, JOB, TASK_KEY)

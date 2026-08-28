@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -6,13 +7,15 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -23,7 +26,12 @@ from app.config import DB_PATH, UPLOAD_PGHOST
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
-from app.settings import get_overall_refresh_time, set_overall_refresh_time
+from app.settings import (
+    get_overall_refresh_time,
+    get_setting,
+    set_overall_refresh_time,
+    set_setting,
+)
 from app.source_identity import reconcile_all_flow_targets
 from app.scanner.lifecycle import (
     recover_interrupted_scan_runs,
@@ -207,11 +215,117 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_DRAINED_WORK_START_PATHS = (
+    re.compile(
+        r"^/api/scanner/(?:run|probe|jobs/[^/]+|pbi-sync|"
+        r"pg-deps|pg-cron|pbi-usage-sync)$"
+    ),
+    re.compile(r"^/api/flows/\d+/run$"),
+    re.compile(r"^/api/flows/runs/\d+/(?:retry-sql|resume)$"),
+    re.compile(r"^/api/flows/(?:sites|reports)/\d+/scan$"),
+    re.compile(r"^/api/flows/sql/catalog/refresh$"),
+    re.compile(r"^/api/pipelines/reports/\d+/runs$"),
+    re.compile(r"^/api/pipelines/runs/\d+/resend-summary$"),
+    re.compile(r"^/api/reports/\d+/refresh$"),
+    re.compile(r"^/api/materialized-views/\d+/refresh$"),
+    re.compile(r"^/api/data-quality/(?:run|checks/\d+/run)$"),
+    re.compile(r"^/api/recurrences/(?:\d+/run|visuals/discover|preview)$"),
+    re.compile(r"^/api/ai/(?:chat|settings/test|operations/runs)$"),
+    re.compile(r"^/api/documentation/(?:ai-suggest/\d+|ai-suggest-all)$"),
+    re.compile(r"^/api/email/(?:send-task-summaries|send-alert-summaries)$"),
+    re.compile(r"^/api/email-schedules/task-summary/send-now$"),
+    re.compile(r"^/api/usage/sync$"),
+    re.compile(r"^/api/system/refresh-now$"),
+)
+
+
+class UpdateDrainMiddleware(BaseHTTPMiddleware):
+    """Reject only *new* production work during the short update drain.
+
+    Worker progress, completion, cancellation, reads, and settings remain
+    available so already-running work can finish normally.
+    """
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        starts_work = request.method.upper() == "POST" and any(
+            pattern.fullmatch(request.url.path)
+            for pattern in _DRAINED_WORK_START_PATHS
+        )
+        if not starts_work:
+            return await call_next(request)
+        if not _try_begin_update_sensitive_work():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": (
+                        "Metronome is finishing active work for an automatic main "
+                        "update. Start this operation again after the app restarts."
+                    )
+                },
+                headers={"Retry-After": "60"},
+            )
+        try:
+            return await call_next(request)
+        finally:
+            _finish_update_sensitive_work()
+
+
 _scheduler = BackgroundScheduler()
 _OVERALL_REFRESH_RETRY_JOB_ID = "daily_overall_refresh_retry"
 _OVERALL_REFRESH_RETRY_MINUTES = 5
 
 
+def _scheduled_work_is_draining() -> bool:
+    event = globals().get("_AUTO_UPDATE_DRAIN_EVENT")
+    return bool(event and event.is_set())
+
+
+def _try_begin_update_sensitive_work() -> bool:
+    """Atomically reject new work after drain starts, otherwise track it."""
+    global _AUTO_UPDATE_ACTIVE_STARTS
+    with _AUTO_UPDATE_ACTIVITY_LOCK:
+        if _AUTO_UPDATE_DRAIN_EVENT.is_set():
+            return False
+        _AUTO_UPDATE_ACTIVE_STARTS += 1
+        return True
+
+
+def _finish_update_sensitive_work() -> None:
+    global _AUTO_UPDATE_ACTIVE_STARTS
+    with _AUTO_UPDATE_ACTIVITY_LOCK:
+        _AUTO_UPDATE_ACTIVE_STARTS = max(0, _AUTO_UPDATE_ACTIVE_STARTS - 1)
+
+
+def _request_update_drain() -> None:
+    with _AUTO_UPDATE_ACTIVITY_LOCK:
+        _AUTO_UPDATE_DRAIN_EVENT.set()
+
+
+def _release_update_drain() -> None:
+    with _AUTO_UPDATE_ACTIVITY_LOCK:
+        _AUTO_UPDATE_DRAIN_EVENT.clear()
+
+
+def _tracked_scheduled_start(work_name: str):
+    """Track scheduler jobs that can create work absent from durable queues."""
+    def decorate(function):
+        @wraps(function)
+        def run(*args, **kwargs):
+            if not _try_begin_update_sensitive_work():
+                logging.getLogger("scheduler").debug(
+                    "Skipping %s while an exact-main update waits for idle",
+                    work_name,
+                )
+                return {"status": "update_draining"}
+            try:
+                return function(*args, **kwargs)
+            finally:
+                _finish_update_sensitive_work()
+        return run
+    return decorate
+
+
+@_tracked_scheduled_start("daily backup")
 def _scheduled_backup():
     """Daily 6 AM backup of governance.db."""
     from app.scanner.runner import _backup_db
@@ -221,6 +335,7 @@ def _scheduled_backup():
     log.info("Scheduled backup complete")
 
 
+@_tracked_scheduled_start("scheduled scan")
 def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = True):
     """Submit a report scan through the durable global scanner lane."""
     from app.routers.scanner import start_scheduled_scan_job
@@ -231,6 +346,7 @@ def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = 
     )
 
 
+@_tracked_scheduled_start("Power BI sync")
 def _scheduled_pbi_sync(
     cancel_generation: int | None = None,
     *,
@@ -261,6 +377,7 @@ def _scheduled_pbi_sync(
         return {"status": "failed", "error": str(e)}
 
 
+@_tracked_scheduled_start("pending Power BI sync retry")
 def _scheduled_pending_pbi_sync_retry():
     """Retry scheduled PBI sync after RDP/lock-screen conditions clear."""
     from app.scanner.pbi_sync import retry_pending_pbi_sync
@@ -273,6 +390,7 @@ def _scheduled_pending_pbi_sync_retry():
         log.exception("Pending PBI sync retry failed: %s", e)
 
 
+@_tracked_scheduled_start("overall refresh")
 def _scheduled_overall_refresh():
     """Submit the daily overall refresh through the durable scanner lane."""
     from app.routers.scanner import start_scheduled_full_scan_job
@@ -317,6 +435,7 @@ def _scheduled_overall_refresh():
     return result
 
 
+@_tracked_scheduled_start("scheduled email")
 def _scheduled_email_dispatch():
     """Check configured email schedules and send anything due."""
     from app.routers.email_schedules import dispatch_due_email_schedules
@@ -329,6 +448,7 @@ def _scheduled_email_dispatch():
         log.exception("Email schedule dispatch failed: %s", e)
 
 
+@_tracked_scheduled_start("Power BI recurrence")
 def _scheduled_recurrence_dispatch():
     """Export due Power BI visuals and launch subgroup emails."""
     from app.routers.recurrences import dispatch_due_recurrences
@@ -341,10 +461,10 @@ def _scheduled_recurrence_dispatch():
         log.exception("Power BI recurrence dispatch failed: %s", e)
 
 
+@_tracked_scheduled_start("Alert AI enrichment")
 def _scheduled_alert_ai_enrichment():
     """Attach advisory Qwen analysis to new canonical Alert revisions."""
     from app.ai.operations_agent import enrich_active_alerts
-
     log = logging.getLogger("scheduler")
     try:
         result = enrich_active_alerts()
@@ -354,6 +474,21 @@ def _scheduled_alert_ai_enrichment():
         # AI is advisory. A provider outage must never interrupt detector,
         # scanner, Flow, Pipeline, or email scheduler work.
         log.exception("Automatic Alert analysis failed: %s", exc)
+
+
+@_tracked_scheduled_start("scheduled Flow")
+def _scheduled_flow_dispatch():
+    return flows.queue_due_flows()
+
+
+@_tracked_scheduled_start("scheduled Flow catalog scan")
+def _scheduled_flow_catalog_dispatch():
+    return flows.queue_due_catalog_scans()
+
+
+@_tracked_scheduled_start("Flow SQL catalog refresh")
+def _scheduled_flow_sql_catalog_refresh():
+    return flows.refresh_sql_catalog()
 
 
 def _configure_overall_refresh_job() -> dict:
@@ -411,7 +546,17 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
-        flows.queue_due_flows,
+        _scheduled_auto_update,
+        "interval",
+        seconds=_AUTO_UPDATE_INTERVAL_SECONDS,
+        id="automatic_main_update",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+    _scheduler.add_job(
+        _scheduled_flow_dispatch,
         "interval",
         minutes=1,
         id="flow_dispatch",
@@ -438,7 +583,7 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
-        flows.queue_due_catalog_scans,
+        _scheduled_flow_catalog_dispatch,
         "interval",
         minutes=15,
         id="flow_catalog_scan_dispatch",
@@ -447,7 +592,7 @@ def _configure_scheduler_jobs() -> dict:
         coalesce=True,
     )
     _scheduler.add_job(
-        flows.refresh_sql_catalog,
+        _scheduled_flow_sql_catalog_refresh,
         "cron",
         hour=5,
         minute=30,
@@ -491,6 +636,29 @@ def _recover_startup_pbi_syncs() -> int:
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    startup_update_attempt = _reconcile_update_attempts()
+    if startup_update_attempt and startup_update_attempt.get("active"):
+        # The external task has started this new process but has not yet
+        # published its terminal health receipt. Keep every new work starter
+        # behind the drain barrier until that receipt is reconciled.
+        _request_update_drain()
+        logging.getLogger(__name__).info(
+            "Update attempt %s is awaiting external health verification",
+            startup_update_attempt.get("attempt_id"),
+        )
+    from app.ai.runtime_config import initialize_runtime_settings
+
+    ai_settings = initialize_runtime_settings()
+    logging.getLogger(__name__).info(
+        "AI runtime: mode=%s model=%s operations=%s alert_auto=%s email=%s docs=%s",
+        ai_settings.mode,
+        ai_settings.model,
+        ai_settings.feature_enabled("operations_investigator"),
+        ai_settings.feature_enabled("automatic_alert_review"),
+        ai_settings.feature_enabled("alert_email_analysis"),
+        ai_settings.feature_enabled("documentation_suggestions")
+        and ai_settings.qwen_enabled,
+    )
     from app.scanner.jobs import recover_interrupted_jobs
 
     interrupted_jobs = recover_interrupted_jobs()
@@ -535,9 +703,12 @@ async def lifespan(app):
         )
     _scheduled_alert_ai_enrichment()
     logging.getLogger(__name__).info(
-        "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, email dispatch every minute",
+        "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, "
+        "email dispatch every minute, main update check every %d minutes (enabled=%s)",
         refresh_time["hour"],
         refresh_time["minute"],
+        _AUTO_UPDATE_INTERVAL_SECONDS // 60,
+        _auto_update_enabled(),
     )
 
     yield
@@ -552,6 +723,7 @@ async def lifespan(app):
 app = FastAPI(title="Metronome", version="0.1.0", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(UserIdentityMiddleware)
+app.add_middleware(UpdateDrainMiddleware)
 
 # Register API routers
 app.include_router(dashboard.router)
@@ -621,21 +793,63 @@ def _get_version() -> str:
 
 _APP_VERSION = _get_version()
 
-#: Latest-commit lookup for the "am I on the latest version?" badge. Cached so
-#: the UI polling the version never hammers GitHub (unauthenticated rate limit
-#: is 60 requests/hour).
-_UPDATE_CHECK_TTL_SECONDS = 15 * 60
+#: Latest-commit lookup shared by the version badge and automatic updater.
+#: Five-minute checks stay comfortably below GitHub's unauthenticated limit
+#: while keeping office installs close to main.
+_UPDATE_CHECK_TTL_SECONDS = 5 * 60
 _UPDATE_CHECK_LOCK = threading.Lock()
 _UPDATE_CHECK: dict = {"checked_at": 0.0, "latest_commit": None, "error": None}
 _LATEST_COMMIT_URL = (
     "https://api.github.com/repos/datap0nd/data_governance/commits/main"
 )
+_TESTS_WORKFLOW_RUNS_URL = (
+    "https://api.github.com/repos/datap0nd/data_governance/"
+    "actions/workflows/tests.yml/runs"
+)
+_TESTS_WORKFLOW_PATH = ".github/workflows/tests.yml"
+_TESTS_GATE_TTL_SECONDS = 60
+_TESTS_GATE_LOCK = threading.Lock()
+_TESTS_GATE_CACHE: dict[str, tuple[float, dict]] = {}
+_AUTO_UPDATE_SETTING_KEY = "automatic_main_updates_enabled"
+_AUTO_UPDATE_INTERVAL_SECONDS = 5 * 60
+_AUTO_UPDATE_RETRY_SECONDS = 30 * 60
+_AUTO_UPDATE_RESERVATION_STALE_SECONDS = 10 * 60
+_AUTO_UPDATE_ATTEMPT_STALE_SECONDS = 2 * 60 * 60
+_AUTO_UPDATE_TASK_NAME = "Metronome_Auto_Update"
+_AUTO_UPDATE_RUN_LOCK = threading.Lock()
+_AUTO_UPDATE_STATE_LOCK = threading.Lock()
+_AUTO_UPDATE_ACTIVITY_LOCK = threading.Lock()
+_AUTO_UPDATE_DRAIN_EVENT = threading.Event()
+_AUTO_UPDATE_ACTIVE_STARTS = 0
+_AUTO_UPDATE_STATE: dict = {
+    "status": "starting",
+    "last_checked_at": None,
+    "last_attempt_at": None,
+    "last_attempt_commit": None,
+    "last_attempt_monotonic": 0.0,
+    "last_error": None,
+}
+
+
+def _github_api_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "Metronome",
+    }
+    token = os.environ.get("DG_GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _deployed_commit() -> str | None:
     """The commit SHA setup.ps1 stamps into VERSION ("<timestamp>-<sha>")."""
     token = _APP_VERSION.rsplit("-", 1)[-1].strip().lower()
-    if re.fullmatch(r"[0-9a-f]{7,40}", token) and not token.isdigit():
+    # A Git SHA prefix is hexadecimal and may legitimately contain only
+    # decimal digits.  Timestamp-only VERSION stamps end in six digits, which
+    # is shorter than the accepted seven-character commit prefix.
+    if re.fullmatch(r"[0-9a-f]{7,40}", token):
         return token
     return None
 
@@ -643,19 +857,25 @@ def _deployed_commit() -> str | None:
 def _fetch_latest_commit() -> str:
     import httpx
 
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Metronome"}
-    token = os.environ.get("DG_GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    response = httpx.get(_LATEST_COMMIT_URL, headers=headers, timeout=5)
+    response = httpx.get(
+        _LATEST_COMMIT_URL,
+        headers=_github_api_headers(),
+        timeout=5,
+    )
     response.raise_for_status()
-    return str(response.json()["sha"]).lower()
+    commit = str(response.json()["sha"]).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError("GitHub returned an invalid main commit identifier")
+    return commit
 
 
-def _latest_commit() -> tuple[str | None, str | None]:
-    """(latest main commit, error), refreshed at most every 15 minutes."""
+def _latest_commit(*, force: bool = False) -> tuple[str | None, str | None]:
+    """Return ``(latest main commit, error)`` using the shared short cache."""
     with _UPDATE_CHECK_LOCK:
-        if time.time() - _UPDATE_CHECK["checked_at"] < _UPDATE_CHECK_TTL_SECONDS:
+        if (
+            not force
+            and time.time() - _UPDATE_CHECK["checked_at"] < _UPDATE_CHECK_TTL_SECONDS
+        ):
             return _UPDATE_CHECK["latest_commit"], _UPDATE_CHECK["error"]
         try:
             _UPDATE_CHECK["latest_commit"] = _fetch_latest_commit()
@@ -664,6 +884,813 @@ def _latest_commit() -> tuple[str | None, str | None]:
             _UPDATE_CHECK["error"] = f"{type(exc).__name__}: {exc}"
         _UPDATE_CHECK["checked_at"] = time.time()
         return _UPDATE_CHECK["latest_commit"], _UPDATE_CHECK["error"]
+
+
+def _commits_match(deployed: str | None, latest: str | None) -> bool:
+    return bool(
+        deployed
+        and latest
+        and (latest.startswith(deployed) or deployed.startswith(latest))
+    )
+
+
+def _auto_update_enabled() -> bool:
+    try:
+        raw = get_setting(_AUTO_UPDATE_SETTING_KEY, "1")
+    except Exception as exc:
+        # Startup/version reporting must keep working even while SQLite is
+        # temporarily unavailable.  The installed default remains enabled.
+        logging.getLogger("auto_update").warning(
+            "Could not read automatic-update setting; using enabled default: %s",
+            _safe_update_error(exc),
+        )
+        raw = "1"
+    return str(raw or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _safe_update_error(value: object) -> str:
+    message = " ".join(str(value or "Update failed").split())
+    token = os.environ.get("DG_GITHUB_TOKEN")
+    if token:
+        message = message.replace(token, "[redacted]")
+    message = re.sub(
+        r"(?i)(authorization|token|password|secret)\s*[=:]\s*[^\s;,]+",
+        r"\1=[redacted]",
+        message,
+    )
+    return message[:500]
+
+
+def _tests_gate_record(
+    target_commit: str | None,
+    state: str,
+    message: str,
+    *,
+    checked_at: str | None = None,
+    error: str | None = None,
+    run: dict | None = None,
+) -> dict:
+    run = run or {}
+    return {
+        "workflow": "Tests",
+        "workflow_file": "tests.yml",
+        "workflow_path": _TESTS_WORKFLOW_PATH,
+        "target_commit": target_commit,
+        "state": state,
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "run_id": run.get("id"),
+        "run_attempt": run.get("run_attempt"),
+        "url": run.get("html_url"),
+        "checked_at": checked_at,
+        "message": message,
+        "error": _safe_update_error(error) if error else None,
+    }
+
+
+def _fetch_tests_workflow_gate(target_commit: str) -> dict:
+    """Return GitHub's Tests result for one exact main-branch commit."""
+    import httpx
+
+    target = str(target_commit or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", target):
+        raise RuntimeError("Tests can only be verified for a full Git commit SHA")
+    response = httpx.get(
+        _TESTS_WORKFLOW_RUNS_URL,
+        headers=_github_api_headers(),
+        params={
+            "head_sha": target,
+            "branch": "main",
+            "event": "push",
+            "per_page": 10,
+        },
+        timeout=5,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("workflow_runs"), list
+    ):
+        raise RuntimeError("GitHub returned an invalid Tests workflow response")
+
+    matching_runs: list[dict] = []
+    for candidate in payload["workflow_runs"]:
+        if not isinstance(candidate, dict):
+            continue
+        workflow_path = str(candidate.get("path") or "").split("@", 1)[0]
+        if (
+            str(candidate.get("head_sha") or "").strip().lower() != target
+            or str(candidate.get("head_branch") or "").strip() != "main"
+            or str(candidate.get("event") or "").strip() != "push"
+            or workflow_path != _TESTS_WORKFLOW_PATH
+        ):
+            continue
+        matching_runs.append(candidate)
+
+    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if not matching_runs:
+        return _tests_gate_record(
+            target,
+            "pending",
+            "The Tests workflow has not started for this main commit yet.",
+            checked_at=checked_at,
+        )
+
+    def run_order(run: dict) -> tuple[int, int, int]:
+        values = []
+        for key in ("run_number", "run_attempt", "id"):
+            try:
+                values.append(int(run.get(key) or 0))
+            except (TypeError, ValueError):
+                values.append(0)
+        return tuple(values)
+
+    run = max(matching_runs, key=run_order)
+    status = str(run.get("status") or "").strip().casefold()
+    conclusion = str(run.get("conclusion") or "").strip().casefold() or None
+    normalized_run = dict(run)
+    normalized_run["status"] = status or None
+    normalized_run["conclusion"] = conclusion
+    if status != "completed":
+        return _tests_gate_record(
+            target,
+            "pending",
+            "The Tests workflow is still running for this main commit.",
+            checked_at=checked_at,
+            run=normalized_run,
+        )
+    if conclusion == "success":
+        return _tests_gate_record(
+            target,
+            "passed",
+            "The exact main commit passed the Tests workflow.",
+            checked_at=checked_at,
+            run=normalized_run,
+        )
+    return _tests_gate_record(
+        target,
+        "failed",
+        f"The Tests workflow finished with {conclusion or 'no conclusion'}.",
+        checked_at=checked_at,
+        run=normalized_run,
+    )
+
+
+def _tests_gate(target_commit: str, *, force: bool = False) -> dict:
+    """Return a short-lived, exact-SHA-keyed workflow gate result."""
+    target = str(target_commit or "").strip().lower()
+    now = time.monotonic()
+    with _TESTS_GATE_LOCK:
+        cached = _TESTS_GATE_CACHE.get(target)
+        if (
+            not force
+            and cached
+            and now - cached[0] < _TESTS_GATE_TTL_SECONDS
+        ):
+            return dict(cached[1])
+        try:
+            result = _fetch_tests_workflow_gate(target)
+        except Exception as exc:
+            checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            result = _tests_gate_record(
+                target or None,
+                "unavailable",
+                "Metronome could not verify the Tests workflow; installation is blocked.",
+                checked_at=checked_at,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        _TESTS_GATE_CACHE[target] = (now, result)
+        if len(_TESTS_GATE_CACHE) > 8:
+            prior_targets = [key for key in _TESTS_GATE_CACHE if key != target]
+            if prior_targets:
+                oldest = min(
+                    prior_targets,
+                    key=lambda key: _TESTS_GATE_CACHE[key][0],
+                )
+                _TESTS_GATE_CACHE.pop(oldest, None)
+        return dict(result)
+
+
+def _tests_gate_for_status(
+    deployed_commit: str | None,
+    latest_commit: str | None,
+    *,
+    force: bool = False,
+) -> dict:
+    if not latest_commit:
+        return _tests_gate_record(
+            None,
+            "not_checked",
+            "A main commit must be found before Tests can be checked.",
+        )
+    if _commits_match(deployed_commit, latest_commit):
+        return _tests_gate_record(
+            latest_commit,
+            "not_required",
+            "The installed commit already matches GitHub main.",
+        )
+    return _tests_gate(latest_commit, force=force)
+
+
+def _tests_gate_auto_status(gate: dict) -> str:
+    return {
+        "pending": "waiting_for_tests",
+        "failed": "tests_failed",
+        "unavailable": "tests_check_failed",
+    }.get(str(gate.get("state") or ""), "tests_check_failed")
+
+
+def _set_auto_update_state(**changes) -> None:
+    with _AUTO_UPDATE_STATE_LOCK:
+        _AUTO_UPDATE_STATE.update(changes)
+
+
+def _auto_update_payload(
+    *,
+    latest_commit: str | None = None,
+    check_error: str | None = None,
+) -> dict:
+    with _AUTO_UPDATE_STATE_LOCK:
+        state = dict(_AUTO_UPDATE_STATE)
+    state.pop("last_attempt_monotonic", None)
+    deployed = _deployed_commit()
+    latest = latest_commit or _UPDATE_CHECK.get("latest_commit")
+    error = check_error if check_error is not None else _UPDATE_CHECK.get("error")
+    enabled = _auto_update_enabled()
+    return {
+        "enabled": enabled,
+        "branch": "main",
+        "interval_minutes": _AUTO_UPDATE_INTERVAL_SECONDS // 60,
+        "task_name": _AUTO_UPDATE_TASK_NAME,
+        "draining": _AUTO_UPDATE_DRAIN_EVENT.is_set(),
+        "deployed_commit": deployed,
+        "latest_commit": latest,
+        "update_available": (
+            bool(deployed and latest) and not _commits_match(deployed, latest)
+        ),
+        "check_error": _safe_update_error(error) if error else None,
+        **state,
+    }
+
+
+def _launch_registered_auto_update_task() -> None:
+    """Start the pre-registered elevated task that survives service restart."""
+    if os.name != "nt":
+        raise RuntimeError("Automatic updates require the installed Windows service")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    query = subprocess.run(
+        ["schtasks", "/query", "/tn", _AUTO_UPDATE_TASK_NAME],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        creationflags=flags,
+    )
+    if query.returncode != 0:
+        raise RuntimeError(
+            "Automatic update task is not installed; run setup.ps1 once to register it"
+        )
+    launch = subprocess.run(
+        ["schtasks", "/run", "/tn", _AUTO_UPDATE_TASK_NAME],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        creationflags=flags,
+    )
+    if launch.returncode != 0:
+        raise RuntimeError(
+            "Windows could not start the automatic update task: "
+            + (launch.stderr or launch.stdout or f"exit {launch.returncode}")
+        )
+
+
+def _registered_auto_update_task_ready() -> tuple[bool, str | None]:
+    """Return whether interactive setup provisioned the fixed elevated task."""
+    if (_CODE_DIR / ".git").exists():
+        return False, (
+            "Automatic installs are disabled in a Git working copy; use a setup.ps1 "
+            "production install so local source changes cannot be overwritten"
+        )
+    if os.name != "nt":
+        return False, "Automatic updates require the installed Windows service"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", _AUTO_UPDATE_TASK_NAME],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=flags,
+        )
+    except Exception as exc:
+        return False, _safe_update_error(exc)
+    if result.returncode == 0:
+        return True, None
+    return False, (
+        "Automatic update task is not installed; run setup.ps1 once to register it"
+    )
+
+
+_CODE_DIR = Path(__file__).resolve().parent.parent
+_UPDATE_ROOT = _CODE_DIR.parent / "updates"
+_UPDATE_REQUEST_PATH = _UPDATE_ROOT / "pending_update.json"
+_UPDATE_RECEIPT_DIR = _UPDATE_ROOT / "receipts"
+
+
+def _table_exists(db, table_name: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _active_update_work(db) -> dict[str, int]:
+    """Return in-flight production work that should finish before restart."""
+    checks = {
+        "scanner_jobs": ("scanner_jobs", "status IN ('queued','running')"),
+        "scan_runs": ("scan_runs", "status='running'"),
+        "flow_runs": ("flow_runs", "status IN ('queued','claimed','running')"),
+        "flow_catalog_scans": (
+            "flow_catalog_scans",
+            "status IN ('queued','claimed','running')",
+        ),
+        "pipeline_runs": (
+            "pipeline_runs",
+            "status NOT IN ('succeeded','failed')",
+        ),
+        "pipeline_notifications": (
+            "pipeline_run_steps",
+            "step_type='notification' AND status IN ('pending','running')",
+        ),
+        # A ``pending`` row records a deferred future retry, not a running
+        # process. It survives the restart and resumes afterward; only a
+        # launched sync must finish before services stop.
+        "pbi_sync_runs": ("pbi_sync_runs", "status='launched'"),
+        "pbi_recurrence_runs": ("pbi_recurrence_runs", "status='running'"),
+        "agent_runs": ("agent_runs", "status IN ('queued','running')"),
+        "outlook_dispatches": ("outlook_dispatches", "status='pending'"),
+    }
+    active: dict[str, int] = {}
+    for label, (table_name, predicate) in checks.items():
+        if not _table_exists(db, table_name):
+            continue
+        count = int(
+            db.execute(
+                f"SELECT COUNT(*) FROM {table_name} WHERE {predicate}"
+            ).fetchone()[0]
+        )
+        if count:
+            active[label] = count
+    with _AUTO_UPDATE_ACTIVITY_LOCK:
+        in_flight_starts = int(_AUTO_UPDATE_ACTIVE_STARTS)
+    if in_flight_starts:
+        active["in_flight_operations"] = in_flight_starts
+    return active
+
+
+def _update_attempt_dict(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["active"] = item.pop("active_slot", None) == 1
+    return item
+
+
+def _read_update_receipt(attempt_id: str) -> dict | None:
+    path = _UPDATE_RECEIPT_DIR / f"{attempt_id}.json"
+    try:
+        if not path.exists() or path.stat().st_size > 128 * 1024:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("attempt_id") != attempt_id:
+        return None
+    return value
+
+
+def _update_attempt_age_seconds(attempt: dict) -> float:
+    raw = attempt.get("launched_at") or attempt.get("created_at")
+    if not raw:
+        return 0.0
+    try:
+        created = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - created).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _reconcile_update_attempts() -> dict | None:
+    """Reconcile the external updater receipt after this service restarts."""
+    with get_db() as db:
+        row = db.execute(
+            """SELECT * FROM app_update_attempts
+                WHERE active_slot=1
+                ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            return None
+        attempt = dict(row)
+        receipt = _read_update_receipt(attempt["attempt_id"])
+        deployed = _deployed_commit()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        stale_after = (
+            _AUTO_UPDATE_RESERVATION_STALE_SECONDS
+            if attempt.get("status") == "reserved" and not receipt
+            else _AUTO_UPDATE_ATTEMPT_STALE_SECONDS
+        )
+        stale = _update_attempt_age_seconds(attempt) > stale_after
+        if receipt:
+            receipt_target = str(receipt.get("target_commit") or "").lower()
+            receipt_status = str(receipt.get("status") or "").casefold()
+            if receipt_target != attempt["target_commit"]:
+                receipt_status = "failed"
+                receipt["error"] = "Updater receipt target did not match its reservation."
+            if receipt_status == "succeeded":
+                if _commits_match(deployed, attempt["target_commit"]):
+                    db.execute(
+                        """UPDATE app_update_attempts
+                              SET status='succeeded', stage='healthy', message=?,
+                                  error=NULL, active_slot=NULL, finished_at=?, updated_at=?
+                            WHERE id=?""",
+                        (
+                            str(receipt.get("message") or "Update installed and verified.")[:1000],
+                            now,
+                            now,
+                            attempt["id"],
+                        ),
+                    )
+                else:
+                    db.execute(
+                        """UPDATE app_update_attempts
+                              SET status='failed', stage='version_mismatch',
+                                  message='Updater reported success but the deployed version does not match.',
+                                  error='Expected commit was not deployed.', active_slot=NULL,
+                                  finished_at=?, updated_at=? WHERE id=?""",
+                        (now, now, attempt["id"]),
+                    )
+            elif receipt_status in {"failed", "rolled_back"}:
+                db.execute(
+                    """UPDATE app_update_attempts
+                          SET status='failed', stage='rolled_back', message=?, error=?,
+                              active_slot=NULL, finished_at=?, updated_at=?
+                        WHERE id=?""",
+                    (
+                        str(receipt.get("message") or "Automatic update failed.")[:1000],
+                        _safe_update_error(receipt.get("error") or "Update rolled back"),
+                        now,
+                        now,
+                        attempt["id"],
+                    ),
+                )
+            elif stale:
+                db.execute(
+                    """UPDATE app_update_attempts
+                          SET status='failed', stage='timed_out',
+                              message='The external updater did not finish in time.',
+                              error='Automatic update attempt timed out.',
+                              active_slot=NULL, finished_at=?, updated_at=?
+                        WHERE id=?""",
+                    (now, now, attempt["id"]),
+                )
+            else:
+                db.execute(
+                    """UPDATE app_update_attempts
+                          SET status='verifying', stage=?, message=?, updated_at=?
+                        WHERE id=?""",
+                    (
+                        str(receipt.get("stage") or "verifying")[:100],
+                        str(receipt.get("message") or "Waiting for updater verification.")[:1000],
+                        now,
+                        attempt["id"],
+                    ),
+                )
+        elif stale:
+            db.execute(
+                """UPDATE app_update_attempts
+                      SET status='failed', stage='timed_out',
+                          message='The external updater stopped reporting progress.',
+                          error='No updater receipt was received before the timeout.',
+                          active_slot=NULL, finished_at=?, updated_at=?
+                    WHERE id=?""",
+                (now, now, attempt["id"]),
+            )
+        elif _commits_match(deployed, attempt["target_commit"]):
+            # The new process is healthy enough to answer, but the external
+            # task may still be polling its health endpoint before receipt.
+            db.execute(
+                """UPDATE app_update_attempts
+                      SET status='verifying', stage='service_started',
+                          message='New service started; waiting for updater health receipt.',
+                          updated_at=? WHERE id=?""",
+                (now, attempt["id"]),
+            )
+        updated = _update_attempt_dict(
+            db.execute(
+                "SELECT * FROM app_update_attempts WHERE id=?",
+                (attempt["id"],),
+            ).fetchone()
+        )
+    if updated and not updated.get("active"):
+        _release_update_drain()
+    return updated
+
+
+def _latest_update_attempts() -> tuple[dict | None, dict | None]:
+    _reconcile_update_attempts()
+    with get_db() as db:
+        active = db.execute(
+            """SELECT * FROM app_update_attempts
+                WHERE active_slot=1 ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        latest = db.execute(
+            "SELECT * FROM app_update_attempts ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return _update_attempt_dict(active), _update_attempt_dict(latest)
+
+
+def _atomic_write_update_request(payload: dict) -> None:
+    _UPDATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _UPDATE_RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = _UPDATE_ROOT / f"pending_update.{payload['attempt_id']}.tmp"
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, _UPDATE_REQUEST_PATH)
+
+
+def _remove_update_request_if_owned(attempt_id: str) -> None:
+    """Remove a failed launch request without touching a newer reservation."""
+    try:
+        if not _UPDATE_REQUEST_PATH.exists() or _UPDATE_REQUEST_PATH.stat().st_size > 128 * 1024:
+            return
+        current = json.loads(_UPDATE_REQUEST_PATH.read_text(encoding="utf-8"))
+        if isinstance(current, dict) and current.get("attempt_id") == attempt_id:
+            _UPDATE_REQUEST_PATH.unlink(missing_ok=True)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+
+
+def _reserve_and_launch_update(target_commit: str, trigger_source: str) -> dict:
+    target = str(target_commit or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", target):
+        raise RuntimeError("The update target is not a full Git commit identifier")
+    if trigger_source not in {"automatic", "manual"}:
+        raise RuntimeError("The update trigger source is invalid")
+
+    attempt_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    from_commit = _deployed_commit()
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute(
+            "SELECT * FROM app_update_attempts WHERE active_slot=1 LIMIT 1"
+        ).fetchone()
+        if existing is not None:
+            return _update_attempt_dict(existing)
+        db.execute(
+            """INSERT INTO app_update_attempts
+                   (attempt_id, from_commit, target_commit, trigger_source,
+                    status, stage, message, active_slot, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'reserved', 'preparing',
+                       'Preparing exact-commit update request.', 1, ?, ?)""",
+            (
+                attempt_id,
+                from_commit,
+                target,
+                trigger_source,
+                created_at,
+                created_at,
+            ),
+        )
+
+    request_payload = {
+        "version": 1,
+        "attempt_id": attempt_id,
+        "target_commit": target,
+        "from_commit": from_commit,
+        "trigger_source": trigger_source,
+        "code_dir": str(_CODE_DIR),
+        "database_path": str(Path(DB_PATH).resolve()),
+        "receipt_path": str(_UPDATE_RECEIPT_DIR / f"{attempt_id}.json"),
+        "created_at": created_at,
+    }
+    try:
+        _atomic_write_update_request(request_payload)
+        _launch_registered_auto_update_task()
+    except Exception as exc:
+        _remove_update_request_if_owned(attempt_id)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with get_db() as db:
+            db.execute(
+                """UPDATE app_update_attempts
+                      SET status='failed', stage='launch_failed', error=?,
+                          message='The elevated updater did not start.',
+                          active_slot=NULL, finished_at=?, updated_at=?
+                    WHERE attempt_id=?""",
+                (_safe_update_error(exc), now, now, attempt_id),
+            )
+        raise
+
+    launched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_db() as db:
+        db.execute(
+            """UPDATE app_update_attempts
+                  SET status='launched', stage='external_task',
+                      message='Elevated updater launched; waiting for restart.',
+                      launched_at=?, updated_at=?
+                WHERE attempt_id=?""",
+            (launched_at, launched_at, attempt_id),
+        )
+        row = db.execute(
+            "SELECT * FROM app_update_attempts WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+    return _update_attempt_dict(row)
+
+
+def _scheduled_auto_update(*, force: bool = False) -> dict:
+    """Check GitHub main and launch the exact-SHA updater when it changes."""
+    if not _AUTO_UPDATE_RUN_LOCK.acquire(blocking=False):
+        _set_auto_update_state(status="check_in_progress")
+        return _auto_update_payload()
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        active_attempt, _ = _latest_update_attempts()
+        if active_attempt:
+            _request_update_drain()
+            _set_auto_update_state(
+                status="waiting_for_update_restart",
+                last_checked_at=now,
+                last_attempt_at=active_attempt.get("launched_at")
+                or active_attempt.get("created_at"),
+                last_attempt_commit=active_attempt.get("target_commit"),
+                last_error=active_attempt.get("error"),
+            )
+            return _auto_update_payload()
+
+        if not _auto_update_enabled():
+            _release_update_drain()
+            _set_auto_update_state(
+                status="disabled",
+                last_checked_at=now,
+                last_error=None,
+            )
+            return _auto_update_payload()
+
+        if (_CODE_DIR / ".git").exists():
+            _release_update_drain()
+            _set_auto_update_state(
+                status="developer_checkout",
+                last_checked_at=now,
+                last_error=(
+                    "Automatic installs do not overwrite a Git working copy; "
+                    "use the setup.ps1 production install"
+                ),
+            )
+            return _auto_update_payload()
+
+        deployed = _deployed_commit()
+        if not deployed:
+            _release_update_drain()
+            _set_auto_update_state(
+                status="not_deployed",
+                last_checked_at=now,
+                last_error=(
+                    "VERSION has no deployed commit stamp; run setup.ps1 once "
+                    "before enabling automatic updates"
+                ),
+            )
+            return _auto_update_payload()
+
+        latest, error = _latest_commit(force=force)
+        if error or not latest:
+            _release_update_drain()
+            _set_auto_update_state(
+                status="check_failed",
+                last_checked_at=now,
+                last_error=_safe_update_error(error or "GitHub returned no main commit"),
+            )
+            return _auto_update_payload(latest_commit=latest, check_error=error)
+
+        if _commits_match(deployed, latest):
+            _release_update_drain()
+            _set_auto_update_state(
+                status="up_to_date",
+                last_checked_at=now,
+                last_error=None,
+            )
+            return _auto_update_payload(latest_commit=latest)
+
+        tests_gate = _tests_gate(latest, force=force)
+        if tests_gate["state"] != "passed":
+            # Waiting for or failing CI must not pause ordinary production
+            # work.  No durable update attempt exists until the exact SHA has
+            # passed the repository's Tests workflow.
+            _release_update_drain()
+            _set_auto_update_state(
+                status=_tests_gate_auto_status(tests_gate),
+                last_checked_at=now,
+                last_error=tests_gate.get("error") or tests_gate.get("message"),
+            )
+            return _auto_update_payload(latest_commit=latest)
+
+        # CI may take long enough for another merge to reach main. Confirm the
+        # branch still points at the tested SHA before draining work or
+        # reserving a restart, otherwise the next watcher pass evaluates the
+        # newer commit and avoids back-to-back deployments.
+        confirmed_latest, confirm_error = _latest_commit(force=True)
+        if confirm_error or not confirmed_latest:
+            _release_update_drain()
+            _set_auto_update_state(
+                status="check_failed",
+                last_checked_at=now,
+                last_error=_safe_update_error(
+                    confirm_error or "GitHub returned no main commit"
+                ),
+            )
+            return _auto_update_payload(
+                latest_commit=confirmed_latest or latest,
+                check_error=confirm_error,
+            )
+        if confirmed_latest != latest:
+            _release_update_drain()
+            _set_auto_update_state(
+                status="main_changed_during_tests_check",
+                last_checked_at=now,
+                last_error=(
+                    "GitHub main changed while Tests were being verified; "
+                    "the newer commit will be checked next."
+                ),
+            )
+            return _auto_update_payload(latest_commit=confirmed_latest)
+        latest = confirmed_latest
+
+        # Stop scheduler jobs from creating fresh work, then re-check the
+        # durable queues before handing control to the external updater.
+        _request_update_drain()
+        with get_db() as db:
+            active_work = _active_update_work(db)
+        if active_work:
+            summary = ", ".join(
+                f"{name}={count}" for name, count in sorted(active_work.items())
+            )
+            _set_auto_update_state(
+                status="waiting_for_idle",
+                last_checked_at=now,
+                last_error=f"Waiting for active work to finish ({summary})",
+            )
+            return _auto_update_payload(latest_commit=latest)
+
+        with _AUTO_UPDATE_STATE_LOCK:
+            attempted_commit = _AUTO_UPDATE_STATE.get("last_attempt_commit")
+            attempted_at = float(_AUTO_UPDATE_STATE.get("last_attempt_monotonic") or 0.0)
+        if (
+            attempted_commit == latest
+            and time.monotonic() - attempted_at < _AUTO_UPDATE_RETRY_SECONDS
+        ):
+            _release_update_drain()
+            _set_auto_update_state(
+                status="retry_cooldown",
+                last_checked_at=now,
+            )
+            return _auto_update_payload(latest_commit=latest)
+
+        try:
+            attempt = _reserve_and_launch_update(latest, "automatic")
+        except Exception as exc:
+            _release_update_drain()
+            _set_auto_update_state(
+                status="launch_failed",
+                last_checked_at=now,
+                last_attempt_at=now,
+                last_attempt_commit=latest,
+                last_attempt_monotonic=time.monotonic(),
+                last_error=_safe_update_error(exc),
+            )
+            logging.getLogger("auto_update").error(
+                "Automatic main update could not launch: %s",
+                _safe_update_error(exc),
+            )
+        else:
+            attempt_commit = attempt.get("target_commit") or latest
+            _set_auto_update_state(
+                status="update_launched",
+                last_checked_at=now,
+                last_attempt_at=attempt.get("launched_at") or now,
+                last_attempt_commit=attempt_commit,
+                last_attempt_monotonic=time.monotonic(),
+                last_error=None,
+            )
+            logging.getLogger("auto_update").info(
+                "New main commit %s detected; elevated update task launched",
+                str(attempt_commit)[:12],
+            )
+        return _auto_update_payload(latest_commit=latest)
+    finally:
+        _AUTO_UPDATE_RUN_LOCK.release()
 
 
 @app.get("/api/version")
@@ -677,13 +1704,70 @@ def get_version():
         error = "VERSION carries no commit stamp; re-run setup.ps1 to enable the check"
     up_to_date = None
     if deployed and latest:
-        up_to_date = latest.startswith(deployed) or deployed.startswith(latest)
+        up_to_date = _commits_match(deployed, latest)
     return {
         "version": _APP_VERSION,
         "commit": deployed,
         "latest_commit": latest,
         "up_to_date": up_to_date,
         "update_check_error": error,
+        "auto_update": _auto_update_payload(
+            latest_commit=latest,
+            check_error=error,
+        ),
+    }
+
+
+def _system_update_status(*, force_check: bool = False) -> dict:
+    """Build the operator-facing state shared by the System Updates page."""
+    latest, error = _latest_commit(force=force_check)
+    active_attempt, latest_attempt = _latest_update_attempts()
+    with get_db() as db:
+        active_work = _active_update_work(db)
+    updater_ready, updater_error = _registered_auto_update_task_ready()
+    deployed = _deployed_commit()
+    up_to_date = _commits_match(deployed, latest) if deployed and latest else None
+    tests_gate = (
+        _tests_gate_record(
+            latest,
+            "not_checked",
+            "The latest main commit could not be confirmed, so Tests were not checked.",
+            error=error,
+        )
+        if error
+        else _tests_gate_for_status(
+            deployed,
+            latest,
+            force=force_check,
+        )
+    )
+    auto_update = _auto_update_payload(
+        latest_commit=latest,
+        check_error=error,
+    )
+    return {
+        "version": _APP_VERSION,
+        "current_commit": deployed,
+        "latest_commit": latest,
+        "up_to_date": up_to_date,
+        "update_check_error": _safe_update_error(error) if error else None,
+        "auto_update": auto_update,
+        "updater_ready": updater_ready,
+        "updater_error": updater_error,
+        "active_work": active_work,
+        "active_attempt": active_attempt,
+        "latest_attempt": latest_attempt,
+        "tests_gate": tests_gate,
+        "can_apply": bool(
+            updater_ready
+            and deployed
+            and latest
+            and not error
+            and not up_to_date
+            and not active_work
+            and not active_attempt
+            and tests_gate["state"] == "passed"
+        ),
     }
 
 
@@ -696,6 +1780,10 @@ class RegisterRequest(BaseModel):
 
 class RefreshScheduleRequest(BaseModel):
     refresh_time: str
+
+
+class AutoUpdateSettingsRequest(BaseModel):
+    enabled: bool
 
 
 @app.get("/api/me")
@@ -912,28 +2000,207 @@ def register_user(body: RegisterRequest, request: Request):
     }
 
 
-@app.post("/api/update")
-def trigger_update(request: Request):
-    """Launch setup.ps1 to update the app."""
+@app.get("/api/system/updates")
+def get_system_updates(request: Request):
+    """Return automatic-main watcher, workload, and updater state."""
     require_app_access(request)
-    setup_path = Path(__file__).parent.parent / "setup.ps1"
-    if not setup_path.exists():
-        raise HTTPException(status_code=404, detail="setup.ps1 not found")
-    # Launch via schtasks so it runs in the logged-in user's interactive session
-    # (the NSSM service runs in session 0 which is non-interactive)
-    task_name = "DG_Update"
-    ps_cmd = f'powershell.exe -ExecutionPolicy Bypass -NoExit -File "{setup_path}"'
+    return _system_update_status()
+
+
+@app.put("/api/system/updates")
+def set_system_updates(payload: AutoUpdateSettingsRequest, request: Request):
+    """Enable or disable unattended installation of new main commits."""
+    require_app_access(request)
+    set_setting(_AUTO_UPDATE_SETTING_KEY, "1" if payload.enabled else "0")
+    active_attempt, _ = _latest_update_attempts()
+    if active_attempt:
+        _request_update_drain()
+    elif not payload.enabled:
+        _release_update_drain()
+    _set_auto_update_state(
+        status=(
+            "waiting_for_update_restart"
+            if active_attempt
+            else "enabled" if payload.enabled else "disabled"
+        ),
+        last_error=active_attempt.get("error") if active_attempt else None,
+    )
+    return _system_update_status()
+
+
+@app.post("/api/system/updates/check")
+def check_system_updates(request: Request):
+    """Force a fresh main lookup without installing it from this request."""
+    require_app_access(request)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    latest, error = _latest_commit(force=True)
+    deployed = _deployed_commit()
+    if error or not latest:
+        _set_auto_update_state(
+            status="check_failed",
+            last_checked_at=now,
+            last_error=_safe_update_error(error or "GitHub returned no main commit"),
+        )
+    elif not deployed:
+        _set_auto_update_state(
+            status="not_deployed",
+            last_checked_at=now,
+            last_error="Run setup.ps1 once before using automatic updates",
+        )
+    elif _commits_match(deployed, latest):
+        _set_auto_update_state(
+            status="up_to_date",
+            last_checked_at=now,
+            last_error=None,
+        )
+    else:
+        tests_gate = _tests_gate(latest, force=True)
+        _set_auto_update_state(
+            status=(
+                "update_available"
+                if tests_gate["state"] == "passed"
+                else _tests_gate_auto_status(tests_gate)
+            ),
+            last_checked_at=now,
+            last_error=(
+                None
+                if tests_gate["state"] == "passed"
+                else tests_gate.get("error") or tests_gate.get("message")
+            ),
+        )
+    return _system_update_status()
+
+
+def _apply_latest_update() -> dict:
+    latest, error = _latest_commit(force=True)
+    if error or not latest:
+        raise HTTPException(
+            status_code=502,
+            detail=_safe_update_error(error or "GitHub returned no main commit"),
+        )
+    deployed = _deployed_commit()
+    if not deployed:
+        raise HTTPException(
+            status_code=409,
+            detail="Run setup.ps1 once before using unattended updates.",
+        )
+    if _commits_match(deployed, latest):
+        _release_update_drain()
+        return {
+            "status": "up_to_date",
+            "current_commit": deployed,
+            "latest_commit": latest,
+        }
+
+    active_attempt, _ = _latest_update_attempts()
+    if active_attempt:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "An update is already in progress.",
+                "attempt": active_attempt,
+            },
+        )
+
+    tests_gate = _tests_gate(latest, force=True)
+    if tests_gate["state"] != "passed":
+        _release_update_drain()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _set_auto_update_state(
+            status=_tests_gate_auto_status(tests_gate),
+            last_checked_at=now,
+            last_error=tests_gate.get("error") or tests_gate.get("message"),
+        )
+        raise HTTPException(
+            status_code=503 if tests_gate["state"] == "unavailable" else 409,
+            detail={
+                "message": "The exact main commit must pass Tests before installation.",
+                "tests_gate": tests_gate,
+            },
+        )
+
+    confirmed_latest, confirm_error = _latest_commit(force=True)
+    if confirm_error or not confirmed_latest:
+        _release_update_drain()
+        raise HTTPException(
+            status_code=502,
+            detail=_safe_update_error(
+                confirm_error or "GitHub returned no main commit"
+            ),
+        )
+    if confirmed_latest != latest:
+        _release_update_drain()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _set_auto_update_state(
+            status="main_changed_during_tests_check",
+            last_checked_at=now,
+            last_error=(
+                "GitHub main changed while Tests were being verified; "
+                "check the newer commit before installing."
+            ),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "GitHub main changed while Tests were being verified.",
+                "previous_commit": latest,
+                "latest_commit": confirmed_latest,
+            },
+        )
+    latest = confirmed_latest
+
+    _request_update_drain()
+    with get_db() as db:
+        active_work = _active_update_work(db)
+    if active_work:
+        if not _auto_update_enabled():
+            _release_update_drain()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Metronome will update after active work finishes.",
+                "active_work": active_work,
+            },
+        )
+    updater_ready, updater_error = _registered_auto_update_task_ready()
+    if not updater_ready:
+        _release_update_drain()
+        raise HTTPException(status_code=503, detail=updater_error)
+
     try:
-        subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"],
-                       capture_output=True, timeout=10)
-        subprocess.run(["schtasks", "/create", "/tn", task_name, "/tr", ps_cmd,
-                        "/sc", "once", "/st", "00:00", "/it", "/f"],
-                       capture_output=True, text=True, timeout=10, check=True)
-        subprocess.run(["schtasks", "/run", "/tn", task_name],
-                       capture_output=True, text=True, timeout=10, check=True)
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to launch update: {e.stderr or e}")
-    return {"status": "launched"}
+        attempt = _reserve_and_launch_update(latest, "manual")
+    except Exception as exc:
+        _release_update_drain()
+        raise HTTPException(status_code=503, detail=_safe_update_error(exc)) from exc
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _set_auto_update_state(
+        status="update_launched",
+        last_checked_at=now,
+        last_attempt_at=attempt.get("launched_at") or now,
+        last_attempt_commit=attempt.get("target_commit") or latest,
+        last_attempt_monotonic=time.monotonic(),
+        last_error=None,
+    )
+    return {
+        "status": "launched",
+        "current_commit": deployed,
+        "latest_commit": latest,
+        "attempt": attempt,
+    }
+
+
+@app.post("/api/system/updates/apply", status_code=202)
+def apply_system_update(request: Request):
+    """Launch the fixed exact-commit updater after confirming the app is idle."""
+    require_app_access(request)
+    return _apply_latest_update()
+
+
+@app.post("/api/update", status_code=202)
+def trigger_update(request: Request):
+    """Backward-compatible alias for the safe System Updates action."""
+    require_app_access(request)
+    return _apply_latest_update()
 
 
 @app.get("/")

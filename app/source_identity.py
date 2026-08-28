@@ -215,6 +215,8 @@ def split_relation(value: str | None, default_schema: str | None = None) -> tupl
         else:
             current.append(char)
         index += 1
+    if quoted:
+        return None
     parts.append("".join(current).strip())
     if any(not item for item in parts) or len(parts) > 2:
         return None

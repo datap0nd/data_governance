@@ -77,6 +77,12 @@ assert.match(emailPreview, /assessment\.recommendation_title/,
     "The Email-page preview must select the Qwen recommendation before deterministic fallback");
 assert.match(emailPreview, /Pending or unavailable/,
     "The preview must disclose when AI is not current instead of implying it was included");
+assert.match(emailPreview, /alert\.ai_analysis_enabled !== false/,
+    "The Email preview must ignore AI-derived next actions when email analysis is disabled");
+assert.match(emailPreview, /AI analysis is disabled in System > AI/,
+    "The Email preview must explain the centralized feature switch");
+assert.match(emailPreview, /const assessmentHtml = alert\.ai_analysis_enabled === false[\s\S]*?\? ""/,
+    "Disabled AI copy must be omitted from each Alert row rather than shown as pending");
 
 const context = {};
 vm.createContext(context);

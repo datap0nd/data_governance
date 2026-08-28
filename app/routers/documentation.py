@@ -255,11 +255,9 @@ def suggest_doc(report_id: int):
     }
 
 
-@router.post("/ai-suggest/{report_id}")
-def ai_suggest_doc(report_id: int):
+def _ai_suggest_doc(report_id: int, ai_settings):
     """Use AI to generate documentation from structured report context."""
     import logging
-    from app.config import AI_MOCK
 
     log = logging.getLogger(__name__)
 
@@ -357,17 +355,9 @@ def ai_suggest_doc(report_id: int):
         "Keys: purpose, formulas"
     )
 
-    if AI_MOCK:
-        # Return a structured placeholder when AI is not configured
-        return {
-            "purpose": f"[AI not configured] Report '{report['name']}' uses {len(tables)} data tables from {sources_text}.",
-            "formulas": "\n".join(f"- {m['measure_name']}: [needs AI to explain]" for m in measures[:10]),
-            "context_preview": context,
-        }
-
     try:
         from app.ai.llm_provider import call_llm
-        raw = call_llm(system_prompt, context)
+        raw = call_llm(system_prompt, context, settings=ai_settings)
         # Try to parse as JSON
         raw = raw.strip()
         if raw.startswith("```"):
@@ -384,19 +374,49 @@ def ai_suggest_doc(report_id: int):
             "formulas": None,
         }
     except Exception as e:
-        log.exception("AI suggest failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"AI service error: {e}")
+        from app.ai.runtime_config import sanitize_ai_error
+
+        safe_message = sanitize_ai_error(e, ai_settings.api_key)
+        log.error("AI suggest failed: %s", safe_message)
+        raise HTTPException(
+            status_code=502,
+            detail="AI service error: " + safe_message,
+        )
+
+
+@router.post("/ai-suggest/{report_id}")
+def ai_suggest_doc(report_id: int):
+    """Generate one report suggestion only with a connected Qwen model."""
+    from app.ai.runtime_config import load_runtime_settings
+
+    ai_settings = load_runtime_settings()
+    if (
+        not ai_settings.feature_enabled("documentation_suggestions")
+        or not ai_settings.qwen_enabled
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="AI documentation suggestions require Qwen mode in System > AI.",
+        )
+    return _ai_suggest_doc(report_id, ai_settings)
 
 
 @router.post("/ai-suggest-all")
 def ai_suggest_all(request: Request):
     """Batch-generate AI documentation for all reports that don't have complete docs."""
     import logging
-    from app.config import AI_MOCK
+    from app.ai.runtime_config import load_runtime_settings
 
     log = logging.getLogger(__name__)
-    if AI_MOCK:
-        raise HTTPException(status_code=503, detail="AI is not configured. Set DG_AI_API_URL and DG_AI_API_KEY.")
+    ai_settings = load_runtime_settings()
+    if (
+        not ai_settings.feature_enabled("documentation_suggestions")
+        or not ai_settings.qwen_enabled
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="AI documentation suggestions require Qwen mode in System > AI.",
+        )
 
     actor = get_actor(request)
     results = {"generated": 0, "skipped": 0, "failed": 0, "errors": []}
@@ -421,7 +441,7 @@ def ai_suggest_all(request: Request):
                     continue
 
             # Call the single-report AI suggest
-            suggestion = ai_suggest_doc(report_id)
+            suggestion = _ai_suggest_doc(report_id, ai_settings)
 
             # Save to database
             now = datetime.now(timezone.utc).isoformat()

@@ -1,11 +1,18 @@
 """Compatibility shim for the existing single-turn AI features."""
 
 from app.ai.openai_provider import OpenAIChatProvider
+from app.ai.runtime_config import AIRuntimeSettings, load_runtime_settings
 
 
-def call_llm(system_prompt: str, user_prompt: str) -> str:
+def call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    settings: AIRuntimeSettings | None = None,
+) -> str:
     """Send a plain text request through the strict provider transport."""
-    provider = OpenAIChatProvider()
+    snapshot = settings or load_runtime_settings()
+    provider = OpenAIChatProvider(settings=snapshot)
     turn = provider.complete(
         [
             {"role": "system", "content": system_prompt},

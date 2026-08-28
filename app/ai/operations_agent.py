@@ -13,10 +13,15 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app import config
 from app.ai.openai_provider import OpenAIChatProvider
+from app.ai.runtime_config import (
+    AIRuntimeSettings,
+    load_runtime_settings,
+    sanitize_ai_error,
+)
 from app.ai.operations_tools import ToolEnvelope, execute_tool, specs_for_focus
 from app.ai.protocol import (
+    AIConfigurationError,
     AIError,
     AIProtocolError,
     AgentBudgetExceeded,
@@ -106,10 +111,14 @@ def _bounded_result_text(value: Any, limit: int = 800) -> str:
     return text[: limit - len(suffix)] + suffix
 
 
-def _check_boundary(run_id: int, deadline: float) -> None:
+def _check_boundary(
+    run_id: int,
+    deadline: float,
+    settings: AIRuntimeSettings,
+) -> None:
     if run_store.is_cancel_requested(run_id):
         raise AgentCancelled("Investigation cancelled.")
-    if run_store.superseded_reason(run_id):
+    if run_store.superseded_reason(run_id, settings=settings):
         raise AgentEvidenceSuperseded(
             "The linked alert changed or closed. Start a new analysis from its latest occurrence."
         )
@@ -348,18 +357,31 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
     })
 
 
-def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
-    row = run_store.claim_run(run_id)
+def execute_run(
+    run_id: int,
+    provider: ChatProvider | None = None,
+    *,
+    settings: AIRuntimeSettings | None = None,
+) -> None:
+    snapshot = settings or load_runtime_settings()
+    row = run_store.claim_run(run_id, settings=snapshot)
     if row is None:
         return
     try:
         focus_type = row["focus_type"]
         focus_id = int(row["focus_id"])
+        required_feature = (
+            "automatic_alert_review"
+            if row.get("mode") == "alert_auto"
+            else "operations_investigator"
+        )
+        if not snapshot.feature_enabled(required_feature):
+            raise AIConfigurationError("This AI function is disabled in System > AI.")
         specs = specs_for_focus(focus_type)
         if not specs:
             raise AIProtocolError("No read tools are registered for this investigation type.")
-        deadline = time.monotonic() + config.AI_AGENT_MAX_SECONDS
-        _check_boundary(run_id, deadline)
+        deadline = time.monotonic() + snapshot.max_seconds
+        _check_boundary(run_id, deadline, snapshot)
 
         seed_name = {
             "flow_run": "get_flow_run",
@@ -378,15 +400,15 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
             focus_type=focus_type,
             focus_id=focus_id,
         )
-        _check_boundary(run_id, deadline)
+        _check_boundary(run_id, deadline, snapshot)
 
-        if config.AI_MOCK and provider is None:
+        if snapshot.mock_mode and provider is None:
             result = _mock_result(focus_type, focus_id, seed)
-            _check_boundary(run_id, deadline)
+            _check_boundary(run_id, deadline, snapshot)
             run_store.complete_run(run_id, result.model_dump(), {})
             return
 
-        provider = provider or OpenAIChatProvider()
+        provider = provider or OpenAIChatProvider(settings=snapshot)
         tool_definitions = [spec.definition() for spec in specs]
         tool_definitions.append(terminal_tool_definition())
         binding_context = (
@@ -424,8 +446,8 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
         protocol_errors = 0
         prose_repairs = 0
 
-        for _turn_number in range(1, config.AI_AGENT_MAX_MODEL_TURNS + 1):
-            _check_boundary(run_id, deadline)
+        for _turn_number in range(1, snapshot.max_model_turns + 1):
+            _check_boundary(run_id, deadline, snapshot)
             turn = provider.complete(
                 messages, tool_definitions, deadline_monotonic=deadline
             )
@@ -433,7 +455,7 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
                 for key in usage:
                     usage[key] += int(turn.usage.get(key, 0))
             messages.append(_assistant_message(turn))
-            _check_boundary(run_id, deadline)
+            _check_boundary(run_id, deadline, snapshot)
 
             if not turn.tool_calls:
                 if prose_repairs >= 1:
@@ -483,7 +505,7 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
                     _validate_terminal_result(
                         run_id, result, focus_type=focus_type, seed=fresh_seed
                     )
-                    _check_boundary(run_id, deadline)
+                    _check_boundary(run_id, deadline, snapshot)
                 except (ValidationError, ValueError) as exc:
                     run_store.finish_step(
                         step_id,
@@ -521,7 +543,7 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
 
             for call in turn.tool_calls:
                 tool_calls += 1
-                if tool_calls > config.AI_AGENT_MAX_TOOL_CALLS:
+                if tool_calls > snapshot.max_tool_calls:
                     raise AgentBudgetExceeded("The investigation reached its read-tool limit.")
                 signature = f"{call.name}:{_json(call.arguments)}"
                 identical[signature] = identical.get(signature, 0) + 1
@@ -551,16 +573,29 @@ def execute_run(run_id: int, provider: ChatProvider | None = None) -> None:
                     ))
                     if protocol_errors > MAX_PROTOCOL_ERRORS:
                         raise AIProtocolError("Qwen repeatedly requested invalid read tools.")
-                _check_boundary(run_id, deadline)
+                _check_boundary(run_id, deadline, snapshot)
 
         raise AgentBudgetExceeded("The investigation reached its model-turn limit.")
     except AgentCancelled as exc:
         run_store.fail_run(run_id, error_code=exc.code, error=exc)
     except AIError as exc:
-        run_store.fail_run(run_id, error_code=exc.code, error=exc)
+        run_store.fail_run(
+            run_id,
+            error_code=exc.code,
+            error=sanitize_ai_error(exc, snapshot.api_key, limit=2000),
+        )
     except Exception as exc:
-        logger.exception("Operations Investigator run %s failed", run_id)
-        run_store.fail_run(run_id, error_code="agent_internal_error", error=exc)
+        safe_message = sanitize_ai_error(exc, snapshot.api_key, limit=2000)
+        logger.error(
+            "Operations Investigator run %s failed: %s",
+            run_id,
+            safe_message,
+        )
+        run_store.fail_run(
+            run_id,
+            error_code="agent_internal_error",
+            error=safe_message,
+        )
 
 
 def _execute_future(run_id: int) -> None:
@@ -602,6 +637,9 @@ def enrich_active_alerts(limit: int = 3) -> dict[str, int]:
     """Queue missing automatic analyses without blocking detector threads."""
     from app.database import get_db
 
+    snapshot = load_runtime_settings()
+    if not snapshot.feature_enabled("automatic_alert_review"):
+        return {"queued": 0, "reused": 0, "considered": 0, "disabled": 1}
     bounded_limit = max(1, min(int(limit), 10))
     with get_db() as db:
         candidates = db.execute(
@@ -616,7 +654,7 @@ def enrich_active_alerts(limit: int = 3) -> dict[str, int]:
             break
         try:
             run_id, created = run_store.create_or_reuse_auto_alert_run(
-                int(candidate["id"])
+                int(candidate["id"]), settings=snapshot
             )
         except Exception:
             logger.exception(

@@ -9,7 +9,11 @@ from typing import Any
 
 import httpx
 
-from app import config
+from app.ai.runtime_config import (
+    AIRuntimeSettings,
+    environment_settings,
+    sanitize_ai_error,
+)
 from app.ai.protocol import (
     AIConfigurationError,
     AIProtocolError,
@@ -113,27 +117,35 @@ def _content_text(value: Any) -> str:
 class OpenAIChatProvider:
     """Small provider with no application tool-dispatch authority."""
 
-    def __init__(self, transport=None):
+    def __init__(
+        self,
+        transport=None,
+        *,
+        settings: AIRuntimeSettings | None = None,
+    ):
         self._transport = transport
+        # One immutable snapshot is used for the complete request. A settings
+        # save can therefore never switch endpoint/model midway through a run.
+        self.settings = settings or environment_settings()
 
     def _payload(self, messages: list[dict], tools: list[dict]) -> dict:
         payload = {
-            "model": config.AI_MODEL,
+            "model": self.settings.model,
             "messages": messages,
             "stream": False,
             "n": 1,
-            "max_tokens": config.AI_AGENT_MAX_OUTPUT_TOKENS,
-            "temperature": config.AI_AGENT_TEMPERATURE,
-            "top_p": config.AI_AGENT_TOP_P,
+            "max_tokens": self.settings.max_output_tokens,
+            "temperature": self.settings.temperature,
+            "top_p": self.settings.top_p,
         }
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        profile = config.AI_PROVIDER_PROFILE.casefold()
+        profile = self.settings.provider_profile.casefold()
         if profile == "qwen_vllm" or (
-            profile == "auto" and "qwen3.8" in config.AI_MODEL.casefold()
+            profile == "auto" and "qwen" in self.settings.model.casefold()
         ):
-            payload["reasoning_effort"] = config.AI_REASONING_EFFORT
+            payload["reasoning_effort"] = self.settings.reasoning_effort
             payload["chat_template_kwargs"] = {
                 "enable_thinking": True,
                 "preserve_thinking": True,
@@ -147,7 +159,7 @@ class OpenAIChatProvider:
         *,
         deadline_monotonic: float | None = None,
     ) -> AssistantTurn:
-        if config.AI_MOCK or not config.AI_API_URL:
+        if not self.settings.qwen_enabled or not self.settings.endpoint:
             raise AIConfigurationError("Qwen is not configured for this Metronome instance.")
 
         if deadline_monotonic is not None and deadline_monotonic <= time.monotonic():
@@ -156,11 +168,11 @@ class OpenAIChatProvider:
         remaining = (
             max(0.1, deadline_monotonic - time.monotonic())
             if deadline_monotonic is not None
-            else config.AI_AGENT_HTTP_TIMEOUT_SECONDS
+            else self.settings.http_timeout_seconds
         )
         headers = {"Content-Type": "application/json"}
-        if config.AI_API_KEY:
-            headers["Authorization"] = f"Bearer {config.AI_API_KEY}"
+        if self.settings.api_key:
+            headers["Authorization"] = f"Bearer {self.settings.api_key}"
 
         attempts = 2
         response = None
@@ -180,17 +192,17 @@ class OpenAIChatProvider:
                 if remaining <= 0:
                     raise AITransportTimeout("The Qwen request deadline has expired.")
             else:
-                remaining = config.AI_AGENT_HTTP_TIMEOUT_SECONDS
+                remaining = self.settings.http_timeout_seconds
             timeout = httpx.Timeout(
                 connect=min(5.0, remaining),
-                read=min(config.AI_AGENT_HTTP_TIMEOUT_SECONDS, remaining),
+                read=min(self.settings.http_timeout_seconds, remaining),
                 write=min(10.0, remaining),
                 pool=min(5.0, remaining),
             )
             try:
                 with httpx.Client(transport=self._transport, timeout=timeout) as client:
                     response = client.post(
-                        config.AI_API_URL,
+                        self.settings.endpoint,
                         json=payload,
                         headers=headers,
                     )
@@ -299,9 +311,26 @@ class OpenAIChatProvider:
             reasoning = None
         if reasoning is not None and len(reasoning.encode("utf-8")) > MAX_REASONING_BYTES:
             raise AIProtocolError("The Qwen endpoint returned oversized reasoning content.")
+        response_id = (
+            sanitize_ai_error(data.get("id"), self.settings.api_key, limit=200)
+            if data.get("id")
+            else None
+        )
+        response_model = (
+            sanitize_ai_error(data.get("model"), self.settings.api_key, limit=200)
+            if data.get("model")
+            else None
+        )
+        logged_tool_names = [
+            sanitize_ai_error(call.name, self.settings.api_key, limit=100)
+            for call in calls
+        ]
         logger.info(
             "AI completion response_id=%s model=%s duration_ms=%s tool_calls=%s",
-            data.get("id"), data.get("model"), elapsed_ms, [call.name for call in calls],
+            response_id,
+            response_model,
+            elapsed_ms,
+            logged_tool_names,
         )
         return AssistantTurn(
             content=content,
@@ -309,6 +338,6 @@ class OpenAIChatProvider:
             tool_calls=tuple(calls),
             finish_reason=finish_reason,
             usage=safe_usage,
-            response_id=str(data.get("id"))[:200] if data.get("id") else None,
-            model=str(data.get("model"))[:200] if data.get("model") else None,
+            response_id=response_id,
+            model=response_model,
         )

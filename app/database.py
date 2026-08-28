@@ -1352,6 +1352,27 @@ MIGRATIONS = [
         PRIMARY KEY(resource_type, resource_key)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pipeline_resource_locks_run ON pipeline_resource_locks(run_id)",
+    # Durable hand-off from the app process to the elevated Windows updater.
+    # ``active_slot`` is 1 only while an attempt is non-terminal; UNIQUE makes
+    # scheduler/manual races reserve at most one install across all threads.
+    """CREATE TABLE IF NOT EXISTS app_update_attempts (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        attempt_id      TEXT NOT NULL UNIQUE,
+        from_commit     TEXT,
+        target_commit   TEXT NOT NULL,
+        trigger_source  TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        stage           TEXT,
+        message         TEXT,
+        error           TEXT,
+        active_slot     INTEGER UNIQUE,
+        created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        launched_at     DATETIME,
+        finished_at     DATETIME,
+        updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_app_update_attempts_created ON app_update_attempts(id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_app_update_attempts_status ON app_update_attempts(status, updated_at)",
     # Outlook reports submission to the local client, not SMTP delivery.
     """CREATE TABLE IF NOT EXISTS outlook_dispatches (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1372,6 +1393,7 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_outlook_dispatches_status ON outlook_dispatches(status, created_at)",
     "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('pipeline_full_refresh_enabled', '0')",
     "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('pipeline_full_refresh_report_allowlist', '[]')",
+    "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('automatic_main_updates_enabled', '1')",
     # Outlook attachment flows use an internal site/report pair so all existing
     # flow history and lineage relationships stay non-null. The site is seeded;
     # the report anchor is created with the first Outlook flow. Catalog
@@ -1578,7 +1600,13 @@ MIGRATIONS = [
     "ALTER TABLE agent_runs ADD COLUMN superseded_at DATETIME",
     "ALTER TABLE agent_runs ADD COLUMN superseded_reason TEXT",
     "ALTER TABLE agent_runs ADD COLUMN alert_context_hash TEXT",
+    # Non-secret fingerprint of the effective model/runtime configuration.
+    # Automatic Alert reviews use it as part of their freshness identity so a
+    # model, endpoint, reasoning, or budget change cannot leave an older
+    # assessment looking current.
+    "ALTER TABLE agent_runs ADD COLUMN config_fingerprint TEXT",
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_action ON agent_runs(action_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_config ON agent_runs(action_id, config_fingerprint, id DESC)",
     # Superseding is orthogonal to execution status: completed traces remain
     # auditable, but cannot be presented as the current alert recommendation.
     """CREATE TRIGGER IF NOT EXISTS trg_actions_revision_supersedes_agent_runs

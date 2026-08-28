@@ -581,7 +581,12 @@ def _artifact_cell_html(alert: dict) -> str:
     )
 
 
-def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
+def _build_alert_summary(
+    owner: dict,
+    alerts: list[dict],
+    *,
+    include_ai_analysis: bool = True,
+) -> dict:
     today = datetime.now(timezone.utc).strftime("%d %b %Y")
     owner_name = owner["name"]
     subject = (
@@ -605,13 +610,15 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
 
     def next_action(alert: dict) -> str:
         assessment = alert.get("ai_assessment") or {}
-        if assessment.get("recommendation_title"):
+        if include_ai_analysis and assessment.get("recommendation_title"):
             title = assessment["recommendation_title"]
             rationale = assessment.get("recommendation_rationale")
             return f"{title} — {rationale}" if rationale else title
         return alert.get("recommendation") or alert.get("triage_cta") or "Open the asset and investigate the issue."
 
     def ai_assessment_text(alert: dict) -> str | None:
+        if not include_ai_analysis:
+            return None
         assessment = alert.get("ai_assessment") or {}
         if not assessment:
             return (
@@ -724,6 +731,7 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
         "body_html": "".join(html_parts),
         "mailto": f"mailto:{quote(owner.get('email') or '')}?subject={quote(subject)}&body={quote(body_text)}",
         "alerts": ranked,
+        "ai_analysis_enabled": include_ai_analysis,
     }
 
 
@@ -762,7 +770,15 @@ def _load_task_summaries(owner_names: set[str] | None = None) -> list[dict]:
     return summaries
 
 
-def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
+def _load_alert_summaries(
+    owner_names: set[str] | None = None,
+    *,
+    ai_settings=None,
+) -> list[dict]:
+    from app.ai.runtime_config import load_runtime_settings
+
+    ai_settings = ai_settings or load_runtime_settings()
+    include_ai_analysis = ai_settings.feature_enabled("alert_email_analysis")
     with get_db() as db:
         people = db.execute(
             """SELECT id, name, role, email, include_all_alerts, created_at
@@ -827,8 +843,10 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
         if include_all_owner_names or assigned_to in owners:
             alert_rows.append(alert)
 
-    ai_assessments = _current_alert_ai_assessments(
-        [int(alert["id"]) for alert in alert_rows]
+    ai_assessments = (
+        _current_alert_ai_assessments([int(alert["id"]) for alert in alert_rows])
+        if include_ai_analysis
+        else {}
     )
     for alert in alert_rows:
         alert["ai_assessment"] = ai_assessments.get(int(alert["id"]))
@@ -887,7 +905,13 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
             key=lambda a: (-(a.get("asset_days") or 0), a.get("asset_name") or ""),
         )
         if owner_alerts:
-            summaries.append(_build_alert_summary(owner, owner_alerts))
+            summaries.append(
+                _build_alert_summary(
+                    owner,
+                    owner_alerts,
+                    include_ai_analysis=include_ai_analysis,
+                )
+            )
     return summaries
 
 
@@ -1183,7 +1207,23 @@ def get_task_summaries():
 @router.get("/alert-summaries")
 def get_alert_summaries():
     """Build active alert email summaries grouped by BI owner."""
-    return {"summaries": _load_alert_summaries()}
+    from app.ai.runtime_config import load_runtime_settings
+
+    ai_settings = load_runtime_settings()
+    enabled = ai_settings.feature_enabled("alert_email_analysis")
+    return {
+        "summaries": _load_alert_summaries(ai_settings=ai_settings),
+        "ai_analysis": {
+            "enabled": enabled,
+            "state": "enabled" if enabled else "disabled",
+            "reason": (
+                None
+                if enabled
+                else "AI analysis is disabled in System > AI."
+            ),
+            "mode": ai_settings.mode,
+        },
+    }
 
 
 @router.post("/send-task-summaries")
