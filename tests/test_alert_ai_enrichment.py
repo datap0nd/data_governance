@@ -93,6 +93,9 @@ def test_generic_alert_context_is_broad_bounded_and_redacted(alert_ai_db):
     assert "salary_private" not in rendered
     assert "C:\\Users\\Analyst" not in rendered
     assert "[redacted]" in rendered
+    assert f"source_cadence:{envelope['data']['alert']['asset']['source_id']}" in {
+        item["reference"] for item in envelope["evidence"]
+    }
     with pytest.raises(ValueError, match="locked"):
         execute_tool(
             "get_alert_context",
@@ -362,6 +365,93 @@ def test_flow_alert_recovery_suggestion_requires_nested_preflight(monkeypatch):
         )
 
 
+def test_stale_source_context_measures_rule_fit_from_durable_change_history(alert_ai_db):
+    action_id = _seed_source_alert()
+    with database.get_db() as db:
+        source_id = db.execute(
+            "SELECT source_id FROM actions WHERE id=?", (action_id,)
+        ).fetchone()["source_id"]
+        db.execute(
+            """UPDATE sources
+                  SET custom_fresh_days=30, custom_stale_days=60,
+                      freshness_rule_type='custom'
+                WHERE id=?""",
+            (source_id,),
+        )
+        for observed, changed in (
+            ("2023-01-10T08:00:00+00:00", "2023-01-09T08:00:00+00:00"),
+            ("2024-01-11T08:00:00+00:00", "2024-01-10T08:00:00+00:00"),
+            ("2025-01-10T08:00:00+00:00", "2025-01-09T08:00:00+00:00"),
+        ):
+            db.execute(
+                """INSERT INTO source_activity_history
+                       (source_id, observed_at, last_data_at, row_count, status)
+                   VALUES (?, ?, ?, 42, 'fresh')""",
+                (source_id, observed, changed),
+            )
+
+    envelope = execute_tool(
+        "get_alert_context", {"action_id": action_id},
+        focus_type="alert", focus_id=action_id,
+    ).to_dict()
+    profile = envelope["data"]["source_context"]["freshness_profile"]
+    assert profile["configured_rule"]["fresh_days"] == 30
+    assert profile["history"]["distinct_change_points"] >= 4
+    assert profile["history"]["median_interval_days"] > 300
+    assert profile["rule_fit_signal"] == "possible_rule_too_strict"
+    assert profile["cadence_to_rule_ratio"] > 10
+
+
+def test_rule_mismatch_diagnosis_requires_real_cadence_evidence(alert_ai_db, monkeypatch):
+    action_id = _seed_source_alert()
+    seed = execute_tool(
+        "get_alert_context", {"action_id": action_id},
+        focus_type="alert", focus_id=action_id,
+    )
+    cadence_ref = f"source_cadence:{seed.data['alert']['asset']['source_id']}"
+    result = AgentResult.model_validate({
+        "conclusion": "The source is outside a rule that may not fit its cadence.",
+        "impact": "The Alert may represent monitoring configuration rather than a failed load.",
+        "conclusion_evidence_refs": [cadence_ref],
+        "alert_assessment": "confirmed",
+        "diagnosis_type": "monitoring_rule_mismatch",
+        "confidence": "medium",
+        "observed_facts": [{
+            "statement": "The source is outside its configured freshness rule.",
+            "evidence_refs": [f"alert:{action_id}"],
+        }],
+        "inferences": [{
+            "statement": "The configured rule may be too strict.",
+            "evidence_refs": [cadence_ref],
+        }],
+        "recommendations": [{
+            "action_type": "review_configuration",
+            "title": "Confirm the expected cadence",
+            "rationale": "Ask the owner before changing the freshness rule.",
+            "evidence_refs": [cadence_ref],
+        }],
+    })
+    monkeypatch.setattr(
+        run_store, "evidence_keys",
+        lambda _run_id: {f"alert:{action_id}", cadence_ref},
+    )
+    with pytest.raises(ValueError, match="needs measured cadence"):
+        operations_agent._validate_terminal_result(
+            1, result, focus_type="alert", seed=seed
+        )
+    result.diagnosis_type = "configuration_issue"
+    with pytest.raises(ValueError, match="needs measured cadence"):
+        operations_agent._validate_terminal_result(
+            1, result, focus_type="alert", seed=seed
+        )
+
+    result.diagnosis_type = "monitoring_rule_mismatch"
+    seed.data["source_context"]["freshness_profile"]["history"]["distinct_change_points"] = 3
+    operations_agent._validate_terminal_result(
+        1, result, focus_type="alert", seed=seed
+    )
+
+
 def test_agent_result_rejects_user_summary_over_100_words():
     ref = "flow_run:1"
     with pytest.raises(ValueError, match="100 words or fewer"):
@@ -413,7 +503,8 @@ def test_alert_api_and_email_use_only_current_completed_assessment(alert_ai_db):
     assert "What happened:" in summary["body_text"]
     assert "Impact:" in summary["body_text"]
     assert current[action_id]["conclusion"] in summary["body_text"]
-    assert "Next action:" in summary["body_text"]
+    assert "Suggested action:" in summary["body_text"]
+    assert "Next action:" not in summary["body_text"]
 
     with database.get_db() as db:
         db.execute(

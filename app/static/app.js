@@ -5200,7 +5200,8 @@ function _emailAiAssessmentText(alert) {
         .replace(/\b\w/g, char => char.toUpperCase());
     const confidence = String(assessment.confidence || "low")
         .replace(/\b\w/g, char => char.toUpperCase());
-    return `${label} (${confidence} confidence). What happened: ${assessment.conclusion || "No conclusion returned."} Impact: ${assessment.impact || "The downstream impact is not recorded."}`;
+    const action = _emailNextAction(alert);
+    return `${label} (${confidence} confidence). What happened: ${assessment.conclusion || "No conclusion returned."} Impact: ${assessment.impact || "The downstream impact is not recorded."} Suggested action: ${action}`;
 }
 
 function _emailAlertLine(alert) {
@@ -12689,13 +12690,17 @@ function _aiResultHtml(run) {
     const alertAssessment = result.alert_assessment
         ? `<span>Alert ${esc(String(result.alert_assessment).replaceAll("_", " "))}</span>`
         : "";
+    const diagnosis = result.diagnosis_type && result.diagnosis_type !== "insufficient_evidence"
+        ? `<span>${esc(String(result.diagnosis_type).replaceAll("_", " "))}</span>`
+        : "";
+    const paragraph = `<strong>What happened:</strong> ${esc(summary.whatHappened)} `
+        + `<strong>Impact:</strong> ${esc(summary.impact)} `
+        + `<strong>Suggested action:</strong> ${esc(summary.suggestedAction)}`;
     return `
-        <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${alertAssessment}${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
+        <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${alertAssessment}${diagnosis}${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
         ${staleness.stale ? `<div class="ai-stale-analysis" role="status"><strong>Stale analysis</strong><span>${esc(staleness.reason)} Recommendations from this snapshot are hidden.</span></div>` : ""}
         ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Local AI is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
-        <section class="ai-result-section"><h4>What happened</h4><p>${esc(summary.whatHappened)}</p></section>
-        <section class="ai-result-section"><h4>Impact</h4><p>${esc(summary.impact)}</p></section>
-        <section class="ai-result-section${staleness.stale ? " ai-result-stale-recommendations" : ""}"><h4>Suggested action</h4><p>${esc(summary.suggestedAction)}</p></section>
+        <section class="ai-result-section ai-result-paragraph${staleness.stale ? " ai-result-stale-recommendations" : ""}"><p>${paragraph}</p></section>
         <details class="ai-evidence-details"><summary>Evidence (${evidenceMap.size})</summary><ul>${evidence}</ul></details>`;
 }
 

@@ -562,6 +562,7 @@ def _current_alert_ai_assessments(action_ids: list[int]) -> dict[int, dict]:
             "provider_mode": row["provider_mode"],
             "assessment": result.get("alert_assessment") or "uncertain",
             "confidence": result.get("confidence") or "low",
+            "diagnosis_type": result.get("diagnosis_type") or "insufficient_evidence",
             **compact,
             "finished_at": row["finished_at"],
         }
@@ -655,7 +656,8 @@ def _build_alert_summary(
         return (
             f"{label} ({confidence} confidence). "
             f"What happened: {assessment['conclusion']} "
-            f"Impact: {assessment.get('impact') or 'The downstream impact is not recorded.'}"
+            f"Impact: {assessment.get('impact') or 'The downstream impact is not recorded.'} "
+            f"Suggested action: {next_action(alert)}"
         )
 
     def ai_assessment_label(alert: dict) -> str:
@@ -666,6 +668,9 @@ def _build_alert_summary(
         if provider_mode == "mock":
             return "Deterministic preview"
         return "Automated assessment"
+
+    def has_visible_ai_assessment(alert: dict) -> bool:
+        return bool(include_ai_analysis and alert.get("ai_assessment"))
 
     def asset_html(alert: dict) -> str:
         if alert.get("report_detail"):
@@ -700,9 +705,11 @@ def _build_alert_summary(
         lines.append(f"{artifact_label} | {issue_label}: {asset_text(alert)} | {degraded_since} | {views:,}")
         if refresh_error(alert):
             lines.append(f"PBI Refresh Error: {refresh_error(alert)}")
-        if ai_assessment_text(alert):
-            lines.append(f"{ai_assessment_label(alert)}: {ai_assessment_text(alert)}")
-        lines.append(f"Next action: {next_action(alert)}")
+        assessment_text = ai_assessment_text(alert)
+        if assessment_text:
+            lines.append(f"{ai_assessment_label(alert)}: {assessment_text}")
+        if not has_visible_ai_assessment(alert):
+            lines.append(f"Next action: {next_action(alert)}")
         lines.append("")
     lines.extend(["Thanks,", "Metronome"])
     body_text = "\n".join(lines)
@@ -727,18 +734,23 @@ def _build_alert_summary(
                 f'<strong>PBI Refresh Error:</strong> {html.escape(refresh_error(alert))}</div>'
             )
         assessment_html = ""
-        if ai_assessment_text(alert):
+        assessment_text = ai_assessment_text(alert)
+        if assessment_text:
             provider_label = ai_assessment_label(alert)
             assessment_html = (
                 '<div style="margin-top:7px;padding:7px 8px;background:#eef6ff;color:#244a70;'
                 'border:1px solid #ccdff2;word-break:break-word">'
-                f'<strong>{html.escape(provider_label)}:</strong> {html.escape(ai_assessment_text(alert))}</div>'
+                f'<strong>{html.escape(provider_label)}:</strong> {html.escape(assessment_text)}</div>'
             )
+        fallback_action_html = (
+            "" if has_visible_ai_assessment(alert) else
+            f'<div style="margin-top:7px;color:#4b5563"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
+        )
         issue_html = (
             f'<strong>{html.escape(issue_label)}</strong><br>{asset_html(alert)}'
             + error_html
             + assessment_html
-            + f'<div style="margin-top:7px;color:#4b5563"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
+            + fallback_action_html
         )
         html_parts.append(
             "<tr>"

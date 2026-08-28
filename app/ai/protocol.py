@@ -129,6 +129,17 @@ class AgentResult(BaseModel):
         "uncertain",
         "not_supported",
     ] = "uncertain"
+    diagnosis_type: Literal[
+        "operational_failure",
+        "monitoring_rule_mismatch",
+        "expected_timing",
+        "data_quality_issue",
+        "dependency_issue",
+        "configuration_issue",
+        "external_service_issue",
+        "no_current_issue",
+        "insufficient_evidence",
+    ] = "insufficient_evidence"
     confidence: Literal["low", "medium", "high"]
     observed_facts: list[EvidenceClaim] = Field(min_length=1, max_length=4)
     inferences: list[EvidenceClaim] = Field(default_factory=list, max_length=2)

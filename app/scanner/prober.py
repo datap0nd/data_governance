@@ -841,6 +841,35 @@ def _prune_probe_history(db, now: str) -> int:
     return cursor.rowcount
 
 
+def _record_source_activity_history(db, now: str) -> int:
+    """Persist sparse source-change evidence before routine probes are pruned.
+
+    ``source_probes`` answers "what is true now" and is intentionally short
+    lived.  This table answers "how often does this source actually change".
+    Repeated probes of unchanged data do not create history rows.
+    """
+    cursor = db.execute(
+        """INSERT INTO source_activity_history
+               (source_id, observed_at, last_data_at, row_count, status)
+           SELECT sp.source_id, ?, sp.last_data_at, sp.row_count, sp.status
+             FROM source_probes sp
+             JOIN (
+                 SELECT source_id, MAX(id) AS latest_id
+                   FROM source_probes
+                  WHERE last_data_at IS NOT NULL OR row_count IS NOT NULL
+                  GROUP BY source_id
+             ) latest ON latest.latest_id=sp.id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM source_activity_history history
+                 WHERE history.source_id=sp.source_id
+                   AND history.last_data_at IS sp.last_data_at
+                   AND history.row_count IS sp.row_count
+            )""",
+        (now,),
+    )
+    return max(0, cursor.rowcount)
+
+
 def _dedupe_open_actions(db, now: str) -> int:
     """Collapse multiple active freshness actions for the same source.
 
@@ -1437,6 +1466,15 @@ def run_probe(
         deduped = _dedupe_open_actions(db, now)
         if deduped:
             log_lines.append(f"Deduped {deduped} duplicate open actions (same source, multiple rows)")
+
+        # Preserve one sparse row per observed source change before pruning the
+        # high-frequency probe log.  This becomes the rule-fit baseline used by
+        # the read-only incident investigator.
+        activity_rows = _record_source_activity_history(db, now)
+        if activity_rows:
+            log_lines.append(
+                f"Recorded {activity_rows} source activity change{'s' if activity_rows != 1 else ''}"
+            )
 
         # 7. Retention: prune old probe history so freshness queries stay fast
         pruned = _prune_probe_history(db, now)

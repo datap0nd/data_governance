@@ -29,6 +29,24 @@ CREATE TABLE IF NOT EXISTS source_probes (
     message         TEXT
 );
 
+-- Sparse, durable history of actual source changes.  Ordinary probes are
+-- intentionally pruned, but the investigator needs a long-lived cadence
+-- baseline to distinguish a broken feed from a freshness rule that does not
+-- fit an annual/monthly/reference source.  One row is stored only when the
+-- observed data timestamp or row count changes.
+CREATE TABLE IF NOT EXISTS source_activity_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    observed_at     DATETIME NOT NULL,
+    last_data_at    DATETIME,
+    row_count       INTEGER,
+    status          TEXT,
+    UNIQUE(source_id, last_data_at, row_count)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_activity_history_source
+    ON source_activity_history(source_id, observed_at DESC);
+
 CREATE TABLE IF NOT EXISTS reports (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT UNIQUE NOT NULL,
@@ -729,6 +747,16 @@ SCHEDULED_TASK_REBUILD_MIGRATIONS = [
 
 
 MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS source_activity_history (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+           observed_at DATETIME NOT NULL,
+           last_data_at DATETIME,
+           row_count INTEGER,
+           status TEXT,
+           UNIQUE(source_id, last_data_at, row_count)
+       )""",
+    "CREATE INDEX IF NOT EXISTS idx_source_activity_history_source ON source_activity_history(source_id, observed_at DESC)",
     "ALTER TABLE reports ADD COLUMN business_owner TEXT",
     "ALTER TABLE reports ADD COLUMN powerbi_url TEXT",
     # Alert resolution workflow

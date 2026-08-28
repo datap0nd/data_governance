@@ -201,6 +201,7 @@ const html = context.resultHtml({
         conclusion: '<img src=x onerror="alert(1)">',
         impact: "A downstream report may be stale.",
         conclusion_evidence_refs: ["flow_run:7"],
+        diagnosis_type: "dependency_issue",
         confidence: "high",
         observed_facts: [{
             statement: "<script>alert(1)</script>", evidence_refs: ["flow_run:7"],
@@ -224,6 +225,9 @@ assert.match(html, /&lt;img/);
 assert.match(html, /What happened/);
 assert.match(html, /Impact/);
 assert.match(html, /Suggested action/);
+assert.equal((html.match(/class="ai-result-section/g) || []).length, 1,
+    "The visible diagnosis must be one compact operational paragraph");
+assert.match(html, /dependency issue/);
 assert.doesNotMatch(html, /Observed facts|Inference|Unknowns/,
     "The primary analysis must stay focused on failure, impact, and recovery");
 assert.match(html, /href="\/flow-runs\/7"/);

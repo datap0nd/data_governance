@@ -53,9 +53,13 @@ Rules:
 3. If evidence is missing, stale, contradictory, or says requires_inspection, say so and recommend inspection rather than replaying an operation.
 4. Outlook status 'submitted' means handed to Outlook, not delivered. Never state or imply delivery unless explicit delivery evidence exists.
 5. Never recommend Resume for an Outlook attachment Flow. Never recommend an action whose recovery_preflight status is not eligible.
-6. Do not reveal hidden reasoning. The user-facing analysis has exactly three parts: conclusion means "What happened", impact states the concrete downstream effect, and the single recommendation means "Suggested action". Together, conclusion, impact, recommendation title, and recommendation rationale must total no more than 100 words. Focus on the failed stage, the effect, and the safest fix. Do not repeat facts between sections.
+6. Do not reveal hidden reasoning. The user-facing analysis is rendered as one operational paragraph: conclusion means "What happened", impact states the concrete downstream effect, and the single recommendation means "Suggested action". Together, conclusion, impact, recommendation title, and recommendation rationale must total no more than 100 words. Focus on the first abnormal stage, the effect, and the single action most likely to confirm or fix it. Do not repeat facts between fields.
 7. Finish only by calling submit_agent_result. Call it alone, never alongside a read tool. Plain prose is not a valid final answer.
 8. For an Alert review, set alert_assessment to confirmed only when current observed evidence directly supports the detector, likely when evidence supports it with gaps, uncertain when evidence is insufficient or contradictory, and not_supported only when current evidence directly contradicts it. This assessment is advisory: the detector remains authoritative and you must never change or suppress the Alert.
+9. Distinguish the detector condition from the underlying diagnosis. A source can be objectively outside its configured freshness rule while the likely diagnosis is monitoring_rule_mismatch or expected_timing rather than operational_failure.
+10. For freshness Alerts, examine the server-computed freshness_profile, explicit schedule, measured change dates/intervals, linked Flow failures, downstream use, and prior operator evidence. A filename containing words such as mapping, master, reference, or lookup is only a weak hint. Never recommend changing a freshness rule from its name alone. Use monitoring_rule_mismatch only when cadence history, an explicit schedule, or prior operator evidence supports it; otherwise use insufficient_evidence and recommend the exact fact that should be confirmed.
+11. The recommendation must add diagnostic value. Prefer the next discriminating check or a specific configuration review. Do not output generic advice such as "check logs", "verify connectivity", "monitor the situation", or "retry" unless the evidence identifies exactly which log, connection, condition, or eligible operation and why it resolves the remaining uncertainty.
+12. Never recommend automatically suppressing an Alert or changing a rule. Freshness-rule changes require operator confirmation and should include a proposed cadence or the evidence needed to choose one.
 """
 
 
@@ -191,6 +195,51 @@ def _validate_terminal_result(
         raise ValueError(
             "Unknown evidence reference(s): " + ", ".join(unknown[:10])
         )
+    alert_type = str((seed.data.get("alert") or {}).get("type") or "")
+    rule_review = (
+        focus_type == "alert"
+        and alert_type in {"stale_source", "outdated_source", "error_source"}
+        and result.recommendations[0].action_type == "review_configuration"
+    )
+    if result.diagnosis_type in {"monitoring_rule_mismatch", "expected_timing"} or rule_review:
+        if focus_type != "alert":
+            raise ValueError(
+                "Timing and monitoring-rule diagnoses require an Alert context."
+            )
+        context = seed.data.get("source_context") or {}
+        profile = context.get("freshness_profile") or {}
+        history = profile.get("history") or {}
+        configured = profile.get("configured_rule") or {}
+        prior_alerts = context.get("prior_alerts") or []
+        has_operator_evidence = any(
+            str(item.get("notes") or "").strip() for item in prior_alerts
+            if isinstance(item, dict)
+            and str(item.get("status") or "").casefold() in {"expected", "resolved"}
+        )
+        has_support = bool(
+            int(history.get("distinct_change_points") or 0) >= 3
+            or str(configured.get("declared_refresh_schedule") or "").strip()
+            or str(configured.get("schedule_days") or "").strip()
+            or has_operator_evidence
+        )
+        if not has_support:
+            raise ValueError(
+                "A rule-mismatch or expected-timing diagnosis needs measured cadence, "
+                "an explicit schedule, or prior operator evidence. A source name is not enough."
+            )
+        cadence_refs = {
+            ref for ref in _all_result_refs(result) if ref.startswith("source_cadence:")
+        }
+        if not cadence_refs:
+            raise ValueError(
+                "A timing or freshness-rule diagnosis must cite the measured source cadence."
+            )
+        if result.recommendations[0].action_type not in {
+            "review_configuration", "contact_owner", "inspect"
+        }:
+            raise ValueError(
+                "Timing and freshness-rule diagnoses may only recommend configuration review, owner confirmation, or inspection."
+            )
     preflight = None
     if focus_type == "flow_run":
         preflight = seed.data.get("recovery_preflight") or {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -762,6 +763,119 @@ def _safe_rows(
     return result
 
 
+def _context_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _source_freshness_profile(
+    source: Any,
+    probes: list[Any],
+    activity: list[Any],
+    linked_flows: list[Any],
+) -> dict[str, Any]:
+    """Build deterministic cadence evidence; never infer business meaning.
+
+    The model may explain these measurements, but words such as ``mapping`` or
+    ``master`` remain weak naming hints rather than proof of update cadence.
+    """
+    now = _now()
+    data_dates: list[datetime] = []
+    for row in [*activity, *probes]:
+        parsed = _context_datetime(row["last_data_at"])
+        if parsed and parsed not in data_dates:
+            data_dates.append(parsed)
+    data_dates.sort()
+    intervals = [
+        round((later - earlier).total_seconds() / 86400, 1)
+        for earlier, later in zip(data_dates, data_dates[1:])
+        if later > earlier
+    ]
+    latest_data = data_dates[-1] if data_dates else None
+    current_age = (
+        round((now - latest_data).total_seconds() / 86400, 1)
+        if latest_data else None
+    )
+    rule_type = str(source["freshness_rule_type"] or "").strip() or (
+        "custom" if source["custom_fresh_days"] is not None else "none"
+    )
+    threshold = (
+        int(source["custom_fresh_days"])
+        if source["custom_fresh_days"] is not None else None
+    )
+    median_interval = round(statistics.median(intervals), 1) if intervals else None
+    maximum_interval = max(intervals) if intervals else None
+    cadence_ratio = (
+        round(median_interval / threshold, 2)
+        if median_interval is not None and threshold and threshold > 0 else None
+    )
+    if len(data_dates) < 3:
+        rule_fit = "insufficient_history"
+    elif rule_type == "fixed_schedule":
+        rule_fit = "compare_with_explicit_schedule"
+    elif cadence_ratio is not None and cadence_ratio > 1.5:
+        rule_fit = "possible_rule_too_strict"
+    elif cadence_ratio is not None:
+        rule_fit = "historical_cadence_within_rule"
+    else:
+        rule_fit = "rule_not_comparable"
+
+    lowered_name = str(source["name"] or "").casefold()
+    semantic_hints = sorted({
+        token for token in (
+            "mapping", "master", "reference", "lookup", "dimension", "calendar"
+        ) if token in lowered_name
+    })
+    failed_flows = [
+        {
+            "id": row["id"],
+            "name": _safe_text(row["name"], 200),
+            "last_status": row["last_status"],
+            "last_error": _safe_text(row["last_error"], 500),
+        }
+        for row in linked_flows
+        if str(row["last_status"] or "").casefold() in {"failed", "error", "timed_out"}
+    ]
+    return {
+        "configured_rule": {
+            "type": rule_type,
+            "fresh_days": threshold,
+            "stale_days": source["custom_stale_days"],
+            "schedule_days": _safe_text(source["freshness_schedule_days"], 200),
+            "declared_refresh_schedule": _safe_text(source["refresh_schedule"], 300),
+        },
+        "current_age_days": current_age,
+        "history": {
+            "distinct_change_points": len(data_dates),
+            "coverage_days": (
+                round((data_dates[-1] - data_dates[0]).total_seconds() / 86400, 1)
+                if len(data_dates) > 1 else 0
+            ),
+            "change_dates": [value.isoformat() for value in data_dates[-24:]],
+            "recent_intervals_days": intervals[-23:],
+            "median_interval_days": median_interval,
+            "maximum_interval_days": maximum_interval,
+        },
+        "rule_fit_signal": rule_fit,
+        "cadence_to_rule_ratio": cadence_ratio,
+        "name_semantic_hints": semantic_hints,
+        "naming_hint_warning": (
+            "Name hints are weak inference only; do not call this a master or reference source without corroborating cadence, schedule, notes, or prior resolution evidence."
+        ),
+        "linked_flow_failures": failed_flows[:5],
+        "interpretation_guardrail": (
+            "Suggest reviewing a freshness rule only when measured cadence, an explicit schedule, or prior operator evidence supports it. Never suppress or change the rule automatically."
+        ),
+    }
+
+
 def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
     """Read one canonical Alert and a broad but safe operational neighbourhood.
 
@@ -832,8 +946,30 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             probes = db.execute(
                 """SELECT id, probed_at, last_data_at, row_count, status, message
                      FROM source_probes WHERE source_id=?
-                     ORDER BY probed_at DESC, id DESC LIMIT 5""",
+                     ORDER BY probed_at DESC, id DESC LIMIT 12""",
                 (action["source_id"],),
+            ).fetchall()
+            activity = db.execute(
+                """SELECT id, observed_at, last_data_at, row_count, status
+                     FROM source_activity_history WHERE source_id=?
+                     ORDER BY last_data_at DESC, id DESC LIMIT 36""",
+                (action["source_id"],),
+            ).fetchall()
+            linked_flows = db.execute(
+                """SELECT id, name, enabled, source_type, schedule_type,
+                          schedule_time, schedule_days, schedule_day,
+                          last_run_at, last_success_at, last_status, last_error
+                     FROM flows
+                    WHERE sql_target_source_id=?
+                    ORDER BY enabled DESC, name LIMIT 10""",
+                (action["source_id"],),
+            ).fetchall()
+            prior_alerts = db.execute(
+                """SELECT id, type, status, notes, created_at, updated_at, resolved_at
+                     FROM actions
+                    WHERE source_id=? AND id<>?
+                    ORDER BY updated_at DESC, id DESC LIMIT 10""",
+                (action["source_id"], args.action_id),
             ).fetchall()
             linked_reports = db.execute(
                 """SELECT DISTINCT r.id, r.name, r.owner, r.pbi_last_refresh_at,
@@ -857,8 +993,26 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             ).fetchall()
             source_context = {
                 "source": _safe_rows([source], tuple(source.keys()), limit=1)[0] if source else None,
+                "freshness_profile": _source_freshness_profile(
+                    source, list(probes), list(activity), list(linked_flows)
+                ) if source else None,
                 "latest_probes": _safe_rows(
-                    probes, ("id", "probed_at", "last_data_at", "row_count", "status", "message"), limit=5
+                    probes, ("id", "probed_at", "last_data_at", "row_count", "status", "message"), limit=12
+                ),
+                "activity_history": _safe_rows(
+                    activity, ("id", "observed_at", "last_data_at", "row_count", "status"), limit=36
+                ),
+                "linked_flows": _safe_rows(
+                    linked_flows,
+                    ("id", "name", "enabled", "source_type", "schedule_type",
+                     "schedule_time", "schedule_days", "schedule_day", "last_run_at",
+                     "last_success_at", "last_status", "last_error"),
+                    limit=10,
+                ),
+                "prior_alerts": _safe_rows(
+                    prior_alerts,
+                    ("id", "type", "status", "notes", "created_at", "updated_at", "resolved_at"),
+                    limit=10,
                 ),
                 "linked_reports": _safe_rows(
                     linked_reports,
@@ -1021,6 +1175,26 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
         deep_link="/#alerts",
         observed_at=observed,
     )]
+    if action["source_id"] is not None:
+        source_id = str(action["source_id"])
+        evidence.extend((
+            Evidence(
+                reference=f"source:{source_id}",
+                entity_type="source",
+                entity_id=source_id,
+                label=f"Source configuration: {action['source_name']}",
+                deep_link=f"/#sources/{source_id}",
+                observed_at=observed,
+            ),
+            Evidence(
+                reference=f"source_cadence:{source_id}",
+                entity_type="source_cadence",
+                entity_id=source_id,
+                label=f"Measured source cadence: {action['source_name']}",
+                deep_link=f"/#sources/{source_id}",
+                observed_at=observed,
+            ),
+        ))
 
     # Exact run occurrences get the richer existing read projection as part of
     # the automatic Alert review, without widening the model's tool authority.
@@ -1084,6 +1258,9 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             source_context["upstream_sources"] = source_context["upstream_sources"][:10]
             source_context["downstream_sources"] = source_context["downstream_sources"][:10]
             source_context["latest_probes"] = source_context["latest_probes"][:3]
+            source_context["activity_history"] = source_context["activity_history"][:18]
+            source_context["linked_flows"] = source_context["linked_flows"][:5]
+            source_context["prior_alerts"] = source_context["prior_alerts"][:5]
         if report_context:
             report_context["tables_and_sources"] = report_context["tables_and_sources"][:12]
         if flow_context:
@@ -1124,6 +1301,9 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             source_context["upstream_sources"] = source_context["upstream_sources"][:5]
             source_context["downstream_sources"] = source_context["downstream_sources"][:5]
             source_context["latest_probes"] = source_context["latest_probes"][:2]
+            source_context["activity_history"] = source_context["activity_history"][:8]
+            source_context["linked_flows"] = source_context["linked_flows"][:3]
+            source_context["prior_alerts"] = source_context["prior_alerts"][:3]
         if report_context:
             report_context["tables_and_sources"] = report_context["tables_and_sources"][:5]
         if flow_context:

@@ -258,6 +258,48 @@ def test_probe_history_pruning_keeps_latest_probe_and_latest_row_count(source_db
     assert remaining == [1, 3]
 
 
+def test_source_activity_history_records_only_real_observation_changes(source_db):
+    from app.scanner import prober
+
+    with database.get_db() as db:
+        _insert_source(db, 1, "Annual mapping")
+        db.execute(
+            """INSERT INTO source_probes
+                   (source_id, probed_at, last_data_at, row_count, status)
+               VALUES (1, '2026-01-10T00:00:00+00:00',
+                       '2026-01-09T00:00:00+00:00', 50, 'fresh')"""
+        )
+        assert prober._record_source_activity_history(
+            db, "2026-01-10T00:00:00+00:00"
+        ) == 1
+        db.execute(
+            """INSERT INTO source_probes
+                   (source_id, probed_at, last_data_at, row_count, status)
+               VALUES (1, '2026-02-10T00:00:00+00:00',
+                       '2026-01-09T00:00:00+00:00', 50, 'outdated')"""
+        )
+        assert prober._record_source_activity_history(
+            db, "2026-02-10T00:00:00+00:00"
+        ) == 0
+        db.execute(
+            """INSERT INTO source_probes
+                   (source_id, probed_at, last_data_at, row_count, status)
+               VALUES (1, '2027-01-10T00:00:00+00:00',
+                       '2027-01-09T00:00:00+00:00', 52, 'fresh')"""
+        )
+        assert prober._record_source_activity_history(
+            db, "2027-01-10T00:00:00+00:00"
+        ) == 1
+        history = db.execute(
+            "SELECT last_data_at, row_count FROM source_activity_history ORDER BY id"
+        ).fetchall()
+
+    assert [(row["last_data_at"], row["row_count"]) for row in history] == [
+        ("2026-01-09T00:00:00+00:00", 50),
+        ("2027-01-09T00:00:00+00:00", 52),
+    ]
+
+
 def _insert_open_alert(db, alert_id, source_id,
                        message="Source data is outside freshness rule (30 days)",
                        severity="critical"):
