@@ -101,6 +101,7 @@ vm.runInContext(`
     this.sameFocus = _sameAIFocus;
     this.runMatches = _runMatchesAIFocus;
     this.evidenceHref = _aiEvidenceHref;
+    this.compactSummary = _aiCompactSummary;
     this.resultHtml = _aiResultHtml;
     this.analysisStaleness = _aiAnalysisStaleness;
     this.normalizeOccurrences = _normalizeAlertOccurrences;
@@ -198,6 +199,7 @@ const html = context.resultHtml({
     model: "Qwen/Qwen3.8-27B",
     result: {
         conclusion: '<img src=x onerror="alert(1)">',
+        impact: "A downstream report may be stale.",
         conclusion_evidence_refs: ["flow_run:7"],
         confidence: "high",
         observed_facts: [{
@@ -219,6 +221,11 @@ const html = context.resultHtml({
 assert.doesNotMatch(html, /<img|<script|<b>unsafe/,
     "All model and evidence text must be HTML-escaped");
 assert.match(html, /&lt;img/);
+assert.match(html, /What happened/);
+assert.match(html, /Impact/);
+assert.match(html, /Suggested action/);
+assert.doesNotMatch(html, /Observed facts|Inference|Unknowns/,
+    "The primary analysis must stay focused on failure, impact, and recovery");
 assert.match(html, /href="\/flow-runs\/7"/);
 assert.doesNotMatch(html, /<button[^>]*(resume|retry|refresh|send)/i,
     "Structured results must not generate operational buttons");
@@ -231,6 +238,7 @@ const staleHtml = context.resultHtml({
     is_current: false,
     result: {
         conclusion: "Historical conclusion",
+        impact: "Historical impact",
         conclusion_evidence_refs: [],
         confidence: "high",
         observed_facts: [],
@@ -249,6 +257,18 @@ assert.match(staleHtml, /Stale analysis/);
 assert.match(staleHtml, /Recommendations from this snapshot are hidden/);
 assert.doesNotMatch(staleHtml, /DO NOT SHOW THIS STALE STEP/,
     "Superseded analysis must never present its recommendation as current");
+const oversizedSummary = context.compactSummary({
+    conclusion: Array(80).fill("failure").join(" "),
+    impact: Array(80).fill("impact").join(" "),
+    recommendations: [{
+        title: Array(40).fill("repair").join(" "),
+        rationale: Array(80).fill("action").join(" "),
+    }],
+});
+assert.ok(
+    Object.values(oversizedSummary).join(" ").split(/\s+/).filter(Boolean).length <= 100,
+    "Even legacy or malformed analyses must render within the 100-word budget",
+);
 const revisionStaleness = context.analysisStaleness({
     action_evidence_revision: 2, current_alert_evidence_revision: 3,
 });

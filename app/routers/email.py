@@ -484,6 +484,34 @@ def _alert_artifact(alert: dict) -> tuple[str, str]:
     return "Data", "data"
 
 
+def _limit_words(value: object, limit: int) -> str:
+    words = str(value or "").strip().split()
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[:limit]) + "…"
+
+
+def _compact_ai_result(result: dict) -> dict:
+    """Return the same 40/25/35-word summary used by the browser UI."""
+    recommendations = result.get("recommendations") or []
+    first = recommendations[0] if recommendations and isinstance(recommendations[0], dict) else {}
+    legacy_facts = result.get("observed_facts") or []
+    first_fact = legacy_facts[0] if legacy_facts and isinstance(legacy_facts[0], dict) else {}
+    return {
+        "conclusion": _limit_words(
+            result.get("conclusion") or "No conclusion was returned.", 40
+        ),
+        "impact": _limit_words(
+            result.get("impact")
+            or first_fact.get("statement")
+            or "The downstream impact is not recorded.",
+            25,
+        ),
+        "recommendation_title": _limit_words(first.get("title"), 12) or None,
+        "recommendation_rationale": _limit_words(first.get("rationale"), 23) or None,
+    }
+
+
 def _current_alert_ai_assessments(action_ids: list[int]) -> dict[int, dict]:
     """Return only completed analyses for the current immutable Alert revision."""
     if not action_ids:
@@ -528,16 +556,13 @@ def _current_alert_ai_assessments(action_ids: list[int]) -> dict[int, dict]:
         result = current_run.get("result")
         if not isinstance(result, dict) or not str(result.get("conclusion") or "").strip():
             continue
-        recommendations = result.get("recommendations") or []
-        first = recommendations[0] if recommendations and isinstance(recommendations[0], dict) else {}
+        compact = _compact_ai_result(result)
         assessments[int(row["action_id"])] = {
             "run_id": int(row["id"]),
             "provider_mode": row["provider_mode"],
             "assessment": result.get("alert_assessment") or "uncertain",
             "confidence": result.get("confidence") or "low",
-            "conclusion": str(result["conclusion"]).strip()[:900],
-            "recommendation_title": str(first.get("title") or "").strip()[:200] or None,
-            "recommendation_rationale": str(first.get("rationale") or "").strip()[:600] or None,
+            **compact,
             "finished_at": row["finished_at"],
         }
     return assessments
@@ -627,7 +652,11 @@ def _build_alert_summary(
             )
         label = str(assessment.get("assessment") or "uncertain").replace("_", " ").title()
         confidence = str(assessment.get("confidence") or "low").title()
-        return f"{label} ({confidence} confidence): {assessment['conclusion']}"
+        return (
+            f"{label} ({confidence} confidence). "
+            f"What happened: {assessment['conclusion']} "
+            f"Impact: {assessment.get('impact') or 'The downstream impact is not recorded.'}"
+        )
 
     def ai_assessment_label(alert: dict) -> str:
         assessment = alert.get("ai_assessment") or {}

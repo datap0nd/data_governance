@@ -230,6 +230,7 @@ def _seed_action_occurrence(
 def _result(ref: str, *, action: str = "inspect") -> dict:
     return {
         "conclusion": "The recorded run failed and needs review.",
+        "impact": "The downstream result may be incomplete.",
         "conclusion_evidence_refs": [ref],
         "confidence": "high",
         "observed_facts": [{

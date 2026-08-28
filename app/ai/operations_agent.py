@@ -53,7 +53,7 @@ Rules:
 3. If evidence is missing, stale, contradictory, or says requires_inspection, say so and recommend inspection rather than replaying an operation.
 4. Outlook status 'submitted' means handed to Outlook, not delivered. Never state or imply delivery unless explicit delivery evidence exists.
 5. Never recommend Resume for an Outlook attachment Flow. Never recommend an action whose recovery_preflight status is not eligible.
-6. Do not reveal hidden reasoning. Keep the conclusion concise.
+6. Do not reveal hidden reasoning. The user-facing analysis has exactly three parts: conclusion means "What happened", impact states the concrete downstream effect, and the single recommendation means "Suggested action". Together, conclusion, impact, recommendation title, and recommendation rationale must total no more than 100 words. Focus on the failed stage, the effect, and the safest fix. Do not repeat facts between sections.
 7. Finish only by calling submit_agent_result. Call it alone, never alongside a read tool. Plain prose is not a valid final answer.
 8. For an Alert review, set alert_assessment to confirmed only when current observed evidence directly supports the detector, likely when evidence supports it with gaps, uncertain when evidence is insufficient or contradictory, and not_supported only when current evidence directly contradicts it. This assessment is advisory: the detector remains authoritative and you must never change or suppress the Alert.
 """
@@ -102,13 +102,20 @@ def _tool_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": {"code": code, "message": message[:800]}}
 
 
-def _bounded_result_text(value: Any, limit: int = 800) -> str:
+def _bounded_result_text(value: Any, limit: int = 400) -> str:
     """Fit deterministic operational text inside the public result schema."""
     text = str(value).strip()
     suffix = "… [truncated]"
     if len(text) <= limit:
         return text
     return text[: limit - len(suffix)] + suffix
+
+
+def _bounded_words(value: Any, limit: int) -> str:
+    words = str(value or "").strip().split()
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[:limit]) + "…"
 
 
 def _check_boundary(
@@ -256,18 +263,19 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
             and (preflight.get("retry_sql") or {}).get("status") == "eligible"
         ):
             action_type, title = "retry_sql", "Retry SQL from the saved artifacts"
-            rationale = _bounded_result_text(preflight["retry_sql"]["message"])
+            rationale = _bounded_words(preflight["retry_sql"]["message"], 30)
         elif (preflight.get("resume") or {}).get("status") == "eligible":
             action_type, title = "resume", "Resume the incomplete Flow"
-            rationale = _bounded_result_text(preflight["resume"]["message"])
+            rationale = _bounded_words(preflight["resume"]["message"], 30)
         elif (preflight.get("run_fresh") or {}).get("status") == "eligible":
             action_type, title = "run_fresh", "Start a fresh run after reviewing the error"
-            rationale = _bounded_result_text(preflight["run_fresh"]["message"])
+            rationale = _bounded_words(preflight["run_fresh"]["message"], 30)
         return AgentResult.model_validate({
             "conclusion": (
                 f"Flow run #{focus_id} is {run['status']}. This is a read-only deterministic "
                 "preview; connect a compatible local model for model-assisted investigation."
             ),
+            "impact": "The recorded Flow result may not have reached its downstream destination.",
             "conclusion_evidence_refs": [ref],
             "alert_assessment": "confirmed",
             "confidence": "high",
@@ -300,6 +308,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
                 "Metronome has current recorded evidence, but no model judgment "
                 "was made because Local AI is not configured. This is a deterministic preview."
             ),
+            "impact": "The affected asset remains degraded until its current evidence is reviewed.",
             "conclusion_evidence_refs": [ref],
             "alert_assessment": "uncertain",
             "confidence": "low",
@@ -342,6 +351,7 @@ def _mock_result(focus_type: str, focus_id: int, seed: ToolEnvelope) -> AgentRes
             f"Pipeline run #{focus_id} is {run['status']}. This is a read-only deterministic "
             "preview; connect a compatible local model for model-assisted investigation."
         ),
+        "impact": "Downstream Pipeline stages may be incomplete or using the previous successful data.",
         "conclusion_evidence_refs": [ref],
         "alert_assessment": "confirmed",
         "confidence": "high",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AIError(RuntimeError):
@@ -79,7 +79,7 @@ class ChatProvider(Protocol):
 class EvidenceClaim(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    statement: str = Field(min_length=1, max_length=800)
+    statement: str = Field(min_length=1, max_length=400)
     evidence_refs: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
         min_length=1, max_length=6
     )
@@ -98,8 +98,8 @@ class AgentRecommendation(BaseModel):
         "review_configuration",
         "none",
     ]
-    title: str = Field(min_length=1, max_length=200)
-    rationale: str = Field(min_length=1, max_length=800)
+    title: str = Field(min_length=1, max_length=160)
+    rationale: str = Field(min_length=1, max_length=400)
     evidence_refs: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
         min_length=1, max_length=6
     )
@@ -110,7 +110,16 @@ class AgentResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    conclusion: str = Field(min_length=1, max_length=3000)
+    conclusion: str = Field(
+        min_length=1,
+        max_length=600,
+        description="A concise statement of what went wrong.",
+    )
+    impact: str = Field(
+        min_length=1,
+        max_length=400,
+        description="The concrete downstream effect of the issue.",
+    )
     conclusion_evidence_refs: list[
         Annotated[str, Field(min_length=1, max_length=120)]
     ] = Field(min_length=1, max_length=6)
@@ -121,12 +130,28 @@ class AgentResult(BaseModel):
         "not_supported",
     ] = "uncertain"
     confidence: Literal["low", "medium", "high"]
-    observed_facts: list[EvidenceClaim] = Field(min_length=1, max_length=12)
-    inferences: list[EvidenceClaim] = Field(default_factory=list, max_length=8)
-    recommendations: list[AgentRecommendation] = Field(default_factory=list, max_length=5)
+    observed_facts: list[EvidenceClaim] = Field(min_length=1, max_length=4)
+    inferences: list[EvidenceClaim] = Field(default_factory=list, max_length=2)
+    recommendations: list[AgentRecommendation] = Field(min_length=1, max_length=1)
     unknowns: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
-        default_factory=list, max_length=8
+        default_factory=list, max_length=3
     )
+
+    @model_validator(mode="after")
+    def concise_operational_summary(self):
+        """Keep the three user-facing sections at or below 100 words total."""
+        recommendation = self.recommendations[0]
+        words = " ".join((
+            self.conclusion,
+            self.impact,
+            recommendation.title,
+            recommendation.rationale,
+        )).split()
+        if len(words) > 100:
+            raise ValueError(
+                "What happened, impact, and suggested action must total 100 words or fewer."
+            )
+        return self
 
 
 def terminal_tool_definition() -> dict[str, Any]:

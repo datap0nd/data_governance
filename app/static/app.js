@@ -5200,7 +5200,7 @@ function _emailAiAssessmentText(alert) {
         .replace(/\b\w/g, char => char.toUpperCase());
     const confidence = String(assessment.confidence || "low")
         .replace(/\b\w/g, char => char.toUpperCase());
-    return `${label} (${confidence} confidence): ${assessment.conclusion || "No conclusion returned."}`;
+    return `${label} (${confidence} confidence). What happened: ${assessment.conclusion || "No conclusion returned."} Impact: ${assessment.impact || "The downstream impact is not recorded."}`;
 }
 
 function _emailAlertLine(alert) {
@@ -12617,6 +12617,33 @@ function _aiEvidenceLinks(refs, evidenceMap) {
     }).join("");
 }
 
+function _aiLimitWords(value, limit) {
+    const words = String(value || "").trim().split(/\s+/).filter(Boolean);
+    if (words.length <= limit) return words.join(" ");
+    return `${words.slice(0, limit).join(" ")}…`;
+}
+
+function _aiCompactSummary(result, { stale = false } = {}) {
+    const recommendation = (result?.recommendations || [])[0] || {};
+    const legacyImpact = (result?.observed_facts || [])[0]?.statement;
+    const suggested = stale
+        ? "Hidden because this analysis is historical. Analyze the latest occurrence before acting."
+        : [recommendation.title, recommendation.rationale].filter(Boolean).join(" — ")
+            || "No operational action is recommended.";
+    // Fixed per-section budgets keep legacy results compact too. New model
+    // results are additionally rejected server-side when the combined total
+    // exceeds 100 words.
+    return {
+        whatHappened: _aiLimitWords(
+            result?.conclusion || "No conclusion was returned.", 40
+        ),
+        impact: _aiLimitWords(
+            result?.impact || legacyImpact || "The downstream impact is not recorded.", 25
+        ),
+        suggestedAction: _aiLimitWords(suggested, 35),
+    };
+}
+
 function _aiAnalysisStaleness(run) {
     const analysisRevision = _positiveInteger(
         run?.action_evidence_revision ?? run?.alert_evidence_revision
@@ -12653,18 +12680,12 @@ function _aiResultHtml(run) {
     if (!result) return '<p class="ai-connection-note">The investigation completed without a structured result.</p>';
     const staleness = _aiAnalysisStaleness(run);
     const evidenceMap = new Map((run.evidence || []).map(item => [item.reference, item]));
-    const claims = items => (items || []).map(item => `
-        <li><span>${esc(item.statement)}</span><div class="ai-evidence-list">${_aiEvidenceLinks(item.evidence_refs, evidenceMap)}</div></li>`).join("");
-    const recommendations = staleness.stale ? "" : (result.recommendations || []).map(item => `
-        <li><div><span class="ai-recommendation-type">${esc(item.action_type.replaceAll("_", " "))}</span><strong>${esc(item.title)}</strong></div><p>${esc(item.rationale)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(item.evidence_refs, evidenceMap)}</div></li>`).join("");
+    const summary = _aiCompactSummary(result, staleness);
     const evidence = [...evidenceMap.values()].map(item => {
         const href = _aiEvidenceHref(item);
         const label = `${item.label} · observed ${formatDate(item.observed_at)}`;
         return `<li>${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)}</li>`;
     }).join("");
-    const recommendationSection = staleness.stale
-        ? `<section class="ai-result-section ai-result-stale-recommendations"><h4>Recommended next step</h4><p>Hidden because this is historical analysis. Analyze the latest occurrence before acting.</p></section>`
-        : `<section class="ai-result-section"><h4>Recommended next step</h4>${recommendations ? `<ul class="ai-recommendations">${recommendations}</ul>` : "<p>No operational action is recommended.</p>"}<p class="ai-safe-note">This panel cannot execute the recommendation. Existing Metronome controls perform their own preflight and confirmation.</p></section>`;
     const alertAssessment = result.alert_assessment
         ? `<span>Alert ${esc(String(result.alert_assessment).replaceAll("_", " "))}</span>`
         : "";
@@ -12672,11 +12693,9 @@ function _aiResultHtml(run) {
         <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${alertAssessment}${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
         ${staleness.stale ? `<div class="ai-stale-analysis" role="status"><strong>Stale analysis</strong><span>${esc(staleness.reason)} Recommendations from this snapshot are hidden.</span></div>` : ""}
         ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Local AI is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
-        <section class="ai-result-section"><h4>Conclusion</h4><p>${esc(result.conclusion)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(result.conclusion_evidence_refs, evidenceMap)}</div></section>
-        <section class="ai-result-section"><h4>Observed facts</h4><ul>${claims(result.observed_facts)}</ul></section>
-        ${(result.inferences || []).length ? `<section class="ai-result-section"><h4>Inference</h4><ul>${claims(result.inferences)}</ul></section>` : ""}
-        ${recommendationSection}
-        ${(result.unknowns || []).length ? `<section class="ai-result-section"><h4>Unknowns</h4><ul>${result.unknowns.map(item => `<li>${esc(item)}</li>`).join("")}</ul></section>` : ""}
+        <section class="ai-result-section"><h4>What happened</h4><p>${esc(summary.whatHappened)}</p></section>
+        <section class="ai-result-section"><h4>Impact</h4><p>${esc(summary.impact)}</p></section>
+        <section class="ai-result-section${staleness.stale ? " ai-result-stale-recommendations" : ""}"><h4>Suggested action</h4><p>${esc(summary.suggestedAction)}</p></section>
         <details class="ai-evidence-details"><summary>Evidence (${evidenceMap.size})</summary><ul>${evidence}</ul></details>`;
 }
 

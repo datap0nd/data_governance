@@ -281,6 +281,7 @@ def test_qwen_alert_review_gets_redacted_snapshot_and_structured_assessment(aler
     assert created and run_id
     result = {
         "conclusion": "The latest probe supports the stale-source Alert.",
+        "impact": "Reports using the source may contain stale data.",
         "conclusion_evidence_refs": [f"alert:{action_id}"],
         "alert_assessment": "confirmed",
         "confidence": "high",
@@ -322,6 +323,7 @@ def test_flow_alert_recovery_suggestion_requires_nested_preflight(monkeypatch):
     ref = "alert:7"
     result = AgentResult.model_validate({
         "conclusion": "The Flow can safely resume.",
+        "impact": "Downstream stages remain incomplete until the Flow resumes.",
         "conclusion_evidence_refs": [ref],
         "alert_assessment": "confirmed",
         "confidence": "high",
@@ -360,6 +362,24 @@ def test_flow_alert_recovery_suggestion_requires_nested_preflight(monkeypatch):
         )
 
 
+def test_agent_result_rejects_user_summary_over_100_words():
+    ref = "flow_run:1"
+    with pytest.raises(ValueError, match="100 words or fewer"):
+        AgentResult.model_validate({
+            "conclusion": " ".join(["failure"] * 40),
+            "impact": " ".join(["impact"] * 30),
+            "conclusion_evidence_refs": [ref],
+            "confidence": "high",
+            "observed_facts": [{"statement": "Failed.", "evidence_refs": [ref]}],
+            "recommendations": [{
+                "action_type": "inspect",
+                "title": " ".join(["repair"] * 15),
+                "rationale": " ".join(["safely"] * 16),
+                "evidence_refs": [ref],
+            }],
+        })
+
+
 def test_alert_api_and_email_use_only_current_completed_assessment(alert_ai_db):
     action_id = _seed_source_alert()
     run_id, created = run_store.create_or_reuse_auto_alert_run(action_id)
@@ -375,6 +395,7 @@ def test_alert_api_and_email_use_only_current_completed_assessment(alert_ai_db):
     current = email._current_alert_ai_assessments([action_id])
     assert current[action_id]["run_id"] == run_id
     assert current[action_id]["conclusion"]
+    assert current[action_id]["impact"]
 
     alert = {
         "id": action_id,
@@ -389,6 +410,8 @@ def test_alert_api_and_email_use_only_current_completed_assessment(alert_ai_db):
         {"name": "Data Owner", "email": "owner@example.test"}, [alert]
     )
     assert "Deterministic preview:" in summary["body_text"]
+    assert "What happened:" in summary["body_text"]
+    assert "Impact:" in summary["body_text"]
     assert current[action_id]["conclusion"] in summary["body_text"]
     assert "Next action:" in summary["body_text"]
 
