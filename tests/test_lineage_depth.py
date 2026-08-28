@@ -254,6 +254,44 @@ class LineageDepthTests(unittest.TestCase):
         self.assertEqual(result["flows"][0]["target_source_ids"], [10])
         self.assertEqual(result["flows"][0]["last_success_at"], "2026-08-15T11:00:00")
 
+    def test_diagram_places_exact_file_flow_upstream_of_file_source(self):
+        self._seed_report_graph([10], [])
+        with get_db() as db:
+            db.execute(
+                """UPDATE sources
+                   SET name='daily.xlsx', type='excel',
+                       connection_info='C:/Exports/daily.xlsx'
+                   WHERE id=10"""
+            )
+            db.execute(
+                """INSERT INTO flow_sites (id, name, adapter, base_url)
+                   VALUES (90, 'Portal', 'web_export', 'https://example.test')"""
+            )
+            db.execute(
+                """INSERT INTO flow_reports (id, site_id, name, report_url)
+                   VALUES (1, 90, 'Daily export', 'https://example.test/export')"""
+            )
+            db.execute(
+                """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, last_run_at, last_success_at, last_status)
+                   VALUES (1, 'Daily workbook', 90, 1, 'c:\\exports', 'DAILY.xlsx',
+                           0, '2026-08-15T11:00:00',
+                           '2026-08-15T11:00:00', 'succeeded')"""
+            )
+
+        result = get_lineage_diagram(1)
+
+        self.assertEqual(len(result["flows"]), 1)
+        flow = result["flows"][0]
+        self.assertEqual(flow["name"], "Daily workbook")
+        self.assertEqual(flow["target_kind"], "file")
+        self.assertEqual(flow["match_strategy"], "exact_path")
+        self.assertEqual(flow["target_source_ids"], [10])
+        self.assertEqual(flow["target"]["filename"], "DAILY.xlsx")
+        self.assertFalse(flow["executable"])
+        self.assertEqual(flow["sql_target_link_status"], "candidate")
+
     def test_diagram_terminates_on_dependency_cycle(self):
         source_ids = [10, 11, 12]
         edges = [(10, 11), (11, 12), (12, 10)]

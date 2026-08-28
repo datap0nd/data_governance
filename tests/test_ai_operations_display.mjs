@@ -29,6 +29,14 @@ assert.doesNotMatch(style, /\.ai-fab\b/,
     "The retired floating AI launcher must not remain in the stylesheet");
 assert.match(source, /data-alert-analysis/,
     "Every dashboard Alert detail must own an inline Analysis surface");
+assert.match(source, /Automatic overall review/,
+    "The normal Alert path must present automatic overall analysis, not require a manual run");
+assert.match(investigator, /current_analysis_run_id/,
+    "Alert details must load the server-created current automatic assessment");
+assert.match(investigator, /run\.focus_type === "alert"/,
+    "Automatic assessment polling must verify that the run belongs to the exact Alert");
+assert.match(investigator, /deterministic alert remains active/i,
+    "A pending or unavailable model must never imply that the deterministic Alert disappeared");
 assert.match(source, /pipeline_failed:\s*"Pipeline Failed"/,
     "Pipeline failure Alerts need a first-class issue label");
 assert.match(source, /pbi_reconnect:\s*"Power BI Reconnect"/,
@@ -59,6 +67,16 @@ assert.match(investigator, /_revalidateCompletedAIInvestigation[\s\S]*?ALERT_ANA
     "Contextual run analysis must also re-check alert-bound recommendations");
 assert.match(investigator, /operational action is recommended|cannot execute the recommendation/i,
     "Recommendations must remain text-only");
+
+const emailPreviewStart = source.indexOf("function _emailNextAction");
+const emailPreviewEnd = source.indexOf("async function renderEmail", emailPreviewStart);
+const emailPreview = source.slice(emailPreviewStart, emailPreviewEnd);
+assert.match(emailPreview, /alert\.ai_assessment/,
+    "The Email-page preview must use the same current Alert AI assessment as Outlook");
+assert.match(emailPreview, /assessment\.recommendation_title/,
+    "The Email-page preview must select the Qwen recommendation before deterministic fallback");
+assert.match(emailPreview, /Pending or unavailable/,
+    "The preview must disclose when AI is not current instead of implying it was included");
 
 const context = {};
 vm.createContext(context);
@@ -244,6 +262,17 @@ assert.match(source, /pipelineStatus\.hidden = true/,
     "Changing report must immediately hide stale Pipeline status");
 assert.match(source, /Manual inspection required/,
     "Pipeline uncertainty must be visible to the user");
+const automaticPoll = source.slice(
+    source.indexOf("async function _pollAutomaticAlertAnalysis"),
+    source.indexOf("\nfunction _setAlertAnalysisBusy"),
+);
+assert.match(automaticPoll,
+    /holder\.dataset\.analysisGeneration !== String\(generation\)\) return;/,
+    "An old automatic Alert poll must yield to a newer occurrence analysis");
+assert.doesNotMatch(
+    automaticPoll.slice(0, automaticPoll.indexOf("try {")),
+    /holder\.dataset\.analysisGeneration\s*=/,
+    "An automatic poll must not reclaim generation ownership before checking it");
 assert.match(flowLog, /investigate=flow_run&subject_id=/,
     "Expanded Flow logs must deep-link to the exact investigation focus");
 assert.match(style, /\.ai-investigation-failed\s*\{[^}]*var\(--red\)/,

@@ -46,11 +46,11 @@ All registered users have the same application access, including remote PCs on t
 
 ### Read-only Operations Investigator
 
-**Alerts is the operational inbox.** A Flow or Pipeline failure creates one durable Alert with an immutable occurrence for each exact failed run. Expanding the Alert shows its deterministic evidence first and an optional **Analysis** action for the current occurrence. Flow history, expanded Flow logs, and full-Pipeline status retain contextual run-analysis shortcuts.
+**Alerts is the operational inbox.** Every active Alert evidence revision is automatically queued for an overall read-only review. Expanding an Alert shows whether the current evidence confirms, likely supports, contradicts, or is insufficient to judge the Alert, followed by a concise explanation and suggested next step. Flow and Pipeline failures also retain immutable run occurrences and optional exact-run analysis under evidence history.
 
-Analysis is pinned on the server to the selected Alert, occurrence, evidence revision, and exact run. The bounded Qwen3.8-27B tool loop explains the recorded state, completed work, likely cause, and safest next step; facts, inferences, recommendations, unknowns, and observation timestamps are displayed separately. If the Alert gains newer evidence, is resolved, or is marked expected, the old analysis remains available as history but its recommendations are hidden. Power BI reconnect occurrences are recorded in Alerts but are not offered to the model because they are not linked to a supported Flow or Pipeline run.
+Overall analysis is pinned on the server to the Alert and its current evidence revision. The bounded Qwen3.8-27B tool loop receives a redacted operational neighbourhood for the linked source, report, Flow, check, scanner state, and exact run when one exists. It never receives credentials, connection strings, raw query/file contents, local paths, or email recipients. When a current assessment is complete, its conclusion and first suggestion are included in the Outlook Alert summary; if Qwen is pending or unavailable, the deterministic Alert email still goes out and says so explicitly. If the Alert gains newer evidence, is resolved, or is marked expected, the old analysis becomes historical and cannot supply current email advice.
 
-The investigator cannot run, resume, retry, stop, refresh, edit, publish, import, browse, execute SQL, access the shell, or send email. Its only writes are its own durable run/step/evidence records. A recommendation such as Resume or Retry SQL is text only and is accepted only when the shared server preflight says it is currently eligible; the normal operational control revalidates again before queueing anything.
+The investigator cannot run, resume, retry, stop, refresh, edit, publish, browse, execute SQL, access the shell, change an Alert, or send email. Its only writes are its own durable run/step/evidence records. A recommendation such as Resume or Retry SQL is text only and is accepted only when the shared server preflight says it is currently eligible; the normal operational control revalidates again before queueing anything.
 
 Without a configured model endpoint, Metronome shows a clearly labelled deterministic preview using recorded state and recovery preflight only. To connect Qwen through an OpenAI-compatible vLLM/SGLang endpoint, set:
 
@@ -185,12 +185,28 @@ Optional Flow SQL handoffs use the dedicated write credentials `DG_UPLOAD_PGUSER
 
 The Pipelines lineage view can also refresh a resolved PostgreSQL materialized view with these credentials. That action preserves the existing Pipeline resource lock and exact source-identity checks. Metronome no longer provides a standalone file-import page or generates Prefect import scripts.
 
+Pipeline Flow lineage is report-scoped. An exact Flow SQL target is matched by
+server, database, schema, and table through the report's full recursive source
+dependency graph, so an upstream table such as `asap_import` remains visible
+when it feeds an intermediate materialized view. Static Excel/CSV output names
+can appear as dashed **Possible file link** evidence, but they are not run
+automatically: current Flow artifacts live in versioned run folders, so a
+filename alone does not prove that the Flow updates the exact file Power BI
+consumes.
+
 ### 5. Run the scanner
 
 Click "Run Scan Now" on the Scanner page, or hit the API:
 ```bash
-curl -X POST http://localhost:8000/api/scanner/run
+curl -X POST http://localhost:8000/api/scanner/jobs/full-scan
+curl http://localhost:8000/api/scanner/jobs/JOB_ID
 ```
+
+Scanner mutations share one durable worker lane. The Scanner page and job API
+show the active phase, source/database progress, heartbeat, failures, and recent
+completed work; a second request reuses or reports the active job instead of
+silently overlapping it. The older `/api/scanner/run`, `/probe`, `/pg-deps`, and
+`/pg-cron` endpoints are non-blocking aliases for the same durable jobs.
 
 ## PostgreSQL "Last Updated" Probing
 

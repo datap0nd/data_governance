@@ -16,6 +16,10 @@ from app.database import get_db
 from app.path_safety import is_remote_file_path
 
 MAX_TOOL_RESULT_BYTES = 64 * 1024
+MAX_ALERT_CONTEXT_BYTES = 56 * 1024
+_SENSITIVE_CONTEXT_KEY = re.compile(
+    r"(?i)(password|secret|token|authorization|api[_-]?key|connection|query|plan|path|folder|recipient)"
+)
 
 
 def _artifact_availability(value: Any) -> tuple[bool | None, str]:
@@ -48,12 +52,39 @@ def _safe_text(value: Any, limit: int = 1000, *, tail: bool = False) -> str | No
     if value is None:
         return None
     text = str(value)
+    # Redact complete bearer/header values before the generic key matcher; if
+    # "Authorization: Bearer ..." is split at whitespace first, the token can
+    # otherwise survive after the word "Bearer".
+    text = re.sub(
+        r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+",
+        "Bearer [redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\bauthorization\s*[=:]\s*(?:bearer|basic)?\s*[^\s,;}]+",
+        "authorization=[redacted]",
+        text,
+    )
+    # JSON/log payloads often quote both the sensitive key and value. Preserve
+    # the shape for diagnosis while replacing the entire value.
+    quoted_secret = re.compile(
+        r"(?i)([\"'](?:password|passwd|token|secret|authorization|api[_ -]?key)[\"']\s*:\s*)"
+        r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)"
+    )
+    text = quoted_secret.sub(
+        lambda match: f"{match.group(1)}{match.group('quote')}[redacted]{match.group('quote')}",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(password|passwd|token|secret|authorization|api[_ -]?key)\s*[=:]\s*([\"']).*?\2",
+        r"\1=[redacted]",
+        text,
+    )
     text = re.sub(
         r"(?i)(password|passwd|token|secret|authorization|api[_ -]?key)\s*[=:]\s*[^\s;,]+",
         r"\1=[redacted]",
         text,
     )
-    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", text)
     text = re.sub(r"(?i)postgresql(?:\+\w+)?://[^\s]+", "postgresql://[redacted]", text)
     text = re.sub(
         r"([\"'])(?:[A-Za-z]:\\|\\\\)[^\"'\r\n]+\1",
@@ -138,6 +169,10 @@ class PipelineFlowRunArtifactsArgs(PipelineFlowRunArgs):
     limit: int = Field(default=50, ge=1, le=50)
 
 
+class AlertContextArgs(_Args):
+    action_id: int = Field(ge=1)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -145,7 +180,7 @@ class ToolSpec:
     args_model: type[BaseModel]
     handler: Callable[[BaseModel], ToolEnvelope]
     progress_label: str
-    focus_type: Literal["flow_run", "pipeline_run"]
+    focus_type: Literal["flow_run", "pipeline_run", "alert"]
 
     def definition(self) -> dict[str, Any]:
         return {
@@ -588,7 +623,13 @@ def _get_pipeline_run(args: PipelineRunArgs) -> ToolEnvelope:
             }
             for step in steps
         ],
-        "resource_locks": [dict(item) for item in locks[:50]],
+        "resource_locks": [
+            {
+                "resource_type": item["resource_type"],
+                "resource_key": _safe_text(item["resource_key"], 500),
+            }
+            for item in locks[:50]
+        ],
         "worker_readiness": workers,
     }
     evidence = [Evidence(
@@ -683,6 +724,427 @@ def _get_pipeline_flow_run_artifacts(args: PipelineFlowRunArtifactsArgs) -> Tool
     )
 
 
+def _safe_context_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return "[depth-limited]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _safe_text(value, 500)
+    if isinstance(value, dict):
+        return {
+            str(key)[:80]: _safe_context_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:30]
+            if not _SENSITIVE_CONTEXT_KEY.search(str(key))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_context_value(item, depth=depth + 1) for item in value[:20]]
+    return _safe_text(value, 500)
+
+
+def _safe_rows(
+    rows,
+    fields: tuple[str, ...],
+    *,
+    limit: int = 20,
+    text_limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Project database rows through one bounded redaction boundary."""
+    result: list[dict[str, Any]] = []
+    for row in list(rows)[:limit]:
+        item: dict[str, Any] = {}
+        for field in fields:
+            if field not in row.keys():
+                continue
+            value = row[field]
+            item[field] = _safe_text(value, text_limit) if isinstance(value, str) else value
+        result.append(item)
+    return result
+
+
+def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
+    """Read one canonical Alert and a broad but safe operational neighbourhood.
+
+    This is deliberately a server-defined projection rather than arbitrary SQL.
+    It excludes credentials, connection strings, query/file contents, local
+    paths, email recipients, and raw execution plans while retaining the facts
+    needed to assess whether the Alert is supported by current evidence.
+    """
+    observed = _iso()
+    with get_db() as db:
+        action = db.execute(
+            """SELECT a.id, a.type, a.status, a.assigned_to, a.notes,
+                      a.source_id, a.report_id, a.flow_id, a.check_id,
+                      a.scheduled_task_id, a.script_id, a.fingerprint,
+                      a.evidence_revision, a.created_at, a.updated_at,
+                      s.name AS source_name, s.type AS source_type,
+                      r.name AS report_name, r.owner AS report_owner,
+                      f.name AS flow_name, f.source_type AS flow_source_type,
+                      st.task_name, st.status AS task_status,
+                      sc.display_name AS script_name
+                 FROM actions a
+                 LEFT JOIN sources s ON s.id=a.source_id
+                 LEFT JOIN reports r ON r.id=a.report_id
+                 LEFT JOIN flows f ON f.id=a.flow_id
+                 LEFT JOIN scheduled_tasks st ON st.id=a.scheduled_task_id
+                 LEFT JOIN scripts sc ON sc.id=a.script_id
+                WHERE a.id=?""",
+            (args.action_id,),
+        ).fetchone()
+        if not action:
+            raise LookupError("Alert not found.")
+
+        revision = int(action["evidence_revision"] or 0)
+        occurrence = db.execute(
+            """SELECT id, evidence_revision, focus_type, focus_id, summary,
+                      evidence_json, observed_at, created_at
+                 FROM action_occurrences
+                WHERE action_id=? AND evidence_revision=?
+                ORDER BY id DESC LIMIT 1""",
+            (args.action_id, revision),
+        ).fetchone()
+        occurrence_data = None
+        if occurrence:
+            raw_evidence = _loads(occurrence["evidence_json"], {})
+            occurrence_data = {
+                "id": int(occurrence["id"]),
+                "evidence_revision": int(occurrence["evidence_revision"]),
+                "focus_type": occurrence["focus_type"],
+                "focus_id": occurrence["focus_id"],
+                "summary": _safe_text(occurrence["summary"], 500),
+                "evidence": (
+                    _safe_context_value(raw_evidence)
+                    if isinstance(raw_evidence, dict) else {}
+                ),
+                "observed_at": occurrence["observed_at"],
+            }
+
+        source_context = None
+        if action["source_id"] is not None:
+            source = db.execute(
+                """SELECT id, name, type, owner, refresh_schedule,
+                          custom_fresh_days, custom_stale_days,
+                          freshness_rule_type, freshness_schedule_days,
+                          archived, updated_at
+                     FROM sources WHERE id=?""",
+                (action["source_id"],),
+            ).fetchone()
+            probes = db.execute(
+                """SELECT id, probed_at, last_data_at, row_count, status, message
+                     FROM source_probes WHERE source_id=?
+                     ORDER BY probed_at DESC, id DESC LIMIT 5""",
+                (action["source_id"],),
+            ).fetchall()
+            linked_reports = db.execute(
+                """SELECT DISTINCT r.id, r.name, r.owner, r.pbi_last_refresh_at,
+                          r.pbi_refresh_status, r.pbi_refresh_error
+                     FROM report_tables rt JOIN reports r ON r.id=rt.report_id
+                    WHERE rt.source_id=? AND COALESCE(r.archived, 0)=0
+                    ORDER BY r.name LIMIT 20""",
+                (action["source_id"],),
+            ).fetchall()
+            upstream = db.execute(
+                """SELECT s.id, s.name, s.type
+                     FROM source_dependencies sd JOIN sources s ON s.id=sd.depends_on_id
+                    WHERE sd.source_id=? ORDER BY s.name LIMIT 20""",
+                (action["source_id"],),
+            ).fetchall()
+            downstream = db.execute(
+                """SELECT s.id, s.name, s.type
+                     FROM source_dependencies sd JOIN sources s ON s.id=sd.source_id
+                    WHERE sd.depends_on_id=? ORDER BY s.name LIMIT 20""",
+                (action["source_id"],),
+            ).fetchall()
+            source_context = {
+                "source": _safe_rows([source], tuple(source.keys()), limit=1)[0] if source else None,
+                "latest_probes": _safe_rows(
+                    probes, ("id", "probed_at", "last_data_at", "row_count", "status", "message"), limit=5
+                ),
+                "linked_reports": _safe_rows(
+                    linked_reports,
+                    ("id", "name", "owner", "pbi_last_refresh_at", "pbi_refresh_status", "pbi_refresh_error"),
+                ),
+                "upstream_sources": _safe_rows(upstream, ("id", "name", "type")),
+                "downstream_sources": _safe_rows(downstream, ("id", "name", "type")),
+            }
+
+        report_context = None
+        if action["report_id"] is not None:
+            report = db.execute(
+                """SELECT id, name, owner, business_owner, frequency,
+                          last_published, pbi_last_refresh_at, pbi_refresh_status,
+                          pbi_refresh_error, archived, updated_at
+                     FROM reports WHERE id=?""",
+                (action["report_id"],),
+            ).fetchone()
+            tables = db.execute(
+                """SELECT rt.id, rt.table_name, rt.last_scanned,
+                          s.id AS source_id, s.name AS source_name, s.type AS source_type,
+                          sp.status AS source_status, sp.last_data_at
+                     FROM report_tables rt
+                     LEFT JOIN sources s ON s.id=rt.source_id
+                     LEFT JOIN source_probes sp ON sp.id=(
+                         SELECT sp2.id FROM source_probes sp2
+                          WHERE sp2.source_id=s.id ORDER BY sp2.probed_at DESC, sp2.id DESC LIMIT 1
+                     )
+                    WHERE rt.report_id=? ORDER BY rt.table_name LIMIT 30""",
+                (action["report_id"],),
+            ).fetchall()
+            latest_pipeline = db.execute(
+                """SELECT id, status, stage, trigger_type, error, requires_inspection,
+                          notification_status, created_at, started_at, finished_at, updated_at
+                     FROM pipeline_runs WHERE report_id=? ORDER BY id DESC LIMIT 1""",
+                (action["report_id"],),
+            ).fetchone()
+            report_context = {
+                "report": _safe_rows([report], tuple(report.keys()), limit=1)[0] if report else None,
+                "tables_and_sources": _safe_rows(
+                    tables,
+                    ("id", "table_name", "last_scanned", "source_id", "source_name", "source_type", "source_status", "last_data_at"),
+                    limit=30,
+                ),
+                "latest_pipeline_run": (
+                    _safe_rows([latest_pipeline], tuple(latest_pipeline.keys()), limit=1)[0]
+                    if latest_pipeline else None
+                ),
+            }
+
+        flow_context = None
+        if action["flow_id"] is not None:
+            flow = db.execute(
+                """SELECT id, name, source_type, enabled, filename_template,
+                          schedule_type, schedule_time, schedule_days, schedule_day,
+                          last_run_at, last_success_at, last_status, last_error,
+                          transform_enabled, sql_handoff_enabled, sql_mode,
+                          sql_database, sql_schema, sql_table, sql_target_source_id,
+                          updated_at
+                     FROM flows WHERE id=?""",
+                (action["flow_id"],),
+            ).fetchone()
+            latest_runs = db.execute(
+                """SELECT id, trigger_type, status, requested_by, worker_id,
+                          error, created_at, started_at, finished_at, heartbeat_at
+                     FROM flow_runs WHERE flow_id=? ORDER BY id DESC LIMIT 5""",
+                (action["flow_id"],),
+            ).fetchall()
+            flow_context = {
+                "flow": _safe_rows([flow], tuple(flow.keys()), limit=1)[0] if flow else None,
+                "latest_runs": _safe_rows(
+                    latest_runs,
+                    ("id", "trigger_type", "status", "requested_by", "worker_id", "error", "created_at", "started_at", "finished_at", "heartbeat_at"),
+                    limit=5,
+                ),
+            }
+
+        check_context = None
+        if action["check_id"] is not None:
+            check = db.execute(
+                "SELECT id, name, source_id, type, severity, enabled, updated_at FROM checks WHERE id=?",
+                (action["check_id"],),
+            ).fetchone()
+            check_results = db.execute(
+                """SELECT id, ran_at, status, value, message
+                     FROM check_results WHERE check_id=? ORDER BY ran_at DESC, id DESC LIMIT 5""",
+                (action["check_id"],),
+            ).fetchall()
+            check_context = {
+                "check": _safe_rows([check], tuple(check.keys()), limit=1)[0] if check else None,
+                "latest_results": _safe_rows(
+                    check_results, ("id", "ran_at", "status", "value", "message"), limit=5
+                ),
+            }
+
+        latest_scan = db.execute(
+            """SELECT id, started_at, finished_at, reports_scanned, sources_found,
+                      new_sources, changed_queries, broken_refs, status, log
+                 FROM scan_runs ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        latest_probe_run = db.execute(
+            """SELECT id, started_at, finished_at, sources_probed, fresh, stale,
+                      outdated, unknown, status, log
+                 FROM probe_runs ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        latest_pbi_sync = db.execute(
+            """SELECT id, sync_type, status, started_at, finished_at, message
+                 FROM pbi_sync_runs ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+
+    action_data = {
+        "id": int(action["id"]),
+        "type": action["type"],
+        "status": action["status"],
+        "assigned_to": _safe_text(action["assigned_to"], 200),
+        "notes": _safe_text(action["notes"], 1600),
+        "evidence_revision": revision,
+        "created_at": action["created_at"],
+        "updated_at": action["updated_at"],
+        "asset": {
+            "source_id": action["source_id"], "source_name": _safe_text(action["source_name"], 300),
+            "report_id": action["report_id"], "report_name": _safe_text(action["report_name"], 300),
+            "flow_id": action["flow_id"], "flow_name": _safe_text(action["flow_name"], 300),
+            "scheduled_task_id": action["scheduled_task_id"], "task_name": _safe_text(action["task_name"], 300),
+            "script_id": action["script_id"], "script_name": _safe_text(action["script_name"], 300),
+        },
+    }
+    data: dict[str, Any] = {
+        "alert": action_data,
+        "current_occurrence": occurrence_data,
+        "source_context": source_context,
+        "report_context": report_context,
+        "flow_context": flow_context,
+        "check_context": check_context,
+        "platform_observation": {
+            "latest_scan": _safe_rows(
+                [latest_scan],
+                ("id", "started_at", "finished_at", "reports_scanned", "sources_found", "new_sources", "changed_queries", "broken_refs", "status", "log"),
+                limit=1,
+            )[0] if latest_scan else None,
+            "latest_probe_run": _safe_rows(
+                [latest_probe_run],
+                ("id", "started_at", "finished_at", "sources_probed", "fresh", "stale", "outdated", "unknown", "status", "log"),
+                limit=1,
+            )[0] if latest_probe_run else None,
+            "latest_pbi_sync": _safe_rows(
+                [latest_pbi_sync], ("id", "sync_type", "status", "started_at", "finished_at", "message"), limit=1
+            )[0] if latest_pbi_sync else None,
+        },
+        "scope_note": (
+            "Read-only, bounded operational metadata. Credentials, connection strings, "
+            "raw queries/plans, file contents, local paths, and email recipients are excluded."
+        ),
+    }
+    evidence: list[Evidence] = [Evidence(
+        reference=f"alert:{args.action_id}",
+        entity_type="alert",
+        entity_id=str(args.action_id),
+        label=f"Alert #{args.action_id}: {action['type']}",
+        deep_link="/#alerts",
+        observed_at=observed,
+    )]
+
+    # Exact run occurrences get the richer existing read projection as part of
+    # the automatic Alert review, without widening the model's tool authority.
+    if occurrence:
+        try:
+            linked_id = int(occurrence["focus_id"])
+        except (TypeError, ValueError):
+            linked_id = 0
+        child: ToolEnvelope | None = None
+        if occurrence["focus_type"] == "flow_run" and linked_id > 0:
+            child = _get_flow_run(FlowRunArgs(run_id=linked_id))
+            events = _get_flow_run_events(FlowRunEventsArgs(run_id=linked_id, limit=8))
+            artifacts = _get_flow_run_artifacts(FlowRunArtifactsArgs(run_id=linked_id, limit=12))
+            data["focused_run"] = child.data
+            data["focused_run_events"] = events.data
+            data["focused_run_artifacts"] = artifacts.data
+            evidence.extend([*child.evidence, *events.evidence, *artifacts.evidence])
+        elif occurrence["focus_type"] == "pipeline_run" and linked_id > 0:
+            child = _get_pipeline_run(PipelineRunArgs(run_id=linked_id))
+            data["focused_run"] = child.data
+            evidence.extend(child.evidence)
+        elif occurrence["focus_type"] == "pbi_sync" and linked_id > 0:
+            with get_db() as db:
+                sync = db.execute(
+                    """SELECT id, sync_type, status, started_at, finished_at, message
+                         FROM pbi_sync_runs WHERE id=?""",
+                    (linked_id,),
+                ).fetchone()
+            if sync:
+                data["focused_pbi_sync"] = _safe_rows(
+                    [sync], ("id", "sync_type", "status", "started_at", "finished_at", "message"), limit=1
+                )[0]
+
+    # The same entity may be returned by multiple bounded run projections.
+    evidence = list({item.reference: item for item in evidence}.values())
+
+    def payload_size() -> int:
+        return len(json.dumps(
+            {"data": data, "evidence": [asdict(item) for item in evidence]},
+            ensure_ascii=False,
+        ).encode("utf-8"))
+
+    def referenced_keys(value: Any) -> set[str]:
+        refs: set[str] = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "evidence_ref" and isinstance(item, str):
+                    refs.add(item)
+                else:
+                    refs.update(referenced_keys(item))
+        elif isinstance(value, list):
+            for item in value:
+                refs.update(referenced_keys(item))
+        return refs
+
+    truncated = False
+    if payload_size() > MAX_ALERT_CONTEXT_BYTES:
+        truncated = True
+        if source_context:
+            source_context["linked_reports"] = source_context["linked_reports"][:10]
+            source_context["upstream_sources"] = source_context["upstream_sources"][:10]
+            source_context["downstream_sources"] = source_context["downstream_sources"][:10]
+            source_context["latest_probes"] = source_context["latest_probes"][:3]
+        if report_context:
+            report_context["tables_and_sources"] = report_context["tables_and_sources"][:12]
+        if flow_context:
+            flow_context["latest_runs"] = flow_context["latest_runs"][:3]
+        if isinstance(data.get("focused_run"), dict):
+            focused = data["focused_run"]
+            if isinstance(focused.get("steps"), list):
+                focused["steps"] = focused["steps"][:15]
+            if isinstance(focused.get("resource_locks"), list):
+                focused["resource_locks"] = focused["resource_locks"][:15]
+            if isinstance(focused.get("timings"), list):
+                focused["timings"] = focused["timings"][:15]
+        data["truncation"] = {
+            "truncated": True,
+            "reason": "The Alert neighbourhood exceeded the bounded model context; newest and most relevant records were retained.",
+        }
+        allowed = referenced_keys(data) | {f"alert:{args.action_id}"}
+        if occurrence and occurrence["focus_type"] in {"flow_run", "pipeline_run"}:
+            allowed.add(f"{occurrence['focus_type']}:{occurrence['focus_id']}")
+        evidence = [item for item in evidence if item.reference in allowed]
+
+    if payload_size() > MAX_ALERT_CONTEXT_BYTES:
+        # Last-resort compact projection keeps the current facts and explicit
+        # truncation signal instead of failing the entire Alert assessment.
+        if isinstance(data.get("focused_run"), dict):
+            focused = data["focused_run"]
+            data["focused_run"] = {
+                key: focused[key]
+                for key in ("run", "last_event", "recovery_preflight", "plan_summary", "steps")
+                if key in focused
+            }
+            if isinstance(data["focused_run"].get("steps"), list):
+                data["focused_run"]["steps"] = data["focused_run"]["steps"][:5]
+        data.pop("focused_run_events", None)
+        data.pop("focused_run_artifacts", None)
+        if source_context:
+            source_context["linked_reports"] = source_context["linked_reports"][:5]
+            source_context["upstream_sources"] = source_context["upstream_sources"][:5]
+            source_context["downstream_sources"] = source_context["downstream_sources"][:5]
+            source_context["latest_probes"] = source_context["latest_probes"][:2]
+        if report_context:
+            report_context["tables_and_sources"] = report_context["tables_and_sources"][:5]
+        if flow_context:
+            flow_context["latest_runs"] = flow_context["latest_runs"][:2]
+        for key in ("latest_scan", "latest_probe_run"):
+            item = data["platform_observation"].get(key)
+            if isinstance(item, dict):
+                item.pop("log", None)
+        allowed = referenced_keys(data) | {f"alert:{args.action_id}"}
+        if occurrence and occurrence["focus_type"] in {"flow_run", "pipeline_run"}:
+            allowed.add(f"{occurrence['focus_type']}:{occurrence['focus_id']}")
+        evidence = [item for item in evidence if item.reference in allowed]
+
+    return ToolEnvelope(
+        data=data,
+        evidence=tuple(evidence),
+        observed_at=observed,
+        truncated=truncated,
+    )
+
+
 TOOL_SPECS: dict[str, ToolSpec] = {
     spec.name: spec
     for spec in (
@@ -728,6 +1190,11 @@ TOOL_SPECS: dict[str, ToolSpec] = {
             PipelineFlowRunArtifactsArgs, _get_pipeline_flow_run_artifacts,
             "Checking linked Flow artifacts", "pipeline_run",
         ),
+        ToolSpec(
+            "get_alert_context",
+            "Read the focused canonical Alert, its current evidence revision, linked asset health, exact run occurrence when present, and latest scanner/probe/Power BI observations through a bounded redacted projection.",
+            AlertContextArgs, _get_alert_context, "Reviewing Alert evidence", "alert",
+        ),
     )
 }
 
@@ -750,10 +1217,12 @@ def execute_tool(
     scoped_id = (
         parsed.pipeline_run_id
         if isinstance(parsed, PipelineFlowRunArgs)
+        else parsed.action_id
+        if isinstance(parsed, AlertContextArgs)
         else getattr(parsed, "run_id", None)
     )
     if scoped_id != focus_id:
-        raise ValueError("Tool calls are locked to the exact run selected by the user.")
+        raise ValueError("Tool calls are locked to the exact run or Alert selected by the server.")
     envelope = spec.handler(parsed)
     size = len(json.dumps(envelope.to_dict(), ensure_ascii=False).encode("utf-8"))
     if size > MAX_TOOL_RESULT_BYTES:

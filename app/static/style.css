@@ -4111,6 +4111,7 @@ button.btn-danger-outline:hover {
 .pipeline-history summary { cursor: pointer; }
 .pipeline-history span { display: block; margin-top: 0.25rem; }
 .lin-flow-suggestion { border-style: dashed; opacity: 0.78; }
+.lin-flow-candidate-label { color: var(--orange); font-weight: 700; }
 @media (max-width: 760px) { .pipeline-preview-summary { grid-template-columns: 1fr; } }
 
 /* Scan log panel (used by scripts, etc.) */
@@ -4464,6 +4465,7 @@ button.btn-danger-outline:hover {
 .lin-edge-hl {
     stroke: var(--accent); stroke-width: 2; opacity: 1;
 }
+.lin-edge-tentative { stroke-dasharray: 5 4; opacity: 0.45; }
 .lin-edge-halo-hl { stroke-width: 5.5; opacity: 1; }
 #lin-arrow path { fill: var(--accent); }
 
@@ -5946,6 +5948,38 @@ tr.row-archived td:last-child {
     margin-bottom: 1rem;
 }
 
+.scanner-work-section { margin-bottom: 1rem; }
+.scanner-work-section h2 { display: flex; align-items: center; gap: 0.45rem; }
+.scanner-live-label {
+    color: var(--green);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.scanner-job-row {
+    border-top: 1px solid var(--border);
+    padding: 0.7rem 0;
+}
+.scanner-job-row:first-child { border-top: 0; padding-top: 0.2rem; }
+.scanner-job-row:last-child { padding-bottom: 0.1rem; }
+.scanner-job-active { border-left: 3px solid var(--accent); padding-left: 0.7rem; }
+.scanner-job-heading { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.scanner-job-heading > span:last-child { color: var(--text-dim); font-size: 0.72rem; }
+.scanner-job-step { margin-top: 0.3rem; color: var(--text); font-size: 0.8rem; }
+.scanner-job-message,
+.scanner-job-failures { margin-top: 0.2rem; color: var(--text-muted); font-size: 0.75rem; }
+.scanner-job-failures { color: var(--red); }
+.scanner-job-stale {
+    margin-top: 0.45rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--red);
+    border-radius: 5px;
+    color: var(--red);
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 0.76rem;
+}
+
 .pbi-sync-facts {
     display: flex;
     flex-wrap: wrap;
@@ -6281,6 +6315,15 @@ tr.row-archived td:last-child {
     color: var(--red);
     background: var(--red-bg);
     border: 1px solid var(--red-border);
+    overflow-wrap: anywhere;
+}
+.email-task-preview .email-ai-assessment {
+    margin: 0.35rem 0 0;
+    padding: 0.35rem 0.45rem;
+    border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--border));
+    background: color-mix(in srgb, var(--blue) 8%, transparent);
+    color: var(--text-secondary);
+    border-radius: 4px;
     overflow-wrap: anywhere;
 }
 .email-task-preview .email-next-action {

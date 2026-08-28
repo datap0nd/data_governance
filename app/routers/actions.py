@@ -638,15 +638,26 @@ def list_action_occurrences(action_id: int):
                  FROM agent_runs ar
                 WHERE ar.action_id=?
                   AND ar.action_evidence_revision IS NOT NULL
+                  AND ar.focus_type IN ('flow_run','pipeline_run')
                   AND ar.id=(
                       SELECT MAX(newer.id) FROM agent_runs newer
                        WHERE newer.action_id=ar.action_id
                          AND newer.action_evidence_revision=ar.action_evidence_revision
+                         AND newer.focus_type IN ('flow_run','pipeline_run')
                   )
                 ORDER BY ar.action_evidence_revision DESC
                 LIMIT 50""",
             (action_id,),
         ).fetchall()
+        current_analysis = db.execute(
+            """SELECT id, status, provider_mode, superseded_at,
+                      superseded_reason, created_at, finished_at
+                 FROM agent_runs
+                WHERE action_id=? AND action_evidence_revision=?
+                  AND focus_type='alert'
+                ORDER BY id DESC LIMIT 1""",
+            (action_id, int(action["evidence_revision"] or 0)),
+        ).fetchone()
 
     latest_analysis: dict[int, dict] = {}
     for row in analyses:
@@ -698,6 +709,20 @@ def list_action_occurrences(action_id: int):
         "action_id": int(action["id"]),
         "action_status": action["status"],
         "evidence_revision": current_revision,
+        "current_analysis_run_id": (
+            int(current_analysis["id"]) if current_analysis else None
+        ),
+        "current_analysis_status": (
+            current_analysis["status"] if current_analysis else "pending"
+        ),
+        "current_analysis_provider_mode": (
+            current_analysis["provider_mode"] if current_analysis else None
+        ),
+        "current_analysis_is_current": bool(
+            current_analysis
+            and not current_analysis["superseded_at"]
+            and action_is_active
+        ),
         "occurrences": occurrences,
     }
 

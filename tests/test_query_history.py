@@ -56,7 +56,7 @@ def _stub_scan_side_effects(monkeypatch):
     from app.routers import best_practices, documentation, schedules
     from app.scanner import pg_cron
 
-    monkeypatch.setattr(pg_deps, "scan_pg_dependencies", lambda scan_run_id=None: {
+    monkeypatch.setattr(pg_deps, "scan_pg_dependencies", lambda scan_run_id=None, **_kwargs: {
         "status": "completed", "changed_queries": 0, "query_change_log": "",
     })
     monkeypatch.setattr(pg_cron, "scan_pg_cron", lambda: {"status": "completed"})
@@ -252,7 +252,7 @@ def test_m_query_removal_restoration_and_rerun_are_ordered_and_idempotent(query_
 def test_mv_changes_are_included_in_overall_scan_count_and_log(query_db, monkeypatch):
     monkeypatch.setattr(runner, "walk_reports_root", lambda root: [])
     _stub_scan_side_effects(monkeypatch)
-    monkeypatch.setattr(pg_deps, "scan_pg_dependencies", lambda scan_run_id=None: {
+    monkeypatch.setattr(pg_deps, "scan_pg_dependencies", lambda scan_run_id=None, **_kwargs: {
         "status": "completed",
         "changed_queries": 1,
         "query_change_log": "CHANGED MV QUERY: public.sales_mv",

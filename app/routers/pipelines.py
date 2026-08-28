@@ -38,7 +38,12 @@ from app.scanner.pbi_fetch import (
     trigger_dataset_refresh,
 )
 from app.settings import get_setting, set_setting
-from app.source_identity import inspect_flow_target, normalize_server, reconcile_flow_target
+from app.source_identity import (
+    file_flow_target,
+    inspect_flow_target,
+    normalize_server,
+    reconcile_flow_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +198,26 @@ def _source_closure(db, report_id: int) -> tuple[list[int], list[tuple[int, int]
 
 
 def _topological_mvs(mv_ids: set[int], edges: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
-    upstream = {source_id: [] for source_id in mv_ids}
+    # Dependency edges can pass through ordinary views. Collapse the complete
+    # source graph down to MV-to-MV relationships, while emitting only exact
+    # materialized-view identities as refresh commands.
+    full_upstream: dict[int, list[int]] = {}
     for source_id, depends_on in edges:
-        if source_id in mv_ids and depends_on in mv_ids:
-            upstream[source_id].append(depends_on)
+        full_upstream.setdefault(source_id, []).append(depends_on)
+    upstream: dict[int, list[int]] = {source_id: [] for source_id in mv_ids}
+    for mv_id in mv_ids:
+        pending = list(full_upstream.get(mv_id, ()))
+        seen: set[int] = set()
+        related: set[int] = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in seen:
+                continue
+            seen.add(dependency)
+            if dependency in mv_ids:
+                related.add(dependency)
+            pending.extend(full_upstream.get(dependency, ()))
+        upstream[mv_id] = sorted(related)
     ordered: list[int] = []
     visiting: set[int] = set()
     visited: set[int] = set()
@@ -313,29 +334,42 @@ def _flow_target_resource_key(
 
 def _flow_target_key_for_id(db, flow_id: int | str) -> str | None:
     row = db.execute(
-        """SELECT sql_handoff_enabled, sql_database, sql_schema, sql_table
+        """SELECT sql_handoff_enabled, sql_database, sql_schema, sql_table,
+                  target_folder, filename_template
            FROM flows WHERE id=?""",
         (flow_id,),
     ).fetchone()
-    if not row or not row["sql_handoff_enabled"]:
+    if not row:
         return None
-    return _flow_target_resource_key(
-        database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
-    )
+    if row["sql_handoff_enabled"]:
+        return _flow_target_resource_key(
+            database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
+        )
+    return _file_flow_target_resource_key(row)
+
+
+def _file_flow_target_resource_key(flow) -> str | None:
+    target = file_flow_target(flow)
+    normalized = target.get("normalized_path")
+    return f"file|{normalized}" if normalized else None
 
 
 def flow_target_resource_key_from_job(job_or_json) -> str | None:
-    """Return the physical target frozen into a durable Flow job snapshot."""
+    """Return the physical SQL or file target frozen into a durable Flow job."""
     job = _loads(job_or_json, {}) if isinstance(job_or_json, str) else (job_or_json or {})
     target = job.get("sql_handoff") or {}
-    if not target.get("enabled"):
-        return None
-    return _flow_target_resource_key(
-        server=target.get("server") if "server" in target else UPLOAD_PGHOST,
-        database=target.get("database"),
-        schema=target.get("schema"),
-        relation=target.get("table"),
-    )
+    if target.get("enabled"):
+        return _flow_target_resource_key(
+            server=target.get("server") if "server" in target else UPLOAD_PGHOST,
+            database=target.get("database"),
+            schema=target.get("schema"),
+            relation=target.get("table"),
+        )
+    downloads = job.get("downloads") or {}
+    return _file_flow_target_resource_key({
+        "target_folder": downloads.get("target_folder"),
+        "filename_template": downloads.get("filename_template"),
+    })
 
 
 def active_flow_target_run(
@@ -367,7 +401,7 @@ def assert_flow_target_available(
         return
     owner = resource_lock_owner(db, "flow_target", target_resource_key)
     if owner is not None:
-        raise HTTPException(409, f"Flow SQL target is reserved by full-pipeline run #{owner}.")
+        raise HTTPException(409, f"Flow output is reserved by full-pipeline run #{owner}.")
     assert_no_active_flow_target_run(
         db, target_resource_key, exclude_run_id=exclude_run_id
     )
@@ -383,7 +417,7 @@ def assert_no_active_flow_target_run(
     if active is not None:
         raise HTTPException(
             409,
-            f"Flow SQL target is already being written by Flow "
+            f"Flow output is already being written by Flow "
             f"'{active['flow_name']}' run #{active['id']}.",
         )
 
@@ -422,7 +456,7 @@ def assert_resource_unlocked(db, resource_type: str, resource_key: str) -> None:
             if target_owner is not None:
                 raise HTTPException(
                     409,
-                    f"Flow SQL target is reserved by full-pipeline run #{target_owner}.",
+                    f"Flow output is reserved by full-pipeline run #{target_owner}.",
                 )
 
 
@@ -489,7 +523,7 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         mv_ids = {
             source_id for source_id, identity in identities.items()
             if identity["kind"] == "materialized_view"
-        } | {source_id for source_id, _ in source_edges if source_id in identities}
+        }
         mv_order, cycle = _topological_mvs(mv_ids, source_edges)
         if cycle:
             blockers.append("Materialized-view dependency cycle: " + " -> ".join(map(str, cycle)) + ".")
@@ -512,19 +546,34 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         )
         blockers.extend(diagnostic_blocker_messages(flow_diagnostics))
         executable_flow_ids = included_flow_ids(flow_diagnostics)
+        diagnostic_by_id = {
+            int(item["id"]): item for item in flow_diagnostics.get("items", [])
+        }
         flow_rows = db.execute(
-            """SELECT id, name, browser_mode, sql_handoff_enabled, sql_database,
-                      sql_schema, sql_table, sql_target_source_id, updated_at
-               FROM flows WHERE sql_handoff_enabled=1 ORDER BY id"""
+            """SELECT id, name, browser_mode, target_folder, filename_template,
+                      sql_handoff_enabled, sql_database, sql_schema, sql_table,
+                      sql_target_source_id, updated_at
+               FROM flows ORDER BY id"""
         ).fetchall()
         flows = []
         for row in flow_rows:
             if int(row["id"]) not in executable_flow_ids:
                 continue
-            inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
-            effective = inspection.get("effective_source_id")
+            diagnostic = diagnostic_by_id[int(row["id"])]
+            target_kind = diagnostic.get("target_kind") or "postgresql"
+            effective = diagnostic.get("effective_source_id")
             effective_id = int(effective) if effective is not None else None
             if effective_id is not None:
+                # included_flow_ids is deliberately SQL-only. Keep this guard
+                # local as defense in depth so a future diagnostic change
+                # cannot make a filename-only candidate executable by accident.
+                if target_kind != "postgresql":
+                    blockers.append(
+                        f"Flow '{row['name']}' has only a possible file-output link; "
+                        "it cannot run automatically in this Pipeline."
+                    )
+                    continue
+                inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
                 target = {
                     "server": normalize_server(UPLOAD_PGHOST),
                     "database": (row["sql_database"] or "").strip(),
@@ -535,6 +584,7 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                     server=target["server"], database=target["database"],
                     schema=target["schema"], relation=target["table"],
                 )
+                persisted_target_source_id = inspection.get("persisted_source_id")
                 active = active_flow_target_run(db, target_resource_key)
                 if active:
                     if int(active["flow_id"]) == int(row["id"]):
@@ -543,24 +593,35 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
                         )
                     else:
                         blockers.append(
-                            f"Flow '{row['name']}' SQL target is already being written by "
+                            f"Flow '{row['name']}' output is already being written by "
                             f"Flow '{active['flow_name']}' run #{active['id']}."
                         )
                 flows.append({
                     "id": int(row["id"]), "name": row["name"],
                     "browser_mode": row["browser_mode"],
+                    "target_kind": target_kind,
+                    "match_strategy": diagnostic.get("match_strategy"),
                     "target_source_id": effective_id,
-                    "persisted_target_source_id": inspection.get("persisted_source_id"),
+                    "persisted_target_source_id": persisted_target_source_id,
                     "target": target,
                     "target_resource_key": target_resource_key,
                     "updated_at": row["updated_at"],
                 })
         by_target: dict[str, list[str]] = {}
+        by_source: dict[int, list[str]] = {}
         for flow in flows:
             by_target.setdefault(flow["target_resource_key"], []).append(flow["name"])
+            by_source.setdefault(int(flow["target_source_id"]), []).append(flow["name"])
         for names in by_target.values():
             if len(names) > 1:
-                blockers.append("Multiple selected Flows write one target: " + ", ".join(names) + ".")
+                blockers.append("Multiple selected Flows write one output: " + ", ".join(names) + ".")
+        for names in by_source.values():
+            if len(names) > 1:
+                blockers.append(
+                    "Multiple selected Flows resolve to one pipeline source: "
+                    + ", ".join(names)
+                    + "."
+                )
 
         workers = _worker_readiness(db, {flow["browser_mode"] for flow in flows})
         for worker in workers:
@@ -583,7 +644,10 @@ def build_refresh_plan(report_id: int, requester: str | None, *, probe_mvs: bool
         }
 
         credential_status = configuration_status()
-        if not credential_status["configured"]:
+        sql_write_required = bool(materialized_views) or any(
+            flow.get("target_kind") == "postgresql" for flow in flows
+        )
+        if sql_write_required and not credential_status["configured"]:
             blockers.append("DG_UPLOAD_* credentials are unavailable: " + ", ".join(credential_status["missing"]) + ".")
 
         locked_resources = []
@@ -1447,20 +1511,32 @@ def refresh_plan(report_id: int, request: Request):
 
 
 def _confirm_flow_targets_for_run(db, plan: dict) -> None:
-    """Revalidate and persist the previewed exact targets in the run transaction."""
+    """Revalidate previewed exact SQL targets inside the run transaction."""
     for expected in plan["flows"]:
         row = db.execute(
             """SELECT id, sql_handoff_enabled, sql_database, sql_schema, sql_table,
-                      sql_target_source_id
+                      sql_target_source_id, target_folder, filename_template
                FROM flows WHERE id=?""",
             (expected["id"],),
         ).fetchone()
         if not row:
             raise HTTPException(409, "A selected Flow no longer exists. Preview the pipeline again.")
 
+        target_kind = expected.get("target_kind") or "postgresql"
+        if target_kind != "postgresql":
+            raise HTTPException(
+                409,
+                f"Flow '{expected['name']}' has only a possible file-output link and "
+                "cannot be run automatically. Preview the pipeline again.",
+            )
+        if not row["sql_handoff_enabled"]:
+            raise HTTPException(
+                409,
+                f"Flow '{expected['name']}' output changed. Preview the pipeline again.",
+            )
         target_key = _flow_target_resource_key(
             database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
-        ) if row["sql_handoff_enabled"] else None
+        )
         inspection = inspect_flow_target(db, row, server=UPLOAD_PGHOST)
         effective = inspection.get("effective_source_id")
         effective_id = int(effective) if effective is not None else None
@@ -1468,7 +1544,7 @@ def _confirm_flow_targets_for_run(db, plan: dict) -> None:
         if effective_id != expected_id or target_key != expected.get("target_resource_key"):
             raise HTTPException(
                 409,
-                f"Flow '{expected['name']}' SQL target changed. Preview the pipeline again.",
+                f"Flow '{expected['name']}' output changed. Preview the pipeline again.",
             )
 
         # The preview checked this too, but a direct Flow can be queued in the
@@ -1476,8 +1552,8 @@ def _confirm_flow_targets_for_run(db, plan: dict) -> None:
         # Recheck its frozen job target before creating governed locks.
         assert_flow_target_available(db, target_key)
 
-        # This is the only point in the preview/confirmation path that mutates
-        # a Flow link. The reconciler updates updated_at only when the FK changes.
+        # SQL target links are persisted only after the exact physical
+        # coordinates have been revalidated in this transaction.
         reconcile_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
         confirmed = inspect_flow_target(db, int(row["id"]), server=UPLOAD_PGHOST)
         confirmed_effective = confirmed.get("effective_source_id")

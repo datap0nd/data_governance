@@ -154,6 +154,12 @@ PGHOST = os.environ.get("PGHOST", "")
 PGUSER = os.environ.get("PGUSER", "")
 PGPASSWORD = os.environ.get("PGPASSWORD", "")
 PGDATABASE = os.environ.get("PGDATABASE", "postgres")
+# Bound each read-only scanner statement so a broken PostgreSQL connection or
+# catalog lock cannot leave lineage discovery invisible for half an hour.  The
+# durable scanner heartbeat will flag a run sooner if it stops making progress.
+PG_SCAN_STATEMENT_TIMEOUT_SECONDS = _bounded_int_env(
+    "DG_PG_SCAN_STATEMENT_TIMEOUT_SECONDS", 180, 30, 900
+)
 
 # PostgreSQL credentials for Flow SQL handoffs and explicit materialized-view
 # refreshes. Kept separate from the read-only probing credentials above:

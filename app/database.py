@@ -67,6 +67,32 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     log             TEXT
 );
 
+-- Durable, user-visible lifecycle for every scanner operation.  ``scan_runs``
+-- keeps the domain result of a full catalog scan; this table also represents
+-- focused lineage rechecks and source probes while they are still executing.
+CREATE TABLE IF NOT EXISTS scanner_jobs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type         TEXT NOT NULL,
+    trigger_source   TEXT NOT NULL DEFAULT 'manual',
+    status           TEXT NOT NULL DEFAULT 'queued',
+    current_step     TEXT,
+    message          TEXT,
+    progress_current INTEGER,
+    progress_total   INTEGER,
+    context_json     TEXT NOT NULL DEFAULT '{}',
+    result_json      TEXT,
+    scan_run_id      INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at       DATETIME,
+    heartbeat_at     DATETIME,
+    finished_at      DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_jobs_status
+    ON scanner_jobs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scanner_jobs_created
+    ON scanner_jobs(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS probe_runs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -400,6 +426,7 @@ CREATE TABLE IF NOT EXISTS premium_viewers (
 CREATE TABLE IF NOT EXISTS pbi_sync_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     sync_type   TEXT NOT NULL,
+    attempt_id  TEXT,
     status      TEXT NOT NULL,
     started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,
@@ -843,13 +870,18 @@ MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         sync_type   TEXT NOT NULL,
+        attempt_id  TEXT,
         status      TEXT NOT NULL,
         started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
         finished_at DATETIME,
         message     TEXT,
         details     TEXT
     )""",
+    "ALTER TABLE pbi_sync_runs ADD COLUMN attempt_id TEXT",
     "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at)",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_pbi_sync_runs_attempt
+       ON pbi_sync_runs(sync_type, attempt_id)
+       WHERE attempt_id IS NOT NULL""",
     # App settings used by scheduler controls
     """CREATE TABLE IF NOT EXISTS app_settings (
         key        TEXT PRIMARY KEY,
@@ -1545,6 +1577,7 @@ MIGRATIONS = [
     "ALTER TABLE agent_runs ADD COLUMN action_evidence_revision INTEGER",
     "ALTER TABLE agent_runs ADD COLUMN superseded_at DATETIME",
     "ALTER TABLE agent_runs ADD COLUMN superseded_reason TEXT",
+    "ALTER TABLE agent_runs ADD COLUMN alert_context_hash TEXT",
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_action ON agent_runs(action_id, id DESC)",
     # Superseding is orthogonal to execution status: completed traces remain
     # auditable, but cannot be presented as the current alert recommendation.

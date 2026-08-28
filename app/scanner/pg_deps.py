@@ -11,7 +11,7 @@ READ-ONLY: Only SELECT queries are used against PostgreSQL.
 import logging
 import inspect
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.database import get_db
@@ -23,6 +23,8 @@ from app.query_history import (
     observe_query,
 )
 from app.scanner.prober import _get_pg_connection
+from app.scanner.control import assert_not_cancelled
+from app.scanner.jobs import heartbeat as scanner_job_heartbeat
 from app.config import PGHOST, PGDATABASE, PGPASSWORD, UPLOAD_PGHOST
 from app.source_identity import (
     exact_identity_rows,
@@ -178,12 +180,14 @@ class _DatabaseCatalog:
     dependency_rows: tuple[tuple, ...]
     definitions: dict[tuple[str, str], str]
     definition_error: str | None = None
+    parent_kinds: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 _DEPENDENCY_SQL = """
     SELECT DISTINCT
         ns_mv.nspname  AS mv_schema,
         c_mv.relname   AS mv_name,
+        c_mv.relkind   AS parent_kind,
         ns_dep.nspname AS dep_schema,
         c_dep.relname  AS dep_name,
         c_dep.relkind  AS dep_kind
@@ -193,7 +197,7 @@ _DEPENDENCY_SQL = """
     JOIN pg_namespace ns_mv ON ns_mv.oid = c_mv.relnamespace
     JOIN pg_class c_dep ON c_dep.oid = d.refobjid
     JOIN pg_namespace ns_dep ON ns_dep.oid = c_dep.relnamespace
-    WHERE c_mv.relkind = 'm'
+    WHERE c_mv.relkind IN ('m', 'v')
       AND d.deptype = 'n'
       AND d.classid = 'pg_rewrite'::regclass
       AND c_dep.relkind IN ('r', 'm', 'v')
@@ -312,11 +316,22 @@ def _fetch_database_catalog(database: str) -> _DatabaseCatalog:
         pg_cur = pg_conn.cursor()
         pg_cur.execute(_DEPENDENCY_SQL)
         dependency_rows = []
+        parent_kinds: dict[tuple[str, str], str] = {}
         for row in pg_cur.fetchall():
+            if len(row) == 6:
+                mv_schema, mv_name, parent_kind, dep_schema, dep_name, dep_kind = row
+                parent_kinds[(mv_schema, mv_name)] = str(parent_kind)
+                dependency_rows.append(
+                    (mv_schema, mv_name, dep_schema, dep_name, dep_kind)
+                )
+                continue
             if len(row) != 5:
                 raise ValueError(
                     "PostgreSQL adapter returned an unexpected dependency row"
                 )
+            # Compatibility for lightweight test/legacy adapters. Historical
+            # rows only described materialized-view parents.
+            parent_kinds[(row[0], row[1])] = "m"
             dependency_rows.append(tuple(row))
 
         definitions: dict[tuple[str, str], str] = {}
@@ -342,13 +357,25 @@ def _fetch_database_catalog(database: str) -> _DatabaseCatalog:
             dependency_rows=tuple(dependency_rows),
             definitions=definitions,
             definition_error=definition_error,
+            parent_kinds=parent_kinds,
         )
     finally:
         pg_conn.close()
 
 
-def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
+def scan_pg_dependencies(
+    scan_run_id: int | None = None,
+    *,
+    operation_id: int | None = None,
+    cancel_generation: int | None = None,
+) -> dict:
     """Refresh dependency lineage independently for every required database."""
+    assert_not_cancelled(cancel_generation, "PostgreSQL lineage scan")
+    scanner_job_heartbeat(
+        operation_id,
+        current_step="Discovering PostgreSQL databases",
+        message="Resolving databases required by reports and Flow SQL targets.",
+    )
     now = datetime.now(timezone.utc).isoformat()
     databases, origins, flow_host_mismatches = _required_databases()
     if not databases:
@@ -368,7 +395,16 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
         }
 
     database_results: dict[str, dict] = {}
-    for database in databases:
+    total_databases = len(databases)
+    for database_index, database in enumerate(databases, start=1):
+        assert_not_cancelled(cancel_generation, "PostgreSQL lineage scan")
+        scanner_job_heartbeat(
+            operation_id,
+            current_step="Reading PostgreSQL catalog",
+            message=f"Scanning database {database}.",
+            progress_current=database_index - 1,
+            progress_total=total_databases,
+        )
         # A Flow's physical target is on UPLOAD_PGHOST. When that differs from
         # the read-only catalog host, a Flow-only requirement cannot safely be
         # satisfied by scanning a same-named database on PGHOST.
@@ -392,6 +428,13 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                 ),
                 "query_change_log": "",
             }
+            scanner_job_heartbeat(
+                operation_id,
+                current_step="Reading PostgreSQL catalog",
+                message=f"Skipped database {database}: catalog server mismatch.",
+                progress_current=database_index,
+                progress_total=total_databases,
+            )
             continue
 
         try:
@@ -415,8 +458,23 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                 "log": "Catalog fetch failed; prior lineage was retained.",
                 "query_change_log": "",
             }
+            scanner_job_heartbeat(
+                operation_id,
+                current_step="Reading PostgreSQL catalog",
+                message=f"Database {database} could not be read; prior lineage was retained.",
+                progress_current=database_index,
+                progress_total=total_databases,
+            )
             continue
 
+        assert_not_cancelled(cancel_generation, "PostgreSQL lineage scan")
+        scanner_job_heartbeat(
+            operation_id,
+            current_step="Applying lineage snapshot",
+            message=f"Reconciling materialized views and Flow targets in {database}.",
+            progress_current=database_index - 1,
+            progress_total=total_databases,
+        )
         try:
             database_results[database] = _apply_database_catalog(
                 database,
@@ -455,6 +513,13 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
                 database_results[database]["definition_error"] = _redact_error(
                     catalog.definition_error
                 )
+        scanner_job_heartbeat(
+            operation_id,
+            current_step="Applying lineage snapshot",
+            message=f"Finished database {database}.",
+            progress_current=database_index,
+            progress_total=total_databases,
+        )
 
     successful = [
         result
@@ -512,6 +577,13 @@ def scan_pg_dependencies(scan_run_id: int | None = None) -> dict:
         errors = [result.get("error", "unknown failure") for result in failed]
         combined = errors[0] if len(errors) == 1 else "; ".join(errors)
         summary["error"] = _redact_error(combined)
+    scanner_job_heartbeat(
+        operation_id,
+        current_step="Finalizing PostgreSQL lineage",
+        message=f"Processed {total_databases} database(s).",
+        progress_current=total_databases,
+        progress_total=total_databases,
+    )
     logger.info("PG dependency scan completed: %s", summary)
     return summary
 
@@ -603,11 +675,13 @@ def _apply_database_catalog(
     with get_db() as db:
         _delete_database_edges(db, server=PGHOST, database=database)
 
-        pending_mvs = set(mv_dependencies)
-        while pending_mvs:
+        pending_relations = set(mv_dependencies)
+        while pending_relations:
             progressed = False
-            for mv_schema, mv_name in sorted(pending_mvs):
+            for mv_schema, mv_name in sorted(pending_relations):
                 refs = mv_dependencies[(mv_schema, mv_name)]
+                parent_kind_code = catalog.parent_kinds.get((mv_schema, mv_name), "m")
+                parent_kind = "view" if parent_kind_code == "v" else "materialized_view"
                 mv_source_id = _find_or_create_source(
                     db,
                     server=PGHOST,
@@ -615,12 +689,13 @@ def _apply_database_catalog(
                     schema=mv_schema,
                     table=mv_name,
                     now=now,
-                    relation_kind="materialized_view",
+                    relation_kind=parent_kind,
                 )
 
-                pending_mvs.remove((mv_schema, mv_name))
+                pending_relations.remove((mv_schema, mv_name))
                 progressed = True
-                mvs_found += 1
+                if parent_kind_code == "m":
+                    mvs_found += 1
 
                 for dep_schema, dep_table, dep_kind in refs:
                     kind = {"m": "materialized_view", "v": "view", "r": "table"}.get(
@@ -648,7 +723,8 @@ def _apply_database_catalog(
 
                 full_mv_name = f"{mv_schema}.{mv_name}"
                 ref_names = [f"{schema}.{name}" for schema, name, _kind in refs]
-                log_lines.append(f"MV: {full_mv_name} -> {', '.join(ref_names)}")
+                label = "VIEW" if parent_kind_code == "v" else "MV"
+                log_lines.append(f"{label}: {full_mv_name} -> {', '.join(ref_names)}")
 
             if not progressed:
                 break

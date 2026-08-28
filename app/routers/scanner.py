@@ -1,6 +1,8 @@
 import logging
 import subprocess
 import sys
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import fastapi
@@ -9,7 +11,9 @@ from pydantic import BaseModel
 from app.config import TMDL_ROOT, DB_PATH, PGHOST, PGDATABASE, PGUSER
 from app.database import get_db
 from app.local_access import require_app_access
-from app.scanner.control import ScannerWorkCancelled
+from app.scanner.control import ScannerWorkCancelled, assert_not_cancelled
+from app.scanner.control import current_cancel_generation
+from app.scanner import jobs as scanner_jobs
 from app.scanner.runner import run_scan
 from app.scanner.prober import run_probe
 from app.scanner import pbi_auth
@@ -37,6 +41,300 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scanner", tags=["scanner"])
 
+_job_executor: ThreadPoolExecutor | None = None
+_job_futures: dict[int, Future] = {}
+_job_future_lock = threading.Lock()
+
+
+def _executor() -> ThreadPoolExecutor:
+    global _job_executor
+    with _job_future_lock:
+        if _job_executor is None:
+            # Scanner mutations are deliberately serialized. A focused lineage
+            # recheck and a full scan must never reconcile the catalog at once.
+            _job_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="scanner-operation"
+            )
+        return _job_executor
+
+
+def _submit_job(job_id: int, worker, *args) -> None:
+    def guarded_worker():
+        try:
+            result = worker(int(job_id), *args)
+        except Exception as exc:
+            # This is a last-resort durability boundary. Individual workers
+            # retain their richer failure messages, but a crash before their
+            # try/except (for example while marking the row running) must not
+            # leave Scanner permanently blocked by a phantom active job.
+            scanner_jobs.finish_job(
+                job_id,
+                status="failed",
+                result={
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                },
+                message="Scanner worker crashed before it recorded a terminal result.",
+            )
+            raise
+        current = scanner_jobs.get_job(job_id)
+        if current is not None and current.get("active"):
+            scanner_jobs.finish_job(
+                job_id,
+                status="failed",
+                result={"status": "failed", "error_type": "IncompleteWorkerExit"},
+                message="Scanner worker exited without recording a terminal result.",
+            )
+        return result
+
+    try:
+        future = _executor().submit(guarded_worker)
+    except Exception as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error_type": type(exc).__name__},
+            message="Scanner worker could not be started.",
+        )
+        raise
+    with _job_future_lock:
+        _job_futures[int(job_id)] = future
+
+    def forget(done: Future) -> None:
+        try:
+            done.result()
+        except Exception:
+            logger.exception("Scanner background job %s crashed", job_id)
+        finally:
+            with _job_future_lock:
+                _job_futures.pop(int(job_id), None)
+
+    future.add_done_callback(forget)
+
+
+def _cancel_queued_jobs() -> None:
+    # Future.cancel() may invoke callbacks synchronously. Copy under the lock,
+    # then cancel outside it so the callback can safely remove its registry row.
+    with _job_future_lock:
+        futures = list(_job_futures.values())
+    for future in futures:
+        future.cancel()
+
+
+def shutdown_scanner_executor() -> None:
+    global _job_executor
+    _cancel_queued_jobs()
+    with _job_future_lock:
+        executor = _job_executor
+        _job_executor = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _execute_full_scan_job(
+    job_id: int,
+    generation: int | None,
+    stop_result: dict,
+    pbi_source: str = "manual_scanner_refresh",
+    launch_usage_sync: bool = False,
+) -> dict:
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Syncing Power BI metadata",
+        message="Refreshing report metadata before local report discovery.",
+    )
+    try:
+        pbi_result = trigger_pbi_sync_and_wait(
+            pbi_source,
+            cancel_existing=False,
+            cancel_generation=generation,
+            operation_id=job_id,
+        )
+        pbi_status = (pbi_result.get("status") or "").lower()
+        if pbi_status not in {"completed", "skipped"}:
+            terminal_status = "stopped" if pbi_status in {"stopped", "cancelled", "canceled"} else "failed"
+            scanner_jobs.finish_job(
+                job_id,
+                status=terminal_status,
+                result={
+                    "status": "pbi_sync_not_completed",
+                    "pbi_sync": pbi_result,
+                    "stop": stop_result,
+                },
+                message=(
+                    "Full scan stopped before report discovery because the "
+                    f"Power BI sync was {pbi_result.get('status') or 'not completed'}."
+                ),
+            )
+            return scanner_jobs.get_job(job_id) or {
+                "status": terminal_status,
+                "pbi_sync": pbi_result,
+            }
+        scanner_jobs.heartbeat(
+            job_id,
+            current_step="Starting local report scan",
+            message="Power BI metadata sync finished; starting PBIX/TMDL discovery.",
+        )
+        scan_result = run_scan(
+            cancel_generation=generation,
+            run_followup_probe=True,
+            operation_id=job_id,
+        )
+        if launch_usage_sync and (scan_result.get("status") or "").lower() in {
+            "completed",
+            "completed_with_warnings",
+        }:
+            try:
+                trigger_pbi_usage_sync(
+                    cancel_existing=False,
+                    cancel_generation=generation,
+                )
+            except Exception:
+                logger.exception("Scheduled Power BI usage sync failed to start")
+        return scan_result
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="stopped",
+            result={"status": "stopped", "message": str(exc)},
+            message=str(exc),
+        )
+        return {"status": "stopped", "message": str(exc)}
+    except Exception as exc:
+        logger.exception("Background full scan failed")
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="Full scan failed; review server logs.",
+        )
+        return redact_component_payload({"status": "failed", "error": str(exc)})
+
+
+def _execute_probe_job(job_id: int, generation: int | None) -> None:
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Probing source freshness",
+        message="Checking file and PostgreSQL sources.",
+    )
+    try:
+        result = redact_component_payload(
+            run_probe(cancel_generation=generation, operation_id=job_id)
+        )
+        scanner_jobs.finish_job(job_id, status=result.get("status") or "completed", result=result)
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="stopped",
+            result={"status": "stopped", "message": str(exc)},
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Background source probe failed")
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="Source probe failed; review server logs.",
+        )
+
+
+def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
+    """Run report discovery/probing for a pre-reserved durable job."""
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Starting local report scan",
+        message="Starting PBIX/TMDL discovery.",
+    )
+    try:
+        run_scan(
+            cancel_generation=generation,
+            run_followup_probe=True,
+            operation_id=job_id,
+        )
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="stopped",
+            result={"status": "stopped", "message": str(exc)},
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Background report scan failed")
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="Report scan failed; review server logs.",
+        )
+
+
+def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
+    from app.scanner.pg_cron import scan_pg_cron
+
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Reading PostgreSQL schedules",
+        message="Checking pg_cron materialized-view refresh schedules.",
+    )
+    try:
+        assert_not_cancelled(generation, "PostgreSQL schedule scan")
+        result = redact_component_payload(scan_pg_cron())
+        assert_not_cancelled(generation, "PostgreSQL schedule scan")
+        scanner_jobs.finish_job(
+            job_id,
+            status=result.get("status") or "completed",
+            result=result,
+        )
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="stopped",
+            result={"status": "stopped", "message": str(exc)},
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Background PostgreSQL schedule scan failed")
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="PostgreSQL schedule scan failed; review server logs.",
+        )
+
+
+def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
+    from app.scanner.pg_deps import scan_pg_dependencies
+
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Preparing PostgreSQL lineage recheck",
+        message="Resolving the databases required by reports and Flow targets.",
+    )
+    try:
+        result = redact_component_payload(
+            scan_pg_dependencies(
+                operation_id=job_id,
+                cancel_generation=generation,
+            )
+        )
+        scanner_jobs.finish_job(job_id, status=result.get("status") or "completed", result=result)
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id,
+            status="stopped",
+            result={"status": "stopped", "message": str(exc)},
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Background PostgreSQL lineage recheck failed")
+        scanner_jobs.finish_job(
+            job_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="PostgreSQL lineage recheck failed; review server logs.",
+        )
+
 
 def _require_scan_access(request: Request):
     """Compatibility hook for scan actions that used to require elevated access."""
@@ -45,50 +343,258 @@ def _require_scan_access(request: Request):
 
 @router.post("/run")
 def do_scan(request: Request):
-    """Trigger a full scan (reads .pbix files or TMDL exports)."""
-    _require_scan_access(request)
-    stop_result = stop_pbi_sync_processes("New scanner refresh started.")
-    generation = (stop_result.get("scanner") or {}).get("generation")
-
-    try:
-        pbi_result = trigger_pbi_sync_and_wait(
-            "manual_scanner_refresh",
-            cancel_existing=False,
-            cancel_generation=generation,
-        )
-        if (pbi_result.get("status") or "").lower() not in {"completed", "skipped"}:
-            return {
-                "status": "pbi_sync_not_completed",
-                "message": "Scanner refresh stopped before scan because Power BI sync did not complete.",
-                "pbi_sync": pbi_result,
-                "stop": stop_result,
-            }
-
-        result = run_scan(cancel_generation=generation, run_followup_probe=True)
-    except ScannerWorkCancelled as e:
-        return {"status": "stopped", "message": str(e), "stop": stop_result}
-    except Exception as e:
-        logger.exception("Scanner refresh failed")
-        return redact_component_payload(
-            {"status": "failed", "error": str(e), "stop": stop_result}
-        )
-    result["pbi_sync"] = pbi_result
-    result["stop"] = stop_result
-    return result
+    """Compatibility alias for the durable, non-blocking full-scan job."""
+    return start_full_scan_job(request)
 
 
 @router.post("/probe")
 def do_probe(request: Request):
-    """Probe all sources for freshness (file mod times)."""
+    """Compatibility alias for the durable, non-blocking source-probe job."""
+    return start_probe_job(request)
+
+
+def _job_start_response(job: dict, *, accepted: bool, reused: bool, message: str) -> dict:
+    return {
+        "accepted": accepted,
+        "reused": reused,
+        "message": message,
+        "job": job,
+        "job_id": job["id"],
+        "status": job["status"],
+    }
+
+
+@router.get("/jobs")
+def list_scanner_jobs(limit: int = 30):
+    """Return authoritative current/recent scanner work with stale health."""
+    return scanner_jobs.list_jobs(limit=limit)
+
+
+@router.get("/jobs/{job_id}")
+def get_scanner_job(job_id: int):
+    job = scanner_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scanner job not found")
+    return job
+
+
+@router.post("/jobs/full-scan")
+def start_full_scan_job(request: Request):
+    """Start a durable full scan without holding the browser request open."""
     _require_scan_access(request)
-    stop_result = stop_pbi_sync_processes("New source probe started.")
+    job, created = scanner_jobs.reserve_job(
+        "full_scan",
+        trigger_source="manual",
+        current_step="Queued",
+        message="Full scan accepted and waiting for its worker.",
+        context={"includes_pbi_sync": True},
+    )
+    if not created:
+        same_job = job["job_type"] == "full_scan"
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=same_job,
+            message=(
+                "This full scan is already running."
+                if same_job
+                else "Another scanner operation is active; wait for it or stop it first."
+            ),
+        )
+
+    job_id = int(job["id"])
+    stop_result = stop_pbi_sync_processes(
+        "New scanner refresh started.", exclude_scanner_job_id=job_id
+    )
+    _cancel_queued_jobs()
     generation = (stop_result.get("scanner") or {}).get("generation")
-    try:
-        result = redact_component_payload(run_probe(cancel_generation=generation))
-        result["stop"] = stop_result
-        return result
-    except ScannerWorkCancelled as e:
-        return {"status": "stopped", "message": str(e), "stop": stop_result}
+    _submit_job(job_id, _execute_full_scan_job, generation, stop_result)
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="Full scan started. Progress is available on the Scanner page.",
+    )
+
+
+def start_scheduled_full_scan_job() -> dict:
+    """Reserve and submit the daily refresh through the same global lane."""
+    job, created = scanner_jobs.reserve_job(
+        "full_scan",
+        trigger_source="scheduled",
+        current_step="Queued",
+        message="Scheduled full scan accepted and waiting for its worker.",
+        context={"includes_pbi_sync": True, "includes_usage_sync": True},
+    )
+    if not created:
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=job["job_type"] == "full_scan",
+            message="Scheduled scan skipped because scanner work is already active.",
+        )
+
+    job_id = int(job["id"])
+    stop_result = stop_pbi_sync_processes(
+        "New scheduled overall refresh started.",
+        exclude_scanner_job_id=job_id,
+    )
+    _cancel_queued_jobs()
+    generation = (stop_result.get("scanner") or {}).get("generation")
+    _submit_job(
+        job_id,
+        _execute_full_scan_job,
+        generation,
+        stop_result,
+        "scheduled_overall_refresh",
+        True,
+    )
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="Scheduled full scan started; live progress is on the Scanner page.",
+    )
+
+
+def start_scheduled_scan_job(
+    *, cancel_generation: int | None = None, stop_existing: bool = True
+) -> dict:
+    """Submit scan-only scheduled work through the durable global lane."""
+    job, created = scanner_jobs.reserve_job(
+        "full_scan",
+        trigger_source="scheduled_scan",
+        current_step="Queued",
+        message="Scheduled report scan accepted and waiting for its worker.",
+        context={"includes_pbi_sync": False},
+    )
+    if not created:
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=job["job_type"] == "full_scan",
+            message="Scheduled report scan skipped because scanner work is already active.",
+        )
+
+    job_id = int(job["id"])
+    generation = cancel_generation
+    if stop_existing:
+        stop_result = stop_pbi_sync_processes(
+            "New scheduled scan started.",
+            exclude_scanner_job_id=job_id,
+        )
+        _cancel_queued_jobs()
+        generation = (stop_result.get("scanner") or {}).get("generation")
+    elif generation is None:
+        generation = current_cancel_generation()
+    _submit_job(job_id, _execute_scan_only_job, generation)
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="Scheduled report scan started; live progress is on the Scanner page.",
+    )
+
+
+@router.post("/jobs/probe")
+def start_probe_job(request: Request):
+    """Start a durable source probe without holding the browser request open."""
+    _require_scan_access(request)
+    job, created = scanner_jobs.reserve_job(
+        "source_probe",
+        trigger_source="manual",
+        current_step="Queued",
+        message="Source probe accepted and waiting for its worker.",
+    )
+    if not created:
+        same_job = job["job_type"] == "source_probe"
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=same_job,
+            message=(
+                "This source probe is already running."
+                if same_job
+                else "Another scanner operation is active; wait for it or stop it first."
+            ),
+        )
+
+    job_id = int(job["id"])
+    stop_result = stop_pbi_sync_processes(
+        "New source probe started.", exclude_scanner_job_id=job_id
+    )
+    _cancel_queued_jobs()
+    generation = (stop_result.get("scanner") or {}).get("generation")
+    _submit_job(job_id, _execute_probe_job, generation)
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="Source probe started. Progress is available on the Scanner page.",
+    )
+
+
+@router.post("/jobs/postgres-lineage")
+def start_postgres_lineage_job(request: Request, report_id: int | None = None):
+    """Start/reuse a durable focused PostgreSQL lineage recheck."""
+    _require_scan_access(request)
+    job, created = scanner_jobs.reserve_job(
+        "postgres_lineage",
+        trigger_source="pipeline_recheck",
+        current_step="Queued",
+        message="PostgreSQL lineage recheck accepted and waiting for its worker.",
+        context={"report_id": report_id} if report_id is not None else {},
+    )
+    if not created:
+        compatible = job["job_type"] in {"full_scan", "postgres_lineage"}
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=compatible,
+            message=(
+                "Existing full scan will refresh PostgreSQL lineage."
+                if job["job_type"] == "full_scan"
+                else "PostgreSQL lineage recheck is already running."
+                if job["job_type"] == "postgres_lineage"
+                else "A source probe is active; wait for it or stop it before rechecking lineage."
+            ),
+        )
+
+    job_id = int(job["id"])
+    _submit_job(job_id, _execute_postgres_lineage_job, current_cancel_generation())
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="PostgreSQL lineage recheck started. Progress is available on the Scanner page.",
+    )
+
+
+@router.post("/jobs/postgres-schedules")
+def start_postgres_schedule_job(request: Request):
+    """Start/reuse a durable pg_cron schedule discovery job."""
+    _require_scan_access(request)
+    job, created = scanner_jobs.reserve_job(
+        "postgres_schedules",
+        trigger_source="manual",
+        current_step="Queued",
+        message="PostgreSQL schedule scan accepted and waiting for its worker.",
+    )
+    if not created:
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=job["job_type"] == "postgres_schedules",
+            message="Another scanner operation is active; wait for it or stop it first.",
+        )
+    job_id = int(job["id"])
+    _submit_job(job_id, _execute_postgres_cron_job, current_cancel_generation())
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message="PostgreSQL schedule scan started. Progress is on the Scanner page.",
+    )
 
 
 @router.get("/probe/runs")
@@ -112,7 +618,9 @@ def do_pbi_sync(request: Request):
 def stop_pbi_sync(request: Request):
     """Stop running scanner refresh work and PBI helper processes."""
     _require_scan_access(request)
-    return stop_pbi_sync_processes()
+    result = stop_pbi_sync_processes()
+    _cancel_queued_jobs()
+    return result
 
 
 @router.get("/pbi-sync/status")
@@ -203,18 +711,14 @@ def get_scan_run(run_id: int):
 
 @router.post("/pg-deps")
 def do_pg_deps(request: Request):
-    """Scan PostgreSQL for materialized view dependencies."""
-    _require_scan_access(request)
-    from app.scanner.pg_deps import scan_pg_dependencies
-    return redact_component_payload(scan_pg_dependencies())
+    """Compatibility alias for durable PostgreSQL lineage discovery."""
+    return start_postgres_lineage_job(request)
 
 
 @router.post("/pg-cron")
 def do_pg_cron(request: Request):
-    """Scan pg_cron for MV refresh schedules."""
-    _require_scan_access(request)
-    from app.scanner.pg_cron import scan_pg_cron
-    return redact_component_payload(scan_pg_cron())
+    """Compatibility alias for durable PostgreSQL schedule discovery."""
+    return start_postgres_schedule_job(request)
 
 
 class OpenPathRequest(BaseModel):

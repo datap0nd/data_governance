@@ -11,10 +11,12 @@ param(
     [string]$ApiBase = "http://localhost:8000",
     [string]$PreferredAccount = $env:DG_PBI_ACCOUNT,
     [int]$ConnectTimeoutSeconds = 120,
+    [string]$AttemptId = $env:DG_PBI_ATTEMPT_ID,
     [switch]$NoPause
 )
 
 $ErrorActionPreference = "Stop"
+$script:SyncTerminalReported = $false
 
 $helperScript = Join-Path $PSScriptRoot "pbi_sync_helpers.ps1"
 if (Test-Path $helperScript) {
@@ -41,14 +43,93 @@ function Report-SyncStatus {
             status    = $Status
             message   = $Message
         }
-        if ($Details) {
-            $payload.details = $Details
+        $correlatedDetails = @{}
+        if ($AttemptId) {
+            $payload.attempt_id = $AttemptId
+            $correlatedDetails.attempt_id = $AttemptId
+        }
+        if ($Details -is [System.Collections.IDictionary]) {
+            foreach ($key in $Details.Keys) {
+                if ($key -ne "attempt_id") {
+                    $correlatedDetails[$key] = $Details[$key]
+                }
+            }
+        } elseif ($Details) {
+            $correlatedDetails.callback_details = $Details
+        }
+        if ($correlatedDetails.Count -gt 0) {
+            $payload.details = $correlatedDetails
         }
         $json = $payload | ConvertTo-Json -Depth 6
         Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-sync/run-status" -Method POST -Body $json -ContentType "application/json; charset=utf-8" | Out-Null
+        if ($Status -in @("completed", "failed", "skipped", "stopped")) {
+            $script:SyncTerminalReported = $true
+        }
     } catch {
         Write-Host "Could not report sync status: $_" -ForegroundColor DarkYellow
     }
+}
+
+function Start-CorrelatedPbiConnectWatchdog {
+    param(
+        [string]$ApiBase,
+        [string]$SyncType,
+        [int]$TimeoutSeconds,
+        [string]$AttemptId,
+        [int]$ParentPid = $PID
+    )
+
+    if ($TimeoutSeconds -le 0) {
+        return $null
+    }
+    if (-not $AttemptId -and (Get-Command Start-DgPbiConnectWatchdog -ErrorAction SilentlyContinue)) {
+        return Start-DgPbiConnectWatchdog -ApiBase $ApiBase -SyncType $SyncType -TimeoutSeconds $TimeoutSeconds -ParentPid $ParentPid
+    }
+
+    $message = "Interactive Power BI sign-in did not complete within $TimeoutSeconds seconds. Windows may be locked, disconnected, or waiting at the Microsoft account picker."
+    $script = @"
+`$ErrorActionPreference = "SilentlyContinue"
+Start-Sleep -Seconds $TimeoutSeconds
+`$parent = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+if (`$parent) {
+    try {
+        `$payload = @{
+            sync_type = "$SyncType"
+            status = "failed"
+            message = "$message"
+            attempt_id = "$AttemptId"
+            details = @{ attempt_id = "$AttemptId" }
+        } | ConvertTo-Json -Depth 4
+        Invoke-RestMethod -Uri "$ApiBase/api/scanner/pbi-sync/run-status" -Method POST -Body `$payload -ContentType "application/json; charset=utf-8" | Out-Null
+    } catch {}
+    Stop-Process -Id $ParentPid -Force -ErrorAction SilentlyContinue
+}
+"@
+
+    try {
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+        return Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand", $encoded
+        )
+    } catch {
+        return $null
+    }
+}
+
+# Several Power BI cmdlets below intentionally run at script scope.  A
+# terminating module/API error must still close the exact correlated attempt;
+# otherwise Metronome would display it as running until the 20-minute waiter
+# times out.  Local catches may provide a more specific failure first.
+trap {
+    $failureText = "Unhandled Power BI refresh sync failure: $($_.Exception.Message)"
+    if (-not $script:SyncTerminalReported) {
+        Report-SyncStatus -Status "failed" -Message $failureText
+    }
+    Write-Host $failureText -ForegroundColor Red
+    Pause-IfNeeded "Press Enter to close"
+    exit 1
 }
 
 if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
@@ -126,7 +207,7 @@ function Connect-DgPowerBI {
     $watchdog = $null
     try {
         if (Get-Command Start-DgPbiConnectWatchdog -ErrorAction SilentlyContinue) {
-            $watchdog = Start-DgPbiConnectWatchdog -ApiBase $ApiBase -SyncType "refresh" -TimeoutSeconds $ConnectTimeoutSeconds
+            $watchdog = Start-CorrelatedPbiConnectWatchdog -ApiBase $ApiBase -SyncType "refresh" -TimeoutSeconds $ConnectTimeoutSeconds -AttemptId $AttemptId
         }
         Connect-PowerBIServiceAccount -ErrorAction Stop | Out-Null
         Write-Host "Connected." -ForegroundColor Green
@@ -232,6 +313,9 @@ $output = @{
     synced_at  = (Get-Date).ToUniversalTime().ToString("o")
     reports    = $results
 }
+if ($AttemptId) {
+    $output.attempt_id = $AttemptId
+}
 
 # POST to governance API
 $json = $output | ConvertTo-Json -Depth 5
@@ -246,6 +330,14 @@ try {
         Pause-IfNeeded "Press Enter to close"
         exit 0
     }
+    if ($response.status -ne "completed") {
+        Write-Host ""
+        $ignoredMessage = if ($response.message) { $response.message } else { "Sync callback was ignored." }
+        Write-Host $ignoredMessage -ForegroundColor Yellow
+        Pause-IfNeeded "Press Enter to close"
+        exit 1
+    }
+    $script:SyncTerminalReported = $true
     Write-Host ""
     Write-Host "Sync complete!" -ForegroundColor Green
     Write-Host "  Matched: $($response.matched)" -ForegroundColor Green

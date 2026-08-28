@@ -322,7 +322,7 @@ def _stub_runner_followups(monkeypatch, reports=None) -> None:
     monkeypatch.setattr(
         pg_deps,
         "scan_pg_dependencies",
-        lambda scan_run_id=None: {
+        lambda scan_run_id=None, **_kwargs: {
             "status": "completed",
             "changed_queries": 0,
             "query_change_log": "",

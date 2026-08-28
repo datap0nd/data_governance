@@ -114,6 +114,12 @@ class AgentResult(BaseModel):
     conclusion_evidence_refs: list[
         Annotated[str, Field(min_length=1, max_length=120)]
     ] = Field(min_length=1, max_length=6)
+    alert_assessment: Literal[
+        "confirmed",
+        "likely",
+        "uncertain",
+        "not_supported",
+    ] = "uncertain"
     confidence: Literal["low", "medium", "high"]
     observed_facts: list[EvidenceClaim] = Field(min_length=1, max_length=12)
     inferences: list[EvidenceClaim] = Field(default_factory=list, max_length=8)

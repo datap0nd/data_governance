@@ -30,7 +30,7 @@ def _stub_scan_components(monkeypatch, pg_result, *, cron_result=None):
             ).fetchone()
         observations.append((component, row["status"], row["finished_at"]))
 
-    def scan_dependencies(scan_run_id=None):
+    def scan_dependencies(scan_run_id=None, **_kwargs):
         observe("postgres_dependencies")
         return pg_result
 
@@ -333,7 +333,7 @@ def test_hard_pg_interruption_remains_running_until_startup_recovery(monkeypatch
         monkeypatch.setattr(runner, "walk_reports_root", lambda root: [])
         monkeypatch.setattr(runner, "deduplicate_sources", lambda reports: {})
 
-        def interrupt_process(scan_run_id=None):
+        def interrupt_process(scan_run_id=None, **_kwargs):
             raise SystemExit("simulated hard interruption")
 
         monkeypatch.setattr(pg_deps, "scan_pg_dependencies", interrupt_process)

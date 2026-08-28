@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -15,8 +16,25 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 SUPPORTED_FOCUS_TABLES = {
     "flow_run": "flow_runs",
     "pipeline_run": "pipeline_runs",
+    "alert": "actions",
 }
 ACTIVE_ACTION_STATUSES = {"open", "acknowledged", "investigating"}
+AUTO_ALERT_ACTOR = "system:auto-alert"
+AUTO_ALERT_QUESTION = (
+    "Assess whether this current Alert is supported by the available operational evidence. "
+    "Summarize what happened, state uncertainty, and suggest the safest next step. "
+    "This is advisory only; do not change or suppress the Alert."
+)
+AUTO_ALERT_RETRY_SECONDS = 15 * 60
+AUTO_ALERT_MAX_ATTEMPTS = 3
+_CONTEXT_LIVENESS_KEYS = {
+    "created_at",
+    "heartbeat_at",
+    "last_seen_at",
+    "probed_at",
+    "started_at",
+    "updated_at",
+}
 
 
 class RunBindingError(ValueError):
@@ -50,6 +68,51 @@ def _loads(value: str | None, default):
         return json.loads(value) if value else default
     except (TypeError, ValueError):
         return default
+
+
+def _stable_alert_context(value: Any, *, parent_key: str = "") -> Any:
+    """Remove polling/liveness noise while retaining diagnostic state."""
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            label = str(key)
+            if label in _CONTEXT_LIVENESS_KEYS:
+                continue
+            # This cross-platform snapshot helps the model interpret outages,
+            # but a new unrelated scan must not invalidate every active Alert.
+            if not parent_key and label == "platform_observation":
+                continue
+            # A fresh probe row with the same material facts is not new Alert
+            # evidence. Status/data time/count/message below still participate.
+            if parent_key == "latest_probes" and label == "id":
+                continue
+            result[label] = _stable_alert_context(item, parent_key=label)
+        return result
+    if isinstance(value, list):
+        return [_stable_alert_context(item, parent_key=parent_key) for item in value]
+    return value
+
+
+def _current_alert_context_hash(action_id: int) -> str:
+    """Fingerprint material facts available to overall Alert AI."""
+    # Import locally to keep the durable store independent during module
+    # startup. The retrieval timestamp is intentionally excluded; only stable
+    # projected facts should invalidate a completed assessment.
+    from app.ai.operations_tools import execute_tool
+
+    envelope = execute_tool(
+        "get_alert_context",
+        {"action_id": int(action_id)},
+        focus_type="alert",
+        focus_id=int(action_id),
+    )
+    payload = json.dumps(
+        _stable_alert_context(envelope.data),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def safe_error(value: Exception | str, limit: int = 2000) -> str:
@@ -195,14 +258,24 @@ def active_focus_run(focus_type: str, focus_id: int) -> dict | None:
     return get_run(int(row["id"])) if row else None
 
 
-def _insert_run(db, *, question: str, binding: dict[str, Any], actor: str | None, now: str) -> int:
+def _insert_run(
+    db,
+    *,
+    question: str,
+    binding: dict[str, Any],
+    actor: str | None,
+    now: str,
+    mode: str = "incident",
+    alert_context_hash: str | None = None,
+) -> int:
     cursor = db.execute(
         """INSERT INTO agent_runs
            (mode, question, focus_type, focus_id, status, actor, model,
             reasoning_effort, provider_mode, prompt_version, action_id,
-            action_evidence_revision, created_at, updated_at)
-           VALUES ('incident', ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            action_evidence_revision, alert_context_hash, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            mode,
             question,
             binding["focus_type"],
             str(binding["focus_id"]),
@@ -213,11 +286,97 @@ def _insert_run(db, *, question: str, binding: dict[str, Any], actor: str | None
             PROMPT_VERSION,
             binding["action_id"],
             binding["action_evidence_revision"],
+            alert_context_hash,
             now,
             now,
         ),
     )
     return int(cursor.lastrowid)
+
+
+def create_or_reuse_auto_alert_run(
+    action_id: int,
+    *,
+    max_active: int = 10,
+    retry_after_seconds: int = AUTO_ALERT_RETRY_SECONDS,
+) -> tuple[int | None, bool]:
+    """Create one automatic advisory analysis for an active Alert revision.
+
+    A completed analysis is reused only while both the detector revision and
+    the exact bounded model context remain unchanged. Transient failures are
+    retried at a bounded cadence and attempt count. The model remains unable to
+    mutate the Alert; this function only appends its own audit rows.
+    """
+    now = _iso()
+    context_hash = _current_alert_context_hash(action_id)
+    cutoff = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - max(0, retry_after_seconds),
+        timezone.utc,
+    ).isoformat(timespec="seconds")
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        action = db.execute(
+            """SELECT id, status, evidence_revision FROM actions WHERE id=?""",
+            (action_id,),
+        ).fetchone()
+        if not action or action["status"] not in ACTIVE_ACTION_STATUSES:
+            return None, False
+        revision = int(action["evidence_revision"] or 0)
+        # Legacy detector paths do not all advance evidence_revision when live
+        # source/report/check facts change. Bind the overall assessment to the
+        # exact safe context it read as a second freshness boundary.
+        db.execute(
+            """UPDATE agent_runs
+                  SET superseded_at=COALESCE(superseded_at, ?),
+                      superseded_reason=COALESCE(
+                          superseded_reason, 'alert_context_changed'
+                      ), updated_at=?
+                WHERE action_id=? AND focus_type='alert'
+                  AND COALESCE(alert_context_hash, '') != ?
+                  AND superseded_at IS NULL""",
+            (now, now, action_id, context_hash),
+        )
+        existing = db.execute(
+            """SELECT id, status, created_at FROM agent_runs
+                WHERE action_id=? AND action_evidence_revision=?
+                  AND focus_type='alert'
+                  AND alert_context_hash=?
+                  AND superseded_at IS NULL
+                ORDER BY id DESC""",
+            (action_id, revision, context_hash),
+        ).fetchall()
+        for row in existing:
+            if row["status"] in {"queued", "running", "completed"}:
+                return int(row["id"]), False
+        if len(existing) >= AUTO_ALERT_MAX_ATTEMPTS:
+            return int(existing[0]["id"]), False
+        if existing and str(existing[0]["created_at"] or "") >= cutoff:
+            return int(existing[0]["id"]), False
+        count = db.execute(
+            """SELECT COUNT(*) AS count FROM agent_runs
+                WHERE status IN ('queued','running') AND superseded_at IS NULL"""
+        ).fetchone()
+        if int(count["count"] if count else 0) >= max_active:
+            return None, False
+        binding = {
+            "focus_type": "alert",
+            "focus_id": int(action_id),
+            "action_id": int(action_id),
+            "occurrence_id": None,
+            "action_evidence_revision": revision,
+        }
+        return (
+            _insert_run(
+                db,
+                question=AUTO_ALERT_QUESTION,
+                binding=binding,
+                actor=AUTO_ALERT_ACTOR,
+                now=now,
+                mode="alert_auto",
+                alert_context_hash=context_hash,
+            ),
+            True,
+        )
 
 
 def create_run(
@@ -316,6 +475,13 @@ def _supersession_reason_for_row(db, row: dict[str, Any]) -> str | None:
         return "alert_inactive"
     if int(action["evidence_revision"] or 0) != int(revision):
         return "alert_evidence_changed"
+    if row.get("focus_type") == "alert":
+        stored_context_hash = str(row.get("alert_context_hash") or "")
+        if (
+            not stored_context_hash
+            or stored_context_hash != _current_alert_context_hash(int(action_id))
+        ):
+            return "alert_context_changed"
     return None
 
 
@@ -623,8 +789,12 @@ def _alert_binding_details(db, row: dict[str, Any]) -> dict[str, Any] | None:
         "action_status": action_status,
         "focus": {
             "type": str(occurrence["focus_type"]),
-            "id": int(occurrence["focus_id"]),
-        } if occurrence else None,
+            "id": (
+                int(occurrence["focus_id"])
+                if str(occurrence["focus_id"]).isdigit()
+                else str(occurrence["focus_id"])
+            ),
+        } if occurrence else {"type": "alert", "id": int(action_id)},
         "summary": str(occurrence["summary"]) if occurrence else None,
         "observed_at": occurrence["observed_at"] if occurrence else None,
         "is_current": is_current,

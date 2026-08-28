@@ -484,6 +484,65 @@ def _alert_artifact(alert: dict) -> tuple[str, str]:
     return "Data", "data"
 
 
+def _current_alert_ai_assessments(action_ids: list[int]) -> dict[int, dict]:
+    """Return only completed analyses for the current immutable Alert revision."""
+    if not action_ids:
+        return {}
+    placeholders = ",".join("?" for _ in action_ids)
+    with get_db() as db:
+        rows = db.execute(
+            f"""SELECT ar.id, ar.action_id, ar.provider_mode, ar.final_json,
+                       ar.finished_at
+                  FROM agent_runs ar
+                  JOIN actions a ON a.id=ar.action_id
+                 WHERE ar.action_id IN ({placeholders})
+                   AND ar.status='completed'
+                   AND ar.focus_type='alert'
+                   AND ar.superseded_at IS NULL
+                   AND ar.action_evidence_revision=a.evidence_revision
+                   AND a.status IN ('open','acknowledged','investigating')
+                   AND ar.id=(
+                       SELECT MAX(newer.id) FROM agent_runs newer
+                        WHERE newer.action_id=ar.action_id
+                          AND newer.action_evidence_revision=ar.action_evidence_revision
+                          AND newer.status='completed'
+                          AND newer.focus_type='alert'
+                          AND newer.superseded_at IS NULL
+                   )""",
+            action_ids,
+        ).fetchall()
+    assessments: dict[int, dict] = {}
+    for row in rows:
+        # Refresh the context-hash boundary immediately before email use. This
+        # catches live probe/report/check changes even from legacy producers
+        # that did not increment actions.evidence_revision.
+        from app.ai import run_store
+
+        current_run = run_store.get_run(int(row["id"]))
+        if (
+            not current_run
+            or current_run.get("status") != "completed"
+            or not current_run.get("is_current")
+        ):
+            continue
+        result = current_run.get("result")
+        if not isinstance(result, dict) or not str(result.get("conclusion") or "").strip():
+            continue
+        recommendations = result.get("recommendations") or []
+        first = recommendations[0] if recommendations and isinstance(recommendations[0], dict) else {}
+        assessments[int(row["action_id"])] = {
+            "run_id": int(row["id"]),
+            "provider_mode": row["provider_mode"],
+            "assessment": result.get("alert_assessment") or "uncertain",
+            "confidence": result.get("confidence") or "low",
+            "conclusion": str(result["conclusion"]).strip()[:900],
+            "recommendation_title": str(first.get("title") or "").strip()[:200] or None,
+            "recommendation_rationale": str(first.get("rationale") or "").strip()[:600] or None,
+            "finished_at": row["finished_at"],
+        }
+    return assessments
+
+
 def _artifact_mark_html(kind: str) -> str:
     if kind == "powerbi":
         mark = (
@@ -545,7 +604,32 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
         alert["artifact_kind"] = artifact_kind
 
     def next_action(alert: dict) -> str:
+        assessment = alert.get("ai_assessment") or {}
+        if assessment.get("recommendation_title"):
+            title = assessment["recommendation_title"]
+            rationale = assessment.get("recommendation_rationale")
+            return f"{title} — {rationale}" if rationale else title
         return alert.get("recommendation") or alert.get("triage_cta") or "Open the asset and investigate the issue."
+
+    def ai_assessment_text(alert: dict) -> str | None:
+        assessment = alert.get("ai_assessment") or {}
+        if not assessment:
+            return (
+                "Pending or unavailable; the deterministic Alert remains active "
+                "and email delivery is not blocked."
+            )
+        label = str(assessment.get("assessment") or "uncertain").replace("_", " ").title()
+        confidence = str(assessment.get("confidence") or "low").title()
+        return f"{label} ({confidence} confidence): {assessment['conclusion']}"
+
+    def ai_assessment_label(alert: dict) -> str:
+        assessment = alert.get("ai_assessment") or {}
+        provider_mode = assessment.get("provider_mode")
+        if provider_mode == "qwen":
+            return "Qwen assessment"
+        if provider_mode == "mock":
+            return "Deterministic preview"
+        return "Automated assessment"
 
     def asset_html(alert: dict) -> str:
         if alert.get("report_detail"):
@@ -580,6 +664,8 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
         lines.append(f"{artifact_label} | {issue_label}: {asset_text(alert)} | {degraded_since} | {views:,}")
         if refresh_error(alert):
             lines.append(f"PBI Refresh Error: {refresh_error(alert)}")
+        if ai_assessment_text(alert):
+            lines.append(f"{ai_assessment_label(alert)}: {ai_assessment_text(alert)}")
         lines.append(f"Next action: {next_action(alert)}")
         lines.append("")
     lines.extend(["Thanks,", "Metronome"])
@@ -604,9 +690,18 @@ def _build_alert_summary(owner: dict, alerts: list[dict]) -> dict:
                 'border:1px solid #efd0ce;word-break:break-word">'
                 f'<strong>PBI Refresh Error:</strong> {html.escape(refresh_error(alert))}</div>'
             )
+        assessment_html = ""
+        if ai_assessment_text(alert):
+            provider_label = ai_assessment_label(alert)
+            assessment_html = (
+                '<div style="margin-top:7px;padding:7px 8px;background:#eef6ff;color:#244a70;'
+                'border:1px solid #ccdff2;word-break:break-word">'
+                f'<strong>{html.escape(provider_label)}:</strong> {html.escape(ai_assessment_text(alert))}</div>'
+            )
         issue_html = (
             f'<strong>{html.escape(issue_label)}</strong><br>{asset_html(alert)}'
             + error_html
+            + assessment_html
             + f'<div style="margin-top:7px;color:#4b5563"><strong>Next action:</strong> {html.escape(next_action(alert))}</div>'
         )
         html_parts.append(
@@ -731,6 +826,12 @@ def _load_alert_summaries(owner_names: set[str] | None = None) -> list[dict]:
         assigned_to = alert.get("assigned_to")
         if include_all_owner_names or assigned_to in owners:
             alert_rows.append(alert)
+
+    ai_assessments = _current_alert_ai_assessments(
+        [int(alert["id"]) for alert in alert_rows]
+    )
+    for alert in alert_rows:
+        alert["ai_assessment"] = ai_assessments.get(int(alert["id"]))
 
     alerts_by_owner: dict[str, list[dict]] = {name: [] for name in owners}
     for alert in alert_rows:

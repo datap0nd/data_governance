@@ -363,7 +363,11 @@ def fetch_refresh_execution_details(
         return None
 
 
-def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = None) -> dict:
+def fetch_refresh_payload(
+    workspace_name: str,
+    cancel_generation: int | None = None,
+    attempt_id: str | None = None,
+) -> dict:
     """Build the same payload shape that pbi_refresh_sync.ps1 POSTs back."""
     auth = get_access_token()
     token = auth["access_token"]
@@ -443,14 +447,19 @@ def fetch_refresh_payload(workspace_name: str, cancel_generation: int | None = N
         "workspace": workspace_name,
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "reports": results,
+        "attempt_id": attempt_id,
     }
 
 
-def run_refresh_sync(workspace_name: str, cancel_generation: int | None = None) -> dict:
+def run_refresh_sync(
+    workspace_name: str,
+    cancel_generation: int | None = None,
+    attempt_id: str | None = None,
+) -> dict:
     """Fetch refresh metadata headlessly and import it into the DB."""
     from app.scanner.pbi_sync import import_pbi_data
 
-    payload = fetch_refresh_payload(workspace_name, cancel_generation)
+    payload = fetch_refresh_payload(workspace_name, cancel_generation, attempt_id)
     logger.info("Headless PBI refresh fetch found %s report entries", len(payload["reports"]))
     return import_pbi_data(payload, cancel_generation)
 

@@ -34,6 +34,7 @@ from app.scanner.tmdl_parser import (
 from app.scanner.walker import walk_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
+from app.scanner import jobs as scanner_jobs
 from app.asset_visibility import get_active_source_ids
 from app.query_history import (
     REPORT_M_KIND,
@@ -182,6 +183,7 @@ def run_scan(
     *,
     cancel_generation: int | None = None,
     run_followup_probe: bool = True,
+    operation_id: int | None = None,
 ) -> dict:
     """Run a full scan and store results.
 
@@ -190,7 +192,29 @@ def run_scan(
     generation = current_cancel_generation() if cancel_generation is None else cancel_generation
     assert_not_cancelled(generation, "Report scan")
 
-    _backup_db()
+    if operation_id is None:
+        operation_id = scanner_jobs.create_job(
+            "full_scan",
+            trigger_source="system",
+            current_step="Preparing full scan",
+            message="Creating a database backup before discovery.",
+        )
+    scanner_jobs.mark_running(
+        operation_id,
+        current_step="Preparing full scan",
+        message="Creating a database backup before discovery.",
+    )
+
+    try:
+        _backup_db()
+    except Exception as exc:
+        scanner_jobs.finish_job(
+            operation_id,
+            status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="The pre-scan database backup failed; review server logs.",
+        )
+        raise
 
     root = reports_path or TMDL_ROOT
     now = datetime.now(timezone.utc).isoformat()
@@ -201,6 +225,7 @@ def run_scan(
             (now,),
         )
         scan_id = cursor.lastrowid
+    scanner_jobs.attach_scan_run(operation_id, int(scan_id))
 
     active_report_count = 0
     active_source_count = 0
@@ -224,6 +249,11 @@ def run_scan(
 
     try:
         assert_not_cancelled(generation, "Report scan")
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Discovering Power BI reports",
+            message="Reading PBIX/TMDL report definitions and source expressions.",
+        )
         reports = walk_reports_root(root)
         assert_not_cancelled(generation, "Report scan")
         all_sources = deduplicate_sources(reports)
@@ -253,6 +283,13 @@ def run_scan(
                     f"NO LAYOUT (visuals not detected){diag_suffix}"
                 )
 
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Reconciling report catalog",
+            message=f"Writing {len(reports)} report(s) and {len(all_sources)} source identity record(s).",
+            progress_current=0,
+            progress_total=len(reports),
+        )
         with get_db() as db:
             assert_not_cancelled(generation, "Report scan")
             # Normalize PostgreSQL source names BEFORE upsert so matches work.
@@ -894,13 +931,24 @@ def run_scan(
             },
             required=True,
         )
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Refreshing PostgreSQL lineage",
+            message="Reading materialized-view dependencies for required databases.",
+            progress_current=None,
+            progress_total=None,
+        )
 
         # Scan PostgreSQL MV dependencies
         assert_not_cancelled(generation, "Report scan")
         try:
             from app.scanner.pg_deps import scan_pg_dependencies
 
-            dep_result = scan_pg_dependencies(scan_run_id=scan_id)
+            dep_result = scan_pg_dependencies(
+                scan_run_id=scan_id,
+                operation_id=operation_id,
+                cancel_generation=generation,
+            )
             dep_result = _mapping_result(dep_result)
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
@@ -918,6 +966,11 @@ def run_scan(
         components["postgres_dependencies"] = dep_component
 
         # Scan pg_cron for MV refresh schedules
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Reading PostgreSQL schedules",
+            message="Checking pg_cron materialized-view refresh schedules.",
+        )
         assert_not_cancelled(generation, "Report scan")
         try:
             from app.scanner.pg_cron import scan_pg_cron
@@ -941,6 +994,11 @@ def run_scan(
 
         # Import configured usage CSVs as part of the scan instead of waiting
         # for a user to open a report or action page.
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Syncing usage metadata",
+            message="Reading configured Power BI usage exports.",
+        )
         try:
             from app.usage import sync_usage_from_csv_if_configured
 
@@ -958,10 +1016,18 @@ def run_scan(
         # data-quality decisions use the current graph.
         probe_result = None
         if run_followup_probe:
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing source freshness",
+                message="Checking file and PostgreSQL source freshness.",
+            )
             try:
                 from app.scanner.prober import run_probe
 
-                probe_result = run_probe(cancel_generation=generation)
+                probe_result = run_probe(
+                    cancel_generation=generation,
+                    operation_id=operation_id,
+                )
                 probe_result = _mapping_result(probe_result)
                 logger.info("Freshness and data-quality checks completed after scan")
             except ScannerWorkCancelled:
@@ -976,6 +1042,11 @@ def run_scan(
 
         # Persist governance findings as owned actions with automatic closure
         # when the next scan proves the condition has cleared.
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Evaluating governance checks",
+            message="Checking best practices, schedules, and documentation coverage.",
+        )
         governance_results = {}
         try:
             from app.routers.best_practices import run_best_practice_scan
@@ -1033,6 +1104,11 @@ def run_scan(
             auxiliary_log.append(f"Governance {name}: {result.get('status', 'unknown')}")
         final_log = "\n".join([log_text, *auxiliary_log])
         overall_status = terminal_status_for_components(components)
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Finalizing full scan",
+            message="Saving the component summary and final counters.",
+        )
         with get_db() as db:
             stored_status = finish_scan_run(
                 db,
@@ -1064,6 +1140,15 @@ def run_scan(
             "log": final_log,
             "scanned_path": str(Path(root).resolve()),
         }
+        scanner_jobs.finish_job(
+            operation_id,
+            status=stored_status,
+            result=summary,
+            message=(
+                f"Scanned {active_report_count} report(s) and found "
+                f"{active_source_count} active source(s)."
+            ),
+        )
         logger.info("Scan completed: %s", summary)
         return summary
 
@@ -1091,6 +1176,12 @@ def run_scan(
                 components=components,
                 log=stopped_log,
             )
+        scanner_jobs.finish_job(
+            operation_id,
+            status="stopped",
+            result={"status": stored_status, "message": str(e), "components": components},
+            message=str(e),
+        )
         return {
             "scan_id": scan_id,
             "status": stored_status,
@@ -1129,6 +1220,16 @@ def run_scan(
                 components=components,
                 log=failure_log,
             )
+        scanner_jobs.finish_job(
+            operation_id,
+            status=stored_status,
+            result={
+                "status": stored_status,
+                "error": "Redacted; review server logs.",
+                "components": components,
+            },
+            message=failure_log,
+        )
         return {
             "scan_id": scan_id,
             "status": stored_status,

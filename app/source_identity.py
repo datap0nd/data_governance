@@ -1,4 +1,4 @@
-"""Exact PostgreSQL relation identities used by executable lineage.
+"""Deterministic source identities used by Flow lineage.
 
 The helpers in this module deliberately separate inspection from mutation.
 Request/preview code can resolve an effective target without changing the
@@ -8,6 +8,8 @@ resolved target in a controlled transaction.
 
 from __future__ import annotations
 
+import ntpath
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -21,6 +23,173 @@ def normalize_server(value: str | None) -> str:
     parsed = urlsplit(candidate)
     host = parsed.hostname or raw.split("/", 1)[0].split(":", 1)[0]
     return host.rstrip(".").casefold()
+
+
+def normalize_file_path(value: str | None) -> str:
+    """Return a comparison key for a Windows/UNC file path.
+
+    This deliberately does not resolve the path or touch the filesystem.  A
+    Flow runs on the BI desktop and the scanner may run under a different
+    account, so ``Path.resolve`` would make an otherwise identical configured
+    path machine-dependent.  Windows paths are case-insensitive and accept
+    both slash styles; those are the only normalizations performed here.
+    """
+    raw = (value or "").strip().strip('"')
+    if not raw:
+        return ""
+    raw = raw.replace("/", "\\")
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    return ntpath.normpath(raw).rstrip("\\").casefold()
+
+
+def static_flow_filename(value: str | None) -> str | None:
+    """Return a literal output basename, or ``None`` for dynamic templates."""
+    raw = (value or "").strip().strip('"')
+    if not raw or re.search(r"\{[^{}]+\}", raw):
+        return None
+    name = ntpath.basename(raw.replace("/", "\\"))
+    if not name or name in {".", ".."}:
+        return None
+    return name
+
+
+def file_flow_target(flow) -> dict:
+    """Describe the deterministic file output configured for a Flow."""
+    filename = static_flow_filename(_row_value(flow, "filename_template"))
+    folder = (_row_value(flow, "target_folder") or "").strip()
+    path = ntpath.join(folder, filename) if folder and filename else ""
+    return {
+        "kind": "file",
+        "folder": folder,
+        "filename": filename,
+        "path": path or None,
+        "normalized_path": normalize_file_path(path),
+    }
+
+
+def inspect_file_flow_target(
+    db,
+    flow,
+    report_source_ids,
+    *,
+    report_sources=None,
+) -> dict:
+    """Find conservative file-output evidence in one report closure.
+
+    An exact configured path wins.  Older scanner rows are keyed by basename
+    and often point through per-run folders, so a literal filename may be used
+    only when that basename identifies exactly one active file source in the
+    entire registry. Even an exact result is presentation evidence, not
+    permission to execute the Flow in a Pipeline: current workers publish to
+    per-run versioned folders. Partial, fuzzy, and dynamic-template matches
+    are rejected entirely.
+    """
+    target = file_flow_target(flow)
+    closure = {
+        int(source_id) for source_id in report_source_ids if source_id is not None
+    }
+    if not target["filename"]:
+        return _resolution(
+            status="unresolved",
+            reason_code="dynamic_file_target",
+            persisted_source_id=None,
+            effective_source_id=None,
+            matches=[],
+            persisted_valid=False,
+            target=target,
+            match_strategy=None,
+        )
+
+    # Basename uniqueness must be global, not merely unique inside one report,
+    # or two physical files could silently become one lineage candidate.
+    # Re-read the small registry even when report rows were supplied by the
+    # lineage endpoint.
+    rows = db.execute(
+        """SELECT id, name, type, connection_info
+           FROM sources
+           WHERE COALESCE(archived, 0)=0
+             AND lower(COALESCE(type, '')) IN ('csv','excel','file')
+           ORDER BY id"""
+    ).fetchall()
+    all_sources = [dict(row) for row in rows]
+
+    wanted_path = target["normalized_path"]
+    exact_path_ids = sorted({
+        int(source["id"])
+        for source in all_sources
+        if wanted_path
+        and normalize_file_path(source.get("connection_info")) == wanted_path
+    })
+    exact_in_report = [source_id for source_id in exact_path_ids if source_id in closure]
+    if len(exact_path_ids) == 1 and len(exact_in_report) == 1:
+        return _resolution(
+            status="confirmed",
+            reason_code=None,
+            persisted_source_id=None,
+            effective_source_id=exact_in_report[0],
+            matches=exact_path_ids,
+            persisted_valid=False,
+            target=target,
+            match_strategy="exact_path",
+        )
+    if exact_in_report:
+        return _resolution(
+            status="ambiguous",
+            reason_code="ambiguous_file_target",
+            persisted_source_id=None,
+            effective_source_id=None,
+            matches=exact_in_report,
+            persisted_valid=False,
+            target=target,
+            match_strategy="exact_path",
+        )
+
+    wanted_name = target["filename"].casefold()
+    basename_ids = sorted({
+        int(source["id"])
+        for source in all_sources
+        if ntpath.basename(
+            (source.get("connection_info") or source.get("name") or "")
+            .replace("/", "\\")
+            .rstrip("\\")
+        ).casefold() == wanted_name
+    })
+    basename_in_report = [source_id for source_id in basename_ids if source_id in closure]
+    if len(basename_ids) == 1 and len(basename_in_report) == 1:
+        return _resolution(
+            status="confirmed",
+            reason_code=None,
+            persisted_source_id=None,
+            effective_source_id=basename_in_report[0],
+            matches=basename_ids,
+            persisted_valid=False,
+            target=target,
+            match_strategy="unique_basename",
+        )
+    if basename_in_report:
+        return _resolution(
+            status="ambiguous",
+            reason_code="ambiguous_file_target",
+            persisted_source_id=None,
+            effective_source_id=None,
+            matches=basename_in_report,
+            persisted_valid=False,
+            target=target,
+            match_strategy="basename",
+        )
+    return _resolution(
+        status="unresolved",
+        reason_code="file_target_not_in_report",
+        persisted_source_id=None,
+        effective_source_id=None,
+        matches=[],
+        persisted_valid=False,
+        target=target,
+        match_strategy=None,
+    )
 
 
 def split_relation(value: str | None, default_schema: str | None = None) -> tuple[str, str] | None:
@@ -214,6 +383,7 @@ def _resolution(
     matches: list[int],
     persisted_valid: bool,
     target: dict,
+    match_strategy: str | None = None,
 ) -> dict:
     return {
         "status": status,
@@ -226,6 +396,7 @@ def _resolution(
         "matches": matches,
         "persisted_valid": persisted_valid,
         "target": target,
+        "match_strategy": match_strategy,
     }
 
 

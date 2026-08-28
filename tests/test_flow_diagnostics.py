@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import app.database as database
@@ -181,8 +182,8 @@ def test_flow_diagnostics_classify_exact_invalid_legacy_and_scope(tmp_path, monk
 
     by_name = {item["name"]: item for item in diagnostics["items"]}
     assert diagnostics["included_count"] == 1
-    assert diagnostics["excluded_count"] == 8
-    assert diagnostics["download_only_count"] == 1
+    assert diagnostics["excluded_count"] == 6
+    assert diagnostics["download_only_count"] == 0
 
     connected = by_name["Connected"]
     assert connected["effective_source_id"] == 11
@@ -201,10 +202,10 @@ def test_flow_diagnostics_classify_exact_invalid_legacy_and_scope(tmp_path, monk
     assert by_name["Ambiguous"]["severity"] == "blocker"
     assert by_name["Ambiguous"]["scope_status"] == "candidate_in_report"
     assert by_name["Ambiguous"]["candidate_source_ids"] == [12, 13]
-    assert by_name["Outside"]["reason_code"] == "outside_report_closure"
-    assert by_name["Outside"]["severity"] == "warning"
-    assert by_name["Unknown"]["reason_code"] == "target_not_discovered"
-    assert by_name["Unknown"]["scope_status"] == "no_report_evidence"
+    # Diagnostics are report-scoped: unrelated and wholly undiscovered global
+    # Flows do not appear as match/no-match noise for this report.
+    assert "Outside" not in by_name
+    assert "Unknown" not in by_name
 
     legacy = by_name["Legacy"]
     assert legacy["reason_code"] == "legacy_display_match"
@@ -299,3 +300,124 @@ def test_diagnostics_are_safe_for_empty_and_legacy_scan_databases(tmp_path, monk
         "scan_run_id": 1,
         "databases": {},
     }
+
+
+def test_focused_lineage_job_becomes_latest_diagnostic_evidence(tmp_path, monkeypatch):
+    path = str(tmp_path / "focused-lineage-diagnostics.db")
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(settings, "DB_PATH", path)
+    database.init_db()
+
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO scan_runs(started_at, finished_at, status, components_json)
+               VALUES ('2026-08-28T08:00:00+00:00', '2026-08-28T08:05:00+00:00',
+                       'failed', ?)""",
+            (serialize_components({
+                "postgres_dependencies": {
+                    "status": "failed",
+                    "databases": {"warehouse": {"status": "failed"}},
+                }
+            }),),
+        )
+        db.execute(
+            """INSERT INTO scanner_jobs
+                   (job_type, trigger_source, status, current_step, result_json,
+                    created_at, heartbeat_at, finished_at)
+               VALUES ('postgres_lineage', 'pipeline_recheck', 'completed',
+                       'Finished', ?, '2026-08-28T09:00:00+00:00',
+                       '2026-08-28T09:03:00+00:00', '2026-08-28T09:03:00+00:00')""",
+            (json.dumps({
+                "status": "completed",
+                "databases": {"warehouse": {"status": "completed"}},
+            }),),
+        )
+        diagnostics = build_flow_diagnostics(db, [], server="db")
+
+    assert diagnostics["postgres_dependencies"] == {
+        "status": "completed",
+        "scan_run_id": None,
+        "scanner_job_id": 1,
+        "databases": {"warehouse": {"status": "completed"}},
+    }
+
+
+def test_file_flow_uses_exact_path_then_unique_static_basename(tmp_path, monkeypatch):
+    server = _seed_diagnostic_matrix(tmp_path, monkeypatch)
+    with get_db() as db:
+        _insert_source(db, 30, "daily.xlsx", source_type="excel")
+        db.execute(
+            "UPDATE sources SET connection_info=? WHERE id=30",
+            (r"D:\\PowerBI\\#77_28-08-2026\\daily.xlsx",),
+        )
+        db.execute(
+            "INSERT INTO source_dependencies(source_id, depends_on_id) VALUES (10, 30)"
+        )
+        _insert_flow(
+            db,
+            120,
+            "Daily workbook",
+            None,
+            sql_handoff_enabled=0,
+        )
+        db.execute(
+            "UPDATE flows SET target_folder=?, filename_template=? WHERE id=120",
+            (r"C:\\Exports", "daily.xlsx"),
+        )
+
+        diagnostics = build_flow_diagnostics(
+            db,
+            [*range(10, 20), 30],
+            server=server,
+        )
+
+    daily = next(item for item in diagnostics["items"] if item["id"] == 120)
+    assert daily["target_kind"] == "file"
+    assert daily["effective_source_id"] == 30
+    assert daily["match_strategy"] == "unique_basename"
+    assert daily["link_status"] == "candidate"
+    assert daily["scope_status"] == "candidate_in_report"
+    assert daily["reason_code"] == "file_output_candidate"
+    assert daily["severity"] == "warning"
+    assert daily["executable"] is False
+
+
+def test_file_flow_does_not_authorize_ambiguous_or_dynamic_filename(tmp_path, monkeypatch):
+    server = _seed_diagnostic_matrix(tmp_path, monkeypatch)
+    with get_db() as db:
+        _insert_source(db, 30, "daily.xlsx", source_type="excel")
+        db.execute(
+            "UPDATE sources SET connection_info=? WHERE id=30",
+            (r"D:\\PowerBI\\daily.xlsx",),
+        )
+        _insert_source(db, 31, "daily duplicate", source_type="excel")
+        db.execute(
+            "UPDATE sources SET connection_info=? WHERE id=31",
+            (r"E:\\Other\\daily.xlsx",),
+        )
+        db.execute(
+            "INSERT INTO source_dependencies(source_id, depends_on_id) VALUES (10, 30)"
+        )
+        for flow_id, name, filename in (
+            (120, "Ambiguous workbook", "daily.xlsx"),
+            (121, "Dynamic workbook", "daily_{week}.xlsx"),
+            (122, "Unrelated workbook", "other.xlsx"),
+        ):
+            _insert_flow(db, flow_id, name, None, sql_handoff_enabled=0)
+            db.execute(
+                "UPDATE flows SET target_folder=?, filename_template=? WHERE id=?",
+                (r"C:\\Exports", filename, flow_id),
+            )
+
+        diagnostics = build_flow_diagnostics(
+            db,
+            [*range(10, 20), 30],
+            server=server,
+        )
+
+    by_name = {item["name"]: item for item in diagnostics["items"]}
+    assert by_name["Ambiguous workbook"]["reason_code"] == "ambiguous_file_target"
+    assert by_name["Ambiguous workbook"]["severity"] == "warning"
+    assert by_name["Ambiguous workbook"]["executable"] is False
+    assert "Dynamic workbook" not in by_name
+    assert "Unrelated workbook" not in by_name

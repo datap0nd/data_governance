@@ -1,17 +1,24 @@
 """Report-scoped Flow target diagnostics shared by lineage and pipelines.
 
-The exact identity resolver remains the only authority for execution.  This
-module adds report-scope and legacy display-name evidence for presentation,
-without mutating Flow links or granting fuzzy matches execution power.
+Structured PostgreSQL coordinates are the execution authority. Conservative
+file-output matches are visible lineage candidates only: Flow workers retain
+each run in a versioned subfolder, so a filename match does not prove that a
+new run updates the exact file consumed by Power BI.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping
 
 from app.scanner.lifecycle import normalize_scan_status, parse_components
-from app.source_identity import inspect_flow_target, normalize_server
+from app.source_identity import (
+    inspect_file_flow_target,
+    inspect_flow_target,
+    normalize_server,
+)
 
 
 def _row_value(row, key: str, default=None):
@@ -80,11 +87,50 @@ def _server_mismatch_ids(db, target: Mapping) -> list[int]:
 
 def _latest_postgres_dependencies(db) -> dict:
     row = db.execute(
-        """SELECT id, components_json
+        """SELECT id, finished_at, components_json
            FROM scan_runs
            ORDER BY id DESC
            LIMIT 1"""
     ).fetchone()
+    job = db.execute(
+        """SELECT id, status, result_json, finished_at
+             FROM scanner_jobs
+            WHERE job_type='postgres_lineage'
+              AND status IN ('completed','completed_with_warnings','failed','stopped')
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1"""
+    ).fetchone()
+
+    def timestamp(value) -> datetime:
+        if not value:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    # A focused Lineage Recheck does not create a synthetic full scan row.
+    # Prefer its durable result when it is newer, so Pipelines immediately
+    # reflects the operation the user just watched complete in Scanner.
+    if job is not None and (
+        row is None or timestamp(job["finished_at"]) >= timestamp(row["finished_at"])
+    ):
+        try:
+            result = json.loads(job["result_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result = {}
+        if not isinstance(result, Mapping):
+            result = {}
+        databases = result.get("databases")
+        return {
+            "status": normalize_scan_status(result.get("status") or job["status"]),
+            "scan_run_id": None,
+            "scanner_job_id": int(job["id"]),
+            "databases": dict(databases) if isinstance(databases, Mapping) else {},
+        }
     if row is None:
         return {"status": "not_scanned", "scan_run_id": None, "databases": {}}
     components = parse_components(row["components_json"]) or {}
@@ -112,6 +158,17 @@ def _diagnostic_message(reason_code: str | None, flow_name: str) -> str:
         "legacy_display_match": (
             "A source display name resembles this target, but it is not an exact identity match."
         ),
+        "ambiguous_file_target": (
+            "More than one file source has this output filename; no automatic link was made."
+        ),
+        "file_output_candidate": (
+            "The filename matches a report source, but Flow runs use versioned output folders. "
+            "This is a possible lineage link only and will not run automatically in the Pipeline."
+        ),
+        "dynamic_file_target": (
+            "This Flow uses a changing output filename, so it cannot be linked automatically."
+        ),
+        "file_target_not_in_report": "This output file is not used by this report.",
     }
     return messages.get(reason_code, f"Flow '{flow_name}' is not connected to this report.")
 
@@ -133,10 +190,10 @@ def build_flow_diagnostics(
 ) -> dict:
     """Build one pure, additive Flow diagnostic contract for a report.
 
-    Only an exact resolver result with ``status == 'confirmed'`` and an
-    effective source inside the report closure is executable.  Invalid stored
-    IDs and exact candidates in that closure are blockers.  Legacy display
-    matches are presentation warnings only.
+    Only a SQL resolver result with ``status == 'confirmed'`` and an effective
+    source inside the report closure is executable. File path/basename matches
+    remain presentation-only until Flows have a stable published-output
+    identity. Legacy display matches are presentation warnings only.
     """
     closure = {int(source_id) for source_id in report_source_ids if source_id is not None}
     if report_sources is None:
@@ -153,17 +210,12 @@ def build_flow_diagnostics(
     else:
         report_sources = list(report_sources)
 
-    download_only_count = int(
-        db.execute(
-            "SELECT COUNT(*) AS count FROM flows WHERE COALESCE(sql_handoff_enabled, 0)=0"
-        ).fetchone()["count"]
-    )
     flow_rows = db.execute(
-        """SELECT id, name, browser_mode, enabled, sql_handoff_enabled,
+        """SELECT id, name, browser_mode, enabled, target_folder,
+                  filename_template, sql_handoff_enabled,
                   sql_database, sql_schema, sql_table, sql_target_source_id,
                   updated_at, last_run_at, last_success_at, last_status, last_error
            FROM flows
-           WHERE COALESCE(sql_handoff_enabled, 0)=1
            ORDER BY name, id"""
     ).fetchall()
 
@@ -171,8 +223,19 @@ def build_flow_diagnostics(
     included_count = 0
     for row in flow_rows:
         flow = dict(row)
-        target = _target(flow, server)
-        inspection = inspect_flow_target(db, flow, server=server)
+        sql_target = bool(flow.get("sql_handoff_enabled"))
+        target_kind = "postgresql" if sql_target else "file"
+        if sql_target:
+            target = _target(flow, server)
+            inspection = inspect_flow_target(db, flow, server=server)
+        else:
+            inspection = inspect_file_flow_target(
+                db,
+                flow,
+                closure,
+                report_sources=report_sources,
+            )
+            target = inspection["target"]
         persisted_id = inspection.get("persisted_source_id")
         effective_id = inspection.get("effective_source_id")
         exact_ids = sorted({int(value) for value in inspection.get("matches", [])})
@@ -181,11 +244,21 @@ def build_flow_diagnostics(
             persisted_id is not None and int(persisted_id) in closure
         )
         status = inspection.get("status") or "unresolved"
-        included = status == "confirmed" and effective_id is not None and int(effective_id) in closure
+        confirmed_in_report = (
+            status == "confirmed"
+            and effective_id is not None
+            and int(effective_id) in closure
+        )
+        included = sql_target and confirmed_in_report
         executable = included
         candidate_ids = list(exact_ids)
 
-        if included:
+        if not sql_target and confirmed_in_report:
+            reason_code = "file_output_candidate"
+            severity = "warning"
+            scope_status = "candidate_in_report"
+            status = "candidate"
+        elif included:
             included_count += 1
             reason_code = None
             severity = "none"
@@ -194,6 +267,16 @@ def build_flow_diagnostics(
             reason_code = "outside_report_closure"
             severity = "warning"
             scope_status = "outside_report_closure"
+        elif not sql_target and status == "ambiguous":
+            reason_code = inspection.get("reason_code") or "ambiguous_file_target"
+            severity = "warning"
+            scope_status = (
+                "candidate_in_report" if exact_in_report else "outside_report_closure"
+            )
+        elif not sql_target:
+            reason_code = inspection.get("reason_code") or "file_target_not_in_report"
+            severity = "warning"
+            scope_status = "no_report_evidence"
         elif status in {"stale", "target_changed"}:
             reason_code = inspection.get("reason_code") or (
                 "stale_target_link" if status == "stale" else "target_changed"
@@ -243,10 +326,20 @@ def build_flow_diagnostics(
                     severity = "warning"
                     scope_status = "no_report_evidence"
 
+        # Pipeline diagnostics are report-scoped.  A global list of every Flow
+        # that does not feed this report is both noisy and misleading.  Keep
+        # connected Flows plus unresolved evidence that is actually inside the
+        # selected report's recursive source closure.
+        relevant = included or scope_status == "candidate_in_report"
+        if not relevant:
+            continue
+
         item = {
             "id": int(flow["id"]),
             "name": flow["name"],
             "target": target,
+            "target_kind": target_kind,
+            "match_strategy": inspection.get("match_strategy"),
             "persisted_source_id": int(persisted_id) if persisted_id is not None else None,
             "effective_source_id": int(effective_id) if effective_id is not None else None,
             "candidate_source_ids": candidate_ids,
@@ -263,7 +356,9 @@ def build_flow_diagnostics(
     return {
         "included_count": included_count,
         "excluded_count": len(items) - included_count,
-        "download_only_count": download_only_count,
+        # Retained for older clients. File-producing Flows are report-scoped
+        # candidates rather than globally counted exclusions.
+        "download_only_count": 0,
         "items": items,
         "postgres_dependencies": _latest_postgres_dependencies(db),
     }

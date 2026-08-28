@@ -79,15 +79,6 @@ const data = {
                 recommended_action: "edit_flow",
             },
             legacy,
-            {
-                id: 13,
-                name: "Outside closure",
-                target: { database: "warehouse", schema: "sales", table: "returns" },
-                severity: "warning",
-                reason_code: "outside_report_closure",
-                message: "The exact target is outside this report.",
-                recommended_action: "edit_flow",
-            },
         ],
         postgres_dependencies: {
             status: "completed_with_warnings",
@@ -102,15 +93,12 @@ const data = {
 
 const html = context.html(data);
 assert.match(html, /Flow lineage/);
-assert.match(html, /1 connected/);
-assert.match(html, /3 excluded/);
-assert.match(html, /2 download-only Flows excluded/);
-assert.match(html, /download-only Flows are intentionally excluded because they do not hand data to SQL/,
-    "Download-only Flows must be explained as an aggregate instead of listed individually");
+assert.match(html, /2 issues for this report/);
+assert.doesNotMatch(html, /connected|excluded|download-only/,
+    "Pipeline diagnostics must not present a global all-Flow match catalogue");
 assert.match(html, /Ambiguous orders/);
 assert.match(html, /Multiple exact source identities match this target/);
 assert.match(html, /Legacy suffix collision/);
-assert.match(html, /Outside closure/);
 assert.match(html, /PostgreSQL dependency scan: completed with warnings \(staging\)/);
 assert.match(html, /data-flow-diagnostic-edit="11"[^>]*>Edit Flow</);
 assert.match(html, />Dismiss</);
@@ -124,8 +112,8 @@ context.dismiss(77, legacy);
 const dismissedHtml = context.html(data);
 assert.doesNotMatch(dismissedHtml, /Legacy suffix collision/,
     "Dismissing a legacy warning must hide it for the current session");
-assert.match(dismissedHtml, /2 excluded/,
-    "A dismissed legacy warning must also leave the presentation-only count");
+assert.match(dismissedHtml, /1 issue for this report/,
+    "A dismissed legacy warning must leave only current report-specific issues");
 assert.match(dismissedHtml, /Ambiguous orders/,
     "Dismissing a legacy suggestion must not suppress an exact blocker");
 const changedTargetData = structuredClone(data);
@@ -181,7 +169,15 @@ assert.match(
 );
 assert.match(source, /const flowDiagnostics = _flowDiagnosticsHtml\(plan\)/,
     "The full-refresh preview must use the same Flow diagnostic summary");
-assert.match(source, /apiPost\("\/api\/scanner\/pg-deps"\)/,
-    "Recheck lineage must invoke the focused PostgreSQL dependency scan");
+assert.match(source, /apiPost\(`\/api\/scanner\/jobs\/postgres-lineage\$\{reportQuery\}`\)/,
+    "Recheck lineage must start the durable focused PostgreSQL lineage job");
+assert.match(source, /_waitForScannerJob\(start\.job_id/,
+    "Recheck lineage must wait for the durable job instead of holding one request open");
+assert.match(source, /flow\.executable === false/,
+    "Filename-only Flow candidates must be visibly distinguished from executable SQL lineage");
+assert.match(source, /Possible file link/,
+    "The candidate card must explain that its file edge is tentative");
+assert.match(source, /lin-edge-tentative/,
+    "Filename-only lineage edges must render as tentative rather than authoritative");
 
 console.log("flow diagnostics display tests passed");

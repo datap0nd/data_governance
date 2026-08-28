@@ -26,9 +26,7 @@ from app.routers import sources, reports, scanner, lineage, alerts, dashboard, a
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.source_identity import reconcile_all_flow_targets
 from app.scanner.lifecycle import (
-    is_successful_scan_status,
     recover_interrupted_scan_runs,
-    redact_component_payload,
 )
 from app.ai.router import router as ai_router
 
@@ -210,6 +208,8 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 
 
 _scheduler = BackgroundScheduler()
+_OVERALL_REFRESH_RETRY_JOB_ID = "daily_overall_refresh_retry"
+_OVERALL_REFRESH_RETRY_MINUTES = 5
 
 
 def _scheduled_backup():
@@ -222,29 +222,13 @@ def _scheduled_backup():
 
 
 def _scheduled_scan(cancel_generation: int | None = None, stop_existing: bool = True):
-    """Run a full report scan and source probe."""
-    from app.scanner.runner import run_scan
-    from app.scanner.control import ScannerWorkCancelled
-    from app.scanner.pbi_sync import stop_pbi_sync_processes
-    log = logging.getLogger("scheduler")
-    log.info("Running scheduled full scan")
-    stop_result = None
-    generation = cancel_generation
-    if stop_existing:
-        stop_result = stop_pbi_sync_processes("New scheduled scan started.")
-        generation = (stop_result.get("scanner") or {}).get("generation")
-    try:
-        result = run_scan(cancel_generation=generation, run_followup_probe=True)
-        log.info("Scan result: %s", result.get("status"))
-        return {**result, "stop": stop_result}
-    except ScannerWorkCancelled as e:
-        log.info("Scheduled scan stopped: %s", e)
-        return {"status": "stopped", "message": str(e), "stop": stop_result}
-    except Exception as e:
-        log.exception("Scheduled scan failed: %s", e)
-        return redact_component_payload(
-            {"status": "failed", "error": str(e), "stop": stop_result}
-        )
+    """Submit a report scan through the durable global scanner lane."""
+    from app.routers.scanner import start_scheduled_scan_job
+
+    return start_scheduled_scan_job(
+        cancel_generation=cancel_generation,
+        stop_existing=stop_existing,
+    )
 
 
 def _scheduled_pbi_sync(
@@ -290,46 +274,47 @@ def _scheduled_pending_pbi_sync_retry():
 
 
 def _scheduled_overall_refresh():
-    """Daily overall refresh: report scan, source probe, then Power BI sync."""
-    from app.scanner.control import ScannerWorkCancelled
-    from app.scanner.pbi_sync import stop_pbi_sync_processes
+    """Submit the daily overall refresh through the durable scanner lane."""
+    from app.routers.scanner import start_scheduled_full_scan_job
+
     log = logging.getLogger("scheduler")
     log.info("Running scheduled overall refresh")
-    stop_result = stop_pbi_sync_processes("New scheduled overall refresh started.")
-    generation = (stop_result.get("scanner") or {}).get("generation")
-    try:
-        pbi_result = _scheduled_pbi_sync(
-            cancel_generation=generation,
-            stop_existing=False,
-            wait=True,
+    result = start_scheduled_full_scan_job()
+    if not result.get("accepted"):
+        active = result.get("job") if isinstance(result.get("job"), dict) else {}
+        context = active.get("context") if isinstance(active.get("context"), dict) else {}
+        already_running_this_schedule = bool(
+            active.get("job_type") == "full_scan"
+            and active.get("trigger_source") == "scheduled"
+            and context.get("includes_usage_sync")
         )
-        if (pbi_result.get("status") or "").lower() not in {"completed", "skipped"}:
-            log.warning("Scheduled overall refresh stopped before scan because PBI sync result was %s", pbi_result.get("status"))
-            return {"status": "pbi_sync_not_completed", "pbi_sync": pbi_result, "stop": stop_result}
-        scan_result = _scheduled_scan(cancel_generation=generation, stop_existing=False)
-        usage_result = None
-        if is_successful_scan_status(scan_result.get("status")):
-            try:
-                from app.scanner.pbi_sync import trigger_pbi_usage_sync
-
-                usage_result = trigger_pbi_usage_sync(
-                    cancel_existing=False,
-                    cancel_generation=generation,
-                )
-            except Exception as exc:
-                usage_result = {"status": "failed", "error": str(exc)}
-                log.exception("Scheduled Power BI usage sync failed to start: %s", exc)
-        log.info("Scheduled overall refresh complete")
-        return {
-            "status": scan_result.get("status"),
-            "pbi_sync": pbi_result,
-            "scan": scan_result,
-            "pbi_usage_sync": usage_result,
-            "stop": stop_result,
-        }
-    except ScannerWorkCancelled as e:
-        log.info("Scheduled overall refresh stopped: %s", e)
-        return {"status": "stopped", "message": str(e), "stop": stop_result}
+        if not already_running_this_schedule:
+            retry_at = datetime.now(timezone.utc) + timedelta(
+                minutes=_OVERALL_REFRESH_RETRY_MINUTES
+            )
+            _scheduler.add_job(
+                _scheduled_overall_refresh,
+                "date",
+                run_date=retry_at,
+                id=_OVERALL_REFRESH_RETRY_JOB_ID,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            result = dict(result)
+            result["retry_scheduled_for"] = retry_at.isoformat(timespec="seconds")
+            log.info(
+                "Scanner lane busy; scheduled overall refresh will retry at %s",
+                result["retry_scheduled_for"],
+            )
+    else:
+        # A prior collision may have left a date retry pending. Once the full
+        # scheduled run is accepted, that extra retry would be duplicate work.
+        retry_job = _scheduler.get_job(_OVERALL_REFRESH_RETRY_JOB_ID)
+        if retry_job is not None:
+            _scheduler.remove_job(_OVERALL_REFRESH_RETRY_JOB_ID)
+    log.info("Scheduled overall refresh submission: %s", result.get("status"))
+    return result
 
 
 def _scheduled_email_dispatch():
@@ -354,6 +339,21 @@ def _scheduled_recurrence_dispatch():
             log.info("Power BI recurrence runs: %s", results)
     except Exception as e:
         log.exception("Power BI recurrence dispatch failed: %s", e)
+
+
+def _scheduled_alert_ai_enrichment():
+    """Attach advisory Qwen analysis to new canonical Alert revisions."""
+    from app.ai.operations_agent import enrich_active_alerts
+
+    log = logging.getLogger("scheduler")
+    try:
+        result = enrich_active_alerts()
+        if result["queued"]:
+            log.info("Queued automatic Alert analyses: %s", result["queued"])
+    except Exception as exc:
+        # AI is advisory. A provider outage must never interrupt detector,
+        # scanner, Flow, Pipeline, or email scheduler work.
+        log.exception("Automatic Alert analysis failed: %s", exc)
 
 
 def _configure_overall_refresh_job() -> dict:
@@ -397,6 +397,15 @@ def _configure_scheduler_jobs() -> dict:
         "interval",
         minutes=1,
         id="pending_pbi_sync_retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _scheduled_alert_ai_enrichment,
+        "interval",
+        seconds=30,
+        id="alert_ai_enrichment",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -471,10 +480,30 @@ def _recover_startup_scan_runs() -> int:
         return recover_interrupted_scan_runs(db)
 
 
+def _recover_startup_pbi_syncs() -> int:
+    """Reject callbacks from Power BI processes launched before this restart."""
+    from app.scanner.pbi_sync import recover_interrupted_pbi_syncs
+
+    return recover_interrupted_pbi_syncs()
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    from app.scanner.jobs import recover_interrupted_jobs
+
+    interrupted_jobs = recover_interrupted_jobs()
+    if interrupted_jobs:
+        logging.getLogger(__name__).warning(
+            "Recovered %d scanner job(s) interrupted by restart", interrupted_jobs
+        )
+    interrupted_pbi_syncs = _recover_startup_pbi_syncs()
+    if interrupted_pbi_syncs:
+        logging.getLogger(__name__).warning(
+            "Recovered %d Power BI sync attempt(s) interrupted by restart",
+            interrupted_pbi_syncs,
+        )
     interrupted_scans = _recover_startup_scan_runs()
     if interrupted_scans:
         logging.getLogger(__name__).warning(
@@ -504,6 +533,7 @@ async def lifespan(app):
         logging.getLogger(__name__).info(
             "Resubmitted %d queued AI investigation(s)", recovered_ai_runs
         )
+    _scheduled_alert_ai_enrichment()
     logging.getLogger(__name__).info(
         "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, email dispatch every minute",
         refresh_time["hour"],
@@ -513,6 +543,7 @@ async def lifespan(app):
     yield
 
     _scheduler.shutdown(wait=False)
+    scanner.shutdown_scanner_executor()
     from app.ai.operations_agent import shutdown_executor as shutdown_ai_executor
     shutdown_ai_executor()
     pipelines.shutdown_pipeline_executor()

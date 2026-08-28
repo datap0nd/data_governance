@@ -178,6 +178,36 @@ def test_inflow_outflow_plan_selects_both_flows_and_orders_mv(pipeline_db, monke
     assert plan["powerbi"]["dataset_id"] == "33333333-3333-3333-3333-333333333333"
 
 
+def test_ordinary_view_in_report_lineage_is_not_refreshed_as_mv(
+    pipeline_db, monkeypatch
+):
+    _seed_pipeline(pipeline_db, monkeypatch)
+    with get_db() as db:
+        db.execute(
+            "UPDATE source_postgres_identities SET relation_kind='view' WHERE source_id=10"
+        )
+
+    plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
+
+    assert plan["blockers"] == []
+    assert [flow["name"] for flow in plan["flows"]] == ["inflow", "outflow"]
+    assert plan["materialized_views"] == []
+
+
+def test_mv_order_collapses_paths_through_ordinary_views():
+    ordered, cycle = pipelines._topological_mvs(
+        {10, 30},
+        [
+            (10, 20),  # downstream MV -> ordinary view
+            (20, 30),  # ordinary view -> upstream MV
+            (30, 40),  # upstream MV -> base table
+        ],
+    )
+
+    assert cycle == []
+    assert ordered == [30, 10]
+
+
 def test_plan_uses_unique_effective_flow_target_without_mutating(pipeline_db, monkeypatch):
     _seed_pipeline(pipeline_db, monkeypatch)
     original_timestamp = "2001-02-03T04:05:06+00:00"
@@ -251,7 +281,7 @@ def test_plan_detects_duplicate_physical_target_across_distinct_source_ids(
     plan = pipelines.build_refresh_plan(1, "Requester", probe_mvs=False)
 
     assert any(
-        "Multiple selected Flows write one target" in blocker
+        "Multiple selected Flows write one output" in blocker
         for blocker in plan["blockers"]
     )
 
@@ -463,7 +493,118 @@ def test_flow_resource_check_honors_physical_target_lock(pipeline_db, monkeypatc
             pipelines.assert_resource_unlocked(db, "flow", "20")
         pipelines.assert_resource_unlocked(db, "flow", "21")
     assert exc.value.status_code == 409
-    assert "SQL target" in str(exc.value.detail)
+    assert "Flow output" in str(exc.value.detail)
+
+
+def test_file_flow_is_visible_candidate_but_not_auto_executed_without_sql_credentials(
+    pipeline_db, monkeypatch
+):
+    with get_db() as db:
+        db.execute("UPDATE app_settings SET value='1' WHERE key='pipeline_full_refresh_enabled'")
+        db.execute(
+            "INSERT INTO people(id, name, role, email) VALUES (1, 'Owner', 'owner', 'owner@example.test')"
+        )
+        db.execute("INSERT INTO reports(id, name, owner) VALUES (1, 'Workbook report', 'Owner')")
+        db.execute(
+            """INSERT INTO sources(id, name, type, connection_info, archived)
+               VALUES (30, 'daily.xlsx', 'excel', 'C:/Exports/daily.xlsx', 0)"""
+        )
+        db.execute(
+            "INSERT INTO report_tables(report_id, table_name, source_id) VALUES (1, 'Model', 30)"
+        )
+        db.execute(
+            "INSERT INTO flow_sites(id, name, adapter) VALUES (10, 'Portal', 'web_export')"
+        )
+        db.execute(
+            """INSERT INTO flow_reports(id, site_id, name, report_url)
+               VALUES (10, 10, 'Daily export', 'https://example.test/export')"""
+        )
+        db.execute(
+            """INSERT INTO flows
+                   (id, name, site_id, report_id, target_folder, filename_template,
+                    sql_handoff_enabled, browser_mode)
+               VALUES (30, 'Daily workbook Flow', 10, 10, 'c:\\exports',
+                       'DAILY.xlsx', 0, 'headless')"""
+        )
+
+    monkeypatch.setattr(
+        pipelines,
+        "configuration_status",
+        lambda: {
+            "configured": False,
+            "missing": ["DG_UPLOAD_PGUSER", "DG_UPLOAD_PGPASSWORD"],
+            "host": "",
+            "default_database": "",
+        },
+    )
+    monkeypatch.setattr(
+        pipelines,
+        "resolve_report_dataset",
+        lambda _workspace, name: {
+            "workspace": {"id": "workspace", "name": "Workspace"},
+            "report_id": "report",
+            "report_name": name,
+            "dataset_id": "dataset",
+            "web_url": "https://app.powerbi.test/report",
+        },
+    )
+    request = SimpleNamespace(state=SimpleNamespace(actor="Owner"))
+
+    preview = pipelines.refresh_plan(1, request)
+
+    assert preview["blockers"] == []
+    assert preview["flows"] == []
+    diagnostic = next(
+        item for item in preview["flow_diagnostics"]["items"] if item["id"] == 30
+    )
+    assert diagnostic["target_kind"] == "file"
+    assert diagnostic["match_strategy"] == "exact_path"
+    assert diagnostic["effective_source_id"] == 30
+    assert diagnostic["scope_status"] == "candidate_in_report"
+    assert diagnostic["reason_code"] == "file_output_candidate"
+    assert diagnostic["executable"] is False
+    assert pipelines.flow_target_resource_key_from_job({
+        "downloads": {
+            "target_folder": r"C:\Exports",
+            "filename_template": "daily.xlsx",
+        },
+        "sql_handoff": {"enabled": False},
+    }) == r"file|c:\exports\daily.xlsx"
+    with get_db() as db, pytest.raises(HTTPException) as legacy_exc:
+        pipelines._confirm_flow_targets_for_run(db, {
+            "source_ids": [30],
+            "flows": [{
+                "id": 30,
+                "name": "Daily workbook Flow",
+                "target_kind": "file",
+                "target_source_id": 30,
+                "target_resource_key": r"file|c:\exports\daily.xlsx",
+            }],
+        })
+    assert legacy_exc.value.status_code == 409
+    assert "cannot be run automatically" in str(legacy_exc.value.detail)
+
+    run = pipelines.create_pipeline_run(
+        1,
+        pipelines.RunCreate(plan_token=preview["plan_token"]),
+        request,
+    )
+
+    assert run["status"] == "queued"
+    assert not any(step["step_type"] == "flow" for step in run["steps"])
+    with get_db() as db:
+        locks = {
+            (row["resource_type"], row["resource_key"])
+            for row in db.execute(
+                "SELECT resource_type, resource_key FROM pipeline_resource_locks WHERE run_id=?",
+                (run["id"],),
+            ).fetchall()
+        }
+        saved_link = db.execute(
+            "SELECT sql_target_source_id FROM flows WHERE id=30"
+        ).fetchone()[0]
+    assert ("flow_target", r"file|c:\exports\daily.xlsx") not in locks
+    assert saved_link is None
 
 
 def test_recipient_falls_back_only_to_unique_valid_requester(pipeline_db):

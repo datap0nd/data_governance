@@ -22,8 +22,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from app.config import PGHOST, PGUSER, PGPASSWORD, PGDATABASE
+from app.config import (
+    PGHOST,
+    PGUSER,
+    PGPASSWORD,
+    PGDATABASE,
+    PG_SCAN_STATEMENT_TIMEOUT_SECONDS,
+)
 from app.database import get_db
+from app.scanner import jobs as scanner_jobs
 from app.scanner.control import assert_not_cancelled, current_cancel_generation
 from app.scanner.tmdl_parser import LOCAL_USER_PATH
 
@@ -387,6 +394,10 @@ def _get_pg_connection(database: str | None = None):
             password=PGPASSWORD,
             database=(database or PGDATABASE),
             connect_timeout=10,
+            options=(
+                f"-c statement_timeout={int(PG_SCAN_STATEMENT_TIMEOUT_SECONDS) * 1000} "
+                "-c lock_timeout=30000"
+            ),
         )
         # Force read-only at the session level as an extra safeguard
         conn.set_session(readonly=True, autocommit=True)
@@ -422,7 +433,15 @@ def _parse_pg_table_ref(connection_info: str, source_name: str):
     return None
 
 
-def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
+def _probe_pg_sources(
+    db,
+    pg_sources,
+    now,
+    log_lines,
+    *,
+    cancel_generation: int | None = None,
+    operation_id: int | None = None,
+) -> dict:
     """Probe PostgreSQL sources using track_commit_timestamp.
 
     Queries MAX(pg_xact_commit_timestamp(xmin)) per table to get the
@@ -441,7 +460,16 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
     commit_timestamps_available = True
 
     if pg_conn is None:
-        for src in pg_sources:
+        for index, src in enumerate(pg_sources, start=1):
+            assert_not_cancelled(cancel_generation, "Source probe")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing PostgreSQL sources",
+                message=f"PostgreSQL credentials unavailable for {src['name']}.",
+                progress_current=index,
+                progress_total=len(pg_sources),
+                db=db,
+            )
             db.execute(
                 "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
                 (src["id"], now, "PostgreSQL credentials not configured"),
@@ -449,6 +477,7 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
             statuses["unknown"] += 1
             short = src["name"].replace("\\", "/").split("/")[-1]
             log_lines.append(f"PG: {short} - unknown (no credentials)")
+            db.commit()
         return statuses
 
     from psycopg2 import sql
@@ -456,7 +485,18 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
     try:
         pg_cur = pg_conn.cursor()
 
-        for src in pg_sources:
+        for index, src in enumerate(pg_sources, start=1):
+            assert_not_cancelled(cancel_generation, "Source probe")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing PostgreSQL sources",
+                message=f"Checking {src['name']} (read-only).",
+                progress_current=index - 1,
+                progress_total=len(pg_sources),
+                db=db,
+            )
+            # Publish the phase before the bounded PostgreSQL statement begins.
+            db.commit()
             rule = _rule_for_source(src)
             parsed = _parse_pg_table_ref(src["connection_info"], src["name"])
 
@@ -563,8 +603,24 @@ def _probe_pg_sources(db, pg_sources, now, log_lines) -> dict:
                 statuses["unknown"] += 1
                 log_lines.append(f"PG: {short} - unknown (error: {e})")
 
+            assert_not_cancelled(cancel_generation, "Source probe")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing PostgreSQL sources",
+                message=f"Finished {short}.",
+                progress_current=index,
+                progress_total=len(pg_sources),
+                db=db,
+            )
+            db.commit()
+
     finally:
         pg_conn.close()
+
+    # Publish a final source result even when its branch used an early continue,
+    # but never after Stop was requested during the last PostgreSQL query.
+    assert_not_cancelled(cancel_generation, "Source probe")
+    db.commit()
 
     return statuses
 
@@ -1069,7 +1125,10 @@ def _check_dependency_freshness(db, now: str, log_lines: list):
     return {**lifecycle, "alerts_resolved": alerts_resolved}
 
 
-def run_probe(cancel_generation: int | None = None) -> dict:
+def run_probe(
+    cancel_generation: int | None = None,
+    operation_id: int | None = None,
+) -> dict:
     """Probe all sources for freshness.
 
     1. File-based sources (Excel): check file modification time
@@ -1081,6 +1140,11 @@ def run_probe(cancel_generation: int | None = None) -> dict:
     """
     generation = current_cancel_generation() if cancel_generation is None else cancel_generation
     assert_not_cancelled(generation, "Source probe")
+    scanner_jobs.heartbeat(
+        operation_id,
+        current_step="Discovering sources to probe",
+        message="Loading active file and PostgreSQL sources.",
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     probed = 0
@@ -1099,17 +1163,40 @@ def run_probe(cancel_generation: int | None = None) -> dict:
                  AND COALESCE(archived, 0) = 0"""
         ).fetchall()
 
-        for src in file_sources:
+        for index, src in enumerate(file_sources, start=1):
             assert_not_cancelled(generation, "Source probe")
             file_path = src["connection_info"] or src["name"]
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing file sources",
+                message=f"Checking {src['name']}.",
+                progress_current=index - 1,
+                progress_total=len(file_sources),
+                db=db,
+            )
+            # Network file metadata calls can be slow; expose the exact file
+            # before entering the call instead of holding an invisible phase.
+            db.commit()
             rule = _rule_for_source(src)
             status = _probe_file_source(db, src["id"], file_path, now, rule)
+            # Stop may be requested while a network share is answering. Do not
+            # publish that result after the slow metadata call returns.
+            assert_not_cancelled(generation, "Source probe")
             statuses[status] = statuses.get(status, 0) + 1
             _create_action_and_alert(db, src["id"], status, now, rule.get("description"))
             file_probed += 1
             probed += 1
             short = file_path.replace("\\", "/").split("/")[-1]
             log_lines.append(f"FILE: {short} - {status}")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Probing file sources",
+                message=f"Finished {short}.",
+                progress_current=index,
+                progress_total=len(file_sources),
+                db=db,
+            )
+            db.commit()
 
         # 2. Probe PostgreSQL sources (READ-ONLY)
         pg_sources = db.execute(
@@ -1121,7 +1208,14 @@ def run_probe(cancel_generation: int | None = None) -> dict:
 
         if pg_sources:
             assert_not_cancelled(generation, "Source probe")
-            pg_statuses = _probe_pg_sources(db, pg_sources, now, log_lines)
+            pg_statuses = _probe_pg_sources(
+                db,
+                pg_sources,
+                now,
+                log_lines,
+                cancel_generation=generation,
+                operation_id=operation_id,
+            )
             for k, v in pg_statuses.items():
                 statuses[k] = statuses.get(k, 0) + v
             pg_probed = len(pg_sources)
@@ -1140,8 +1234,16 @@ def run_probe(cancel_generation: int | None = None) -> dict:
             (now,),
         ).fetchall()
 
-        for src in unprobed_db:
+        for index, src in enumerate(unprobed_db, start=1):
             assert_not_cancelled(generation, "Source probe")
+            scanner_jobs.heartbeat(
+                operation_id,
+                current_step="Recording unsupported sources",
+                message=f"Recording {src['name']} as not directly probed.",
+                progress_current=index - 1,
+                progress_total=len(unprobed_db),
+                db=db,
+            )
             db.execute(
                 "INSERT INTO source_probes (source_id, probed_at, status, message) VALUES (?, ?, 'unknown', ?)",
                 (src["id"], now, f"No direct connection ({src['type']})"),
@@ -1150,9 +1252,19 @@ def run_probe(cancel_generation: int | None = None) -> dict:
             probed += 1
             short = src["name"].replace("\\", "/").split("/")[-1]
             log_lines.append(f"SKIP: {short} - unknown ({src['type']}, no connection)")
+            db.commit()
 
         # 4. Dependency freshness check: flag MVs whose upstream data is newer
         assert_not_cancelled(generation, "Source probe")
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Evaluating freshness dependencies",
+            message="Comparing upstream source and materialized-view timestamps.",
+            progress_current=None,
+            progress_total=None,
+            db=db,
+        )
+        db.commit()
         _check_dependency_freshness(db, now, log_lines)
 
         # 4b. Schedule mismatch: report refreshed before its sources
@@ -1205,6 +1317,11 @@ def run_probe(cancel_generation: int | None = None) -> dict:
     # The quality engine uses the same read-only PostgreSQL credentials and
     # stores its own result history without changing any governed source.
     try:
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Running data-quality checks",
+            message="Evaluating configured read-only quality rules.",
+        )
         from app.checks.data_quality import run_quality_checks
 
         quality_result = run_quality_checks()
@@ -1242,5 +1359,10 @@ def run_probe(cancel_generation: int | None = None) -> dict:
         "status": probe_status,
         "log": final_log,
     }
+    scanner_jobs.heartbeat(
+        operation_id,
+        current_step="Finalizing source probe",
+        message="Source freshness and quality checks finished.",
+    )
     logger.info("Probe completed: %s", summary)
     return summary

@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -35,10 +36,14 @@ from app.config import (
 )
 from app.database import get_db
 from app.scanner.findings import sync_managed_actions
+from app.scanner import jobs as scanner_jobs
 from app.scanner.control import (
     ScannerWorkCancelled,
     assert_not_cancelled,
+    clear_pbi_callback_fence,
     current_cancel_generation,
+    pbi_callbacks_fenced,
+    pbi_stop_barrier,
     request_stop_existing_work,
 )
 
@@ -85,6 +90,158 @@ def pbi_auth_mode() -> str:
     return "interactive"
 
 
+def _ensure_pbi_sync_runs_schema(db) -> None:
+    """Keep callback correlation available in upgraded and test databases."""
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            sync_type   TEXT NOT NULL,
+            attempt_id  TEXT,
+            status      TEXT NOT NULL,
+            started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            finished_at DATETIME,
+            message     TEXT,
+            details     TEXT
+        )"""
+    )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(pbi_sync_runs)").fetchall()}
+    if "attempt_id" not in columns:
+        db.execute("ALTER TABLE pbi_sync_runs ADD COLUMN attempt_id TEXT")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status "
+        "ON pbi_sync_runs(sync_type, status, finished_at)"
+    )
+    db.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_pbi_sync_runs_attempt
+           ON pbi_sync_runs(sync_type, attempt_id)
+           WHERE attempt_id IS NOT NULL"""
+    )
+
+
+def _normalize_attempt_id(value: object) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _correlated_attempts_exist(db, sync_type: str = "refresh") -> bool:
+    _ensure_pbi_sync_runs_schema(db)
+    return db.execute(
+        """SELECT 1 FROM pbi_sync_runs
+            WHERE sync_type=? AND attempt_id IS NOT NULL
+            LIMIT 1""",
+        (sync_type,),
+    ).fetchone() is not None
+
+
+def _stopped_legacy_attempt_exists(db, sync_type: str = "refresh") -> bool:
+    """A stopped pre-correlation launch makes a late no-ID callback unsafe."""
+    _ensure_pbi_sync_runs_schema(db)
+    return db.execute(
+        """SELECT 1 FROM pbi_sync_runs
+            WHERE sync_type=? AND attempt_id IS NULL
+              AND LOWER(COALESCE(status, ''))='stopped'
+            LIMIT 1""",
+        (sync_type,),
+    ).fetchone() is not None
+
+
+def _active_attempt_row(db, sync_type: str, attempt_id: str) -> tuple[dict | None, str | None]:
+    """Return the still-authoritative launch row, or a stable rejection reason."""
+    _ensure_pbi_sync_runs_schema(db)
+    row = db.execute(
+        """SELECT * FROM pbi_sync_runs
+            WHERE sync_type=? AND attempt_id=?
+            LIMIT 1""",
+        (sync_type, attempt_id),
+    ).fetchone()
+    if row is None:
+        return None, "uncorrelated_attempt"
+
+    launch = dict(row)
+    launch_status = str(launch.get("status") or "").lower()
+    if launch_status == "stopped":
+        return launch, "stopped_attempt"
+    if launch_status != "launched":
+        return launch, "duplicate_or_terminal_attempt"
+
+    newer = db.execute(
+        """SELECT 1 FROM pbi_sync_runs
+            WHERE sync_type=? AND attempt_id IS NOT NULL AND id>?
+            LIMIT 1""",
+        (sync_type, int(launch["id"])),
+    ).fetchone()
+    if newer is not None:
+        return launch, "superseded_attempt"
+    return launch, None
+
+
+def _insert_sync_run_row(
+    db,
+    sync_type: str,
+    status: str,
+    message: str | None,
+    details: dict | None,
+    *,
+    attempt_id: str | None,
+    started_at: str,
+    finished_at: str | None,
+) -> int:
+    details_json = json.dumps(details or {}, default=str) if details else None
+    cursor = db.execute(
+        """INSERT INTO pbi_sync_runs
+               (sync_type, attempt_id, status, started_at, finished_at, message, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            sync_type,
+            attempt_id,
+            status,
+            started_at,
+            finished_at,
+            message,
+            details_json,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _finish_correlated_attempt(
+    db,
+    sync_type: str,
+    attempt_id: str,
+    status: str,
+    message: str | None,
+    details: dict | None,
+    *,
+    finished_at: str | None = None,
+) -> tuple[int | None, str | None]:
+    launch, rejection = _active_attempt_row(db, sync_type, attempt_id)
+    if rejection:
+        return None, rejection
+    now = finished_at or _now_iso()
+    safe_details = dict(details or {})
+    safe_details.setdefault("attempt_id", attempt_id)
+    cursor = db.execute(
+        """UPDATE pbi_sync_runs
+              SET status=?, finished_at=?, message=?, details=?
+            WHERE id=? AND status='launched' AND attempt_id=?""",
+        (
+            status,
+            now if status in PBI_SYNC_TERMINAL_STATUSES else None,
+            message,
+            json.dumps(safe_details, default=str),
+            int(launch["id"]),
+            attempt_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        return None, "duplicate_or_terminal_attempt"
+    return int(launch["id"]), None
+
+
 def _record_sync_run(
     sync_type: str,
     status: str,
@@ -92,34 +249,70 @@ def _record_sync_run(
     details: dict | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
+    attempt_id: str | None = None,
 ) -> int | None:
     """Persist sync status so scheduled emails can require fresh PBI data."""
     now = _now_iso()
     started = started_at or now
     finished = finished_at if finished_at is not None else (now if status in {"completed", "failed", "skipped", "stopped"} else None)
-    details_json = json.dumps(details or {}, default=str) if details else None
+    raw_attempt_id = attempt_id
+    if raw_attempt_id is None and isinstance(details, dict):
+        raw_attempt_id = details.get("attempt_id")
+    normalized_attempt_id = _normalize_attempt_id(raw_attempt_id)
+    if raw_attempt_id and normalized_attempt_id is None:
+        logger.warning("Ignored Power BI %s status with invalid attempt ID", sync_type)
+        return None
+    safe_details = dict(details or {})
+    if normalized_attempt_id:
+        safe_details.setdefault("attempt_id", normalized_attempt_id)
     try:
-        with get_db() as db:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sync_type   TEXT NOT NULL,
-                    status      TEXT NOT NULL,
-                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    finished_at DATETIME,
-                    message     TEXT,
-                    details     TEXT
-                )"""
-            )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_pbi_sync_runs_type_status ON pbi_sync_runs(sync_type, status, finished_at)"
-            )
-            cursor = db.execute(
-                """INSERT INTO pbi_sync_runs (sync_type, status, started_at, finished_at, message, details)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (sync_type, status, started, finished, message, details_json),
-            )
-            return cursor.lastrowid
+        with pbi_stop_barrier():
+            if sync_type == "refresh" and status != "launched" and pbi_callbacks_fenced():
+                logger.warning(
+                    "Ignored Power BI refresh callback while the stop fence is active"
+                )
+                return None
+            run_id = None
+            with get_db() as db:
+                _ensure_pbi_sync_runs_schema(db)
+                if normalized_attempt_id and status != "launched":
+                    run_id, rejection = _finish_correlated_attempt(
+                        db,
+                        sync_type,
+                        normalized_attempt_id,
+                        status,
+                        message,
+                        safe_details,
+                        finished_at=finished,
+                    )
+                    if rejection:
+                        logger.warning(
+                            "Ignored Power BI %s callback for attempt %s: %s",
+                            sync_type,
+                            normalized_attempt_id,
+                            rejection,
+                        )
+                else:
+                    run_id = _insert_sync_run_row(
+                        db,
+                        sync_type,
+                        status,
+                        message,
+                        safe_details,
+                        attempt_id=normalized_attempt_id,
+                        started_at=started,
+                        finished_at=finished,
+                    )
+            # Commit happens when get_db exits. Only that durable newer launch
+            # can safely lift a fallback fence: every older attempt is now
+            # rejected by the supersession check.
+            if (
+                sync_type == "refresh"
+                and status == "launched"
+                and normalized_attempt_id
+            ):
+                clear_pbi_callback_fence()
+            return run_id
     except Exception:
         logger.exception("Could not record PBI sync run")
         return None
@@ -227,17 +420,7 @@ def latest_pbi_sync(sync_type: str = "refresh") -> dict | None:
     """Return the newest sync run for a sync type."""
     try:
         with get_db() as db:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sync_type   TEXT NOT NULL,
-                    status      TEXT NOT NULL,
-                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    finished_at DATETIME,
-                    message     TEXT,
-                    details     TEXT
-                )"""
-            )
+            _ensure_pbi_sync_runs_schema(db)
             row = db.execute(
                 """SELECT * FROM pbi_sync_runs
                    WHERE sync_type = ?
@@ -255,17 +438,7 @@ def latest_pbi_sync_after(sync_type: str = "refresh", after_id: int | None = Non
     """Return the newest sync run after a launch row."""
     try:
         with get_db() as db:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sync_type   TEXT NOT NULL,
-                    status      TEXT NOT NULL,
-                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    finished_at DATETIME,
-                    message     TEXT,
-                    details     TEXT
-                )"""
-            )
+            _ensure_pbi_sync_runs_schema(db)
             if after_id:
                 row = db.execute(
                     """SELECT * FROM pbi_sync_runs
@@ -288,21 +461,31 @@ def latest_pbi_sync_after(sync_type: str = "refresh", after_id: int | None = Non
         return None
 
 
+def pbi_sync_attempt(sync_type: str, attempt_id: str) -> dict | None:
+    """Return exactly one UUID-correlated sync attempt."""
+    normalized = _normalize_attempt_id(attempt_id)
+    if not normalized:
+        return None
+    try:
+        with get_db() as db:
+            _ensure_pbi_sync_runs_schema(db)
+            row = db.execute(
+                """SELECT * FROM pbi_sync_runs
+                    WHERE sync_type=? AND attempt_id=?
+                    LIMIT 1""",
+                (sync_type, normalized),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        logger.exception("Could not read Power BI sync attempt %s", normalized)
+        return None
+
+
 def latest_successful_pbi_sync(sync_type: str = "refresh") -> dict | None:
     """Return the newest completed sync run for a sync type."""
     try:
         with get_db() as db:
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS pbi_sync_runs (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sync_type   TEXT NOT NULL,
-                    status      TEXT NOT NULL,
-                    started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    finished_at DATETIME,
-                    message     TEXT,
-                    details     TEXT
-                )"""
-            )
+            _ensure_pbi_sync_runs_schema(db)
             row = db.execute(
                 """SELECT * FROM pbi_sync_runs
                    WHERE sync_type = ? AND status = 'completed'
@@ -351,10 +534,53 @@ def pbi_sync_freshness(max_age_hours: float = 24.0, sync_type: str = "refresh") 
     }
 
 
-def _launch_powershell_background(script: Path, args: list[str], sync_type: str) -> dict:
+def recover_interrupted_pbi_syncs() -> int:
+    """Retire correlated launches abandoned by a prior app process."""
+    now = _now_iso()
+    message = "STOPPED: Metronome restarted before this Power BI sync completed."
+    with pbi_stop_barrier():
+        with get_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            _ensure_pbi_sync_runs_schema(db)
+            cursor = db.execute(
+                """UPDATE pbi_sync_runs
+                      SET status='stopped', finished_at=COALESCE(finished_at, ?),
+                          message=CASE
+                              WHEN message IS NULL OR TRIM(message)='' THEN ?
+                              ELSE message || char(10) || ?
+                          END
+                    WHERE sync_type='refresh'
+                      AND LOWER(COALESCE(status, '')) IN ('launched', 'pending')""",
+                (now, message, message),
+            )
+            recovered = cursor.rowcount if cursor.rowcount != -1 else 0
+        clear_pbi_callback_fence()
+        return recovered
+
+
+def _launch_powershell_background(
+    script: Path,
+    args: list[str],
+    sync_type: str,
+    *,
+    attempt_id: str | None = None,
+    cancel_generation: int | None = None,
+) -> dict:
     command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args]
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if sync_type == "refresh":
+        clear_pending_pbi_sync()
+    run_id = _record_sync_run(
+        sync_type,
+        "launched",
+        "Power BI sync launched with service principal authentication.",
+        {"auth_mode": "service_principal"},
+        attempt_id=attempt_id,
+    )
+    if run_id is None:
+        return {"status": "error", "message": "Could not persist the Power BI sync launch."}
     try:
+        assert_not_cancelled(cancel_generation, "Power BI sync launch")
         subprocess.Popen(
             command,
             cwd=str(BASE_DIR),
@@ -363,16 +589,19 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
             creationflags=creationflags,
         )
     except Exception as exc:
-        _record_sync_run(sync_type, "failed", str(exc))
-        return {"status": "error", "message": str(exc)}
-    if sync_type == "refresh":
-        clear_pending_pbi_sync()
-    run_id = _record_sync_run(sync_type, "launched", "Power BI sync launched with service principal authentication.")
+        _record_sync_run(sync_type, "failed", str(exc), attempt_id=attempt_id)
+        return {
+            "status": "error",
+            "message": str(exc),
+            "attempt_id": attempt_id,
+            "run_id": run_id,
+        }
     return {
         "status": "launched",
         "message": "Power BI sync launched in unattended service-principal mode.",
         "auth_mode": "service_principal",
         "run_id": run_id,
+        "attempt_id": attempt_id,
     }
 
 
@@ -437,7 +666,13 @@ def _resolve_reconnect_alerts(db, now: str) -> int:
     return result.rowcount or 0
 
 
-def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_generation: int | None) -> dict:
+def _launch_cached_account_sync(
+    sync_type: str,
+    workspace: str | None,
+    cancel_generation: int | None,
+    *,
+    attempt_id: str | None = None,
+) -> dict:
     """Run the sync headlessly in a background thread with the saved account."""
     generation = current_cancel_generation() if cancel_generation is None else cancel_generation
     if sync_type == "refresh":
@@ -446,19 +681,27 @@ def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_ge
         sync_type,
         "launched",
         "Power BI sync running headless with the saved Microsoft account.",
+        {"auth_mode": "cached_account"},
+        attempt_id=attempt_id,
     )
+    if run_id is None:
+        return {"status": "error", "message": "Could not persist the Power BI sync launch."}
 
     def _worker():
         try:
             from app.scanner import pbi_fetch
             if sync_type == "refresh":
-                pbi_fetch.run_refresh_sync(workspace, cancel_generation=generation)
+                pbi_fetch.run_refresh_sync(
+                    workspace,
+                    cancel_generation=generation,
+                    attempt_id=attempt_id,
+                )
             else:
                 from app.config import PBI_USAGE_DAYS_BACK
                 result = pbi_fetch.run_usage_sync(PBI_USAGE_DAYS_BACK, cancel_generation=generation)
                 logger.info("Headless PBI usage sync result: %s", result.get("status"))
         except ScannerWorkCancelled as exc:
-            _record_sync_run(sync_type, "stopped", str(exc))
+            _record_sync_run(sync_type, "stopped", str(exc), attempt_id=attempt_id)
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
             if getattr(exc, "reconnect_required", False):
@@ -467,16 +710,41 @@ def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_ge
                     "Reconnect from the Scanner page (Connect Power BI)."
                 )
             logger.exception("Headless Power BI %s sync failed", sync_type)
-            failure_run_id = _record_sync_run(sync_type, "failed", message)
+            failure_run_id = _record_sync_run(
+                sync_type, "failed", message, attempt_id=attempt_id
+            )
             if getattr(exc, "reconnect_required", False):
                 _create_reconnect_alert(message, failure_run_id)
 
-    threading.Thread(target=_worker, name=f"pbi-{sync_type}-headless-sync", daemon=True).start()
+    try:
+        worker_thread = threading.Thread(
+            target=_worker,
+            name=f"pbi-{sync_type}-headless-sync",
+            daemon=True,
+        )
+        worker_thread.start()
+    except Exception as exc:
+        message = f"Could not start the Power BI background worker: {exc}"
+        _record_sync_run(
+            sync_type,
+            "failed",
+            message,
+            {"auth_mode": "cached_account", "stage": "thread_start"},
+            attempt_id=attempt_id,
+        )
+        return {
+            "status": "error",
+            "message": message,
+            "auth_mode": "cached_account",
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+        }
     return {
         "status": "launched",
         "message": "Power BI sync running headless with the saved Microsoft account (no window needed).",
         "auth_mode": "cached_account",
         "run_id": run_id,
+        "attempt_id": attempt_id,
     }
 
 
@@ -604,15 +872,22 @@ foreach ($processInfo in $processes) {
     return parsed
 
 
-def stop_pbi_sync_processes(reason: str = "Stop requested by user.") -> dict:
+def stop_pbi_sync_processes(
+    reason: str = "Stop requested by user.",
+    *,
+    exclude_scanner_job_id: int | None = None,
+) -> dict:
     """Stop running scanner refresh work and Power BI helper processes."""
-    scanner_stop = request_stop_existing_work(reason)
+    scanner_stop = request_stop_existing_work(
+        reason, exclude_scanner_job_id=exclude_scanner_job_id
+    )
     pending = get_pending_pbi_sync()
     clear_pending_pbi_sync()
 
     if platform.system() != "Windows":
         stopped_count = (
-            scanner_stop.get("scan_runs_stopped", 0)
+            scanner_stop.get("scanner_jobs_stopped", 0)
+            + scanner_stop.get("scan_runs_stopped", 0)
             + scanner_stop.get("probe_runs_stopped", 0)
             + scanner_stop.get("pbi_runs_stopped", 0)
             + (1 if pending else 0)
@@ -677,7 +952,8 @@ def stop_pbi_sync_processes(reason: str = "Stop requested by user.") -> dict:
     stopped_task_actions = sum(1 for result in task_results if result.get("action") == "end" and result.get("ok"))
     stopped_process_count = len(stopped_processes)
     scanner_stopped_count = (
-        scanner_stop.get("scan_runs_stopped", 0)
+        scanner_stop.get("scanner_jobs_stopped", 0)
+        + scanner_stop.get("scan_runs_stopped", 0)
         + scanner_stop.get("probe_runs_stopped", 0)
         + scanner_stop.get("pbi_runs_stopped", 0)
         + (1 if pending else 0)
@@ -990,6 +1266,8 @@ def trigger_pbi_sync(
         _record_sync_run("refresh", "failed", message)
         return {"status": "error", "message": message}
 
+    attempt_id = str(uuid.uuid4())
+
     if service_principal_configured():
         if not PS1_SCRIPT.exists():
             message = f"PowerShell script not found: {PS1_SCRIPT}"
@@ -997,13 +1275,28 @@ def trigger_pbi_sync(
             return {"status": "error", "message": message}
         return _launch_powershell_background(
             PS1_SCRIPT,
-            ["-WorkspaceName", ws_name, "-ApiBase", f"http://localhost:{port}", "-NoPause"],
+            [
+                "-WorkspaceName",
+                ws_name,
+                "-ApiBase",
+                f"http://localhost:{port}",
+                "-AttemptId",
+                attempt_id,
+                "-NoPause",
+            ],
             "refresh",
+            attempt_id=attempt_id,
+            cancel_generation=cancel_generation,
         )
 
     if cached_account_available():
         assert_not_cancelled(cancel_generation, "Power BI sync")
-        return _launch_cached_account_sync("refresh", ws_name, cancel_generation)
+        return _launch_cached_account_sync(
+            "refresh",
+            ws_name,
+            cancel_generation,
+            attempt_id=attempt_id,
+        )
 
     if not PS1_SCRIPT.exists():
         message = f"PowerShell script not found: {PS1_SCRIPT}"
@@ -1026,8 +1319,20 @@ def trigger_pbi_sync(
     # Build the command the scheduled task will run
     ps_cmd = (
         f'powershell -NoProfile -ExecutionPolicy Bypass -File "{PS1_SCRIPT}" '
-        f'-WorkspaceName "{ws_name}" -ApiBase "http://localhost:{port}" -NoPause'
+        f'-WorkspaceName "{ws_name}" -ApiBase "http://localhost:{port}" '
+        f'-AttemptId "{attempt_id}" -NoPause'
     )
+
+    clear_pending_pbi_sync()
+    run_id = _record_sync_run(
+        "refresh",
+        "launched",
+        "Power BI sync launched with interactive scheduled task.",
+        {"auth_mode": "interactive", "guard": guard_result},
+        attempt_id=attempt_id,
+    )
+    if run_id is None:
+        return {"status": "error", "message": "Could not persist the Power BI sync launch."}
 
     # Create a scheduled task that runs in the interactive session
     try:
@@ -1050,25 +1355,40 @@ def trigger_pbi_sync(
             capture_output=True, text=True, timeout=10, check=True,
         )
         # Run it now
+        assert_not_cancelled(cancel_generation, "Power BI sync launch")
         subprocess.run(
             ["schtasks", "/run", "/tn", TASK_NAME],
             capture_output=True, text=True, timeout=10, check=True,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else str(e)
-        _record_sync_run("refresh", "failed", f"Failed to launch PBI sync task: {stderr}")
-        return {"status": "error", "message": f"Failed to launch PBI sync task: {stderr}"}
+        _record_sync_run(
+            "refresh",
+            "failed",
+            f"Failed to launch PBI sync task: {stderr}",
+            attempt_id=attempt_id,
+        )
+        return {
+            "status": "error",
+            "message": f"Failed to launch PBI sync task: {stderr}",
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+        }
     except Exception as e:
-        _record_sync_run("refresh", "failed", str(e))
-        return {"status": "error", "message": str(e)}
+        _record_sync_run("refresh", "failed", str(e), attempt_id=attempt_id)
+        return {
+            "status": "error",
+            "message": str(e),
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+        }
 
-    clear_pending_pbi_sync()
-    run_id = _record_sync_run("refresh", "launched", "Power BI sync launched with interactive scheduled task.")
     return {
         "status": "launched",
         "message": "PBI sync started - a PowerShell window should appear on your desktop. Log in if prompted.",
         "auth_mode": "interactive",
         "run_id": run_id,
+        "attempt_id": attempt_id,
     }
 
 
@@ -1122,17 +1442,44 @@ def wait_for_pbi_sync_completion(
     *,
     timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
     cancel_generation: int | None = None,
+    operation_id: int | None = None,
 ) -> dict:
-    """Wait until the PowerShell process records a terminal refresh sync status."""
+    """Wait for this launch only, while keeping its scanner operation live."""
     status = (launch_result.get("status") or "").lower()
     if status != "launched":
         return launch_result
 
     launch_id = launch_result.get("run_id")
+    raw_attempt_id = launch_result.get("attempt_id")
+    attempt_id = _normalize_attempt_id(raw_attempt_id)
+    if raw_attempt_id and attempt_id is None:
+        return {
+            "status": "failed",
+            "message": "Power BI launch returned an invalid attempt identifier.",
+            "launch": launch_result,
+        }
+    if attempt_id is None:
+        with get_db() as db:
+            if _correlated_attempts_exist(db, "refresh"):
+                return {
+                    "status": "failed",
+                    "message": "Power BI launch is missing attempt correlation and cannot be waited safely.",
+                    "launch": launch_result,
+                }
+
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         assert_not_cancelled(cancel_generation, "Power BI sync wait")
-        latest = latest_pbi_sync_after("refresh", launch_id)
+        scanner_jobs.heartbeat(
+            operation_id,
+            current_step="Syncing Power BI metadata",
+            message="Waiting for the launched Power BI metadata attempt to finish.",
+        )
+        latest = (
+            pbi_sync_attempt("refresh", attempt_id)
+            if attempt_id
+            else latest_pbi_sync_after("refresh", launch_id)
+        )
         latest_status = (latest or {}).get("status", "").lower()
         if latest and latest_status in PBI_SYNC_TERMINAL_STATUSES:
             return {
@@ -1144,7 +1491,13 @@ def wait_for_pbi_sync_completion(
         time.sleep(PBI_SYNC_WAIT_POLL_SECONDS)
 
     message = f"Timed out waiting {timeout_seconds} seconds for Power BI sync import to complete."
-    _record_sync_run("refresh", "failed", message, {"launch": launch_result})
+    _record_sync_run(
+        "refresh",
+        "failed",
+        message,
+        {"launch": launch_result},
+        attempt_id=attempt_id,
+    )
     return {"status": "timeout", "message": message, "launch": launch_result}
 
 
@@ -1154,6 +1507,7 @@ def trigger_pbi_sync_and_wait(
     cancel_existing: bool = True,
     cancel_generation: int | None = None,
     timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    operation_id: int | None = None,
 ) -> dict:
     """Launch refresh sync and wait for the import result before continuing."""
     result = trigger_pbi_sync_or_defer(
@@ -1165,6 +1519,7 @@ def trigger_pbi_sync_and_wait(
         result,
         timeout_seconds=timeout_seconds,
         cancel_generation=cancel_generation,
+        operation_id=operation_id,
     )
 
 
@@ -1235,11 +1590,33 @@ def import_pbi_data(data: dict, cancel_generation: int | None = None) -> dict:
         )
     except ScannerWorkCancelled as exc:
         message = str(exc)
-        _record_sync_run("refresh", "stopped", message, {"workspace": data.get("workspace")})
+        _record_sync_run(
+            "refresh",
+            "stopped",
+            message,
+            {"workspace": data.get("workspace")},
+            attempt_id=_normalize_attempt_id(data.get("attempt_id")),
+        )
         return {"status": "stopped", "message": message}
 
 
 def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> dict:
+    """Serialize catalog mutation with stop requests from other threads."""
+    with pbi_stop_barrier():
+        if pbi_callbacks_fenced():
+            logger.warning("Ignored Power BI refresh import behind the stop fence")
+            return {
+                "status": "ignored",
+                "reason": "stop_fence_active",
+                "message": (
+                    "Ignored a Power BI callback because the preceding stop "
+                    "could not be persisted safely."
+                ),
+            }
+        return _import_pbi_data_serialized(data, cancel_generation)
+
+
+def _import_pbi_data_serialized(data: dict, cancel_generation: int | None = None) -> dict:
     """Import PBI data received from the PS1 script and update the reports table.
 
     Also auto-archives reports not found in PBI and sets powerbi_url.
@@ -1252,8 +1629,50 @@ def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> d
     log_lines = []
 
     now = datetime.now(timezone.utc).isoformat()
+    raw_attempt_id = data.get("attempt_id")
+    attempt_id = _normalize_attempt_id(raw_attempt_id)
 
     with get_db() as db:
+        # Correlation and catalog mutation share one SQLite write transaction.
+        # A stop, newer launch, or first successful callback therefore wins
+        # before any report row or auto-archive decision can be changed.
+        db.execute("BEGIN IMMEDIATE")
+        _ensure_pbi_sync_runs_schema(db)
+        if raw_attempt_id and attempt_id is None:
+            return {
+                "status": "ignored",
+                "reason": "invalid_attempt_id",
+                "message": "Ignored Power BI callback with an invalid attempt identifier.",
+            }
+        if attempt_id:
+            _launch, rejection = _active_attempt_row(db, "refresh", attempt_id)
+            if rejection:
+                logger.warning(
+                    "Ignored Power BI refresh import for attempt %s: %s",
+                    attempt_id,
+                    rejection,
+                )
+                return {
+                    "status": "ignored",
+                    "reason": rejection,
+                    "attempt_id": attempt_id,
+                    "message": "Ignored a stale or inactive Power BI callback.",
+                }
+        elif _correlated_attempts_exist(db, "refresh"):
+            logger.warning("Ignored uncorrelated legacy Power BI refresh import")
+            return {
+                "status": "ignored",
+                "reason": "missing_attempt_id",
+                "message": "Ignored an uncorrelated Power BI callback.",
+            }
+        elif _stopped_legacy_attempt_exists(db, "refresh"):
+            logger.warning("Ignored callback from a stopped legacy Power BI refresh")
+            return {
+                "status": "ignored",
+                "reason": "stopped_legacy_attempt",
+                "message": "Ignored a callback from a stopped pre-correlation Power BI sync.",
+            }
+
         # Build a lookup map: lowercase name -> (id, original name)
         all_reports = db.execute("SELECT id, name FROM reports").fetchall()
         name_map = {r["name"].strip().lower(): (r["id"], r["name"]) for r in all_reports}
@@ -1330,6 +1749,45 @@ def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> d
         overdue_count = _check_refresh_alerts(db, now)
         _resolve_reconnect_alerts(db, now)
 
+        completion_details = {
+            "workspace": data.get("workspace"),
+            "synced_at": data.get("synced_at"),
+            "total_pbi_reports": len(reports_data),
+            "matched": matched,
+            "unmatched_count": len(unmatched),
+            "archived": archived_count,
+            "overdue_alerts": overdue_count,
+        }
+        completion_message = (
+            f"Power BI refresh sync completed: {matched} matched, "
+            f"{len(unmatched)} unmatched."
+        )
+        if attempt_id:
+            _run_id, rejection = _finish_correlated_attempt(
+                db,
+                "refresh",
+                attempt_id,
+                "completed",
+                completion_message,
+                completion_details,
+                finished_at=now,
+            )
+            if rejection:
+                raise RuntimeError(
+                    f"Power BI attempt became inactive during import: {rejection}"
+                )
+        else:
+            _insert_sync_run_row(
+                db,
+                "refresh",
+                "completed",
+                completion_message,
+                completion_details,
+                attempt_id=None,
+                started_at=now,
+                finished_at=now,
+            )
+
     summary = {
         "status": "completed",
         "workspace": data.get("workspace"),
@@ -1340,22 +1798,8 @@ def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> d
         "archived": archived_count,
         "overdue_alerts": overdue_count,
         "log": "\n".join(log_lines),
+        "attempt_id": attempt_id,
     }
-    _record_sync_run(
-        "refresh",
-        "completed",
-        f"Power BI refresh sync completed: {matched} matched, {len(unmatched)} unmatched.",
-        {
-            "workspace": data.get("workspace"),
-            "synced_at": data.get("synced_at"),
-            "total_pbi_reports": len(reports_data),
-            "matched": matched,
-            "unmatched_count": len(unmatched),
-            "archived": archived_count,
-            "overdue_alerts": overdue_count,
-        },
-        finished_at=now,
-    )
     clear_pending_pbi_sync()
     logger.info("PBI sync completed: %s matched, %s unmatched, %s archived, %s overdue", matched, len(unmatched), archived_count, overdue_count)
     return summary

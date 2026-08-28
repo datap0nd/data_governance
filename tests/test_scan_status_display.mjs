@@ -76,8 +76,8 @@ assert.match(
 );
 assert.match(
     source,
-    /toast\(_scanCompletionToast\(result, pbiMsg\)\)/,
-    "The manual scan toast must use the warning-aware completion message",
+    /apiPost\("\/api\/scanner\/jobs\/full-scan"\)/,
+    "The manual scan must start a durable background job instead of holding one request open",
 );
 assert.match(
     source,

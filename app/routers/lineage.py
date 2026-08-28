@@ -276,8 +276,19 @@ def get_lineage_diagram(report_id: int):
             int(item["id"]): item for item in flow_diagnostics["items"]
         }
         included_ids = included_flow_ids(flow_diagnostics)
+        # File-output matches are useful evidence in the diagram, but the
+        # current Flow worker writes each run beneath a versioned directory.
+        # Show uniquely matched report candidates without treating them as
+        # executable Pipeline inputs.
+        visible_ids = included_ids | {
+            int(item["id"])
+            for item in flow_diagnostics.get("items", [])
+            if item.get("target_kind") == "file"
+            and item.get("scope_status") == "candidate_in_report"
+            and item.get("effective_source_id") is not None
+        }
         flows = []
-        if included_ids:
+        if visible_ids:
             flow_rows = db.execute(
                 """SELECT f.*,
                           EXISTS(
@@ -286,33 +297,41 @@ def get_lineage_diagram(report_id: int):
                                 AND fr.status IN ('queued','claimed','running')
                           ) AS has_active_run
                    FROM flows f
-                   WHERE f.sql_handoff_enabled=1
                    ORDER BY f.name"""
             ).fetchall()
             for row in flow_rows:
                 flow = dict(row)
-                if int(flow["id"]) not in included_ids:
+                if int(flow["id"]) not in visible_ids:
                     continue
                 diagnostic = diagnostic_by_id[int(flow["id"])]
                 effective_source_id = int(diagnostic["effective_source_id"])
+                target_kind = diagnostic.get("target_kind") or "postgresql"
                 last_success_at = flow.get("last_success_at")
                 if not last_success_at and flow.get("last_status") == "succeeded":
                     last_success_at = flow.get("last_run_at")
                 flows.append({
                     "id": flow["id"],
                     "name": flow["name"],
+                    "target_kind": target_kind,
+                    "match_strategy": diagnostic.get("match_strategy"),
+                    "target": diagnostic.get("target"),
                     "target_source_ids": [effective_source_id],
                     "sql_database": flow.get("sql_database"),
                     "sql_schema": flow.get("sql_schema"),
                     "sql_table": flow.get("sql_table"),
+                    "target_folder": flow.get("target_folder"),
+                    "filename_template": flow.get("filename_template"),
                     "last_run_at": flow.get("last_run_at"),
                     "last_success_at": last_success_at,
                     "last_status": flow.get("last_status"),
                     "last_error": flow.get("last_error"),
                     "has_active_run": bool(flow.get("has_active_run")),
                     "sql_target_link_status": diagnostic["link_status"],
-                    "sql_target_persisted": diagnostic["persisted_source_id"] == effective_source_id,
-                    "executable": True,
+                    "sql_target_persisted": (
+                        target_kind == "postgresql"
+                        and diagnostic["persisted_source_id"] == effective_source_id
+                    ),
+                    "executable": bool(diagnostic.get("executable")),
                 })
         legacy_flow_suggestions = build_legacy_flow_suggestions(flow_diagnostics)
 

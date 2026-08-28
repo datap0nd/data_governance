@@ -161,6 +161,8 @@ def test_postgres_connection_helper_selects_requested_database(monkeypatch):
     assert result is connection
     assert calls[0][0] == "connect"
     assert calls[0][1]["database"] == "requested_db"
+    assert "statement_timeout=" in calls[0][1]["options"]
+    assert "lock_timeout=30000" in calls[0][1]["options"]
     assert calls[1] == ("session", {"readonly": True, "autocommit": True})
 
 
@@ -411,6 +413,54 @@ def test_new_materialized_view_gets_exact_database_qualified_identity(
         ("warehouse", "sales", "report_mv", "materialized_view", "pg_deps"),
     ]
     assert tuple(edge) == ("report_mv", "orders")
+
+
+def test_catalog_scan_keeps_mv_to_view_to_table_lineage(scan_db, monkeypatch):
+    _configure_hosts(monkeypatch, database_name="warehouse")
+    connection = _CatalogConnection(
+        [
+            ("sales", "inflow_outflow_mv", "m", "sales", "asap_stage", "v"),
+            ("sales", "asap_stage", "v", "sales", "asap_import", "r"),
+        ],
+        [("sales", "inflow_outflow_mv", "SELECT * FROM sales.asap_stage")],
+    )
+    monkeypatch.setattr(
+        pg_deps, "_get_pg_connection", lambda *, database: connection
+    )
+
+    result = pg_deps.scan_pg_dependencies()
+
+    assert result["status"] == "completed"
+    assert result["mvs_found"] == 1
+    assert result["deps_created"] == 2
+    with get_db() as db:
+        identities = {
+            row["relation_name"]: (int(row["source_id"]), row["relation_kind"])
+            for row in db.execute(
+                """SELECT source_id, relation_name, relation_kind
+                     FROM source_postgres_identities
+                    WHERE database_name='warehouse' AND schema_name='sales'"""
+            ).fetchall()
+        }
+        edges = {
+            tuple(row)
+            for row in db.execute(
+                """SELECT downstream.relation_name, upstream.relation_name
+                     FROM source_dependencies sd
+                     JOIN source_postgres_identities downstream
+                       ON downstream.source_id=sd.source_id
+                     JOIN source_postgres_identities upstream
+                       ON upstream.source_id=sd.depends_on_id"""
+            ).fetchall()
+        }
+
+    assert identities["inflow_outflow_mv"][1] == "materialized_view"
+    assert identities["asap_stage"][1] == "view"
+    assert identities["asap_import"][1] == "table"
+    assert edges == {
+        ("inflow_outflow_mv", "asap_stage"),
+        ("asap_stage", "asap_import"),
+    }
 
 
 def test_flow_only_database_with_server_mismatch_is_not_scanned(

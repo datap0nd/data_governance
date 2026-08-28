@@ -316,6 +316,82 @@ function _scanCompletionToast(result, pbiMessage = "") {
     return `Scan complete: ${counts}${suffix}`;
 }
 
+function _scannerJobLabel(jobType) {
+    const labels = {
+        full_scan: "Full report scan",
+        postgres_lineage: "PostgreSQL lineage recheck",
+        source_probe: "Source freshness probe",
+    };
+    return labels[jobType] || String(jobType || "Scanner operation").replaceAll("_", " ");
+}
+
+function _scannerJobStatusHtml(job) {
+    const status = String(job?.display_status || job?.status || "unknown").toLowerCase();
+    if (status === "stale") return '<span class="badge badge-red">possibly stuck</span>';
+    if (status === "running") return '<span class="badge badge-blue">running</span>';
+    if (status === "queued") return '<span class="badge badge-yellow">queued</span>';
+    if (status === "stopped") return '<span class="badge badge-muted">stopped</span>';
+    return statusBadge(status);
+}
+
+function _scannerJobFailureDetails(job) {
+    const databases = job?.result?.databases;
+    if (!databases || typeof databases !== "object" || Array.isArray(databases)) return [];
+    return Object.entries(databases)
+        .filter(([, detail]) => detail && String(detail.status || "").toLowerCase() === "failed")
+        .map(([database, detail]) => `${database} · ${detail.stage || "scan"}`);
+}
+
+function _scannerJobsHtml(jobs) {
+    const rows = Array.isArray(jobs) ? jobs : [];
+    const active = rows.filter(job => job.active);
+    // Keep the live operation first without hiding the failure that prompted a
+    // retry. Scanner is both a status surface and a short operational history.
+    const recentTerminal = rows.filter(job => !job.active).slice(0, 5);
+    const visible = [...active, ...recentTerminal];
+    if (!visible.length) {
+        return '<div class="empty-state">No scanner work has been recorded yet.</div>';
+    }
+    return visible.map(job => {
+        const current = Number(job.progress_current);
+        const total = Number(job.progress_total);
+        const hasProgress = Number.isFinite(current) && Number.isFinite(total) && total > 0;
+        const progress = hasProgress ? ` · ${Math.max(0, current)}/${total}` : "";
+        const failures = _scannerJobFailureDetails(job);
+        const stale = job.is_stale
+            ? `<div class="scanner-job-stale">No heartbeat for ${Math.max(1, Math.floor((job.heartbeat_age_seconds || 0) / 60))} minutes. This operation may be stuck; use Stop Refresh Work before retrying.</div>`
+            : "";
+        return `<div class="scanner-job-row${job.active ? " scanner-job-active" : ""}">
+            <div class="scanner-job-heading">
+                <strong>${esc(_scannerJobLabel(job.job_type))}</strong>
+                ${_scannerJobStatusHtml(job)}
+                <span title="${formatDate(job.created_at)}">${timeAgo(job.created_at)}</span>
+            </div>
+            <div class="scanner-job-step">${esc(job.current_step || "Waiting for status")}${esc(progress)}</div>
+            ${job.message ? `<div class="scanner-job-message">${esc(job.message)}</div>` : ""}
+            ${failures.length ? `<div class="scanner-job-failures">Affected: ${failures.map(esc).join(", ")}</div>` : ""}
+            ${stale}
+        </div>`;
+    }).join("");
+}
+
+function _waitForScannerJob(jobId, stillRelevant = null) {
+    return new Promise(resolve => {
+        const poll = async () => {
+            if (stillRelevant && !stillRelevant()) { resolve(null); return; }
+            try {
+                const job = await api(`/api/scanner/jobs/${jobId}`);
+                if (!job.active || job.is_stale) { resolve(job); return; }
+            } catch (error) {
+                resolve({ status: "failed", display_status: "failed", message: error.message });
+                return;
+            }
+            setTimeout(poll, 2500);
+        };
+        poll();
+    });
+}
+
 function actionStatusBadge(status) {
     const colors = {
         open: "badge-red",
@@ -2409,13 +2485,18 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                         <section class="alerts-analysis" data-alert-analysis data-action-id="${a.id}" aria-labelledby="alert-analysis-${a.id}">
                             <div class="alerts-detail-heading">
                                 <div><span class="alerts-detail-kicker">Read-only</span><h3 id="alert-analysis-${a.id}">Analysis</h3></div>
-                                <span class="alerts-analysis-scope">Exact run evidence only</span>
+                                <span class="alerts-analysis-scope">Automatic overall review</span>
                             </div>
-                            <p class="alerts-analysis-intro">Choose a recorded Flow or Pipeline occurrence. Analysis explains the evidence and safest next step; it cannot run an operation.</p>
-                            <div class="alerts-occurrences" data-alert-occurrences aria-live="polite">
-                                <p class="alerts-occurrence-note">Open this alert to load its exact run occurrences.</p>
+                            <p class="alerts-analysis-intro">Metronome automatically asks the local model to assess whether current evidence supports this alert, explain what happened, and suggest a next step. The assessment cannot change or suppress the alert.</p>
+                            <div class="alerts-analysis-result" data-alert-analysis-result aria-live="polite">
+                                <div class="alerts-occurrence-loading"><span></span>Loading automatic assessment…</div>
                             </div>
-                            <div class="alerts-analysis-result" data-alert-analysis-result aria-live="polite"></div>
+                            <details class="alerts-analysis-history">
+                                <summary>Evidence occurrences and analysis history</summary>
+                                <div class="alerts-occurrences" data-alert-occurrences aria-live="polite">
+                                    <p class="alerts-occurrence-note">Open this alert to load its recorded evidence.</p>
+                                </div>
+                            </details>
                         </section>
                     </div>
                 </td>
@@ -3458,10 +3539,11 @@ function _watchPbiDeviceFlow() {
 }
 
 async function renderScanner() {
-    const [runs, probeRuns, pbiStatus] = await Promise.all([
+    const [runs, probeRuns, pbiStatus, scannerJobs] = await Promise.all([
         api("/api/scanner/runs"),
         api("/api/scanner/probe/runs"),
         api("/api/scanner/pbi-sync/status").catch(() => null),
+        api("/api/scanner/jobs").catch(() => []),
     ]);
     const lastRun = runs.length > 0 ? runs[0] : null;
     const lastProbe = probeRuns.length > 0 ? probeRuns[0] : null;
@@ -3543,6 +3625,13 @@ async function renderScanner() {
         </div>
 
         <div id="diagnose-panel" style="display:none"></div>
+
+        <div class="section scanner-work-section">
+            <h2>Current Scanner Work <span class="scanner-live-label">Live</span></h2>
+            <div id="scanner-work-status" data-active-count="${scannerJobs.filter(job => job.active).length}">
+                ${_scannerJobsHtml(scannerJobs)}
+            </div>
+        </div>
 
         ${pbiSyncMeta}
 
@@ -5014,10 +5103,38 @@ function _emailFixLinks(alert) {
     return [...reportLinks, ...sourceLinks];
 }
 
+function _emailNextAction(alert) {
+    const assessment = alert.ai_assessment || {};
+    if (assessment.recommendation_title) {
+        return assessment.recommendation_rationale
+            ? `${assessment.recommendation_title} — ${assessment.recommendation_rationale}`
+            : assessment.recommendation_title;
+    }
+    return alert.recommendation || alert.triage_cta || "Open the asset and investigate the issue.";
+}
+
+function _emailAiAssessmentText(alert) {
+    const assessment = alert.ai_assessment || {};
+    if (!alert.ai_assessment) {
+        return "Pending or unavailable; the deterministic Alert remains active and email delivery is not blocked.";
+    }
+    const label = String(assessment.assessment || "uncertain").replaceAll("_", " ")
+        .replace(/\b\w/g, char => char.toUpperCase());
+    const confidence = String(assessment.confidence || "low")
+        .replace(/\b\w/g, char => char.toUpperCase());
+    return `${label} (${confidence} confidence): ${assessment.conclusion || "No conclusion returned."}`;
+}
+
 function _emailAlertLine(alert) {
     const views = Number(alert.impact_views_30d || 0).toLocaleString();
     const degradedSince = formatDateOnly(alert.degraded_since || alert.created_at);
-    const nextAction = alert.recommendation || alert.triage_cta || "Open the alert and review the evidence.";
+    const nextAction = _emailNextAction(alert);
+    const assessment = _emailAiAssessmentText(alert);
+    const assessmentLabel = alert.ai_assessment?.provider_mode === "qwen"
+        ? "Qwen assessment"
+        : alert.ai_assessment?.provider_mode === "mock"
+            ? "Deterministic preview"
+            : "Automated assessment";
     const links = _emailFixLinks(alert).slice(0, 3).join("");
     return `<tr>
         <td><span class="email-artifact email-artifact-${esc(alert.artifact_kind || "data")}">${esc(alert.artifact_label || "Data")}</span></td>
@@ -5025,6 +5142,7 @@ function _emailAlertLine(alert) {
             <div class="email-alert-title"><strong>${esc(alert.issue_label || alert.type)}</strong></div>
             <div>${esc(alert.asset_name || "Unknown asset")}</div>
             ${alert.pbi_refresh_error ? `<div class="email-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(alert.pbi_refresh_error)}</div>` : ""}
+            <div class="email-ai-assessment"><strong>${esc(assessmentLabel)}:</strong> ${esc(assessment)}</div>
             <div class="email-next-action"><strong>Next:</strong> ${esc(nextAction)}</div>
             ${links ? `<div class="email-fix-links">${links}</div>` : ""}
         </td>
@@ -7236,27 +7354,13 @@ function _flowDiagnosticsModel(data, payloadWarnings = []) {
     }
 
     const dismissed = _flowDiagnosticDismissals();
-    const dismissedLegacyCount = rawItems.filter(item =>
-        item.reason_code === "legacy_display_match"
-        && dismissed.has(_flowDiagnosticDismissalKey(reportId, item))
-    ).length;
     const items = [...rawItems, ...payloadWarnings].filter(item => {
         if (!["warning", "blocker"].includes(item.severity)) return false;
         if (item.reason_code !== "legacy_display_match") return true;
         return !dismissed.has(_flowDiagnosticDismissalKey(reportId, item));
     });
-    const numeric = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-    const includedCount = numeric(raw.included_count, (data?.flows || []).length);
-    const downloadOnlyCount = numeric(raw.download_only_count, 0);
-    const excludedCount = Math.max(0,
-        numeric(raw.excluded_count, rawItems.filter(item => item.severity !== "none").length)
-        - dismissedLegacyCount
-    );
     return {
         reportId,
-        includedCount,
-        excludedCount,
-        downloadOnlyCount,
         items,
         postgres: raw.postgres_dependencies || null,
         postgresMessage: _flowPostgresDiagnostic(raw.postgres_dependencies),
@@ -7266,33 +7370,27 @@ function _flowDiagnosticsModel(data, payloadWarnings = []) {
 
 function _flowDiagnosticsHasRelevantInfo(data, model = _flowDiagnosticsModel(data)) {
     return (data?.flows || []).length > 0
-        || model.includedCount > 0
-        || model.excludedCount > 0
-        || model.downloadOnlyCount > 0
         || model.items.length > 0
         || !!model.postgresMessage;
 }
 
 function _flowDiagnosticTargetText(item) {
     const target = item.target || {};
-    return [target.database, target.schema, target.table].filter(Boolean).join(".");
+    return target.path || target.filename
+        || [target.database, target.schema, target.table].filter(Boolean).join(".");
 }
 
 function _flowDiagnosticsHtml(data, { payloadWarnings = [] } = {}) {
     const model = _flowDiagnosticsModel(data, payloadWarnings);
-    const hasBanner = model.excludedCount > 0
-        || model.downloadOnlyCount > 0
-        || model.items.length > 0
+    const hasBanner = model.items.length > 0
         || !!model.postgresMessage;
     if (!hasBanner) return "";
 
     const blockerCount = model.items.filter(item => item.severity === "blocker").length;
-    const summary = [`${model.includedCount} connected`];
-    if (model.excludedCount) summary.push(`${model.excludedCount} excluded`);
-    if (model.downloadOnlyCount) {
-        summary.push(`${model.downloadOnlyCount} download-only Flow${model.downloadOnlyCount === 1 ? "" : "s"} excluded`);
+    const summary = [];
+    if (model.items.length) {
+        summary.push(`${model.items.length} issue${model.items.length === 1 ? "" : "s"} for this report`);
     }
-    if (model.payloadWarningCount) summary.push(`${model.payloadWarningCount} payload warning${model.payloadWarningCount === 1 ? "" : "s"}`);
     if (model.postgresMessage) summary.push("PostgreSQL scan needs attention");
 
     const itemHtml = model.items.map(item => {
@@ -7313,9 +7411,6 @@ function _flowDiagnosticsHtml(data, { payloadWarnings = [] } = {}) {
         </li>`;
     }).join("");
     const details = [
-        model.downloadOnlyCount
-            ? `<p class="pipeline-empty">${model.downloadOnlyCount} download-only Flow${model.downloadOnlyCount === 1 ? " is" : "s are"} intentionally excluded because ${model.downloadOnlyCount === 1 ? "it does" : "they do"} not hand data to SQL.</p>`
-            : "",
         model.postgresMessage ? `<p class="pipeline-warning">${esc(model.postgresMessage)}</p>` : "",
         itemHtml ? `<ul>${itemHtml}</ul>` : "",
     ].join("");
@@ -7344,10 +7439,23 @@ async function _recheckFlowLineage(reportId, button) {
         button.textContent = "Rechecking...";
     }
     try {
-        const result = await apiPost("/api/scanner/pg-deps");
-        const status = result?.status || "completed";
-        if (status === "completed") toast("PostgreSQL lineage rechecked.");
-        else toast(`PostgreSQL lineage recheck ${String(status).replaceAll("_", " ")}. Open Scanner for details.`);
+        const reportQuery = reportId ? `?report_id=${encodeURIComponent(reportId)}` : "";
+        const start = await apiPost(`/api/scanner/jobs/postgres-lineage${reportQuery}`);
+        toast(start.message || "PostgreSQL lineage recheck started. Progress is available in Scanner.");
+        const compatible = start.job?.job_type === "postgres_lineage" || start.job?.job_type === "full_scan";
+        if (!compatible) return null;
+        const result = await _waitForScannerJob(start.job_id, () => !button || button.isConnected);
+        if (!result) return null;
+        const status = result.display_status || result.status || "failed";
+        if (status === "stale") {
+            toast("PostgreSQL lineage recheck may be stuck. Open Scanner for its last heartbeat and Stop control.");
+            return null;
+        }
+        if (!["completed", "completed_with_warnings"].includes(status)) {
+            toast(result.message || `PostgreSQL lineage recheck ${String(status).replaceAll("_", " ")}. Open Scanner for details.`);
+            return null;
+        }
+        toast(result.message || (status === "completed" ? "PostgreSQL lineage rechecked." : "PostgreSQL lineage rechecked with warnings."));
         if (reportId) {
             const updated = await api(`/api/lineage/report/${reportId}/diagram`);
             window._lineageData = updated;
@@ -7947,15 +8055,18 @@ function _renderLineageDiagram(data) {
     };
     let flowH = "";
     for (const flow of flowNodes) {
+        const tentative = flow.executable === false;
         const active = flow.has_active_run || ["queued", "claimed", "running"].includes(flow.last_status);
         const statusLabel = flow.last_status ? flow.last_status.replaceAll("_", " ") : "never run";
         const loaded = flow.last_success_at
             ? `<span title="${esc(formatDate(flow.last_success_at))}">Loaded ${timeAgo(flow.last_success_at)}</span>`
             : "<span>Never loaded</span>";
-        const target = [flow.sql_schema, flow.sql_table].filter(Boolean).join(".");
-        flowH += `<div class="lin-card lin-flow ${flowStateClass(flow)}" data-lin-id="flow-${flow.id}" title="${esc(flow.last_error || flow.name)}">
+        const target = flow.target_kind === "file"
+            ? (flow.target?.filename || flow.filename_template || "")
+            : [flow.sql_schema, flow.sql_table].filter(Boolean).join(".");
+        flowH += `<div class="lin-card lin-flow ${tentative ? "lin-flow-suggestion" : ""} ${flowStateClass(flow)}" data-lin-id="flow-${flow.id}" title="${esc(tentative ? "Possible filename match only; this Flow is not run automatically by Pipelines." : (flow.last_error || flow.name))}">
             <div class="lin-card-hdr"><span class="lin-card-lbl">${esc(flow.name)}</span><span class="lin-flow-status">${esc(statusLabel)}</span><button class="lin-refresh-action" type="button" data-lin-refresh-flow="${flow.id}" ${active ? "disabled" : ""} aria-label="Refresh flow ${esc(flow.name)}">${active ? "Running" : "Refresh"}</button></div>
-            <div class="lin-card-facts">${loaded}${target ? `<span class="lin-card-sep">-</span><span title="Target table">${esc(target)}</span>` : ""}</div>
+            <div class="lin-card-facts">${tentative ? '<span class="lin-flow-candidate-label">Possible file link</span><span class="lin-card-sep">-</span>' : ""}${loaded}${target ? `<span class="lin-card-sep">-</span><span title="Flow output">${esc(target)}</span>` : ""}</div>
         </div>`;
     }
     colHtml.flows = flowH;
@@ -8088,10 +8199,10 @@ async function _showLineageSourceDetail(sourceId) {
 
 function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, upstreamNodes) {
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
-    function add(a, b, svg) {
+    function add(a, b, svg, tentative = false) {
         if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
         if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
-        if (svg) svgEdges.push({ from: a, to: b });
+        if (svg) svgEdges.push({ from: a, to: b, tentative });
     }
     // Field -> Visual (detail)
     for (const v of visualNodes) for (const fk of v.fields) add(`field-${fk}`, v.id, false);
@@ -8113,7 +8224,7 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     // Flow -> target source (SVG)
     for (const flow of (data.flows || [])) {
         for (const sourceId of (flow.target_source_ids || [])) {
-            add(`flow-${flow.id}`, `source-${sourceId}`, true);
+            add(`flow-${flow.id}`, `source-${sourceId}`, true, flow.executable === false);
         }
     }
     // Upstream system -> source (SVG)
@@ -8361,7 +8472,7 @@ function _drawLinEdges() {
         const fromBand = _linAnchorBand(fromEl, fr);
         const toBand = _linAnchorBand(toEl, tr);
         edges.push({
-            from: e.from, to: e.to, hl: !!highlighted,
+            from: e.from, to: e.to, hl: !!highlighted, tentative: !!e.tentative,
             x1: fr.right + ox, y1: fromBand.y + oy,
             x2: (ci === cj ? tr.right : tr.left) + ox, y2: toBand.y + oy,
             y1min: fromBand.top + oy, y1max: fromBand.bottom + oy,
@@ -8380,7 +8491,7 @@ function _drawLinEdges() {
 
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
         path.setAttribute("d", _linEdgePath(e));
-        path.setAttribute("class", e.hl ? "lin-edge lin-edge-hl" : "lin-edge");
+        path.setAttribute("class", ["lin-edge", e.hl ? "lin-edge-hl" : "", e.tentative ? "lin-edge-tentative" : ""].filter(Boolean).join(" "));
         if (e.hl) path.setAttribute("marker-end", "url(#lin-arrow)");
         path.dataset.from = e.from; path.dataset.to = e.to;
         svg.appendChild(path);
@@ -9765,6 +9876,15 @@ function _pipelineDuration(seconds) {
     return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
 }
 
+function _pipelineFlowTargetLabel(flow) {
+    const target = flow?.target || {};
+    if (flow?.target_kind === "file") {
+        return target.path || target.filename || "File output";
+    }
+    return [target.database, target.schema, target.table].filter(Boolean).join(".")
+        || "PostgreSQL output";
+}
+
 function _openPipelinePreview(plan, onConfirm) {
     const restoreFocus = document.activeElement;
     const overlay = document.createElement("div");
@@ -9783,7 +9903,7 @@ function _openPipelinePreview(plan, onConfirm) {
                 <div><dt>Estimate</dt><dd>${esc(_pipelineDuration(plan.estimated_duration_seconds))}<small>Based on conservative stage defaults</small></dd></div>
             </dl>
             ${flowDiagnostics}
-            <section><h3>1. Flows (${plan.flows.length})</h3>${plan.flows.length ? `<ol>${plan.flows.map(flow => `<li><strong>${esc(flow.name)}</strong><span>${esc(flow.browser_mode)} · ${esc(flow.target.database)}.${esc(flow.target.schema)}.${esc(flow.target.table)}</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No explicitly linked upstream Flows.</p>'}</section>
+            <section><h3>1. Flows (${plan.flows.length})</h3>${plan.flows.length ? `<ol>${plan.flows.map(flow => `<li><strong>${esc(flow.name)}</strong><span>${esc(flow.browser_mode)} · ${esc(_pipelineFlowTargetLabel(flow))}</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No automatically connected upstream Flows.</p>'}</section>
             <section><h3>2. Materialized views (${plan.materialized_views.length})</h3>${plan.materialized_views.length ? `<ol>${plan.materialized_views.map(mv => `<li><strong>${esc(mv.database)}.${esc(mv.schema)}.${esc(mv.relation)}</strong><span>commits before the next MV · exact row count after commit</span></li>`).join("")}</ol>` : '<p class="pipeline-empty">No materialized views in the report closure.</p>'}</section>
             <section><h3>Worker readiness</h3>${plan.worker_readiness.length ? `<ul>${plan.worker_readiness.map(worker => `<li class="${worker.ready ? "pipeline-ready" : "pipeline-warning"}"><strong>${esc(worker.mode)}</strong><span>${worker.ready ? `ready · heartbeat ${esc(formatDate(worker.last_seen_at))}` : "will be started; must register within 60 seconds"}</span></li>`).join("")}</ul>` : '<p class="pipeline-empty">No Flow workers are required.</p>'}</section>
             ${warnings.length ? `<div class="pipeline-message pipeline-warning"><strong>Warnings</strong><ul>${warnings.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
@@ -10360,6 +10480,30 @@ async function navigate(page) {
     }
 }
 
+function _pollScannerWorkStatus() {
+    if (window._scannerWorkPoll) clearTimeout(window._scannerWorkPoll);
+    const poll = async () => {
+        const panel = document.getElementById("scanner-work-status");
+        if (!panel || currentPage !== "scanner") return;
+        try {
+            const jobs = await api("/api/scanner/jobs");
+            const priorActive = Number(panel.dataset.activeCount || 0);
+            const activeCount = jobs.filter(job => job.active).length;
+            panel.innerHTML = _scannerJobsHtml(jobs);
+            panel.dataset.activeCount = String(activeCount);
+            if (priorActive > 0 && activeCount === 0) {
+                navigate("scanner");
+                return;
+            }
+        } catch (_) {
+            // Keep the last authoritative snapshot visible during a brief API outage.
+        }
+        const stillActive = Number(panel.dataset.activeCount || 0) > 0;
+        window._scannerWorkPoll = setTimeout(poll, stillActive ? 3000 : 8000);
+    };
+    window._scannerWorkPoll = setTimeout(poll, 1000);
+}
+
 function bindScannerButtons() {
     // Log toggle
     document.querySelectorAll(".log-toggle").forEach(h2 => {
@@ -10378,34 +10522,13 @@ function bindScannerButtons() {
     if (btnScan) {
         btnScan.addEventListener("click", async () => {
             btnScan.disabled = true;
-            btnScan.textContent = "Scanning...";
+            btnScan.textContent = "Starting...";
             try {
-                const result = await apiPost("/api/scanner/run");
-                if (result.status === "pbi_sync_not_completed") {
-                    const pbi = result.pbi_sync || {};
-                    toast(`Refresh stopped before scan: PBI sync ${pbi.status || "did not complete"}`);
-                    navigate("scanner");
-                    return;
-                }
-                if (result.status === "stopped") {
-                    toast(result.message || "Scanner refresh stopped");
-                    navigate("scanner");
-                    return;
-                }
-                if (result.status === "failed") {
-                    toast("Scanner refresh failed: " + (result.error || result.message || "unknown error"));
-                    btnScan.disabled = false;
-                    btnScan.textContent = "Run Scan Now";
-                    return;
-                }
-                const pbi = result.pbi_sync || {};
-                const pbiMsg = pbi.status === "completed"
-                    ? "PBI sync completed"
-                    : `PBI sync ${pbi.status || "not launched"}`;
-                toast(_scanCompletionToast(result, pbiMsg));
+                const result = await apiPost("/api/scanner/jobs/full-scan");
+                toast(result.message || "Full scan started. Progress is shown on Scanner.");
                 navigate("scanner");
             } catch (err) {
-                toast("Scan failed: " + err.message);
+                toast("Scan was not started: " + err.message);
                 btnScan.disabled = false;
                 btnScan.textContent = "Run Scan Now";
             }
@@ -10416,18 +10539,13 @@ function bindScannerButtons() {
     if (btnProbe) {
         btnProbe.addEventListener("click", async () => {
             btnProbe.disabled = true;
-            btnProbe.textContent = "Probing...";
+            btnProbe.textContent = "Starting...";
             try {
-                const result = await apiPost("/api/scanner/probe");
-                if (result.status === "stopped") {
-                    toast(result.message || "Probe stopped");
-                } else {
-                    toast(`Probe complete: ${result.probed || 0} sources checked`);
-                }
-                btnProbe.disabled = false;
-                btnProbe.textContent = "Probe Sources";
+                const result = await apiPost("/api/scanner/jobs/probe");
+                toast(result.message || "Source probe started. Progress is shown on Scanner.");
+                navigate("scanner");
             } catch (err) {
-                toast("Probe failed: " + err.message);
+                toast("Probe was not started: " + err.message);
                 btnProbe.disabled = false;
                 btnProbe.textContent = "Probe Sources";
             }
@@ -10537,6 +10655,7 @@ function bindScannerButtons() {
     // Resume polling if a device-code sign-in is already in progress
     const flowNote = document.getElementById("pbi-flow-note");
     if (flowNote) _watchPbiDeviceFlow();
+    _pollScannerWorkStatus();
 }
 
 function renderDiagnosePanel(d) {
@@ -10951,6 +11070,122 @@ async function _loadAlertOccurrences(actionId, expandRow) {
     surface.dataset.occurrencesState = fallback ? "fallback" : "loaded";
     container.innerHTML = _alertOccurrencesHtml(actionId, occurrences, { fallback });
     _bindAlertOccurrenceControls(surface);
+    const holder = surface.querySelector("[data-alert-analysis-result]");
+    if (holder) _loadAutomaticAlertAnalysis(payload, holder, actionId);
+}
+
+function _loadAutomaticAlertAnalysis(payload, holder, actionId) {
+    if (!holder?.isConnected) return;
+    const runId = _positiveInteger(payload?.current_analysis_run_id);
+    if (runId) {
+        const generation = ++_alertAnalysisGeneration;
+        holder.dataset.analysisGeneration = String(generation);
+        _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, 0);
+        return;
+    }
+    const generation = ++_alertAnalysisGeneration;
+    holder.dataset.analysisGeneration = String(generation);
+    holder.className = "alerts-analysis-result ai-investigation";
+    if (!["open", "acknowledged", "investigating"].includes(payload?.action_status)) {
+        holder.innerHTML = `
+            <div class="ai-result-meta"><span>Automatic review</span><span>Read-only</span><span>Inactive</span></div>
+            <p class="ai-connection-note">This alert is no longer active, so Metronome will not queue a new assessment.</p>`;
+        return;
+    }
+    holder.innerHTML = `
+        <div class="ai-result-meta"><span>Automatic review</span><span>Read-only</span><span>Pending</span></div>
+        <p class="ai-connection-note">This alert is waiting for its automatic assessment. The deterministic alert remains active while the local model is unavailable, busy, or still working.</p>`;
+    setTimeout(
+        () => _waitForAutomaticAlertAnalysis(holder, actionId, generation),
+        5000
+    );
+}
+
+async function _waitForAutomaticAlertAnalysis(holder, actionId, generation) {
+    if (!holder?.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+    try {
+        const payload = await api(`/api/actions/${actionId}/occurrences`);
+        if (!holder.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        if (!["open", "acknowledged", "investigating"].includes(payload?.action_status)) {
+            holder.className = "alerts-analysis-result ai-investigation";
+            holder.innerHTML = `
+                <div class="ai-result-meta"><span>Automatic review</span><span>Read-only</span><span>Inactive</span></div>
+                <p class="ai-connection-note">This alert is no longer active, so Metronome will not queue a new assessment.</p>`;
+            return;
+        }
+        const runId = _positiveInteger(payload?.current_analysis_run_id);
+        if (runId) {
+            _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, 0);
+            return;
+        }
+    } catch (_) {
+        // Keep the last honest pending state. Alert evidence remains usable.
+    }
+    setTimeout(
+        () => _waitForAutomaticAlertAnalysis(holder, actionId, generation),
+        ALERT_ANALYSIS_FRESHNESS_MS
+    );
+}
+
+async function _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, failureCount) {
+    // A person may open an exact occurrence analysis while an older automatic
+    // poll is sleeping. Never let that stale callback reclaim the shared panel.
+    if (!holder?.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+    try {
+        const run = await api(`/api/ai/operations/runs/${runId}`);
+        if (!holder.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        const sameAlert = Number(run.action_id) === Number(actionId)
+            && run.focus_type === "alert"
+            && Number(run.focus_id) === Number(actionId);
+        if (!sameAlert) throw new Error("The stored assessment belongs to a different alert.");
+        if (["queued", "running"].includes(run.status)) {
+            holder.className = "alerts-analysis-result ai-investigation";
+            holder.innerHTML = _aiProgressHtml(run, "Reviewing the complete Alert evidence…");
+            setTimeout(
+                () => _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, 0),
+                1800
+            );
+            return;
+        }
+        if (run.status === "completed") {
+            holder.className = "alerts-analysis-result ai-investigation ai-investigation-complete";
+            holder.innerHTML = _aiResultHtml(run);
+            const staleness = _aiAnalysisStaleness(run);
+            if (!staleness.stale) {
+                setTimeout(
+                    () => _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, 0),
+                    ALERT_ANALYSIS_FRESHNESS_MS
+                );
+            } else if (!["alert_resolved", "alert_expected"].includes(run.superseded_reason)) {
+                setTimeout(
+                    () => _waitForAutomaticAlertAnalysis(holder, actionId, generation),
+                    ALERT_ANALYSIS_FRESHNESS_MS
+                );
+            }
+            return;
+        }
+        holder.className = "alerts-analysis-result ai-investigation ai-investigation-failed";
+        holder.innerHTML = `
+            <h4>Automatic assessment unavailable</h4>
+            <p>${esc(run.error || "The local model did not complete this review.")}</p>
+            <p>The deterministic alert remains active. Automatic retries are bounded and never change or suppress the alert.</p>`;
+        setTimeout(
+            () => _waitForAutomaticAlertAnalysis(holder, actionId, generation),
+            ALERT_ANALYSIS_FRESHNESS_MS
+        );
+    } catch (error) {
+        if (!holder?.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        const delays = [3000, 7000, 15000];
+        const nextFailureCount = failureCount + 1;
+        holder.className = "alerts-analysis-result ai-investigation";
+        holder.innerHTML = `
+            <div class="ai-result-meta"><span>Automatic review</span><span>Read-only</span><span>Unavailable</span></div>
+            <p class="ai-connection-note">${esc(error.message)} The deterministic alert remains active while Metronome reconnects.</p>`;
+        setTimeout(
+            () => _pollAutomaticAlertAnalysis(runId, holder, actionId, generation, nextFailureCount),
+            delays[Math.min(nextFailureCount - 1, delays.length - 1)]
+        );
+    }
 }
 
 function _setAlertAnalysisBusy(holder, busy) {
@@ -11288,6 +11523,7 @@ function _aiAnalysisStaleness(run) {
     );
     const reason = ({
         alert_evidence_changed: "Newer evidence was recorded for this alert.",
+        alert_context_changed: "The operational evidence for this alert changed.",
         alert_resolved: "The alert was resolved after this analysis.",
         alert_expected: "The alert was accepted as expected after this analysis.",
     })[rawReason] || rawReason;
@@ -11311,8 +11547,11 @@ function _aiResultHtml(run) {
     const recommendationSection = staleness.stale
         ? `<section class="ai-result-section ai-result-stale-recommendations"><h4>Recommended next step</h4><p>Hidden because this is historical analysis. Analyze the latest occurrence before acting.</p></section>`
         : `<section class="ai-result-section"><h4>Recommended next step</h4>${recommendations ? `<ul class="ai-recommendations">${recommendations}</ul>` : "<p>No operational action is recommended.</p>"}<p class="ai-safe-note">This panel cannot execute the recommendation. Existing Metronome controls perform their own preflight and confirmation.</p></section>`;
+    const alertAssessment = result.alert_assessment
+        ? `<span>Alert ${esc(String(result.alert_assessment).replaceAll("_", " "))}</span>`
+        : "";
     return `
-        <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
+        <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${alertAssessment}${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
         ${staleness.stale ? `<div class="ai-stale-analysis" role="status"><strong>Stale analysis</strong><span>${esc(staleness.reason)} Recommendations from this snapshot are hidden.</span></div>` : ""}
         ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Qwen is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
         <section class="ai-result-section"><h4>Conclusion</h4><p>${esc(result.conclusion)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(result.conclusion_evidence_refs, evidenceMap)}</div></section>
