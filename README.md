@@ -223,7 +223,14 @@ This shows `csv_samples` (what the CSV has) and `postgresql_sources` (what's in 
 ## Offline sandbox (fake data for local testing / UI work)
 
 To run the app completely offline with realistic fake data — no Power BI, no
-network shares, no production PostgreSQL — build the disposable sandbox:
+network shares, no production PostgreSQL — use the disposable sandbox.
+
+**Windows, one click**: right-click `start_sandbox.ps1` > "Run with
+PowerShell". It builds the sandbox on first run, starts it on port 8001 (so
+the real app service on 8000 is untouched), and opens the browser on it.
+Close the window to stop it.
+
+Or manually:
 
 ```bash
 python tools/seed_sandbox.py        # builds <repo>/local_sandbox
