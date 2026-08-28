@@ -73,16 +73,46 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _sync_flow_failure_actions(db, now: str) -> dict:
-    """Expose current Flow failures through the shared operational alert list."""
+    """Expose the latest terminal Flow failure through shared Alerts.
+
+    Queued, running, or cancelled retries do not erase the last confirmed
+    failure. A later terminal success resolves it.
+    """
     failed = db.execute(
-        """SELECT id, name, last_error FROM flows
-           WHERE last_status='failed'"""
+        """SELECT f.id, f.name, f.last_error, r.id AS run_id,
+                  r.trigger_type, r.error AS run_error, r.finished_at,
+                  p.name AS owner_name,
+                  (SELECT e.stage FROM flow_run_events e
+                    WHERE e.run_id=r.id AND e.stage IS NOT NULL AND e.stage!=''
+                    ORDER BY e.id DESC LIMIT 1) AS failure_stage
+             FROM flows f
+             LEFT JOIN people p ON p.id=f.owner_person_id
+             JOIN flow_runs r ON r.id=(
+                 SELECT r2.id FROM flow_runs r2
+                  WHERE r2.flow_id=f.id
+                    AND r2.status IN ('succeeded','failed')
+                  ORDER BY r2.id DESC LIMIT 1
+             )
+            WHERE r.status='failed'"""
     ).fetchall()
     findings = [
         {
             "fingerprint": f"flow_failed:{row['id']}",
             "flow_id": row["id"],
+            "assigned_to": row["owner_name"],
             "notes": row["last_error"] or f"Flow {row['name']} failed.",
+            "occurrence": {
+                "focus_type": "flow_run",
+                "focus_id": row["run_id"],
+                "observed_at": row["finished_at"] or now,
+                "summary": f"Flow {row['name']} run #{row['run_id']} failed.",
+                "evidence": {
+                    "status": "failed",
+                    "stage": row["failure_stage"],
+                    "trigger_type": row["trigger_type"],
+                    "error": row["run_error"] or row["last_error"],
+                },
+            },
         }
         for row in failed
     ]
@@ -1682,89 +1712,322 @@ def get_run(run_id: int):
         }
 
 
+def _recovery_result(
+    status: str,
+    reason_code: str,
+    message: str,
+    *,
+    http_status: int = 409,
+    **internal,
+) -> dict:
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        "http_status": http_status,
+        **internal,
+    }
+
+
+def inspect_sql_retry_eligibility(
+    db,
+    run_id: int,
+    *,
+    verify_artifact_files: bool = True,
+    verify_remote_artifacts: bool = True,
+) -> dict:
+    """Pure preflight shared by the SQL-retry endpoint and AI read tools."""
+    source = db.execute(
+        """SELECT r.*, f.name AS flow_name FROM flow_runs r
+           JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+        (run_id,),
+    ).fetchone()
+    if not source:
+        return _recovery_result(
+            "not_applicable", "run_not_found", "Source flow run not found.", http_status=404
+        )
+    from app.routers.pipelines import (
+        assert_flow_target_available,
+        assert_resource_unlocked,
+        flow_target_resource_key_from_job,
+    )
+    try:
+        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
+    except HTTPException as exc:
+        return _recovery_result(
+            "blocked", "pipeline_lock", str(exc.detail), http_status=exc.status_code,
+            _source=source,
+        )
+    if source["status"] not in RUN_TERMINAL:
+        return _recovery_result(
+            "blocked", "run_active", "Wait for the source run to finish before retrying SQL.",
+            _source=source,
+        )
+    source_job = _loads(source["job_json"], {})
+    sql_target = source_job.get("sql_handoff", {})
+    if not sql_target.get("enabled"):
+        return _recovery_result(
+            "not_applicable", "sql_disabled", "The source run did not have SQL handoff enabled.",
+            http_status=400, _source=source,
+        )
+    source_artifacts = _loads(source["artifact_json"], [])
+    transformed = bool(source_job.get("transformation", {}).get("enabled"))
+    if transformed:
+        candidates = [item for item in source_artifacts if item.get("status") == "transformed"]
+    else:
+        candidates = [item for item in source_artifacts if item.get("status") != "transformed"]
+    artifacts = [
+        {
+            key: item.get(key)
+            for key in (
+                "file_path", "filename", "period_key", "file_size", "checksum",
+                "row_count", "status", "source_receipt",
+            )
+            if item.get(key) is not None
+        }
+        for item in candidates if item.get("file_path") and item.get("filename")
+    ]
+    if not artifacts:
+        return _recovery_result(
+            "not_applicable", "no_sql_artifacts", "The source run has no saved SQL-ready CSV artifacts.",
+            _source=source,
+        )
+    if verify_artifact_files:
+        if not verify_remote_artifacts:
+            from app.path_safety import is_remote_file_path
+
+            remote = [
+                item["filename"] for item in artifacts
+                if is_remote_file_path(item["file_path"])
+            ]
+            if remote:
+                return _recovery_result(
+                    "blocked", "remote_artifact_unverified",
+                    "Saved SQL artifacts are on a network location that the read-only investigator did not probe. Use the normal Retry SQL control to run its authoritative file check.",
+                    _source=source,
+                )
+        missing = [
+            item["filename"] for item in artifacts
+            if not Path(item["file_path"]).is_file()
+        ]
+        if missing:
+            return _recovery_result(
+                "blocked", "artifact_missing",
+                f"Saved SQL artifact is no longer available on the BI desktop: {', '.join(missing[:10])}",
+                _source=source,
+            )
+    if _source_folder_unavailable(db, run_id):
+        return _recovery_result(
+            "blocked", "folder_unavailable",
+            "The saved files from this run were removed (or are being removed) by run folder cleanup. Use Run to download them again.",
+            _source=source,
+        )
+    active = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=?
+           AND status IN ('queued','claimed','running') LIMIT 1""",
+        (source["flow_id"],),
+    ).fetchone()
+    if active:
+        return _recovery_result(
+            "blocked", "flow_active", "This flow already has an active run.",
+            _source=source, active_run_id=int(active["id"]),
+        )
+
+    job = copy.deepcopy(source_job)
+    job["job_type"] = "sql_retry"
+    job["execution"] = {
+        "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
+        "worker_id": LOCAL_WORKER_ID,
+    }
+    job["transformation"] = {
+        "enabled": False,
+        "source_run_id": run_id,
+        "source_was_transformed": transformed,
+    }
+    job["sql_retry"] = {"source_run_id": run_id, "artifacts": artifacts}
+    source_receipt = next(
+        (item.get("source_receipt") for item in artifacts if item.get("source_receipt")),
+        None,
+    )
+    if source_receipt:
+        job["outlook_source_receipt"] = source_receipt
+    try:
+        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+    except HTTPException as exc:
+        return _recovery_result(
+            "blocked", "sql_target_busy", str(exc.detail), http_status=exc.status_code,
+            _source=source,
+        )
+    return _recovery_result(
+        "eligible", "sql_artifacts_ready",
+        f"{len(artifacts)} saved artifact(s) passed the SQL-retry preflight.",
+        http_status=200, _source=source, _job=job, _artifacts=artifacts,
+        _transformed=transformed,
+    )
+
+
+def inspect_resume_eligibility(db, run_id: int) -> dict:
+    """Pure preflight shared by the Resume endpoint and AI read tools."""
+    source = db.execute(
+        """SELECT r.*, f.name AS flow_name, f.source_type FROM flow_runs r
+           JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
+        (run_id,),
+    ).fetchone()
+    if not source:
+        return _recovery_result(
+            "not_applicable", "run_not_found", "Source flow run not found.", http_status=404
+        )
+    from app.routers.pipelines import (
+        assert_flow_target_available,
+        assert_resource_unlocked,
+        flow_target_resource_key_from_job,
+    )
+    try:
+        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
+    except HTTPException as exc:
+        return _recovery_result(
+            "blocked", "pipeline_lock", str(exc.detail), http_status=exc.status_code,
+            _source=source,
+        )
+    if source["status"] not in {"failed", "cancelled"}:
+        return _recovery_result(
+            "not_applicable", "status_not_resumable", "Only a failed or cancelled run can be resumed.",
+            _source=source,
+        )
+    if (source["source_type"] or "portal") == "outlook":
+        return _recovery_result(
+            "not_applicable", "outlook_no_resume",
+            "Outlook attachment runs cannot be resumed. Use Run to acquire the attachment again, or Retry SQL for a saved file.",
+            _source=source,
+        )
+    active = db.execute(
+        """SELECT id FROM flow_runs WHERE flow_id=?
+           AND status IN ('queued','claimed','running') LIMIT 1""",
+        (source["flow_id"],),
+    ).fetchone()
+    if active:
+        return _recovery_result(
+            "blocked", "flow_active", "This flow already has an active run.",
+            _source=source, active_run_id=int(active["id"]),
+        )
+    source_job = _loads(source["job_json"], {})
+    carried = (source_job.get("resume") or {}).get("completed") or []
+    saved = [
+        {
+            "export_view": item.get("export_view"), "period_key": item.get("period_key"),
+            "file_path": item.get("file_path"), "source_run_id": run_id,
+        }
+        for item in _loads(source["artifact_json"], [])
+        if item.get("status") == "saved" and item.get("file_path")
+    ]
+    completed, seen = [], set()
+    had_saved = False
+    for item in [*carried, *saved]:
+        entry = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
+        key = _json(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        had_saved = True
+        source_run = item.get("source_run_id")
+        if item.get("file_path"):
+            if isinstance(source_run, int) and _source_folder_unavailable(db, source_run):
+                continue
+            entry["file_path"] = item.get("file_path")
+            entry["source_run_id"] = source_run
+        completed.append(entry)
+    if not had_saved:
+        return _recovery_result(
+            "not_applicable", "no_completed_files",
+            "No file finished in that run. Use Run to start the flow from the beginning.",
+            _source=source,
+        )
+    try:
+        job = _build_job(db, source["flow_id"])
+        job["resume"] = {"from_run_id": run_id, "completed": completed}
+        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+    except HTTPException as exc:
+        return _recovery_result(
+            "blocked", "target_busy", str(exc.detail), http_status=exc.status_code,
+            _source=source,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _recovery_result(
+            "blocked", "flow_configuration_invalid",
+            f"The current Flow configuration cannot be queued: {exc}",
+            http_status=409, _source=source,
+        )
+    return _recovery_result(
+        "eligible", "completed_files_available",
+        f"Resume can reuse {len(completed)} completed file(s); the endpoint will revalidate before queueing.",
+        http_status=200, _source=source, _job=job, _completed=completed,
+    )
+
+
+def inspect_fresh_run_eligibility(db, flow_id: int) -> dict:
+    """Read-only preview of whether a new manual run is currently unblocked."""
+    flow = db.execute("SELECT id FROM flows WHERE id=?", (flow_id,)).fetchone()
+    if not flow:
+        return _recovery_result(
+            "not_applicable", "flow_not_found", "Flow not found.", http_status=404
+        )
+    from app.routers.pipelines import (
+        assert_flow_target_available,
+        assert_resource_unlocked,
+        flow_target_resource_key_from_job,
+    )
+    try:
+        assert_resource_unlocked(db, "flow", str(flow_id))
+        active = db.execute(
+            """SELECT id FROM flow_runs WHERE flow_id=?
+               AND status IN ('queued','claimed','running') LIMIT 1""",
+            (flow_id,),
+        ).fetchone()
+        if active:
+            return _recovery_result(
+                "blocked", "flow_active", "This flow already has an active run.",
+                active_run_id=int(active["id"]),
+            )
+        job = _build_job(db, flow_id)
+        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+    except HTTPException as exc:
+        return _recovery_result(
+            "blocked", "resource_busy", str(exc.detail), http_status=exc.status_code
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _recovery_result(
+            "blocked", "flow_configuration_invalid",
+            f"The current Flow configuration cannot be queued: {exc}",
+            http_status=409,
+        )
+    return _recovery_result(
+        "eligible", "manual_run_available",
+        "A fresh manual run is currently unblocked; the Run endpoint will revalidate before queueing.",
+        http_status=200,
+    )
+
+
 @router.post("/runs/{run_id}/retry-sql")
 def retry_run_sql(run_id: int, request: Request):
     """Queue SQL only from a terminal run's saved SQL-ready CSV artifacts."""
     now = _iso(_now())
+    # A disconnected network share can make a file probe slow. Perform that
+    # I/O before taking SQLite's global write reservation, then revalidate all
+    # database locks/state inside the transaction immediately before insert.
+    with get_db() as db:
+        file_preflight = inspect_sql_retry_eligibility(db, run_id)
+    if file_preflight["status"] != "eligible":
+        raise HTTPException(file_preflight["http_status"], file_preflight["message"])
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
-        source = db.execute(
-            """SELECT r.*, f.name AS flow_name FROM flow_runs r
-               JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
-            (run_id,),
-        ).fetchone()
-        if not source:
-            raise HTTPException(404, "Source flow run not found.")
-        from app.routers.pipelines import (
-            assert_flow_target_available,
-            assert_resource_unlocked,
-            flow_target_resource_key_from_job,
+        eligibility = inspect_sql_retry_eligibility(
+            db, run_id, verify_artifact_files=False
         )
-        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
-        if source["status"] not in RUN_TERMINAL:
-            raise HTTPException(409, "Wait for the source run to finish before retrying SQL.")
-        source_job = _loads(source["job_json"], {})
-        sql_target = source_job.get("sql_handoff", {})
-        if not sql_target.get("enabled"):
-            raise HTTPException(400, "The source run did not have SQL handoff enabled.")
-        source_artifacts = _loads(source["artifact_json"], [])
-        transformed = bool(source_job.get("transformation", {}).get("enabled"))
-        if transformed:
-            candidates = [item for item in source_artifacts if item.get("status") == "transformed"]
-        else:
-            candidates = [item for item in source_artifacts if item.get("status") != "transformed"]
-        artifacts = [
-            {
-                key: item.get(key)
-                for key in (
-                    "file_path", "filename", "period_key", "file_size", "checksum",
-                    "row_count", "status", "source_receipt",
-                )
-                if item.get(key) is not None
-            }
-            for item in candidates if item.get("file_path") and item.get("filename")
-        ]
-        if not artifacts:
-            raise HTTPException(409, "The source run has no saved SQL-ready CSV artifacts.")
-        missing = [item["filename"] for item in artifacts if not Path(item["file_path"]).is_file()]
-        if missing:
-            raise HTTPException(
-                409,
-                f"Saved SQL artifact is no longer available on the BI desktop: {', '.join(missing[:10])}",
-            )
-        if _source_folder_unavailable(db, run_id):
-            raise HTTPException(
-                409,
-                "The saved files from this run were removed (or are being removed) by the "
-                f"keep-newest-{RETENTION_KEEP} run folder cleanup. Use Run to download them again.",
-            )
-        active = db.execute(
-            """SELECT id FROM flow_runs WHERE flow_id=?
-               AND status IN ('queued','claimed','running') LIMIT 1""",
-            (source["flow_id"],),
-        ).fetchone()
-        if active:
-            raise HTTPException(409, "This flow already has an active run.")
-
-        job = copy.deepcopy(source_job)
-        job["job_type"] = "sql_retry"
-        job["execution"] = {
-            "mode": "local", "host": "bi_desktop", "browser_mode": "headless",
-            "worker_id": LOCAL_WORKER_ID,
-        }
-        job["transformation"] = {
-            "enabled": False,
-            "source_run_id": run_id,
-            "source_was_transformed": transformed,
-        }
-        job["sql_retry"] = {"source_run_id": run_id, "artifacts": artifacts}
-        source_receipt = next(
-            (item.get("source_receipt") for item in artifacts if item.get("source_receipt")),
-            None,
-        )
-        if source_receipt:
-            job["outlook_source_receipt"] = source_receipt
-        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+        if eligibility["status"] != "eligible":
+            raise HTTPException(eligibility["http_status"], eligibility["message"])
+        source = eligibility["_source"]
+        job = eligibility["_job"]
+        artifacts = eligibility["_artifacts"]
         cursor = db.execute(
             """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1812,74 +2075,12 @@ def resume_run(run_id: int, request: Request):
     now = _iso(_now())
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
-        source = db.execute(
-            """SELECT r.*, f.name AS flow_name, f.source_type FROM flow_runs r
-               JOIN flows f ON f.id=r.flow_id WHERE r.id=?""",
-            (run_id,),
-        ).fetchone()
-        if not source:
-            raise HTTPException(404, "Source flow run not found.")
-        from app.routers.pipelines import (
-            assert_flow_target_available,
-            assert_resource_unlocked,
-            flow_target_resource_key_from_job,
-        )
-        assert_resource_unlocked(db, "flow", str(source["flow_id"]))
-        if source["status"] not in {"failed", "cancelled"}:
-            raise HTTPException(409, "Only a failed or cancelled run can be resumed.")
-        if (source["source_type"] or "portal") == "outlook":
-            raise HTTPException(
-                409,
-                "Outlook attachment runs cannot be resumed. Use Run to acquire the attachment again, or Retry SQL for a saved file.",
-            )
-        active = db.execute(
-            """SELECT id FROM flow_runs WHERE flow_id=?
-               AND status IN ('queued','claimed','running') LIMIT 1""",
-            (source["flow_id"],),
-        ).fetchone()
-        if active:
-            raise HTTPException(409, "This flow already has an active run.")
-        source_job = _loads(source["job_json"], {})
-        carried = (source_job.get("resume") or {}).get("completed") or []
-        saved = [
-            {
-                "export_view": item.get("export_view"), "period_key": item.get("period_key"),
-                "file_path": item.get("file_path"), "source_run_id": run_id,
-            }
-            for item in _loads(source["artifact_json"], [])
-            if item.get("status") == "saved" and item.get("file_path")
-        ]
-        completed, seen = [], set()
-        had_saved = False
-        for item in [*carried, *saved]:
-            entry = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
-            key = _json(entry)
-            if key in seen:
-                continue
-            seen.add(key)
-            had_saved = True
-            source_run = item.get("source_run_id")
-            if item.get("file_path"):
-                if isinstance(source_run, int) and _source_folder_unavailable(db, source_run):
-                    # The saved file's run folder was pruned (or is scheduled
-                    # for removal). The export must download again, so it is
-                    # left out of the completed list entirely - an entry
-                    # without a path would read as legacy-complete and be
-                    # skipped by the worker.
-                    continue
-                entry["file_path"] = item.get("file_path")
-                entry["source_run_id"] = source_run
-            completed.append(entry)
-        # A source whose every saved file was pruned still resumes - with an
-        # empty completed list, so everything downloads again. Only a run
-        # that never finished a single file cannot be resumed.
-        if not had_saved:
-            raise HTTPException(
-                409, "No file finished in that run. Use Run to start the flow from the beginning.",
-            )
-        job = _build_job(db, source["flow_id"])
-        job["resume"] = {"from_run_id": run_id, "completed": completed}
-        assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+        eligibility = inspect_resume_eligibility(db, run_id)
+        if eligibility["status"] != "eligible":
+            raise HTTPException(eligibility["http_status"], eligibility["message"])
+        source = eligibility["_source"]
+        job = eligibility["_job"]
+        completed = eligibility["_completed"]
         cursor = db.execute(
             """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                VALUES (?, 'resume', 'queued', ?, ?, ?)""",

@@ -32,8 +32,9 @@ TMDL_ROOT = _tmdl_root_raw
 SCAN_INTERVAL_HOURS = int(os.environ.get("DG_SCAN_INTERVAL_HOURS", "24"))
 CHECK_INTERVAL_HOURS = int(os.environ.get("DG_CHECK_INTERVAL_HOURS", "6"))
 
-# AI configuration
-AI_MODEL = os.environ.get("DG_AI_MODEL", "gpt-oss-120b")
+# AI configuration. Qwen is reached through an OpenAI-compatible endpoint; the
+# application itself never loads the 27B checkpoint into the web process.
+AI_MODEL = os.environ.get("DG_AI_MODEL", "Qwen/Qwen3.8-27B")
 AI_API_KEY = os.environ.get("DG_AI_API_KEY", "")
 
 # Read endpoint URL: endpoint_url.txt takes priority, then DG_AI_API_URL env var
@@ -52,6 +53,37 @@ if _ai_url:
 else:
     AI_API_URL = "http://localhost:11434/v1/chat/completions"
     AI_MOCK = os.environ.get("DG_AI_MOCK", "true").lower() in ("true", "1", "yes")
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(os.environ.get(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def _bounded_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        return min(maximum, max(minimum, float(os.environ.get(name, str(default)))))
+    except ValueError:
+        return default
+
+
+AI_PROVIDER_PROFILE = os.environ.get("DG_AI_PROVIDER_PROFILE", "auto").strip() or "auto"
+AI_REASONING_EFFORT = os.environ.get("DG_AI_REASONING_EFFORT", "medium").strip().casefold()
+if AI_REASONING_EFFORT not in {"low", "medium", "xhigh"}:
+    AI_REASONING_EFFORT = "medium"
+AI_AGENT_MAX_TOOL_CALLS = _bounded_int_env("DG_AI_AGENT_MAX_TOOL_CALLS", 8, 1, 12)
+AI_AGENT_MAX_MODEL_TURNS = _bounded_int_env("DG_AI_AGENT_MAX_MODEL_TURNS", 6, 1, 8)
+AI_AGENT_MAX_SECONDS = _bounded_int_env("DG_AI_AGENT_MAX_SECONDS", 180, 30, 300)
+AI_AGENT_HTTP_TIMEOUT_SECONDS = _bounded_float_env(
+    "DG_AI_AGENT_HTTP_TIMEOUT_SECONDS", 90.0, 10.0, 180.0
+)
+AI_AGENT_MAX_OUTPUT_TOKENS = _bounded_int_env(
+    "DG_AI_AGENT_MAX_OUTPUT_TOKENS", 4096, 512, 8192
+)
+AI_AGENT_TEMPERATURE = _bounded_float_env("DG_AI_AGENT_TEMPERATURE", 1.0, 0.0, 1.5)
+AI_AGENT_TOP_P = _bounded_float_env("DG_AI_AGENT_TOP_P", 0.95, 0.1, 1.0)
 
 # Power BI workspace name for refresh schedule sync
 PBI_WORKSPACE = os.environ.get("DG_PBI_WORKSPACE", "")
@@ -123,16 +155,12 @@ PGUSER = os.environ.get("PGUSER", "")
 PGPASSWORD = os.environ.get("PGPASSWORD", "")
 PGDATABASE = os.environ.get("PGDATABASE", "postgres")
 
-# PostgreSQL credentials for the Import Data section, which WRITES
-# (CREATE TABLE / TRUNCATE / INSERT). Kept separate from the read-only
-# probing credentials above on purpose: user and password have no fallback,
-# so imports stay disabled until DG_UPLOAD_PGUSER/DG_UPLOAD_PGPASSWORD are
-# set to an account that is allowed to write. Host/port/database fall back
-# to the probing connection's values.
+# PostgreSQL credentials for Flow SQL handoffs and explicit materialized-view
+# refreshes. Kept separate from the read-only probing credentials above:
+# user and password have no fallback, while host/port/database may reuse the
+# probing connection's location.
 UPLOAD_PGHOST = os.environ.get("DG_UPLOAD_PGHOST", "") or PGHOST
 UPLOAD_PGPORT = os.environ.get("DG_UPLOAD_PGPORT", "") or os.environ.get("PGPORT", "") or "5432"
 UPLOAD_PGDATABASE = os.environ.get("DG_UPLOAD_PGDATABASE", "") or PGDATABASE
 UPLOAD_PGUSER = os.environ.get("DG_UPLOAD_PGUSER", "")
 UPLOAD_PGPASSWORD = os.environ.get("DG_UPLOAD_PGPASSWORD", "")
-UPLOAD_SCHEMA = os.environ.get("DG_UPLOAD_SCHEMA", "bi_reporting")
-IMPORT_SCRIPT_DIR = os.environ.get("DG_IMPORT_SCRIPT_DIR", str(BASE_DIR / "generated_imports"))

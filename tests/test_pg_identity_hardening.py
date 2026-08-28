@@ -5,10 +5,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 import app.database as database
 from app.database import get_db, init_db
-from app.routers import data_import
+from app.routers import materialized_views
 from app.scanner import pg_deps, runner
 from app.scanner.tmdl_parser import ParsedTable, SourceInfo
 from app.scanner.walker import DiscoveredReport
@@ -144,44 +145,13 @@ def test_guarded_claim_never_overwrites_an_existing_physical_identity(identity_d
         assert tuple(row) == ("db.internal", "staging", "sales", "orders")
 
 
-class _Rows:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def fetchall(self):
-        return list(self._rows)
-
-
-class _EngineConnection:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def execute(self, _query, _params=None):
-        return _Rows(self._rows)
-
-
-class _Engine:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def connect(self):
-        return _EngineConnection(self._rows)
-
-
-def test_data_import_enrichment_uses_only_exact_upload_identity(
+def test_materialized_view_refresh_identity_is_source_and_database_aware(
     identity_db, monkeypatch
 ):
-    monkeypatch.setattr(data_import, "UPLOAD_PGHOST", "db.internal")
-    monkeypatch.setattr(data_import, "UPLOAD_PGDATABASE", "warehouse")
+    monkeypatch.setattr(materialized_views, "UPLOAD_PGHOST", "db.internal")
 
     with get_db() as db:
-        _source(db, 1, "warehouse MV", schedule="0 6 * * *")
+        _source(db, 1, "warehouse MV")
         _identity(
             db,
             1,
@@ -189,60 +159,41 @@ def test_data_import_enrichment_uses_only_exact_upload_identity(
             relation="orders_mv",
             kind="materialized_view",
         )
-        _source(db, 2, "sales.no_identity_mv", schedule="0 7 * * *")
-        _source(db, 3, "staging MV", schedule="0 8 * * *")
-        _identity(
-            db,
-            3,
-            database_name="staging",
-            relation="staging_only_mv",
-            kind="materialized_view",
-        )
-
-    views = data_import._materialized_views(
-        _Engine(
-            [
-                ("sales", "orders_mv"),
-                ("sales", "no_identity_mv"),
-                ("sales", "staging_only_mv"),
-            ]
-        )
-    )
-    by_name = {view["name"]: view for view in views}
-
-    assert by_name["orders_mv"]["source_id"] == 1
-    assert by_name["orders_mv"]["refresh_schedule"] == "0 6 * * *"
-    assert by_name["no_identity_mv"]["source_id"] is None
-    assert by_name["staging_only_mv"]["source_id"] is None
-
-
-def test_data_import_enrichment_does_not_choose_between_duplicate_identities(
-    identity_db, monkeypatch
-):
-    monkeypatch.setattr(data_import, "UPLOAD_PGHOST", "db.internal")
-    monkeypatch.setattr(data_import, "UPLOAD_PGDATABASE", "warehouse")
-
-    with get_db() as db:
-        _source(db, 1, "orders MV one")
-        _source(db, 2, "orders MV two")
-        _identity(
-            db,
-            1,
-            database_name="warehouse",
-            relation="orders_mv",
-            kind="materialized_view",
-        )
+        _source(db, 2, "staging MV")
         _identity(
             db,
             2,
-            database_name="warehouse",
+            database_name="staging",
             relation="orders_mv",
             kind="materialized_view",
         )
 
-    [view] = data_import._materialized_views(_Engine([("sales", "orders_mv")]))
-    assert view["source_id"] is None
-    assert view["refresh_schedule"] is None
+    warehouse = materialized_views._materialized_view_identity(1)
+    staging = materialized_views._materialized_view_identity(2)
+
+    assert warehouse["database_name"] == "warehouse"
+    assert staging["database_name"] == "staging"
+    assert warehouse["relation_name"] == staging["relation_name"] == "orders_mv"
+
+
+def test_materialized_view_refresh_rejects_a_non_materialized_source(
+    identity_db, monkeypatch
+):
+    monkeypatch.setattr(materialized_views, "UPLOAD_PGHOST", "db.internal")
+
+    with get_db() as db:
+        _source(db, 1, "orders table")
+        _identity(
+            db,
+            1,
+            database_name="warehouse",
+            relation="orders",
+            kind="table",
+        )
+
+    with pytest.raises(HTTPException, match="not a materialized view") as exc_info:
+        materialized_views._materialized_view_identity(1)
+    assert exc_info.value.status_code == 400
 
 
 class _PgCursor:

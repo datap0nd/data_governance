@@ -1,40 +1,18 @@
-"""Interface for the LiteLLM / OpenAI-compatible LLM endpoint."""
+"""Compatibility shim for the existing single-turn AI features."""
 
-import logging
-import httpx
-from app.config import AI_API_URL, AI_API_KEY, AI_MODEL
-
-logger = logging.getLogger(__name__)
+from app.ai.openai_provider import OpenAIChatProvider
 
 
 def call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Send a prompt to the configured LLM endpoint and return the response text.
-
-    Expects an OpenAI-compatible chat completions endpoint.
-    """
-    headers = {"Content-Type": "application/json"}
-    if AI_API_KEY:
-        headers["Authorization"] = f"Bearer {AI_API_KEY}"
-
-    payload = {
-        "model": AI_MODEL,
-        "messages": [
+    """Send a plain text request through the strict provider transport."""
+    provider = OpenAIChatProvider()
+    turn = provider.complete(
+        [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "max_tokens": 2048,
-        "temperature": 0.3,
-    }
-
-    logger.info("Calling LLM at %s with model %s", AI_API_URL, AI_MODEL)
-    resp = httpx.post(AI_API_URL, json=payload, headers=headers, timeout=120.0)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # OpenAI-compatible format
-    if "choices" in data:
-        return data["choices"][0]["message"]["content"]
-    # Anthropic format
-    if "content" in data:
-        return data["content"][0]["text"]
-    return str(data)
+        [],
+    )
+    if turn.tool_calls or not turn.content:
+        raise RuntimeError("The configured model did not return a plain text response.")
+    return turn.content

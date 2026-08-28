@@ -34,6 +34,7 @@ from app.config import (
     PBI_WORKSPACE,
 )
 from app.database import get_db
+from app.scanner.findings import sync_managed_actions
 from app.scanner.control import (
     ScannerWorkCancelled,
     assert_not_cancelled,
@@ -375,10 +376,32 @@ def _launch_powershell_background(script: Path, args: list[str], sync_type: str)
     }
 
 
-def _create_reconnect_alert(message: str) -> None:
+def _create_reconnect_alert(message: str, sync_run_id: int | None = None) -> None:
     """Surface an expired Power BI sign-in as a critical dashboard alert."""
     try:
         with get_db() as db:
+            now = _now_iso()
+            sync_managed_actions(
+                db,
+                "pbi_reconnect",
+                [{
+                    "fingerprint": f"pbi_reconnect:{PBI_WORKSPACE or 'default'}",
+                    "notes": message,
+                    "occurrence": {
+                        "focus_type": "pbi_sync",
+                        "focus_id": sync_run_id or now,
+                        "observed_at": now,
+                        "summary": "Power BI account reconnect is required.",
+                        "evidence": {
+                            "status": "failed",
+                            "reason": "reconnect_required",
+                            "message": message,
+                        },
+                    },
+                }],
+                now,
+            )
+            # Retain the legacy row for old API consumers during migration.
             existing = db.execute(
                 """SELECT id FROM alerts
                    WHERE message LIKE 'Power BI sign-in%' AND resolution_status IS NULL"""
@@ -386,10 +409,32 @@ def _create_reconnect_alert(message: str) -> None:
             if not existing:
                 db.execute(
                     "INSERT INTO alerts (severity, message, created_at) VALUES ('critical', ?, ?)",
-                    (message, _now_iso()),
+                    (message, now),
                 )
     except Exception:
         logger.exception("Could not create Power BI reconnect alert")
+
+
+def _resolve_reconnect_alerts(db, now: str) -> int:
+    """Resolve reconnect incidents only after an authenticated import succeeds."""
+    result = db.execute(
+        """UPDATE actions
+              SET status='resolved', resolved_at=?, updated_at=?,
+                  notes=COALESCE(notes, '') || ' [auto-resolved: authenticated Power BI sync succeeded]'
+            WHERE type='pbi_reconnect' AND status!='resolved'""",
+        (now, now),
+    )
+    # Legacy rows remain readable and mirror the canonical recovery outcome.
+    db.execute(
+        """UPDATE alerts
+              SET resolution_status='resolved', resolved_at=?, acknowledged=1,
+                  acknowledged_by='auto',
+                  resolution_reason='Authenticated Power BI sync succeeded'
+            WHERE message LIKE 'Power BI sign-in%'
+              AND resolution_status IS NULL""",
+        (now,),
+    )
+    return result.rowcount or 0
 
 
 def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_generation: int | None) -> dict:
@@ -421,9 +466,10 @@ def _launch_cached_account_sync(sync_type: str, workspace: str | None, cancel_ge
                     f"Power BI sign-in expired or was revoked: {message} "
                     "Reconnect from the Scanner page (Connect Power BI)."
                 )
-                _create_reconnect_alert(message)
             logger.exception("Headless Power BI %s sync failed", sync_type)
-            _record_sync_run(sync_type, "failed", message)
+            failure_run_id = _record_sync_run(sync_type, "failed", message)
+            if getattr(exc, "reconnect_required", False):
+                _create_reconnect_alert(message, failure_run_id)
 
     threading.Thread(target=_worker, name=f"pbi-{sync_type}-headless-sync", daemon=True).start()
     return {
@@ -1282,6 +1328,7 @@ def _import_pbi_data_once(data: dict, cancel_generation: int | None = None) -> d
         # Check for overdue refreshes and create alerts
         assert_not_cancelled(cancel_generation, "Power BI refresh import")
         overdue_count = _check_refresh_alerts(db, now)
+        _resolve_reconnect_alerts(db, now)
 
     summary = {
         "status": "completed",
@@ -1358,6 +1405,11 @@ def _import_pbi_usage_data_once(data: dict) -> dict:
             )
             if report_id:
                 matched += 1
+
+        # A successful usage import also proves the saved Microsoft account is
+        # authenticated. Reconnect incidents must clear regardless of which
+        # authenticated Power BI sync recovered first.
+        _resolve_reconnect_alerts(db, now)
 
     result = {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
     _record_sync_run(

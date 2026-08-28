@@ -1366,6 +1366,215 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
     # Per-component scan lifecycle details (NULL for legacy scan rows).
     "ALTER TABLE scan_runs ADD COLUMN components_json TEXT",
+    # Canonical alert evidence. ``actions`` remains the user-facing incident
+    # lifecycle while immutable occurrences retain the exact run that caused a
+    # Flow/Pipeline failure. Legacy ``alerts`` rows stay readable.
+    "ALTER TABLE actions ADD COLUMN evidence_revision INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE actions ADD COLUMN evidence_hash TEXT",
+    # Repair any historical race duplicates before enforcing one active
+    # occurrence of a managed fingerprint. Keep the oldest row/first-seen age,
+    # but merge the strongest explicit lifecycle and ownership state into it so
+    # cleanup cannot silently undo a person's expected/investigating decision.
+    """WITH ranked AS (
+           SELECT id, type, fingerprint, status, assigned_to, notes, resolved_at,
+                  ROW_NUMBER() OVER (
+                      PARTITION BY type, fingerprint
+                      ORDER BY CASE status
+                                 WHEN 'expected' THEN 4
+                                 WHEN 'investigating' THEN 3
+                                 WHEN 'acknowledged' THEN 2
+                                 ELSE 1
+                               END DESC,
+                               CASE WHEN assigned_to IS NOT NULL AND TRIM(assigned_to) != ''
+                                    THEN 1 ELSE 0 END DESC,
+                               COALESCE(updated_at, created_at) DESC,
+                               id DESC
+                  ) AS state_rank
+             FROM actions
+            WHERE fingerprint IS NOT NULL
+              AND status IN ('open', 'acknowledged', 'investigating', 'expected')
+       ), survivors AS (
+           SELECT type, fingerprint, MIN(id) AS survivor_id, MIN(created_at) AS first_created_at
+             FROM actions
+            WHERE fingerprint IS NOT NULL
+              AND status IN ('open', 'acknowledged', 'investigating', 'expected')
+            GROUP BY type, fingerprint
+           HAVING COUNT(*) > 1
+       ), merged AS (
+           SELECT s.survivor_id, s.type, s.fingerprint, s.first_created_at,
+                  winner.status AS winner_status,
+                  winner.resolved_at AS winner_resolved_at,
+                  COALESCE(
+                      NULLIF(TRIM(winner.assigned_to), ''),
+                      (SELECT NULLIF(TRIM(owner.assigned_to), '')
+                         FROM ranked owner
+                        WHERE owner.type=s.type AND owner.fingerprint=s.fingerprint
+                          AND owner.assigned_to IS NOT NULL
+                          AND TRIM(owner.assigned_to) != ''
+                        ORDER BY owner.state_rank LIMIT 1)
+                  ) AS merged_assigned_to,
+                  COALESCE(
+                      NULLIF(TRIM(winner.notes), ''),
+                      (SELECT NULLIF(TRIM(noted.notes), '')
+                         FROM ranked noted
+                        WHERE noted.type=s.type AND noted.fingerprint=s.fingerprint
+                          AND noted.notes IS NOT NULL AND TRIM(noted.notes) != ''
+                        ORDER BY noted.state_rank LIMIT 1)
+                  ) AS merged_notes
+             FROM survivors s
+             JOIN ranked winner
+               ON winner.type=s.type AND winner.fingerprint=s.fingerprint
+              AND winner.state_rank=1
+       )
+       UPDATE actions
+          SET status=(SELECT winner_status FROM merged WHERE survivor_id=actions.id),
+              assigned_to=COALESCE(
+                  (SELECT merged_assigned_to FROM merged WHERE survivor_id=actions.id),
+                  assigned_to
+              ),
+              notes=COALESCE(
+                  (SELECT merged_notes FROM merged WHERE survivor_id=actions.id),
+                  notes
+              ),
+              resolved_at=CASE
+                  WHEN (SELECT winner_status FROM merged WHERE survivor_id=actions.id)='expected'
+                  THEN COALESCE(
+                      (SELECT winner_resolved_at FROM merged WHERE survivor_id=actions.id),
+                      resolved_at,
+                      CURRENT_TIMESTAMP
+                  )
+                  ELSE NULL
+              END,
+              created_at=COALESCE(
+                  (SELECT first_created_at FROM merged WHERE survivor_id=actions.id),
+                  created_at
+              ),
+              updated_at=CURRENT_TIMESTAMP
+        WHERE id IN (SELECT survivor_id FROM merged)""",
+    """UPDATE actions
+       SET status='resolved', resolved_at=COALESCE(resolved_at, CURRENT_TIMESTAMP),
+           updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes, '') || ' [auto-resolved: duplicate active alert]'
+       WHERE fingerprint IS NOT NULL
+         AND status IN ('open', 'acknowledged', 'investigating', 'expected')
+         AND id NOT IN (
+             SELECT MIN(id) FROM actions
+              WHERE fingerprint IS NOT NULL
+                AND status IN ('open', 'acknowledged', 'investigating', 'expected')
+              GROUP BY type, fingerprint
+         )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_actions_active_fingerprint
+       ON actions(type, fingerprint)
+       WHERE fingerprint IS NOT NULL
+         AND status IN ('open', 'acknowledged', 'investigating', 'expected')""",
+    """CREATE TABLE IF NOT EXISTS action_occurrences (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        action_id           INTEGER NOT NULL REFERENCES actions(id) ON DELETE CASCADE,
+        evidence_revision   INTEGER NOT NULL,
+        focus_type          TEXT NOT NULL,
+        focus_id            TEXT NOT NULL,
+        evidence_hash       TEXT NOT NULL,
+        summary             TEXT NOT NULL,
+        evidence_json       TEXT NOT NULL DEFAULT '{}',
+        observed_at         DATETIME NOT NULL,
+        created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(action_id, evidence_revision),
+        UNIQUE(action_id, focus_type, focus_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_action_occurrences_action ON action_occurrences(action_id, evidence_revision DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_action_occurrences_focus ON action_occurrences(focus_type, focus_id)",
+    # Read-only AI Operations Investigator. These append-oriented records keep
+    # evidence and progress durable without giving the model any write tool.
+    """CREATE TABLE IF NOT EXISTS agent_runs (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode                TEXT NOT NULL DEFAULT 'incident',
+        question            TEXT NOT NULL,
+        focus_type          TEXT NOT NULL,
+        focus_id            TEXT NOT NULL,
+        status              TEXT NOT NULL DEFAULT 'queued',
+        actor               TEXT,
+        model               TEXT NOT NULL,
+        reasoning_effort    TEXT,
+        provider_mode       TEXT NOT NULL,
+        prompt_version      TEXT NOT NULL,
+        cancel_requested    INTEGER NOT NULL DEFAULT 0,
+        tool_call_count     INTEGER NOT NULL DEFAULT 0,
+        final_json          TEXT,
+        error_code          TEXT,
+        error               TEXT,
+        usage_json          TEXT NOT NULL DEFAULT '{}',
+        created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at          DATETIME,
+        finished_at         DATETIME,
+        updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_focus ON agent_runs(focus_type, focus_id, id DESC)",
+    """CREATE TABLE IF NOT EXISTS agent_steps (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id              INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        sequence_no         INTEGER NOT NULL,
+        tool_call_id        TEXT,
+        tool_name           TEXT NOT NULL,
+        arguments_json      TEXT NOT NULL DEFAULT '{}',
+        status              TEXT NOT NULL DEFAULT 'running',
+        result_json         TEXT,
+        error               TEXT,
+        started_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at         DATETIME,
+        duration_ms         INTEGER,
+        UNIQUE(run_id, sequence_no)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, sequence_no)",
+    """CREATE TABLE IF NOT EXISTS agent_evidence (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id              INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        step_id             INTEGER REFERENCES agent_steps(id) ON DELETE SET NULL,
+        evidence_key        TEXT NOT NULL,
+        entity_type         TEXT NOT NULL,
+        entity_id           TEXT NOT NULL,
+        label               TEXT NOT NULL,
+        deep_link           TEXT,
+        observed_at         DATETIME NOT NULL,
+        UNIQUE(run_id, evidence_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_agent_evidence_run ON agent_evidence(run_id, id)",
+    # Optional canonical-alert linkage. Null values preserve standalone run
+    # investigations and all rows created before alert integration.
+    "ALTER TABLE agent_runs ADD COLUMN action_id INTEGER REFERENCES actions(id) ON DELETE SET NULL",
+    "ALTER TABLE agent_runs ADD COLUMN action_evidence_revision INTEGER",
+    "ALTER TABLE agent_runs ADD COLUMN superseded_at DATETIME",
+    "ALTER TABLE agent_runs ADD COLUMN superseded_reason TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_action ON agent_runs(action_id, id DESC)",
+    # Superseding is orthogonal to execution status: completed traces remain
+    # auditable, but cannot be presented as the current alert recommendation.
+    """CREATE TRIGGER IF NOT EXISTS trg_actions_revision_supersedes_agent_runs
+       AFTER UPDATE OF evidence_revision ON actions
+       WHEN NEW.evidence_revision != OLD.evidence_revision
+       BEGIN
+         UPDATE agent_runs
+            SET superseded_at=COALESCE(superseded_at, CURRENT_TIMESTAMP),
+                superseded_reason=COALESCE(superseded_reason, 'alert_evidence_changed')
+          WHERE action_id=NEW.id
+            AND COALESCE(action_evidence_revision, -1) != NEW.evidence_revision
+            AND superseded_at IS NULL;
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS trg_actions_closed_supersedes_agent_runs
+       AFTER UPDATE OF status ON actions
+       WHEN NEW.status IN ('resolved', 'expected')
+        AND COALESCE(OLD.status, '') NOT IN ('resolved', 'expected')
+       BEGIN
+         UPDATE agent_runs
+            SET superseded_at=COALESCE(superseded_at, CURRENT_TIMESTAMP),
+                superseded_reason=COALESCE(
+                    superseded_reason,
+                    CASE NEW.status
+                      WHEN 'resolved' THEN 'alert_resolved'
+                      ELSE 'alert_expected'
+                    END
+                )
+          WHERE action_id=NEW.id AND superseded_at IS NULL;
+       END""",
 ]
 
 

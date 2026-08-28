@@ -11,16 +11,6 @@ from app.models import LineageEdge
 router = APIRouter(prefix="/api/lineage", tags=["lineage"])
 
 
-def _postgres_ref(source_name: str | None) -> dict | None:
-    """Extract the schema and relation from a PostgreSQL lineage source name."""
-    cleaned = (source_name or "").strip().replace("\\", "/").split("/")[-1]
-    cleaned = cleaned.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
-    parts = [part.strip() for part in cleaned.split(".") if part.strip()]
-    if len(parts) < 2:
-        return None
-    return {"schema": parts[-2], "name": parts[-1]}
-
-
 @router.get("", response_model=list[LineageEdge])
 def get_lineage():
     """Get all source-to-report lineage edges."""
@@ -271,11 +261,7 @@ def get_lineage_diagram(report_id: int):
             source["postgres_ref"] = (
                 {"schema": identity["schema"], "name": identity["relation"]}
                 if source["is_materialized_view"] and identity
-                else (
-                    _postgres_ref(source["name"])
-                    if source["is_materialized_view"] and (source["type"] or "").casefold() == "postgresql"
-                    else None
-                )
+                else None
             )
 
         # 8. Flows that load a SQL target represented anywhere in this report

@@ -4,7 +4,6 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 from app import flow_sql, flow_worker
@@ -693,7 +692,7 @@ def test_csv_reader_uses_normalized_comma_format(tmp_path, monkeypatch):
 
 def test_sql_preflight_reports_missing_and_unexpected_columns(tmp_path, monkeypatch):
     path = tmp_path / "wrong.csv"
-    pd.DataFrame({"a": [1], "extra": [2]}).to_csv(path, index=False)
+    path.write_text("a,extra\n1,2\n", encoding="utf-8")
 
     class Result:
         def fetchall(self):

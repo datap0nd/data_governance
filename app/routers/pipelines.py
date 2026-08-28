@@ -29,6 +29,7 @@ from app.flow_diagnostics import (
 from app.flow_local_runner import HEADED_WORKER_ID, WORKER_ID, launch_local_worker
 from app.flow_sql import _engine, _quote_identifier, configuration_status
 from app.routers.eventlog import get_actor, log_event
+from app.scanner.findings import sync_managed_actions
 from app.scanner.pbi_fetch import (
     PbiFetchError,
     fetch_dataset_refresh_by_request_id,
@@ -683,6 +684,53 @@ def _release_locks(db, run_id: int) -> None:
     db.execute("DELETE FROM pipeline_resource_locks WHERE run_id=?", (run_id,))
 
 
+def _sync_pipeline_failure_actions(db, now: str) -> dict:
+    """Keep one report-scoped alert with immutable exact-run occurrences.
+
+    A newer in-progress run does not clear the previous failure. Only a later
+    terminal success for the same report resolves its active failure alert.
+    """
+    failed = db.execute(
+        """SELECT pr.id AS run_id, pr.report_id, pr.stage, pr.error,
+                  pr.requires_inspection, pr.finished_at,
+                  r.name AS report_name, r.owner
+             FROM pipeline_runs pr
+             JOIN reports r ON r.id=pr.report_id
+            WHERE COALESCE(r.archived, 0)=0
+              AND pr.status='failed'
+              AND pr.id=(
+                  SELECT pr2.id FROM pipeline_runs pr2
+                   WHERE pr2.report_id=pr.report_id
+                     AND pr2.status IN ('succeeded','failed')
+                   ORDER BY pr2.id DESC LIMIT 1
+              )"""
+    ).fetchall()
+    findings = [
+        {
+            "fingerprint": f"pipeline_failed:{row['report_id']}",
+            "report_id": row["report_id"],
+            "assigned_to": row["owner"],
+            "notes": row["error"] or f"Pipeline for {row['report_name']} failed.",
+            "occurrence": {
+                "focus_type": "pipeline_run",
+                "focus_id": row["run_id"],
+                "observed_at": row["finished_at"] or now,
+                "summary": (
+                    f"Pipeline run #{row['run_id']} for {row['report_name']} failed."
+                ),
+                "evidence": {
+                    "status": "failed",
+                    "stage": row["stage"],
+                    "requires_inspection": bool(row["requires_inspection"]),
+                    "error": row["error"],
+                },
+            },
+        }
+        for row in failed
+    ]
+    return sync_managed_actions(db, "pipeline_failed", findings, now)
+
+
 def _fail_pipeline(
     run_id: int,
     error: str,
@@ -712,6 +760,7 @@ def _fail_pipeline(
         (_safe_error(error), int(requires_inspection), now, now, run_id),
     )
     _release_locks(db, run_id)
+    _sync_pipeline_failure_actions(db, now)
 
 
 def _succeed_pipeline(run_id: int) -> None:
@@ -723,6 +772,7 @@ def _succeed_pipeline(run_id: int) -> None:
             (now, now, run_id),
         )
         _release_locks(db, run_id)
+        _sync_pipeline_failure_actions(db, now)
 
 
 def _set_stage(run_id: int, stage: str, *, db=None) -> None:
@@ -1279,6 +1329,10 @@ def pipeline_tick() -> dict:
                  AND od.id=(SELECT MAX(od2.id) FROM outlook_dispatches od2 WHERE od2.pipeline_run_id=pr.id)
                ORDER BY od.id DESC"""
         ).fetchall()
+        # Also backfill/repair canonical alerts for terminal runs created by an
+        # older Metronome build. In-progress retries deliberately leave the
+        # prior failure active until a terminal success is recorded.
+        _sync_pipeline_failure_actions(db, _iso())
         for receipt in receipts:
             if receipt["status"] == "submitted":
                 db.execute(

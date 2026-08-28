@@ -21,7 +21,7 @@ jobs:
         run: >
           pip install pytest fastapi uvicorn pydantic httpx playwright
           openpyxl==3.1.5 xlrd==2.0.2 pyxlsb==1.0.10
-          python-multipart apscheduler pandas sqlalchemy truststore
+          python-multipart apscheduler sqlalchemy truststore
       - name: Run Python test suite
         run: python -m pytest tests -q
       - name: Run catalog tree tests
@@ -36,5 +36,7 @@ jobs:
         run: node tests/test_scan_status_display.mjs
       - name: Run Flow diagnostics display tests
         run: node tests/test_flow_diagnostics_display.mjs
+      - name: Run AI Operations Investigator display tests
+        run: node tests/test_ai_operations_display.mjs
       - name: Check frontend JavaScript syntax
         run: node --check app/static/app.js

@@ -93,7 +93,9 @@ async function apiError(res) {
             detail = payload.detail.map(item => item.msg || item.message || "Invalid value").join("; ");
         }
     } catch (_) {}
-    return new Error(detail || `API error: ${res.status}`);
+    const error = new Error(detail || `API error: ${res.status}`);
+    error.status = res.status;
+    return error;
 }
 
 async function api(path) {
@@ -341,6 +343,9 @@ function actionTypeBadge(type, neutral = false) {
         data_quality: "Data Quality",
         dependency_stale: "Upstream Newer",
         schedule_discrepancy: "Schedule Mismatch",
+        flow_failed: "Flow Failed",
+        pipeline_failed: "Pipeline Failed",
+        pbi_reconnect: "Power BI Reconnect",
         best_practice: "Model Quality",
         documentation_missing: "Documentation",
     };
@@ -359,6 +364,9 @@ function actionTypeBadge(type, neutral = false) {
         data_quality: "badge-red",
         dependency_stale: "badge-yellow",
         schedule_discrepancy: "badge-yellow",
+        flow_failed: "badge-red",
+        pipeline_failed: "badge-red",
+        pbi_reconnect: "badge-red",
         best_practice: "badge-yellow",
         documentation_missing: "badge-yellow",
     };
@@ -382,6 +390,9 @@ function actionTypeLabel(type) {
         data_quality: "Data-quality check failed",
         dependency_stale: "Upstream data is newer",
         schedule_discrepancy: "Refresh schedule mismatch",
+        flow_failed: "Flow failed",
+        pipeline_failed: "Pipeline failed",
+        pbi_reconnect: "Power BI sign-in needs reconnection",
         best_practice: "Model quality issue",
         documentation_missing: "Documentation incomplete",
     };
@@ -536,9 +547,11 @@ function bindQueryDiffButtons(scope = document) {
 }
 
 function alertAssetKind(action) {
+    if (action.type === "pbi_reconnect") return "powerbi";
     const assetType = String(action.asset_type || "").toLowerCase();
     if (assetType === "report") return "powerbi";
     if (["flow", "script", "scheduled_task"].includes(assetType)) return "flow";
+    if (assetType === "system") return "system";
 
     const sourceType = String(action.source_type || "").toLowerCase();
     const sourceName = String(action.asset_name || action.source_name || "").toLowerCase();
@@ -549,6 +562,13 @@ function alertAssetKind(action) {
     return "sql";
 }
 
+function alertAssetDisplayName(action) {
+    if (action?.type === "pbi_reconnect") return "Power BI connection";
+    if (String(action?.asset_type || "").toLowerCase() === "system") return "Metronome system";
+    const raw = action?.asset_name || action?.source_name || action?.report_name || "Unknown asset";
+    return shortNameFromPath(raw) || raw;
+}
+
 function alertAssetLogo(action) {
     const kind = alertAssetKind(action);
     const labels = {
@@ -556,13 +576,16 @@ function alertAssetLogo(action) {
         excel: "Excel source",
         sql: "SQL source",
         flow: "Flow automation",
+        system: "Metronome system",
     };
     const icons = {
         powerbi: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="3" height="8" rx="1"/><rect x="9" y="7" width="3" height="12" rx="1"/><rect x="14" y="4" width="3" height="15" rx="1"/><rect x="19" y="9" width="2" height="10" rx="1"/></svg>`,
         excel: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h13a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="m7.5 8 5 8m0-8-5 8M14 8h3m-3 4h3m-3 4h3"/></svg>`,
         sql: `<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>`,
         flow: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8.4 6.4 15.5 7.6M16.5 10l-5.2 5.8M8.5 15.8 6.7 8.4"/></svg>`,
+        system: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg>`,
     };
+    if (action.type === "pbi_reconnect") labels.powerbi = "Power BI connection";
     return `<span class="alert-source-logo alert-source-logo-${kind}" role="img" aria-label="${labels[kind]}" title="${labels[kind]}">${icons[kind]}</span>`;
 }
 
@@ -583,11 +606,18 @@ function _notifySlaIssueReasons(type) {
             "The root cause is still under investigation.",
         ];
     }
-    if (type === "task_failed" || type === "script_failed") {
+    if (["task_failed", "script_failed", "flow_failed", "pipeline_failed"].includes(type)) {
         return [
             "The scheduled automation failed and needs a rerun after investigation.",
             "The issue may be related to credentials, access, or a script dependency.",
             "The issue may be related to internet or gateway connectivity.",
+            "The root cause is still under investigation.",
+        ];
+    }
+    if (type === "pbi_reconnect") {
+        return [
+            "The saved Power BI sign-in needs to be reconnected.",
+            "Microsoft access or conditional-access policy may have changed.",
             "The root cause is still under investigation.",
         ];
     }
@@ -602,7 +632,7 @@ function _notifySlaIssueReasons(type) {
 }
 
 function _notifySlaDefaultSla(type) {
-    if (["refresh_failed", "error_source", "empty_source", "task_failed", "script_failed"].includes(type)) {
+    if (["refresh_failed", "error_source", "empty_source", "task_failed", "script_failed", "flow_failed", "pipeline_failed", "pbi_reconnect"].includes(type)) {
         return { value: 4, unit: "hours" };
     }
     if (["refresh_overdue", "schedule_mismatch", "stale_source", "outdated_source"].includes(type)) {
@@ -694,8 +724,7 @@ function _notifySlaCollectRecipients() {
 }
 
 function _notifySlaAssetName(action) {
-    const raw = action.asset_name || action.source_name || action.report_name || "Unknown asset";
-    return shortNameFromPath(raw) || raw;
+    return alertAssetDisplayName(action);
 }
 
 function _notifySlaBuildBody(action, reason, slaValue, slaUnit) {
@@ -2178,8 +2207,7 @@ function renderFixFirstPanel(openActions) {
     };
 
     const items = picks.map(a => {
-        const rawName = a.asset_name || a.source_name || a.report_name || "-";
-        const assetName = shortNameFromPath(rawName) || rawName;
+        const assetName = alertAssetDisplayName(a);
         const reasons = (a.triage_reasons || []).slice(0, 3).map(r => `<span>${esc(r)}</span>`).join("");
         return `
             <div class="fix-first-item">
@@ -2271,8 +2299,7 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
     `;
 
     const rows = filtered.map(a => {
-        const rawName = a.asset_name || a.source_name || a.report_name || "-";
-        const assetName = shortNameFromPath(rawName) || rawName;
+        const assetName = alertAssetDisplayName(a);
         const linkData = a.asset_type === "source"
             ? `alerts-source-link" data-source-id="${a.asset_id}`
             : a.asset_type === "report"
@@ -2299,12 +2326,19 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
 
         const degradedSince = a.degraded_since || a.created_at;
         const impact = a.impact_views_30d || 0;
-        const hasExpandable = a.type === "schedule_mismatch" || !!a.recommendation || !!a.pbi_refresh_error || (a.detail_items && a.detail_items.length > 0) || (a.query_changes && a.query_changes.length > 0);
+        const deterministicRecommendation = a.recommendation || ({
+            pipeline_failed: "Review the failed Pipeline occurrence and its stopped downstream stages before starting a new run.",
+            pbi_reconnect: "Reconnect the saved Power BI account, then run the interrupted sync again.",
+        })[a.type] || "";
+        // Every operational alert has a detail surface.  Deterministic context
+        // is available immediately; exact run occurrences and their read-only
+        // analysis are loaded only when the person opens the alert.
+        const hasExpandable = true;
         const mainRow = `
             <tr class="alerts-row" data-action-id="${a.id}" data-assigned="${esc(a.assigned_to || '')}">
                 <td>
                     ${hasExpandable
-                        ? `<button type="button" class="alerts-expand-btn" data-action-id="${a.id}" aria-expanded="false" title="Show error and recommendation"><span class="alerts-expand-label">Details</span><span class="alerts-expand-arrow">&#8250;</span></button>`
+                        ? `<button type="button" class="alerts-expand-btn" data-action-id="${a.id}" aria-expanded="false" title="Open alert details and analysis"><span class="alerts-expand-label">Details</span><span class="alerts-expand-arrow">&#8250;</span></button>`
                         : '<span class="alerts-expand-spacer"></span>'}
                     <span class="alerts-asset-wrap">${assetCell}</span>
                 </td>
@@ -2350,13 +2384,40 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
             </div>
         `).join("");
 
+        const overviewHtml = `
+            ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
+            ${a.notes ? `<div class="alerts-recorded-detail"><strong>Recorded detail:</strong> ${esc(a.notes)}</div>` : ""}
+            ${deterministicRecommendation ? `<div class="alerts-recommendation"><strong>Deterministic next step:</strong> ${esc(deterministicRecommendation)}</div>` : ""}
+            ${queryChangesHtml ? `<div class="alerts-sources-label">Changed queries:</div><div class="alerts-query-changes">${queryChangesHtml}</div>` : ""}
+            ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
+            ${!a.pbi_refresh_error && !a.notes && !deterministicRecommendation && !queryChangesHtml && !sourceLinksHtml
+                ? '<p class="alerts-detail-empty">No additional deterministic detail was recorded for this alert.</p>'
+                : ""}
+        `;
+
         const expandRow = hasExpandable ? `
             <tr class="alerts-expand-row" data-action-id="${a.id}" style="display:none">
                 <td colspan="6" class="alerts-expand-cell">
-                    ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
-                    ${a.recommendation ? `<div class="alerts-recommendation"><strong>Recommendation:</strong> ${esc(a.recommendation)}</div>` : ""}
-                    ${queryChangesHtml ? `<div class="alerts-sources-label">Changed queries:</div><div class="alerts-query-changes">${queryChangesHtml}</div>` : ""}
-                    ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
+                    <div class="alerts-detail-grid">
+                        <section class="alerts-overview" aria-labelledby="alert-overview-${a.id}">
+                            <div class="alerts-detail-heading">
+                                <div><span class="alerts-detail-kicker">Alert</span><h3 id="alert-overview-${a.id}">Overview</h3></div>
+                                <span class="alerts-detail-status">${esc(a.status || "open")}</span>
+                            </div>
+                            ${overviewHtml}
+                        </section>
+                        <section class="alerts-analysis" data-alert-analysis data-action-id="${a.id}" aria-labelledby="alert-analysis-${a.id}">
+                            <div class="alerts-detail-heading">
+                                <div><span class="alerts-detail-kicker">Read-only</span><h3 id="alert-analysis-${a.id}">Analysis</h3></div>
+                                <span class="alerts-analysis-scope">Exact run evidence only</span>
+                            </div>
+                            <p class="alerts-analysis-intro">Choose a recorded Flow or Pipeline occurrence. Analysis explains the evidence and safest next step; it cannot run an operation.</p>
+                            <div class="alerts-occurrences" data-alert-occurrences aria-live="polite">
+                                <p class="alerts-occurrence-note">Open this alert to load its exact run occurrences.</p>
+                            </div>
+                            <div class="alerts-analysis-result" data-alert-analysis-result aria-live="polite"></div>
+                        </section>
+                    </div>
                 </td>
             </tr>
         ` : "";
@@ -2522,7 +2583,8 @@ function bindDashboardAlertsRowControls() {
         });
     });
 
-    // Expand button toggles the recommendation/source-list row
+    // Expand button opens the alert's deterministic overview and lazily loads
+    // exact run occurrences for the read-only Analysis area.
     document.querySelectorAll(".alerts-expand-btn").forEach(btn => {
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -2533,6 +2595,7 @@ function bindDashboardAlertsRowControls() {
             expandRow.style.display = isOpen ? "none" : "";
             btn.classList.toggle("expanded", !isOpen);
             btn.setAttribute("aria-expanded", isOpen ? "false" : "true");
+            if (!isOpen) _loadAlertOccurrences(Number(actionId), expandRow);
         });
     });
 
@@ -3673,8 +3736,7 @@ async function renderActionsContent() {
                            : a.type.includes("broken") ? "ind-red"
                            : "ind-blue";
 
-            const assetName = a.asset_name || a.source_name || a.report_name || "-";
-            const shortAsset = shortNameFromPath(assetName) || assetName;
+            const shortAsset = alertAssetDisplayName(a);
             const currentOwner = a.assigned_to || "";
             const historyEndpoint = _queryHistoryEndpointForAction(a);
             const assetTitle = a.asset_type === "report" && a.asset_id
@@ -7404,6 +7466,15 @@ function bindLineageDiagramPage() {
     });
     sel.addEventListener("change", async () => {
         const id = sel.value;
+        if (window._pipelineRunTimer) {
+            clearTimeout(window._pipelineRunTimer);
+            window._pipelineRunTimer = null;
+        }
+        const pipelineStatus = document.getElementById("lineage-pipeline-status");
+        if (pipelineStatus) {
+            pipelineStatus.hidden = true;
+            pipelineStatus.innerHTML = "";
+        }
         reportRefresh.disabled = true;
         fullRefresh.disabled = !id;
         reportRefresh.dataset.canRefresh = "0";
@@ -7416,6 +7487,7 @@ function bindLineageDiagramPage() {
             '<div class="lineage-placeholder">Loading lineage...</div>';
         try {
             const data = await api(`/api/lineage/report/${id}/diagram`);
+            if (sel.value !== id) return;
             window._lineageData = data;
             reportRefresh.dataset.canRefresh = data.report.can_refresh ? "1" : "0";
             reportRefresh.disabled = !data.report.can_refresh;
@@ -7426,7 +7498,14 @@ function bindLineageDiagramPage() {
                 : "Power BI refresh is unavailable because no workspace is configured";
             _renderLineageDiagram(data);
             api(`/api/pipelines/reports/${id}/runs/latest`)
-                .then(run => run && _renderPipelineRunStatus(run))
+                .then(run => {
+                    if (sel.value !== id || !run || Number(run.report_id) !== Number(id)) return;
+                    _renderPipelineRunStatus(run, Number(id));
+                    if (!["succeeded", "failed"].includes(run.status)
+                            || ["pending", "pending_receipt"].includes(run.notification_status)) {
+                        _pollPipelineRun(run.id, Number(id));
+                    }
+                })
                 .catch(() => {});
         } catch (e) {
             document.getElementById("lineage-container").innerHTML =
@@ -7461,8 +7540,8 @@ function bindLineageDiagramPage() {
                 const run = await apiPostJson(`/api/pipelines/reports/${reportId}/runs`, {
                     plan_token: plan.plan_token,
                 });
-                _renderPipelineRunStatus(run);
-                _pollPipelineRun(run.id);
+                _renderPipelineRunStatus(run, Number(reportId));
+                _pollPipelineRun(run.id, Number(reportId));
                 toast(`Full-pipeline refresh #${run.id} started.`);
             });
         } catch (err) {
@@ -8349,9 +8428,7 @@ function _bindLinInteractions() {
             button.disabled = true;
             button.textContent = "Refreshing...";
             try {
-                await apiPostJson("/api/data-import/materialized-views/refresh", {
-                    materialized_views: [source.postgres_ref],
-                });
+                await apiPost(`/api/materialized-views/${sourceId}/refresh`);
                 toast(`Materialized view ${source.name} refreshed. Freshness updates on the next probe.`);
             } catch (err) {
                 toast("Materialized view refresh failed: " + err.message);
@@ -8704,7 +8781,7 @@ const FAQ_ITEMS = [
     },
     {
         q: "What is the AI Assistant?",
-        a: "The AI chat (bottom-right button) lets you ask questions about your data ecosystem - risks, source health, specific reports, or general governance questions. It uses live data from the database to give contextual answers."
+        a: "The bottom-right Operations Investigator explains one selected Flow or Pipeline run using bounded read-only evidence. It can recommend a next step, but it cannot retry, resume, refresh, edit, or send anything."
     },
     {
         q: "What database does the platform use?",
@@ -8915,132 +8992,6 @@ function bindRefreshSchedulePage() {
             pipelineSave.textContent = "Save full-pipeline settings";
         }
     });
-}
-
-
-// ── Import Data ──
-
-async function renderDataImport() {
-    let status = { configured: false, missing: [], dependencies_installed: true, host: "", database: "", schema: "", script_dir: "" };
-    try {
-        status = await api("/api/data-import/status");
-    } catch (_) { /* endpoint unreachable; render unconfigured state */ }
-
-    const target = status.host && status.database
-        ? `${esc(status.database)} on ${esc(status.host)} &middot; schema <b>${esc(status.schema)}</b>`
-        : "connection not configured";
-
-    let warning = "";
-    if (!status.dependencies_installed) {
-        warning = `<div style="border:1px solid var(--yellow);border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.8rem;color:var(--text-secondary)">
-            Python dependencies for imports (pandas, sqlalchemy) are not installed on this machine. Re-run setup.ps1, then restart the service.</div>`;
-    } else if (status.missing.length) {
-        warning = `<div style="border:1px solid var(--yellow);border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.8rem;color:var(--text-secondary)">
-            Imports are disabled until these environment variables are set: <b>${status.missing.map(esc).join(", ")}</b>. Restart the service after setting them.</div>`;
-    }
-
-    return `
-    <div class="page-header">
-        <h1>Import Data</h1>
-        <span class="subtitle">Load a CSV or Excel file into PostgreSQL (${target})</span>
-    </div>
-    ${warning}
-    <fieldset style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">1 &middot; File</legend>
-        <input type="file" id="di-file" accept=".csv,.xlsx,.xls" style="display:none">
-        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-            <button class="btn-export" id="di-pick" style="float:none" ${status.configured ? "" : "disabled"}>Choose file...</button>
-            <span id="di-file-info" style="font-size:0.8rem;color:var(--text-dim)">CSV, XLSX or XLS. Column names are normalized to lowercase_with_underscores.</span>
-        </div>
-        <div id="di-preview" style="margin-top:0.75rem"></div>
-    </fieldset>
-    <fieldset id="di-target" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">2 &middot; Target table</legend>
-        <div style="display:flex;gap:1.25rem;flex-wrap:wrap;margin-bottom:0.6rem">
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-targettype" value="existing" checked> Existing table</label>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-targettype" value="new"> New table</label>
-        </div>
-        <div id="di-existing">
-            <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
-                <select id="di-table" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px"></select>
-            </div>
-        </div>
-        <div id="di-new" style="display:none">
-            <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-                <input type="text" id="di-newname" placeholder="new_table_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
-                <button class="btn-export" id="di-create-table" type="button" style="float:none">Create table now</button>
-                <span id="di-create-result" style="font-size:0.8rem;color:var(--text-dim)"></span>
-            </div>
-            <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">lowercase letters, numbers and underscores (uppercase is lowered and spaces become underscores automatically); column types are inferred from this upload. No scheduled script is created in this step.</div>
-        </div>
-    </fieldset>
-    <fieldset id="di-schedule" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">3 &middot; Recurring import options</legend>
-        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem">
-            <span style="font-size:0.78rem;font-weight:600">Script action</span>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="append" checked> Append rows</label>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-mode" value="replace"> Truncate and replace</label>
-        </div>
-        <div style="font-size:0.78rem;font-weight:600;margin-bottom:0.35rem">Materialized views included after SQL write</div>
-        <div id="di-mv-picker" style="position:relative;max-width:520px;margin-bottom:0.7rem">
-            <button class="btn-outline" id="di-mv-toggle" type="button" aria-expanded="false" style="width:100%;float:none;display:flex;justify-content:space-between;align-items:center;font-size:0.8rem">
-                <span id="di-mv-toggle-text">Select materialized views</span><span aria-hidden="true">v</span>
-            </button>
-            <div id="di-mv-menu" style="display:none;position:absolute;z-index:30;top:calc(100% + 0.25rem);left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 20px rgba(15,23,42,0.16);padding:0.5rem">
-                <input type="text" id="di-mv-filter" placeholder="Filter views" style="width:100%;box-sizing:border-box;font-size:0.8rem;padding:0.35rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-bottom:0.45rem">
-                <div id="di-mv-list" style="display:flex;flex-direction:column;gap:0.15rem;max-height:280px;overflow:auto"></div>
-            </div>
-        </div>
-        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-            <button class="btn-outline" id="di-refresh-mv" style="font-size:0.78rem">Refresh selected now</button>
-            <span id="di-mv-status" style="font-size:0.8rem;color:var(--text-dim)"></span>
-        </div>
-    </fieldset>
-    <fieldset id="di-script" style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem;display:none">
-        <legend style="font-weight:600;font-size:0.82rem;padding:0 0.4rem">4 &middot; Python scheduling script</legend>
-        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem">
-            <span style="font-size:0.78rem;font-weight:600">Script folder</span>
-            <input type="text" id="di-script-dir" aria-label="Script folder" value="${esc(status.script_dir || "generated_imports")}" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:340px;max-width:100%">
-            <button class="btn-outline" id="di-save-script-dir" type="button" style="font-size:0.78rem">Save folder</button>
-            <span id="di-script-dir-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
-        </div>
-        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem">
-            <span style="font-size:0.78rem;font-weight:600">Prefect schedule</span>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="manual" checked> One-time/manual</label>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="daily"> Daily</label>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="weekly"> Weekly</label>
-            <label style="font-size:0.82rem;cursor:pointer"><input type="radio" name="di-schedule-type" value="cron"> Custom cron</label>
-        </div>
-        <div id="di-prefect-schedule-fields" style="display:none;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.45rem">
-            <label id="di-schedule-time-wrap" style="font-size:0.78rem">Time
-                <input type="time" id="di-schedule-time" value="08:00" step="60" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-left:0.35rem">
-            </label>
-            <label id="di-schedule-day-wrap" style="font-size:0.78rem;display:none">Day
-                <select id="di-schedule-day" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-left:0.35rem">
-                    <option value="1">Monday</option>
-                    <option value="2">Tuesday</option>
-                    <option value="3">Wednesday</option>
-                    <option value="4">Thursday</option>
-                    <option value="5">Friday</option>
-                    <option value="6">Saturday</option>
-                    <option value="0">Sunday</option>
-                </select>
-            </label>
-            <label id="di-schedule-cron-wrap" style="font-size:0.78rem;display:none">Cron
-                <input type="text" id="di-schedule-cron" value="0 8 * * 1" placeholder="0 8 * * 1" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:190px;margin-left:0.35rem">
-            </label>
-            <label id="di-schedule-timezone-wrap" style="font-size:0.78rem">Timezone
-                <input type="text" id="di-schedule-timezone" value="UTC" placeholder="UTC" style="font-size:0.82rem;padding:0.25rem 0.45rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:180px;margin-left:0.35rem">
-            </label>
-        </div>
-        <div id="di-schedule-summary" style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.65rem">Manual / run once</div>
-        <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
-            <input type="text" id="di-script-name" placeholder="optional_script_name" style="font-size:0.82rem;padding:0.3rem 0.5rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:5px;min-width:240px">
-            <button class="btn-export" id="di-create-script" style="float:none">Create append/replace script</button>
-        </div>
-        <div id="di-script-result" style="margin-top:0.65rem;font-size:0.78rem;color:var(--text-secondary)"></div>
-    </fieldset>
-    `;
 }
 
 
@@ -9855,15 +9806,19 @@ function _openPipelinePreview(plan, onConfirm) {
     overlay.querySelector(".pipeline-cancel").focus();
 }
 
-function _renderPipelineRunStatus(run) {
+function _renderPipelineRunStatus(run, expectedReportId = null) {
     const panel = document.getElementById("lineage-pipeline-status");
-    if (!panel) return;
+    const selectedReportId = Number(document.getElementById("lineage-report-select")?.value);
+    if (!panel
+            || (expectedReportId && selectedReportId !== Number(expectedReportId))
+            || (expectedReportId && Number(run.report_id) !== Number(expectedReportId))) return false;
     const terminal = ["succeeded", "failed"].includes(run.status);
     panel.hidden = false;
     panel.className = `pipeline-run-status pipeline-run-${esc(run.status)}`;
     panel.innerHTML = `
-        <div><strong>Full-pipeline run #${esc(run.id)}</strong><span class="badge ${run.status === "succeeded" ? "badge-green" : run.status === "failed" ? "badge-red" : "badge-blue"}">${esc(run.status.replaceAll("_", " "))}</span></div>
+        <div class="pipeline-run-title"><strong>Full-pipeline run #${esc(run.id)}</strong><span class="badge ${run.status === "succeeded" ? "badge-green" : run.status === "failed" ? "badge-red" : "badge-blue"}">${esc(run.status.replaceAll("_", " "))}</span><button class="btn-sm btn-outline" data-ai-pipeline-investigate="${esc(run.id)}">Investigate</button></div>
         <div class="pipeline-step-strip">${(run.steps || []).map(step => `<span class="pipeline-step pipeline-step-${esc(step.status)}"><b>${esc(step.step_type)}</b>${esc(step.entity_name || "")} · ${esc(step.status)}</span>`).join("")}</div>
+        ${run.requires_inspection ? '<p class="pipeline-message pipeline-warning"><strong>Manual inspection required.</strong> Do not replay an unknown external outcome.</p>' : ""}
         ${run.error ? `<p>${esc(run.error)}</p>` : ""}
         <small>Summary: ${esc(run.notification_status || "pending")}${terminal && ["unknown", "failed"].includes(run.notification_status) ? ` · <button class="btn-link" data-pipeline-resend="${run.id}">resend</button>` : ""}</small>
         ${(run.recent_runs || []).length > 1 ? `<details class="pipeline-history"><summary>Recent full-pipeline runs</summary>${run.recent_runs.map(item => `<span><b>#${item.id}</b> ${esc(item.status)} · ${esc(formatDate(item.created_at))}${item.error ? ` · ${esc(item.error)}` : ""}</span>`).join("")}</details>` : ""}`;
@@ -9872,19 +9827,34 @@ function _renderPipelineRunStatus(run) {
         try { await apiPost(`/api/pipelines/runs/${run.id}/resend-summary`); toast("Pipeline summary queued for submission."); }
         catch (err) { toast("Summary was not queued: " + err.message); event.currentTarget.disabled = false; }
     });
+    panel.querySelector("[data-ai-pipeline-investigate]")?.addEventListener("click", () => {
+        openAIInvestigator(
+            { type: "pipeline_run", id: Number(run.id) },
+            "Explain what happened in this Pipeline run, what completed, and the safest next step."
+        );
+    });
+    return true;
 }
 
-function _pollPipelineRun(runId) {
+function _pollPipelineRun(runId, expectedReportId) {
     if (window._pipelineRunTimer) clearTimeout(window._pipelineRunTimer);
     const poll = async () => {
-        if (!document.getElementById("lineage-pipeline-status")) return;
+        const selectedReportId = Number(document.getElementById("lineage-report-select")?.value);
+        if (!document.getElementById("lineage-pipeline-status")
+                || selectedReportId !== Number(expectedReportId)) return;
         try {
             const run = await api(`/api/pipelines/runs/${runId}`);
-            _renderPipelineRunStatus(run);
+            if (Number(run.report_id) !== Number(expectedReportId)
+                    || Number(document.getElementById("lineage-report-select")?.value) !== Number(expectedReportId)) return;
+            _renderPipelineRunStatus(run, expectedReportId);
             if (!["succeeded", "failed"].includes(run.status) || ["pending", "pending_receipt"].includes(run.notification_status)) {
                 window._pipelineRunTimer = setTimeout(poll, 5000);
             }
-        } catch (_) { window._pipelineRunTimer = setTimeout(poll, 10000); }
+        } catch (_) {
+            if (Number(document.getElementById("lineage-report-select")?.value) === Number(expectedReportId)) {
+                window._pipelineRunTimer = setTimeout(poll, 10000);
+            }
+        }
     };
     poll();
 }
@@ -9958,6 +9928,23 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll('.flow-row-actions a[href^="/flow-runs/"]').forEach(link => {
+        if (link.parentElement.querySelector(".ai-investigate-run")) return;
+        const runId = Number(link.getAttribute("href").match(/\/flow-runs\/(\d+)/)?.[1]);
+        if (!Number.isInteger(runId)) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn-sm btn-outline ai-investigate-run";
+        button.dataset.id = String(runId);
+        button.textContent = "Investigate";
+        link.before(button);
+    });
+    document.querySelectorAll(".ai-investigate-run").forEach(button => button.onclick = () => {
+        openAIInvestigator(
+            { type: "flow_run", id: Number(button.dataset.id) },
+            "Explain this Flow run's current recorded state, what completed, and the safest next step."
+        );
+    });
     $("#flow-builder-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-replicate-apply")?.addEventListener("click", () => {
         const sourceId = Number($("#flow-replicate-source")?.value);
@@ -10210,516 +10197,6 @@ function bindFlowsPage() {
     _bindFlowWorkspace();
 }
 
-function bindDataImportPage() {
-    const pick = document.getElementById("di-pick");
-    if (!pick) return;
-    const fileInput = document.getElementById("di-file");
-    const fileInfo = document.getElementById("di-file-info");
-    const previewBox = document.getElementById("di-preview");
-    const targetBox = document.getElementById("di-target");
-    const scheduleBox = document.getElementById("di-schedule");
-    const mvPicker = document.getElementById("di-mv-picker");
-    const mvToggle = document.getElementById("di-mv-toggle");
-    const mvToggleText = document.getElementById("di-mv-toggle-text");
-    const mvMenu = document.getElementById("di-mv-menu");
-    const mvFilter = document.getElementById("di-mv-filter");
-    const mvList = document.getElementById("di-mv-list");
-    const mvRefreshBtn = document.getElementById("di-refresh-mv");
-    const mvStatus = document.getElementById("di-mv-status");
-    const scriptBox = document.getElementById("di-script");
-    const scriptDir = document.getElementById("di-script-dir");
-    const saveScriptDirBtn = document.getElementById("di-save-script-dir");
-    const scriptDirStatus = document.getElementById("di-script-dir-status");
-    const scheduleFields = document.getElementById("di-prefect-schedule-fields");
-    const scheduleTimeWrap = document.getElementById("di-schedule-time-wrap");
-    const scheduleDayWrap = document.getElementById("di-schedule-day-wrap");
-    const scheduleCronWrap = document.getElementById("di-schedule-cron-wrap");
-    const scheduleTimezoneWrap = document.getElementById("di-schedule-timezone-wrap");
-    const scheduleTime = document.getElementById("di-schedule-time");
-    const scheduleDay = document.getElementById("di-schedule-day");
-    const scheduleCron = document.getElementById("di-schedule-cron");
-    const scheduleTimezone = document.getElementById("di-schedule-timezone");
-    const scheduleSummary = document.getElementById("di-schedule-summary");
-    const scriptName = document.getElementById("di-script-name");
-    const createScriptBtn = document.getElementById("di-create-script");
-    const scriptResult = document.getElementById("di-script-result");
-    const tableSelect = document.getElementById("di-table");
-    const newName = document.getElementById("di-newname");
-    const createTableBtn = document.getElementById("di-create-table");
-    const createResult = document.getElementById("di-create-result");
-
-    let staged = null;   // { token, filename, rows, columns, sample }
-    let tablesLoaded = false;
-    let materializedViewsLoaded = false;
-    let materializedViews = [];
-    let selectedMvKeys = new Set();
-    let currentScriptDir = scriptDir.value.trim();
-
-    async function diFetch(path, opts = {}) {
-        const res = await fetch(path, { ...opts, headers: apiHeaders(opts.headers || {}) });
-        let data = {};
-        try { data = await res.json(); } catch (_) {}
-        if (!res.ok) throw new Error(data.detail || `API error: ${res.status}`);
-        return data;
-    }
-
-    const targetType = () => document.querySelector('input[name="di-targettype"]:checked').value;
-    const mode = () => document.querySelector('input[name="di-mode"]:checked').value;
-    // Table names are normalized before SQL: lowercase, spaces -> underscores.
-    const normalizeTableName = v => (v || "").trim().replace(/\s+/g, "_").toLowerCase();
-    const tableName = () => targetType() === "new" ? normalizeTableName(newName.value) : tableSelect.value;
-    const mvKey = v => `${v.schema}.${v.name}`;
-    const selectedMaterializedViews = () => materializedViews
-        .filter(v => selectedMvKeys.has(mvKey(v)))
-        .map(v => ({ schema: v.schema, name: v.name }));
-    const selectedScheduleType = () => document.querySelector('input[name="di-schedule-type"]:checked').value;
-
-    try {
-        scheduleTimezone.value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    } catch (_) {
-        scheduleTimezone.value = "UTC";
-    }
-
-    function invalidateScript() {
-        if (scriptResult) scriptResult.innerHTML = "";
-        refreshLoadButton();
-    }
-
-    function canConfigureScript() {
-        return Boolean(staged && targetType() === "existing" && tableName());
-    }
-
-    function refreshLoadButton() {
-        const ready = canConfigureScript();
-        scheduleBox.style.display = ready ? "" : "none";
-        scriptBox.style.display = ready ? "" : "none";
-    }
-
-    function scheduleTimeParts() {
-        const raw = scheduleTime.value || "08:00";
-        const parts = raw.split(":");
-        const hour = Number(parts[0]);
-        const minute = Number(parts[1]);
-        if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-            throw new Error("Choose a valid Prefect schedule time");
-        }
-        return {
-            hour,
-            minute,
-            text: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
-        };
-    }
-
-    function cleanScheduleTimezone() {
-        return (scheduleTimezone.value || "UTC").trim() || "UTC";
-    }
-
-    function cleanCron(value) {
-        const cron = (value || "").trim().replace(/\s+/g, " ");
-        if (cron.split(" ").filter(Boolean).length !== 5) {
-            throw new Error("Cron schedule must have five fields");
-        }
-        return cron;
-    }
-
-    function buildPrefectSchedule() {
-        const type = selectedScheduleType();
-        const timezone = cleanScheduleTimezone();
-        if (type === "manual") {
-            return { type: "manual", cron: null, timezone };
-        }
-        if (type === "cron") {
-            return { type: "cron", cron: cleanCron(scheduleCron.value), timezone };
-        }
-
-        const time = scheduleTimeParts();
-        if (type === "daily") {
-            return { type: "daily", cron: `${time.minute} ${time.hour} * * *`, timezone };
-        }
-        if (type === "weekly") {
-            return { type: "weekly", cron: `${time.minute} ${time.hour} * * ${scheduleDay.value}`, timezone };
-        }
-        throw new Error("Choose a Prefect schedule type");
-    }
-
-    function refreshPrefectScheduleControls() {
-        const type = selectedScheduleType();
-        const usesCron = type === "cron";
-        const usesTime = type === "daily" || type === "weekly";
-        scheduleFields.style.display = type === "manual" ? "none" : "flex";
-        scheduleTimeWrap.style.display = usesTime ? "" : "none";
-        scheduleDayWrap.style.display = type === "weekly" ? "" : "none";
-        scheduleCronWrap.style.display = usesCron ? "" : "none";
-        scheduleTimezoneWrap.style.display = type === "manual" ? "none" : "";
-        try {
-            const schedule = buildPrefectSchedule();
-            if (schedule.type === "manual") {
-                scheduleSummary.textContent = "Manual / run once";
-            } else {
-                scheduleSummary.textContent = `${schedule.type === "cron" ? "Custom cron" : schedule.type}: ${schedule.cron} (${schedule.timezone})`;
-            }
-        } catch (err) {
-            scheduleSummary.textContent = err.message;
-        }
-    }
-
-    function refreshMvToggle() {
-        if (materializedViewsLoaded && !materializedViews.length) {
-            mvToggleText.textContent = "No materialized views found";
-            mvToggle.setAttribute("aria-expanded", "false");
-            return;
-        }
-        const count = selectedMvKeys.size;
-        mvToggleText.textContent = count ? `${count} materialized view${count === 1 ? "" : "s"} selected for script` : "No materialized views selected for script";
-        mvToggle.setAttribute("aria-expanded", mvMenu.style.display !== "none" ? "true" : "false");
-    }
-
-    async function saveScriptDir() {
-        const path = scriptDir.value.trim();
-        if (!path) {
-            toast("Script folder cannot be blank");
-            throw new Error("Script folder cannot be blank");
-        }
-        saveScriptDirBtn.disabled = true;
-        saveScriptDirBtn.textContent = "Saving...";
-        scriptDirStatus.textContent = "";
-        try {
-            const r = await diFetch("/api/data-import/script-dir", {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path }),
-            });
-            currentScriptDir = r.script_dir;
-            scriptDir.value = r.script_dir;
-            scriptDirStatus.textContent = "Saved";
-            toast("Script folder saved");
-            return r;
-        } catch (err) {
-            scriptDirStatus.textContent = err.message;
-            toast("Script folder save failed: " + err.message);
-            throw err;
-        } finally {
-            saveScriptDirBtn.disabled = false;
-            saveScriptDirBtn.textContent = "Save folder";
-        }
-    }
-
-    function renderMaterializedViewList() {
-        const filter = (mvFilter.value || "").trim().toLowerCase();
-        const views = filter
-            ? materializedViews.filter(v => `${v.display_name} ${v.refresh_schedule || ""}`.toLowerCase().includes(filter))
-            : materializedViews;
-        if (!materializedViews.length) {
-            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim);padding:0.25rem">No materialized views found.</span>`;
-            return;
-        }
-        if (!views.length) {
-            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--text-dim);padding:0.25rem">No matches.</span>`;
-            return;
-        }
-        mvList.innerHTML = views.map((v, i) => {
-            const key = mvKey(v);
-            const id = `di-mv-${i}`;
-            const sched = v.refresh_schedule ? `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:0.35rem">${esc(v.refresh_schedule)}</span>` : "";
-            return `<label for="${id}" style="display:flex;gap:0.45rem;align-items:flex-start;font-size:0.8rem;cursor:pointer;padding:0.35rem 0.4rem;border-radius:4px">
-                <input type="checkbox" class="di-mv-check" id="${id}" data-key="${esc(key)}" ${selectedMvKeys.has(key) ? "checked" : ""} style="margin-top:0.1rem">
-                <span><strong>${esc(v.display_name)}</strong>${sched}</span>
-            </label>`;
-        }).join("");
-        document.querySelectorAll(".di-mv-check").forEach(cb => {
-            cb.addEventListener("change", () => {
-                if (cb.checked) selectedMvKeys.add(cb.dataset.key);
-                else selectedMvKeys.delete(cb.dataset.key);
-                refreshMvToggle();
-                invalidateScript();
-            });
-        });
-    }
-
-    async function loadTables(force = false) {
-        if (tablesLoaded && !force) return;
-        try {
-            const data = await diFetch("/api/data-import/tables");
-            tableSelect.innerHTML = data.tables.length
-                ? data.tables.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")
-                : '<option value="">(no tables in schema)</option>';
-            tablesLoaded = true;
-        } catch (err) {
-            tableSelect.innerHTML = '<option value="">(could not list tables)</option>';
-            toast("Could not list tables: " + err.message);
-        }
-        refreshLoadButton();
-    }
-
-    async function loadMaterializedViews() {
-        if (materializedViewsLoaded) return;
-        mvToggle.disabled = true;
-        mvToggleText.textContent = "Loading materialized views...";
-        try {
-            const data = await diFetch("/api/data-import/materialized-views");
-            materializedViews = data.views || [];
-            selectedMvKeys = new Set([...selectedMvKeys].filter(key => materializedViews.some(v => mvKey(v) === key)));
-            renderMaterializedViewList();
-            mvToggle.disabled = false;
-            if (!materializedViews.length) mvToggle.disabled = true;
-            refreshMvToggle();
-            materializedViewsLoaded = true;
-        } catch (err) {
-            materializedViews = [];
-            selectedMvKeys = new Set();
-            mvList.innerHTML = `<span style="font-size:0.78rem;color:var(--red);padding:0.25rem">Could not list materialized views: ${esc(err.message)}</span>`;
-            mvToggleText.textContent = "Could not list materialized views";
-            mvToggle.disabled = true;
-            toast("Could not list materialized views: " + err.message);
-        }
-        refreshLoadButton();
-    }
-
-    mvToggle.addEventListener("click", () => {
-        if (mvToggle.disabled) return;
-        mvMenu.style.display = mvMenu.style.display === "none" ? "" : "none";
-        refreshMvToggle();
-        if (mvMenu.style.display !== "none") mvFilter.focus();
-    });
-    mvFilter.addEventListener("input", renderMaterializedViewList);
-    document.addEventListener("click", e => {
-        if (!mvPicker.contains(e.target)) {
-            mvMenu.style.display = "none";
-            refreshMvToggle();
-        }
-    });
-    document.addEventListener("keydown", e => {
-        if (e.key === "Escape" && mvMenu.style.display !== "none") {
-            mvMenu.style.display = "none";
-            refreshMvToggle();
-            mvToggle.focus();
-        }
-    });
-
-    pick.addEventListener("click", () => fileInput.click());
-
-    fileInput.addEventListener("change", async () => {
-        const f = fileInput.files[0];
-        if (!f) return;
-        pick.disabled = true;
-        pick.textContent = "Parsing...";
-        createResult.textContent = "";
-        if (scriptResult) scriptResult.innerHTML = "";
-        if (mvStatus) mvStatus.textContent = "";
-        try {
-            const fd = new FormData();
-            fd.append("file", f);
-            const p = await diFetch("/api/data-import/preview", { method: "POST", body: fd });
-            staged = p;
-            fileInfo.textContent = `${p.filename} - ${p.rows} rows, ${p.columns.length} columns`;
-            const head = p.columns.map(c => `<th style="text-align:left;padding:0.25rem 0.6rem;border-bottom:1px solid var(--border);font-weight:600">${esc(c)}</th>`).join("");
-            const body = p.sample.map(r => `<tr>${r.map(v => `<td style="padding:0.25rem 0.6rem;border-bottom:1px solid var(--border);color:var(--text-secondary)">${esc(v)}</td>`).join("")}</tr>`).join("");
-            previewBox.innerHTML = `
-                <div style="overflow-x:auto;border:1px solid var(--border);border-radius:5px">
-                    <table style="border-collapse:collapse;font-size:0.75rem;font-family:monospace;min-width:100%">
-                        <thead><tr>${head}</tr></thead><tbody>${body}</tbody>
-                    </table>
-                </div>
-                <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem">First ${p.sample.length} rows shown with normalized column names.</div>`;
-            targetBox.style.display = "";
-            await loadTables();
-            await loadMaterializedViews();
-            refreshLoadButton();
-        } catch (err) {
-            staged = null;
-            previewBox.innerHTML = "";
-            targetBox.style.display = "none";
-            scheduleBox.style.display = "none";
-            scriptBox.style.display = "none";
-            fileInfo.textContent = "Parse failed: " + err.message;
-            toast("Parse failed: " + err.message);
-        } finally {
-            pick.disabled = false;
-            pick.textContent = "Choose file...";
-            fileInput.value = "";
-            refreshLoadButton();
-        }
-    });
-
-    document.querySelectorAll('input[name="di-targettype"]').forEach(r => {
-        r.addEventListener("change", () => {
-            document.getElementById("di-existing").style.display = targetType() === "existing" ? "" : "none";
-            document.getElementById("di-new").style.display = targetType() === "new" ? "" : "none";
-            createResult.textContent = "";
-            invalidateScript();
-        });
-    });
-    document.querySelectorAll('input[name="di-mode"]').forEach(r => r.addEventListener("change", invalidateScript));
-    tableSelect.addEventListener("change", invalidateScript);
-    newName.addEventListener("input", () => {
-        // Show the normalized name as it is typed: lowercase, spaces -> underscores.
-        // The 1:1 character mapping keeps the caret position valid; run collapsing
-        // and trimming still happen in normalizeTableName on submit.
-        const live = newName.value.replace(/\s/g, "_").toLowerCase();
-        if (live !== newName.value) {
-            const start = newName.selectionStart;
-            const end = newName.selectionEnd;
-            newName.value = live;
-            newName.setSelectionRange(start, end);
-        }
-        createResult.textContent = "";
-        invalidateScript();
-    });
-    scriptDir.addEventListener("input", invalidateScript);
-    saveScriptDirBtn.addEventListener("click", () => saveScriptDir().catch(() => {}));
-    document.querySelectorAll('input[name="di-schedule-type"]').forEach(r => {
-        r.addEventListener("change", () => {
-            refreshPrefectScheduleControls();
-            invalidateScript();
-        });
-    });
-    [scheduleTime, scheduleDay, scheduleCron, scheduleTimezone].forEach(el => {
-        el.addEventListener("input", () => {
-            refreshPrefectScheduleControls();
-            invalidateScript();
-        });
-        el.addEventListener("change", () => {
-            refreshPrefectScheduleControls();
-            invalidateScript();
-        });
-    });
-    scriptName.addEventListener("input", invalidateScript);
-
-    createTableBtn.addEventListener("click", async () => {
-        if (!staged) return;
-        const t = normalizeTableName(newName.value);
-        if (!t) {
-            toast("Enter a new table name");
-            return;
-        }
-        createTableBtn.disabled = true;
-        createTableBtn.textContent = "Creating...";
-        createResult.textContent = "";
-        try {
-            const r = await diFetch("/api/data-import/load", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: staged.token, table: t, mode: "create", materialized_views: [] }),
-            });
-            createResult.textContent = `Created ${r.schema}.${r.table} (${r.rows} rows).`;
-            fileInfo.textContent = `${staged.filename} - ${staged.rows} rows. Created ${r.schema}.${r.table}; configure the recurring script below.`;
-            toast(`${r.rows} rows loaded into ${r.schema}.${r.table}`);
-            tablesLoaded = false;
-            await loadTables(true);
-            if (![...tableSelect.options].some(option => option.value === r.table)) {
-                tableSelect.insertAdjacentHTML("beforeend", `<option value="${esc(r.table)}">${esc(r.table)}</option>`);
-            }
-            tableSelect.value = r.table;
-            const existingRadio = document.querySelector('input[name="di-targettype"][value="existing"]');
-            if (existingRadio) existingRadio.checked = true;
-            document.getElementById("di-existing").style.display = "";
-            document.getElementById("di-new").style.display = "none";
-            invalidateScript();
-        } catch (err) {
-            createResult.textContent = err.message;
-            toast("Create table failed: " + err.message);
-        } finally {
-            createTableBtn.disabled = false;
-            createTableBtn.textContent = "Create table now";
-            refreshLoadButton();
-        }
-    });
-
-    mvRefreshBtn.addEventListener("click", async () => {
-        const views = selectedMaterializedViews();
-        if (!views.length) {
-            toast("Choose at least one materialized view");
-            return;
-        }
-        mvRefreshBtn.disabled = true;
-        mvRefreshBtn.textContent = "Refreshing...";
-        mvStatus.textContent = "";
-        try {
-            const r = await diFetch("/api/data-import/materialized-views/refresh", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ materialized_views: views }),
-            });
-            mvStatus.textContent = `Refreshed ${r.refreshed.join(", ")}`;
-            toast(`Refreshed ${r.refreshed.length} materialized view${r.refreshed.length === 1 ? "" : "s"}`);
-        } catch (err) {
-            mvStatus.textContent = err.message;
-            toast("Refresh failed: " + err.message);
-        } finally {
-            mvRefreshBtn.disabled = false;
-            mvRefreshBtn.textContent = "Refresh selected now";
-        }
-    });
-
-    createScriptBtn.addEventListener("click", async () => {
-        if (!canConfigureScript()) {
-            toast(targetType() === "new" ? "Create the table first" : "Choose an existing target table");
-            return;
-        }
-        const t = tableName();
-        if (!t) {
-            toast("Choose a target table");
-            return;
-        }
-        const m = mode();
-        let prefectSchedule;
-        try {
-            prefectSchedule = buildPrefectSchedule();
-        } catch (err) {
-            toast(err.message);
-            return;
-        }
-        createScriptBtn.disabled = true;
-        createScriptBtn.textContent = "Creating...";
-        scriptResult.innerHTML = "";
-        try {
-            if (scriptDir.value.trim() !== currentScriptDir) await saveScriptDir();
-            const body = {
-                token: staged.token,
-                table: t,
-                mode: m,
-                materialized_views: selectedMaterializedViews(),
-                schedule: prefectSchedule,
-                script_name: scriptName.value.trim() || null,
-            };
-            const r = await diFetch("/api/data-import/script", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-            });
-            const mvLine = r.materialized_views && r.materialized_views.length
-                ? `<div>Refreshes: <code>${esc(r.materialized_views.join(", "))}</code></div>`
-                : "";
-            const sched = r.schedule || {};
-            const scheduleLine = sched.label
-                ? `<div>Prefect schedule: <code style="word-break:break-all">${esc(sched.label)}</code></div>`
-                : "";
-            scriptResult.innerHTML = `
-                <div style="border:1px solid var(--border);border-radius:5px;padding:0.55rem 0.7rem">
-                    <div>Script: <code style="word-break:break-all">${esc(r.script_path)}</code></div>
-                    <div>Entrypoint: <code style="word-break:break-all">${esc(r.entrypoint)}</code></div>
-                    <div>Run: <code style="word-break:break-all">${esc(r.run_command)}</code></div>
-                    <div>Serve: <code style="word-break:break-all">${esc(r.serve_command)}</code></div>
-                    ${scheduleLine}
-                    ${mvLine}
-                </div>`;
-            toast("Import script created");
-            refreshLoadButton();
-        } catch (err) {
-            scriptResult.textContent = err.message;
-            toast("Script creation failed: " + err.message);
-            refreshLoadButton();
-        } finally {
-            createScriptBtn.disabled = false;
-            createScriptBtn.textContent = "Create append/replace script";
-        }
-    });
-
-    refreshPrefectScheduleControls();
-    refreshLoadButton();
-}
-
-
 // ── Router ──
 
 const pages = {
@@ -10735,7 +10212,6 @@ const pages = {
     email: renderEmail,
     recurrences: renderRecurrences,
     export: renderExport,
-    dataimport: renderDataImport,
     flows: renderFlows,
     eventlog: renderEventLog,
     faq: renderFaq,
@@ -10744,7 +10220,7 @@ const pages = {
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard", scripts: "flows", scheduledtasks: "flows", powerautomate: "flows" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard", scripts: "flows", scheduledtasks: "flows", powerautomate: "flows", dataimport: "flows" };
 
 let currentPage = "dashboard";
 let navigationRequestId = 0;
@@ -10873,7 +10349,6 @@ async function navigate(page) {
         if (page === "email") bindEmailPage();
         if (page === "recurrences") bindRecurrencesPage();
         if (page === "export") bindExportPage();
-        if (page === "dataimport") bindDataImportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
@@ -11144,20 +10619,14 @@ function renderDiagnosePanel(d) {
 }
 
 
-// ── AI Chat Panel ──
+// ── Read-only run analysis ──
 
 function initAIChatPanel() {
     if (document.getElementById("ai-chat-panel")) return;
 
-    // Floating action button
-    const fab = document.createElement("button");
-    fab.className = "ai-fab";
-    fab.id = "ai-fab";
-    fab.innerHTML = "AI";
-    fab.title = "AI Assistant";
-    document.body.appendChild(fab);
-
-    // Overlay
+    // This contextual drawer has no global launcher. It opens only from an
+    // exact Flow/Pipeline run shortcut or a deep link. Dashboard Alerts render
+    // the same structured analysis inside their own detail surface.
     const overlay = document.createElement("div");
     overlay.className = "ai-chat-overlay";
     overlay.id = "ai-chat-overlay";
@@ -11169,29 +10638,28 @@ function initAIChatPanel() {
     panel.id = "ai-chat-panel";
     panel.innerHTML = `
         <div class="ai-chat-header">
-            <h3>AI Assistant</h3>
-            <button class="ai-chat-close" id="ai-chat-close">&times;</button>
+            <h3>Run Analysis</h3>
+            <button class="ai-chat-close" id="ai-chat-close" aria-label="Close run analysis">&times;</button>
         </div>
-        <div class="ai-chat-messages" id="ai-chat-messages">
+        <div class="ai-focus-strip" id="ai-focus-strip" hidden></div>
+        <div class="ai-chat-messages" id="ai-chat-messages" aria-live="polite">
             <div class="ai-msg assistant">
-                <p>Hi! I can help you understand your analytics ecosystem. Ask me about risks, source health, or specific reports.</p>
+                <p>Select <strong>Investigate</strong> on a Flow or Pipeline run. Analysis can read that exact run's evidence, but it cannot execute, retry, resume, refresh, edit, or send anything.</p>
             </div>
         </div>
-        <div class="ai-chat-quick" id="ai-chat-quick">
-            <button class="ai-quick-chip" data-q="What's degraded?">What's degraded?</button>
-            <button class="ai-quick-chip" data-q="Summarize dashboard">Summarize dashboard</button>
-            <button class="ai-quick-chip" data-q="Show degraded sources">Show degraded sources</button>
-            <button class="ai-quick-chip" data-q="Audit report queries">Audit report queries</button>
+        <div class="ai-chat-quick" id="ai-chat-quick" style="display:none">
+            <button class="ai-quick-chip" data-q="Explain what failed and the likely cause.">What failed?</button>
+            <button class="ai-quick-chip" data-q="Explain exactly what completed before this run stopped.">What completed?</button>
+            <button class="ai-quick-chip" data-q="What is the safest next step, based only on the recorded preflight?">Safest next step</button>
         </div>
         <div class="ai-chat-input-area">
-            <textarea class="ai-chat-input" id="ai-chat-input" placeholder="Ask about your data..." rows="1"></textarea>
-            <button class="ai-chat-send" id="ai-chat-send">&#9654;</button>
+            <textarea class="ai-chat-input" id="ai-chat-input" placeholder="Select a run to investigate" rows="1" disabled></textarea>
+            <button class="ai-chat-send" id="ai-chat-send" disabled>&#9654;</button>
         </div>
     `;
     document.body.appendChild(panel);
 
     // Bind events
-    fab.addEventListener("click", () => toggleAIChat(true));
     overlay.addEventListener("click", () => toggleAIChat(false));
     document.getElementById("ai-chat-close").addEventListener("click", () => toggleAIChat(false));
     document.getElementById("ai-chat-send").addEventListener("click", sendAIChat);
@@ -11216,77 +10684,800 @@ function initAIChatPanel() {
             sendAIChat();
         });
     });
+    _restoreAIInvestigation();
 }
 
 function toggleAIChat(open) {
     const panel = document.getElementById("ai-chat-panel");
     const overlay = document.getElementById("ai-chat-overlay");
-    const fab = document.getElementById("ai-fab");
+    if (!panel || !overlay) return;
     if (open) {
         panel.classList.add("open");
         overlay.classList.add("visible");
-        fab.style.display = "none";
         document.body.classList.add("ai-panel-open");
-        document.getElementById("ai-chat-input").focus();
+        const input = document.getElementById("ai-chat-input");
+        (input.disabled ? document.getElementById("ai-chat-close") : input).focus();
     } else {
         panel.classList.remove("open");
         overlay.classList.remove("visible");
-        fab.style.display = "flex";
         document.body.classList.remove("ai-panel-open");
+    }
+}
+
+let _aiFocus = null;
+let _aiActiveRunId = null;
+let _aiPollTimer = null;
+let _aiPollFailures = 0;
+let _aiFocusGeneration = 0;
+let _aiCreatePending = false;
+let _alertAnalysisGeneration = 0;
+const ALERT_ANALYSIS_FRESHNESS_MS = 15000;
+
+function _positiveInteger(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function _normalizeOccurrenceFocusType(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (["flow", "flowrun", "flow_run"].includes(normalized)) return "flow_run";
+    if (["pipeline", "pipelinerun", "pipeline_run"].includes(normalized)) return "pipeline_run";
+    if (["pbi_sync", "powerbi_sync", "power_bi_sync"].includes(normalized)) return "pbi_sync";
+    return "";
+}
+
+function _alertOccurrenceEvidence(raw) {
+    if (raw?.evidence && typeof raw.evidence === "object") return raw.evidence;
+    if (raw?.evidence_json && typeof raw.evidence_json === "object") return raw.evidence_json;
+    if (typeof raw?.evidence_json === "string") {
+        try {
+            const parsed = JSON.parse(raw.evidence_json);
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_) {}
+    }
+    return {};
+}
+
+function _alertOccurrenceFocus(occurrence) {
+    const raw = occurrence || {};
+    const nested = raw.focus && typeof raw.focus === "object" ? raw.focus : {};
+    const nestedRun = raw.run && typeof raw.run === "object" ? raw.run : {};
+    const type = _normalizeOccurrenceFocusType(
+        nested.type || nestedRun.type || raw.focus_type || raw.subject_type
+        || raw.entity_type || raw.occurrence_type || raw.run_type
+        || (raw.flow_run_id ? "flow_run" : raw.pipeline_run_id ? "pipeline_run" : "")
+    );
+    const id = _positiveInteger(
+        nested.id ?? nestedRun.id ?? raw.focus_id ?? raw.subject_id ?? raw.entity_id
+        ?? raw.run_id ?? raw.flow_run_id ?? raw.pipeline_run_id
+    );
+    return type && id ? { type, id } : null;
+}
+
+function _fallbackAlertOccurrences(action) {
+    if (!action || typeof action !== "object") return [];
+    const embedded = action.latest_occurrence || action.occurrence;
+    if (embedded && _alertOccurrenceFocus(embedded)) return [embedded];
+
+    const isPipeline = action.asset_type === "pipeline" || action.type === "pipeline_failed";
+    const isFlow = action.asset_type === "flow" || action.type === "flow_failed";
+    const flowRunId = _positiveInteger(action.flow_run_id ?? action.latest_flow_run_id);
+    const pipelineRunId = _positiveInteger(action.pipeline_run_id ?? action.latest_pipeline_run_id);
+    if (isFlow && flowRunId) {
+        return [{
+            occurrence_id: action.occurrence_id,
+            focus_type: "flow_run",
+            focus_id: flowRunId,
+            status: action.status,
+            observed_at: action.updated_at || action.created_at,
+        }];
+    }
+    if (isPipeline && pipelineRunId) {
+        return [{
+            occurrence_id: action.occurrence_id,
+            focus_type: "pipeline_run",
+            focus_id: pipelineRunId,
+            status: action.status,
+            observed_at: action.updated_at || action.created_at,
+        }];
+    }
+    return [];
+}
+
+function _normalizeAlertOccurrences(payload, action) {
+    let rows = [];
+    if (Array.isArray(payload)) rows = payload;
+    else if (Array.isArray(payload?.occurrences)) rows = payload.occurrences;
+    else if (Array.isArray(payload?.items)) rows = payload.items;
+    else if (payload?.latest_occurrence) rows = [payload.latest_occurrence];
+
+    if (!rows.length) rows = _fallbackAlertOccurrences(action);
+    const currentRevision = _positiveInteger(
+        payload?.current_evidence_revision ?? payload?.evidence_revision ?? action?.evidence_revision
+    );
+    const seen = new Set();
+    const normalized = [];
+    for (const raw of rows) {
+        const focus = _alertOccurrenceFocus(raw);
+        if (!focus) continue;
+        const recordedEvidence = _alertOccurrenceEvidence(raw);
+        const occurrenceId = _positiveInteger(raw.occurrence_id ?? raw.id);
+        const key = `${focus.type}:${focus.id}:${occurrenceId || "none"}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const evidenceRevision = _positiveInteger(raw.evidence_revision);
+        const explicitlyCurrent = typeof raw.is_current === "boolean"
+            ? raw.is_current
+            : raw.is_current === 0 || raw.is_current === 1
+            ? Boolean(raw.is_current)
+            : null;
+        normalized.push({
+            occurrence_id: occurrenceId,
+            focus,
+            status: String(raw.status || raw.run_status || recordedEvidence.status || "recorded"),
+            observed_at: raw.observed_at || raw.detected_at || raw.finished_at || raw.created_at || null,
+            label: String(raw.label || ""),
+            summary: String(raw.summary || raw.message || ""),
+            evidence_revision: evidenceRevision,
+            is_current: explicitlyCurrent !== null
+                ? explicitlyCurrent
+                : currentRevision && evidenceRevision
+                ? currentRevision === evidenceRevision
+                : raw.superseded_at
+                ? false
+                : null,
+            analysis_run_id: _positiveInteger(
+                raw.analysis_run_id ?? raw.agent_run_id ?? raw.latest_analysis_run_id ?? raw.analysis?.id
+            ),
+        });
+    }
+    normalized.sort((left, right) =>
+        String(right.observed_at || "").localeCompare(String(left.observed_at || ""))
+    );
+    return normalized.slice(0, 20);
+}
+
+function _alertOccurrenceStatusClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (["failed", "error", "cancelled", "unknown"].includes(normalized)) return "is-failed";
+    if (["succeeded", "completed"].includes(normalized)) return "is-succeeded";
+    return "is-recorded";
+}
+
+function _alertOccurrenceLabel(occurrence) {
+    if (occurrence.label && occurrence.label !== occurrence.summary) return occurrence.label;
+    if (occurrence.focus.type === "flow_run") return `Flow run #${occurrence.focus.id}`;
+    if (occurrence.focus.type === "pipeline_run") return `Pipeline run #${occurrence.focus.id}`;
+    return `Power BI sync #${occurrence.focus.id}`;
+}
+
+function _alertOccurrencesHtml(actionId, occurrences, { fallback = false } = {}) {
+    if (!occurrences.length) {
+        return `
+            <div class="alerts-occurrence-empty">
+                <strong>No exact run occurrence is linked yet.</strong>
+                <p>This alert keeps its deterministic evidence. Run analysis becomes available only when Metronome can pin it to one recorded Flow or Pipeline run.</p>
+            </div>`;
+    }
+    return `
+        ${fallback ? '<p class="alerts-occurrence-note">The occurrence service is not available yet; showing the exact run link already stored on this alert.</p>' : ""}
+        <ol class="alerts-occurrence-list">
+            ${occurrences.map((occurrence, index) => {
+                const focus = occurrence.focus;
+                const when = occurrence.observed_at ? formatDate(occurrence.observed_at) : "Time not recorded";
+                const href = focus.type === "flow_run" ? `/flow-runs/${focus.id}` : "";
+                const analyzable = ["flow_run", "pipeline_run"].includes(focus.type);
+                const historical = occurrence.is_current === false;
+                // Starting from an Alert must preserve the server-issued immutable
+                // occurrence id. A fallback run link is useful for navigation, but
+                // it is not a safe substitute for an exact Alert binding.
+                const canStartAnalysis = analyzable
+                    && Boolean(occurrence.occurrence_id)
+                    && !historical;
+                const analysisAvailable = analyzable
+                    && Boolean(occurrence.analysis_run_id || canStartAnalysis);
+                const analysisLabel = occurrence.analysis_run_id
+                    ? historical ? "View historical analysis" : "View analysis"
+                    : "Analyze run";
+                const unavailableLabel = historical && analyzable
+                    ? "No saved analysis"
+                    : analyzable && !occurrence.occurrence_id
+                    ? "Exact occurrence unavailable"
+                    : "Recorded evidence";
+                return `
+                    <li class="alerts-occurrence-item ${_alertOccurrenceStatusClass(occurrence.status)}${historical ? " is-historical" : ""}"${index === 0 ? ' data-latest="true"' : ""}>
+                        <div class="alerts-occurrence-copy">
+                            <div><strong>${esc(_alertOccurrenceLabel(occurrence))}</strong>${historical ? '<span class="alerts-history-badge">Historical</span>' : index === 0 ? '<span class="alerts-latest-badge">Latest</span>' : ""}</div>
+                            <span>${esc(occurrence.status.replaceAll("_", " "))} · ${esc(when)}</span>
+                            ${occurrence.summary ? `<p>${esc(occurrence.summary)}</p>` : ""}
+                            ${occurrence.evidence_revision ? `<small>Evidence revision ${occurrence.evidence_revision}</small>` : ""}
+                        </div>
+                        <div class="alerts-occurrence-actions">
+                            ${href ? `<a class="btn-sm btn-outline" href="${esc(href)}">Open log</a>` : ""}
+                            ${analysisAvailable ? `<button type="button" class="btn-sm btn-outline alerts-analyze-occurrence"
+                                data-alert-analyze-occurrence
+                                data-action-id="${actionId}"
+                                data-focus-type="${focus.type}"
+                                data-focus-id="${focus.id}"
+                                ${occurrence.occurrence_id ? `data-occurrence-id="${occurrence.occurrence_id}"` : ""}
+                                ${occurrence.analysis_run_id ? `data-analysis-run-id="${occurrence.analysis_run_id}"` : ""}
+                                >
+                                ${analysisLabel}
+                            </button>` : `<span class="alerts-analysis-unavailable">${unavailableLabel}</span>`}
+                        </div>
+                    </li>`;
+            }).join("")}
+        </ol>`;
+}
+
+function _bindAlertOccurrenceControls(surface) {
+    surface.querySelectorAll("[data-alert-analyze-occurrence]").forEach(button => {
+        button.addEventListener("click", () => {
+            const focus = {
+                type: button.dataset.focusType,
+                id: _positiveInteger(button.dataset.focusId),
+            };
+            if (!_validAIFocus(focus)) return;
+            const actionId = _positiveInteger(button.dataset.actionId);
+            const occurrenceId = _positiveInteger(button.dataset.occurrenceId);
+            const analysisRunId = _positiveInteger(button.dataset.analysisRunId);
+            const holder = surface.querySelector("[data-alert-analysis-result]");
+            if (!holder || !actionId) return;
+            if (analysisRunId) {
+                _showAlertInvestigationRun(analysisRunId, holder, focus, actionId, occurrenceId);
+            } else {
+                _startAlertInvestigation(holder, focus, actionId, occurrenceId);
+            }
+        });
+    });
+}
+
+async function _loadAlertOccurrences(actionId, expandRow) {
+    const surface = expandRow?.querySelector(`[data-alert-analysis][data-action-id="${actionId}"]`);
+    const container = surface?.querySelector("[data-alert-occurrences]");
+    if (!surface || !container || surface.dataset.occurrencesState) return;
+    surface.dataset.occurrencesState = "loading";
+    container.innerHTML = '<div class="alerts-occurrence-loading"><span></span>Loading exact run occurrences…</div>';
+    const action = (window._dashboardActions || []).find(item => Number(item.id) === Number(actionId));
+    let payload = null;
+    let fallback = false;
+    try {
+        payload = await api(`/api/actions/${actionId}/occurrences`);
+    } catch (error) {
+        fallback = true;
+    }
+    if (!surface.isConnected) return;
+    const occurrences = _normalizeAlertOccurrences(payload, action);
+    surface.dataset.occurrencesState = fallback ? "fallback" : "loaded";
+    container.innerHTML = _alertOccurrencesHtml(actionId, occurrences, { fallback });
+    _bindAlertOccurrenceControls(surface);
+}
+
+function _setAlertAnalysisBusy(holder, busy) {
+    const surface = holder.closest("[data-alert-analysis]");
+    surface?.querySelectorAll("[data-alert-analyze-occurrence]").forEach(button => {
+        button.disabled = busy;
+    });
+}
+
+function _markAlertOccurrenceAnalyzed(holder, occurrenceId, focus, runId) {
+    const surface = holder.closest("[data-alert-analysis]");
+    if (!surface) return;
+    const button = [...surface.querySelectorAll("[data-alert-analyze-occurrence]")].find(item => {
+        const sameOccurrence = occurrenceId
+            ? _positiveInteger(item.dataset.occurrenceId) === occurrenceId
+            : true;
+        return sameOccurrence
+            && item.dataset.focusType === focus.type
+            && _positiveInteger(item.dataset.focusId) === Number(focus.id);
+    });
+    if (!button) return;
+    button.dataset.analysisRunId = String(runId);
+    button.textContent = "View analysis";
+}
+
+function _alertAnalysisQuestion(focus) {
+    return focus.type === "flow_run"
+        ? "Explain this exact Flow alert occurrence: what failed, what completed, and the safest next step."
+        : "Explain this exact Pipeline alert occurrence: what failed, what completed, and the safest next step.";
+}
+
+async function _createAlertInvestigation(focus, actionId, occurrenceId) {
+    const linkedBody = {
+        question: _alertAnalysisQuestion(focus),
+        focus: { type: focus.type, id: Number(focus.id) },
+        action_id: actionId,
+    };
+    if (occurrenceId) linkedBody.occurrence_id = occurrenceId;
+    // Alert-originated analysis fails closed if the server cannot preserve its
+    // alert/occurrence linkage. Only explicit run-history shortcuts may create
+    // a standalone analysis.
+    return apiPostJson("/api/ai/operations/runs", linkedBody);
+}
+
+async function _startAlertInvestigation(holder, focus, actionId, occurrenceId) {
+    if (!_validAIFocus(focus) || !holder?.isConnected) return;
+    const generation = ++_alertAnalysisGeneration;
+    holder.dataset.analysisGeneration = String(generation);
+    delete holder.dataset.renderedAnalysisRunId;
+    holder.className = "alerts-analysis-result ai-investigation";
+    holder.innerHTML = _aiProgressHtml({ status: "queued", steps: [] });
+    _setAlertAnalysisBusy(holder, true);
+    try {
+        const run = await _createAlertInvestigation(focus, actionId, occurrenceId);
+        if (!holder.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        if (!_runMatchesAIFocus(run, focus) || !_positiveInteger(run.id)) {
+            throw new Error("The server returned analysis for a different run.");
+        }
+        _pollAlertInvestigation(Number(run.id), holder, focus, actionId, occurrenceId, generation, 0);
+    } catch (error) {
+        if (!holder.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        holder.className = "alerts-analysis-result ai-investigation ai-investigation-failed";
+        holder.innerHTML = `<h4>Analysis unavailable</h4><p>${esc(error.message)}. The alert and selected run were not changed.</p><button type="button" class="btn-sm btn-outline alerts-retry-analysis">Retry analysis</button>`;
+        holder.querySelector(".alerts-retry-analysis")?.addEventListener("click", () =>
+            _startAlertInvestigation(holder, focus, actionId, occurrenceId)
+        );
+        _setAlertAnalysisBusy(holder, false);
+    }
+}
+
+function _showAlertInvestigationRun(runId, holder, focus, actionId, occurrenceId) {
+    if (!_validAIFocus(focus) || !holder?.isConnected) return;
+    const generation = ++_alertAnalysisGeneration;
+    holder.dataset.analysisGeneration = String(generation);
+    delete holder.dataset.renderedAnalysisRunId;
+    holder.className = "alerts-analysis-result ai-investigation";
+    holder.innerHTML = _aiProgressHtml({ status: "queued", steps: [] });
+    _setAlertAnalysisBusy(holder, true);
+    _pollAlertInvestigation(runId, holder, focus, actionId, occurrenceId, generation, 0);
+}
+
+async function _pollAlertInvestigation(
+    runId, holder, expectedFocus, actionId, occurrenceId, generation, failureCount
+) {
+    if (!holder?.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+    try {
+        const run = await api(`/api/ai/operations/runs/${runId}`);
+        if (!holder.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        if (!_runMatchesAIFocus(run, expectedFocus)) {
+            throw new Error("The stored analysis does not match this exact occurrence.");
+        }
+        if (["queued", "running"].includes(run.status)) {
+            holder.innerHTML = _aiProgressHtml(run);
+            setTimeout(
+                () => _pollAlertInvestigation(
+                    runId, holder, expectedFocus, actionId, occurrenceId, generation, 0
+                ),
+                1800
+            );
+            return;
+        }
+        _setAlertAnalysisBusy(holder, false);
+        if (run.status === "completed") {
+            const staleness = _aiAnalysisStaleness(run);
+            const alreadyRendered = holder.dataset.renderedAnalysisRunId === String(runId);
+            if (!alreadyRendered || staleness.stale) {
+                holder.className = "alerts-analysis-result ai-investigation ai-investigation-complete";
+                holder.innerHTML = _aiResultHtml(run);
+                holder.dataset.renderedAnalysisRunId = String(runId);
+            }
+            _markAlertOccurrenceAnalyzed(holder, occurrenceId, expectedFocus, runId);
+            if (!staleness.stale) {
+                // Revalidate a visible recommendation against the durable run.
+                // The holder can remain in the DOM while its Alert row is collapsed,
+                // so continuing here also prevents an unchecked recommendation from
+                // resurfacing when that row is opened again.
+                setTimeout(
+                    () => _pollAlertInvestigation(
+                        runId, holder, expectedFocus, actionId, occurrenceId, generation, 0
+                    ),
+                    ALERT_ANALYSIS_FRESHNESS_MS
+                );
+            }
+            return;
+        }
+        holder.className = "alerts-analysis-result ai-investigation ai-investigation-failed";
+        const historical = _aiAnalysisStaleness(run).stale;
+        holder.innerHTML = `<h4>${run.status === "cancelled" ? "Analysis cancelled" : "Analysis unavailable"}</h4><p>${esc(run.error || "The analysis did not complete. The alert and run were not changed.")}</p>${historical ? '<p>This is historical evidence. Analyze the latest occurrence instead of retrying this snapshot.</p>' : '<button type="button" class="btn-sm btn-outline alerts-retry-analysis">Retry analysis</button>'}`;
+        if (!historical) {
+            holder.querySelector(".alerts-retry-analysis")?.addEventListener("click", () =>
+                _startAlertInvestigation(holder, expectedFocus, actionId, occurrenceId)
+            );
+        }
+    } catch (error) {
+        if (!holder?.isConnected || holder.dataset.analysisGeneration !== String(generation)) return;
+        const permanent = Number.isInteger(error.status)
+            && error.status < 500
+            && ![408, 429].includes(error.status);
+        if (permanent || !Number.isInteger(error.status)) {
+            _setAlertAnalysisBusy(holder, false);
+            holder.className = "alerts-analysis-result ai-investigation ai-investigation-failed";
+            holder.innerHTML = `<h4>Analysis unavailable</h4><p>${esc(error.message)}. The alert and run were not changed.</p><button type="button" class="btn-sm btn-outline alerts-retry-analysis">Run a new analysis</button>`;
+            holder.querySelector(".alerts-retry-analysis")?.addEventListener("click", () =>
+                _startAlertInvestigation(holder, expectedFocus, actionId, occurrenceId)
+            );
+            return;
+        }
+        const delays = [2000, 5000, 10000];
+        const nextFailureCount = failureCount + 1;
+        holder.innerHTML = _aiProgressHtml(
+            { status: "running", steps: [] },
+            "Connection interrupted; server-side analysis may still be running. Retrying."
+        );
+        setTimeout(
+            () => _pollAlertInvestigation(
+                runId, holder, expectedFocus, actionId, occurrenceId,
+                generation, nextFailureCount
+            ),
+            delays[Math.min(nextFailureCount - 1, delays.length - 1)]
+        );
+    }
+}
+
+function _validAIFocus(focus) {
+    return focus
+        && ["flow_run", "pipeline_run"].includes(focus.type)
+        && Number.isInteger(Number(focus.id))
+        && Number(focus.id) > 0;
+}
+
+function _aiFocusLabel(focus) {
+    return `${focus.type === "flow_run" ? "Flow" : "Pipeline"} run #${Number(focus.id)}`;
+}
+
+function _sameAIFocus(left, right) {
+    return _validAIFocus(left)
+        && _validAIFocus(right)
+        && left.type === right.type
+        && Number(left.id) === Number(right.id);
+}
+
+function _runMatchesAIFocus(run, focus) {
+    return Boolean(run) && _sameAIFocus(
+        { type: run.focus_type, id: Number(run.focus_id) },
+        focus
+    );
+}
+
+function _setAIInvestigatorFocus(focus, { resetMessages = true } = {}) {
+    if (!_validAIFocus(focus)) return false;
+    _aiFocus = { type: focus.type, id: Number(focus.id) };
+    _aiFocusGeneration += 1;
+    sessionStorage.setItem("ai_operations_focus", JSON.stringify(_aiFocus));
+    const strip = document.getElementById("ai-focus-strip");
+    strip.hidden = false;
+    strip.innerHTML = `<strong>${esc(_aiFocusLabel(_aiFocus))}</strong><span>Read-only · exact run evidence</span>`;
+    const input = document.getElementById("ai-chat-input");
+    const send = document.getElementById("ai-chat-send");
+    input.disabled = false;
+    input.placeholder = `Ask about ${_aiFocusLabel(_aiFocus)}`;
+    send.disabled = false;
+    document.getElementById("ai-chat-quick").style.display = "flex";
+    if (resetMessages) {
+        document.getElementById("ai-chat-messages").innerHTML = `
+            <div class="ai-msg assistant">
+                <p><strong>${esc(_aiFocusLabel(_aiFocus))}</strong> is pinned. I can inspect this run only. Recommendations are text—not executable controls.</p>
+            </div>`;
+    }
+    return true;
+}
+
+function openAIInvestigator(focus, question = "") {
+    if ((_aiActiveRunId || _aiCreatePending) && !_sameAIFocus(focus, _aiFocus)) {
+        toggleAIChat(true);
+        toast("An investigation is already running. Let it finish before switching runs.");
+        return;
+    }
+    if ((_aiActiveRunId || _aiCreatePending) && _sameAIFocus(focus, _aiFocus)) {
+        toggleAIChat(true);
+        return;
+    }
+    if (!_setAIInvestigatorFocus(focus)) return;
+    clearTimeout(_aiPollTimer);
+    _aiActiveRunId = null;
+    sessionStorage.removeItem("ai_operations_run_id");
+    toggleAIChat(true);
+    if (question) {
+        const input = document.getElementById("ai-chat-input");
+        input.value = question;
+        sendAIChat();
+    }
+}
+
+function _restoreAIInvestigation() {
+    let focus = null;
+    try { focus = JSON.parse(sessionStorage.getItem("ai_operations_focus") || "null"); }
+    catch (_) {}
+    if (!_validAIFocus(focus)) return;
+    _setAIInvestigatorFocus(focus);
+    const runId = Number(sessionStorage.getItem("ai_operations_run_id"));
+    if (!Number.isInteger(runId) || runId <= 0) return;
+    _aiActiveRunId = runId;
+    const holder = document.createElement("div");
+    holder.className = "ai-msg assistant ai-investigation";
+    holder.innerHTML = _aiProgressHtml({ status: "queued", steps: [] });
+    document.getElementById("ai-chat-messages").appendChild(holder);
+    // With no global launcher, a deliberately persisted contextual analysis
+    // must restore visibly after a reload instead of continuing off-screen.
+    toggleAIChat(true);
+    _pollAIInvestigation(runId, holder, { ..._aiFocus }, _aiFocusGeneration);
+}
+
+function _consumeAIInvestigationDeepLink() {
+    const params = new URLSearchParams(location.search);
+    const type = params.get("investigate");
+    const id = Number(params.get("subject_id"));
+    if (!_validAIFocus({ type, id })) return;
+    history.replaceState(null, "", `${location.pathname}${location.hash}`);
+    openAIInvestigator(
+        { type, id },
+        type === "flow_run"
+            ? "Explain this Flow run's current recorded state, what completed, and the safest next step."
+            : "Explain what happened in this Pipeline run, what completed, and the safest next step."
+    );
+}
+
+function _aiStepLabel(name) {
+    return ({
+        get_flow_run: "Reading Flow run",
+        get_flow_run_events: "Reading run events",
+        get_flow_run_artifacts: "Checking artifacts",
+        compare_flow_runs: "Comparing prior run",
+        get_pipeline_run: "Reading Pipeline run",
+        get_pipeline_flow_run: "Reading linked Flow run",
+        get_pipeline_flow_run_events: "Reading linked Flow events",
+        get_pipeline_flow_run_artifacts: "Checking linked Flow artifacts",
+        submit_agent_result: "Preparing assessment",
+    })[name] || "Reading recorded evidence";
+}
+
+function _aiProgressHtml(run, connectionMessage = "") {
+    const steps = run.steps || [];
+    const rows = steps.length
+        ? steps.map(step => `<li class="ai-step ai-step-${esc(step.status)}"><span></span>${esc(_aiStepLabel(step.tool_name))}<small>${esc(step.status)}</small></li>`).join("")
+        : '<li class="ai-step ai-step-running"><span></span>Waiting for the investigator<small>queued</small></li>';
+    return `
+        <div class="ai-run-progress">
+            <strong>${run.status === "queued" ? "Queued" : "Investigating"}</strong>
+            <ul>${rows}</ul>
+            ${connectionMessage ? `<p class="ai-connection-note">${esc(connectionMessage)}</p>` : ""}
+        </div>`;
+}
+
+function _aiEvidenceHref(item) {
+    const deep = String(item?.deep_link || "");
+    if (/^\/flow-runs\/\d+$/.test(deep)) return deep;
+    if (item?.entity_type === "flow_run" && /^\d+$/.test(String(item.entity_id))) {
+        return `/flow-runs/${item.entity_id}`;
+    }
+    return "";
+}
+
+function _aiEvidenceLinks(refs, evidenceMap) {
+    return (refs || []).map(ref => {
+        const item = evidenceMap.get(ref);
+        if (!item) return `<span class="ai-evidence-missing">${esc(ref)}</span>`;
+        const href = _aiEvidenceHref(item);
+        return href
+            ? `<a class="ai-evidence-chip" href="${esc(href)}">${esc(item.label)}</a>`
+            : `<span class="ai-evidence-chip">${esc(item.label)}</span>`;
+    }).join("");
+}
+
+function _aiAnalysisStaleness(run) {
+    const analysisRevision = _positiveInteger(
+        run?.action_evidence_revision ?? run?.alert_evidence_revision
+        ?? run?.evidence_revision ?? run?.result?.evidence_revision
+    );
+    const currentRevision = _positiveInteger(run?.current_alert_evidence_revision);
+    const revisionChanged = Boolean(
+        analysisRevision && currentRevision && analysisRevision !== currentRevision
+    );
+    const stale = Boolean(
+        run?.superseded_at || run?.superseded || run?.stale
+        || run?.is_current === false || run?.is_current === 0
+        || run?.recommendations_current === false || revisionChanged
+    );
+    if (!stale) return { stale: false, reason: "" };
+    const rawReason = String(
+        run?.superseded_reason
+        || run?.reason
+        || (revisionChanged
+            ? `Alert evidence advanced from revision ${analysisRevision} to ${currentRevision}.`
+            : "Newer alert evidence or analysis is available.")
+    );
+    const reason = ({
+        alert_evidence_changed: "Newer evidence was recorded for this alert.",
+        alert_resolved: "The alert was resolved after this analysis.",
+        alert_expected: "The alert was accepted as expected after this analysis.",
+    })[rawReason] || rawReason;
+    return { stale: true, reason };
+}
+
+function _aiResultHtml(run) {
+    const result = run.result;
+    if (!result) return '<p class="ai-connection-note">The investigation completed without a structured result.</p>';
+    const staleness = _aiAnalysisStaleness(run);
+    const evidenceMap = new Map((run.evidence || []).map(item => [item.reference, item]));
+    const claims = items => (items || []).map(item => `
+        <li><span>${esc(item.statement)}</span><div class="ai-evidence-list">${_aiEvidenceLinks(item.evidence_refs, evidenceMap)}</div></li>`).join("");
+    const recommendations = staleness.stale ? "" : (result.recommendations || []).map(item => `
+        <li><div><span class="ai-recommendation-type">${esc(item.action_type.replaceAll("_", " "))}</span><strong>${esc(item.title)}</strong></div><p>${esc(item.rationale)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(item.evidence_refs, evidenceMap)}</div></li>`).join("");
+    const evidence = [...evidenceMap.values()].map(item => {
+        const href = _aiEvidenceHref(item);
+        const label = `${item.label} · observed ${formatDate(item.observed_at)}`;
+        return `<li>${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)}</li>`;
+    }).join("");
+    const recommendationSection = staleness.stale
+        ? `<section class="ai-result-section ai-result-stale-recommendations"><h4>Recommended next step</h4><p>Hidden because this is historical analysis. Analyze the latest occurrence before acting.</p></section>`
+        : `<section class="ai-result-section"><h4>Recommended next step</h4>${recommendations ? `<ul class="ai-recommendations">${recommendations}</ul>` : "<p>No operational action is recommended.</p>"}<p class="ai-safe-note">This panel cannot execute the recommendation. Existing Metronome controls perform their own preflight and confirmation.</p></section>`;
+    return `
+        <div class="ai-result-meta"><span>${run.provider_mode === "mock" ? "Deterministic preview" : esc(run.model)}</span><span>Read-only</span>${staleness.stale ? "<span>Historical</span>" : ""}<span>${esc(result.confidence)} confidence</span></div>
+        ${staleness.stale ? `<div class="ai-stale-analysis" role="status"><strong>Stale analysis</strong><span>${esc(staleness.reason)} Recommendations from this snapshot are hidden.</span></div>` : ""}
+        ${run.provider_mode === "mock" ? '<p class="ai-mock-note">Qwen is not connected. This preview contains deterministic Metronome facts and preflight only.</p>' : ""}
+        <section class="ai-result-section"><h4>Conclusion</h4><p>${esc(result.conclusion)}</p><div class="ai-evidence-list">${_aiEvidenceLinks(result.conclusion_evidence_refs, evidenceMap)}</div></section>
+        <section class="ai-result-section"><h4>Observed facts</h4><ul>${claims(result.observed_facts)}</ul></section>
+        ${(result.inferences || []).length ? `<section class="ai-result-section"><h4>Inference</h4><ul>${claims(result.inferences)}</ul></section>` : ""}
+        ${recommendationSection}
+        ${(result.unknowns || []).length ? `<section class="ai-result-section"><h4>Unknowns</h4><ul>${result.unknowns.map(item => `<li>${esc(item)}</li>`).join("")}</ul></section>` : ""}
+        <details class="ai-evidence-details"><summary>Evidence (${evidenceMap.size})</summary><ul>${evidence}</ul></details>`;
+}
+
+function _finishAIInvestigationInput() {
+    const input = document.getElementById("ai-chat-input");
+    input.disabled = !_aiFocus;
+    document.getElementById("ai-chat-send").disabled = !_aiFocus;
+    document.getElementById("ai-chat-quick").style.display = _aiFocus ? "flex" : "none";
+}
+
+function _revalidateCompletedAIInvestigation(runId, holder, expectedFocus) {
+    if (!holder?.isConnected || holder.dataset.analysisRunId !== String(runId)) return;
+    setTimeout(async () => {
+        if (!holder?.isConnected || holder.dataset.analysisRunId !== String(runId)) return;
+        try {
+            const run = await api(`/api/ai/operations/runs/${runId}`);
+            if (!holder.isConnected
+                    || holder.dataset.analysisRunId !== String(runId)
+                    || !_runMatchesAIFocus(run, expectedFocus)
+                    || run.status !== "completed") return;
+            holder.innerHTML = _aiResultHtml(run);
+            if (!_aiAnalysisStaleness(run).stale && run.action_id) {
+                _revalidateCompletedAIInvestigation(runId, holder, expectedFocus);
+            }
+        } catch (_) {
+            // A transient read failure must not replace the last durable result.
+            // Try again while the same result surface is still mounted.
+            _revalidateCompletedAIInvestigation(runId, holder, expectedFocus);
+        }
+    }, ALERT_ANALYSIS_FRESHNESS_MS);
+}
+
+async function _pollAIInvestigation(runId, holder, expectedFocus, focusGeneration) {
+    if (_aiActiveRunId !== runId
+            || focusGeneration !== _aiFocusGeneration
+            || !_sameAIFocus(expectedFocus, _aiFocus)) return;
+    try {
+        const run = await api(`/api/ai/operations/runs/${runId}`);
+        if (_aiActiveRunId !== runId
+                || focusGeneration !== _aiFocusGeneration
+                || !_sameAIFocus(expectedFocus, _aiFocus)) return;
+        if (!_runMatchesAIFocus(run, expectedFocus)) {
+            sessionStorage.removeItem("ai_operations_run_id");
+            _aiActiveRunId = null;
+            holder.className = "ai-msg assistant ai-investigation ai-investigation-failed";
+            holder.innerHTML = "<p>The stored investigation does not match the pinned run. Start a new investigation from the run itself.</p>";
+            _finishAIInvestigationInput();
+            return;
+        }
+        _aiPollFailures = 0;
+        if (["queued", "running"].includes(run.status)) {
+            holder.innerHTML = _aiProgressHtml(run);
+            _aiPollTimer = setTimeout(
+                () => _pollAIInvestigation(runId, holder, expectedFocus, focusGeneration),
+                1800
+            );
+            return;
+        }
+        _aiActiveRunId = null;
+        clearTimeout(_aiPollTimer);
+        if (run.status === "completed") {
+            holder.className = "ai-msg assistant ai-investigation ai-investigation-complete";
+            holder.innerHTML = _aiResultHtml(run);
+            holder.dataset.analysisRunId = String(runId);
+            if (run.action_id && !_aiAnalysisStaleness(run).stale) {
+                _revalidateCompletedAIInvestigation(runId, holder, expectedFocus);
+            }
+        } else {
+            sessionStorage.removeItem("ai_operations_run_id");
+            holder.className = "ai-msg assistant ai-investigation ai-investigation-failed";
+            holder.innerHTML = `<h4>${run.status === "cancelled" ? "Investigation cancelled" : "Investigation unavailable"}</h4><p>${esc(run.error || "The investigation did not complete. Run records were not changed.")}</p>${(run.evidence || []).length ? `<details><summary>Evidence collected before failure</summary><ul>${run.evidence.map(item => `<li>${esc(item.label)}</li>`).join("")}</ul></details>` : ""}<button type="button" class="btn-sm btn-outline ai-retry-analysis">Retry investigation</button>`;
+            holder.querySelector(".ai-retry-analysis")?.addEventListener("click", () => {
+                holder.remove();
+                const input = document.getElementById("ai-chat-input");
+                input.value = "Re-run the read-only investigation and explain the safest next step.";
+                sendAIChat();
+            });
+        }
+        _finishAIInvestigationInput();
+        document.getElementById("ai-chat-messages").scrollTop = document.getElementById("ai-chat-messages").scrollHeight;
+    } catch (err) {
+        if (_aiActiveRunId !== runId
+                || focusGeneration !== _aiFocusGeneration
+                || !_sameAIFocus(expectedFocus, _aiFocus)) return;
+        const permanent = Number.isInteger(err.status)
+            && err.status < 500
+            && ![408, 429].includes(err.status);
+        if (permanent) {
+            sessionStorage.removeItem("ai_operations_run_id");
+            _aiActiveRunId = null;
+            holder.className = "ai-msg assistant ai-investigation ai-investigation-failed";
+            holder.innerHTML = `<p>${esc(err.message)} Start a new read-only investigation from the selected run.</p>`;
+            _finishAIInvestigationInput();
+            return;
+        }
+        _aiPollFailures += 1;
+        const delays = [2000, 5000, 10000];
+        holder.innerHTML = _aiProgressHtml(
+            { status: "running", steps: [] },
+            "Connection interrupted; the server-side investigation may still be running. Retrying."
+        );
+        _aiPollTimer = setTimeout(
+            () => _pollAIInvestigation(runId, holder, expectedFocus, focusGeneration),
+            delays[Math.min(_aiPollFailures - 1, delays.length - 1)]
+        );
     }
 }
 
 async function sendAIChat() {
     const input = document.getElementById("ai-chat-input");
     const msg = input.value.trim();
-    if (!msg) return;
+    if (!msg || !_validAIFocus(_aiFocus) || _aiActiveRunId || _aiCreatePending) return;
+    const requestedFocus = { ..._aiFocus };
+    const focusGeneration = _aiFocusGeneration;
+    _aiCreatePending = true;
 
     const messages = document.getElementById("ai-chat-messages");
-    const sendBtn = document.getElementById("ai-chat-send");
-
-    // Add user message
     const userEl = document.createElement("div");
     userEl.className = "ai-msg user";
     userEl.textContent = msg;
     messages.appendChild(userEl);
     input.value = "";
     input.style.height = "auto";
-    sendBtn.disabled = true;
+    input.disabled = true;
+    document.getElementById("ai-chat-send").disabled = true;
+    document.getElementById("ai-chat-quick").style.display = "none";
 
-    // Hide quick chips after first message
-    const quickArea = document.getElementById("ai-chat-quick");
-    if (quickArea) quickArea.style.display = "none";
-
-    // Typing indicator
-    const typing = document.createElement("div");
-    typing.className = "ai-typing";
-    typing.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
-    messages.appendChild(typing);
+    const holder = document.createElement("div");
+    holder.className = "ai-msg assistant ai-investigation";
+    holder.innerHTML = _aiProgressHtml({ status: "queued", steps: [] });
+    messages.appendChild(holder);
     messages.scrollTop = messages.scrollHeight;
 
     try {
-        const res = await fetch("/api/ai/chat", {
-            method: "POST",
-            headers: apiHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ message: msg }),
+        const run = await apiPostJson("/api/ai/operations/runs", {
+            question: msg,
+            focus: { type: requestedFocus.type, id: Number(requestedFocus.id) },
         });
-        const data = await res.json();
-        typing.remove();
-
-        const assistantEl = document.createElement("div");
-        assistantEl.className = "ai-msg assistant ai-content";
-        assistantEl.innerHTML = renderMd(data.response);
-        messages.appendChild(assistantEl);
+        if (focusGeneration !== _aiFocusGeneration
+                || !_sameAIFocus(requestedFocus, _aiFocus)) return;
+        if (!_runMatchesAIFocus(run, requestedFocus) || !Number.isInteger(Number(run.id))) {
+            throw new Error("The server returned an investigation for a different run.");
+        }
+        _aiActiveRunId = Number(run.id);
+        sessionStorage.setItem("ai_operations_run_id", String(_aiActiveRunId));
+        _pollAIInvestigation(
+            _aiActiveRunId, holder, requestedFocus, focusGeneration
+        );
     } catch (err) {
-        typing.remove();
-        const errEl = document.createElement("div");
-        errEl.className = "ai-msg assistant";
-        errEl.innerHTML = `<p style="color:var(--red)">Error: ${err.message}</p>`;
-        messages.appendChild(errEl);
+        if (focusGeneration !== _aiFocusGeneration) return;
+        holder.className = "ai-msg assistant ai-investigation ai-investigation-failed";
+        holder.innerHTML = `<p>Investigator unavailable: ${esc(err.message)}. The selected run was not changed.</p>`;
+        _aiActiveRunId = null;
+        sessionStorage.removeItem("ai_operations_run_id");
+        _finishAIInvestigationInput();
+    } finally {
+        if (focusGeneration === _aiFocusGeneration) _aiCreatePending = false;
     }
-
-    sendBtn.disabled = false;
-    messages.scrollTop = messages.scrollHeight;
 }
 
 
@@ -11505,7 +11696,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }).catch(() => {});
 
     initAIChatPanel();
-    navigate(getInitialPage());
+    navigate(getInitialPage()).then(_consumeAIInvestigationDeepLink);
 
     // Show version in nav, with a live check against GitHub main so "am I on
     // the latest version?" is answered inside the app.

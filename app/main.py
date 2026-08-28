@@ -22,7 +22,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, data_import, recurrences, flows, query_history, pipelines
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
 from app.settings import get_overall_refresh_time, set_overall_refresh_time
 from app.source_identity import reconcile_all_flow_targets
 from app.scanner.lifecycle import (
@@ -495,6 +495,15 @@ async def lifespan(app):
     refresh_time = _configure_scheduler_jobs()
     _scheduler.start()
     flows.ensure_local_worker()
+    # Let Pipeline restart reconciliation establish authoritative unknown/
+    # terminal states before queued read-only investigations can observe it.
+    pipelines.pipeline_tick()
+    from app.ai.operations_agent import recover_and_start as recover_ai_runs
+    recovered_ai_runs = recover_ai_runs()
+    if recovered_ai_runs:
+        logging.getLogger(__name__).info(
+            "Resubmitted %d queued AI investigation(s)", recovered_ai_runs
+        )
     logging.getLogger(__name__).info(
         "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, email dispatch every minute",
         refresh_time["hour"],
@@ -504,6 +513,8 @@ async def lifespan(app):
     yield
 
     _scheduler.shutdown(wait=False)
+    from app.ai.operations_agent import shutdown_executor as shutdown_ai_executor
+    shutdown_ai_executor()
     pipelines.shutdown_pipeline_executor()
 
 
@@ -534,7 +545,7 @@ app.include_router(documentation.router)
 app.include_router(email.router)
 app.include_router(email_schedules.router)
 app.include_router(usage.router)
-app.include_router(data_import.router)
+app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
 app.include_router(pipelines.router)

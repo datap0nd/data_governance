@@ -44,6 +44,27 @@ For other people on the network to access it, they go to `http://YOUR_COMPUTER_I
 
 All registered users have the same application access, including remote PCs on the network. There is no app-level admin allowlist or IP toggle.
 
+### Read-only Operations Investigator
+
+**Alerts is the operational inbox.** A Flow or Pipeline failure creates one durable Alert with an immutable occurrence for each exact failed run. Expanding the Alert shows its deterministic evidence first and an optional **Analysis** action for the current occurrence. Flow history, expanded Flow logs, and full-Pipeline status retain contextual run-analysis shortcuts.
+
+Analysis is pinned on the server to the selected Alert, occurrence, evidence revision, and exact run. The bounded Qwen3.8-27B tool loop explains the recorded state, completed work, likely cause, and safest next step; facts, inferences, recommendations, unknowns, and observation timestamps are displayed separately. If the Alert gains newer evidence, is resolved, or is marked expected, the old analysis remains available as history but its recommendations are hidden. Power BI reconnect occurrences are recorded in Alerts but are not offered to the model because they are not linked to a supported Flow or Pipeline run.
+
+The investigator cannot run, resume, retry, stop, refresh, edit, publish, import, browse, execute SQL, access the shell, or send email. Its only writes are its own durable run/step/evidence records. A recommendation such as Resume or Retry SQL is text only and is accepted only when the shared server preflight says it is currently eligible; the normal operational control revalidates again before queueing anything.
+
+Without a configured model endpoint, Metronome shows a clearly labelled deterministic preview using recorded state and recovery preflight only. To connect Qwen through an OpenAI-compatible vLLM/SGLang endpoint, set:
+
+```text
+DG_AI_API_URL=http://QWEN_HOST:8000/v1
+DG_AI_MODEL=Qwen/Qwen3.8-27B
+DG_AI_PROVIDER_PROFILE=qwen_vllm
+DG_AI_REASONING_EFFORT=medium
+```
+
+The server must expose native OpenAI-compatible `tool_calls` with the Qwen reasoning and tool-call parsers enabled. Raw `<think>` or `<tool_call>` text is rejected rather than executed. Optional bounded tuning variables are `DG_AI_AGENT_MAX_TOOL_CALLS`, `DG_AI_AGENT_MAX_MODEL_TURNS`, `DG_AI_AGENT_MAX_SECONDS`, `DG_AI_AGENT_HTTP_TIMEOUT_SECONDS`, and `DG_AI_AGENT_MAX_OUTPUT_TOKENS`.
+
+See [the AI agent plan](docs/ai_agent_plan.md) for the implemented boundary and later evaluation-gated modes.
+
 ### Unattended Power BI sync
 
 The sync picks the first available auth mode, in this order:
@@ -158,15 +179,11 @@ Each recurrence has an alert owner. New recurrences default to the selected repo
 
 The saved source uses Power BI's technical page and visual identifiers. Renaming or moving the visual, and adding or removing non-rule columns, does not require editing the recurrence. Every run reads the visual's current fields, so newly added standard columns or measures appear automatically in the HTML table. Static visual field format strings are applied by the REST fallback. The primary summarized-export path also reads those formats and safely normalizes fields formatted as whole numbers before previewing, filtering, grouping, or emailing the rows. Richer currency, percentage, locale, and dynamic formats remain Power BI's responsibility. If the visual is deleted, export is disabled, a configured subgroup/rule column disappears, the row limit would truncate the result, or the visual uses a construct that cannot be reproduced safely, the run fails closed and sends no email. The current fallback supports normal columns, explicit column aggregations, measures, basic filters, advanced filters, and standard slicer selections. Visual calculations, hierarchies, percent-of-grand-total fields, Top N filters, relative date/time filters, identity filters, and multi-field filters are rejected rather than approximated. Summarized export is capped at 30,000 rows. The timeout and lower row limit can be configured with `DG_PBI_VISUAL_EXPORT_TIMEOUT_SECONDS` and `DG_PBI_VISUAL_EXPORT_MAX_ROWS`.
 
-### Import Data and Prefect scripts
+### Flow SQL and materialized-view refresh
 
-The Tools > Import Data page can load CSV, XLSX, or XLS files into PostgreSQL with the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Host, port, and database can be set with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; if host or database are omitted, the app falls back to the read-only probe connection values. `DG_UPLOAD_SCHEMA` defaults to `bi_reporting`.
+Optional Flow SQL handoffs use the dedicated write credentials `DG_UPLOAD_PGUSER` and `DG_UPLOAD_PGPASSWORD`. Set the target server with `DG_UPLOAD_PGHOST`, `DG_UPLOAD_PGPORT`, and `DG_UPLOAD_PGDATABASE`; host and database fall back to the read-only probe connection values when omitted. Each Flow stores its own database, schema, table, and append or managed-snapshot behavior.
 
-New table creation is a one-time action in the app and does not generate a scheduling script. After the table exists, the page offers recurring append or truncate-and-replace script generation. Existing tables go straight to that recurring-import setup.
-
-After choosing an existing target table, the page lists PostgreSQL materialized views from `pg_matviews`. Selected views can be refreshed immediately, or included in the generated Python import script so they refresh after rows are inserted.
-
-Generated scripts are written to the folder shown in Tools > Import Data. The initial default comes from `DG_IMPORT_SCRIPT_DIR`, falling back to `generated_imports/` under the repo, and can be changed from the app without restarting. Each generated script exposes a Prefect flow named `import_data_flow`, can run once with `python generated_imports/import_table.py`, and can be served as a Prefect deployment with `python generated_imports/import_table.py --serve`. The UI embeds the selected Prefect schedule in the script: manual/one-time creates no automatic schedule, while daily, weekly, and custom cron options create a cron schedule with the selected timezone when served. Generated scripts support append or replace mode only, and read database credentials from environment variables at runtime, not from the generated file.
+The Pipelines lineage view can also refresh a resolved PostgreSQL materialized view with these credentials. That action preserves the existing Pipeline resource lock and exact source-identity checks. Metronome no longer provides a standalone file-import page or generates Prefect import scripts.
 
 ### 5. Run the scanner
 

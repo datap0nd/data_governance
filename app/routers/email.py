@@ -51,6 +51,9 @@ ACTION_TYPE_LABELS = {
     "task_failed": "Scheduled task failed",
     "script_failed": "Script failed",
     "schedule_mismatch": "Upstream data is newer",
+    "flow_failed": "Flow failed",
+    "pipeline_failed": "Full Pipeline failed",
+    "pbi_reconnect": "Power BI reconnect required",
 }
 
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}

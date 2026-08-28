@@ -7,8 +7,7 @@ truststore
 playwright>=1.50,<2
 pbixray
 psycopg2-binary
-# Import Data section (CSV/Excel -> Postgres)
-pandas==2.3.3
+# Flow SQL and spreadsheet normalization
 sqlalchemy==2.0.50
 openpyxl==3.1.5
 xlrd==2.0.2
@@ -16,5 +15,3 @@ pyxlsb==1.0.10
 pycountry
 reverse_geocoder==1.5.1
 python-multipart
-# Generated Import Data scripts can be served as Prefect deployments.
-prefect>=3,<4

@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
@@ -211,6 +212,10 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
         return "Check the script log for errors. The linked scheduled task(s) may need to be re-run after fixing."
     if action_type == "flow_failed":
         return "Open the Flow, review its latest run error, and refresh it again after correcting the cause."
+    if action_type == "pipeline_failed":
+        return "Open the failed Pipeline occurrence, review what completed, and inspect the failed stage before running it again."
+    if action_type == "pbi_reconnect":
+        return "Reconnect the saved Power BI account from Scanner, then confirm an authenticated sync completes."
     if action_type == "broken_ref":
         return "Update the report to point at an existing source, or remove the unused table."
     if action_type == "changed_query":
@@ -237,6 +242,8 @@ TRIAGE_TYPE_WEIGHT = {
     "task_failed": 620,
     "script_failed": 620,
     "flow_failed": 720,
+    "pipeline_failed": 820,
+    "pbi_reconnect": 950,
     "broken_ref": 540,
     "changed_query": 420,
     "data_quality": 850,
@@ -258,6 +265,8 @@ def _issue_reason(action_type: str) -> str:
         "task_failed": "Scheduled task failed",
         "script_failed": "Script-linked refresh failed",
         "flow_failed": "Flow refresh failed",
+        "pipeline_failed": "Full Pipeline failed",
+        "pbi_reconnect": "Power BI account must be reconnected",
         "broken_ref": "Report points to a missing source",
         "changed_query": "Source query changed",
         "data_quality": "Automated data-quality check failed",
@@ -493,6 +502,12 @@ def list_actions(status: str | None = None):
             except (ValueError, TypeError, AttributeError):
                 asset_days = 0
             impact_views_30d = 0
+        elif r["type"] == "pbi_reconnect":
+            asset_type = "system"
+            asset_id = None
+            asset_name = "Power BI connection"
+            asset_days = 0
+            impact_views_30d = 0
         else:
             asset_type = None
             asset_id = None
@@ -590,6 +605,103 @@ def list_actions(status: str | None = None):
     return deduped
 
 
+@router.get("/{action_id}/occurrences")
+def list_action_occurrences(action_id: int):
+    """Return immutable exact-run occurrences and their latest analysis.
+
+    ``actions`` is the canonical user-facing Alert lifecycle. Occurrences are
+    append-only evidence revisions; AI traces remain separate audit records and
+    are referenced here rather than copied into the Alert payload.
+    """
+    with get_db() as db:
+        action = db.execute(
+            """SELECT id, status, evidence_revision, evidence_hash
+                 FROM actions WHERE id=?""",
+            (action_id,),
+        ).fetchone()
+        if not action:
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+        rows = db.execute(
+            """SELECT id, action_id, evidence_revision, focus_type, focus_id,
+                      summary, evidence_json, observed_at, created_at
+                 FROM action_occurrences
+                WHERE action_id=?
+                ORDER BY evidence_revision DESC, id DESC
+                LIMIT 50""",
+            (action_id,),
+        ).fetchall()
+        analyses = db.execute(
+            """SELECT ar.id, ar.action_evidence_revision, ar.status,
+                      ar.superseded_at, ar.superseded_reason,
+                      ar.created_at, ar.finished_at
+                 FROM agent_runs ar
+                WHERE ar.action_id=?
+                  AND ar.action_evidence_revision IS NOT NULL
+                  AND ar.id=(
+                      SELECT MAX(newer.id) FROM agent_runs newer
+                       WHERE newer.action_id=ar.action_id
+                         AND newer.action_evidence_revision=ar.action_evidence_revision
+                  )
+                ORDER BY ar.action_evidence_revision DESC
+                LIMIT 50""",
+            (action_id,),
+        ).fetchall()
+
+    latest_analysis: dict[int, dict] = {}
+    for row in analyses:
+        revision = row["action_evidence_revision"]
+        if revision is None or int(revision) in latest_analysis:
+            continue
+        latest_analysis[int(revision)] = dict(row)
+
+    current_revision = int(action["evidence_revision"] or 0)
+    action_is_active = action["status"] in {"open", "acknowledged", "investigating"}
+    occurrences = []
+    for row in rows:
+        try:
+            evidence = json.loads(row["evidence_json"] or "{}")
+        except (TypeError, ValueError):
+            evidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        revision = int(row["evidence_revision"])
+        analysis = latest_analysis.get(revision)
+        analysis_is_current = bool(
+            analysis
+            and not analysis.get("superseded_at")
+            and action_is_active
+            and revision == current_revision
+        )
+        occurrences.append({
+            "occurrence_id": int(row["id"]),
+            "action_id": int(row["action_id"]),
+            "evidence_revision": revision,
+            "focus_type": row["focus_type"],
+            "focus_id": row["focus_id"],
+            "status": evidence.get("status") or "recorded",
+            "summary": row["summary"],
+            "label": row["summary"],
+            "evidence": evidence,
+            "observed_at": row["observed_at"],
+            "created_at": row["created_at"],
+            "is_current": action_is_active and revision == current_revision,
+            "latest_analysis_run_id": int(analysis["id"]) if analysis else None,
+            "analysis_status": analysis.get("status") if analysis else None,
+            "analysis_is_current": analysis_is_current,
+            "analysis_superseded_reason": (
+                analysis.get("superseded_reason") if analysis else None
+            ),
+        })
+
+    return {
+        "action_id": int(action["id"]),
+        "action_status": action["status"],
+        "evidence_revision": current_revision,
+        "occurrences": occurrences,
+    }
+
+
 # Alert message prefix per action type, for resolving the linked alert when a
 # person resolves the action. Explicit map only - types without a known alert
 # pattern leave alerts untouched.
@@ -630,10 +742,28 @@ def update_action(action_id: int, update: ActionUpdate, request: Request):
 
     with get_db() as db:
         existing = db.execute(
-            "SELECT id, source_id, type FROM actions WHERE id = ?", (action_id,)
+            "SELECT id, source_id, type, status, fingerprint FROM actions WHERE id = ?",
+            (action_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Action not found")
+
+        if (
+            update.status in {"open", "acknowledged", "investigating", "expected"}
+            and existing["fingerprint"]
+        ):
+            newer = db.execute(
+                """SELECT id FROM actions
+                    WHERE type=? AND fingerprint=? AND id!=?
+                      AND status IN ('open','acknowledged','investigating','expected')
+                    ORDER BY id DESC LIMIT 1""",
+                (existing["type"], existing["fingerprint"], action_id),
+            ).fetchone()
+            if newer:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A newer active Alert already represents this issue.",
+                )
 
         fields = ["updated_at = ?"]
         values = [now]
