@@ -125,11 +125,10 @@ def test_flow_get_returns_exact_qualified_ambiguity_candidates(flow_target_db):
         result = flows._flow_out(db, 20)
 
     assert result["sql_target_exact_candidates"] == [
-        {"id": 11, "name": "public.Target [analytics@warehouse-a]"},
-        {"id": 12, "name": "public.Target [analytics@warehouse-b]"},
+        {"id": 11, "name": "public.Target"},
+        {"id": 12, "name": "public.Target [analytics]"},
     ]
-    # These labels do not end with schema.table, proving the choices came from
-    # exact structured identity IDs rather than the legacy suffix matcher.
+    # Exact structured identity IDs are not repeated as legacy text matches.
     assert result["sql_target_legacy_suggestions"] == []
 
 

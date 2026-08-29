@@ -8,7 +8,6 @@ Scan runner — orchestrates a full scan.
 5. Record the scan run
 """
 
-import hashlib
 import logging
 import re
 import shutil
@@ -43,12 +42,6 @@ from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
 from app.scanner import jobs as scanner_jobs
 from app.asset_visibility import get_active_source_ids
-from app.query_history import (
-    REPORT_M_KIND,
-    link_versions_to_action,
-    observe_query,
-    report_artifact_key,
-)
 from app.source_identity import (
     postgres_server_identity,
     exact_identity_rows,
@@ -60,6 +53,32 @@ from app.source_identity import (
 logger = logging.getLogger(__name__)
 
 _FILE_SOURCE_DB_TYPES = {"csv", "excel", "folder", "file"}
+
+
+def _source_resolution(source, *, source_id: int | None, is_metadata: bool, expression: str | None) -> tuple[str, str | None]:
+    if is_metadata or not expression:
+        return "not_applicable", None
+    if source_id is not None:
+        return "resolved", None
+    if source is None:
+        return "unresolved", "unrecognized_source_expression"
+    if source.source_type == "calculated":
+        return "not_external", None
+    if source.source_type == "postgresql":
+        if not source.postgres_single_connector:
+            return "unresolved", "multiple_postgres_connectors"
+        if not source.postgres_single_native_query:
+            return "unresolved", "multiple_native_postgres_queries"
+        if not source.postgres_native_query_exact:
+            return "unresolved", "nonliteral_native_postgres_query"
+        if not source.postgres_conditional_output_exact:
+            return "unresolved", "conditional_postgres_output"
+        if not source.sql_table:
+            return "unresolved", "unresolved_postgres_relation"
+        return "unresolved", "postgres_relation_not_verified"
+    if source.source_type == "unknown":
+        return "unresolved", "unsupported_or_multiple_sources"
+    return "unresolved", "source_not_linked"
 
 
 def _postgres_work_is_required(db) -> bool:
@@ -139,6 +158,38 @@ def _archive_folder_like_scan_sources(db, now: str, log_lines: list[str]) -> Non
         log_lines.append(f"ARCHIVED: {row['name']} (folder path, not a file source)")
     if archived_count:
         log_lines.append(f"TOTAL ARCHIVED: {archived_count} folder-like file sources")
+
+
+def _retire_legacy_unknown_sources(db, now: str, log_lines: list[str]) -> int:
+    """Unlink and archive the old shared ``Unknown Source`` placeholder."""
+    rows = db.execute(
+        """SELECT id, name FROM sources
+             WHERE COALESCE(archived, 0)=0
+               AND lower(trim(name))='unknown source'
+             ORDER BY id"""
+    ).fetchall()
+    for row in rows:
+        source_id = int(row["id"])
+        db.execute("UPDATE report_tables SET source_id=NULL WHERE source_id=?", (source_id,))
+        archive_source(
+            db,
+            source_id,
+            now,
+            reason="Legacy unresolved source placeholder retired",
+        )
+        replacement_name = f"Archived unresolved source {source_id}"
+        suffix = 2
+        candidate = replacement_name
+        while db.execute(
+            "SELECT 1 FROM sources WHERE name=? AND id!=?", (candidate, source_id)
+        ).fetchone():
+            candidate = f"{replacement_name} #{suffix}"
+            suffix += 1
+        db.execute("UPDATE sources SET name=? WHERE id=?", (candidate, source_id))
+        log_lines.append(
+            f"ARCHIVED: legacy unresolved placeholder source {source_id}; report tables are unlinked"
+        )
+    return len(rows)
 
 
 def _archive_local_user_path_sources(db, all_sources, now: str, log_lines: list[str]) -> None:
@@ -261,7 +312,6 @@ def run_scan(
     active_report_count = 0
     active_source_count = 0
     new_sources = 0
-    changed_queries = 0
     broken_refs = 0
     log_text = "Scan did not complete core discovery."
     postgres_required = False
@@ -283,9 +333,20 @@ def run_scan(
         scanner_jobs.heartbeat(
             operation_id,
             current_step="Discovering Power BI reports",
-            message="Reading PBIX/TMDL report definitions and source expressions.",
+            message=(
+                "Reading the explicitly supplied local report path."
+                if reports_path is not None
+                else "Reading live semantic models through XMLA/TOM with Fabric fallback."
+            ),
         )
-        reports = walk_reports_root(root)
+        if reports_path is not None:
+            reports = walk_reports_root(root)
+            scan_origin = str(Path(root).resolve())
+        else:
+            from app.scanner.pbi_metadata import read_live_reports
+
+            reports = read_live_reports()
+            scan_origin = "powerbi://configured-workspace"
         assert_not_cancelled(generation, "Report scan")
         all_sources = deduplicate_sources(reports)
         assert_not_cancelled(generation, "Report scan")
@@ -661,35 +722,68 @@ def run_scan(
                         """UPDATE reports SET tmdl_path = ?,
                            owner = COALESCE(NULLIF(owner, ''), ?),
                            business_owner = COALESCE(NULLIF(business_owner, ''), ?),
-                           powerbi_url = COALESCE(NULLIF(powerbi_url, ''), ?),
+                           powerbi_url = COALESCE(?, powerbi_url),
+                           pbi_workspace_id = COALESCE(?, pbi_workspace_id),
+                           pbi_report_id = COALESCE(?, pbi_report_id),
+                           pbi_dataset_id = COALESCE(?, pbi_dataset_id),
+                           metadata_provider = COALESCE(?, metadata_provider),
                            updated_at = ? WHERE id = ?""",
-                        (report.tmdl_path, report.report_owner, report.business_owner, None, now, report_id),
+                        (
+                            report.tmdl_path,
+                            report.report_owner,
+                            report.business_owner,
+                            getattr(report, "powerbi_url", None),
+                            getattr(report, "workspace_id", None),
+                            getattr(report, "pbi_report_id", None),
+                            getattr(report, "dataset_id", None),
+                            getattr(report, "metadata_provider", None),
+                            now,
+                            report_id,
+                        ),
                     )
                 else:
                     cursor = db.execute(
-                        "INSERT INTO reports (name, tmdl_path, owner, business_owner, powerbi_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (report.name, report.tmdl_path, report.report_owner, report.business_owner, None, now, now),
+                        """INSERT INTO reports
+                               (name, tmdl_path, owner, business_owner, powerbi_url,
+                                pbi_workspace_id, pbi_report_id, pbi_dataset_id,
+                                metadata_provider, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            report.name,
+                            report.tmdl_path,
+                            report.report_owner,
+                            report.business_owner,
+                            getattr(report, "powerbi_url", None),
+                            getattr(report, "workspace_id", None),
+                            getattr(report, "pbi_report_id", None),
+                            getattr(report, "dataset_id", None),
+                            getattr(report, "metadata_provider", None),
+                            now,
+                            now,
+                        ),
                     )
                     report_id = cursor.lastrowid
 
                 # Upsert report tables
                 from app.scanner.tmdl_parser import is_auto_table
-                report_query_changes: list[dict] = []
+                seen_table_names: list[str] = []
                 for table in report.tables:
                     assert_not_cancelled(generation, "Report scan")
                     # Skip Power BI auto-generated internal tables
                     if is_auto_table(table.table_name):
                         continue
+                    if not getattr(table, "is_metadata", False):
+                        seen_table_names.append(table.table_name)
                     source_id = None
+                    source_candidate_id = None
                     source = getattr(table, "source", None)
                     m_expression = getattr(table, "m_expression", None)
                     is_metadata = getattr(table, "is_metadata", False)
                     existing_table = db.execute(
-                        """SELECT id, source_id, source_expression, last_scanned
-                           FROM report_tables WHERE report_id = ? AND table_name = ?""",
+                        """SELECT source_id, source_candidate_id FROM report_tables
+                             WHERE report_id=? AND table_name=?""",
                         (report_id, table.table_name),
                     ).fetchone()
-
                     if source and not is_metadata and is_folder_like_file_source(source):
                         log_lines.append(
                             f"SKIPPED: {report.name}/{table.table_name} folder source "
@@ -699,7 +793,24 @@ def run_scan(
                         # Find matching source in DB
                         mapped_source_id = source_ids_by_key.get(source.connection_key)
                         if mapped_source_id:
-                            source_id = mapped_source_id
+                            if source.source_type == "postgresql":
+                                # PostgreSQL catalog verification owns relinks.
+                                # Keep the prior anchor (or NULL for a new table)
+                                # until the complete endpoint snapshot commits.
+                                prior_source_id = (
+                                    int(existing_table["source_id"])
+                                    if existing_table is not None
+                                    and existing_table["source_id"] is not None
+                                    else None
+                                )
+                                source_id = prior_source_id
+                                if source.postgres_identity_is_exact:
+                                    if prior_source_id == mapped_source_id:
+                                        source_id = mapped_source_id
+                                    else:
+                                        source_candidate_id = mapped_source_id
+                            else:
+                                source_id = mapped_source_id
                         elif source.source_type != "unknown":
                             broken_refs += 1
                             bucket = broken_by_report.setdefault(
@@ -714,106 +825,60 @@ def run_scan(
                                 f"references unknown source: {source.display_name}"
                             )
 
+                    resolution_status, resolution_reason = _source_resolution(
+                        source,
+                        source_id=source_id,
+                        is_metadata=is_metadata,
+                        expression=m_expression,
+                    )
+                    if (
+                        source
+                        and source.source_type == "postgresql"
+                        and source.postgres_identity_is_exact
+                        and source_candidate_id is not None
+                    ):
+                        resolution_status = "pending_verification"
+                        resolution_reason = "awaiting_postgres_catalog"
                     if not is_metadata:
-                        # Version M at report-table grain. A brand-new table is
-                        # a baseline; an existing table moving to/from an empty
-                        # expression is a real addition/removal.
-                        if m_expression is not None or (
-                            existing_table is not None and existing_table["source_expression"] is not None
-                        ):
-                            observation = observe_query(
-                                db,
-                                artifact_kind=REPORT_M_KIND,
-                                artifact_key=report_artifact_key(report_id, table.table_name),
-                                report_id=report_id,
-                                source_id=source_id,
-                                artifact_name=table.table_name,
-                                language="m",
-                                query_text=m_expression,
-                                scan_run_id=scan_id,
-                                detected_at=now,
-                                has_saved_baseline=existing_table is not None,
-                                saved_baseline_text=existing_table["source_expression"] if existing_table else None,
-                                saved_baseline_source_id=existing_table["source_id"] if existing_table else None,
-                                saved_baseline_at=existing_table["last_scanned"] if existing_table else None,
-                            )
-                            if observation.changed:
-                                report_query_changes.append({
-                                    "version_id": observation.version_id,
-                                    "table_name": table.table_name,
-                                    "query_hash": observation.query_hash,
-                                })
                         db.execute(
-                            """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
-                               VALUES (?, ?, ?, ?, ?)
+                            """INSERT INTO report_tables
+                                   (report_id, table_name, source_id, source_candidate_id,
+                                    source_expression,
+                                    source_resolution_status, source_resolution_reason,
+                                    last_scanned)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(report_id, table_name)
-                               DO UPDATE SET source_id = ?, source_expression = ?, last_scanned = ?""",
+                               DO UPDATE SET source_id = ?, source_candidate_id = ?,
+                                             source_expression = ?,
+                                             source_resolution_status = ?,
+                                             source_resolution_reason = ?, last_scanned = ?""",
                             (
                                 report_id,
                                 table.table_name,
                                 source_id,
+                                source_candidate_id,
                                 m_expression,
+                                resolution_status,
+                                resolution_reason,
                                 now,
                                 source_id,
+                                source_candidate_id,
                                 m_expression,
+                                resolution_status,
+                                resolution_reason,
                                 now,
                             ),
                         )
 
-                if report_query_changes:
-                    changed_queries += len(report_query_changes)
-                    signature = "|".join(
-                        f"{item['table_name']}:{item['query_hash']}"
-                        for item in sorted(report_query_changes, key=lambda item: item["table_name"].casefold())
-                    )
-                    fingerprint = (
-                        f"changed_query:report:{report_id}:"
-                        f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]}"
-                    )
-                    owner_row = db.execute("SELECT owner FROM reports WHERE id = ?", (report_id,)).fetchone()
-                    owner = owner_row["owner"] if owner_row else report.report_owner
-                    names = [item["table_name"] for item in report_query_changes]
-                    notes = (
-                        f"{len(names)} Power Query change{'s' if len(names) != 1 else ''} "
-                        f"detected in {report.name}: {', '.join(names)}."
-                    )
+                if seen_table_names:
+                    placeholders = ",".join("?" for _ in seen_table_names)
                     db.execute(
-                        """UPDATE actions
-                           SET status='resolved', resolved_at=?, updated_at=?,
-                               notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
-                           WHERE report_id=? AND type='changed_query'
-                             AND fingerprint!=?
-                             AND status IN ('open','acknowledged','investigating')""",
-                        (now, now, report_id, fingerprint),
+                        f"""DELETE FROM report_tables
+                              WHERE report_id=? AND table_name NOT IN ({placeholders})""",
+                        (report_id, *seen_table_names),
                     )
-                    prior = db.execute(
-                        """SELECT id FROM actions
-                           WHERE fingerprint = ? AND status != 'resolved'
-                           ORDER BY id DESC LIMIT 1""",
-                        (fingerprint,),
-                    ).fetchone()
-                    if prior:
-                        action_id = prior["id"]
-                        db.execute(
-                            "UPDATE actions SET notes=?, assigned_to=?, updated_at=? WHERE id=?",
-                            (notes, owner, now, action_id),
-                        )
-                    else:
-                        cursor = db.execute(
-                            """INSERT INTO actions
-                               (report_id, type, status, assigned_to, notes, fingerprint, created_at, updated_at)
-                               VALUES (?, 'changed_query', 'open', ?, ?, ?, ?, ?)""",
-                            (report_id, owner, notes, fingerprint, now, now),
-                        )
-                        action_id = int(cursor.lastrowid)
-                    link_versions_to_action(
-                        db,
-                        [item["version_id"] for item in report_query_changes],
-                        action_id,
-                    )
-                    log_lines.append(
-                        f"CHANGED: {report.name} Power Query in {', '.join(names)}"
-                    )
+                else:
+                    db.execute("DELETE FROM report_tables WHERE report_id=?", (report_id,))
 
                 # Store visual layout (PBIX mode only)
                 layout = getattr(report, "layout", None)
@@ -875,8 +940,8 @@ def run_scan(
 
                 # Store measures
                 measures = getattr(report, "measures", [])
+                db.execute("DELETE FROM report_measures WHERE report_id = ?", (report_id,))
                 if measures:
-                    db.execute("DELETE FROM report_measures WHERE report_id = ?", (report_id,))
                     for m in measures:
                         db.execute(
                             """INSERT INTO report_measures (report_id, table_name, measure_name, measure_dax)
@@ -917,6 +982,8 @@ def run_scan(
                     f"{broken_lifecycle['resolved']} resolved"
                 )
 
+            _retire_legacy_unknown_sources(db, now, log_lines)
+
             # Set initial "unknown" status for any source without a probe
             assert_not_cancelled(generation, "Report scan")
             sourceless = db.execute("""
@@ -948,7 +1015,6 @@ def run_scan(
                 "reports_scanned": active_report_count,
                 "sources_found": active_source_count,
                 "new_sources": new_sources,
-                "changed_queries": changed_queries,
                 "broken_refs": broken_refs,
             },
             required=True,
@@ -1114,20 +1180,12 @@ def run_scan(
         )
         components["governance"] = governance_component
 
-        mv_changed_queries = int(dep_component.get("changed_queries") or 0)
-        changed_queries += mv_changed_queries
         auxiliary_log = [
             f"PostgreSQL dependencies: {dep_component.get('status', 'unknown')}",
             f"PostgreSQL schedules: {cron_component.get('status', 'unknown')}",
             f"Configured usage import: {usage_component.get('status', 'unknown')}",
         ]
-        if dep_component.get("definition_status") == "skipped":
-            auxiliary_log.append(
-                "PostgreSQL MV query history: skipped; dependency discovery continued"
-            )
         auxiliary_log.append(f"Source probe: {probe_component.get('status', 'unknown')}")
-        if dep_component.get("query_change_log"):
-            auxiliary_log.append(dep_component["query_change_log"])
         for name, result in governance_components.items():
             auxiliary_log.append(f"Governance {name}: {result.get('status', 'unknown')}")
         final_log = "\n".join([log_text, *auxiliary_log])
@@ -1145,7 +1203,6 @@ def run_scan(
                 reports_scanned=active_report_count,
                 sources_found=active_source_count,
                 new_sources=new_sources,
-                changed_queries=changed_queries,
                 broken_refs=broken_refs,
                 components=components,
                 log=final_log,
@@ -1156,7 +1213,6 @@ def run_scan(
             "reports_scanned": active_report_count,
             "sources_found": active_source_count,
             "new_sources": new_sources,
-            "changed_queries": changed_queries,
             "broken_refs": broken_refs,
             "components": components,
             "probe": probe_component,
@@ -1166,7 +1222,7 @@ def run_scan(
             "governance": governance_components,
             "status": stored_status,
             "log": final_log,
-            "scanned_path": str(Path(root).resolve()),
+            "scanned_path": scan_origin,
         }
         scanner_jobs.finish_job(
             operation_id,
@@ -1199,7 +1255,6 @@ def run_scan(
                 reports_scanned=active_report_count,
                 sources_found=active_source_count,
                 new_sources=new_sources,
-                changed_queries=changed_queries,
                 broken_refs=broken_refs,
                 components=components,
                 log=stopped_log,
@@ -1243,7 +1298,6 @@ def run_scan(
                 reports_scanned=active_report_count,
                 sources_found=active_source_count,
                 new_sources=new_sources,
-                changed_queries=changed_queries,
                 broken_refs=broken_refs,
                 components=components,
                 log=failure_log,

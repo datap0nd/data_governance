@@ -154,7 +154,6 @@ Tools return small, typed JSON with stable entity IDs, observation timestamps, a
 | `get_worker_readiness` | Required worker mode and current availability | Later |
 | `get_source_health` | Latest observation and freshness rule | P0 briefing |
 | `get_lineage_impact` | Exact upstream/downstream closure and reports | P1 |
-| `get_query_change` | Exact normalized diff and version metadata | P1 |
 | `get_outlook_dispatch` | Draft/submitted/failed/unknown evidence | P1 |
 | `search_documentation` | SQLite full-text/field search over current docs | P1 |
 | `draft_owner_update` | Structured draft only; no Outlook side effect | P1 |
@@ -267,7 +266,6 @@ Create fixture-shaped cases with expected tools, required facts, forbidden claim
 7. ambiguous or stale exact identity versus harmless name similarity;
 8. materialized-view dependency cycle;
 9. restart during MV refresh producing `unknown/requires_inspection`;
-10. semantic query change, whitespace-only change, and revert;
 11. email deferred because Power BI state is stale;
 12. Outlook `submitted`, `failed`, and `unknown` outcomes;
 13. partial scanner failure versus total failure;

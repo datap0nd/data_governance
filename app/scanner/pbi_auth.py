@@ -103,6 +103,10 @@ def resolve_proxy(target_url: str) -> str | None:
 
 LOGIN_BASE = "https://login.microsoftonline.com"
 PBI_SCOPE = "https://analysis.windows.net/powerbi/api/.default offline_access openid profile"
+FABRIC_SCOPE = (
+    "https://api.fabric.microsoft.com/SemanticModel.ReadWrite.All "
+    "offline_access openid profile"
+)
 TOKEN_TIMEOUT_SECONDS = 30
 REFRESH_SKEW_SECONDS = 300
 
@@ -391,12 +395,18 @@ def _short_aad_error(body: dict) -> str:
     return f"{code}: {first}" if first else code
 
 
-def _record_from_tokens(tokens: dict, previous: dict | None = None) -> dict:
+def _record_from_tokens(
+    tokens: dict,
+    previous: dict | None = None,
+    *,
+    requested_scope: str = PBI_SCOPE,
+) -> dict:
     previous = previous or {}
     now = time.time()
     record = {
         "client_id": PBI_PUBLIC_CLIENT_ID,
-        "scope": PBI_SCOPE,
+        "scope": previous.get("scope") or PBI_SCOPE,
+        "access_token_scope": requested_scope,
         "refresh_token": tokens.get("refresh_token") or previous.get("refresh_token"),
         "access_token": tokens.get("access_token"),
         "access_token_expires_at": now + float(tokens.get("expires_in") or 0),
@@ -409,7 +419,7 @@ def _record_from_tokens(tokens: dict, previous: dict | None = None) -> dict:
     return record
 
 
-def _refresh_tokens(record: dict) -> dict:
+def _refresh_tokens(record: dict, *, scope: str = PBI_SCOPE) -> dict:
     tenant = record.get("tenant_id") or PBI_AUTH_TENANT
     body, status = _post_form(
         _token_endpoint(tenant),
@@ -417,11 +427,11 @@ def _refresh_tokens(record: dict) -> dict:
             "grant_type": "refresh_token",
             "client_id": record.get("client_id") or PBI_PUBLIC_CLIENT_ID,
             "refresh_token": record["refresh_token"],
-            "scope": record.get("scope") or PBI_SCOPE,
+            "scope": scope,
         },
     )
     if "access_token" in body:
-        updated = _record_from_tokens(body, record)
+        updated = _record_from_tokens(body, record, requested_scope=scope)
         _save_record(updated)
         return updated
 
@@ -436,7 +446,7 @@ def _refresh_tokens(record: dict) -> dict:
     raise PbiAuthError(f"Power BI token refresh failed ({message}).", reconnect_required=reconnect)
 
 
-def get_access_token() -> dict:
+def get_access_token(*, scope: str = PBI_SCOPE) -> dict:
     """Return a valid access token silently, refreshing the cache if needed.
 
     Returns {"access_token": str, "account": str}. Raises PbiAuthError when
@@ -450,10 +460,15 @@ def get_access_token() -> dict:
                 reconnect_required=True,
             )
         expires_at = float(record.get("access_token_expires_at") or 0)
-        if record.get("access_token") and expires_at - time.time() > REFRESH_SKEW_SECONDS:
+        cached_scope = record.get("access_token_scope") or record.get("scope") or PBI_SCOPE
+        if (
+            record.get("access_token")
+            and cached_scope == scope
+            and expires_at - time.time() > REFRESH_SKEW_SECONDS
+        ):
             return {"access_token": record["access_token"], "account": record.get("account") or ""}
         try:
-            updated = _refresh_tokens(record)
+            updated = _refresh_tokens(record, scope=scope)
         except PbiAuthError:
             raise
         except Exception as exc:

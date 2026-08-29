@@ -386,13 +386,6 @@ function _scannerJobRepairDetails(job) {
         labels.push(`Catalog target ${endpoint || "endpoint"} became active during this scan; rerun lineage`);
         if (unattempted.length > 1) labels.push(`${unattempted.length - 1} more new catalog target(s)`);
     }
-    const cleanupFailures = Array.isArray(postgres?.superseded_cleanup_failures)
-        ? postgres.superseded_cleanup_failures : [];
-    if (cleanupFailures.length) {
-        const target = cleanupFailures[0];
-        const endpoint = [target?.server, target?.database].filter(Boolean).join("/");
-        labels.push(`Obsolete query-change alerts could not be retired for ${endpoint || "a superseded catalog"}`);
-    }
     const databases = postgres?.databases;
     if (databases && typeof databases === "object" && !Array.isArray(databases)) {
         const flowWarnings = Object.entries(databases).flatMap(([database, detail]) => {
@@ -485,7 +478,6 @@ function actionTypeBadge(type, neutral = false) {
         error_source: "Source Error",
         empty_source: "Empty Source",
         broken_ref: "Broken Ref",
-        changed_query: "Query Changed",
         refresh_failed: "Refresh Failed",
         refresh_overdue: "Refresh Overdue",
         task_failed: "Task Failed",
@@ -506,7 +498,6 @@ function actionTypeBadge(type, neutral = false) {
         error_source: "badge-red",
         empty_source: "badge-red",
         broken_ref: "badge-red",
-        changed_query: "badge-blue",
         refresh_failed: "badge-red",
         refresh_overdue: "badge-yellow",
         task_failed: "badge-red",
@@ -532,7 +523,6 @@ function actionTypeLabel(type) {
         error_source: "Source error",
         empty_source: "Empty source",
         broken_ref: "Broken reference",
-        changed_query: "Query changed",
         refresh_failed: "Refresh failed",
         refresh_overdue: "Refresh overdue",
         task_failed: "Scheduled task failed",
@@ -548,153 +538,6 @@ function actionTypeLabel(type) {
         documentation_missing: "Documentation incomplete",
     };
     return labels[type] || String(type || "Alert").replace(/_/g, " ");
-}
-
-function _queryHistoryEndpointForAction(action) {
-    if (action.report_id || (action.asset_type === "report" && action.asset_id)) {
-        return `/api/query-history/report/${action.report_id || action.asset_id}`;
-    }
-    if (action.source_id || (action.asset_type === "source" && action.asset_id)) {
-        return `/api/query-history/materialized-view/${action.source_id || action.asset_id}`;
-    }
-    return "";
-}
-
-function _queryVersionLabel(version) {
-    const prefix = version.is_baseline ? "Baseline" : "Change";
-    return `${prefix} · ${version.detected_at ? formatDate(version.detected_at) : `version ${version.id}`}`;
-}
-
-function _queryHistoryListHtml(groups, endpoint, prefix) {
-    if (!groups || groups.length === 0) {
-        return '<div class="query-history-empty">No query versions captured yet. The next scan will establish a baseline.</div>';
-    }
-    return groups.map((group, groupIndex) => {
-        const versions = group.versions || [];
-        const changes = versions.filter(version => !version.is_baseline).length;
-        const rows = versions.map(version => `
-            <div class="query-history-version">
-                <div>
-                    <strong>${esc(version.is_baseline ? "Baseline" : "Changed")}</strong>
-                    <span>${esc(version.detected_at ? formatDate(version.detected_at) : "Unknown time")}</span>
-                </div>
-                ${version.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
-                    data-query-version="${version.id}"
-                    data-query-previous="${version.previous_version_id}"
-                    data-query-history-endpoint="${esc(endpoint)}">View diff</button>` : ""}
-            </div>
-        `).join("");
-        return `
-            <div class="query-history-group" id="${esc(prefix)}-${groupIndex}">
-                <div class="query-history-group-title">
-                    <span><strong>${esc(group.artifact_name)}</strong> <span class="badge badge-muted">${esc(String(group.language || "query").toUpperCase())}</span></span>
-                    <span>${changes} change${changes === 1 ? "" : "s"}</span>
-                </div>
-                <div class="query-history-versions">${rows}</div>
-            </div>
-        `;
-    }).join("");
-}
-
-async function _openQueryDiffModal(versionId, previousVersionId, historyEndpoint) {
-    let groups;
-    try {
-        groups = await api(historyEndpoint);
-    } catch (error) {
-        toast("Query history could not be loaded: " + error.message);
-        return;
-    }
-    const group = (groups || []).find(item => (item.versions || []).some(version => Number(version.id) === Number(versionId)));
-    if (!group) {
-        toast("This query version is no longer available.");
-        return;
-    }
-    const versions = group.versions || [];
-    const overlay = document.createElement("div");
-    overlay.className = "task-modal-overlay query-diff-overlay";
-    overlay.id = "query-diff-overlay";
-    const options = versions.map(version => `<option value="${version.id}">${esc(_queryVersionLabel(version))}</option>`).join("");
-    overlay.innerHTML = `
-        <div class="task-modal query-diff-modal" role="dialog" aria-modal="true" aria-labelledby="query-diff-title">
-            <div class="query-diff-header">
-                <div>
-                    <h2 id="query-diff-title">${esc(group.artifact_name)} query diff</h2>
-                    <span>${esc(String(group.language || "query").toUpperCase())} · saved Metronome history</span>
-                </div>
-                <button type="button" class="btn-outline query-diff-close" aria-label="Close query diff">&times; Close</button>
-            </div>
-            <div class="query-diff-selectors">
-                <label>Before<select id="query-diff-before">${options}</select></label>
-                <label>After<select id="query-diff-after">${options}</select></label>
-            </div>
-            <div id="query-diff-content" class="query-diff-content"><div class="query-history-empty">Loading comparison...</div></div>
-        </div>
-    `;
-    document.body.appendChild(overlay);
-    const beforeSelect = overlay.querySelector("#query-diff-before");
-    const afterSelect = overlay.querySelector("#query-diff-after");
-    beforeSelect.value = String(previousVersionId || versions[versions.length - 1]?.id || versionId);
-    afterSelect.value = String(versionId);
-
-    const close = () => {
-        document.removeEventListener("keydown", onKeyDown);
-        overlay.remove();
-    };
-    const onKeyDown = event => { if (event.key === "Escape") close(); };
-    document.addEventListener("keydown", onKeyDown);
-    overlay.querySelector(".query-diff-close").addEventListener("click", close);
-    overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
-
-    const renderComparison = async () => {
-        const content = overlay.querySelector("#query-diff-content");
-        beforeSelect.disabled = true;
-        afterSelect.disabled = true;
-        content.innerHTML = '<div class="query-history-empty">Loading comparison...</div>';
-        try {
-            const diff = await api(`/api/query-history/compare?from_version_id=${encodeURIComponent(beforeSelect.value)}&to_version_id=${encodeURIComponent(afterSelect.value)}`);
-            const rows = (diff.rows || []).map(row => `
-                <tr class="query-diff-${esc(row.kind)}">
-                    <td class="query-diff-line">${row.before_line ?? ""}</td>
-                    <td><pre>${esc(row.before_text ?? "")}</pre></td>
-                    <td class="query-diff-line">${row.after_line ?? ""}</td>
-                    <td><pre>${esc(row.after_text ?? "")}</pre></td>
-                </tr>
-            `).join("");
-            content.innerHTML = `
-                <div class="query-diff-times">
-                    <span>Before: ${esc(diff.before.detected_at ? formatDate(diff.before.detected_at) : "Unknown")}</span>
-                    <span>After: ${esc(diff.after.detected_at ? formatDate(diff.after.detected_at) : "Unknown")}</span>
-                </div>
-                <div class="query-diff-table-wrap"><table class="query-diff-table">
-                    <thead><tr><th colspan="2">Before</th><th colspan="2">After</th></tr></thead>
-                    <tbody>${rows}</tbody>
-                </table></div>
-            `;
-        } catch (error) {
-            content.innerHTML = `<div class="query-history-empty query-diff-error">Comparison failed: ${esc(error.message)}</div>`;
-        } finally {
-            beforeSelect.disabled = false;
-            afterSelect.disabled = false;
-        }
-    };
-    beforeSelect.addEventListener("change", renderComparison);
-    afterSelect.addEventListener("change", renderComparison);
-    await renderComparison();
-}
-
-function bindQueryDiffButtons(scope = document) {
-    scope.querySelectorAll(".query-diff-open").forEach(button => {
-        if (button.dataset.queryDiffBound === "1") return;
-        button.dataset.queryDiffBound = "1";
-        button.addEventListener("click", event => {
-            event.stopPropagation();
-            _openQueryDiffModal(
-                Number(button.dataset.queryVersion),
-                Number(button.dataset.queryPrevious),
-                button.dataset.queryHistoryEndpoint,
-            );
-        });
-    });
 }
 
 function alertAssetKind(action) {
@@ -772,7 +615,7 @@ function _notifySlaIssueReasons(type) {
             "The root cause is still under investigation.",
         ];
     }
-    if (type === "broken_ref" || type === "changed_query") {
+    if (type === "broken_ref") {
         return [
             "The source reference or query changed and needs confirmation.",
             "The downstream report needs a source mapping review.",
@@ -1658,11 +1501,7 @@ async function showSourceDetail(source) {
     const existing = $("#source-detail");
     if (existing) existing.remove();
 
-    const historyEndpoint = `/api/query-history/materialized-view/${source.id}`;
-    const [reports, queryHistory] = await Promise.all([
-        api(`/api/sources/${source.id}/reports`),
-        api(historyEndpoint).catch(() => []),
-    ]);
+    const reports = await api(`/api/sources/${source.id}/reports`);
     const parsed = parseSourceName(source);
 
     const panel = document.createElement("div");
@@ -1703,11 +1542,6 @@ async function showSourceDetail(source) {
             <tbody>${reportRows}</tbody>
         </table>
 
-        ${queryHistory.length ? `
-            <h2>Materialized View Query History</h2>
-            <div class="query-history-list">${_queryHistoryListHtml(queryHistory, historyEndpoint, `source-query-${source.id}`)}</div>
-        ` : ""}
-
         <h2>Freshness Rule</h2>
         ${_freshnessRuleFormHtml(source, { prefix: "source-freshness", wide: true })}
     `;
@@ -1730,7 +1564,6 @@ async function showSourceDetail(source) {
     });
 
     _bindFreshnessRuleForm(panel, source, { prefix: "source-freshness" });
-    bindQueryDiffButtons(panel);
 }
 
 
@@ -1755,12 +1588,10 @@ async function showReportDetail(report) {
         }
     });
 
-    const historyEndpoint = `/api/query-history/report/${report.id}`;
-    const [tables, unusedData, docData, queryHistory] = await Promise.all([
+    const [tables, unusedData, docData] = await Promise.all([
         api(`/api/reports/${report.id}/tables`),
         api(`/api/reports/${report.id}/unused`).catch(() => ({ total_measures: 0, total_columns: 0, total_fields: 0, unused_measures: [], unused_columns: [], unused_tables: [], unused_fields_count: 0, unused_pct: 0, total_tables: 0, unused_tables_count: 0 })),
         api(`/api/documentation?report_id=${report.id}`).catch(() => []),
-        api(historyEndpoint).catch(() => []),
     ]);
     let doc = docData.length > 0 ? docData[0] : null;
 
@@ -1786,6 +1617,18 @@ async function showReportDetail(report) {
         .join(", ");
 
     let dsGroupIdx = 0;
+    const sourceResolutionLabels = {
+        multiple_postgres_connectors: "multiple PostgreSQL sources in one table",
+        multiple_native_postgres_queries: "multiple PostgreSQL queries in one table",
+        nonliteral_native_postgres_query: "dynamic PostgreSQL query cannot be verified",
+        conditional_postgres_output: "conditional PostgreSQL output cannot be verified",
+        unresolved_postgres_relation: "PostgreSQL relation could not be identified",
+        postgres_relation_not_found: "referenced PostgreSQL relation does not exist",
+        catalog_not_completed: "PostgreSQL verification failed; prior link retained",
+        awaiting_postgres_catalog: "waiting for PostgreSQL catalog verification",
+        unsupported_or_multiple_sources: "source expression has multiple or unsupported sources",
+        unrecognized_source_expression: "source expression could not be identified",
+    };
     const groupedSourcesHtml = Object.entries(typeGroups).map(([type, items]) => {
         const gid = `ds-group-${dsGroupIdx++}`;
         return `
@@ -1795,7 +1638,9 @@ async function showReportDetail(report) {
             </div>
             <div class="rx-body" id="${gid}" style="display:none">
                 ${items.map(({ table: t, source: src }) => {
-                    const srcName = src ? (shortNameFromPath(src.name) || src.name) : (t.source_name || "no linked source");
+                    const srcName = src
+                        ? (shortNameFromPath(src.name) || src.name)
+                        : (sourceResolutionLabels[t.source_resolution_reason] || t.source_name || "no linked source");
                     return `<div class="report-source-item rx-l3${src ? ' report-source-clickable' : ''}" ${src ? `data-source-id="${src.id}"` : ''}>
                         <span class="report-source-table">${t.table_name}</span>
                         <span class="report-source-arrow">&rarr;</span>
@@ -1840,11 +1685,6 @@ async function showReportDetail(report) {
 
     // Known Issues (separate from documentation)
     const hasKnownIssues = doc?.technical_known_issues && doc.technical_known_issues.trim();
-    const queryChangeCount = queryHistory.reduce(
-        (total, group) => total + (group.versions || []).filter(version => !version.is_baseline).length,
-        0,
-    );
-
     const docEditHtml = `
         <div class="doc-inline-edit">
             <label>Purpose - Why does this report exist?</label><textarea id="doc-e-purpose" rows="2">${esc(doc?.business_purpose || "")}</textarea>
@@ -1908,17 +1748,6 @@ async function showReportDetail(report) {
                     <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400;margin-left:0.5rem">${typeSummary}</span>
                 </div>
                 <div class="rx-body" id="ds-list" style="display:none">${groupedSourcesHtml}</div>
-            </div>
-
-            <div class="rx-section rx-l1">
-                <div class="rx-toggle" data-target="query-history-section">
-                    <span class="rx-arrow">&#9656;</span> Query History
-                    <span class="rx-count">(${queryHistory.length} table${queryHistory.length === 1 ? "" : "s"})</span>
-                    ${queryChangeCount ? `<span class="badge badge-yellow" style="margin-left:0.35rem;font-size:0.58rem">${queryChangeCount} change${queryChangeCount === 1 ? "" : "s"}</span>` : ""}
-                </div>
-                <div class="rx-body query-history-list" id="query-history-section" style="display:none">
-                    ${_queryHistoryListHtml(queryHistory, historyEndpoint, `report-query-${report.id}`)}
-                </div>
             </div>
 
             <div class="rx-section rx-l1">
@@ -1994,7 +1823,6 @@ async function showReportDetail(report) {
             if (arrow) arrow.innerHTML = showing ? "&#9656;" : "&#9662;";
         });
     });
-    bindQueryDiffButtons(expandRow);
 
     // Clickable sources -> navigate to source detail
     expandRow.querySelectorAll(".report-source-clickable").forEach(el => {
@@ -2524,24 +2352,12 @@ function renderDashboardAlertsTable(actions, biPeople, personFilter) {
                 </span>
             </a>`;
         }).join("");
-        const queryHistoryEndpoint = _queryHistoryEndpointForAction(a);
-        const queryChangesHtml = (a.query_changes || []).map(change => `
-            <div class="alerts-query-change">
-                <span><strong>${esc(change.artifact_name)}</strong> <span class="badge badge-muted">${esc(String(change.language || "query").toUpperCase())}</span></span>
-                ${change.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
-                    data-query-version="${change.version_id}"
-                    data-query-previous="${change.previous_version_id}"
-                    data-query-history-endpoint="${esc(queryHistoryEndpoint)}">View diff</button>` : ""}
-            </div>
-        `).join("");
-
         const overviewHtml = `
             ${a.pbi_refresh_error ? `<div class="alerts-refresh-error"><strong>PBI Refresh Error:</strong> ${esc(a.pbi_refresh_error)}</div>` : ""}
             ${a.notes ? `<div class="alerts-recorded-detail"><strong>Recorded detail:</strong> ${esc(a.notes)}</div>` : ""}
             ${deterministicRecommendation ? `<div class="alerts-recommendation"><strong>Deterministic next step:</strong> ${esc(deterministicRecommendation)}</div>` : ""}
-            ${queryChangesHtml ? `<div class="alerts-sources-label">Changed queries:</div><div class="alerts-query-changes">${queryChangesHtml}</div>` : ""}
             ${sourceLinksHtml ? `<div class="alerts-sources-label">Sources refreshed after the report:</div><div class="alerts-sources-list">${sourceLinksHtml}</div>` : ""}
-            ${!a.pbi_refresh_error && !a.notes && !deterministicRecommendation && !queryChangesHtml && !sourceLinksHtml
+            ${!a.pbi_refresh_error && !a.notes && !deterministicRecommendation && !sourceLinksHtml
                 ? '<p class="alerts-detail-empty">No additional deterministic detail was recorded for this alert.</p>'
                 : ""}
         `;
@@ -2666,7 +2482,6 @@ function _waitForElement(selector, timeoutMs = 2000) {
 }
 
 function bindDashboardAlertsRowControls() {
-    bindQueryDiffButtons(document);
     document.querySelectorAll(".fix-first-focus-owner").forEach(btn => {
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -3902,22 +3717,11 @@ async function renderActionsContent() {
 
             const shortAsset = alertAssetDisplayName(a);
             const currentOwner = a.assigned_to || "";
-            const historyEndpoint = _queryHistoryEndpointForAction(a);
             const assetTitle = a.asset_type === "report" && a.asset_id
                 ? `<button type="button" class="action-asset-link action-go-report" data-report-id="${a.asset_id}">${esc(shortAsset)}</button>`
                 : a.asset_type === "source" && a.asset_id
                 ? `<button type="button" class="action-asset-link action-go-source" data-source-id="${a.asset_id}">${esc(shortAsset)}</button>`
                 : esc(shortAsset);
-            const queryChanges = (a.query_changes || []).map(change => `
-                <div class="action-query-change">
-                    <span>${esc(change.artifact_name)} <span class="badge badge-muted">${esc(String(change.language || "query").toUpperCase())}</span></span>
-                    ${change.previous_version_id ? `<button type="button" class="btn-outline query-diff-open"
-                        data-query-version="${change.version_id}"
-                        data-query-previous="${change.previous_version_id}"
-                        data-query-history-endpoint="${esc(historyEndpoint)}">View diff</button>` : ""}
-                </div>
-            `).join("");
-
             return `
                 <div class="action-card" data-action-id="${a.id}">
                     <div class="action-indicator ${indColor}"></div>
@@ -3933,7 +3737,6 @@ async function renderActionsContent() {
                             <span>${timeAgo(a.created_at)}</span>
                         </div>
                         ${a.notes ? `<div class="action-notes">${esc(a.notes)}</div>` : ""}
-                        ${queryChanges ? `<div class="action-query-changes">${queryChanges}</div>` : ""}
                     </div>
                     <div class="action-controls">
                         <div class="status-pill-wrapper">
@@ -4001,7 +3804,6 @@ function _reRenderActionList() {
     bindActionStatusSelects();
     bindActionOwnerSelects();
     bindActionAssetLinks();
-    bindQueryDiffButtons(container);
 }
 
 function bindActionsTab() {
@@ -4023,7 +3825,6 @@ function bindActionsTab() {
     bindActionStatusSelects();
     bindActionOwnerSelects();
     bindActionAssetLinks();
-    bindQueryDiffButtons(document);
 }
 
 function bindActionAssetLinks() {
@@ -6724,7 +6525,7 @@ function bindExportPage() {
                     md += `**Scan #${scan.id}** (${scan.status})\n`;
                     md += `- Started: ${scan.started_at || "-"}\n`;
                     md += `- Finished: ${scan.finished_at || "-"}\n`;
-                    md += `- Reports: ${scan.reports_scanned}, Sources: ${scan.sources_found}, New: ${scan.new_sources}, Changed: ${scan.changed_queries}, Broken: ${scan.broken_refs}\n`;
+                    md += `- Reports: ${scan.reports_scanned}, Sources: ${scan.sources_found}, New: ${scan.new_sources}, Broken: ${scan.broken_refs}\n`;
                     if (scan.log) md += `- Log:\n\`\`\`\n${scan.log}\n\`\`\`\n`;
                     md += "\n";
                 }
@@ -7446,8 +7247,6 @@ function _flowPostgresDiagnostic(postgres) {
         ? postgres.unconfigured_catalog_targets[0] : null;
     const unattempted = Array.isArray(postgres?.unattempted_catalog_targets)
         ? postgres.unattempted_catalog_targets[0] : null;
-    const cleanupFailure = Array.isArray(postgres?.superseded_cleanup_failures)
-        ? postgres.superseded_cleanup_failures[0] : null;
     const repairMessage = repairNeedsAttention
         ? (unconfigured
             ? ` This report reads ${[unconfigured.server, unconfigured.database].filter(Boolean).join("/")}, but Scanner has no configured catalog connection for that endpoint.`
@@ -7457,8 +7256,6 @@ function _flowPostgresDiagnostic(postgres) {
         ? ` Scanner has no configured catalog connection for active source ${[globalUnconfigured.server, globalUnconfigured.database].filter(Boolean).join("/")}.`
         : unattempted
             ? " A catalog target became active during the scan; rerun lineage to cover the final target set."
-            : cleanupFailure
-                ? " An obsolete query-change alert could not be retired; open Scanner for details."
             : "";
     return `PostgreSQL dependency scan: ${status}${databases.length ? ` (${databases.join(", ")})` : ""}.${repairMessage}${globalMessage}`;
 }

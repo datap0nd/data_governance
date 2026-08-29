@@ -16,12 +16,6 @@ from datetime import datetime, timezone
 
 from app.database import get_db
 from app.asset_visibility import get_active_source_ids
-from app.query_history import (
-    MATERIALIZED_VIEW_KIND,
-    link_versions_to_action,
-    mv_artifact_key,
-    observe_query,
-)
 from app.scanner.prober import _get_pg_connection
 from app.scanner.control import assert_not_cancelled
 from app.scanner.jobs import heartbeat as scanner_job_heartbeat
@@ -41,25 +35,19 @@ from app.scanner.report_source_identities import (
     complete_report_postgres_identity_reconciliation,
     finalize_report_postgres_identity_relinks,
     pending_report_postgres_identity_target_source_ids,
+    reconcile_all_report_postgres_identities,
     reconcile_report_postgres_identities,
 )
 from app.source_identity import (
     exact_identity_rows,
     normalize_server,
+    unique_postgres_source_name,
     postgres_server_identity,
     reconcile_flow_target,
     upsert_postgres_identity,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# A query-version row is durable audit evidence as soon as a catalog batch
-# commits, but the corresponding alert must not become actionable until all
-# deferred report relinks have classified that catalog target as current. A
-# resolved action carrying this private marker is invisible to Alerts, email,
-# and the AI investigator while still giving query_versions a stable link.
-_STAGED_QUERY_ACTION_MARKER = " [staged: awaiting final catalog classification]"
 
 
 def _primary_server_identity() -> str:
@@ -129,22 +117,14 @@ def _claim_identity(
 def _new_source_name(
     db, *, server: str, database: str, schema: str, relation: str
 ) -> str:
-    """Choose a readable unique label while the structured identity stays authoritative."""
-    full_name = f"{schema}.{relation}"
-    if not db.execute("SELECT 1 FROM sources WHERE name=?", (full_name,)).fetchone():
-        return full_name
-
-    host = normalize_server(server) or "unknown-host"
-    qualified = f"{full_name} [{database}@{host}]"
-    if not db.execute("SELECT 1 FROM sources WHERE name=?", (qualified,)).fetchone():
-        return qualified
-
-    suffix = 2
-    while db.execute(
-        "SELECT 1 FROM sources WHERE name=?", (f"{qualified} #{suffix}",)
-    ).fetchone():
-        suffix += 1
-    return f"{qualified} #{suffix}"
+    """Choose a readable unique label while structured identity stays authoritative."""
+    return unique_postgres_source_name(
+        db,
+        server=server,
+        database=database,
+        schema=schema,
+        relation=relation,
+    )
 
 
 def _find_or_create_source(
@@ -221,6 +201,8 @@ class _DatabaseCatalog:
     definitions: dict[tuple[str, str], str]
     definition_error: str | None = None
     parent_kinds: dict[tuple[str, str], str] = field(default_factory=dict)
+    relations: dict[tuple[str, str], str] = field(default_factory=dict)
+    requested_relations: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -343,6 +325,52 @@ _DEFINITION_SQL = """
     FROM pg_matviews
     ORDER BY schemaname, matviewname
 """
+
+
+def _referenced_relations(
+    *,
+    server: str,
+    database: str,
+    pending_source_ids: tuple[int, ...] | list[int] | set[int] | frozenset[int] = (),
+) -> tuple[tuple[str, str], ...]:
+    """Return only locally referenced exact relations for one endpoint."""
+    with get_db() as db:
+        active_source_ids = get_active_source_ids(db)
+        active_source_ids.update(int(source_id) for source_id in pending_source_ids)
+        active_source_ids.update(
+            int(row["sql_target_source_id"])
+            for row in db.execute(
+                """SELECT sql_target_source_id FROM flows
+                     WHERE sql_handoff_enabled=1 AND sql_target_source_id IS NOT NULL"""
+            ).fetchall()
+        )
+        if not active_source_ids:
+            return ()
+        placeholders = ",".join("?" for _ in active_source_ids)
+        rows = db.execute(
+            f"""SELECT schema_name, relation_name
+                  FROM source_postgres_identities
+                 WHERE server_name=? AND database_name=?
+                   AND source_id IN ({placeholders})
+                 ORDER BY schema_name, relation_name""",
+            (normalize_server(server), database, *sorted(active_source_ids)),
+        ).fetchall()
+    return tuple((str(row["schema_name"]), str(row["relation_name"])) for row in rows)
+
+
+def _mark_catalog_verification_failed(*, server: str, database: str) -> None:
+    """Retain prior links while making the failed verification explicit."""
+    with get_db() as db:
+        db.execute(
+            """UPDATE report_tables
+                  SET source_resolution_status='verification_failed',
+                      source_resolution_reason='catalog_not_completed'
+                WHERE source_id IN (
+                    SELECT source_id FROM source_postgres_identities
+                     WHERE server_name=? AND database_name=?
+                )""",
+            (normalize_server(server), database),
+        )
 
 
 def _redact_error(value: object) -> str:
@@ -509,6 +537,7 @@ def _fetch_database_catalog(
     database: str,
     *,
     use_flow_credentials: bool = False,
+    referenced_relations: tuple[tuple[str, str], ...] = (),
 ) -> _DatabaseCatalog:
     """Fetch a complete dependency snapshot before opening a SQLite write batch."""
     pg_conn = (
@@ -544,6 +573,12 @@ def _fetch_database_catalog(
             parent_kinds[(row[0], row[1])] = "m"
             dependency_rows.append(tuple(row))
 
+        relations: dict[tuple[str, str], str] = {}
+        for parent, kind in parent_kinds.items():
+            relations[parent] = kind
+        for _parent_schema, _parent_name, schema, name, kind in dependency_rows:
+            relations[(schema, name)] = str(kind)
+
         definitions: dict[tuple[str, str], str] = {}
         definition_error = None
         try:
@@ -555,6 +590,7 @@ def _fetch_database_catalog(
                     )
                 schema, name, definition = row
                 definitions[(schema, name)] = definition or ""
+                relations[(schema, name)] = "m"
         except Exception as exc:
             definition_error = _redact_error(exc)
             logger.warning(
@@ -563,14 +599,56 @@ def _fetch_database_catalog(
                 definition_error,
             )
 
+        requested_relations = tuple(sorted(set(referenced_relations)))
+        if requested_relations:
+            values = ",".join("(%s,%s)" for _ in requested_relations)
+            parameters = tuple(value for pair in requested_relations for value in pair)
+            pg_cur.execute(
+                f"""SELECT ns.nspname, cls.relname, cls.relkind
+                       FROM pg_class cls
+                       JOIN pg_namespace ns ON ns.oid=cls.relnamespace
+                      WHERE (ns.nspname, cls.relname) IN ({values})
+                        AND cls.relkind IN ('r','p','m','v','f')
+                      ORDER BY ns.nspname, cls.relname""",
+                parameters,
+            )
+            for row in pg_cur.fetchall():
+                if len(row) != 3:
+                    raise ValueError("PostgreSQL adapter returned an unexpected relation row")
+                relations[(str(row[0]), str(row[1]))] = str(row[2])
+
         return _DatabaseCatalog(
             dependency_rows=tuple(dependency_rows),
             definitions=definitions,
             definition_error=definition_error,
             parent_kinds=parent_kinds,
+            relations=relations,
+            requested_relations=requested_relations,
         )
     finally:
         pg_conn.close()
+
+
+def _fetch_catalog_for_target(
+    database: str,
+    *,
+    use_flow_credentials: bool,
+    referenced_relations: tuple[tuple[str, str], ...],
+) -> _DatabaseCatalog:
+    """Call the catalog reader while tolerating older injected adapters."""
+    try:
+        parameters = inspect.signature(_fetch_database_catalog).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    accepts_references = any(
+        parameter.name == "referenced_relations"
+        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+    kwargs = {"use_flow_credentials": use_flow_credentials}
+    if accepts_references:
+        kwargs["referenced_relations"] = referenced_relations
+    return _fetch_database_catalog(database, **kwargs)
 
 
 def scan_pg_dependencies(
@@ -582,9 +660,10 @@ def scan_pg_dependencies(
 ) -> dict:
     """Refresh dependency lineage independently for every required database."""
     assert_not_cancelled(cancel_generation, "PostgreSQL lineage scan")
-    report_identity_reconciliation = reconcile_report_postgres_identities(
-        report_id,
-        defer_relinks=True,
+    report_identity_reconciliation = (
+        reconcile_report_postgres_identities(report_id, defer_relinks=True)
+        if report_id is not None
+        else reconcile_all_report_postgres_identities(defer_relinks=True)
     )
     scanner_job_heartbeat(
         operation_id,
@@ -671,7 +750,6 @@ def scan_pg_dependencies(
                 for target in final_catalog_targets
             ],
             "superseded_catalog_targets": [],
-            "superseded_cleanup_failures": [],
             "unattempted_catalog_targets": unattempted_catalog_targets,
             "unconfigured_catalog_targets": unconfigured_catalog_targets,
             "report_identity_reconciliation": report_identity_reconciliation,
@@ -679,7 +757,6 @@ def scan_pg_dependencies(
             "mvs_found": 0,
             "deps_created": 0,
             "sources_created": 0,
-            "changed_queries": 0,
             "definition_status": "not_requested",
             "log": (
                 "One or more active PostgreSQL catalog targets were not scanned; "
@@ -690,7 +767,6 @@ def scan_pg_dependencies(
                 if unconfigured_catalog_targets
                 else "No PostgreSQL databases require dependency discovery."
             ),
-            "query_change_log": "",
         }
 
     flow_target_catalog_databases = {
@@ -718,10 +794,23 @@ def scan_pg_dependencies(
         use_flow_credentials = target.credential_profile == "flow_target"
         credential_profile = target.credential_profile
         catalog_server = target.server
+        protected_source_ids = (
+            pending_report_postgres_identity_target_source_ids(
+                report_identity_reconciliation,
+                server=catalog_server,
+                database=database,
+            )
+        )
+        referenced_relations = _referenced_relations(
+            server=catalog_server,
+            database=database,
+            pending_source_ids=protected_source_ids,
+        )
         try:
-            catalog = _fetch_database_catalog(
+            catalog = _fetch_catalog_for_target(
                 database,
                 use_flow_credentials=use_flow_credentials,
+                referenced_relations=referenced_relations,
             )
         except Exception as primary_exc:
             # If both roles point to the same endpoint, the dedicated Flow account
@@ -734,9 +823,10 @@ def scan_pg_dependencies(
                 credential_profile = "flow_target"
                 catalog_server = _flow_server_identity()
                 try:
-                    catalog = _fetch_database_catalog(
+                    catalog = _fetch_catalog_for_target(
                         database,
                         use_flow_credentials=True,
+                        referenced_relations=referenced_relations,
                     )
                     fetch_error = None
                 except Exception as fallback_exc:
@@ -753,6 +843,10 @@ def scan_pg_dependencies(
                     database,
                     error,
                 )
+                _mark_catalog_verification_failed(
+                    server=catalog_server,
+                    database=database,
+                )
                 database_results[result_key] = {
                     "status": "failed",
                     "stage": "fetch",
@@ -761,12 +855,10 @@ def scan_pg_dependencies(
                     "mvs_found": 0,
                     "deps_created": 0,
                     "sources_created": 0,
-                    "changed_queries": 0,
                     "definition_status": "not_requested",
                     "catalog_server": normalize_server(catalog_server),
                     "credential_profile": credential_profile,
                     "log": "Catalog fetch failed; prior lineage was retained.",
-                    "query_change_log": "",
                 }
                 scanner_job_heartbeat(
                     operation_id,
@@ -786,13 +878,6 @@ def scan_pg_dependencies(
             progress_total=total_targets,
         )
         try:
-            protected_source_ids = (
-                pending_report_postgres_identity_target_source_ids(
-                    report_identity_reconciliation,
-                    server=catalog_server,
-                    database=database,
-                )
-            )
             applied_result = _apply_database_catalog(
                 database,
                 catalog,
@@ -814,12 +899,10 @@ def scan_pg_dependencies(
                 "mvs_found": 0,
                 "deps_created": 0,
                 "sources_created": 0,
-                "changed_queries": 0,
                 "definition_status": (
                     "skipped" if catalog.definition_error else "completed"
                 ),
                 "log": "Catalog apply failed; prior lineage was retained.",
-                "query_change_log": "",
                 "catalog_server": normalize_server(catalog_server),
                 "credential_profile": credential_profile,
             }
@@ -837,6 +920,7 @@ def scan_pg_dependencies(
                     report_identity_reconciliation,
                     server=catalog_server,
                     database=database,
+                    verified_source_ids=applied_result.get("verified_source_ids") or (),
                 )
             except Exception as exc:
                 # The catalog transaction has already committed. Report that
@@ -889,7 +973,6 @@ def scan_pg_dependencies(
         for target, result_key in zip(catalog_targets, result_keys)
     }
     superseded_catalog_targets = []
-    superseded_cleanup_failures = []
     for target, result_key in zip(catalog_targets, result_keys):
         target_key = (normalize_server(target.server), target.database)
         if target_key in final_catalog_keys or result_key not in database_results:
@@ -899,33 +982,6 @@ def scan_pg_dependencies(
         result["attempt_status"] = prior_status
         result["status"] = "superseded"
         result["superseded_after_report_relink"] = True
-        try:
-            actions_resolved = _resolve_inactive_changed_query_actions(
-                server=target.server,
-                database=target.database,
-                now=now,
-            )
-            staged_actions_discarded = _discard_staged_changed_query_actions(
-                server=target.server,
-                database=target.database,
-                now=now,
-            )
-        except Exception as exc:
-            cleanup_error = _redact_error(exc)
-            result["inactive_action_cleanup_error"] = cleanup_error
-            actions_resolved = 0
-            staged_actions_discarded = 0
-            superseded_cleanup_failures.append(
-                {
-                    "database": target.database,
-                    "server": target.server,
-                    "reason_code": "superseded_action_cleanup_failed",
-                }
-            )
-        result["inactive_changed_query_actions_resolved"] = actions_resolved
-        result["staged_changed_query_actions_discarded"] = (
-            staged_actions_discarded
-        )
         result["log"] = (
             f"{result.get('log') or ''}\n"
             "This catalog target became inactive after the selected report was "
@@ -962,75 +1018,6 @@ def scan_pg_dependencies(
             server=final_target.server,
             required=final_target.reconcile_flow_targets,
         )
-        if (
-            result.get("status") in {"completed", "completed_with_warnings"}
-            and result.get("definition_status") == "completed"
-        ):
-            try:
-                publication = _publish_staged_changed_query_actions(
-                    server=final_target.server,
-                    database=final_target.database,
-                    source_ids=result.get("observed_definition_source_ids") or (),
-                    now=now,
-                )
-                result["query_actions_published"] = publication["published"]
-                result["query_actions_reused"] = publication["reused"]
-                result["staged_query_actions_discarded"] = publication["discarded"]
-                result["superseded_query_actions_resolved"] = publication[
-                    "superseded_resolved"
-                ]
-            except Exception as exc:
-                error = _redact_error(exc)
-                logger.warning(
-                    "PostgreSQL catalog committed but query-change action "
-                    "publication failed for %s: %s",
-                    final_target.database,
-                    error,
-                )
-                result["status"] = "completed_with_warnings"
-                warning_stages = list(result.get("warning_stages") or [])
-                if "query_action_publication" not in warning_stages:
-                    warning_stages.append("query_action_publication")
-                result["warning_stages"] = warning_stages
-                if len(warning_stages) == 1:
-                    result["warning_stage"] = warning_stages[0]
-                else:
-                    result.pop("warning_stage", None)
-                result["query_action_publication_error"] = error
-                result["log"] = (
-                    f"{result.get('log') or ''}\n"
-                    "Query change evidence was retained but its alert stayed "
-                    "hidden because final publication failed."
-                ).strip()
-        if result.get("status") in {"completed", "completed_with_warnings"}:
-            try:
-                inactive_resolved = _resolve_inactive_changed_query_actions(
-                    server=final_target.server,
-                    database=final_target.database,
-                    now=now,
-                )
-                result["inactive_changed_query_actions_resolved"] = (
-                    int(result.get("inactive_changed_query_actions_resolved") or 0)
-                    + inactive_resolved
-                )
-            except Exception as exc:
-                error = _redact_error(exc)
-                logger.warning(
-                    "PostgreSQL catalog committed but inactive query-action "
-                    "cleanup failed for %s: %s",
-                    final_target.database,
-                    error,
-                )
-                result["status"] = "completed_with_warnings"
-                warning_stages = list(result.get("warning_stages") or [])
-                if "inactive_query_action_cleanup" not in warning_stages:
-                    warning_stages.append("inactive_query_action_cleanup")
-                result["warning_stages"] = warning_stages
-                if len(warning_stages) == 1:
-                    result["warning_stage"] = warning_stages[0]
-                else:
-                    result.pop("warning_stage", None)
-                result["inactive_action_cleanup_error"] = error
     databases = final_databases
     origins = final_origins
     flow_target_catalog_databases = {
@@ -1063,7 +1050,6 @@ def scan_pg_dependencies(
             if (
                 identity_warning
                 or unconfigured_catalog_targets
-                or superseded_cleanup_failures
             )
             else "not_requested"
         )
@@ -1076,7 +1062,6 @@ def scan_pg_dependencies(
                 or identity_warning
                 or unconfigured_catalog_targets
                 or unattempted_catalog_targets
-                or superseded_cleanup_failures
             )
             else "completed"
         )
@@ -1091,13 +1076,10 @@ def scan_pg_dependencies(
         return sum(int(result.get(key) or 0) for result in successful)
 
     log_sections = []
-    query_sections = []
     for result_key, result in database_results.items():
         log_sections.append(
             f"[{result_key}] {result.get('log') or result['status']}"
         )
-        if result.get("query_change_log"):
-            query_sections.append(f"[{result_key}] {result['query_change_log']}")
 
     definition_status = (
         "skipped"
@@ -1123,7 +1105,6 @@ def scan_pg_dependencies(
             for target in final_catalog_targets
         ],
         "superseded_catalog_targets": superseded_catalog_targets,
-        "superseded_cleanup_failures": superseded_cleanup_failures,
         "unattempted_catalog_targets": unattempted_catalog_targets,
         "unconfigured_catalog_targets": unconfigured_catalog_targets,
         "report_identity_reconciliation": report_identity_reconciliation,
@@ -1131,10 +1112,8 @@ def scan_pg_dependencies(
         "mvs_found": total("mvs_found"),
         "deps_created": total("deps_created"),
         "sources_created": total("sources_created"),
-        "changed_queries": total("changed_queries"),
         "definition_status": definition_status,
         "log": "\n".join(log_sections),
-        "query_change_log": "\n".join(query_sections),
     }
     if status == "failed":
         errors = [result.get("error", "unknown failure") for result in failed]
@@ -1290,7 +1269,6 @@ def _cleanup_database_orphans(
              )
              AND NOT EXISTS (SELECT 1 FROM report_tables rt WHERE rt.source_id=s.id)
              AND NOT EXISTS (SELECT 1 FROM script_tables st WHERE st.source_id=s.id)
-             AND NOT EXISTS (SELECT 1 FROM query_versions qv WHERE qv.source_id=s.id)
              AND NOT EXISTS (SELECT 1 FROM flows f WHERE f.sql_target_source_id=s.id)
              AND NOT EXISTS (SELECT 1 FROM checks c WHERE c.source_id=s.id)
              AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.source_id=s.id)
@@ -1316,268 +1294,6 @@ def _cleanup_database_orphans(
     return len(source_ids)
 
 
-def _resolve_inactive_changed_query_actions(
-    *,
-    server: str,
-    database: str,
-    now: str,
-) -> int:
-    """Retire actionable MV-change alerts for a superseded inactive catalog.
-
-    Query versions and their action links remain intact as audit history. Only
-    the operational state is closed, and only when the source is no longer in
-    any active report/task/manual lineage after the final report relink.
-    """
-    with get_db() as db:
-        active_source_ids = get_active_source_ids(db)
-        source_ids = [
-            int(row["source_id"])
-            for row in db.execute(
-                """SELECT source_id FROM source_postgres_identities
-                    WHERE server_name=? AND database_name=?
-                    ORDER BY source_id""",
-                (normalize_server(server), database),
-            ).fetchall()
-            if int(row["source_id"]) not in active_source_ids
-        ]
-        if not source_ids:
-            return 0
-        placeholders = ",".join("?" for _ in source_ids)
-        cursor = db.execute(
-            f"""UPDATE actions
-                   SET status='resolved', resolved_at=COALESCE(resolved_at, ?),
-                       updated_at=?,
-                       notes=COALESCE(notes, '') ||
-                             ' [auto-resolved: catalog target no longer active]'
-                 WHERE source_id IN ({placeholders}) AND type='changed_query'
-                   AND status IN ('open','acknowledged','investigating')""",
-            (now, now, *source_ids),
-        )
-        return int(cursor.rowcount or 0)
-
-
-def _discard_staged_changed_query_actions(
-    *,
-    server: str,
-    database: str,
-    now: str,
-) -> int:
-    """Close unpublished query-change evidence for a superseded catalog.
-
-    The linked query versions remain immutable audit history. Removing the
-    staging marker is important: a future scan may make this physical catalog
-    active again, but only a newly verified current definition should be
-    eligible for publication then.
-    """
-    with get_db() as db:
-        cursor = db.execute(
-            """UPDATE actions
-                  SET notes=REPLACE(
-                          COALESCE(notes, ''), ?,
-                          ' [not published: catalog target no longer active]'
-                      ),
-                      updated_at=?
-                WHERE type='changed_query' AND status='resolved'
-                  AND INSTR(COALESCE(notes, ''), ?) > 0
-                  AND source_id IN (
-                      SELECT source_id FROM source_postgres_identities
-                       WHERE server_name=? AND database_name=?
-                  )""",
-            (
-                _STAGED_QUERY_ACTION_MARKER,
-                now,
-                _STAGED_QUERY_ACTION_MARKER,
-                normalize_server(server),
-                database,
-            ),
-        )
-        return int(cursor.rowcount or 0)
-
-
-def _publish_staged_changed_query_actions(
-    *,
-    server: str,
-    database: str,
-    source_ids: tuple[int, ...] | list[int] | set[int] | frozenset[int],
-    now: str,
-) -> dict[str, int]:
-    """Publish only staged MV changes that are current after final relinking.
-
-    A staged action is recoverable after an interrupted scan: on a later
-    successful catalog pass, the latest linked query version is still current
-    even though ``observe_query`` correctly reports no new change. Legitimate
-    user-resolved actions are never reopened because they do not carry the
-    private staging marker.
-    """
-    published = 0
-    reused = 0
-    discarded = 0
-    superseded_resolved = 0
-    verified_source_ids = {int(source_id) for source_id in source_ids}
-    if not verified_source_ids:
-        return {
-            "published": 0,
-            "reused": 0,
-            "discarded": 0,
-            "superseded_resolved": 0,
-        }
-    with get_db() as db:
-        active_source_ids = get_active_source_ids(db)
-        endpoint_source_ids = {
-            int(row["source_id"])
-            for row in db.execute(
-                """SELECT source_id FROM source_postgres_identities
-                    WHERE server_name=? AND database_name=?""",
-                (normalize_server(server), database),
-            ).fetchall()
-        }
-        eligible_source_ids = sorted(
-            active_source_ids & endpoint_source_ids & verified_source_ids
-        )
-        if not eligible_source_ids:
-            return {
-                "published": 0,
-                "reused": 0,
-                "discarded": 0,
-                "superseded_resolved": 0,
-            }
-
-        placeholders = ",".join("?" for _ in eligible_source_ids)
-        staged_rows = db.execute(
-            f"""SELECT id, source_id, fingerprint, assigned_to, notes
-                  FROM actions
-                 WHERE type='changed_query' AND status='resolved'
-                   AND INSTR(COALESCE(notes, ''), ?) > 0
-                   AND source_id IN ({placeholders})
-                 ORDER BY id""",
-            (_STAGED_QUERY_ACTION_MARKER, *eligible_source_ids),
-        ).fetchall()
-
-        for staged in staged_rows:
-            action_id = int(staged["id"])
-            # Only the action linked to the latest version of its artifact can
-            # describe the catalog definition just verified by this scan.
-            current_version = db.execute(
-                """SELECT qv.id
-                     FROM query_versions qv
-                    WHERE qv.action_id=?
-                      AND qv.id=(
-                          SELECT MAX(latest.id)
-                            FROM query_versions latest
-                           WHERE latest.artifact_key=qv.artifact_key
-                      )
-                    ORDER BY qv.id DESC LIMIT 1""",
-                (action_id,),
-            ).fetchone()
-            clean_notes = str(staged["notes"] or "").replace(
-                _STAGED_QUERY_ACTION_MARKER, ""
-            )
-            if current_version is None:
-                db.execute(
-                    """UPDATE actions
-                          SET notes=? || ' [not published: newer query version exists]',
-                              updated_at=?
-                        WHERE id=?""",
-                    (clean_notes, now, action_id),
-                )
-                discarded += 1
-                continue
-
-            existing = db.execute(
-                """SELECT id FROM actions
-                    WHERE type='changed_query' AND fingerprint=? AND id!=?
-                      AND status IN ('open','acknowledged','investigating','expected')
-                    ORDER BY id DESC LIMIT 1""",
-                (staged["fingerprint"], action_id),
-            ).fetchone()
-            if existing:
-                existing_id = int(existing["id"])
-                db.execute(
-                    "UPDATE query_versions SET action_id=? WHERE action_id=?",
-                    (existing_id, action_id),
-                )
-                db.execute(
-                    """UPDATE actions
-                          SET notes=? || ' [not published: matching active alert exists]',
-                              updated_at=?
-                        WHERE id=?""",
-                    (clean_notes, now, action_id),
-                )
-                reused += 1
-                continue
-
-            db.execute(
-                """UPDATE actions
-                      SET status='resolved', resolved_at=COALESCE(resolved_at, ?),
-                          updated_at=?,
-                          notes=COALESCE(notes, '') ||
-                                ' [auto-resolved: superseded query change]'
-                    WHERE source_id=? AND report_id IS NULL
-                      AND type='changed_query' AND fingerprint!=?
-                      AND status IN ('open','acknowledged','investigating')""",
-                (
-                    now,
-                    now,
-                    int(staged["source_id"]),
-                    staged["fingerprint"],
-                ),
-            )
-            db.execute(
-                """UPDATE actions
-                      SET status='open', resolved_at=NULL, notes=?, updated_at=?
-                    WHERE id=?""",
-                (clean_notes, now, action_id),
-            )
-            published += 1
-
-        # Reconcile against the current verified query even when no new staged
-        # action was needed. This matters for a reversion to a fingerprint a
-        # person previously marked expected: the expected action remains
-        # closed, while an alert for the now-obsolete intermediate query must
-        # still be resolved after final target classification.
-        current_rows = db.execute(
-            f"""SELECT qv.source_id, qv.query_hash
-                  FROM query_versions qv
-                 WHERE qv.artifact_kind=?
-                   AND qv.source_id IN ({placeholders})
-                   AND qv.id=(
-                       SELECT MAX(latest.id)
-                         FROM query_versions latest
-                        WHERE latest.artifact_key=qv.artifact_key
-                   )""",
-            (MATERIALIZED_VIEW_KIND, *eligible_source_ids),
-        ).fetchall()
-        for current in current_rows:
-            current_fingerprint = (
-                f"changed_query:mv:{int(current['source_id'])}:"
-                f"{str(current['query_hash'])[:16]}"
-            )
-            cursor = db.execute(
-                """UPDATE actions
-                      SET status='resolved', resolved_at=COALESCE(resolved_at, ?),
-                          updated_at=?,
-                          notes=COALESCE(notes, '') ||
-                                ' [auto-resolved: superseded query change]'
-                    WHERE source_id=? AND report_id IS NULL
-                      AND type='changed_query' AND fingerprint!=?
-                      AND status IN ('open','acknowledged','investigating')""",
-                (
-                    now,
-                    now,
-                    int(current["source_id"]),
-                    current_fingerprint,
-                ),
-            )
-            superseded_resolved += int(cursor.rowcount or 0)
-
-    return {
-        "published": published,
-        "reused": reused,
-        "discarded": discarded,
-        "superseded_resolved": superseded_resolved,
-    }
-
-
 def _apply_database_catalog(
     database: str,
     catalog: _DatabaseCatalog,
@@ -1601,14 +1317,68 @@ def _apply_database_catalog(
 
     mvs_found = 0
     deps_created = 0
-    changed_queries = 0
-    query_actions_staged = 0
-    observed_definition_source_ids: list[int] = []
     log_lines: list[str] = []
-    query_change_lines: list[str] = []
 
     with get_db() as db:
         _delete_database_edges(db, server=server, database=database)
+
+        verified_source_ids: set[int] = set()
+        for (schema, relation), kind_code in sorted(catalog.relations.items()):
+            relation_kind = {
+                "m": "materialized_view",
+                "v": "view",
+                "r": "table",
+                "p": "table",
+                "f": "foreign_table",
+            }.get(kind_code, "table")
+            source_id = _find_or_create_source(
+                db,
+                server=server,
+                database=database,
+                schema=schema,
+                table=relation,
+                now=now,
+                relation_kind=relation_kind,
+            )
+            verified_source_ids.add(source_id)
+            db.execute(
+                """UPDATE report_tables
+                      SET source_resolution_status='resolved',
+                          source_resolution_reason=NULL
+                    WHERE source_id=?""",
+                (source_id,),
+            )
+
+        missing_relations = sorted(
+            set(catalog.requested_relations) - set(catalog.relations)
+        )
+        missing_source_ids: set[int] = set()
+        for schema, relation in missing_relations:
+            rows = exact_identity_rows(
+                db,
+                server=server,
+                database=database,
+                schema=schema,
+                relation=relation,
+            )
+            for row in rows:
+                source_id = int(row["source_id"])
+                missing_source_ids.add(source_id)
+                db.execute(
+                    """UPDATE report_tables
+                          SET source_id=NULL,
+                              source_resolution_status='unresolved',
+                              source_resolution_reason='postgres_relation_not_found'
+                        WHERE source_id=?""",
+                    (source_id,),
+                )
+                db.execute(
+                    "UPDATE flows SET sql_target_source_id=NULL WHERE sql_target_source_id=?",
+                    (source_id,),
+                )
+            log_lines.append(
+                f"UNRESOLVED: {schema}.{relation} was referenced locally but does not exist in the PostgreSQL catalog"
+            )
 
         pending_relations = set(mv_dependencies)
         while pending_relations:
@@ -1626,6 +1396,7 @@ def _apply_database_catalog(
                     now=now,
                     relation_kind=parent_kind,
                 )
+                verified_source_ids.add(mv_source_id)
 
                 pending_relations.remove((mv_schema, mv_name))
                 progressed = True
@@ -1651,6 +1422,7 @@ def _apply_database_catalog(
                         now=now,
                         relation_kind=kind,
                     )
+                    verified_source_ids.add(dep_source_id)
                     if dep_source_id == mv_source_id:
                         continue
                     cursor = db.execute(
@@ -1673,128 +1445,6 @@ def _apply_database_catalog(
 
             if not progressed:
                 break
-
-        active_source_ids = get_active_source_ids(db)
-        # Exact targets created during report repair are intentionally not
-        # linked to the report until after this transaction commits. Observe
-        # their first SQL baseline now so the next real edit cannot be mistaken
-        # for "first seen". Any change action remains staged until final relink
-        # classification, so a failed repair cannot emit a false alert.
-        observable_source_ids = active_source_ids | {
-            int(source_id) for source_id in protected_source_ids
-        }
-        for (mv_schema, mv_name), definition in sorted(catalog.definitions.items()):
-            mv_identity = _one_exact_identity(
-                db,
-                server=server,
-                database=database,
-                schema=mv_schema,
-                relation=mv_name,
-            )
-            if mv_identity is None:
-                continue
-            source_id = int(mv_identity["source_id"])
-            if source_id not in observable_source_ids:
-                continue
-            observed_definition_source_ids.append(source_id)
-
-            mv_source = db.execute(
-                "SELECT id, name, owner FROM sources WHERE id=?", (source_id,)
-            ).fetchone()
-            if not mv_source:
-                raise PostgresIdentityResolutionError(
-                    f"PostgreSQL identity references missing source {source_id}"
-                )
-            full_mv_name = f"{mv_schema}.{mv_name}"
-            observation = observe_query(
-                db,
-                artifact_kind=MATERIALIZED_VIEW_KIND,
-                artifact_key=mv_artifact_key(source_id),
-                report_id=None,
-                source_id=source_id,
-                artifact_name=full_mv_name,
-                language="sql",
-                query_text=definition,
-                scan_run_id=scan_run_id,
-                detected_at=now,
-            )
-            if not observation.changed:
-                continue
-
-            changed_queries += 1
-            fingerprint = f"changed_query:mv:{source_id}:{observation.query_hash[:16]}"
-            owner = mv_source["owner"]
-            if not owner:
-                owner_row = db.execute(
-                    """WITH RECURSIVE downstream_sources(id) AS (
-                           SELECT ?
-                           UNION
-                           SELECT sd.source_id
-                           FROM source_dependencies sd
-                           JOIN downstream_sources ds ON sd.depends_on_id=ds.id
-                       )
-                       SELECT r.owner FROM report_tables rt
-                       JOIN reports r ON r.id=rt.report_id
-                       JOIN downstream_sources ds ON ds.id=rt.source_id
-                       WHERE COALESCE(r.archived, 0)=0
-                         AND NULLIF(TRIM(r.owner), '') IS NOT NULL
-                       ORDER BY r.id LIMIT 1""",
-                    (source_id,),
-                ).fetchone()
-                owner = owner_row["owner"] if owner_row else None
-
-            prior = db.execute(
-                """SELECT id FROM actions
-                   WHERE fingerprint=?
-                     AND status IN ('open','acknowledged','investigating','expected')
-                   ORDER BY id DESC LIMIT 1""",
-                (fingerprint,),
-            ).fetchone()
-            notes = f"Materialized view definition changed for {full_mv_name}."
-            if prior:
-                action_id = int(prior["id"])
-                db.execute(
-                    "UPDATE actions SET notes=?, assigned_to=?, updated_at=? WHERE id=?",
-                    (notes, owner, now, action_id),
-                )
-            else:
-                staged = db.execute(
-                    """SELECT id FROM actions
-                         WHERE fingerprint=? AND status='resolved'
-                           AND INSTR(COALESCE(notes, ''), ?) > 0
-                         ORDER BY id DESC LIMIT 1""",
-                    (fingerprint, _STAGED_QUERY_ACTION_MARKER),
-                ).fetchone()
-                staged_notes = notes + _STAGED_QUERY_ACTION_MARKER
-                if staged:
-                    action_id = int(staged["id"])
-                    db.execute(
-                        """UPDATE actions
-                              SET assigned_to=?, notes=?, resolved_at=COALESCE(resolved_at, ?),
-                                  updated_at=?
-                            WHERE id=?""",
-                        (owner, staged_notes, now, now, action_id),
-                    )
-                else:
-                    cursor = db.execute(
-                        """INSERT INTO actions
-                               (source_id, type, status, assigned_to, notes,
-                                fingerprint, created_at, updated_at, resolved_at)
-                           VALUES (?, 'changed_query', 'resolved', ?, ?, ?, ?, ?, ?)""",
-                        (
-                            source_id,
-                            owner,
-                            staged_notes,
-                            fingerprint,
-                            now,
-                            now,
-                            now,
-                        ),
-                    )
-                    action_id = int(cursor.lastrowid)
-                query_actions_staged += 1
-            link_versions_to_action(db, [observation.version_id], action_id)
-            query_change_lines.append(f"CHANGED MV QUERY: {full_mv_name}")
 
         _cleanup_database_orphans(
             db,
@@ -1839,14 +1489,14 @@ def _apply_database_catalog(
         "mvs_found": mvs_found,
         "deps_created": deps_created,
         "sources_created": int(sources_created),
-        "changed_queries": changed_queries,
-        "query_actions_staged": query_actions_staged,
-        "observed_definition_source_ids": sorted(
-            set(observed_definition_source_ids)
-        ),
         "definition_status": "skipped" if catalog.definition_error else "completed",
+        "verified_source_ids": sorted(verified_source_ids),
+        "missing_referenced_relations": [
+            {"schema": schema, "relation": relation}
+            for schema, relation in missing_relations
+        ],
+        "missing_referenced_source_ids": sorted(missing_source_ids),
         "log": "\n".join(log_lines) if log_lines else "No MV dependencies found.",
-        "query_change_log": "\n".join(query_change_lines),
         "flow_reconciliation": flow_reconciliation,
         "flow_targets_needing_attention": flow_targets_needing_attention,
     }

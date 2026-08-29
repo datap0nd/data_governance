@@ -18,17 +18,13 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure TMDL path
+### 3. Configure the Power BI workspace
 
-Set where your TMDL report exports live. By default it looks at:
-```
-%USERPROFILE%\documents\projects\data_governance\reports\
-```
-
-To change it, set the environment variable before running:
-```bash
-set DG_TMDL_ROOT=C:\Users\YourName\documents\projects\data_governance
-```
+Production scans read the configured workspace directly instead of relying on
+a possibly stale local PBIX/TMDL export. Set `DG_PBI_WORKSPACE` to the Power BI
+workspace name and connect the saved Microsoft account from **Scanner > Connect
+Power BI**. An explicitly supplied reports path remains available for tests and
+manual development scans only.
 
 ### 4. Run the app
 
@@ -97,6 +93,17 @@ The sync picks the first available auth mode, in this order:
 1. **Service principal** (`DG_PBI_TENANT_ID` + `DG_PBI_CLIENT_ID` + `DG_PBI_CLIENT_SECRET`): fully unattended, requires tenant-admin setup.
 2. **Saved Microsoft account (recommended when no tenant access exists)**: open the panel, go to Scanner, click **Connect Power BI**, and enter the shown code at microsoft.com/devicelogin from any device (your own laptop or phone works). After this one-time sign-in, every sync runs headless inside the app with a silently refreshed token: no PowerShell window, no account picker, and it works while the PC is locked or the RDP session is disconnected.
 3. **Interactive fallback**: the legacy scheduled-task flow that opens a PowerShell window plus the Microsoft account picker in the sync user's session. Only used when neither of the above is configured.
+
+The report scanner now acquires each live semantic model before changing the
+local catalog. It first uses the bundled XMLA/TOM helper and falls back to the
+Fabric `getDefinition` API in TMDL format. If either provider cannot produce a
+complete workspace snapshot, the scan fails and retains the prior Metronome
+catalog rather than publishing a partial result. The setup script builds the
+helper when the .NET 8 SDK is available; set `DG_PBI_TOM_HELPER` only to use a
+different published helper path. The optional Fabric fallback requires the
+saved account to have read-write access to the semantic model and delegated
+`SemanticModel.ReadWrite.All` (or `Item.ReadWrite.All`) consent. Its timeout can
+be changed with `DG_PBI_METADATA_TIMEOUT_SECONDS`.
 
 #### Saved Microsoft account details
 

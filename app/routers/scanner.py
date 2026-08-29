@@ -172,8 +172,8 @@ def _execute_full_scan_job(
             }
         scanner_jobs.heartbeat(
             job_id,
-            current_step="Starting local report scan",
-            message="Power BI metadata sync finished; starting PBIX/TMDL discovery.",
+            current_step="Starting live model scan",
+            message="Power BI refresh sync finished; reading the live semantic-model definition.",
         )
         scan_result = run_scan(
             cancel_generation=generation,
@@ -243,8 +243,8 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
     """Run report discovery/probing for a pre-reserved durable job."""
     scanner_jobs.mark_running(
         job_id,
-        current_step="Starting local report scan",
-        message="Starting PBIX/TMDL discovery.",
+        current_step="Starting live model scan",
+        message="Reading live semantic models through XMLA/TOM with Fabric fallback.",
     )
     try:
         run_scan(
@@ -954,7 +954,7 @@ def diagnostic_report():
 
         # ── Recent Scan Runs ──
         scans = db.execute(
-            "SELECT id, started_at, finished_at, status, reports_scanned, sources_found, new_sources, changed_queries, broken_refs, log FROM scan_runs ORDER BY id DESC LIMIT 5"
+            "SELECT id, started_at, finished_at, status, reports_scanned, sources_found, new_sources, broken_refs, log FROM scan_runs ORDER BY id DESC LIMIT 5"
         ).fetchall()
         report["recent_scans"] = [dict(r) for r in scans]
 

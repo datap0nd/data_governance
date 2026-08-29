@@ -107,7 +107,7 @@ def fetch_workspace_reports(workspace_name: str | None = None) -> dict:
                 "embed_url": report.get("embedUrl"),
             }
             for report in reports
-            if report.get("id") and report.get("name") and report.get("embedUrl")
+            if report.get("id") and report.get("name")
         ],
     }
 

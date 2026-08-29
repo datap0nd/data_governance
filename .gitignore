@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_tmp*/
+.pytest-*/
 governance.db
 *.db.bak
 node_modules/
@@ -9,3 +10,5 @@ pbi_token.json
 msal_token_cache.bin
 generated_imports/
 flow_scripts/
+tools/pbi_metadata/bin/
+tools/pbi_metadata/obj/

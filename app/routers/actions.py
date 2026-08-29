@@ -218,8 +218,6 @@ def _recommendation_for(action_type: str, detail_items: list[dict]) -> str | Non
         return "Reconnect the saved Power BI account from Scanner, then confirm an authenticated sync completes."
     if action_type == "broken_ref":
         return "Update the report to point at an existing source, or remove the unused table."
-    if action_type == "changed_query":
-        return "Open the saved query diff and confirm downstream usage is still correct."
     if action_type == "schedule_discrepancy":
         return "Move the upstream, source, or report schedule so each dependent step runs after its inputs."
     if action_type == "documentation_missing":
@@ -245,7 +243,6 @@ TRIAGE_TYPE_WEIGHT = {
     "pipeline_failed": 820,
     "pbi_reconnect": 950,
     "broken_ref": 540,
-    "changed_query": 420,
     "data_quality": 850,
     "dependency_stale": 800,
     "schedule_discrepancy": 700,
@@ -268,7 +265,6 @@ def _issue_reason(action_type: str) -> str:
         "pipeline_failed": "Full Pipeline failed",
         "pbi_reconnect": "Power BI account must be reconnected",
         "broken_ref": "Report points to a missing source",
-        "changed_query": "Source query changed",
         "data_quality": "Automated data-quality check failed",
         "dependency_stale": "Materialized view is behind upstream data",
         "schedule_discrepancy": "Refresh schedules are in the wrong order",
@@ -393,28 +389,6 @@ def list_actions(status: str | None = None):
             params.append(status)
         query += " ORDER BY a.created_at DESC"
         rows = db.execute(query, params).fetchall()
-
-        query_change_map: dict[int, list[dict]] = {}
-        action_ids = [int(row["id"]) for row in rows]
-        if action_ids:
-            placeholders = ",".join("?" for _ in action_ids)
-            version_rows = db.execute(
-                f"""SELECT action_id, id AS version_id, previous_version_id,
-                            artifact_kind, artifact_name, language, detected_at
-                     FROM query_versions
-                     WHERE action_id IN ({placeholders})
-                     ORDER BY artifact_name COLLATE NOCASE, id""",
-                action_ids,
-            ).fetchall()
-            for version in version_rows:
-                query_change_map.setdefault(int(version["action_id"]), []).append({
-                    "version_id": version["version_id"],
-                    "previous_version_id": version["previous_version_id"],
-                    "artifact_kind": version["artifact_kind"],
-                    "artifact_name": version["artifact_name"],
-                    "language": version["language"],
-                    "detected_at": version["detected_at"],
-                })
 
         source_days = _compute_source_days_outdated(db)
         source_reports, report_degradation, _ = _compute_report_context(db, source_days)
@@ -558,7 +532,6 @@ def list_actions(status: str | None = None):
             check_id=r["check_id"] if "check_id" in r.keys() else None,
             impact_views_30d=impact_views_30d,
             degraded_since=r["created_at"],
-            query_changes=query_change_map.get(int(r["id"]), []),
             pbi_refresh_error=r["pbi_refresh_error"] if rid is not None else None,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
@@ -584,13 +557,7 @@ def list_actions(status: str | None = None):
         if a.asset_type is None or a.asset_id is None:
             deduped.append(a)
             continue
-        family = (
-            "source_freshness"
-            if a.type in FRESHNESS_ACTION_TYPES
-            else "changed_query"
-            if a.type == "changed_query"
-            else a.fingerprint or a.type
-        )
+        family = "source_freshness" if a.type in FRESHNESS_ACTION_TYPES else a.fingerprint or a.type
         key = (a.asset_type, a.asset_id, family)
         if key in seen:
             continue

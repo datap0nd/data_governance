@@ -39,7 +39,7 @@ STALE_AFTER_SECONDS = _bounded_int_env(
 )
 MAX_MESSAGE_CHARS = 1000
 MAX_RESULT_CHARS = 24000
-_VERBOSE_RESULT_KEYS = frozenset({"log", "query_change_log"})
+_VERBOSE_RESULT_KEYS = frozenset({"log"})
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -386,12 +386,6 @@ def _result_message(job_type: str, status: str, result: Mapping[str, Any]) -> st
                 return (
                     "Lineage targets changed while the recheck was running; "
                     "rerun lineage to scan the final target set."
-                )
-            cleanup_failures = result.get("superseded_cleanup_failures")
-            if isinstance(cleanup_failures, list) and cleanup_failures:
-                return (
-                    "Lineage refreshed, but obsolete query-change alerts could not "
-                    "be retired; rerun lineage or review Scanner details."
                 )
         if status == "completed_with_warnings" and isinstance(databases, Mapping):
             flow_attention = []
