@@ -226,6 +226,17 @@ automatically: current Flow artifacts live in versioned run folders, so a
 filename alone does not prove that the Flow updates the exact file Power BI
 consumes.
 
+Schedule the lineage scan after PostgreSQL load jobs that temporarily drop and
+recreate relations. A complete catalog snapshot taken inside that window will
+correctly mark the missing relation unresolved and will restore the exact link
+on the next successful scan, but the pipeline remains unlinked in between.
+
+The startup migration that removes the retired Query Changed feature first
+creates a timestamped SQLite backup under `backups/`. It then removes the query
+version table and every `changed_query` action, including resolved history and
+notes. SQLite versions older than 3.35 retain the unused `changed_queries` scan
+counter column so startup remains compatible; no application code reads it.
+
 ### 5. Run the scanner
 
 Click "Run Scan Now" on the Scanner page, or hit the API:

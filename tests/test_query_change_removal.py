@@ -69,3 +69,39 @@ def test_startup_backs_up_then_removes_only_legacy_query_change_data(monkeypatch
             assert "changed_queries" not in {
                 row[1] for row in live.execute("PRAGMA table_info(scan_runs)")
             }
+
+
+def test_startup_on_old_sqlite_keeps_only_inert_scan_counter(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="metronome-old-sqlite-removal-") as folder:
+        db_path = Path(folder) / "governance.db"
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        database.init_db()
+
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("ALTER TABLE scan_runs ADD COLUMN changed_queries INTEGER DEFAULT 0")
+            db.execute(
+                "CREATE TABLE query_versions (id INTEGER PRIMARY KEY, query_text TEXT)"
+            )
+            db.execute("INSERT INTO query_versions(id, query_text) VALUES (1, 'select 1')")
+            db.execute(
+                "INSERT INTO sources(id, name, type) VALUES (99, 'Kept source', 'manual')"
+            )
+            db.execute(
+                """INSERT INTO actions(id, source_id, type, status, notes)
+                   VALUES (101, 99, 'changed_query', 'resolved', 'resolved history')"""
+            )
+            db.commit()
+
+        monkeypatch.setattr(database.sqlite3, "sqlite_version_info", (3, 34, 0))
+        database.init_db()
+
+        with closing(sqlite3.connect(db_path)) as live:
+            assert live.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='query_versions'"
+            ).fetchone() is None
+            assert live.execute(
+                "SELECT COUNT(*) FROM actions WHERE type='changed_query'"
+            ).fetchone()[0] == 0
+            assert "changed_queries" in {
+                row[1] for row in live.execute("PRAGMA table_info(scan_runs)")
+            }

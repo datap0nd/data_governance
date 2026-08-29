@@ -1693,7 +1693,9 @@ def _remove_query_change_feature(conn: sqlite3.Connection) -> str | None:
             conn.execute("DELETE FROM actions WHERE type='changed_query'")
         if has_versions:
             conn.execute("DROP TABLE query_versions")
-        if has_scan_counter:
+        # DROP COLUMN was added in SQLite 3.35. Older embedded runtimes can
+        # safely retain this inert counter; the feature data and code are gone.
+        if has_scan_counter and sqlite3.sqlite_version_info >= (3, 35, 0):
             conn.execute("ALTER TABLE scan_runs DROP COLUMN changed_queries")
     except Exception:
         conn.execute("ROLLBACK TO remove_query_change_feature")

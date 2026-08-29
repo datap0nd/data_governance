@@ -556,6 +556,91 @@ def _assert_unresolved_report_table(report_name: str):
     return row
 
 
+def test_legacy_unknown_placeholder_retirement_uses_scanner_fingerprint(identity_db):
+    log_lines = []
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, discovered_by, archived)
+               VALUES (1, 'Unknown Source', 'unknown', '', 'scan', 0)"""
+        )
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Legacy report')")
+        db.execute(
+            """INSERT INTO report_tables(report_id, table_name, source_id)
+               VALUES (1, 'Model', 1)"""
+        )
+        retired = runner._retire_legacy_unknown_sources(db, NOW, log_lines)
+
+        source = db.execute(
+            "SELECT name, archived FROM sources WHERE id=1"
+        ).fetchone()
+        linked_source_id = db.execute(
+            "SELECT source_id FROM report_tables WHERE report_id=1"
+        ).fetchone()["source_id"]
+
+    assert retired == 1
+    assert source["archived"] == 1
+    assert source["name"].startswith("Archived unresolved source 1")
+    assert linked_source_id is None
+    assert log_lines
+
+
+def test_legitimate_manual_unknown_source_name_is_never_retired(identity_db):
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, discovered_by, archived)
+               VALUES (1, 'Unknown Source', 'unknown', '', 'manual', 0)"""
+        )
+        retired = runner._retire_legacy_unknown_sources(db, NOW, [])
+        source = db.execute(
+            "SELECT name, archived FROM sources WHERE id=1"
+        ).fetchone()
+
+    assert retired == 0
+    assert tuple(source) == ("Unknown Source", 0)
+
+
+def test_empty_governed_table_snapshot_fails_without_unlinking_catalog(
+    identity_db,
+    monkeypatch,
+):
+    incomplete_report = DiscoveredReport(
+        name="Existing report",
+        tmdl_path="C:/Existing report",
+        tables=[
+            ParsedTable(table_name="Business Owner", is_metadata=True),
+            ParsedTable(table_name="LocalDateTable_deadbeef"),
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [incomplete_report])
+
+    with get_db() as db:
+        _source(db, 1, "sales.orders")
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Existing report')")
+        db.execute(
+            """INSERT INTO report_tables
+                   (report_id, table_name, source_id, source_expression)
+               VALUES (1, 'Orders', 1, 'prior complete expression')"""
+        )
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "failed"
+    assert result["components"]["core"]["status"] == "failed"
+    with get_db() as db:
+        retained = db.execute(
+            """SELECT table_name, source_id, source_expression
+                 FROM report_tables WHERE report_id=1"""
+        ).fetchall()
+        source = db.execute("SELECT archived FROM sources WHERE id=1").fetchone()
+
+    assert [tuple(row) for row in retained] == [
+        ("Orders", 1, "prior complete expression")
+    ]
+    assert source["archived"] == 0
+
+
 def test_full_scan_reparses_quoted_native_query_and_remaps_generic_report_source(
     identity_db, monkeypatch
 ):

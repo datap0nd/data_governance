@@ -34,6 +34,7 @@ from app.scanner.lifecycle import (
 )
 from app.scanner.tmdl_parser import (
     LOCAL_USER_PATH,
+    is_auto_table,
     is_folder_like_file_source,
     path_has_file_extension,
 )
@@ -53,6 +54,34 @@ from app.source_identity import (
 logger = logging.getLogger(__name__)
 
 _FILE_SOURCE_DB_TYPES = {"csv", "excel", "folder", "file"}
+
+
+def _governed_table_names(report) -> list[str]:
+    """Return tables whose catalog rows may be reconciled by this snapshot."""
+    return [
+        table.table_name
+        for table in report.tables
+        if (table.table_name or "").strip()
+        and not getattr(table, "is_metadata", False)
+        and not is_auto_table(table.table_name)
+    ]
+
+
+def _validate_report_snapshots(reports) -> None:
+    """Reject incomplete snapshots before they can mutate report lineage."""
+    empty_reports = [
+        (report.name or "<unnamed report>")
+        for report in reports
+        if not _governed_table_names(report)
+    ]
+    if empty_reports:
+        names = ", ".join(empty_reports[:5])
+        if len(empty_reports) > 5:
+            names += f", and {len(empty_reports) - 5} more"
+        raise RuntimeError(
+            "Report metadata contained no governable tables for "
+            f"{names}; the prior catalog was retained."
+        )
 
 
 def _source_resolution(source, *, source_id: int | None, is_metadata: bool, expression: str | None) -> tuple[str, str | None]:
@@ -166,6 +195,13 @@ def _retire_legacy_unknown_sources(db, now: str, log_lines: list[str]) -> int:
         """SELECT id, name FROM sources
              WHERE COALESCE(archived, 0)=0
                AND lower(trim(name))='unknown source'
+               AND lower(trim(COALESCE(type, '')))='unknown'
+               AND trim(COALESCE(connection_info, ''))=''
+               AND lower(trim(COALESCE(discovered_by, ''))) IN ('scan', 'tmdl_scan')
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_postgres_identities spi
+                    WHERE spi.source_id=sources.id
+               )
              ORDER BY id"""
     ).fetchall()
     for row in rows:
@@ -348,6 +384,7 @@ def run_scan(
             reports = read_live_reports()
             scan_origin = "powerbi://configured-workspace"
         assert_not_cancelled(generation, "Report scan")
+        _validate_report_snapshots(reports)
         all_sources = deduplicate_sources(reports)
         assert_not_cancelled(generation, "Report scan")
 
@@ -765,15 +802,12 @@ def run_scan(
                     report_id = cursor.lastrowid
 
                 # Upsert report tables
-                from app.scanner.tmdl_parser import is_auto_table
-                seen_table_names: list[str] = []
+                seen_table_names = _governed_table_names(report)
                 for table in report.tables:
                     assert_not_cancelled(generation, "Report scan")
                     # Skip Power BI auto-generated internal tables
                     if is_auto_table(table.table_name):
                         continue
-                    if not getattr(table, "is_metadata", False):
-                        seen_table_names.append(table.table_name)
                     source_id = None
                     source_candidate_id = None
                     source = getattr(table, "source", None)
@@ -870,15 +904,20 @@ def run_scan(
                             ),
                         )
 
-                if seen_table_names:
-                    placeholders = ",".join("?" for _ in seen_table_names)
-                    db.execute(
-                        f"""DELETE FROM report_tables
-                              WHERE report_id=? AND table_name NOT IN ({placeholders})""",
-                        (report_id, *seen_table_names),
+                # The pre-write snapshot validation guarantees this list is
+                # non-empty. Keep the guard here so future callers cannot turn
+                # a partial provider response into a destructive full unlink.
+                if not seen_table_names:
+                    raise RuntimeError(
+                        f"Refusing to clear table lineage for {report.name}: "
+                        "the metadata snapshot contained no governable tables."
                     )
-                else:
-                    db.execute("DELETE FROM report_tables WHERE report_id=?", (report_id,))
+                placeholders = ",".join("?" for _ in seen_table_names)
+                db.execute(
+                    f"""DELETE FROM report_tables
+                          WHERE report_id=? AND table_name NOT IN ({placeholders})""",
+                    (report_id, *seen_table_names),
+                )
 
                 # Store visual layout (PBIX mode only)
                 layout = getattr(report, "layout", None)
