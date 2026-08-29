@@ -491,15 +491,31 @@ def _stub_runner_followups(monkeypatch, reports=None) -> None:
 
     monkeypatch.setattr(runner, "_backup_db", lambda: None)
     monkeypatch.setattr(runner, "walk_reports_root", lambda _root: reports or [])
-    monkeypatch.setattr(
-        pg_deps,
-        "scan_pg_dependencies",
-        lambda scan_run_id=None, **_kwargs: {
-            "status": "completed",
-            "changed_queries": 0,
-            "query_change_log": "",
-        },
-    )
+    def complete_catalog_verification(scan_run_id=None, **_kwargs):
+        from app.scanner.report_source_identities import (
+            complete_report_postgres_identity_reconciliation,
+            finalize_report_postgres_identity_relinks,
+            pending_report_postgres_identity_target_source_ids,
+            reconcile_all_report_postgres_identities,
+        )
+
+        reconciliation = reconcile_all_report_postgres_identities(defer_relinks=True)
+        for target in reconciliation.get("catalog_targets") or []:
+            source_ids = pending_report_postgres_identity_target_source_ids(
+                reconciliation,
+                server=target["server"],
+                database=target["database"],
+            )
+            finalize_report_postgres_identity_relinks(
+                reconciliation,
+                server=target["server"],
+                database=target["database"],
+                verified_source_ids=source_ids,
+            )
+        complete_report_postgres_identity_reconciliation(reconciliation)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(pg_deps, "scan_pg_dependencies", complete_catalog_verification)
     monkeypatch.setattr(pg_cron, "scan_pg_cron", lambda: {"status": "completed"})
     monkeypatch.setattr(
         usage,
@@ -521,6 +537,108 @@ def _stub_runner_followups(monkeypatch, reports=None) -> None:
         "sync_documentation_completeness_actions",
         lambda: {"status": "completed"},
     )
+
+
+def _assert_unresolved_report_table(report_name: str):
+    with get_db() as db:
+        row = db.execute(
+            """SELECT rt.source_id, rt.source_expression,
+                      rt.source_resolution_status, rt.source_resolution_reason
+                 FROM reports r
+                 JOIN report_tables rt ON rt.report_id=r.id
+                WHERE r.name=?""",
+            (report_name,),
+        ).fetchone()
+    assert row is not None
+    assert row["source_id"] is None
+    assert row["source_resolution_status"] == "unresolved"
+    assert row["source_resolution_reason"]
+    return row
+
+
+def test_legacy_unknown_placeholder_retirement_uses_scanner_fingerprint(identity_db):
+    log_lines = []
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, discovered_by, archived)
+               VALUES (1, 'Unknown Source', 'unknown', '', 'scan', 0)"""
+        )
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Legacy report')")
+        db.execute(
+            """INSERT INTO report_tables(report_id, table_name, source_id)
+               VALUES (1, 'Model', 1)"""
+        )
+        retired = runner._retire_legacy_unknown_sources(db, NOW, log_lines)
+
+        source = db.execute(
+            "SELECT name, archived FROM sources WHERE id=1"
+        ).fetchone()
+        linked_source_id = db.execute(
+            "SELECT source_id FROM report_tables WHERE report_id=1"
+        ).fetchone()["source_id"]
+
+    assert retired == 1
+    assert source["archived"] == 1
+    assert source["name"].startswith("Archived unresolved source 1")
+    assert linked_source_id is None
+    assert log_lines
+
+
+def test_legitimate_manual_unknown_source_name_is_never_retired(identity_db):
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO sources
+                   (id, name, type, connection_info, discovered_by, archived)
+               VALUES (1, 'Unknown Source', 'unknown', '', 'manual', 0)"""
+        )
+        retired = runner._retire_legacy_unknown_sources(db, NOW, [])
+        source = db.execute(
+            "SELECT name, archived FROM sources WHERE id=1"
+        ).fetchone()
+
+    assert retired == 0
+    assert tuple(source) == ("Unknown Source", 0)
+
+
+def test_empty_governed_table_snapshot_fails_without_unlinking_catalog(
+    identity_db,
+    monkeypatch,
+):
+    incomplete_report = DiscoveredReport(
+        name="Existing report",
+        tmdl_path="C:/Existing report",
+        tables=[
+            ParsedTable(table_name="Business Owner", is_metadata=True),
+            ParsedTable(table_name="LocalDateTable_deadbeef"),
+        ],
+    )
+    _stub_runner_followups(monkeypatch, [incomplete_report])
+
+    with get_db() as db:
+        _source(db, 1, "sales.orders")
+        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Existing report')")
+        db.execute(
+            """INSERT INTO report_tables
+                   (report_id, table_name, source_id, source_expression)
+               VALUES (1, 'Orders', 1, 'prior complete expression')"""
+        )
+
+    result = runner.run_scan("unused", run_followup_probe=False)
+
+    assert result["status"] == "failed"
+    assert result["components"]["core"]["status"] == "failed"
+    with get_db() as db:
+        retained = db.execute(
+            """SELECT table_name, source_id, source_expression
+                 FROM report_tables WHERE report_id=1"""
+        ).fetchall()
+        source = db.execute("SELECT archived FROM sources WHERE id=1").fetchone()
+
+    assert [tuple(row) for row in retained] == [
+        ("Orders", 1, "prior complete expression")
+    ]
+    assert source["archived"] == 0
 
 
 def test_full_scan_reparses_quoted_native_query_and_remaps_generic_report_source(
@@ -622,19 +740,7 @@ def test_full_scan_never_assumes_public_for_unqualified_native_postgres_sql(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, s.connection_info, spi.source_id,
-                      rt.source_expression
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Search path report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["connection_info"].startswith("unresolved/")
-    assert row["source_id"] is None
+    row = _assert_unresolved_report_table("Search path report")
     assert row["source_expression"] == expression
 
 
@@ -667,17 +773,7 @@ def test_full_scan_never_assumes_public_for_unqualified_postgres_navigation(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Bare navigation report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Bare navigation report")
 
 
 def test_full_scan_never_chooses_one_of_multiple_native_postgres_queries(
@@ -704,17 +800,7 @@ def test_full_scan_never_chooses_one_of_multiple_native_postgres_queries(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Branched native report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Branched native report")
 
 
 def test_full_scan_never_uses_navigation_fallback_for_dynamic_connector_query(
@@ -742,17 +828,7 @@ def test_full_scan_never_uses_navigation_fallback_for_dynamic_connector_query(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Dynamic connector query report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Dynamic connector query report")
 
 
 def test_full_scan_reads_query_after_another_connector_option(
@@ -844,17 +920,7 @@ def test_full_scan_leaves_conditional_navigation_targets_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Conditional navigation report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Conditional navigation report")
 
 
 def test_full_scan_leaves_dynamic_navigation_branch_unresolved(
@@ -880,17 +946,7 @@ def test_full_scan_leaves_dynamic_navigation_branch_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Dynamic navigation branch report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Dynamic navigation branch report")
 
 
 def test_full_scan_leaves_dynamic_navigation_key_unresolved(
@@ -916,17 +972,7 @@ def test_full_scan_leaves_dynamic_navigation_key_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Dynamic navigation key report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Dynamic navigation key report")
 
 
 def test_full_scan_ignores_commented_connector_when_selecting_postgres(
@@ -985,17 +1031,7 @@ def test_full_scan_never_treats_commented_plain_sql_as_live(identity_db, monkeyp
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Commented SQL report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Commented SQL report")
 
 
 def test_full_scan_native_postgres_sql_wins_over_navigation_step(
@@ -1056,17 +1092,7 @@ def test_full_scan_leaves_conditional_native_and_navigation_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Mixed query mechanism report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Mixed query mechanism report")
 
 
 def test_full_scan_leaves_assigned_conditional_query_mechanisms_unresolved(
@@ -1092,17 +1118,7 @@ def test_full_scan_leaves_assigned_conditional_query_mechanisms_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Assigned mixed mechanism report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Assigned mixed mechanism report")
 
 
 def test_full_scan_leaves_try_fallback_query_mechanisms_unresolved(
@@ -1128,17 +1144,7 @@ def test_full_scan_leaves_try_fallback_query_mechanisms_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Try fallback mechanism report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Try fallback mechanism report")
 
 
 def test_full_scan_leaves_try_catch_query_mechanisms_unresolved(
@@ -1164,17 +1170,7 @@ def test_full_scan_leaves_try_catch_query_mechanisms_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Try catch mechanism report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Try catch mechanism report")
 
 
 def test_full_scan_ignores_query_decoys_outside_connector_options(
@@ -1247,18 +1243,17 @@ def test_full_scan_never_persists_unresolved_postgres_parameters_as_identity(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, s.connection_info, spi.server_name,
-                      spi.database_name, spi.schema_name, spi.relation_name
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Parameterized report'"""
-        ).fetchone()
-
     if resolve_parameters:
+        with get_db() as db:
+            row = db.execute(
+                """SELECT s.name, s.connection_info, spi.server_name,
+                          spi.database_name, spi.schema_name, spi.relation_name
+                     FROM reports r
+                     JOIN report_tables rt ON rt.report_id=r.id
+                     JOIN sources s ON s.id=rt.source_id
+                     LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
+                    WHERE r.name='Parameterized report'"""
+            ).fetchone()
         assert parsed.postgres_identity_is_exact is True
         assert tuple(row) == (
             "sales.orders",
@@ -1269,12 +1264,7 @@ def test_full_scan_never_persists_unresolved_postgres_parameters_as_identity(
             "orders",
         )
     else:
-        assert row["name"].startswith("unresolved_pg_query_")
-        assert row["connection_info"].startswith("unresolved/")
-        assert row["server_name"] is None
-        assert row["database_name"] is None
-        assert row["schema_name"] is None
-        assert row["relation_name"] is None
+        _assert_unresolved_report_table("Parameterized report")
 
 
 @pytest.mark.parametrize(
@@ -1324,17 +1314,7 @@ def test_full_scan_never_chooses_one_branch_of_conditional_postgres_connection(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Conditional endpoint report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Conditional endpoint report")
 
 
 def test_runner_legacy_cleanup_preserves_identified_database_sources(
@@ -1345,10 +1325,10 @@ def test_runner_legacy_cleanup_preserves_identified_database_sources(
     monkeypatch.setattr(runner, "PGDATABASE", "warehouse")
 
     expected_names = {
-        1: "warehouse.sales.orders",
-        3: "sales.customers [warehouse@db.internal]",
-        4: "sales.(quoted_orders)",
-        5: "db.internal/warehouse/sales.products",
+        1: "sales.orders",
+        3: "sales.customers",
+        4: "sales.quoted_orders",
+        5: "sales.products",
         7: "sales.inventory",
     }
     with get_db() as db:
@@ -1366,9 +1346,8 @@ def test_runner_legacy_cleanup_preserves_identified_database_sources(
                     7: "inventory",
                 }[source_id],
             )
-        # This unidentified source has the normalized label that source 1's
-        # legacy database prefix would otherwise collide and merge into.
-        _source(db, 2, "sales.orders")
+        # A legacy unidentified row remains separate from canonical identities.
+        _source(db, 2, "Legacy sales.orders")
         # The reverse direction is equally unsafe: an unidentified prefixed
         # source must not merge into an identified normalized-name source.
         _source(db, 6, "warehouse.sales.inventory")
@@ -1432,12 +1411,16 @@ def test_postgres_connection_key_preserves_identifiers_and_normalizes_only_host(
 
 
 def _pg_report(name: str, database_name: str) -> DiscoveredReport:
+    expression = (
+        f'let Source = PostgreSQL.Database("db.internal", "{database_name}"), '
+        'Rows = Source{[Schema="sales", Item="orders"]}[Data] in Rows'
+    )
     source = SourceInfo(
         source_type="postgresql",
         server="db.internal",
         database=database_name,
         sql_table="sales.orders",
-        raw_expression=f"PostgreSQL.Database db.internal {database_name}",
+        raw_expression=expression,
     )
     return DiscoveredReport(
         name=name,
@@ -1445,7 +1428,7 @@ def _pg_report(name: str, database_name: str) -> DiscoveredReport:
         tables=[
             ParsedTable(
                 table_name="Orders",
-                m_expression=source.raw_expression,
+                m_expression=expression,
                 source=source,
             )
         ],
@@ -1466,8 +1449,6 @@ def test_full_scan_metadata_refresh_preserves_mv_kind_when_catalog_fails(
             "databases": {
                 "warehouse": {"status": "failed", "stage": "fetch"},
             },
-            "changed_queries": 0,
-            "query_change_log": "",
         },
     )
     with get_db() as db:
@@ -1624,17 +1605,7 @@ def test_full_scan_leaves_postgres_or_local_output_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Postgres or local report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Postgres or local report")
 
 
 def test_full_scan_keeps_lineage_for_conditional_row_transform(
@@ -1695,17 +1666,7 @@ def test_full_scan_leaves_wrapped_postgres_or_local_conditional_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Wrapped conditional report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Wrapped conditional report")
 
 
 def test_full_scan_leaves_invoked_table_lambda_conditional_unresolved(
@@ -1732,17 +1693,7 @@ def test_full_scan_leaves_invoked_table_lambda_conditional_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Invoked table lambda report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Invoked table lambda report")
 
 
 def test_full_scan_leaves_conditional_table_input_unresolved(
@@ -1769,14 +1720,4 @@ def test_full_scan_leaves_conditional_table_input_unresolved(
     result = runner.run_scan("unused", run_followup_probe=False)
 
     assert result["status"] == "completed"
-    with get_db() as db:
-        row = db.execute(
-            """SELECT s.name, spi.source_id
-                 FROM reports r
-                 JOIN report_tables rt ON rt.report_id=r.id
-                 JOIN sources s ON s.id=rt.source_id
-                 LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                WHERE r.name='Conditional table input report'"""
-        ).fetchone()
-    assert row["name"].startswith("unresolved_pg_query_")
-    assert row["source_id"] is None
+    _assert_unresolved_report_table("Conditional table input report")

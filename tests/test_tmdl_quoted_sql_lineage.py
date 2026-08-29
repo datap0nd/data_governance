@@ -264,7 +264,7 @@ class _CatalogCursor:
     def __init__(self):
         self.rows = []
 
-    def execute(self, query):
+    def execute(self, query, parameters=None):
         if "FROM pg_depend" in query:
             assert "c_dep.relkind IN ('r', 'p', 'm', 'v', 'f')" in query
             self.rows = [
@@ -287,6 +287,19 @@ class _CatalogCursor:
             ]
         elif "FROM pg_matviews" in query:
             self.rows = []
+        elif "FROM pg_class cls" in query:
+            values = tuple(parameters or ())
+            requested = list(zip(values[::2], values[1::2]))
+            kinds = {
+                ("bi_reporting", "inflow_outflow_mv"): "m",
+                ("bi_reporting", "asap_stage"): "v",
+                ("bi_reporting", "asap_import"): "p",
+            }
+            self.rows = [
+                (schema, relation, kinds[(schema, relation)])
+                for schema, relation in requested
+                if (schema, relation) in kinds
+            ]
         else:  # pragma: no cover - fails loudly if catalog behavior expands
             raise AssertionError(query)
 

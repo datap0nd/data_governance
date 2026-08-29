@@ -10,7 +10,6 @@ import pytest
 
 import app.database as database
 from app.database import get_db, init_db
-from app.query_history import MATERIALIZED_VIEW_KIND, mv_artifact_key, observe_query
 from app.scanner import pg_deps, prober
 from app.source_identity import upsert_postgres_identity
 
@@ -111,7 +110,7 @@ class _CatalogCursor:
         self._definition_error = definition_error
         self._rows = ()
 
-    def execute(self, sql):
+    def execute(self, sql, parameters=None):
         if "FROM pg_depend" in sql:
             if self._dependency_error:
                 raise self._dependency_error
@@ -120,6 +119,30 @@ class _CatalogCursor:
             if self._definition_error:
                 raise self._definition_error
             self._rows = self._definition_rows
+        elif "FROM pg_class cls" in sql:
+            values = tuple(parameters or ())
+            requested = list(zip(values[::2], values[1::2]))
+            parent_relations = {
+                (row[0], row[1])
+                for row in self._dependency_rows
+                if len(row) in {5, 6}
+            }
+            dependency_relations = {
+                (row[3], row[4]) if len(row) == 6 else (row[2], row[3])
+                for row in self._dependency_rows
+                if len(row) in {5, 6}
+            }
+            definition_relations = {(row[0], row[1]) for row in self._definition_rows}
+            self._rows = tuple(
+                (
+                    schema,
+                    relation,
+                    "m"
+                    if (schema, relation) in parent_relations | definition_relations
+                    else "r",
+                )
+                for schema, relation in requested
+            )
         else:  # pragma: no cover - protects the catalog contract
             raise AssertionError(f"Unexpected PostgreSQL query: {sql}")
 
@@ -340,7 +363,7 @@ def test_full_scan_warns_for_active_report_on_unconfigured_endpoint(
     }]
     # A global scan reports this at the top level; it must not mislabel the
     # report-scoped repair component, because no report repair was requested.
-    assert result["report_identity_reconciliation"]["status"] == "not_requested"
+    assert result["report_identity_reconciliation"]["status"] == "completed"
     assert result["report_identity_reconciliation"]["issues"] == []
 
 
@@ -1115,10 +1138,8 @@ def test_catalog_result_keys_cannot_hide_endpoint_failure_on_legal_name_collisio
             "mvs_found": 1,
             "deps_created": 0,
             "sources_created": 0,
-            "changed_queries": 0,
             "definition_status": "completed",
             "log": "done",
-            "query_change_log": "",
         },
     )
 
@@ -1386,7 +1407,7 @@ def test_full_scan_drops_unconfigured_warning_after_stale_edge_is_replaced(
 
     assert result["status"] == "completed"
     assert result["unconfigured_catalog_targets"] == []
-    assert result["report_identity_reconciliation"]["status"] == "not_requested"
+    assert result["report_identity_reconciliation"]["status"] == "completed"
     with get_db() as db:
         dependencies = {
             row[0]
@@ -1622,316 +1643,3 @@ def test_zero_dependency_mv_and_foreign_table_are_catalogued_exactly(
     assert kinds["foreign_mv"] == "materialized_view"
     assert kinds["foreign_orders"] == "foreign_table"
     assert report_relation == "constant_mv"
-
-
-def test_new_repaired_mv_records_baseline_before_next_change(
-    scan_db,
-    monkeypatch,
-):
-    monkeypatch.setattr(pg_deps, "PGHOST", "db.internal")
-    monkeypatch.setattr(pg_deps, "PGPORT", 5432)
-    monkeypatch.setattr(pg_deps, "PGDATABASE", "warehouse")
-    monkeypatch.setattr(pg_deps, "UPLOAD_PGHOST", "db.internal")
-    monkeypatch.setattr(pg_deps, "UPLOAD_PGPORT", 5432)
-    definition = {"sql": "SELECT * FROM sales.asap_import"}
-
-    def fetch(database, *, use_flow_credentials=False):
-        if database == "legacy":
-            return pg_deps._DatabaseCatalog(dependency_rows=(), definitions={})
-        assert database == "warehouse"
-        return pg_deps._DatabaseCatalog(
-            dependency_rows=(
-                ("sales", "inflow_outflow_mv", "sales", "asap_import", "r"),
-            ),
-            definitions={
-                ("sales", "inflow_outflow_mv"): definition["sql"],
-            },
-        )
-
-    monkeypatch.setattr(pg_deps, "_fetch_database_catalog", fetch)
-    expression = (
-        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
-        'Rows = Value.NativeQuery(Source, '
-        '"SELECT * FROM ""sales"".""inflow_outflow_mv""") in Rows'
-    )
-    with get_db() as db:
-        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Inflow Outflow')")
-        _source(db, 10, "Legacy root", discovered_by="scan")
-        _identity(db, 10, "legacy", "wrong_root")
-        db.execute(
-            """INSERT INTO report_tables
-                   (report_id, table_name, source_id, source_expression)
-               VALUES (1, 'Model', 10, ?)""",
-            (expression,),
-        )
-
-    first = pg_deps.scan_pg_dependencies(report_id=1)
-
-    assert first["status"] == "completed"
-    assert first["changed_queries"] == 0
-    with get_db() as db:
-        baseline = db.execute(
-            """SELECT qv.id, qv.is_baseline, qv.action_id, spi.source_id
-                 FROM source_postgres_identities spi
-                 JOIN query_versions qv ON qv.source_id=spi.source_id
-                WHERE spi.database_name='warehouse'
-                  AND spi.schema_name='sales'
-                  AND spi.relation_name='inflow_outflow_mv'"""
-        ).fetchone()
-    assert baseline is not None
-    assert baseline["is_baseline"] == 1
-    assert baseline["action_id"] is None
-
-    definition["sql"] = "SELECT *, CURRENT_DATE AS loaded_on FROM sales.asap_import"
-    second = pg_deps.scan_pg_dependencies(report_id=1)
-
-    assert second["status"] == "completed"
-    assert second["changed_queries"] == 1
-    with get_db() as db:
-        action = db.execute(
-            """SELECT id, status FROM actions
-                WHERE source_id=? AND type='changed_query'
-                ORDER BY id DESC LIMIT 1""",
-            (baseline["source_id"],),
-        ).fetchone()
-        versions = db.execute(
-            """SELECT is_baseline, action_id FROM query_versions
-                WHERE source_id=? ORDER BY id""",
-            (baseline["source_id"],),
-        ).fetchall()
-    assert action["status"] == "open"
-    assert len(versions) == 2
-    assert versions[1]["is_baseline"] == 0
-    assert versions[1]["action_id"] == action["id"]
-
-
-def test_definition_failure_never_publishes_stale_staged_query_action(
-    scan_db,
-    monkeypatch,
-):
-    _configure_hosts(monkeypatch, database_name="warehouse")
-    state = {
-        "definition": "SELECT id FROM sales.asap_import",
-        "error": None,
-        "present": True,
-    }
-
-    def fetch(database, *, use_flow_credentials=False):
-        assert database == "warehouse"
-        return pg_deps._DatabaseCatalog(
-            dependency_rows=(
-                ("sales", "inflow_outflow_mv", "sales", "asap_import", "r"),
-            ),
-            definitions=(
-                {}
-                if state["error"] or not state["present"]
-                else {("sales", "inflow_outflow_mv"): state["definition"]}
-            ),
-            definition_error=state["error"],
-        )
-
-    monkeypatch.setattr(pg_deps, "_fetch_database_catalog", fetch)
-    with get_db() as db:
-        _source(db, 10, "sales.inflow_outflow_mv", discovered_by="scan")
-        _identity(
-            db,
-            10,
-            "warehouse",
-            "inflow_outflow_mv",
-            kind="materialized_view",
-        )
-        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Inflow Outflow')")
-        db.execute(
-            """INSERT INTO report_tables(report_id, table_name, source_id)
-               VALUES (1, 'Model', 10)"""
-        )
-
-    assert pg_deps.scan_pg_dependencies()["changed_queries"] == 0
-
-    original_publish = pg_deps._publish_staged_changed_query_actions
-    state["definition"] = "SELECT id, amount FROM sales.asap_import"
-    monkeypatch.setattr(
-        pg_deps,
-        "_publish_staged_changed_query_actions",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("publication unavailable")),
-    )
-    interrupted = pg_deps.scan_pg_dependencies()
-    assert interrupted["status"] == "completed_with_warnings"
-    monkeypatch.setattr(
-        pg_deps,
-        "_publish_staged_changed_query_actions",
-        original_publish,
-    )
-    with get_db() as db:
-        staged_id = int(
-            db.execute(
-                """SELECT id FROM actions
-                    WHERE source_id=10 AND type='changed_query'
-                      AND status='resolved'
-                      AND notes LIKE '%awaiting final catalog classification%'"""
-            ).fetchone()["id"]
-        )
-        cursor = db.execute(
-            """INSERT INTO actions
-                   (source_id, type, status, notes, fingerprint)
-               VALUES (10, 'changed_query', 'open', 'Competing prior alert',
-                       'changed_query:mv:10:obsolete')"""
-        )
-        competing_id = int(cursor.lastrowid)
-
-    # The live definition could have reverted while definition capture is
-    # unavailable. Neither staged evidence nor competing state may be changed
-    # based on the stale latest query_version.
-    state["definition"] = "SELECT id FROM sales.asap_import"
-    state["error"] = "pg_matviews unavailable"
-    partial = pg_deps.scan_pg_dependencies()
-
-    assert partial["status"] == "completed_with_warnings"
-    assert partial["definition_status"] == "skipped"
-    with get_db() as db:
-        staged = db.execute(
-            "SELECT status, notes FROM actions WHERE id=?",
-            (staged_id,),
-        ).fetchone()
-        competing_status = db.execute(
-            "SELECT status FROM actions WHERE id=?",
-            (competing_id,),
-        ).fetchone()["status"]
-    assert staged["status"] == "resolved"
-    assert "awaiting final catalog classification" in staged["notes"]
-    assert competing_status == "open"
-
-    # A successful endpoint read still cannot verify an MV omitted from the
-    # captured pg_matviews rows (dropped, replaced, or no longer visible).
-    state["error"] = None
-    state["present"] = False
-    absent = pg_deps.scan_pg_dependencies()
-
-    assert absent["status"] == "completed"
-    with get_db() as db:
-        staged_status = db.execute(
-            "SELECT status FROM actions WHERE id=?",
-            (staged_id,),
-        ).fetchone()["status"]
-        competing_status = db.execute(
-            "SELECT status FROM actions WHERE id=?",
-            (competing_id,),
-        ).fetchone()["status"]
-    assert staged_status == "resolved"
-    assert competing_status == "open"
-
-    state["present"] = True
-    state["error"] = None
-    recovered = pg_deps.scan_pg_dependencies()
-
-    assert recovered["status"] == "completed"
-    assert recovered["changed_queries"] == 1
-    with get_db() as db:
-        statuses = db.execute(
-            """SELECT id, status, notes FROM actions
-                WHERE source_id=10 AND type='changed_query' ORDER BY id"""
-        ).fetchall()
-    assert [row["status"] for row in statuses].count("open") == 1
-    assert next(row for row in statuses if row["id"] == staged_id)["status"] == "resolved"
-    assert next(row for row in statuses if row["id"] == competing_id)["status"] == "resolved"
-
-
-def test_superseded_inactive_mv_change_action_is_resolved_but_audited(
-    scan_db,
-    monkeypatch,
-):
-    monkeypatch.setattr(pg_deps, "PGHOST", "db.internal")
-    monkeypatch.setattr(pg_deps, "PGPORT", 5432)
-    monkeypatch.setattr(pg_deps, "PGDATABASE", "warehouse")
-    monkeypatch.setattr(pg_deps, "UPLOAD_PGHOST", "db.internal")
-    monkeypatch.setattr(pg_deps, "UPLOAD_PGPORT", 5432)
-
-    def fetch(database, *, use_flow_credentials=False):
-        if database == "legacy":
-            return pg_deps._DatabaseCatalog(
-                dependency_rows=(),
-                definitions={
-                    ("sales", "wrong_root"): "SELECT 2 AS changed_value",
-                },
-            )
-        assert database == "warehouse"
-        return pg_deps._DatabaseCatalog(
-            dependency_rows=(
-                ("sales", "inflow_outflow_mv", "sales", "asap_import", "r"),
-            ),
-            definitions={},
-        )
-
-    monkeypatch.setattr(pg_deps, "_fetch_database_catalog", fetch)
-    expression = (
-        'let Source = PostgreSQL.Database("db.internal", "warehouse"), '
-        'Rows = Value.NativeQuery(Source, '
-        '"SELECT * FROM ""sales"".""inflow_outflow_mv""") in Rows'
-    )
-    with get_db() as db:
-        db.execute("INSERT INTO reports(id, name) VALUES (1, 'Inflow Outflow')")
-        _source(db, 10, "Legacy MV", discovered_by="scan")
-        _identity(db, 10, "legacy", "wrong_root", kind="materialized_view")
-        observe_query(
-            db,
-            artifact_kind=MATERIALIZED_VIEW_KIND,
-            artifact_key=mv_artifact_key(10),
-            report_id=None,
-            source_id=10,
-            artifact_name="sales.wrong_root",
-            language="sql",
-            query_text="SELECT 1 AS old_value",
-            scan_run_id=None,
-            detected_at=OLD_VERIFIED_AT,
-        )
-        db.execute(
-            """INSERT INTO report_tables
-                   (report_id, table_name, source_id, source_expression)
-               VALUES (1, 'Model', 10, ?)""",
-            (expression,),
-        )
-
-    original_finalize = pg_deps.finalize_report_postgres_identity_relinks
-
-    def finalize(reconciliation, *, server, database):
-        if database == "legacy":
-            with get_db() as db:
-                staged = db.execute(
-                    """SELECT status, notes FROM actions
-                        WHERE source_id=10 AND type='changed_query'"""
-                ).fetchone()
-            # Email and AI workers may run in this exact interval. Evidence is
-            # durable, but it must not be actionable before final relinking.
-            assert staged["status"] == "resolved"
-            assert "awaiting final catalog classification" in staged["notes"]
-        return original_finalize(
-            reconciliation,
-            server=server,
-            database=database,
-        )
-
-    monkeypatch.setattr(
-        pg_deps,
-        "finalize_report_postgres_identity_relinks",
-        finalize,
-    )
-
-    result = pg_deps.scan_pg_dependencies(report_id=1)
-
-    assert result["status"] == "completed"
-    legacy = result["databases"]["legacy"]
-    assert legacy["status"] == "superseded"
-    assert legacy["inactive_changed_query_actions_resolved"] == 0
-    assert legacy["staged_changed_query_actions_discarded"] == 1
-    with get_db() as db:
-        action = db.execute(
-            """SELECT id, status, notes FROM actions
-                WHERE source_id=10 AND type='changed_query'"""
-        ).fetchone()
-        linked_versions = db.execute(
-            "SELECT COUNT(*) FROM query_versions WHERE source_id=10 AND action_id=?",
-            (action["id"],),
-        ).fetchone()[0]
-    assert action["status"] == "resolved"
-    assert "not published: catalog target no longer active" in action["notes"]
-    assert linked_versions == 1

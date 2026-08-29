@@ -985,6 +985,11 @@ def test_deferred_relinks_apply_only_for_matching_successful_catalog(repair_db):
         result,
         server="db.internal",
         database="warehouse",
+        verified_source_ids=repair.pending_report_postgres_identity_target_source_ids(
+            result,
+            server="db.internal",
+            database="warehouse",
+        ),
     )
     assert result["pending_relinks"] == 1
     assert result["relinked"] == 1
@@ -1012,6 +1017,122 @@ def test_deferred_relinks_apply_only_for_matching_successful_catalog(repair_db):
         assert db.execute(
             "SELECT source_id FROM report_tables WHERE id=?", (staging_row,)
         ).fetchone()[0] is None
+
+
+def test_deferred_candidate_is_never_promoted_when_catalog_relation_is_missing(
+    repair_db,
+):
+    expression = _expression("renamed_target")
+    with get_db() as db:
+        _report(db, 1, "Catalog-gated rename")
+        _source(db, 10)
+        upsert_postgres_identity(
+            db,
+            source_id=10,
+            server="db.internal",
+            database="warehouse",
+            schema="bi_reporting",
+            relation="prior_target",
+            relation_kind="table",
+        )
+        _source(db, 20)
+        upsert_postgres_identity(
+            db,
+            source_id=20,
+            server="db.internal",
+            database="warehouse",
+            schema="bi_reporting",
+            relation="renamed_target",
+            relation_kind="table",
+        )
+        row_id = _report_table(db, 1, "Model", expression, 10)
+        db.execute(
+            "UPDATE report_tables SET source_candidate_id=? WHERE id=?",
+            (20, row_id),
+        )
+
+    result = repair.reconcile_report_postgres_identities(1, defer_relinks=True)
+    assert result["status"] == "pending"
+    assert result["pending_relinks"] == 1
+
+    # An empty verified set means PostgreSQL did not return the parsed target.
+    repair.finalize_report_postgres_identity_relinks(
+        result,
+        server="db.internal",
+        database="warehouse",
+        verified_source_ids=(),
+    )
+
+    assert result["status"] == "completed_with_warnings"
+    assert result["relinked"] == 0
+    assert result["issues"][-1]["reason_code"] == "postgres_relation_not_found"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT source_id, source_candidate_id,
+                      source_resolution_status, source_resolution_reason
+                 FROM report_tables WHERE id=?""",
+            (row_id,),
+        ).fetchone()
+    assert row["source_id"] is None
+    assert row["source_candidate_id"] is None
+    assert row["source_resolution_status"] == "unresolved"
+    assert row["source_resolution_reason"] == "postgres_relation_not_found"
+
+
+def test_older_missing_catalog_result_cannot_erase_a_newer_relink(repair_db):
+    expression = _expression("renamed_target")
+    with get_db() as db:
+        _report(db, 1, "Concurrent relink")
+        _source(db, 10)
+        _source(db, 20)
+        for source_id, relation in ((10, "prior_target"), (20, "renamed_target")):
+            upsert_postgres_identity(
+                db,
+                source_id=source_id,
+                server="db.internal",
+                database="warehouse",
+                schema="bi_reporting",
+                relation=relation,
+                relation_kind="table",
+            )
+        row_id = _report_table(db, 1, "Model", expression, 10)
+        db.execute(
+            "UPDATE report_tables SET source_candidate_id=? WHERE id=?",
+            (20, row_id),
+        )
+
+    result = repair.reconcile_report_postgres_identities(1, defer_relinks=True)
+    with get_db() as db:
+        db.execute(
+            """UPDATE report_tables
+                  SET source_id=20, source_candidate_id=NULL,
+                      source_resolution_status='resolved',
+                      source_resolution_reason=NULL
+                WHERE id=?""",
+            (row_id,),
+        )
+
+    repair.finalize_report_postgres_identity_relinks(
+        result,
+        server="db.internal",
+        database="warehouse",
+        verified_source_ids=(),
+    )
+
+    assert result["unresolved"] == 0
+    assert result["not_applied"] == 1
+    assert result["issues"][-1]["reason_code"] == "deferred_relink_stale"
+    with get_db() as db:
+        row = db.execute(
+            """SELECT source_id, source_candidate_id,
+                      source_resolution_status, source_resolution_reason
+                 FROM report_tables WHERE id=?""",
+            (row_id,),
+        ).fetchone()
+    assert row["source_id"] == 20
+    assert row["source_candidate_id"] is None
+    assert row["source_resolution_status"] == "resolved"
+    assert row["source_resolution_reason"] is None
 
 
 def test_default_direct_call_relinks_immediately(repair_db):

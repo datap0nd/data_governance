@@ -61,6 +61,9 @@ def list_reports(include_archived: bool = Query(False)):
             worst_source_updated=worst_date,
             unused_pct=unused_pct_map.get(rid),
             pbi_dataset_id=r["pbi_dataset_id"],
+            pbi_workspace_id=r["pbi_workspace_id"],
+            pbi_report_id=r["pbi_report_id"],
+            metadata_provider=r["metadata_provider"],
             pbi_refresh_schedule=r["pbi_refresh_schedule"],
             pbi_last_refresh_at=r["pbi_last_refresh_at"],
             pbi_refresh_status=r["pbi_refresh_status"],
@@ -180,6 +183,9 @@ def get_report(report_id: int):
         source_count=r["source_count"],
         worst_source_updated=worst_date,
         pbi_dataset_id=r["pbi_dataset_id"],
+        pbi_workspace_id=r["pbi_workspace_id"],
+        pbi_report_id=r["pbi_report_id"],
+        metadata_provider=r["metadata_provider"],
         pbi_refresh_schedule=r["pbi_refresh_schedule"],
         pbi_last_refresh_at=r["pbi_last_refresh_at"],
         pbi_refresh_status=r["pbi_refresh_status"],
@@ -234,6 +240,8 @@ def get_report_tables(report_id: int):
             source_id=r["source_id"],
             source_name=r["source_name"],
             source_expression=r["source_expression"],
+            source_resolution_status=r["source_resolution_status"],
+            source_resolution_reason=r["source_resolution_reason"],
             last_scanned=r["last_scanned"],
         )
         for r in rows

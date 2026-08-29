@@ -236,7 +236,6 @@ def test_runner_stays_running_until_warning_components_finish(monkeypatch):
     try:
         raw_pg_result = {
             "status": "completed_with_warnings",
-            "changed_queries": 2,
             "required_databases": ["warehouse", "staging"],
             "databases": {
                 "warehouse": {"status": "completed", "deps_created": 4},
@@ -273,7 +272,6 @@ def test_runner_stays_running_until_warning_components_finish(monkeypatch):
             ).fetchone()
         assert stored["status"] == "completed_with_warnings"
         assert stored["finished_at"] is not None
-        assert stored["changed_queries"] == 2
         assert "database-secret" not in stored["components_json"]
         api_run = scanner._scan_run_out(stored)
         assert api_run.components["postgres_dependencies"]["databases"]["staging"][

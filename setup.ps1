@@ -362,6 +362,23 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
 
+# XMLA/TOM is an optional first-choice metadata reader. A missing SDK or a
+# blocked NuGet feed must not prevent installation because the application can
+# use Fabric getDefinition instead.
+$TomProject = Join-Path $CodeDir "tools\pbi_metadata\Metronome.PowerBiMetadata.csproj"
+$DotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+if ($DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
+    try {
+        & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 --self-contained false -o "$CodeDir\tools\pbi_metadata\bin" -p:UseAppHost=true
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
+        Write-Host "  XMLA/TOM metadata helper ready." -ForegroundColor Green
+    } catch {
+        Write-Host "  WARNING: XMLA/TOM helper could not be built; Fabric getDefinition will be used: $_" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  XMLA/TOM helper skipped (no .NET SDK); Fabric getDefinition will be used." -ForegroundColor DarkGray
+}
+
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"

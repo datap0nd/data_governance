@@ -1,5 +1,7 @@
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from app.config import DB_PATH
 
 SQLITE_BUSY_TIMEOUT_MS = 60000
@@ -57,6 +59,10 @@ CREATE TABLE IF NOT EXISTS reports (
     frequency       TEXT,
     last_published  DATETIME,
     powerbi_url     TEXT,
+    pbi_workspace_id TEXT,
+    pbi_report_id   TEXT,
+    pbi_dataset_id  TEXT,
+    metadata_provider TEXT,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -66,7 +72,10 @@ CREATE TABLE IF NOT EXISTS report_tables (
     report_id       INTEGER REFERENCES reports(id),
     table_name      TEXT NOT NULL,
     source_id       INTEGER REFERENCES sources(id),
+    source_candidate_id INTEGER REFERENCES sources(id),
     source_expression TEXT,
+    source_resolution_status TEXT,
+    source_resolution_reason TEXT,
     last_scanned    DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(report_id, table_name)
 );
@@ -78,7 +87,6 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     reports_scanned INTEGER,
     sources_found   INTEGER,
     new_sources     INTEGER,
-    changed_queries INTEGER,
     broken_refs     INTEGER,
     status          TEXT,
     components_json TEXT,
@@ -171,23 +179,6 @@ CREATE TABLE IF NOT EXISTS actions (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     resolved_at     DATETIME
-);
-
-CREATE TABLE IF NOT EXISTS query_versions (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    artifact_kind       TEXT NOT NULL,
-    artifact_key        TEXT NOT NULL,
-    report_id           INTEGER REFERENCES reports(id),
-    source_id           INTEGER REFERENCES sources(id),
-    artifact_name       TEXT NOT NULL,
-    language            TEXT NOT NULL,
-    query_text          TEXT NOT NULL,
-    query_hash          TEXT NOT NULL,
-    previous_version_id INTEGER REFERENCES query_versions(id),
-    scan_run_id         INTEGER REFERENCES scan_runs(id),
-    action_id           INTEGER REFERENCES actions(id),
-    is_baseline         INTEGER DEFAULT 0,
-    detected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS upstream_systems (
@@ -387,6 +378,7 @@ CREATE VIEW IF NOT EXISTS lineage AS
 
 CREATE INDEX IF NOT EXISTS idx_source_probes_source_id ON source_probes(source_id);
 CREATE INDEX IF NOT EXISTS idx_report_tables_source_id ON report_tables(source_id);
+CREATE INDEX IF NOT EXISTS idx_report_tables_candidate_id ON report_tables(source_candidate_id);
 CREATE INDEX IF NOT EXISTS idx_report_tables_report_id ON report_tables(report_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_source_id ON alerts(source_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_acknowledged ON alerts(acknowledged);
@@ -394,10 +386,6 @@ CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_actions_source_id ON actions(source_id);
 CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status);
-CREATE INDEX IF NOT EXISTS idx_query_versions_artifact ON query_versions(artifact_key, id DESC);
-CREATE INDEX IF NOT EXISTS idx_query_versions_report ON query_versions(report_id, id DESC);
-CREATE INDEX IF NOT EXISTS idx_query_versions_source ON query_versions(source_id, id DESC);
-CREATE INDEX IF NOT EXISTS idx_query_versions_action ON query_versions(action_id);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_key ON email_schedules(schedule_key);
 CREATE INDEX IF NOT EXISTS idx_email_schedules_next_run ON email_schedules(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_pbi_recurrences_next_run ON pbi_recurrences(enabled, next_run_at);
@@ -804,6 +792,13 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_script_id ON scheduled_tasks(script_id)",
     # Power BI refresh sync
     "ALTER TABLE reports ADD COLUMN pbi_dataset_id TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_workspace_id TEXT",
+    "ALTER TABLE reports ADD COLUMN pbi_report_id TEXT",
+    "ALTER TABLE reports ADD COLUMN metadata_provider TEXT",
+    "ALTER TABLE report_tables ADD COLUMN source_resolution_status TEXT",
+    "ALTER TABLE report_tables ADD COLUMN source_resolution_reason TEXT",
+    "ALTER TABLE report_tables ADD COLUMN source_candidate_id INTEGER REFERENCES sources(id)",
+    "CREATE INDEX IF NOT EXISTS idx_report_tables_candidate_id ON report_tables(source_candidate_id)",
     "ALTER TABLE reports ADD COLUMN pbi_refresh_schedule TEXT",
     "ALTER TABLE reports ADD COLUMN pbi_last_refresh_at TEXT",
     "ALTER TABLE reports ADD COLUMN pbi_refresh_status TEXT",
@@ -1049,27 +1044,6 @@ MIGRATIONS = [
     "ALTER TABLE actions ADD COLUMN check_id INTEGER REFERENCES checks(id)",
     "CREATE INDEX IF NOT EXISTS idx_actions_fingerprint ON actions(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_actions_check_id ON actions(check_id)",
-    # Durable Power Query / materialized-view definition history.
-    """CREATE TABLE IF NOT EXISTS query_versions (
-        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-        artifact_kind       TEXT NOT NULL,
-        artifact_key        TEXT NOT NULL,
-        report_id           INTEGER REFERENCES reports(id),
-        source_id           INTEGER REFERENCES sources(id),
-        artifact_name       TEXT NOT NULL,
-        language            TEXT NOT NULL,
-        query_text          TEXT NOT NULL,
-        query_hash          TEXT NOT NULL,
-        previous_version_id INTEGER REFERENCES query_versions(id),
-        scan_run_id         INTEGER REFERENCES scan_runs(id),
-        action_id           INTEGER REFERENCES actions(id),
-        is_baseline         INTEGER DEFAULT 0,
-        detected_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-    )""",
-    "CREATE INDEX IF NOT EXISTS idx_query_versions_artifact ON query_versions(artifact_key, id DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_query_versions_report ON query_versions(report_id, id DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_query_versions_source ON query_versions(source_id, id DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_query_versions_action ON query_versions(action_id)",
     # Data-quality check metadata. The original tables existed without a
     # usable runner or management surface.
     "ALTER TABLE checks ADD COLUMN name TEXT",
@@ -1207,19 +1181,6 @@ MIGRATIONS = [
              SELECT MIN(id) FROM actions
              WHERE source_id IS NOT NULL
                AND type IN ('stale_source','outdated_source','error_source')
-               AND status IN ('open','acknowledged','investigating')
-             GROUP BY source_id
-         )""",
-    # Query-change history belongs in the event trail. Alerts expose only the
-    # latest unresolved change for each source.
-    """UPDATE actions
-       SET status='resolved', resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-           notes=COALESCE(notes, '') || ' [auto-resolved: superseded query change]'
-       WHERE source_id IS NOT NULL AND type='changed_query'
-         AND status IN ('open','acknowledged','investigating')
-         AND id NOT IN (
-             SELECT MAX(id) FROM actions
-             WHERE source_id IS NOT NULL AND type='changed_query'
                AND status IN ('open','acknowledged','investigating')
              GROUP BY source_id
          )""",
@@ -1686,12 +1647,73 @@ def _scheduled_tasks_has_host_unique_key(conn):
     return False
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    return any(
+        str(row[1]) == column_name
+        for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+    )
+
+
+def _remove_query_change_feature(conn: sqlite3.Connection) -> str | None:
+    """Remove legacy query history only after creating a pre-removal backup."""
+    has_versions = _table_exists(conn, "query_versions")
+    has_actions = _table_exists(conn, "actions") and conn.execute(
+        "SELECT 1 FROM actions WHERE type='changed_query' LIMIT 1"
+    ).fetchone() is not None
+    has_scan_counter = _column_exists(conn, "scan_runs", "changed_queries")
+    if not has_versions and not has_actions and not has_scan_counter:
+        return None
+
+    db_path = Path(DB_PATH).resolve()
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = backup_dir / f"{db_path.stem}.pre-query-history-removal.{timestamp}.db"
+    # A sqlite connection's own context manager commits or rolls back but does
+    # not close the handle.  Explicit closing matters on Windows, where an open
+    # backup handle prevents cleanup and can also block operators from moving
+    # the safety copy.
+    with closing(sqlite3.connect(str(backup_path))) as backup_conn:
+        conn.backup(backup_conn)
+
+    conn.execute("SAVEPOINT remove_query_change_feature")
+    try:
+        if has_versions:
+            conn.execute("DELETE FROM query_versions")
+        if has_actions:
+            conn.execute("DELETE FROM actions WHERE type='changed_query'")
+        if has_versions:
+            conn.execute("DROP TABLE query_versions")
+        # DROP COLUMN was added in SQLite 3.35. Older embedded runtimes can
+        # safely retain this inert counter; the feature data and code are gone.
+        if has_scan_counter and sqlite3.sqlite_version_info >= (3, 35, 0):
+            conn.execute("ALTER TABLE scan_runs DROP COLUMN changed_queries")
+    except Exception:
+        conn.execute("ROLLBACK TO remove_query_change_feature")
+        conn.execute("RELEASE remove_query_change_feature")
+        raise
+    conn.execute("RELEASE remove_query_change_feature")
+    conn.commit()
+    return str(backup_path)
+
+
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
+    _remove_query_change_feature(conn)
     conn.executescript(SCHEMA)
     scheduled_tasks_rebuild_complete = _scheduled_tasks_has_host_unique_key(conn)
     for migration in MIGRATIONS:
@@ -1704,21 +1726,9 @@ def init_db():
                 pass  # column already exists
             else:
                 raise
-    # Old query-change actions were attached only to a deduplicated source and
-    # cannot be mapped reliably to the report table whose M expression changed.
-    # Any v2 action has at least one query_versions row, so this cleanup is safe
-    # to run on every startup and also repairs partially-created legacy rows.
-    conn.execute(
-        """UPDATE actions
-           SET status = 'resolved', resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP),
-               updated_at = CURRENT_TIMESTAMP,
-               notes = COALESCE(notes, '') || ' [auto-resolved: legacy unattributed query change]'
-           WHERE type = 'changed_query'
-             AND status IN ('open', 'acknowledged', 'investigating')
-             AND NOT EXISTS (
-                 SELECT 1 FROM query_versions qv WHERE qv.action_id = actions.id
-             )"""
-    )
+    from app.source_identity import normalize_all_postgres_source_names
+
+    normalize_all_postgres_source_names(conn)
     conn.commit()
     conn.close()
 

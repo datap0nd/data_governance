@@ -281,6 +281,95 @@ def split_relation(value: str | None, default_schema: str | None = None) -> tupl
     return schema, relation
 
 
+def postgres_display_name(schema: str | None, relation: str | None) -> str:
+    """Return a SQL-syntax-free label for an exact PostgreSQL relation."""
+    clean_schema = str(schema or "").replace('"', "").strip()
+    clean_relation = str(relation or "").replace('"', "").strip()
+    if clean_schema and clean_relation:
+        return f"{clean_schema}.{clean_relation}"
+    return clean_relation or clean_schema or "unresolved_postgres_relation"
+
+
+def unique_postgres_source_name(
+    db,
+    *,
+    server: str,
+    database: str,
+    schema: str,
+    relation: str,
+    exclude_source_id: int | None = None,
+) -> str:
+    """Choose a readable label without using display text as identity."""
+    base = postgres_display_name(schema, relation)
+    host = normalize_server(server) or "unconfigured-host"
+    database_label = str(database or "").replace('"', "").strip() or "database"
+
+    def available(candidate: str) -> bool:
+        row = db.execute("SELECT id FROM sources WHERE name=?", (candidate,)).fetchone()
+        return row is None or (
+            exclude_source_id is not None and int(row["id"]) == int(exclude_source_id)
+        )
+
+    for candidate in (
+        base,
+        f"{base} [{database_label}]",
+        f"{base} [{database_label}@{host}]",
+    ):
+        if available(candidate):
+            return candidate
+
+    qualified = f"{base} [{database_label}@{host}]"
+    suffix = 2
+    while not available(f"{qualified} #{suffix}"):
+        suffix += 1
+    return f"{qualified} #{suffix}"
+
+
+def refresh_postgres_source_name(db, source_id: int) -> str | None:
+    identity = db.execute(
+        """SELECT server_name, database_name, schema_name, relation_name
+             FROM source_postgres_identities WHERE source_id=?""",
+        (int(source_id),),
+    ).fetchone()
+    if identity is None:
+        return None
+    name = unique_postgres_source_name(
+        db,
+        server=identity["server_name"],
+        database=identity["database_name"],
+        schema=identity["schema_name"],
+        relation=identity["relation_name"],
+        exclude_source_id=int(source_id),
+    )
+    current = db.execute(
+        "SELECT name FROM sources WHERE id=?", (int(source_id),)
+    ).fetchone()
+    if current is not None and current["name"] != name:
+        db.execute(
+            "UPDATE sources SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (name, int(source_id)),
+        )
+    return name
+
+
+def normalize_all_postgres_source_names(db) -> int:
+    source_ids = [
+        int(row["source_id"])
+        for row in db.execute(
+            "SELECT source_id FROM source_postgres_identities ORDER BY source_id"
+        ).fetchall()
+    ]
+    changed = 0
+    for source_id in source_ids:
+        before = db.execute("SELECT name FROM sources WHERE id=?", (source_id,)).fetchone()
+        if before is None:
+            continue
+        after = refresh_postgres_source_name(db, source_id)
+        if after != before["name"]:
+            changed += 1
+    return changed
+
+
 def postgres_identity_tuple(
     *, server: str | None, database: str | None, schema: str | None, relation: str | None
 ) -> tuple[str, str, str, str]:
@@ -355,6 +444,7 @@ def upsert_postgres_identity(
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (int(source_id), *requested_tuple, relation_kind, verified_at),
         )
+        refresh_postgres_source_name(db, int(source_id))
         return {
             "status": "claimed",
             "source_id": int(source_id),
@@ -387,6 +477,7 @@ def upsert_postgres_identity(
            WHERE source_id=?""",
         (effective_relation_kind, verified_at, int(source_id)),
     )
+    refresh_postgres_source_name(db, int(source_id))
     return {
         "status": "refreshed",
         "source_id": int(source_id),

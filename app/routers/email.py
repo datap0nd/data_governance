@@ -45,7 +45,6 @@ ACTION_TYPE_LABELS = {
     "outdated_source": "Degraded source",
     "error_source": "Source error",
     "broken_ref": "Broken reference",
-    "changed_query": "Query changed",
     "refresh_failed": "Refresh failed",
     "refresh_overdue": "Refresh overdue",
     "task_failed": "Scheduled task failed",

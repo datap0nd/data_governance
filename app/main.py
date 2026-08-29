@@ -25,7 +25,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, pipelines
 from app.settings import (
     get_overall_refresh_time,
     get_setting,
@@ -736,7 +736,6 @@ app.include_router(scanner.router)
 app.include_router(lineage.router)
 app.include_router(alerts.router)
 app.include_router(actions.router)
-app.include_router(query_history.router)
 app.include_router(ai_router)
 app.include_router(changelog.router)
 app.include_router(schedules.router)
