@@ -50,6 +50,14 @@ deliberately refresh the ASAP/GSCM browser sessions, run:
 .\setup.ps1 -AuthenticateFlows
 ```
 
+Updates keep the installed Windows service credentials. If setup reports a
+service logon failure, repair them once with the Windows account password (not
+the Windows Hello PIN):
+
+```powershell
+.\setup.ps1 -ResetServiceCredentials
+```
+
 ## Network access
 
 To allow others on the network to access the panel, open port 8000 in Windows Firewall. Run this once in an admin PowerShell:

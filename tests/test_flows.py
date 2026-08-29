@@ -3054,6 +3054,19 @@ def test_setup_resolves_an_exact_main_commit_and_avoids_stale_archives():
     assert "Never reuse an archive" in source
 
 
+def test_setup_preserves_service_identity_and_reports_main_health_failure():
+    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
+
+    assert "remove $ServiceName confirm" not in source
+    assert "Existing Windows service credentials preserved" in source
+    assert "[switch]$ResetServiceCredentials" in source
+    assert "not a Windows Hello PIN" in source
+    assert "set $ServiceName Application $PyExe" in source
+    assert "set $ServiceName AppParameters" in source
+    assert "Waiting up to 60 seconds for Metronome itself to answer" in source
+    assert 'Get-Content "$LogDir\\mx_analytics_error.log" -Tail 80' in source
+
+
 def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
     source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
     log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()

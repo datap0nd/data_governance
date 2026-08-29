@@ -105,3 +105,21 @@ def test_startup_on_old_sqlite_keeps_only_inert_scan_counter(monkeypatch):
             assert "changed_queries" in {
                 row[1] for row in live.execute("PRAGMA table_info(scan_runs)")
             }
+
+
+def test_failed_legacy_cleanup_preserves_data_but_does_not_block_startup(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="metronome-cleanup-failure-") as folder:
+        db_path = Path(folder) / "governance.db"
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+
+        def fail_cleanup(_connection):
+            raise sqlite3.OperationalError("unexpected legacy constraint")
+
+        monkeypatch.setattr(database, "_remove_query_change_feature", fail_cleanup)
+
+        database.init_db()
+
+        with closing(sqlite3.connect(db_path)) as live:
+            assert live.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sources'"
+            ).fetchone() is not None

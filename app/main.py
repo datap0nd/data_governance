@@ -637,11 +637,34 @@ def _recover_startup_pbi_syncs() -> int:
     return recover_interrupted_pbi_syncs()
 
 
+def _run_optional_startup_step(name: str, function, *, default=None):
+    """Keep an ancillary recovery job from taking down the web application.
+
+    Database schema initialization remains deliberately fatal: the API cannot
+    operate against an unknown schema.  Everything passed through this helper
+    is repair/reconciliation/scheduling work that may be retried after the UI
+    is available, so one malformed legacy row must not make localhost vanish.
+    """
+    try:
+        return function()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Startup step failed; Metronome will continue without %s", name
+        )
+        return default
+
+
 @asynccontextmanager
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
-    startup_update_attempt = _reconcile_update_attempts()
+    startup_update_attempt = _run_optional_startup_step(
+        "update-attempt reconciliation",
+        _reconcile_update_attempts,
+        # If receipt reconciliation itself is broken, fail closed for new
+        # operational work while still bringing the read-only web UI online.
+        default={"active": True, "attempt_id": "unresolved-startup-update"},
+    )
     if startup_update_attempt and startup_update_attempt.get("active"):
         # The external task has started this new process but has not yet
         # published its terminal health receipt. Keep every new work starter
@@ -666,23 +689,39 @@ async def lifespan(app):
     )
     from app.scanner.jobs import recover_interrupted_jobs
 
-    interrupted_jobs = recover_interrupted_jobs()
+    interrupted_jobs = _run_optional_startup_step(
+        "scanner-job recovery", recover_interrupted_jobs, default=0
+    )
     if interrupted_jobs:
         logging.getLogger(__name__).warning(
             "Recovered %d scanner job(s) interrupted by restart", interrupted_jobs
         )
-    interrupted_pbi_syncs = _recover_startup_pbi_syncs()
+    interrupted_pbi_syncs = _run_optional_startup_step(
+        "Power BI sync recovery", _recover_startup_pbi_syncs, default=0
+    )
     if interrupted_pbi_syncs:
         logging.getLogger(__name__).warning(
             "Recovered %d Power BI sync attempt(s) interrupted by restart",
             interrupted_pbi_syncs,
         )
-    interrupted_scans = _recover_startup_scan_runs()
+    interrupted_scans = _run_optional_startup_step(
+        "scan recovery", _recover_startup_scan_runs, default=0
+    )
     if interrupted_scans:
         logging.getLogger(__name__).warning(
             "Recovered %d scan run(s) interrupted by restart", interrupted_scans
         )
-    reconciliation = _reconcile_startup_flow_targets()
+    reconciliation = _run_optional_startup_step(
+        "Flow target reconciliation",
+        _reconcile_startup_flow_targets,
+        default={
+            "total": 0,
+            "changed": 0,
+            "confirmed": 0,
+            "ambiguous": 0,
+            "unresolved": 0,
+        },
+    )
     logging.getLogger(__name__).info(
         "Flow target reconciliation: total=%d changed=%d confirmed=%d "
         "ambiguous=%d unresolved=%d",
@@ -694,31 +733,51 @@ async def lifespan(app):
     )
 
     # Daily backup plus a user-configurable overall refresh.
-    refresh_time = _configure_scheduler_jobs()
-    _scheduler.start()
-    flows.ensure_local_worker()
+    refresh_time = _run_optional_startup_step(
+        "background-job configuration", _configure_scheduler_jobs
+    )
+    scheduler_started = False
+    if refresh_time is not None:
+        scheduler_started = bool(
+            _run_optional_startup_step(
+                "background scheduler",
+                lambda: _scheduler.start() or True,
+                default=False,
+            )
+        )
+    _run_optional_startup_step("local Flow worker start", flows.ensure_local_worker)
     # Let Pipeline restart reconciliation establish authoritative unknown/
     # terminal states before queued read-only investigations can observe it.
-    pipelines.pipeline_tick()
+    _run_optional_startup_step("Pipeline restart reconciliation", pipelines.pipeline_tick)
     from app.ai.operations_agent import recover_and_start as recover_ai_runs
-    recovered_ai_runs = recover_ai_runs()
+    recovered_ai_runs = _run_optional_startup_step(
+        "AI investigation recovery", recover_ai_runs, default=0
+    )
     if recovered_ai_runs:
         logging.getLogger(__name__).info(
             "Resubmitted %d queued AI investigation(s)", recovered_ai_runs
         )
-    _scheduled_alert_ai_enrichment()
-    logging.getLogger(__name__).info(
-        "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, "
-        "email dispatch every minute, main update check every %d minutes (enabled=%s)",
-        refresh_time["hour"],
-        refresh_time["minute"],
-        _AUTO_UPDATE_INTERVAL_SECONDS // 60,
-        _auto_update_enabled(),
+    _run_optional_startup_step(
+        "initial alert AI enrichment", _scheduled_alert_ai_enrichment
     )
+    if scheduler_started:
+        logging.getLogger(__name__).info(
+            "Scheduler started: backup at 06:00, overall refresh at %02d:%02d, "
+            "email dispatch every minute, main update check every %d minutes (enabled=%s)",
+            refresh_time["hour"],
+            refresh_time["minute"],
+            _AUTO_UPDATE_INTERVAL_SECONDS // 60,
+            _auto_update_enabled(),
+        )
+    else:
+        logging.getLogger(__name__).error(
+            "Metronome web is available, but background scheduling did not start"
+        )
 
     yield
 
-    _scheduler.shutdown(wait=False)
+    if getattr(_scheduler, "running", False):
+        _scheduler.shutdown(wait=False)
     scanner.shutdown_scanner_executor()
     from app.ai.operations_agent import shutdown_executor as shutdown_ai_executor
     shutdown_ai_executor()

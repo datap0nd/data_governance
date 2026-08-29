@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -1713,7 +1714,16 @@ def init_db():
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
-    _remove_query_change_feature(conn)
+    try:
+        _remove_query_change_feature(conn)
+    except Exception:
+        # Query-history retirement is cleanup, not a prerequisite for serving
+        # the application.  Preserve the legacy rows and continue when a live
+        # database has an unexpected constraint, lock, or backup problem.
+        conn.rollback()
+        logging.getLogger(__name__).exception(
+            "Legacy query-history cleanup failed; data was preserved and startup will continue"
+        )
     conn.executescript(SCHEMA)
     scheduled_tasks_rebuild_complete = _scheduled_tasks_has_host_unique_key(conn)
     for migration in MIGRATIONS:

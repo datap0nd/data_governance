@@ -10,13 +10,15 @@
 # Uses a portable Python 3.13 (no system changes) so pbixray works.
 
 param(
-    [switch]$AuthenticateFlows
+    [switch]$AuthenticateFlows,
+    [switch]$ResetServiceCredentials
 )
 
 # --- Self-elevate to Admin if needed ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $ElevationArguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($AuthenticateFlows) { $ElevationArguments += " -AuthenticateFlows" }
+    if ($ResetServiceCredentials) { $ElevationArguments += " -ResetServiceCredentials" }
     Start-Process powershell.exe $ElevationArguments -Verb RunAs
     exit
 }
@@ -267,11 +269,18 @@ Stop-ScheduledTask -TaskName $HeadedFlowTaskName -ErrorAction SilentlyContinue
 $NssmExe = "$CodeDir\tools\nssm.exe"
 $ErrorActionPreference = "Continue"
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$HadExistingService = [bool]$existing
 if ($existing) {
     Write-Host "[2/5] Stopping service..." -ForegroundColor Yellow
     & $NssmExe stop $ServiceName 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
-    & $NssmExe remove $ServiceName confirm 2>&1 | Out-Null
+    try {
+        $existing.WaitForStatus(
+            [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30)
+        )
+    } catch {
+        throw "Metronome did not stop within 30 seconds. Update aborted before replacing code."
+    }
 } else {
     Write-Host "[2/5] No existing service." -ForegroundColor DarkGray
 }
@@ -355,6 +364,7 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         $env:DG_SETUP_RELAUNCHED = "1"
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
         if ($AuthenticateFlows) { $RelaunchArguments += "-AuthenticateFlows" }
+        if ($ResetServiceCredentials) { $RelaunchArguments += "-ResetServiceCredentials" }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
@@ -449,7 +459,11 @@ if ($DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
 
-& $NssmExe install $ServiceName $PyExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
+if (-not $HadExistingService) {
+    & $NssmExe install $ServiceName $PyExe "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
+}
+& $NssmExe set $ServiceName Application $PyExe
+& $NssmExe set $ServiceName AppParameters "-m uvicorn app.main:app --host 0.0.0.0 --port $Port"
 & $NssmExe set $ServiceName AppDirectory $CodeDir
 & $NssmExe set $ServiceName DisplayName "MX Analytics - Data Governance"
 & $NssmExe set $ServiceName Description "BI data governance panel"
@@ -465,14 +479,26 @@ $NssmExe = "$CodeDir\tools\nssm.exe"
     "METRONOME_FLOW_PROFILE=$FlowProfile" `
     "DG_AI_MOCK=true"
 
-# Run service as current user (needed for network share access)
+# Run services as the current user (needed for network share access). Ordinary
+# updates preserve the installed credentials; repeatedly asking for a password
+# made it too easy to replace a working service login with a Windows Hello PIN.
+$ExistingAutoUpdateTask = Get-ScheduledTask -TaskName $AutoUpdateTaskName -ErrorAction SilentlyContinue
+$NeedsServiceCredential = (-not $HadExistingService) -or (-not $existingFlowService) -or (-not $ExistingAutoUpdateTask)
+$ServicePassword = $null
+$SetServiceCredentials = $false
 if ($env:DG_SVC_PASSWORD) {
     $ServicePassword = $env:DG_SVC_PASSWORD
-} else {
-    $cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter your Windows password so the service can access network shares"
+    $SetServiceCredentials = $true
+} elseif ($ResetServiceCredentials -or $NeedsServiceCredential) {
+    $cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter your Windows ACCOUNT password (not a Windows Hello PIN) for Metronome services"
     $ServicePassword = $cred.GetNetworkCredential().Password
+    $SetServiceCredentials = $true
+} else {
+    Write-Host "  Existing Windows service credentials preserved." -ForegroundColor DarkGray
 }
-& $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
+if ($SetServiceCredentials) {
+    & $NssmExe set $ServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
+}
 
 & $NssmExe set $ServiceName AppExit Default Restart
 & $NssmExe set $ServiceName AppRestartDelay 5000
@@ -500,7 +526,9 @@ if (-not $existingFlowService) {
 & $NssmExe set $FlowServiceName DisplayName "Metronome - Flows Worker"
 & $NssmExe set $FlowServiceName Description "Headless authenticated ASAP discovery and download worker"
 & $NssmExe set $FlowServiceName Start SERVICE_AUTO_START
-& $NssmExe set $FlowServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
+if ($SetServiceCredentials) {
+    & $NssmExe set $FlowServiceName ObjectName "$env:USERDOMAIN\$env:USERNAME" $ServicePassword
+}
 & $NssmExe set $FlowServiceName AppExit Default Restart
 & $NssmExe set $FlowServiceName AppRestartDelay 10000
 & $NssmExe set $FlowServiceName AppStdout "$LogDir\flow_worker.log"
@@ -538,10 +566,16 @@ $AutoUpdateAction = New-ScheduledTaskAction -Execute $AutoUpdatePowerShell -Argu
 $AutoUpdateSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $AutoUpdateTaskName -Action $AutoUpdateAction `
-    -Settings $AutoUpdateSettings -Description "Apply a pinned Metronome update with backup, health check, and rollback" `
-    -User "$env:USERDOMAIN\$env:USERNAME" -Password $ServicePassword -RunLevel Highest -Force | Out-Null
-Write-Host "  Unattended auto-update task registered." -ForegroundColor Green
+if ($ServicePassword) {
+    Register-ScheduledTask -TaskName $AutoUpdateTaskName -Action $AutoUpdateAction `
+        -Settings $AutoUpdateSettings -Description "Apply a pinned Metronome update with backup, health check, and rollback" `
+        -User "$env:USERDOMAIN\$env:USERNAME" -Password $ServicePassword -RunLevel Highest -Force | Out-Null
+    Write-Host "  Unattended auto-update task registered." -ForegroundColor Green
+} elseif ($ExistingAutoUpdateTask) {
+    Write-Host "  Existing unattended auto-update task preserved." -ForegroundColor DarkGray
+} else {
+    throw "The unattended auto-update task needs the Windows account password during first setup."
+}
 
 if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
     Write-Host "Installing RDP console guard..." -ForegroundColor Yellow
@@ -639,7 +673,40 @@ if ($WorkerStartOutput -match 'already running') {
 }
 
 & $NssmExe start $ServiceName
-Start-Sleep -Seconds 3
+$MetronomeHealthy = $false
+Write-Host "  Waiting up to 60 seconds for Metronome itself to answer..." -ForegroundColor DarkGray
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+    Start-Sleep -Seconds 2
+    try {
+        $VersionProbe = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/version" -TimeoutSec 3
+        if ($VersionProbe) {
+            $MetronomeHealthy = $true
+            break
+        }
+    } catch {}
+    if ($attempt % 5 -eq 0) {
+        $CurrentService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $CurrentStatus = if ($CurrentService) { $CurrentService.Status } else { "missing" }
+        Write-Host "  Still waiting for Metronome... $($attempt * 2)s (service: $CurrentStatus)" -ForegroundColor DarkGray
+    }
+}
+
+if (-not $MetronomeHealthy) {
+    Write-Host ""
+    Write-Host "ERROR: Metronome did not start. Recent application error log:" -ForegroundColor Red
+    if (Test-Path "$LogDir\mx_analytics_error.log") {
+        Get-Content "$LogDir\mx_analytics_error.log" -Tail 80 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
+    } else {
+        Write-Host "  No application error log was created." -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Write-Host "If the log is empty or mentions a logon failure, rerun:" -ForegroundColor Yellow
+    Write-Host "  .\setup.ps1 -ResetServiceCredentials" -ForegroundColor White
+    Write-Host "Use the Windows account password, not the Windows Hello PIN." -ForegroundColor Yellow
+    throw "Metronome failed its localhost health check."
+}
+Write-Host "  Metronome is answering on port $Port." -ForegroundColor Green
 
 function Describe-WorkerRegistrationFailure {
     param($Port, $CodeDir, $LogDir, $WorkerStartedAt)
@@ -718,7 +785,7 @@ function Describe-WorkerRegistrationFailure {
     }
 
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq "Running") {
+if ($MetronomeHealthy -and $svc -and $svc.Status -eq "Running") {
     Write-Host ""
     Write-Host "Done. MX Analytics running at http://localhost:$Port" -ForegroundColor Green
     Write-Host "Deployed version: $ver" -ForegroundColor Cyan

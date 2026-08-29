@@ -602,6 +602,54 @@ def test_lifespan_reconciles_and_drains_active_update_before_runtime_start(
     assert calls.index("request_drain") < calls.index("scheduler_start")
 
 
+def test_lifespan_keeps_web_available_when_optional_startup_repairs_fail(
+    update_env, monkeypatch
+):
+    from app.ai import operations_agent, runtime_config
+    from app.scanner import jobs
+
+    entered = []
+
+    def fail(label):
+        def run():
+            raise RuntimeError(label)
+
+        return run
+
+    monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main, "_reconcile_update_attempts", fail("updates"))
+    monkeypatch.setattr(
+        runtime_config,
+        "initialize_runtime_settings",
+        lambda: SimpleNamespace(
+            mode="mock",
+            model="test",
+            qwen_enabled=False,
+            feature_enabled=lambda _name: False,
+        ),
+    )
+    monkeypatch.setattr(jobs, "recover_interrupted_jobs", fail("scanner recovery"))
+    monkeypatch.setattr(main, "_recover_startup_pbi_syncs", fail("pbi recovery"))
+    monkeypatch.setattr(main, "_recover_startup_scan_runs", fail("scan recovery"))
+    monkeypatch.setattr(main, "_reconcile_startup_flow_targets", fail("flow targets"))
+    monkeypatch.setattr(main, "_configure_scheduler_jobs", fail("scheduler config"))
+    monkeypatch.setattr(main.flows, "ensure_local_worker", fail("worker"))
+    monkeypatch.setattr(main.pipelines, "pipeline_tick", fail("pipelines"))
+    monkeypatch.setattr(operations_agent, "recover_and_start", fail("ai recovery"))
+    monkeypatch.setattr(main, "_scheduled_alert_ai_enrichment", fail("alert ai"))
+    monkeypatch.setattr(main.scanner, "shutdown_scanner_executor", lambda: None)
+    monkeypatch.setattr(operations_agent, "shutdown_executor", lambda: None)
+    monkeypatch.setattr(main.pipelines, "shutdown_pipeline_executor", lambda: None)
+
+    async def run_lifespan():
+        async with main.lifespan(main.app):
+            entered.append(True)
+
+    asyncio.run(run_lifespan())
+
+    assert entered == [True]
+
+
 def test_failed_receipt_releases_reservation_and_redacts_error(
     update_env, monkeypatch
 ):
