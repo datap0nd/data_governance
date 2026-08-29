@@ -9,9 +9,15 @@
 #
 # Uses a portable Python 3.13 (no system changes) so pbixray works.
 
+param(
+    [switch]$AuthenticateFlows
+)
+
 # --- Self-elevate to Admin if needed ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    $ElevationArguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if ($AuthenticateFlows) { $ElevationArguments += " -AuthenticateFlows" }
+    Start-Process powershell.exe $ElevationArguments -Verb RunAs
     exit
 }
 
@@ -61,16 +67,56 @@ $DbPath      = "$ProjectDir\governance.db"
 $ReportsPath = "\\MX-SHARE\Users\METOMX\Desktop\BI Report Originals"
 $ScriptsPath = "\\MX-SHARE\Users\METOMX\Desktop;\\MX-SHARE\Users\meto.mx\Desktop;\\METO-MX02\Users\METOMX\Desktop"
 $Port        = 8000
+$Repository  = "datap0nd/data_governance"
 $GitHubToken = $env:DG_GITHUB_TOKEN
+$LatestSha   = $null
+if ($env:DG_UPDATE_COMMIT_SHA) {
+    $LatestSha = "$($env:DG_UPDATE_COMMIT_SHA)".Trim().ToLowerInvariant()
+    if ($LatestSha -notmatch '^[0-9a-f]{40}$') {
+        throw "DG_UPDATE_COMMIT_SHA must contain one exact 40-character Git commit"
+    }
+} elseif (-not $env:DG_UPDATE_ZIP_URL) {
+    $ShaHeaders = @{
+        "User-Agent" = "Metronome-Setup"
+        "Accept" = "application/vnd.github+json"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+    if ($GitHubToken) { $ShaHeaders["Authorization"] = "Bearer $GitHubToken" }
+    $LatestError = $null
+    for ($attempt = 1; $attempt -le 3 -and -not $LatestSha; $attempt++) {
+        try {
+            $LatestSha = (Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/$Repository/commits/main" `
+                -Headers $ShaHeaders -TimeoutSec 30).sha
+            $LatestSha = "$LatestSha".Trim().ToLowerInvariant()
+            if ($LatestSha -notmatch '^[0-9a-f]{40}$') {
+                throw "GitHub returned an invalid main commit"
+            }
+        } catch {
+            $LatestSha = $null
+            $LatestError = $_.Exception.Message
+            if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 2) }
+        }
+    }
+    if ($LatestSha) {
+        Write-Host "  Latest GitHub main commit: $LatestSha" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  WARNING: Could not resolve GitHub main: $LatestError" -ForegroundColor Yellow
+        Write-Host "  The branch download will use a unique cache-busting URL." -ForegroundColor Yellow
+    }
+}
+$CacheBuster = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $ZipUrl      = if ($GitHubToken) {
-    "https://api.github.com/repos/datap0nd/data_governance/zipball/main"
+    if ($LatestSha) { "https://api.github.com/repos/$Repository/zipball/$LatestSha" }
+    else            { "https://api.github.com/repos/$Repository/zipball/main?nocache=$CacheBuster" }
 } else {
-    "https://github.com/datap0nd/data_governance/archive/refs/heads/main.zip"
+    if ($LatestSha) { "https://github.com/$Repository/archive/$LatestSha.zip" }
+    else            { "https://github.com/$Repository/archive/refs/heads/main.zip?nocache=$CacheBuster" }
 }
 if ($env:DG_UPDATE_ZIP_URL) {
     $ZipUrl = $env:DG_UPDATE_ZIP_URL
 }
-$ZipHeaders = @{}
+$ZipHeaders = @{ "User-Agent" = "Metronome-Setup" }
 if ($GitHubToken) {
     $ZipHeaders["Authorization"] = "Bearer $GitHubToken"
     $ZipHeaders["Accept"] = "application/vnd.github+json"
@@ -172,6 +218,9 @@ Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 
 # --- Download latest code ---
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
+
+# Never reuse an archive left by an interrupted or failed prior setup.
+Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
 
 try {
     Invoke-WebRequestWithRetry -Uri $ZipUrl -OutFile $ZipPath -Headers $ZipHeaders
@@ -304,7 +353,9 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         Write-Host ""
         Write-Host "setup.ps1 itself was updated. Relaunching the new version..." -ForegroundColor Yellow
         $env:DG_SETUP_RELAUNCHED = "1"
-        & powershell.exe -ExecutionPolicy Bypass -File $SetupScriptPath
+        $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
+        if ($AuthenticateFlows) { $RelaunchArguments += "-AuthenticateFlows" }
+        & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
 }
@@ -329,12 +380,14 @@ if (Test-Path $BundledFlowTransforms) {
 # GitHub archive zips carry the exact commit SHA as the zip archive comment,
 # so the stamp names the code revision, not just when it was downloaded.
 $ver = (Get-Date -Format "yyyyMMdd-HHmmss")
-$CommitSha = ""
+$CommitSha = $LatestSha
 try {
-    $CommitSha = (& $PyExe -c "import zipfile; print(zipfile.ZipFile(r'$ZipPath').comment.decode()[:9])").Trim()
+    if (-not $CommitSha) {
+        $CommitSha = (& $PyExe -c "import zipfile; print(zipfile.ZipFile(r'$ZipPath').comment.decode())").Trim()
+    }
 } catch {}
 if (-not $CommitSha -and $Inner -and $Inner.Name -match '-([0-9a-f]{7,40})$') {
-    $CommitSha = $Matches[1].Substring(0, [Math]::Min(9, $Matches[1].Length))
+    $CommitSha = $Matches[1]
 }
 if ($CommitSha) { $ver = "$ver-$CommitSha" }
 Set-Content "$CodeDir\VERSION" $ver
@@ -368,12 +421,25 @@ if ($LASTEXITCODE -ne 0) {
 $TomProject = Join-Path $CodeDir "tools\pbi_metadata\Metronome.PowerBiMetadata.csproj"
 $DotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
 if ($DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
-    try {
-        & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 --self-contained false -o "$CodeDir\tools\pbi_metadata\bin" -p:UseAppHost=true
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
-        Write-Host "  XMLA/TOM metadata helper ready." -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: XMLA/TOM helper could not be built; Fabric getDefinition will be used: $_" -ForegroundColor Yellow
+    $DotnetSdks = (& $DotnetCommand.Source --list-sdks 2>$null | Out-String)
+    $NuGetSources = (& $DotnetCommand.Source nuget list source 2>$null | Out-String)
+    $CanBuildTom = ($DotnetSdks -match '(?m)^8\.') -and
+        (($NuGetSources -match 'https?://') -or $env:DG_BUILD_TOM_HELPER -eq "1")
+    if ($CanBuildTom) {
+        $TomBuildLog = Join-Path $ProjectDir "logs\pbi_metadata_build.log"
+        New-Item -ItemType Directory -Path (Split-Path $TomBuildLog) -Force | Out-Null
+        try {
+            & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 `
+                --self-contained false -o "$CodeDir\tools\pbi_metadata\bin" `
+                -p:UseAppHost=true --nologo --verbosity quiet *> $TomBuildLog
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
+            Write-Host "  XMLA/TOM metadata helper ready." -ForegroundColor Green
+        } catch {
+            Write-Host "  XMLA/TOM helper build skipped after a restore failure; Fabric getDefinition remains available." -ForegroundColor Yellow
+            Write-Host "  Build details: $TomBuildLog" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  XMLA/TOM helper build skipped (no usable .NET 8/NuGet feed); Fabric getDefinition will be used." -ForegroundColor DarkGray
     }
 } else {
     Write-Host "  XMLA/TOM helper skipped (no .NET SDK); Fabric getDefinition will be used." -ForegroundColor DarkGray
@@ -496,7 +562,10 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 # enrolled in Flows, this helper can validate/refresh the browser session
 # without user interaction. Otherwise the worker reports a clear UI action.
 $FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
-if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
+if (-not $AuthenticateFlows) {
+    Write-Host "Flows browser sign-in was left unchanged (normal setup/update mode)." -ForegroundColor DarkGray
+    Write-Host "  To deliberately refresh portal sessions, run: .\setup.ps1 -AuthenticateFlows" -ForegroundColor DarkGray
+} elseif ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
     # Create any portal the new code registers before reading the site list.
     # Migrations otherwise run when the service starts, which is after this
     # point, so a newly shipped portal would be missing here and its one-time
@@ -532,18 +601,22 @@ if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
                     # The embedded Python runtime runs in isolated mode and can
                     # ignore PYTHONPATH for ``-m app...``. The worker script
                     # bootstraps its package root before importing app modules.
-                    & $PyExe "$CodeDir\app\flow_worker.py" `
+                    $ProfileKey = ($ProfileTarget.Label -replace '[^A-Za-z0-9]+', '_').Trim('_')
+                    $AuthLog = Join-Path $LogDir "flow_auth_${FlowAuthAdapter}_${ProfileKey}.log"
+                    $AuthOutput = @(& $PyExe "$CodeDir\app\flow_worker.py" `
                         --profile-dir $ProfileTarget.Path `
                         --authenticate-url $FlowAuthUrl `
                         --authenticate-adapter $FlowAuthAdapter `
-                        --authentication-timeout-minutes 10
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "authentication helper exited with code $LASTEXITCODE"
+                        --authentication-timeout-minutes 10 2>&1)
+                    $AuthExitCode = $LASTEXITCODE
+                    $AuthOutput | Set-Content -LiteralPath $AuthLog
+                    if ($AuthExitCode -ne 0) {
+                        throw "authentication helper exited with code $AuthExitCode (details: $AuthLog)"
                     }
                     Write-Host "  $($ProfileTarget.Label) Flows browser authenticated for $PortalLabel." -ForegroundColor Green
                 } catch {
                     Write-Host "  WARNING: $PortalLabel authentication was not completed for the $($ProfileTarget.Label) profile: $_" -ForegroundColor Yellow
-                    Write-Host "  Runs in that mode will wait for sign-in (headed) or fail as not signed in (headless) until setup is rerun." -ForegroundColor Yellow
+                    Write-Host "  Retry only the sign-in step with: .\setup.ps1 -AuthenticateFlows" -ForegroundColor Yellow
                 }
             }
         }
@@ -615,6 +688,7 @@ function Describe-WorkerRegistrationFailure {
         }).Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
+        Write-Host "  Waiting up to 2 minutes for the Flows worker to register..." -ForegroundColor DarkGray
         for ($attempt = 0; $attempt -lt 60; $attempt++) {
             Start-Sleep -Seconds 2
             try {
@@ -627,6 +701,9 @@ function Describe-WorkerRegistrationFailure {
                     break
                 }
             } catch {}
+            if (($attempt + 1) % 5 -eq 0) {
+                Write-Host "  Still waiting for the Flows worker... $([int](($attempt + 1) * 2))s" -ForegroundColor DarkGray
+            }
         }
     }
     if ($WorkerOnline) {

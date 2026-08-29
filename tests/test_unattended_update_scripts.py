@@ -20,6 +20,7 @@ ROOT = Path(__file__).parents[1]
 APPLY_UPDATE = ROOT / "tools" / "apply_update.ps1"
 BACKUP_SQLITE = ROOT / "tools" / "backup_sqlite.py"
 SETUP = ROOT / "setup.ps1"
+UPDATE_APP = ROOT / "update_app.ps1"
 
 
 def test_sqlite_backup_includes_committed_wal_pages():
@@ -273,3 +274,12 @@ def test_setup_registers_fixed_elevated_on_demand_update_task():
     assert "-ExecutionTimeLimit (New-TimeSpan -Seconds 0)" in source
     assert "-Password $ServicePassword -RunLevel Highest" in source
     assert "Register-ScheduledTask -TaskName $AutoUpdateTaskName" in source
+
+
+def test_manual_update_uses_only_the_authoritative_setup_script():
+    source = UPDATE_APP.read_text(encoding="utf-8")
+
+    assert 'Join-Path $CodeDir "setup.ps1"' in source
+    assert "DG_UPDATE_COMMIT_SHA" in source
+    assert "setup_ps1_clean.txt" not in source
+    assert "Copy-Item $Template" not in source

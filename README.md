@@ -65,6 +65,13 @@ containing `.git`; develop and merge in a Git working copy, then run the service
 and `setup.ps1` from a separate release-style folder without `.git` so local
 source changes cannot be overwritten.
 
+Ordinary setup and updates preserve the existing ASAP/GSCM browser sessions and
+do not stop for interactive website authentication. Run
+`setup.ps1 -AuthenticateFlows` only when those portal sessions intentionally
+need to be refreshed. Optional XMLA/TOM build failures are written to
+`logs\pbi_metadata_build.log`; the installation continues with Fabric
+`getDefinition` instead.
+
 ### Read-only Operations Investigator
 
 **Alerts is the operational inbox.** Every active Alert evidence revision is automatically queued for an overall read-only review. Expanding an Alert shows whether the current evidence confirms, likely supports, contradicts, or is insufficient to judge the Alert, followed by a concise explanation and suggested next step. Flow and Pipeline failures also retain immutable run occurrences and optional exact-run analysis under evidence history.

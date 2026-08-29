@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
 from pydantic import BaseModel
+from urllib.parse import urlencode
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -36,6 +37,7 @@ from app.source_identity import postgres_server_identity, reconcile_all_flow_tar
 from app.scanner.lifecycle import (
     recover_interrupted_scan_runs,
 )
+from app.scanner.pbi_auth import resolve_proxy
 from app.ai.router import router as ai_router
 
 # Show scanner logs in the console
@@ -845,6 +847,87 @@ def _github_api_headers() -> dict[str, str]:
     return headers
 
 
+def _github_api_json_via_powershell(request_url: str):
+    """Use Windows' native proxy and certificate stack as a network fallback."""
+    child_env = os.environ.copy()
+    child_env["METRONOME_GITHUB_REQUEST_URL"] = request_url
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$headers = @{
+    'Accept' = 'application/vnd.github+json'
+    'X-GitHub-Api-Version' = '2022-11-28'
+    'User-Agent' = 'Metronome'
+}
+if ($env:DG_GITHUB_TOKEN) {
+    $headers['Authorization'] = 'Bearer ' + $env:DG_GITHUB_TOKEN
+}
+$payload = Invoke-RestMethod -Uri $env:METRONOME_GITHUB_REQUEST_URL `
+    -Headers $headers -TimeoutSec 30
+$payload | ConvertTo-Json -Depth 20 -Compress
+"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=40,
+        creationflags=flags,
+        env=child_env,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "PowerShell request failed").strip()
+        raise RuntimeError(detail[-500:])
+    try:
+        return json.loads((completed.stdout or "").lstrip("\ufeff"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Windows GitHub fallback returned invalid JSON") from exc
+
+
+def _windows_github_fallback_available() -> bool:
+    return os.name == "nt"
+
+
+def _github_api_json(url: str, *, params: dict | None = None):
+    """Read GitHub through the office proxy, with a Windows-native fallback."""
+    import httpx
+
+    request_url = url
+    if params:
+        request_url = f"{url}?{urlencode(params)}"
+    try:
+        response = httpx.get(
+            url,
+            headers=_github_api_headers(),
+            params=params,
+            proxy=resolve_proxy(url),
+            follow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as primary_error:
+        if not _windows_github_fallback_available():
+            raise
+        try:
+            payload = _github_api_json_via_powershell(request_url)
+            logging.getLogger("auto_update").warning(
+                "Python GitHub request failed; Windows network fallback succeeded: %s",
+                _safe_update_error(primary_error),
+            )
+            return payload
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "GitHub request failed through both the application and the "
+                f"Windows network stack: {primary_error}; {fallback_error}"
+            ) from primary_error
+
+
 def _deployed_commit() -> str | None:
     """The commit SHA setup.ps1 stamps into VERSION ("<timestamp>-<sha>")."""
     token = _APP_VERSION.rsplit("-", 1)[-1].strip().lower()
@@ -857,15 +940,10 @@ def _deployed_commit() -> str | None:
 
 
 def _fetch_latest_commit() -> str:
-    import httpx
-
-    response = httpx.get(
-        _LATEST_COMMIT_URL,
-        headers=_github_api_headers(),
-        timeout=5,
-    )
-    response.raise_for_status()
-    commit = str(response.json()["sha"]).strip().lower()
+    payload = _github_api_json(_LATEST_COMMIT_URL)
+    if not isinstance(payload, dict):
+        raise RuntimeError("GitHub returned an invalid main commit response")
+    commit = str(payload.get("sha") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise RuntimeError("GitHub returned an invalid main commit identifier")
     return commit
@@ -952,24 +1030,18 @@ def _tests_gate_record(
 
 def _fetch_tests_workflow_gate(target_commit: str) -> dict:
     """Return GitHub's Tests result for one exact main-branch commit."""
-    import httpx
-
     target = str(target_commit or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", target):
         raise RuntimeError("Tests can only be verified for a full Git commit SHA")
-    response = httpx.get(
+    payload = _github_api_json(
         _TESTS_WORKFLOW_RUNS_URL,
-        headers=_github_api_headers(),
         params={
             "head_sha": target,
             "branch": "main",
             "event": "push",
             "per_page": 10,
         },
-        timeout=5,
     )
-    response.raise_for_status()
-    payload = response.json()
     if not isinstance(payload, dict) or not isinstance(
         payload.get("workflow_runs"), list
     ):

@@ -61,6 +61,7 @@ try {
 
 # --- Point the update at exactly that version (uncacheable address) ---
 if ($LatestSha) {
+    $env:DG_UPDATE_COMMIT_SHA = $LatestSha
     $env:DG_UPDATE_ZIP_URL = if ($GitHubToken) {
         "https://api.github.com/repos/$Repo/zipball/$LatestSha"
     } else {
@@ -70,23 +71,12 @@ if ($LatestSha) {
 # A leftover archive from an earlier failed run must never be reused.
 Remove-Item (Join-Path $ProjectDir "_update.zip") -Force -ErrorAction SilentlyContinue
 
-# --- Find and run the normal update script ---
-# Identified by its header line, so renamed copies still work. The marker is
-# assembled in two parts so this file never matches itself.
-$Marker = "MX Analytics" + " - Setup"
-$Self = Split-Path -Leaf $PSCommandPath
-$UpdateScript = Get-ChildItem -Path $CodeDir -Filter *.ps1 -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne $Self } |
-    Where-Object { Select-String -Path $_.FullName -Pattern $Marker -SimpleMatch -Quiet } |
-    Select-Object -First 1 -ExpandProperty FullName
-if (-not $UpdateScript) {
-    $Template = Join-Path $CodeDir "setup_ps1_clean.txt"
-    if (Test-Path $Template) {
-        $UpdateScript = Join-Path $CodeDir "update.ps1"
-        Copy-Item $Template $UpdateScript -Force
-    } else {
-        throw "Could not find the update script in $CodeDir."
-    }
+# --- Run the one authoritative setup script ---
+# Never reconstruct it from a second template: that can revive an installer
+# older than the code that was just downloaded.
+$UpdateScript = Join-Path $CodeDir "setup.ps1"
+if (-not (Test-Path $UpdateScript -PathType Leaf)) {
+    throw "Could not find setup.ps1 in $CodeDir."
 }
 Write-Host "Running the update: $UpdateScript" -ForegroundColor Yellow
 Write-Host ""

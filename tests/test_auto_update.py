@@ -21,6 +21,11 @@ OTHER_TARGET = "c" * 40
 REAL_TESTS_GATE = main._tests_gate
 
 
+@pytest.fixture(autouse=True)
+def _disable_host_proxy_discovery(monkeypatch):
+    monkeypatch.setattr(main, "resolve_proxy", lambda _url: None)
+
+
 def _passed_tests_gate(target, *, force=False):
     return {
         "workflow": "Tests",
@@ -760,6 +765,58 @@ def test_github_commit_response_requires_a_full_hex_sha(monkeypatch):
 
     with pytest.raises(RuntimeError, match="invalid main commit"):
         main._fetch_latest_commit()
+
+
+def test_github_lookup_uses_windows_network_fallback(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            httpx.ConnectError("office proxy required")
+        ),
+    )
+    monkeypatch.setattr(main, "_windows_github_fallback_available", lambda: True)
+    observed = []
+    monkeypatch.setattr(
+        main,
+        "_github_api_json_via_powershell",
+        lambda url: observed.append(url) or {"sha": TARGET},
+    )
+
+    assert main._fetch_latest_commit() == TARGET
+    assert observed == [main._LATEST_COMMIT_URL]
+
+
+def test_github_lookup_passes_resolved_office_proxy(monkeypatch):
+    import httpx
+
+    observed = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"sha": TARGET}
+
+    def proxy(url):
+        observed["proxy_target"] = url
+        return "http://office-proxy:8080"
+
+    monkeypatch.setattr(main, "resolve_proxy", proxy)
+
+    def get(_url, **kwargs):
+        observed.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    assert main._fetch_latest_commit() == TARGET
+    assert observed["proxy"] == "http://office-proxy:8080"
+    assert observed["proxy_target"] == main._LATEST_COMMIT_URL
+    assert observed["timeout"] == 20
 
 
 def test_tests_workflow_gate_accepts_only_the_exact_main_push(monkeypatch):
