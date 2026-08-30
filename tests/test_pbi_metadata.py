@@ -228,7 +228,7 @@ def test_aadsts65002_error_is_operator_readable():
     )
 
 
-def test_bundled_tom_helper_contains_framework_dependent_runtime():
+def test_bundled_tom_helper_contains_windows_framework_runtime():
     bundle = (
         Path(__file__).resolve().parents[1]
         / "vendor"
@@ -239,11 +239,11 @@ def test_bundled_tom_helper_contains_framework_dependent_runtime():
 
     assert {
         "Metronome.PowerBiMetadata.exe",
-        "Metronome.PowerBiMetadata.dll",
-        "Metronome.PowerBiMetadata.deps.json",
-        "Metronome.PowerBiMetadata.runtimeconfig.json",
+        "Metronome.PowerBiMetadata.exe.config",
         "Microsoft.AnalysisServices.Tabular.dll",
+        "Microsoft.AnalysisServices.Core.dll",
     } <= names
+    assert "Metronome.PowerBiMetadata.runtimeconfig.json" not in names
 
 
 def test_setup_prefers_bundled_tom_helper_before_optional_local_build():

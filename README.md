@@ -112,8 +112,10 @@ Fabric `getDefinition` API in TMDL format. If either provider cannot produce a
 complete workspace snapshot, the scan fails and retains the prior Metronome
 catalog rather than publishing a partial result. The setup script extracts the
 tested Windows helper included in each release, without contacting NuGet; a
-local .NET build is only a fallback. Set `DG_PBI_TOM_HELPER` only to use a
-different published helper path. The optional Fabric fallback requires the
+local .NET build is only a fallback. The helper targets the Windows .NET
+Framework already included with supported Windows 10/11 installations, so it
+does not require the separate x64 .NET 8 runtime. Set `DG_PBI_TOM_HELPER` only
+to use a different published helper path. The optional Fabric fallback requires the
 saved account to have read-write access to the semantic model and delegated
 `SemanticModel.ReadWrite.All` (or `Item.ReadWrite.All`) consent. Its timeout can
 be changed with `DG_PBI_METADATA_TIMEOUT_SECONDS`.

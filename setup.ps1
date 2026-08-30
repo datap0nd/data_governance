@@ -425,9 +425,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
 
-# XMLA/TOM is the first-choice metadata reader. Ship its framework-dependent
-# win-x64 output with the release so an office machine never needs NuGet access
-# to install it. The local build remains a development/fallback path.
+# XMLA/TOM is the first-choice metadata reader. Ship its Windows .NET Framework
+# output with the release so an office machine needs neither NuGet nor a
+# separate .NET 8 runtime. The local build remains a development/fallback path.
 $TomProject = Join-Path $CodeDir "tools\pbi_metadata\Metronome.PowerBiMetadata.csproj"
 $TomOutput = Join-Path $CodeDir "tools\pbi_metadata\bin"
 $TomExecutable = Join-Path $TomOutput "Metronome.PowerBiMetadata.exe"
@@ -450,7 +450,7 @@ $DotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
 if (-not $TomReady -and $DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
     $DotnetSdks = (& $DotnetCommand.Source --list-sdks 2>$null | Out-String)
     $NuGetSources = (& $DotnetCommand.Source nuget list source 2>$null | Out-String)
-    $CanBuildTom = ($DotnetSdks -match '(?m)^8\.') -and
+    $CanBuildTom = ($DotnetSdks -match '(?m)^\d+\.') -and
         (($NuGetSources -match 'https?://') -or $env:DG_BUILD_TOM_HELPER -eq "1")
     if ($CanBuildTom) {
         $TomBuildLog = Join-Path $ProjectDir "logs\pbi_metadata_build.log"
@@ -458,7 +458,7 @@ if (-not $TomReady -and $DotnetCommand -and (Test-Path $TomProject -PathType Lea
         try {
             & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 `
                 --self-contained false -o $TomOutput `
-                -p:UseAppHost=true --nologo --verbosity quiet *> $TomBuildLog
+                -p:PlatformTarget=x64 --nologo --verbosity quiet *> $TomBuildLog
             if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
             $TomReady = Test-Path $TomExecutable -PathType Leaf
             if (-not $TomReady) { throw "dotnet publish did not produce the helper executable" }

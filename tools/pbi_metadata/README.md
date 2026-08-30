@@ -5,6 +5,8 @@ endpoint and returns only model metadata as JSON. It receives the existing
 short-lived delegated access token over standard input; the token is never
 written to disk or included in output.
 
-`setup.ps1` publishes it when a .NET 8 SDK is available. If it is unavailable
-or the workspace has no XMLA capability, Metronome uses Fabric
-`getDefinition` instead.
+Production releases include a tested Windows x64 build targeting the .NET
+Framework already present on supported Windows 10/11 installations. Setup
+extracts that build without contacting NuGet or requiring the separate .NET 8
+runtime. A local SDK build is retained only as a fallback. If XMLA is not
+available for the workspace, Metronome uses Fabric `getDefinition` instead.
