@@ -10,16 +10,13 @@
 # Uses a portable Python 3.13 (no system changes) so pbixray works.
 
 param(
-    [switch]$AuthenticateFlows,
-    [switch]$ResetServiceCredentials,
     [switch]$Unattended
 )
 
 # --- Self-elevate to Admin if needed ---
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $ElevationArguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    if ($AuthenticateFlows) { $ElevationArguments += " -AuthenticateFlows" }
-    if ($ResetServiceCredentials) { $ElevationArguments += " -ResetServiceCredentials" }
+    $ElevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if (-not $Unattended) { $ElevationArguments = "-NoExit $ElevationArguments" }
     if ($Unattended) { $ElevationArguments += " -Unattended" }
     Start-Process powershell.exe $ElevationArguments -Verb RunAs
     exit
@@ -226,9 +223,6 @@ Write-Host "  Python:   $PyExe" -ForegroundColor DarkGray
 # --- Download latest code ---
 Write-Host "[3/5] Downloading latest version..." -ForegroundColor Yellow
 
-# Never reuse an archive left by an interrupted or failed prior setup.
-Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
-
 try {
     Invoke-WebRequestWithRetry -Uri $ZipUrl -OutFile $ZipPath -Headers $ZipHeaders
     Write-Host "  Downloaded via PowerShell." -ForegroundColor Green
@@ -371,8 +365,6 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         Write-Host "setup.ps1 itself was updated. Relaunching the new version..." -ForegroundColor Yellow
         $env:DG_SETUP_RELAUNCHED = "1"
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
-        if ($AuthenticateFlows) { $RelaunchArguments += "-AuthenticateFlows" }
-        if ($ResetServiceCredentials) { $RelaunchArguments += "-ResetServiceCredentials" }
         if ($Unattended) { $RelaunchArguments += "-Unattended" }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
@@ -399,14 +391,12 @@ if (Test-Path $BundledFlowTransforms) {
 # GitHub archive zips carry the exact commit SHA as the zip archive comment,
 # so the stamp names the code revision, not just when it was downloaded.
 $ver = (Get-Date -Format "yyyyMMdd-HHmmss")
-$CommitSha = $LatestSha
+$CommitSha = ""
 try {
-    if (-not $CommitSha) {
-        $CommitSha = (& $PyExe -c "import zipfile; print(zipfile.ZipFile(r'$ZipPath').comment.decode())").Trim()
-    }
+    $CommitSha = (& $PyExe -c "import zipfile; print(zipfile.ZipFile(r'$ZipPath').comment.decode()[:9])").Trim()
 } catch {}
 if (-not $CommitSha -and $Inner -and $Inner.Name -match '-([0-9a-f]{7,40})$') {
-    $CommitSha = $Matches[1]
+    $CommitSha = $Matches[1].Substring(0, [Math]::Min(9, $Matches[1].Length))
 }
 if ($CommitSha) { $ver = "$ver-$CommitSha" }
 Set-Content "$CodeDir\VERSION" $ver
@@ -434,55 +424,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
 
-# XMLA/TOM is the first-choice metadata reader. Ship its Windows .NET Framework
-# output with the release so an office machine needs neither NuGet nor a
-# separate .NET 8 runtime. The local build remains a development/fallback path.
-$TomProject = Join-Path $CodeDir "tools\pbi_metadata\Metronome.PowerBiMetadata.csproj"
-$TomOutput = Join-Path $CodeDir "tools\pbi_metadata\bin"
-$TomExecutable = Join-Path $TomOutput "Metronome.PowerBiMetadata.exe"
-$TomBundle = Join-Path $CodeDir "vendor\pbi_metadata-win-x64.zip"
-$TomReady = $false
-if (Test-Path $TomBundle -PathType Leaf) {
-    try {
-        New-Item -ItemType Directory -Path $TomOutput -Force | Out-Null
-        Expand-Archive -Path $TomBundle -DestinationPath $TomOutput -Force
-        if (-not (Test-Path $TomExecutable -PathType Leaf)) {
-            throw "the bundle did not contain Metronome.PowerBiMetadata.exe"
-        }
-        $TomReady = $true
-        Write-Host "  Bundled XMLA/TOM metadata helper ready." -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: Bundled XMLA/TOM helper could not be installed: $_" -ForegroundColor Yellow
-    }
-}
-$DotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-if (-not $TomReady -and $DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
-    $DotnetSdks = (& $DotnetCommand.Source --list-sdks 2>$null | Out-String)
-    $NuGetSources = (& $DotnetCommand.Source nuget list source 2>$null | Out-String)
-    $CanBuildTom = ($DotnetSdks -match '(?m)^\d+\.') -and
-        (($NuGetSources -match 'https?://') -or $env:DG_BUILD_TOM_HELPER -eq "1")
-    if ($CanBuildTom) {
-        $TomBuildLog = Join-Path $ProjectDir "logs\pbi_metadata_build.log"
-        New-Item -ItemType Directory -Path (Split-Path $TomBuildLog) -Force | Out-Null
-        try {
-            & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 `
-                --self-contained false -o $TomOutput `
-                -p:PlatformTarget=x64 --nologo --verbosity quiet *> $TomBuildLog
-            if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
-            $TomReady = Test-Path $TomExecutable -PathType Leaf
-            if (-not $TomReady) { throw "dotnet publish did not produce the helper executable" }
-            Write-Host "  XMLA/TOM metadata helper ready." -ForegroundColor Green
-        } catch {
-            Write-Host "  XMLA/TOM helper build failed; Fabric getDefinition remains available." -ForegroundColor Yellow
-            Write-Host "  Build details: $TomBuildLog" -ForegroundColor DarkGray
-        }
-    } else {
-        Write-Host "  XMLA/TOM helper build skipped (no usable .NET 8/NuGet feed); Fabric getDefinition will be used." -ForegroundColor DarkGray
-    }
-} elseif (-not $TomReady) {
-    Write-Host "  XMLA/TOM helper skipped (no .NET SDK); Fabric getDefinition will be used." -ForegroundColor DarkGray
-}
-
 # --- Create and start service ---
 Write-Host "Starting service..." -ForegroundColor Yellow
 $NssmExe = "$CodeDir\tools\nssm.exe"
@@ -507,9 +448,8 @@ if (-not $HadExistingService) {
     "METRONOME_FLOW_PROFILE=$FlowProfile" `
     "DG_AI_MOCK=true"
 
-# Run services as the current user (needed for network share access). Ordinary
-# updates preserve the installed credentials; repeatedly asking for a password
-# made it too easy to replace a working service login with a Windows Hello PIN.
+# Run services as the current user (needed for network share access). Normal
+# updates preserve the installed credentials so unattended setup never prompts.
 $ExistingAutoUpdateTask = Get-ScheduledTask -TaskName $AutoUpdateTaskName -ErrorAction SilentlyContinue
 $NeedsServiceCredential = (-not $HadExistingService) -or (-not $existingFlowService) -or (-not $ExistingAutoUpdateTask)
 $ServicePassword = $null
@@ -517,7 +457,7 @@ $SetServiceCredentials = $false
 if ($env:DG_SVC_PASSWORD) {
     $ServicePassword = $env:DG_SVC_PASSWORD
     $SetServiceCredentials = $true
-} elseif ($ResetServiceCredentials -or $NeedsServiceCredential) {
+} elseif ($NeedsServiceCredential) {
     if ($Unattended) {
         throw "Unattended setup cannot request a Windows password. Run setup.ps1 once manually to register the services and update task."
     }
@@ -541,7 +481,6 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $ServiceName AppStderrCreationDisposition 4
 & $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateOnline 1
 & $NssmExe set $ServiceName AppRotateSeconds 86400
 & $NssmExe set $ServiceName AppRotateBytes 10485760
 
@@ -568,7 +507,6 @@ if ($SetServiceCredentials) {
 & $NssmExe set $FlowServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $FlowServiceName AppStderrCreationDisposition 4
 & $NssmExe set $FlowServiceName AppRotateFiles 1
-& $NssmExe set $FlowServiceName AppRotateOnline 1
 & $NssmExe set $FlowServiceName AppRotateSeconds 86400
 & $NssmExe set $FlowServiceName AppRotateBytes 10485760
 
@@ -605,6 +543,8 @@ if ($ServicePassword) {
         -User "$env:USERDOMAIN\$env:USERNAME" -Password $ServicePassword -RunLevel Highest -Force | Out-Null
     Write-Host "  Unattended auto-update task registered." -ForegroundColor Green
 } elseif ($ExistingAutoUpdateTask) {
+    Set-ScheduledTask -TaskName $AutoUpdateTaskName -Action $AutoUpdateAction `
+        -Settings $AutoUpdateSettings | Out-Null
     Write-Host "  Existing unattended auto-update task preserved." -ForegroundColor DarkGray
 } else {
     throw "The unattended auto-update task needs the Windows account password during first setup."
@@ -628,11 +568,9 @@ if (Test-Path "$CodeDir\tools\install_rdp_console_guard.ps1") {
 # Do not block setup on a visible login. Once the local DPAPI credential is
 # enrolled in Flows, this helper can validate/refresh the browser session
 # without user interaction. Otherwise the worker reports a clear UI action.
+if (-not $Unattended) {
 $FlowCredentialPath = Join-Path $FlowProfile ".asap_credentials"
-if (-not $AuthenticateFlows) {
-    Write-Host "Flows browser sign-in was left unchanged (normal setup/update mode)." -ForegroundColor DarkGray
-    Write-Host "  To deliberately refresh portal sessions, run: .\setup.ps1 -AuthenticateFlows" -ForegroundColor DarkGray
-} elseif ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
+if ((Test-Path $DbPath) -and (Test-Path $FlowCredentialPath)) {
     # Create any portal the new code registers before reading the site list.
     # Migrations otherwise run when the service starts, which is after this
     # point, so a newly shipped portal would be missing here and its one-time
@@ -668,22 +606,18 @@ if (-not $AuthenticateFlows) {
                     # The embedded Python runtime runs in isolated mode and can
                     # ignore PYTHONPATH for ``-m app...``. The worker script
                     # bootstraps its package root before importing app modules.
-                    $ProfileKey = ($ProfileTarget.Label -replace '[^A-Za-z0-9]+', '_').Trim('_')
-                    $AuthLog = Join-Path $LogDir "flow_auth_${FlowAuthAdapter}_${ProfileKey}.log"
-                    $AuthOutput = @(& $PyExe "$CodeDir\app\flow_worker.py" `
+                    & $PyExe "$CodeDir\app\flow_worker.py" `
                         --profile-dir $ProfileTarget.Path `
                         --authenticate-url $FlowAuthUrl `
                         --authenticate-adapter $FlowAuthAdapter `
-                        --authentication-timeout-minutes 10 2>&1)
-                    $AuthExitCode = $LASTEXITCODE
-                    $AuthOutput | Set-Content -LiteralPath $AuthLog
-                    if ($AuthExitCode -ne 0) {
-                        throw "authentication helper exited with code $AuthExitCode (details: $AuthLog)"
+                        --authentication-timeout-minutes 10
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "authentication helper exited with code $LASTEXITCODE"
                     }
                     Write-Host "  $($ProfileTarget.Label) Flows browser authenticated for $PortalLabel." -ForegroundColor Green
                 } catch {
                     Write-Host "  WARNING: $PortalLabel authentication was not completed for the $($ProfileTarget.Label) profile: $_" -ForegroundColor Yellow
-                    Write-Host "  Retry only the sign-in step with: .\setup.ps1 -AuthenticateFlows" -ForegroundColor Yellow
+                    Write-Host "  Runs in that mode will wait for sign-in (headed) or fail as not signed in (headless) until setup is rerun." -ForegroundColor Yellow
                 }
             }
         }
@@ -691,6 +625,9 @@ if (-not $AuthenticateFlows) {
 } elseif (Test-Path $DbPath) {
     Write-Host "ASAP automatic sign-in is not configured yet." -ForegroundColor DarkGray
     Write-Host "  Open Metronome > Flows > Catalog > ASAP and store the encrypted BI-desktop credential once." -ForegroundColor DarkGray
+}
+} else {
+    Write-Host "Flows browser sign-in was left unchanged (unattended update mode)." -ForegroundColor DarkGray
 }
 
 # The worker starts before the app on purpose: it retries registration for
@@ -706,40 +643,22 @@ if ($WorkerStartOutput -match 'already running') {
 }
 
 & $NssmExe start $ServiceName
+Start-Sleep -Seconds 3
+
 $MetronomeHealthy = $false
-Write-Host "  Waiting up to 60 seconds for Metronome itself to answer..." -ForegroundColor DarkGray
-for ($attempt = 1; $attempt -le 30; $attempt++) {
-    Start-Sleep -Seconds 2
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
     try {
-        $VersionProbe = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/version" -TimeoutSec 3
-        if ($VersionProbe) {
+        $VersionResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/version" -TimeoutSec 5
+        if ($VersionResponse) {
             $MetronomeHealthy = $true
             break
         }
     } catch {}
-    if ($attempt % 5 -eq 0) {
-        $CurrentService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        $CurrentStatus = if ($CurrentService) { $CurrentService.Status } else { "missing" }
-        Write-Host "  Still waiting for Metronome... $($attempt * 2)s (service: $CurrentStatus)" -ForegroundColor DarkGray
-    }
+    Start-Sleep -Seconds 2
 }
-
-if (-not $MetronomeHealthy) {
-    Write-Host ""
-    Write-Host "ERROR: Metronome did not start. Recent application error log:" -ForegroundColor Red
-    if (Test-Path "$LogDir\mx_analytics_error.log") {
-        Get-Content "$LogDir\mx_analytics_error.log" -Tail 80 -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
-    } else {
-        Write-Host "  No application error log was created." -ForegroundColor Yellow
-    }
-    Write-Host ""
-    Write-Host "If the log is empty or mentions a logon failure, rerun:" -ForegroundColor Yellow
-    Write-Host "  .\setup.ps1 -ResetServiceCredentials" -ForegroundColor White
-    Write-Host "Use the Windows account password, not the Windows Hello PIN." -ForegroundColor Yellow
-    throw "Metronome failed its localhost health check."
+if (-not $MetronomeHealthy -and $Unattended) {
+    throw "Metronome failed its localhost health check after unattended setup. Check $LogDir\"
 }
-Write-Host "  Metronome is answering on port $Port." -ForegroundColor Green
 
 function Describe-WorkerRegistrationFailure {
     param($Port, $CodeDir, $LogDir, $WorkerStartedAt)
@@ -788,7 +707,6 @@ function Describe-WorkerRegistrationFailure {
         }).Count -gt 0
     } catch {}
     if (-not $WorkerOnline) {
-        Write-Host "  Waiting up to 2 minutes for the Flows worker to register..." -ForegroundColor DarkGray
         for ($attempt = 0; $attempt -lt 60; $attempt++) {
             Start-Sleep -Seconds 2
             try {
@@ -801,9 +719,6 @@ function Describe-WorkerRegistrationFailure {
                     break
                 }
             } catch {}
-            if (($attempt + 1) % 5 -eq 0) {
-                Write-Host "  Still waiting for the Flows worker... $([int](($attempt + 1) * 2))s" -ForegroundColor DarkGray
-            }
         }
     }
     if ($WorkerOnline) {
@@ -829,8 +744,5 @@ if ($MetronomeHealthy -and $svc -and $svc.Status -eq "Running") {
     Write-Host ""
     Write-Host "WARNING: Service not running. Check $LogDir\" -ForegroundColor Red
     Write-Host ""
-    if ($Unattended) {
-        throw "Metronome failed its localhost health check after unattended setup. Check $LogDir\"
-    }
 }
 if (-not $Unattended) { pause }

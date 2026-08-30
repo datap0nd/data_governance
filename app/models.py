@@ -62,9 +62,6 @@ class ReportOut(BaseModel):
     worst_source_updated: str | None = None  # oldest source last_data_at
     unused_pct: int | None = None  # % of measures+columns not used in visuals
     pbi_dataset_id: str | None = None
-    pbi_workspace_id: str | None = None
-    pbi_report_id: str | None = None
-    metadata_provider: str | None = None
     pbi_refresh_schedule: str | None = None
     pbi_last_refresh_at: str | None = None
     pbi_refresh_status: str | None = None
@@ -93,8 +90,6 @@ class ReportTableOut(BaseModel):
     source_id: int | None = None
     source_name: str | None = None
     source_expression: str | None = None
-    source_resolution_status: str | None = None
-    source_resolution_reason: str | None = None
     last_scanned: str | None = None
 
 
@@ -120,6 +115,7 @@ class ScanRunOut(BaseModel):
     reports_scanned: int | None = None
     sources_found: int | None = None
     new_sources: int | None = None
+    changed_queries: int | None = None
     broken_refs: int | None = None
     status: str | None = None
     components: dict | None = None
@@ -150,6 +146,53 @@ class AlertOut(BaseModel):
 
 # --- Actions ---
 
+class QueryChangeSummary(BaseModel):
+    version_id: int
+    previous_version_id: int | None = None
+    artifact_kind: str
+    artifact_name: str
+    language: str
+    detected_at: str | None = None
+
+
+class QueryVersionSummary(BaseModel):
+    id: int
+    previous_version_id: int | None = None
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    query_hash: str
+    is_baseline: bool = False
+    action_id: int | None = None
+    detected_at: str | None = None
+
+
+class QueryHistoryGroup(BaseModel):
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    versions: list[QueryVersionSummary] = Field(default_factory=list)
+
+
+class QueryDiffRow(BaseModel):
+    kind: str
+    before_line: int | None = None
+    after_line: int | None = None
+    before_text: str | None = None
+    after_text: str | None = None
+
+
+class QueryDiffOut(BaseModel):
+    artifact_kind: str
+    artifact_key: str
+    artifact_name: str
+    language: str
+    before: QueryVersionSummary
+    after: QueryVersionSummary
+    rows: list[QueryDiffRow] = Field(default_factory=list)
+
 class ActionOut(BaseModel):
     id: int
     source_id: int | None = None
@@ -178,7 +221,7 @@ class ActionOut(BaseModel):
     detail_items: list[dict] = []
     # Short actionable recommendation shown when the row is expanded.
     recommendation: str | None = None
-    type: str  # stale_source, error_source, broken_ref, refresh_failed, refresh_overdue, schedule_mismatch
+    type: str  # stale_source, error_source, broken_ref, changed_query, refresh_failed, refresh_overdue, schedule_mismatch
     status: str = "open"  # open, acknowledged, investigating, expected, resolved
     assigned_to: str | None = None
     notes: str | None = None
@@ -191,6 +234,7 @@ class ActionOut(BaseModel):
     triage_score: int = 0
     triage_reasons: list[str] = []
     triage_cta: str | None = None
+    query_changes: list[QueryChangeSummary] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
     resolved_at: str | None = None

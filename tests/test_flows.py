@@ -2967,7 +2967,7 @@ def test_setup_registers_on_demand_interactive_headed_worker():
 
 def test_setup_stops_headed_worker_before_replacing_runtime_code():
     root = Path(__file__).parents[1]
-    for filename in ("setup.ps1",):
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
         source = root.joinpath(filename).read_text()
         stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
         assert stop in source
@@ -2976,7 +2976,7 @@ def test_setup_stops_headed_worker_before_replacing_runtime_code():
 
 def test_setup_downloads_update_before_stopping_running_services():
     root = Path(__file__).parents[1]
-    for filename in ("setup.ps1",):
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
         source = root.joinpath(filename).read_text()
         download = "Invoke-WebRequestWithRetry -Uri $ZipUrl"
         headed_stop = "Stop-ScheduledTask -TaskName $HeadedFlowTaskName"
@@ -2989,7 +2989,7 @@ def test_setup_downloads_update_before_stopping_running_services():
 
 def test_setup_waits_for_headless_worker_to_stop_before_replacing_code():
     root = Path(__file__).parents[1]
-    for filename in ("setup.ps1",):
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
         source = root.joinpath(filename).read_text()
         wait = "$existingFlowService.WaitForStatus("
         assert wait in source
@@ -3029,42 +3029,11 @@ def test_flow_builder_uses_discovered_week_dropdowns():
 
 def test_setup_fails_closed_when_python_dependencies_cannot_install():
     root = Path(__file__).parents[1]
-    for filename in ("setup.ps1",):
+    for filename in ("setup.ps1", "setup_ps1_clean.txt"):
         source = root.joinpath(filename).read_text()
         assert "install --upgrade setuptools wheel -q" in source
         assert "install --no-build-isolation -r requirements.txt -q" in source
         assert "Python dependency installation failed with exit code" in source
-
-
-def test_normal_setup_never_blocks_on_portal_authentication():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-
-    assert "[switch]$AuthenticateFlows" in source
-    assert "if (-not $AuthenticateFlows)" in source
-    assert ".\\setup.ps1 -AuthenticateFlows" in source
-
-
-def test_setup_resolves_an_exact_main_commit_and_avoids_stale_archives():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-
-    assert 'repos/$Repository/commits/main' in source
-    assert "DG_UPDATE_COMMIT_SHA" in source
-    assert "archive/$LatestSha.zip" in source
-    assert "nocache=$CacheBuster" in source
-    assert "Never reuse an archive" in source
-
-
-def test_setup_preserves_service_identity_and_reports_main_health_failure():
-    source = Path(__file__).parents[1].joinpath("setup.ps1").read_text()
-
-    assert "remove $ServiceName confirm" not in source
-    assert "Existing Windows service credentials preserved" in source
-    assert "[switch]$ResetServiceCredentials" in source
-    assert "not a Windows Hello PIN" in source
-    assert "set $ServiceName Application $PyExe" in source
-    assert "set $ServiceName AppParameters" in source
-    assert "Waiting up to 60 seconds for Metronome itself to answer" in source
-    assert 'Get-Content "$LogDir\\mx_analytics_error.log" -Tail 80' in source
 
 
 def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():

@@ -104,11 +104,7 @@ def _submit_job(job_id: int, worker, *args) -> None:
         try:
             done.result()
         except Exception:
-            logger.exception(
-                "Scanner background job %s crashed",
-                job_id,
-                extra={"operator_area": "Scanner", "job_id": job_id},
-            )
+            logger.exception("Scanner background job %s crashed", job_id)
         finally:
             with _job_future_lock:
                 _job_futures.pop(int(job_id), None)
@@ -176,8 +172,8 @@ def _execute_full_scan_job(
             }
         scanner_jobs.heartbeat(
             job_id,
-            current_step="Starting live model scan",
-            message="Power BI refresh sync finished; reading the live semantic-model definition.",
+            current_step="Starting local report scan",
+            message="Power BI metadata sync finished; starting PBIX/TMDL discovery.",
         )
         scan_result = run_scan(
             cancel_generation=generation,
@@ -205,10 +201,7 @@ def _execute_full_scan_job(
         )
         return {"status": "stopped", "message": str(exc)}
     except Exception as exc:
-        logger.exception(
-            "Background full scan failed",
-            extra={"operator_area": "Scanner", "job_id": job_id},
-        )
+        logger.exception("Background full scan failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -237,10 +230,7 @@ def _execute_probe_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception(
-            "Background source probe failed",
-            extra={"operator_area": "Scanner", "job_id": job_id},
-        )
+        logger.exception("Background source probe failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -253,8 +243,8 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
     """Run report discovery/probing for a pre-reserved durable job."""
     scanner_jobs.mark_running(
         job_id,
-        current_step="Starting live model scan",
-        message="Reading live semantic models through XMLA/TOM with Fabric fallback.",
+        current_step="Starting local report scan",
+        message="Starting PBIX/TMDL discovery.",
     )
     try:
         run_scan(
@@ -270,10 +260,7 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception(
-            "Background report scan failed",
-            extra={"operator_area": "Scanner", "job_id": job_id},
-        )
+        logger.exception("Background report scan failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -307,10 +294,7 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception(
-            "Background PostgreSQL schedule scan failed",
-            extra={"operator_area": "Scanner", "job_id": job_id},
-        )
+        logger.exception("Background PostgreSQL schedule scan failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -355,10 +339,7 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception(
-            "Background PostgreSQL lineage recheck failed",
-            extra={"operator_area": "Scanner", "job_id": job_id},
-        )
+        logger.exception("Background PostgreSQL lineage recheck failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -710,10 +691,7 @@ def start_pbi_auth(request: Request):
     try:
         return pbi_auth.start_device_flow()
     except Exception as exc:
-        logger.exception(
-            "Power BI connect failed",
-            extra={"operator_area": "Scanner"},
-        )
+        logger.exception("Power BI connect failed")
         return {"status": "failed", "message": f"Could not start the Microsoft sign-in: {exc}"}
 
 
@@ -976,7 +954,7 @@ def diagnostic_report():
 
         # ── Recent Scan Runs ──
         scans = db.execute(
-            "SELECT id, started_at, finished_at, status, reports_scanned, sources_found, new_sources, broken_refs, log FROM scan_runs ORDER BY id DESC LIMIT 5"
+            "SELECT id, started_at, finished_at, status, reports_scanned, sources_found, new_sources, changed_queries, broken_refs, log FROM scan_runs ORDER BY id DESC LIMIT 5"
         ).fetchall()
         report["recent_scans"] = [dict(r) for r in scans]
 

@@ -18,13 +18,17 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure the Power BI workspace
+### 3. Configure TMDL path
 
-Production scans read the configured workspace directly instead of relying on
-a possibly stale local PBIX/TMDL export. Set `DG_PBI_WORKSPACE` to the Power BI
-workspace name and connect the saved Microsoft account from **Scanner > Connect
-Power BI**. An explicitly supplied reports path remains available for tests and
-manual development scans only.
+Set where your TMDL report exports live. By default it looks at:
+```
+%USERPROFILE%\documents\projects\data_governance\reports\
+```
+
+To change it, set the environment variable before running:
+```bash
+set DG_TMDL_ROOT=C:\Users\YourName\documents\projects\data_governance
+```
 
 ### 4. Run the app
 
@@ -44,33 +48,20 @@ All registered users have the same application access, including remote PCs on t
 
 Production installs watch the GitHub `main` branch every five minutes by
 default. When a new commit appears, Metronome immediately starts one
-pre-registered elevated Windows task. That task passes the detected exact
-40-character commit to `setup.ps1 -Unattended`; `setup.ps1` remains the only
-installer and performs the same download, service restart, dependency install,
-and localhost health check as a manual run. Active-work and GitHub Tests status
-remain visible for information but do not delay the requested update.
+pre-registered elevated Windows task. That task validates the exact
+40-character commit and runs the same `setup.ps1` used for manual installs in
+unattended mode. `setup.ps1` remains the only installer: it preserves the
+database and existing Windows service credentials, replaces the code with the
+detected commit, installs dependencies, restarts Metronome, and verifies the
+local `/api/version` health check. GitHub Tests and currently active work remain
+visible in **System > Updates** for awareness, but they do not delay the update.
 
 Run `setup.ps1` interactively once after deploying this version so it can
 register the fixed `Metronome_Auto_Update` task using the existing service
 account. After that, use **System > Updates** to enable/disable automatic
-installs, force a check, install manually, or inspect blockers and the latest
-durable attempt. Private-repository installs must expose `DG_GITHUB_TOKEN` to
-the service account. Automatic installation deliberately refuses a folder
-containing `.git`; develop and merge in a Git working copy, then run the service
-and `setup.ps1` from a separate release-style folder without `.git` so local
-source changes cannot be overwritten.
-
-Ordinary setup and updates preserve the existing ASAP/GSCM browser sessions and
-do not stop for interactive website authentication. Run
-`setup.ps1 -AuthenticateFlows` only when those portal sessions intentionally
-need to be refreshed. Optional XMLA/TOM build failures are written to
-`logs\pbi_metadata_build.log`; the installation continues with Fabric
-`getDefinition` instead.
-
-Ordinary updates also preserve the existing Windows service identity instead
-of asking for the account password again. If Windows reports a service logon
-failure, run `setup.ps1 -ResetServiceCredentials` once and enter the Windows
-account password, not a Windows Hello PIN.
+installs, force a check, install manually, or inspect the latest durable
+attempt. Private-repository installs must expose `DG_GITHUB_TOKEN` to the
+service account.
 
 ### Read-only Operations Investigator
 
@@ -100,22 +91,6 @@ The sync picks the first available auth mode, in this order:
 1. **Service principal** (`DG_PBI_TENANT_ID` + `DG_PBI_CLIENT_ID` + `DG_PBI_CLIENT_SECRET`): fully unattended, requires tenant-admin setup.
 2. **Saved Microsoft account (recommended when no tenant access exists)**: open the panel, go to Scanner, click **Connect Power BI**, and enter the shown code at microsoft.com/devicelogin from any device (your own laptop or phone works). After this one-time sign-in, every sync runs headless inside the app with a silently refreshed token: no PowerShell window, no account picker, and it works while the PC is locked or the RDP session is disconnected.
 3. **Interactive fallback**: the legacy scheduled-task flow that opens a PowerShell window plus the Microsoft account picker in the sync user's session. Only used when neither of the above is configured.
-
-The report scanner now acquires each live semantic model before changing the
-local catalog. It first uses the bundled XMLA/TOM helper and falls back to the
-Fabric `getDefinition` API in TMDL format. If either provider cannot produce a
-complete workspace snapshot, the scan fails and retains the prior Metronome
-catalog rather than publishing a partial result. The setup script extracts the
-tested Windows helper included in each release, without contacting NuGet; a
-local .NET build is only a fallback. The helper targets the Windows .NET
-Framework already included with supported Windows 10/11 installations, so it
-does not require the separate x64 .NET 8 runtime. Set `DG_PBI_TOM_HELPER` only
-to use a different published helper path. The helper assigns the saved user
-bearer token through the Analysis Services `AccessToken` API; it is not passed
-as a password. The optional Fabric fallback requires the saved account to have
-read-write access to the semantic model and delegated
-`SemanticModel.ReadWrite.All` (or `Item.ReadWrite.All`) consent. Its timeout can
-be changed with `DG_PBI_METADATA_TIMEOUT_SECONDS`.
 
 #### Saved Microsoft account details
 
@@ -237,17 +212,6 @@ can appear as dashed **Possible file link** evidence, but they are not run
 automatically: current Flow artifacts live in versioned run folders, so a
 filename alone does not prove that the Flow updates the exact file Power BI
 consumes.
-
-Schedule the lineage scan after PostgreSQL load jobs that temporarily drop and
-recreate relations. A complete catalog snapshot taken inside that window will
-correctly mark the missing relation unresolved and will restore the exact link
-on the next successful scan, but the pipeline remains unlinked in between.
-
-The startup migration that removes the retired Query Changed feature first
-creates a timestamped SQLite backup under `backups/`. It then removes the query
-version table and every `changed_query` action, including resolved history and
-notes. SQLite versions older than 3.35 retain the unused `changed_queries` scan
-counter column so startup remains compatible; no application code reads it.
 
 ### 5. Run the scanner
 

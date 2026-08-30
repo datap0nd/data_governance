@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from app.source_identity import normalize_server, postgres_display_name, split_relation
+from app.source_identity import normalize_server, split_relation
 
 
 @dataclass
@@ -120,10 +120,7 @@ class SourceInfo:
             # For PostgreSQL, just show schema.table (skip server IP and database name)
             if self.source_type == "postgresql":
                 if self.sql_table:
-                    parts = split_relation(self.sql_table)
-                    if parts:
-                        return postgres_display_name(*parts)
-                    return _clean_identifier(self.sql_table).replace('"', "")
+                    return _clean_identifier(self.sql_table)
                 # This is intentionally a clean identifier: runner cleanup
                 # must retain the distinct unresolved source so the UI can
                 # diagnose it, rather than merging or archiving it by name.
@@ -136,7 +133,7 @@ class SourceInfo:
             if parts:
                 return f"{_clean_identifier(self.server)}/{'/'.join(parts)}"
             return _clean_identifier(self.server)
-        return f"unresolved_source_{self.unresolved_fingerprint}"
+        return "Unknown Source"
 
     @property
     def connection_info(self) -> str:
@@ -146,19 +143,11 @@ class SourceInfo:
         elif self.source_type in self.DB_TYPES:
             if self.source_type == "postgresql" and not self.postgres_identity_is_exact:
                 return f"unresolved/{self.unresolved_fingerprint}"
-            parts = [_clean_identifier(self.server).replace('"', "") or "?"]
+            parts = [_clean_identifier(self.server) or "?"]
             if self.database:
-                parts.append(_clean_identifier(self.database).replace('"', ""))
+                parts.append(_clean_identifier(self.database))
             if self.sql_table:
-                if self.source_type == "postgresql":
-                    relation = split_relation(self.sql_table)
-                    parts.append(
-                        postgres_display_name(*relation)
-                        if relation
-                        else _clean_identifier(self.sql_table).replace('"', "")
-                    )
-                else:
-                    parts.append(_clean_identifier(self.sql_table))
+                parts.append(_clean_identifier(self.sql_table))
             return "/".join(parts)
         return ""
 
@@ -230,11 +219,6 @@ def parse_tmdl_file(file_path: str | Path) -> ParsedTable | None:
         return None
 
     text = file_path.read_text(encoding="utf-8-sig")  # handle BOM
-    return parse_tmdl_text(text, file_path=str(file_path))
-
-
-def parse_tmdl_text(text: str, *, file_path: str = "live://semantic-model") -> ParsedTable | None:
-    """Parse one TMDL table definition without writing it to disk."""
     lines = text.splitlines()
 
     if not lines:
@@ -267,7 +251,7 @@ def parse_tmdl_text(text: str, *, file_path: str = "live://semantic-model") -> P
         mode=mode,
         m_expression=m_expression,
         source=source,
-        file_path=file_path,
+        file_path=str(file_path),
         is_metadata=is_metadata,
         metadata_value=metadata_value,
     )
@@ -284,11 +268,6 @@ def parse_expressions_file(file_path: str | Path) -> dict[str, str]:
         return {}
 
     text = file_path.read_text(encoding="utf-8-sig")
-    return parse_expressions_text(text)
-
-
-def parse_expressions_text(text: str) -> dict[str, str]:
-    """Parse named Power Query parameters from an in-memory TMDL part."""
     params = {}
 
     # Match: expression Name = "value" meta [...]

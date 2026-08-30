@@ -1027,15 +1027,11 @@ def _flow_out(db, flow_id: int) -> dict:
     result["sql_target_legacy_suggestions"] = []
     if result["sql_handoff_enabled"] and link["status"] != "confirmed":
         display_target = f"{result.get('sql_schema')}.{result.get('sql_table')}".casefold()
-        exact_exclusion = (
-            f"AND id NOT IN ({','.join('?' * len(match_ids))})" if match_ids else ""
-        )
         suggestions = db.execute(
-            f"""SELECT id, name FROM sources
+            """SELECT id, name FROM sources
                WHERE COALESCE(archived, 0)=0 AND lower(name) LIKE ?
-                 {exact_exclusion}
                ORDER BY id LIMIT 20""",
-            (f"%{display_target}", *match_ids),
+            (f"%{display_target}",),
         ).fetchall()
         result["sql_target_legacy_suggestions"] = [dict(item) for item in suggestions]
     if result["download_mode"] == "one_per_week":

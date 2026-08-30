@@ -104,12 +104,6 @@ PBI_PUBLIC_CLIENT_ID = os.environ.get("DG_PBI_PUBLIC_CLIENT_ID", "04b07795-8ddb-
 PBI_AUTH_TENANT = os.environ.get("DG_PBI_AUTH_TENANT", PBI_TENANT_ID or "organizations")
 PBI_TOKEN_CACHE_PATH = os.environ.get("DG_PBI_TOKEN_CACHE", str(BASE_DIR / "pbi_token.json"))
 PBI_USAGE_DAYS_BACK = int(os.environ.get("DG_PBI_USAGE_DAYS_BACK", "30"))
-PBI_TOM_HELPER = os.environ.get(
-    "DG_PBI_TOM_HELPER",
-    str(BASE_DIR / "tools" / "pbi_metadata" / "bin" / "Metronome.PowerBiMetadata.exe"),
-)
-PBI_METADATA_TIMEOUT_SECONDS = int(os.environ.get("DG_PBI_METADATA_TIMEOUT_SECONDS", "180"))
-FABRIC_API_BASE = os.environ.get("DG_FABRIC_API_BASE", "https://api.fabric.microsoft.com/v1").rstrip("/")
 
 # Outbound proxy override for login.microsoftonline.com / api.powerbi.com,
 # e.g. DG_PBI_PROXY=http://proxyhost:8080. When unset, the app uses

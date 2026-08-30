@@ -1110,7 +1110,7 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
 
         latest_scan = db.execute(
             """SELECT id, started_at, finished_at, reports_scanned, sources_found,
-                      new_sources, broken_refs, status, log
+                      new_sources, changed_queries, broken_refs, status, log
                  FROM scan_runs ORDER BY id DESC LIMIT 1"""
         ).fetchone()
         latest_probe_run = db.execute(
@@ -1150,7 +1150,7 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
         "platform_observation": {
             "latest_scan": _safe_rows(
                 [latest_scan],
-                ("id", "started_at", "finished_at", "reports_scanned", "sources_found", "new_sources", "broken_refs", "status", "log"),
+                ("id", "started_at", "finished_at", "reports_scanned", "sources_found", "new_sources", "changed_queries", "broken_refs", "status", "log"),
                 limit=1,
             )[0] if latest_scan else None,
             "latest_probe_run": _safe_rows(

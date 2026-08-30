@@ -36,27 +36,7 @@ That's it. The app runs at **http://localhost:8000** automatically on boot.
 
 ## Updating
 
-Run `setup.ps1` once as Administrator to install the services and unattended
-updater. After that, Metronome checks GitHub `main` every five minutes and
-installs a tested commit automatically when production work is idle. Use
-**System > Updates** to see the exact installed/latest commits and the last
-check. Running `setup.ps1` again is only the manual recovery path; the database
-is preserved.
-
-Normal setup does not open or reauthenticate website browser profiles. To
-deliberately refresh the ASAP/GSCM browser sessions, run:
-
-```powershell
-.\setup.ps1 -AuthenticateFlows
-```
-
-Updates keep the installed Windows service credentials. If setup reports a
-service logon failure, repair them once with the Windows account password (not
-the Windows Hello PIN):
-
-```powershell
-.\setup.ps1 -ResetServiceCredentials
-```
+When there is a new version, run `setup.ps1` again (as Administrator). It downloads the latest code, reinstalls everything, and restarts the service. The database is not affected.
 
 ## Network access
 

@@ -225,6 +225,7 @@ def finish_scan_run(
     reports_scanned: int,
     sources_found: int,
     new_sources: int,
+    changed_queries: int,
     broken_refs: int,
     components: Mapping[str, Any],
     log: str,
@@ -242,7 +243,7 @@ def finish_scan_run(
     db.execute(
         """UPDATE scan_runs
            SET finished_at = ?, reports_scanned = ?, sources_found = ?,
-               new_sources = ?, broken_refs = ?,
+               new_sources = ?, changed_queries = ?, broken_refs = ?,
                status = ?, components_json = ?, log = ?
            WHERE id = ? AND LOWER(COALESCE(status, '')) = 'running'""",
         (
@@ -250,6 +251,7 @@ def finish_scan_run(
             int(reports_scanned or 0),
             int(sources_found or 0),
             int(new_sources or 0),
+            int(changed_queries or 0),
             int(broken_refs or 0),
             normalized_status,
             serialize_components(components),

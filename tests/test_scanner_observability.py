@@ -407,14 +407,6 @@ def test_full_scan_job_preserves_cancelled_pbi_as_stopped(monkeypatch):
 
 def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        pg_deps,
-        "reconcile_all_report_postgres_identities",
-        lambda **_kwargs: pg_deps.reconcile_report_postgres_identities(
-            None, defer_relinks=True
-        ),
-    )
-    monkeypatch.setattr(pg_deps, "_referenced_relations", lambda **_kwargs: ())
     catalog = pg_deps._DatabaseCatalog(
         dependency_rows=(), definitions={}, definition_error=None
     )
@@ -436,15 +428,26 @@ def test_postgres_dependency_scan_reports_each_database_phase(monkeypatch):
             "mvs_found": 1,
             "deps_created": 2,
             "sources_created": 0,
+            "changed_queries": 0,
             "definition_status": "completed",
             "log": "done",
-            "verified_source_ids": [],
+            "query_change_log": "",
         },
     )
     monkeypatch.setattr(
         pg_deps,
         "_refresh_final_flow_reconciliation",
         lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pg_deps,
+        "_publish_staged_changed_query_actions",
+        lambda **kwargs: {
+            "published": 0,
+            "reused": 0,
+            "discarded": 0,
+            "superseded_resolved": 0,
+        },
     )
     monkeypatch.setattr(
         pg_deps,

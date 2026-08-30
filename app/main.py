@@ -5,7 +5,6 @@ import re
 import socket
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -27,37 +26,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import (
-    actions,
-    alerts,
-    archive,
-    best_practices,
-    changelog,
-    create,
-    dashboard,
-    data_quality,
-    documentation,
-    email,
-    email_schedules,
-    eventlog,
-    flows,
-    lineage,
-    materialized_views,
-    operator_errors as operator_errors_router,
-    people,
-    pipelines,
-    recurrences,
-    reports,
-    scanner,
-    schedules,
-    sources,
-    tasks,
-    usage,
-)
-from app.operator_errors import (
-    install_operator_error_handler,
-    prune_rotated_service_logs,
-)
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
 from app.settings import (
     get_overall_refresh_time,
     get_setting,
@@ -71,18 +40,8 @@ from app.scanner.lifecycle import (
 from app.scanner.pbi_auth import resolve_proxy
 from app.ai.router import router as ai_router
 
-# Keep routine service activity out of NSSM's stderr file. Real failures are
-# also mirrored into a small structured history for System > Error Logs.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(name)s | %(message)s",
-    stream=sys.stdout,
-)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-install_operator_error_handler()
+# Show scanner logs in the console
+logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
 # In-memory caches for identity resolution (cleared on register)
 _identity_cache: dict[tuple[str, str | None], str | None] = {}
@@ -375,7 +334,6 @@ def _scheduled_backup():
     log = logging.getLogger("scheduler")
     log.info("Running scheduled backup")
     _backup_db()
-    prune_rotated_service_logs()
     log.info("Scheduled backup complete")
 
 
@@ -680,13 +638,7 @@ def _recover_startup_pbi_syncs() -> int:
 
 
 def _run_optional_startup_step(name: str, function, *, default=None):
-    """Keep an ancillary recovery job from taking down the web application.
-
-    Database schema initialization remains deliberately fatal: the API cannot
-    operate against an unknown schema.  Everything passed through this helper
-    is repair/reconciliation/scheduling work that may be retried after the UI
-    is available, so one malformed legacy row must not make localhost vanish.
-    """
+    """Keep ancillary recovery work from taking down the web application."""
     try:
         return function()
     except Exception:
@@ -700,14 +652,11 @@ def _run_optional_startup_step(name: str, function, *, default=None):
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
-    _run_optional_startup_step(
-        "legacy service-log retention", prune_rotated_service_logs, default=0
-    )
     startup_update_attempt = _run_optional_startup_step(
         "update-attempt reconciliation",
         _reconcile_update_attempts,
-        # If receipt reconciliation itself is broken, fail closed for new
-        # operational work while still bringing the read-only web UI online.
+        # If reconciliation is broken, fail closed for new operational work
+        # while still bringing the read-only web UI online.
         default={"active": True, "attempt_id": "unresolved-startup-update"},
     )
     if startup_update_attempt and startup_update_attempt.get("active"):
@@ -793,7 +742,9 @@ async def lifespan(app):
     _run_optional_startup_step("local Flow worker start", flows.ensure_local_worker)
     # Let Pipeline restart reconciliation establish authoritative unknown/
     # terminal states before queued read-only investigations can observe it.
-    _run_optional_startup_step("Pipeline restart reconciliation", pipelines.pipeline_tick)
+    _run_optional_startup_step(
+        "Pipeline restart reconciliation", pipelines.pipeline_tick
+    )
     from app.ai.operations_agent import recover_and_start as recover_ai_runs
     recovered_ai_runs = _run_optional_startup_step(
         "AI investigation recovery", recover_ai_runs, default=0
@@ -842,6 +793,7 @@ app.include_router(scanner.router)
 app.include_router(lineage.router)
 app.include_router(alerts.router)
 app.include_router(actions.router)
+app.include_router(query_history.router)
 app.include_router(ai_router)
 app.include_router(changelog.router)
 app.include_router(schedules.router)
@@ -860,7 +812,6 @@ app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
 app.include_router(pipelines.router)
-app.include_router(operator_errors_router.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"
@@ -1245,8 +1196,8 @@ def _tests_gate(target_commit: str, *, force: bool = False) -> dict:
             result = _fetch_tests_workflow_gate(target)
         except Exception as exc:
             if cached and cached[1].get("state") == "passed":
-                # A network timeout cannot invalidate a successful result that
-                # was already observed for this exact immutable commit SHA.
+                # A transient office-network failure cannot invalidate a
+                # successful result already observed for this immutable SHA.
                 result = dict(cached[1])
                 result["message"] = (
                     "This exact main commit previously passed Tests. The latest "
@@ -1432,9 +1383,8 @@ def _active_update_work(db) -> dict[str, int]:
         "pbi_sync_runs": ("pbi_sync_runs", "status='launched'"),
         "pbi_recurrence_runs": ("pbi_recurrence_runs", "status='running'"),
         # AI investigations are advisory, durable, and recovered after a
-        # restart. They must not keep production code pinned for minutes while
-        # a local model drains its queue. The update drain still prevents new
-        # scheduled/manual investigations from starting during handoff.
+        # restart, so they must never keep production code pinned while a local
+        # model drains its queue.
         "outlook_dispatches": ("outlook_dispatches", "status='pending'"),
     }
     active: dict[str, int] = {}
@@ -1793,7 +1743,7 @@ def _scheduled_auto_update(*, force: bool = False) -> dict:
             return _auto_update_payload(latest_commit=latest)
 
         # The watcher has one job: when GitHub main differs from the installed
-        # commit, launch the existing elevated task.  That task invokes the
+        # commit, launch the existing elevated task. That task invokes the
         # same setup.ps1 operators already use manually.
         _release_update_drain()
         try:

@@ -62,35 +62,10 @@ _SCAN_PG_DEPENDENCIES = pg_deps.scan_pg_dependencies
 
 class _FakePgCursor:
     def __init__(self, rows):
-        self.catalog_rows = tuple(rows)
-        self.rows = ()
+        self.rows = rows
 
-    def execute(self, sql, parameters=None):
-        if "FROM pg_depend" in sql:
-            self.rows = self.catalog_rows
-        elif "FROM pg_matviews" in sql:
-            raise RuntimeError("pg_matviews is unavailable in this minimal adapter")
-        elif "FROM pg_class cls" in sql:
-            values = tuple(parameters or ())
-            requested = list(zip(values[::2], values[1::2]))
-            kinds = {
-                (parent_schema, parent_name): "m"
-                for parent_schema, parent_name, *_rest in self.catalog_rows
-            }
-            kinds.update(
-                {
-                    (dep_schema, dep_name): dep_kind
-                    for _parent_schema, _parent_name, dep_schema, dep_name, dep_kind
-                    in self.catalog_rows
-                }
-            )
-            self.rows = tuple(
-                (schema, relation, kinds[(schema, relation)])
-                for schema, relation in requested
-                if (schema, relation) in kinds
-            )
-        else:  # pragma: no cover - keeps the fake aligned with catalog scope
-            raise AssertionError(sql)
+    def execute(self, _sql):
+        pass
 
     def fetchall(self):
         return list(self.rows)

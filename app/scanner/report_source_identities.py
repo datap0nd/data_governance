@@ -29,7 +29,6 @@ from app.source_identity import (
     postgres_identity_tuple,
     postgres_server_identity,
     split_relation,
-    unique_postgres_source_name,
     upsert_postgres_identity,
 )
 
@@ -58,7 +57,6 @@ class _PendingRelink:
     report_table_id: int
     original_source_id: int | None
     target_source_id: int
-    candidate_source_id: int | None
     server: str
     database: str
     schema: str
@@ -84,24 +82,24 @@ def _identity_tuple(row) -> tuple[str, str, str, str] | None:
     )
 
 
-def _candidate_target(row) -> _ExactTarget | None:
-    if row is None or row["candidate_identity_source_id"] is None:
-        return None
-    return _ExactTarget(
-        parsed=None,
-        server=row["candidate_server_name"],
-        database=row["candidate_database_name"],
-        schema=row["candidate_schema_name"],
-        relation=row["candidate_relation_name"],
-    )
+def _unique_source_name(db, base_name: str, *, database: str, server: str) -> str:
+    candidate = base_name
+    if not db.execute("SELECT 1 FROM sources WHERE name=?", (candidate,)).fetchone():
+        return candidate
+    qualified = f"{base_name} [{database}@{server}]"
+    candidate = qualified
+    suffix = 2
+    while db.execute("SELECT 1 FROM sources WHERE name=?", (candidate,)).fetchone():
+        candidate = f"{qualified} #{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _create_exact_source(db, target: _ExactTarget, *, now: str) -> int:
     """Create one exact source without moving any existing report links."""
-    source_name = unique_postgres_source_name(
+    source_name = _unique_source_name(
         db,
-        schema=target.schema,
-        relation=target.relation,
+        target.parsed.display_name,
         database=target.database,
         server=target.server,
     )
@@ -269,22 +267,14 @@ def _apply_relink(db, pending: _PendingRelink) -> bool:
     if identity is None:
         return False
     condition, values = _source_condition(pending.original_source_id)
-    if pending.candidate_source_id is None:
-        candidate_condition = "source_candidate_id IS NULL"
-        candidate_values = ()
-    else:
-        candidate_condition = "source_candidate_id=?"
-        candidate_values = (int(pending.candidate_source_id),)
     cursor = db.execute(
-        f"""UPDATE report_tables
-              SET source_id=?, source_candidate_id=NULL
-              WHERE id=? AND report_id=? AND {condition} AND {candidate_condition}""",
+        f"""UPDATE report_tables SET source_id=?
+              WHERE id=? AND report_id=? AND {condition}""",
         (
             int(pending.target_source_id),
             int(pending.report_table_id),
             int(pending.report_id),
             *values,
-            *candidate_values,
         ),
     )
     return bool(cursor.rowcount)
@@ -368,25 +358,17 @@ def reconcile_report_postgres_identities(
             result["status"] = "missing_report"
             return result
         rows = db.execute(
-            """SELECT rt.id AS report_table_id, rt.source_id,
-                      rt.source_candidate_id, rt.source_expression,
+            """SELECT rt.id AS report_table_id, rt.source_id, rt.source_expression,
                       s.id AS existing_source_id, s.name AS source_name,
                       s.type AS source_type, s.source_query,
                       (SELECT COUNT(*) FROM report_tables shared_rt
                         WHERE shared_rt.source_id=rt.source_id) AS source_ref_count,
                       COALESCE(s.archived, 0) AS archived,
                       spi.source_id AS identity_source_id, spi.server_name,
-                      spi.database_name, spi.schema_name, spi.relation_name,
-                      candidate_spi.source_id AS candidate_identity_source_id,
-                      candidate_spi.server_name AS candidate_server_name,
-                      candidate_spi.database_name AS candidate_database_name,
-                      candidate_spi.schema_name AS candidate_schema_name,
-                      candidate_spi.relation_name AS candidate_relation_name
+                      spi.database_name, spi.schema_name, spi.relation_name
                  FROM report_tables rt
                  LEFT JOIN sources s ON s.id=rt.source_id
                  LEFT JOIN source_postgres_identities spi ON spi.source_id=s.id
-                 LEFT JOIN source_postgres_identities candidate_spi
-                        ON candidate_spi.source_id=rt.source_candidate_id
                 WHERE rt.report_id=?
                 ORDER BY rt.id""",
             (int(report_id),),
@@ -394,32 +376,11 @@ def reconcile_report_postgres_identities(
 
         result["rows_examined"] = len(rows)
         for row in rows:
-            target = _candidate_target(row)
-            reason = None
-            current = _identity_tuple(row)
             own_expression = str(row["source_expression"] or "").strip()
-            if (
-                target is None
-                and current is not None
-                and not row["archived"]
-                and not own_expression
-            ):
-                target = _ExactTarget(
-                    parsed=None,
-                    server=current[0],
-                    database=current[1],
-                    schema=current[2],
-                    relation=current[3],
-                )
-                result["parsed"] += 1
-                _record_catalog_target(result, target)
-                result["confirmed"] += 1
-                continue
-            if target is None:
-                if not own_expression and int(row["source_ref_count"] or 0) > 1:
-                    target, reason = None, "missing_report_source_expression"
-                else:
-                    target, reason = _parse_exact_target(_reference_expression(row))
+            if not own_expression and int(row["source_ref_count"] or 0) > 1:
+                target, reason = None, "missing_report_source_expression"
+            else:
+                target, reason = _parse_exact_target(_reference_expression(row))
             if target is None:
                 source_says_postgres = str(row["source_type"] or "").casefold() == "postgresql"
                 if reason == "not_postgresql" and not source_says_postgres:
@@ -431,11 +392,8 @@ def reconcile_report_postgres_identities(
 
             result["parsed"] += 1
             _record_catalog_target(result, target)
-            if (
-                current == target.identity
-                and not row["archived"]
-                and row["source_candidate_id"] is None
-            ):
+            current = _identity_tuple(row)
+            if current == target.identity and not row["archived"]:
                 result["confirmed"] += 1
                 continue
 
@@ -455,7 +413,7 @@ def reconcile_report_postgres_identities(
             original_source_id = int(row["source_id"]) if row["source_id"] is not None else None
             if len(match_ids) == 1:
                 target_source_id = match_ids[0]
-                if original_source_id == target_source_id and row["source_candidate_id"] is None:
+                if original_source_id == target_source_id:
                     result["confirmed"] += 1
                     continue
             elif (
@@ -502,11 +460,6 @@ def reconcile_report_postgres_identities(
                 report_table_id=int(row["report_table_id"]),
                 original_source_id=original_source_id,
                 target_source_id=int(target_source_id),
-                candidate_source_id=(
-                    int(row["source_candidate_id"])
-                    if row["source_candidate_id"] is not None
-                    else None
-                ),
                 server=target.server,
                 database=target.database,
                 schema=target.schema,
@@ -523,52 +476,6 @@ def reconcile_report_postgres_identities(
     result._pending_relinks = pending_relinks
     _refresh_status(result)
     return result
-
-
-def reconcile_all_report_postgres_identities(
-    *,
-    defer_relinks: bool = True,
-) -> ReportIdentityReconciliation:
-    """Parse every active report and combine its exact PostgreSQL repair plan."""
-    with get_db() as db:
-        report_ids = [
-            int(row["id"])
-            for row in db.execute(
-                "SELECT id FROM reports WHERE COALESCE(archived, 0)=0 ORDER BY id"
-            ).fetchall()
-        ]
-    combined = _public_result(None, defer_relinks=defer_relinks)
-    combined["status"] = "completed"
-    counter_keys = (
-        "rows_examined",
-        "parsed",
-        "skipped",
-        "confirmed",
-        "claimed",
-        "created",
-        "relinked",
-        "not_applied",
-        "unconfigured_catalog_targets",
-        "ambiguous",
-        "unresolved",
-    )
-    pending: list[_PendingRelink] = []
-    for report_id in report_ids:
-        result = reconcile_report_postgres_identities(
-            report_id,
-            defer_relinks=defer_relinks,
-        )
-        for key in counter_keys:
-            combined[key] += int(result.get(key) or 0)
-        for target in result.get("catalog_targets") or []:
-            if target not in combined["catalog_targets"]:
-                combined["catalog_targets"].append(target)
-        for issue in result.get("issues") or []:
-            combined["issues"].append({"report_id": report_id, **issue})
-        pending.extend(result._pending_relinks)
-    combined._pending_relinks = pending
-    _refresh_status(combined)
-    return combined
 
 
 def pending_report_postgres_identity_target_source_ids(
@@ -604,7 +511,6 @@ def finalize_report_postgres_identity_relinks(
     *,
     server: str,
     database: str,
-    verified_source_ids: tuple[int, ...] | list[int] | set[int] | frozenset[int] = (),
 ) -> ReportIdentityReconciliation:
     """Apply deferred links for one successfully committed catalog coordinate."""
     if not isinstance(reconciliation, ReportIdentityReconciliation):
@@ -617,55 +523,10 @@ def finalize_report_postgres_identity_relinks(
         if normalize_server(item.server) == wanted_server and item.database == wanted_database
     ]
     remaining = [item for item in reconciliation._pending_relinks if item not in matching]
-    verified = {int(source_id) for source_id in verified_source_ids}
     if matching:
         with get_db() as db:
             for pending in matching:
-                if int(pending.target_source_id) not in verified:
-                    condition, values = _source_condition(pending.original_source_id)
-                    if pending.candidate_source_id is None:
-                        candidate_condition = "source_candidate_id IS NULL"
-                        candidate_values = ()
-                    else:
-                        candidate_condition = "source_candidate_id=?"
-                        candidate_values = (int(pending.candidate_source_id),)
-                    cursor = db.execute(
-                        f"""UPDATE report_tables
-                               SET source_id=NULL,
-                                   source_candidate_id=NULL,
-                                   source_resolution_status='unresolved',
-                                   source_resolution_reason='postgres_relation_not_found'
-                             WHERE id=? AND report_id=?
-                               AND {condition} AND {candidate_condition}""",
-                        (
-                            pending.report_table_id,
-                            pending.report_id,
-                            *values,
-                            *candidate_values,
-                        ),
-                    )
-                    if cursor.rowcount:
-                        reconciliation["unresolved"] += 1
-                        reason_code = "postgres_relation_not_found"
-                    else:
-                        reconciliation["not_applied"] += 1
-                        reason_code = "deferred_relink_stale"
-                    reconciliation["issues"].append(
-                        {
-                            "report_table_id": pending.report_table_id,
-                            "source_id": pending.original_source_id,
-                            "reason_code": reason_code,
-                        }
-                    )
-                    continue
                 if _apply_relink(db, pending):
-                    db.execute(
-                        """UPDATE report_tables
-                              SET source_resolution_status='resolved',
-                                  source_resolution_reason=NULL
-                            WHERE id=?""",
-                        (pending.report_table_id,),
-                    )
                     reconciliation["relinked"] += 1
                 else:
                     reconciliation["not_applied"] += 1
@@ -687,43 +548,15 @@ def complete_report_postgres_identity_reconciliation(
     """Finish deferred repair and safely abandon links without catalog success."""
     if not isinstance(reconciliation, ReportIdentityReconciliation):
         raise TypeError("Expected ReportIdentityReconciliation from deferred repair.")
-    pending_items = list(reconciliation._pending_relinks)
-    if pending_items:
-        with get_db() as db:
-            for pending in pending_items:
-                condition, values = _source_condition(pending.original_source_id)
-                if pending.candidate_source_id is None:
-                    candidate_condition = "source_candidate_id IS NULL"
-                    candidate_values = ()
-                else:
-                    candidate_condition = "source_candidate_id=?"
-                    candidate_values = (int(pending.candidate_source_id),)
-                cursor = db.execute(
-                    f"""UPDATE report_tables
-                           SET source_candidate_id=NULL,
-                               source_resolution_status='verification_failed',
-                               source_resolution_reason='catalog_not_completed'
-                         WHERE id=? AND report_id=?
-                           AND {condition} AND {candidate_condition}""",
-                    (
-                        pending.report_table_id,
-                        pending.report_id,
-                        *values,
-                        *candidate_values,
-                    ),
-                )
-                reconciliation["not_applied"] += 1
-                reconciliation["issues"].append(
-                    {
-                        "report_table_id": pending.report_table_id,
-                        "source_id": pending.original_source_id,
-                        "reason_code": (
-                            "catalog_not_completed"
-                            if cursor.rowcount
-                            else "deferred_relink_stale"
-                        ),
-                    }
-                )
+    for pending in reconciliation._pending_relinks:
+        reconciliation["not_applied"] += 1
+        reconciliation["issues"].append(
+            {
+                "report_table_id": pending.report_table_id,
+                "source_id": pending.original_source_id,
+                "reason_code": "catalog_not_completed",
+            }
+        )
     reconciliation._pending_relinks = []
     reconciliation["deferred"] = False
     _refresh_status(reconciliation, final=True)

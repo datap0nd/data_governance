@@ -62,7 +62,8 @@ def test_alert_list_hides_best_practices_and_collapses_redundant_families(tmp_pa
     counts = {row["type"]: row["count"] for row in active}
     assert counts.get("best_practice", 0) == 0
     assert sum(counts.get(name, 0) for name in ("stale_source", "outdated_source", "error_source")) == 1
-    # Query Changed was removed; legacy records cannot remain actionable.
+    # Legacy source-level query changes cannot identify the report table that
+    # changed, so v2 startup cleanup removes them from the active queue.
     assert counts.get("changed_query", 0) == 0
 
     actions = list_actions(status="open")

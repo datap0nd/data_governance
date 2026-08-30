@@ -34,11 +34,6 @@ class DiscoveredReport:
     business_owner: str | None = None
     report_owner: str | None = None
     layout: object = None  # ReportLayout from layout_parser (PBIX mode only)
-    workspace_id: str | None = None
-    pbi_report_id: str | None = None
-    dataset_id: str | None = None
-    powerbi_url: str | None = None
-    metadata_provider: str | None = None
 
 
 def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
