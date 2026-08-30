@@ -510,6 +510,7 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 & $NssmExe set $ServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $ServiceName AppStderrCreationDisposition 4
 & $NssmExe set $ServiceName AppRotateFiles 1
+& $NssmExe set $ServiceName AppRotateOnline 1
 & $NssmExe set $ServiceName AppRotateSeconds 86400
 & $NssmExe set $ServiceName AppRotateBytes 10485760
 
@@ -536,6 +537,7 @@ if ($SetServiceCredentials) {
 & $NssmExe set $FlowServiceName AppStdoutCreationDisposition 4
 & $NssmExe set $FlowServiceName AppStderrCreationDisposition 4
 & $NssmExe set $FlowServiceName AppRotateFiles 1
+& $NssmExe set $FlowServiceName AppRotateOnline 1
 & $NssmExe set $FlowServiceName AppRotateSeconds 86400
 & $NssmExe set $FlowServiceName AppRotateBytes 10485760
 

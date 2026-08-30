@@ -10,5 +10,6 @@ pbi_token.json
 msal_token_cache.bin
 generated_imports/
 flow_scripts/
+logs/
 tools/pbi_metadata/bin/
 tools/pbi_metadata/obj/

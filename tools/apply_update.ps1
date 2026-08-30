@@ -365,6 +365,25 @@ function Stop-ExistingRuntime {
     Stop-ServiceChecked -Name $ServiceName
 }
 
+function Set-BoundedServiceLogPolicy {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    # The updater already runs elevated and the service is stopped. Updating
+    # only NSSM's rotation values preserves the executable, account identity,
+    # password, startup mode, and every application argument.
+    $parametersKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name\Parameters"
+    if (-not (Test-Path -LiteralPath $parametersKey -PathType Container)) { return }
+    foreach ($setting in @{
+        AppRotateFiles = 1
+        AppRotateOnline = 1
+        AppRotateSeconds = 86400
+        AppRotateBytes = 10485760
+    }.GetEnumerator()) {
+        New-ItemProperty -LiteralPath $parametersKey -Name $setting.Key `
+            -Value ([int]$setting.Value) -PropertyType DWord -Force | Out-Null
+    }
+}
+
 function Wait-AppVersion {
     param(
         [Parameter(Mandatory = $true)][string]$Sha,
@@ -721,6 +740,11 @@ try {
             "--find-links", $Wheelhouse, "-r", (Join-Path $CodeDir "requirements.txt")
         ) `
         -Description "Offline Python dependency validation/install"
+
+    Set-BoundedServiceLogPolicy -Name $ServiceName
+    if (Get-Service -Name $FlowServiceName -ErrorAction SilentlyContinue) {
+        Set-BoundedServiceLogPolicy -Name $FlowServiceName
+    }
 
     $VersionStamp = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $TargetSha
     Write-AtomicText -Path (Join-Path $CodeDir "VERSION") -Content ($VersionStamp + [Environment]::NewLine)

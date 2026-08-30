@@ -428,6 +428,9 @@ function _scannerJobsHtml(jobs) {
         const stale = job.is_stale
             ? `<div class="scanner-job-stale">No heartbeat for ${Math.max(1, Math.floor((job.heartbeat_age_seconds || 0) / 60))} minutes. This operation may be stuck; use Stop Refresh Work before retrying.</div>`
             : "";
+        const errorLink = !job.active && ["failed", "stopped"].includes(job.display_status || job.status)
+            ? '<button class="btn-link scanner-error-link" type="button" data-open-error-logs>View error details</button>'
+            : "";
         return `<div class="scanner-job-row${job.active ? " scanner-job-active" : ""}">
             <div class="scanner-job-heading">
                 <strong>${esc(_scannerJobLabel(job.job_type))}</strong>
@@ -439,6 +442,7 @@ function _scannerJobsHtml(jobs) {
             ${failures.length ? `<div class="scanner-job-failures">Affected: ${failures.map(esc).join(", ")}</div>` : ""}
             ${repairDetails.length ? `<div class="scanner-job-repair">Lineage details: ${repairDetails.map(esc).join(" · ")}</div>` : ""}
             ${stale}
+            ${errorLink}
         </div>`;
     }).join("");
 }
@@ -3429,11 +3433,12 @@ function _watchPbiDeviceFlow() {
 }
 
 async function renderScanner() {
-    const [runs, probeRuns, pbiStatus, scannerJobs] = await Promise.all([
+    const [runs, probeRuns, pbiStatus, scannerJobs, scannerErrorData] = await Promise.all([
         api("/api/scanner/runs"),
         api("/api/scanner/probe/runs"),
         api("/api/scanner/pbi-sync/status").catch(() => null),
         api("/api/scanner/jobs").catch(() => []),
+        api("/api/system/errors?area=Scanner&limit=3").catch(() => ({ errors: [] })),
     ]);
     const lastRun = runs.length > 0 ? runs[0] : null;
     const lastProbe = probeRuns.length > 0 ? probeRuns[0] : null;
@@ -3445,6 +3450,7 @@ async function renderScanner() {
     const pendingPbiSync = pbiStatus?.pending;
     const auth = pbiStatus?.auth || {};
     const authMode = pbiStatus?.auth_mode || "interactive";
+    const scannerErrors = Array.isArray(scannerErrorData?.errors) ? scannerErrorData.errors : [];
     const isInteractiveMode = authMode === "interactive";
     const modeLabel = authMode === "service_principal" ? "Service principal"
         : authMode === "cached_account" ? "Saved Microsoft account (headless)"
@@ -3515,6 +3521,16 @@ async function renderScanner() {
         </div>
 
         <div id="diagnose-panel" style="display:none"></div>
+
+        ${scannerErrors.length ? `
+            <div class="section operator-error-summary">
+                <div class="operator-error-summary-head">
+                    <h2>Recent Scanner Errors</h2>
+                    <button class="btn-outline" type="button" data-open-error-logs>Open all error logs</button>
+                </div>
+                ${scannerErrors.map(error => _operatorErrorCard(error, true)).join("")}
+            </div>
+        ` : ""}
 
         <div class="section scanner-work-section">
             <h2>Current Scanner Work <span class="scanner-live-label">Live</span></h2>
@@ -8783,6 +8799,91 @@ function bindEventLogPage() {
 }
 
 
+// ── Error Logs Page ──
+
+function _operatorErrorCard(error, compact = false) {
+    const errorType = error.error_type || "Application error";
+    const cause = error.error_message
+        ? `${errorType}: ${error.error_message}`
+        : errorType;
+    const context = [
+        error.operation_id != null ? `Operation #${error.operation_id}` : "",
+        error.scan_id != null ? `Scan #${error.scan_id}` : "",
+        error.job_id != null ? `Job #${error.job_id}` : "",
+    ].filter(Boolean);
+    const detail = !compact && error.technical_detail
+        ? `<details class="operator-error-details">
+                <summary>Technical detail</summary>
+                <pre>${esc(error.technical_detail)}</pre>
+           </details>`
+        : "";
+    return `<article class="operator-error-card${compact ? " operator-error-card-compact" : ""}" data-error-area="${esc(error.area || "Application")}">
+        <div class="operator-error-meta">
+            <span class="badge badge-red">${esc(error.area || "Application")}</span>
+            <time title="${esc(formatDate(error.created_at))}">${esc(timeAgo(error.created_at))}</time>
+            ${context.map(value => `<span>${esc(value)}</span>`).join("")}
+        </div>
+        <h3>${esc(error.summary || "An application operation failed")}</h3>
+        <p class="operator-error-cause">${esc(cause)}</p>
+        ${detail}
+    </article>`;
+}
+
+async function renderErrorLogs() {
+    const data = await api("/api/system/errors?limit=150");
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    const areas = [...new Set(errors.map(error => error.area || "Application"))].sort();
+    const bytes = Number(data.storage?.bytes || 0);
+    const maximum = Number(data.storage?.maximum_bytes || 0);
+    const storageLabel = maximum
+        ? `${(bytes / 1048576).toFixed(1)} MB of ${(maximum / 1048576).toFixed(0)} MB rolling storage`
+        : "Bounded rolling storage";
+    return `
+        <div class="page-header">
+            <h1>Error Logs</h1>
+            <span class="subtitle">Recent application failures, newest first · ${esc(storageLabel)}</span>
+        </div>
+        <div class="operator-error-toolbar">
+            <input id="operator-error-search" type="search" placeholder="Search errors" aria-label="Search errors">
+            <select id="operator-error-area" aria-label="Filter error area">
+                <option value="">All areas</option>
+                ${areas.map(area => `<option value="${esc(area)}">${esc(area)}</option>`).join("")}
+            </select>
+            <button id="operator-error-refresh" class="btn-outline" type="button">Refresh</button>
+            <span id="operator-error-visible-count">${errors.length} error${errors.length === 1 ? "" : "s"}</span>
+        </div>
+        <div id="operator-error-list" class="operator-error-list">
+            ${errors.length
+                ? errors.map(error => _operatorErrorCard(error)).join("")
+                : '<div class="empty-state">No application errors have been recorded. Routine scheduler activity is intentionally excluded.</div>'}
+        </div>
+    `;
+}
+
+function bindErrorLogsPage() {
+    const search = document.getElementById("operator-error-search");
+    const area = document.getElementById("operator-error-area");
+    const count = document.getElementById("operator-error-visible-count");
+    const applyFilters = () => {
+        const needle = (search?.value || "").trim().toLowerCase();
+        const selectedArea = area?.value || "";
+        let visible = 0;
+        document.querySelectorAll(".operator-error-card").forEach(card => {
+            const matchesArea = !selectedArea || card.dataset.errorArea === selectedArea;
+            const matchesSearch = !needle || card.textContent.toLowerCase().includes(needle);
+            card.hidden = !(matchesArea && matchesSearch);
+            if (!card.hidden) visible += 1;
+        });
+        if (count) count.textContent = `${visible} error${visible === 1 ? "" : "s"}`;
+    };
+    search?.addEventListener("input", applyFilters);
+    area?.addEventListener("change", applyFilters);
+    document.getElementById("operator-error-refresh")?.addEventListener(
+        "click", () => navigate("errorlogs")
+    );
+}
+
+
 // ── FAQ Page ──
 
 const FAQ_ITEMS = [
@@ -11246,6 +11347,7 @@ const pages = {
     export: renderExport,
     flows: renderFlows,
     eventlog: renderEventLog,
+    errorlogs: renderErrorLogs,
     faq: renderFaq,
     ai: renderAISettings,
     updates: renderUpdates,
@@ -11385,6 +11487,7 @@ async function navigate(page) {
         if (page === "export") bindExportPage();
         if (page === "faq") bindFaqPage();
         if (page === "eventlog") bindEventLogPage();
+        if (page === "errorlogs") bindErrorLogsPage();
         if (page === "ai") bindAISettingsPage();
         if (page === "updates") bindUpdatesPage();
         if (page === "refreshschedule") bindRefreshSchedulePage();
@@ -11432,6 +11535,10 @@ function bindScannerButtons() {
                 if (hint) hint.textContent = showing ? "- click to expand" : "- click to collapse";
             }
         });
+    });
+
+    document.querySelectorAll("[data-open-error-logs]").forEach(button => {
+        button.addEventListener("click", () => navigate("errorlogs"));
     });
 
     const btnScan = $("#btn-scan");

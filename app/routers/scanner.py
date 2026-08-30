@@ -104,7 +104,11 @@ def _submit_job(job_id: int, worker, *args) -> None:
         try:
             done.result()
         except Exception:
-            logger.exception("Scanner background job %s crashed", job_id)
+            logger.exception(
+                "Scanner background job %s crashed",
+                job_id,
+                extra={"operator_area": "Scanner", "job_id": job_id},
+            )
         finally:
             with _job_future_lock:
                 _job_futures.pop(int(job_id), None)
@@ -201,7 +205,10 @@ def _execute_full_scan_job(
         )
         return {"status": "stopped", "message": str(exc)}
     except Exception as exc:
-        logger.exception("Background full scan failed")
+        logger.exception(
+            "Background full scan failed",
+            extra={"operator_area": "Scanner", "job_id": job_id},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -230,7 +237,10 @@ def _execute_probe_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception("Background source probe failed")
+        logger.exception(
+            "Background source probe failed",
+            extra={"operator_area": "Scanner", "job_id": job_id},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -260,7 +270,10 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception("Background report scan failed")
+        logger.exception(
+            "Background report scan failed",
+            extra={"operator_area": "Scanner", "job_id": job_id},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -294,7 +307,10 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception("Background PostgreSQL schedule scan failed")
+        logger.exception(
+            "Background PostgreSQL schedule scan failed",
+            extra={"operator_area": "Scanner", "job_id": job_id},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -339,7 +355,10 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
             message=str(exc),
         )
     except Exception as exc:
-        logger.exception("Background PostgreSQL lineage recheck failed")
+        logger.exception(
+            "Background PostgreSQL lineage recheck failed",
+            extra={"operator_area": "Scanner", "job_id": job_id},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
@@ -691,7 +710,10 @@ def start_pbi_auth(request: Request):
     try:
         return pbi_auth.start_device_flow()
     except Exception as exc:
-        logger.exception("Power BI connect failed")
+        logger.exception(
+            "Power BI connect failed",
+            extra={"operator_area": "Scanner"},
+        )
         return {"status": "failed", "message": f"Could not start the Microsoft sign-in: {exc}"}
 
 

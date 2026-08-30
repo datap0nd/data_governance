@@ -1080,7 +1080,15 @@ def run_scan(
             logger.info("PG dependency scan completed: %s", dep_result.get("status"))
         except Exception as e:
             dep_result = {"status": "failed", "error": str(e)}
-            logger.exception("PG dependency scan failed: %s", e)
+            logger.exception(
+                "PG dependency scan failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
         dep_status = normalize_scan_status(dep_result.get("status"))
         # Deferred report relinks can make the core-stage snapshot stale, while
         # an unidentified active PostgreSQL source can still require attention
@@ -1113,7 +1121,15 @@ def run_scan(
             logger.info("pg_cron scan completed: %s", cron_result.get("status"))
         except Exception as e:
             cron_result = {"status": "failed", "error": str(e)}
-            logger.exception("pg_cron scan failed: %s", e)
+            logger.exception(
+                "pg_cron scan failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
         cron_status = normalize_scan_status(cron_result.get("status"))
         cron_requested = not (
             not postgres_required and cron_status in {"skipped", "not_requested"}
@@ -1141,7 +1157,15 @@ def run_scan(
             logger.info("Usage sync completed: %s", usage_result.get("status"))
         except Exception as e:
             usage_result = {"status": "failed", "error": str(e)}
-            logger.exception("Usage sync failed: %s", e)
+            logger.exception(
+                "Usage sync failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
         usage_component = component_result(usage_result)
         components["usage"] = usage_component
 
@@ -1167,7 +1191,15 @@ def run_scan(
                 raise
             except Exception as e:
                 probe_result = {"status": "failed", "error": str(e)}
-                logger.exception("Probe failed after scan: %s", e)
+                logger.exception(
+                    "Probe failed after scan: %s",
+                    e,
+                    extra={
+                        "operator_area": "Scanner",
+                        "operation_id": operation_id,
+                        "scan_id": scan_id,
+                    },
+                )
             probe_component = component_result(probe_result)
         else:
             probe_component = component_result(requested=False)
@@ -1187,21 +1219,45 @@ def run_scan(
             governance_results["best_practices"] = run_best_practice_scan(persist=False)
         except Exception as e:
             governance_results["best_practices"] = {"status": "failed", "error": str(e)}
-            logger.exception("Best-practice scan failed: %s", e)
+            logger.exception(
+                "Best-practice scan failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
         try:
             from app.routers.schedules import run_schedule_discrepancy_scan
 
             governance_results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
         except Exception as e:
             governance_results["schedule_discrepancies"] = {"status": "failed", "error": str(e)}
-            logger.exception("Schedule discrepancy scan failed: %s", e)
+            logger.exception(
+                "Schedule discrepancy scan failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
         try:
             from app.routers.documentation import sync_documentation_completeness_actions
 
             governance_results["documentation"] = sync_documentation_completeness_actions()
         except Exception as e:
             governance_results["documentation"] = {"status": "failed", "error": str(e)}
-            logger.exception("Documentation completeness scan failed: %s", e)
+            logger.exception(
+                "Documentation completeness scan failed: %s",
+                e,
+                extra={
+                    "operator_area": "Scanner",
+                    "operation_id": operation_id,
+                    "scan_id": scan_id,
+                },
+            )
 
         governance_components = {}
         for name, result in governance_results.items():
@@ -1312,7 +1368,14 @@ def run_scan(
         }
 
     except Exception as e:
-        logger.exception("Scan failed")
+        logger.exception(
+            "Scan failed",
+            extra={
+                "operator_area": "Scanner",
+                "operation_id": operation_id,
+                "scan_id": scan_id,
+            },
+        )
         core_status = normalize_scan_status(components.get("core", {}).get("status"))
         if core_status == "running":
             components["core"] = component_result(

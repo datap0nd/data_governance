@@ -5409,6 +5409,90 @@ button.btn-danger-outline:hover {
 .eventlog-action.action-reopened { color: var(--purple); }
 .eventlog-action.action-assigned { color: var(--cyan); }
 
+/* ================================================================
+   Operator Error Logs
+   ================================================================ */
+.operator-error-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.operator-error-toolbar input { min-width: 240px; }
+.operator-error-toolbar > span {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-left: auto;
+}
+.operator-error-list {
+    display: grid;
+    gap: 0.65rem;
+}
+.operator-error-card {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--red);
+    border-radius: 6px;
+    background: var(--surface);
+    padding: 0.8rem 0.9rem;
+}
+.operator-error-card[hidden] { display: none; }
+.operator-error-card h3 {
+    font-size: 0.86rem;
+    margin: 0.4rem 0 0.25rem;
+    color: var(--text);
+}
+.operator-error-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+}
+.operator-error-cause {
+    margin: 0;
+    color: var(--red);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+.operator-error-details { margin-top: 0.65rem; }
+.operator-error-details summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+}
+.operator-error-details pre {
+    max-height: 360px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.7rem;
+    font-size: 0.68rem;
+    line-height: 1.5;
+}
+.operator-error-summary {
+    border: 1px solid var(--red-border, var(--border));
+    border-radius: 7px;
+    background: var(--red-bg);
+    padding: 0.8rem;
+}
+.operator-error-summary-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+}
+.operator-error-summary-head h2 { margin: 0; }
+.operator-error-summary .operator-error-card { margin-top: 0.45rem; }
+.operator-error-card-compact { background: var(--surface); }
+.scanner-error-link { margin-top: 0.45rem; }
+
 @media (max-width: 768px) {
     .kanban-board {
         flex-direction: column;

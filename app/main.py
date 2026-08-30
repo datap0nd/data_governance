@@ -5,6 +5,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -26,7 +27,37 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, pipelines
+from app.routers import (
+    actions,
+    alerts,
+    archive,
+    best_practices,
+    changelog,
+    create,
+    dashboard,
+    data_quality,
+    documentation,
+    email,
+    email_schedules,
+    eventlog,
+    flows,
+    lineage,
+    materialized_views,
+    operator_errors as operator_errors_router,
+    people,
+    pipelines,
+    recurrences,
+    reports,
+    scanner,
+    schedules,
+    sources,
+    tasks,
+    usage,
+)
+from app.operator_errors import (
+    install_operator_error_handler,
+    prune_rotated_service_logs,
+)
 from app.settings import (
     get_overall_refresh_time,
     get_setting,
@@ -40,8 +71,18 @@ from app.scanner.lifecycle import (
 from app.scanner.pbi_auth import resolve_proxy
 from app.ai.router import router as ai_router
 
-# Show scanner logs in the console
-logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
+# Keep routine service activity out of NSSM's stderr file. Real failures are
+# also mirrored into a small structured history for System > Error Logs.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s | %(message)s",
+    stream=sys.stdout,
+)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+install_operator_error_handler()
 
 # In-memory caches for identity resolution (cleared on register)
 _identity_cache: dict[tuple[str, str | None], str | None] = {}
@@ -334,6 +375,7 @@ def _scheduled_backup():
     log = logging.getLogger("scheduler")
     log.info("Running scheduled backup")
     _backup_db()
+    prune_rotated_service_logs()
     log.info("Scheduled backup complete")
 
 
@@ -658,6 +700,9 @@ def _run_optional_startup_step(name: str, function, *, default=None):
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    _run_optional_startup_step(
+        "legacy service-log retention", prune_rotated_service_logs, default=0
+    )
     startup_update_attempt = _run_optional_startup_step(
         "update-attempt reconciliation",
         _reconcile_update_attempts,
@@ -815,6 +860,7 @@ app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
 app.include_router(pipelines.router)
+app.include_router(operator_errors_router.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"
