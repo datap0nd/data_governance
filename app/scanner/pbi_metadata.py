@@ -42,6 +42,57 @@ class PowerBiMetadataError(RuntimeError):
     """Raised when no live metadata provider can return a complete snapshot."""
 
 
+def _compact_provider_error(value: object, *, provider: str) -> str:
+    """Turn provider failures into one safe, operator-readable sentence."""
+    text = " ".join(str(value or "unknown failure").split())
+    lowered = text.casefold()
+    if provider == "xmla" and (
+        "helper is unavailable at" in lowered
+        or "helper is not configured" in lowered
+    ):
+        return "the local metadata helper is not installed"
+    if "aadsts65002" in lowered or "not preauthorized for the requested api" in lowered:
+        return (
+            "the saved Microsoft sign-in client cannot request the Fabric definition "
+            "permission; XMLA/TOM or a tenant app registration is required"
+        )
+    if len(text) > 280:
+        return text[:277].rstrip() + "..."
+    return text
+
+
+def _live_failure_message(failures: list[dict[str, str]]) -> str:
+    model_count = len({item["dataset_id"] for item in failures})
+    report_names = list(dict.fromkeys(item["report_name"] for item in failures))
+    xmla_errors = list(
+        dict.fromkeys(
+            _compact_provider_error(item["xmla_error"], provider="xmla")
+            for item in failures
+        )
+    )
+    fabric_errors = list(
+        dict.fromkeys(
+            _compact_provider_error(item["fabric_error"], provider="fabric")
+            for item in failures
+        )
+    )
+
+    def summarize(values: list[str]) -> str:
+        suffix = f" (+{len(values) - 1} other cause(s))" if len(values) > 1 else ""
+        return values[0] + suffix
+
+    shown_names = ", ".join(report_names[:5])
+    if len(report_names) > 5:
+        shown_names += f", +{len(report_names) - 5} more"
+    return (
+        "Live semantic-model acquisition was incomplete; the existing catalog was retained. "
+        f"Could not refresh {model_count} semantic model(s) used by "
+        f"{len(report_names)} report(s). XMLA/TOM: {summarize(xmla_errors)}. "
+        f"Fabric getDefinition: {summarize(fabric_errors)}. "
+        f"Affected reports: {shown_names}."
+    )
+
+
 def _modes(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -343,26 +394,36 @@ def read_live_reports(workspace_name: str | None = None) -> list[DiscoveredRepor
         )
 
     model_cache: dict[str, DiscoveredReport] = {}
-    failures: list[str] = []
+    failures: list[dict[str, str]] = []
+    model_failures: dict[str, tuple[str, str]] = {}
     discovered: list[DiscoveredReport] = []
     for report in reports:
         dataset_id = str(report["dataset_id"])
         template = model_cache.get(dataset_id)
         if template is None:
-            xmla_error = None
-            try:
-                template = _read_with_tom(report, workspace)
-            except Exception as exc:
-                xmla_error = str(exc)
-                logger.info("XMLA/TOM unavailable for %s: %s", report["name"], exc)
+            failed_model = model_failures.get(dataset_id)
+            if failed_model is None:
+                xmla_error = None
                 try:
-                    template = _read_with_fabric(report, workspace)
-                except Exception as fabric_exc:
-                    failures.append(
-                        f"{report['name']}: XMLA/TOM: {xmla_error}; "
-                        f"Fabric getDefinition: {fabric_exc}"
-                    )
-                    continue
+                    template = _read_with_tom(report, workspace)
+                except Exception as exc:
+                    xmla_error = str(exc)
+                    logger.info("XMLA/TOM unavailable for %s: %s", report["name"], exc)
+                    try:
+                        template = _read_with_fabric(report, workspace)
+                    except Exception as fabric_exc:
+                        failed_model = (xmla_error, str(fabric_exc))
+                        model_failures[dataset_id] = failed_model
+            if failed_model is not None:
+                failures.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "report_name": str(report["name"]),
+                        "xmla_error": failed_model[0],
+                        "fabric_error": failed_model[1],
+                    }
+                )
+                continue
             model_cache[dataset_id] = template
 
         discovered.append(
@@ -382,8 +443,5 @@ def read_live_reports(workspace_name: str | None = None) -> list[DiscoveredRepor
             )
         )
     if failures:
-        raise PowerBiMetadataError(
-            "Live semantic-model acquisition was incomplete; the existing catalog was retained. "
-            + " | ".join(failures[:10])
-        )
+        raise PowerBiMetadataError(_live_failure_message(failures))
     return discovered

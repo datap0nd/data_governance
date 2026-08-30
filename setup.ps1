@@ -425,12 +425,29 @@ if ($LASTEXITCODE -ne 0) {
     throw "Python dependency installation failed with exit code $LASTEXITCODE"
 }
 
-# XMLA/TOM is an optional first-choice metadata reader. A missing SDK or a
-# blocked NuGet feed must not prevent installation because the application can
-# use Fabric getDefinition instead.
+# XMLA/TOM is the first-choice metadata reader. Ship its framework-dependent
+# win-x64 output with the release so an office machine never needs NuGet access
+# to install it. The local build remains a development/fallback path.
 $TomProject = Join-Path $CodeDir "tools\pbi_metadata\Metronome.PowerBiMetadata.csproj"
+$TomOutput = Join-Path $CodeDir "tools\pbi_metadata\bin"
+$TomExecutable = Join-Path $TomOutput "Metronome.PowerBiMetadata.exe"
+$TomBundle = Join-Path $CodeDir "vendor\pbi_metadata-win-x64.zip"
+$TomReady = $false
+if (Test-Path $TomBundle -PathType Leaf) {
+    try {
+        New-Item -ItemType Directory -Path $TomOutput -Force | Out-Null
+        Expand-Archive -Path $TomBundle -DestinationPath $TomOutput -Force
+        if (-not (Test-Path $TomExecutable -PathType Leaf)) {
+            throw "the bundle did not contain Metronome.PowerBiMetadata.exe"
+        }
+        $TomReady = $true
+        Write-Host "  Bundled XMLA/TOM metadata helper ready." -ForegroundColor Green
+    } catch {
+        Write-Host "  WARNING: Bundled XMLA/TOM helper could not be installed: $_" -ForegroundColor Yellow
+    }
+}
 $DotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
-if ($DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
+if (-not $TomReady -and $DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
     $DotnetSdks = (& $DotnetCommand.Source --list-sdks 2>$null | Out-String)
     $NuGetSources = (& $DotnetCommand.Source nuget list source 2>$null | Out-String)
     $CanBuildTom = ($DotnetSdks -match '(?m)^8\.') -and
@@ -440,18 +457,20 @@ if ($DotnetCommand -and (Test-Path $TomProject -PathType Leaf)) {
         New-Item -ItemType Directory -Path (Split-Path $TomBuildLog) -Force | Out-Null
         try {
             & $DotnetCommand.Source publish $TomProject -c Release -r win-x64 `
-                --self-contained false -o "$CodeDir\tools\pbi_metadata\bin" `
+                --self-contained false -o $TomOutput `
                 -p:UseAppHost=true --nologo --verbosity quiet *> $TomBuildLog
             if ($LASTEXITCODE -ne 0) { throw "dotnet publish exited with code $LASTEXITCODE" }
+            $TomReady = Test-Path $TomExecutable -PathType Leaf
+            if (-not $TomReady) { throw "dotnet publish did not produce the helper executable" }
             Write-Host "  XMLA/TOM metadata helper ready." -ForegroundColor Green
         } catch {
-            Write-Host "  XMLA/TOM helper build skipped after a restore failure; Fabric getDefinition remains available." -ForegroundColor Yellow
+            Write-Host "  XMLA/TOM helper build failed; Fabric getDefinition remains available." -ForegroundColor Yellow
             Write-Host "  Build details: $TomBuildLog" -ForegroundColor DarkGray
         }
     } else {
         Write-Host "  XMLA/TOM helper build skipped (no usable .NET 8/NuGet feed); Fabric getDefinition will be used." -ForegroundColor DarkGray
     }
-} else {
+} elseif (-not $TomReady) {
     Write-Host "  XMLA/TOM helper skipped (no .NET SDK); Fabric getDefinition will be used." -ForegroundColor DarkGray
 }
 

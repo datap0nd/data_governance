@@ -110,8 +110,9 @@ The report scanner now acquires each live semantic model before changing the
 local catalog. It first uses the bundled XMLA/TOM helper and falls back to the
 Fabric `getDefinition` API in TMDL format. If either provider cannot produce a
 complete workspace snapshot, the scan fails and retains the prior Metronome
-catalog rather than publishing a partial result. The setup script builds the
-helper when the .NET 8 SDK is available; set `DG_PBI_TOM_HELPER` only to use a
+catalog rather than publishing a partial result. The setup script extracts the
+tested Windows helper included in each release, without contacting NuGet; a
+local .NET build is only a fallback. Set `DG_PBI_TOM_HELPER` only to use a
 different published helper path. The optional Fabric fallback requires the
 saved account to have read-write access to the semantic model and delegated
 `SemanticModel.ReadWrite.All` (or `Item.ReadWrite.All`) consent. Its timeout can

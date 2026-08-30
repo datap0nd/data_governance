@@ -392,6 +392,11 @@ def _short_aad_error(body: dict) -> str:
     description = (body.get("error_description") or "").splitlines()
     first = description[0].strip() if description else ""
     code = body.get("error") or "unknown_error"
+    if "AADSTS65002" in first.upper():
+        return (
+            f"{code}: this Microsoft sign-in client is not preauthorized for "
+            "the requested API; use XMLA/TOM or an approved tenant app registration"
+        )
     return f"{code}: {first}" if first else code
 
 

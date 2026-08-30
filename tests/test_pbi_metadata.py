@@ -1,6 +1,10 @@
 import base64
 import json
+import os
+import platform
+import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -170,6 +174,118 @@ def test_live_reader_rejects_partial_workspace_snapshot(monkeypatch):
 
     assert "existing catalog was retained" in str(error.value)
     assert "Report two" in str(error.value)
+
+
+def test_live_reader_deduplicates_provider_failures_for_shared_model(monkeypatch):
+    reports = [_report("one", "shared"), _report("two", "shared")]
+    monkeypatch.setattr(
+        pbi_metadata,
+        "fetch_workspace_reports",
+        lambda _workspace: {"workspace": WORKSPACE, "reports": reports},
+    )
+    calls = {"xmla": 0, "fabric": 0}
+
+    def fail_xmla(*_args):
+        calls["xmla"] += 1
+        raise RuntimeError("XMLA/TOM helper is unavailable at C:/missing/helper.exe")
+
+    def fail_fabric(*_args):
+        calls["fabric"] += 1
+        raise RuntimeError(
+            "Power BI token refresh failed (invalid_request: AADSTS65002: "
+            "Consent details, trace identifiers, and other noisy diagnostics)"
+        )
+
+    monkeypatch.setattr(pbi_metadata, "_read_with_tom", fail_xmla)
+    monkeypatch.setattr(pbi_metadata, "_read_with_fabric", fail_fabric)
+
+    with pytest.raises(pbi_metadata.PowerBiMetadataError) as error:
+        pbi_metadata.read_live_reports("Governed Workspace")
+
+    message = str(error.value)
+    assert calls == {"xmla": 1, "fabric": 1}
+    assert "1 semantic model(s) used by 2 report(s)" in message
+    assert "local metadata helper is not installed" in message
+    assert "cannot request the Fabric definition permission" in message
+    assert "Report one, Report two" in message
+    assert "AADSTS65002" not in message
+
+
+def test_aadsts65002_error_is_operator_readable():
+    result = pbi_auth._short_aad_error(
+        {
+            "error": "invalid_request",
+            "error_description": (
+                "AADSTS65002: Consent between first party application and first party "
+                "resource must be configured via preauthorization. Trace ID: noisy"
+            ),
+        }
+    )
+
+    assert result == (
+        "invalid_request: this Microsoft sign-in client is not preauthorized for "
+        "the requested API; use XMLA/TOM or an approved tenant app registration"
+    )
+
+
+def test_bundled_tom_helper_contains_framework_dependent_runtime():
+    bundle = (
+        Path(__file__).resolve().parents[1]
+        / "vendor"
+        / "pbi_metadata-win-x64.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        names = set(archive.namelist())
+
+    assert {
+        "Metronome.PowerBiMetadata.exe",
+        "Metronome.PowerBiMetadata.dll",
+        "Metronome.PowerBiMetadata.deps.json",
+        "Metronome.PowerBiMetadata.runtimeconfig.json",
+        "Microsoft.AnalysisServices.Tabular.dll",
+    } <= names
+
+
+def test_setup_prefers_bundled_tom_helper_before_optional_local_build():
+    setup = (Path(__file__).resolve().parents[1] / "setup.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    bundle_extract = "Expand-Archive -Path $TomBundle"
+    local_build = "& $DotnetCommand.Source publish $TomProject"
+    assert bundle_extract in setup
+    assert local_build in setup
+    assert setup.index(bundle_extract) < setup.index(local_build)
+    assert "if (-not $TomReady -and $DotnetCommand" in setup
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or platform.machine().casefold() not in {"amd64", "x86_64"},
+    reason="bundled helper targets production Windows x64",
+)
+def test_bundled_tom_helper_starts_on_windows_x64():
+    bundle = (
+        Path(__file__).resolve().parents[1]
+        / "vendor"
+        / "pbi_metadata-win-x64.zip"
+    )
+    with tempfile.TemporaryDirectory(prefix="metronome-tom-bundle-") as folder:
+        with zipfile.ZipFile(bundle) as archive:
+            archive.extractall(folder)
+        completed = subprocess.run(
+            [str(Path(folder) / "Metronome.PowerBiMetadata.exe")],
+            input="{}",
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+
+    assert completed.returncode == 1
+    assert (
+        "workspace, datasetid, and accesstoken are required"
+        in completed.stderr.casefold()
+    )
 
 
 def test_fabric_long_running_operation_fetches_result_after_success(monkeypatch):
