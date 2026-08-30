@@ -1018,6 +1018,61 @@ def test_tests_gate_api_failure_is_unavailable_and_redacts_token(
     assert "[redacted]" in result["error"]
 
 
+def test_tests_gate_reuses_prior_exact_sha_pass_during_network_timeout(
+    update_env, monkeypatch
+):
+    calls = 0
+
+    def fetch(target):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _passed_tests_gate(target)
+        raise RuntimeError("SSL handshake operation timed out")
+
+    monkeypatch.setattr(main, "_fetch_tests_workflow_gate", fetch)
+
+    first = REAL_TESTS_GATE(TARGET, force=True)
+    second = REAL_TESTS_GATE(TARGET, force=True)
+
+    assert first["state"] == second["state"] == "passed"
+    assert second["target_commit"] == TARGET
+    assert second["run_id"] == first["run_id"]
+    assert "previously passed" in second["message"]
+    assert "retry automatically" in second["verification_warning"]
+
+
+def test_advisory_agent_queue_does_not_block_production_update(update_env):
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO agent_runs
+                   (question, focus_type, focus_id, status, actor, model,
+                    provider_mode, config_fingerprint, prompt_version)
+               VALUES ('queued advisory', 'alert', '1', 'queued', 'System',
+                       'local-model', 'local', 'fingerprint', 'v1'),
+                      ('running advisory', 'alert', '2', 'running', 'System',
+                       'local-model', 'local', 'fingerprint', 'v1')"""
+        )
+        active = main._active_update_work(db)
+
+    assert "agent_runs" not in active
+
+
+def test_update_timeout_is_operator_readable():
+    raw = (
+        "RuntimeError: GitHub request failed: _ssl.c:1011: The handshake "
+        "operation timed out; Invoke-RestMethod: The operation has timed out. "
+        "CategoryInfo InvalidOperation WebException"
+    )
+
+    result = main._safe_update_error(raw)
+
+    assert result == (
+        "GitHub did not answer before the office network timeout. "
+        "Metronome will retry automatically; no test or installation failed."
+    )
+
+
 def test_system_updates_get_exposes_readiness_and_apply_gate(
     update_env, monkeypatch
 ):

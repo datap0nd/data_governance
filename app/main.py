@@ -1103,6 +1103,20 @@ def _safe_update_error(value: object) -> str:
         r"\1=[redacted]",
         message,
     )
+    lowered = message.casefold()
+    if (
+        "handshake operation timed out" in lowered
+        or "operation has timed out" in lowered
+        or "operation timed out" in lowered
+        or (
+            "timed out" in lowered
+            and ("ssl" in lowered or "github" in lowered)
+        )
+    ):
+        return (
+            "GitHub did not answer before the office network timeout. "
+            "Metronome will retry automatically; no test or installation failed."
+        )
     return message[:500]
 
 
@@ -1230,14 +1244,26 @@ def _tests_gate(target_commit: str, *, force: bool = False) -> dict:
         try:
             result = _fetch_tests_workflow_gate(target)
         except Exception as exc:
-            checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            result = _tests_gate_record(
-                target or None,
-                "unavailable",
-                "Metronome could not verify the Tests workflow; installation is blocked.",
-                checked_at=checked_at,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            if cached and cached[1].get("state") == "passed":
+                # A network timeout cannot invalidate a successful result that
+                # was already observed for this exact immutable commit SHA.
+                result = dict(cached[1])
+                result["message"] = (
+                    "This exact main commit previously passed Tests. The latest "
+                    "GitHub status refresh timed out, so the verified result was reused."
+                )
+                result["verification_warning"] = _safe_update_error(
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                result = _tests_gate_record(
+                    target or None,
+                    "unavailable",
+                    "Metronome could not verify the Tests workflow; installation is blocked.",
+                    checked_at=checked_at,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         _TESTS_GATE_CACHE[target] = (now, result)
         if len(_TESTS_GATE_CACHE) > 8:
             prior_targets = [key for key in _TESTS_GATE_CACHE if key != target]
@@ -1405,7 +1431,10 @@ def _active_update_work(db) -> dict[str, int]:
         # launched sync must finish before services stop.
         "pbi_sync_runs": ("pbi_sync_runs", "status='launched'"),
         "pbi_recurrence_runs": ("pbi_recurrence_runs", "status='running'"),
-        "agent_runs": ("agent_runs", "status IN ('queued','running')"),
+        # AI investigations are advisory, durable, and recovered after a
+        # restart. They must not keep production code pinned for minutes while
+        # a local model drains its queue. The update drain still prevents new
+        # scheduled/manual investigations from starting during handoff.
         "outlook_dispatches": ("outlook_dispatches", "status='pending'"),
     }
     active: dict[str, int] = {}
