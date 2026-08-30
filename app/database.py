@@ -1,4 +1,5 @@
 import logging
+import re
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -1664,6 +1665,34 @@ def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) 
     )
 
 
+_ADD_COLUMN_MIGRATION = re.compile(
+    r"^\s*ALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD\s+COLUMN\b",
+    re.IGNORECASE,
+)
+
+
+def _run_existing_table_column_migrations(conn: sqlite3.Connection) -> None:
+    """Upgrade legacy table columns before creating dependent schema objects.
+
+    ``SCHEMA`` is also the fresh-install definition and therefore contains
+    indexes and views that reference newer columns. ``CREATE TABLE IF NOT
+    EXISTS`` does not add those columns to a legacy table, so executing the
+    full script first used to fail before the normal migration loop could run.
+    Only idempotent ``ADD COLUMN`` statements for tables that already exist are
+    advanced here; every other migration keeps its original ordering below.
+    """
+    for migration in MIGRATIONS:
+        match = _ADD_COLUMN_MIGRATION.match(migration)
+        if not match or not _table_exists(conn, match.group(1)):
+            continue
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError as exc:
+            message = str(exc).casefold()
+            if "duplicate column" not in message and "already exists" not in message:
+                raise
+
+
 def _remove_query_change_feature(conn: sqlite3.Connection) -> str | None:
     """Remove legacy query history only after creating a pre-removal backup."""
     has_versions = _table_exists(conn, "query_versions")
@@ -1724,6 +1753,9 @@ def init_db():
         logging.getLogger(__name__).exception(
             "Legacy query-history cleanup failed; data was preserved and startup will continue"
         )
+    # Existing installations must receive new columns before SCHEMA creates
+    # indexes/views that depend on them (for example source_candidate_id).
+    _run_existing_table_column_migrations(conn)
     conn.executescript(SCHEMA)
     scheduled_tasks_rebuild_complete = _scheduled_tasks_has_host_unique_key(conn)
     for migration in MIGRATIONS:

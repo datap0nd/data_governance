@@ -123,3 +123,73 @@ def test_failed_legacy_cleanup_preserves_data_but_does_not_block_startup(monkeyp
             assert live.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sources'"
             ).fetchone() is not None
+
+
+def test_legacy_report_tables_get_columns_before_dependent_schema(monkeypatch):
+    """Reproduce the production upgrade that failed on source_candidate_id."""
+    with tempfile.TemporaryDirectory(prefix="metronome-legacy-report-tables-") as folder:
+        db_path = Path(folder) / "governance.db"
+        monkeypatch.setattr(database, "DB_PATH", str(db_path))
+        with closing(sqlite3.connect(db_path)) as legacy:
+            legacy.executescript(
+                """
+                CREATE TABLE sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    type TEXT NOT NULL,
+                    connection_info TEXT,
+                    source_query TEXT,
+                    owner TEXT,
+                    refresh_schedule TEXT,
+                    tags TEXT,
+                    discovered_by TEXT DEFAULT 'manual',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    tmdl_path TEXT,
+                    owner TEXT,
+                    recipients TEXT,
+                    frequency TEXT,
+                    last_published DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE report_tables (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id INTEGER REFERENCES reports(id),
+                    table_name TEXT NOT NULL,
+                    source_id INTEGER REFERENCES sources(id),
+                    source_expression TEXT,
+                    last_scanned DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(report_id, table_name)
+                );
+                INSERT INTO sources(id, name, type) VALUES (1, 'legacy_table', 'postgres');
+                INSERT INTO reports(id, name) VALUES (1, 'Legacy report');
+                INSERT INTO report_tables(id, report_id, table_name, source_id)
+                    VALUES (1, 1, 'LegacyModel', 1);
+                """
+            )
+            legacy.commit()
+
+        database.init_db()
+        database.init_db()
+
+        with closing(sqlite3.connect(db_path)) as upgraded:
+            columns = {
+                row[1] for row in upgraded.execute("PRAGMA table_info(report_tables)")
+            }
+            assert {
+                "source_candidate_id",
+                "source_resolution_status",
+                "source_resolution_reason",
+            }.issubset(columns)
+            assert upgraded.execute(
+                "SELECT table_name, source_id FROM report_tables WHERE id=1"
+            ).fetchone() == ("LegacyModel", 1)
+            indexes = {
+                row[1] for row in upgraded.execute("PRAGMA index_list(report_tables)")
+            }
+            assert "idx_report_tables_candidate_id" in indexes
