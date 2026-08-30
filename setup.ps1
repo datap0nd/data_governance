@@ -11,7 +11,8 @@
 
 param(
     [switch]$AuthenticateFlows,
-    [switch]$ResetServiceCredentials
+    [switch]$ResetServiceCredentials,
+    [switch]$Unattended
 )
 
 # --- Self-elevate to Admin if needed ---
@@ -19,6 +20,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     $ElevationArguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($AuthenticateFlows) { $ElevationArguments += " -AuthenticateFlows" }
     if ($ResetServiceCredentials) { $ElevationArguments += " -ResetServiceCredentials" }
+    if ($Unattended) { $ElevationArguments += " -Unattended" }
     Start-Process powershell.exe $ElevationArguments -Verb RunAs
     exit
 }
@@ -28,7 +30,7 @@ trap {
     Write-Host ""
     Write-Host "SETUP FAILED: $_" -ForegroundColor Red
     Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
-    pause
+    if (-not $Unattended) { pause }
     exit 1
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -144,7 +146,7 @@ $PyZipUrl    = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd
 # --- Safety check ---
 if (-not (Test-Path "$CodeDir\app\main.py")) {
     Write-Host "ERROR: Run this from inside the data_governance-main folder." -ForegroundColor Red
-    pause
+    if (-not $Unattended) { pause }
     exit 1
 }
 
@@ -167,6 +169,9 @@ if (-not (Test-Path $PyExe)) {
     try {
         Invoke-WebRequest -Uri $PyZipUrl -OutFile $PyZipPath -UseBasicParsing
     } catch {
+        if ($Unattended) {
+            throw "Portable Python download failed during unattended setup: $($_.Exception.Message)"
+        }
         Write-Host "  Direct download failed, trying Edge..." -ForegroundColor Yellow
         Start-Process "msedge" $PyZipUrl
         $timeout = 120
@@ -184,7 +189,7 @@ if (-not (Test-Path $PyExe)) {
                 Write-Host "  Timed out. Download Python manually from:" -ForegroundColor Red
                 Write-Host "  $PyZipUrl" -ForegroundColor White
                 Write-Host "  Extract to: $PyDir" -ForegroundColor White
-                pause
+                if (-not $Unattended) { pause }
                 exit 1
             }
         }
@@ -208,7 +213,7 @@ if (-not (Test-Path $PyExe)) {
         Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipPath -UseBasicParsing
     } catch {
         Write-Host "  Could not download get-pip.py" -ForegroundColor Red
-        pause
+        if (-not $Unattended) { pause }
         exit 1
     }
     & $PyExe $getPipPath --no-warn-script-location -q
@@ -232,8 +237,11 @@ try {
     if ($GitHubToken) {
         Write-Host "  Check that DG_GITHUB_TOKEN has read access to this private repo." -ForegroundColor Red
         Write-Host "  Required GitHub permission: Contents = Read." -ForegroundColor Red
-        pause
+        if (-not $Unattended) { pause }
         exit 1
+    }
+    if ($Unattended) {
+        throw "GitHub archive download failed during unattended setup: $($_.Exception.Message)"
     }
     Write-Host "  Trying via Edge..." -ForegroundColor Yellow
 
@@ -251,7 +259,7 @@ try {
         }
         if ($elapsed -ge $timeout) {
             Write-Host "  Timed out waiting for download." -ForegroundColor Red
-            pause
+            if (-not $Unattended) { pause }
             exit 1
         }
         if ($elapsed % 15 -eq 0) {
@@ -365,6 +373,7 @@ if (-not $env:DG_SETUP_RELAUNCHED) {
         $RelaunchArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $SetupScriptPath)
         if ($AuthenticateFlows) { $RelaunchArguments += "-AuthenticateFlows" }
         if ($ResetServiceCredentials) { $RelaunchArguments += "-ResetServiceCredentials" }
+        if ($Unattended) { $RelaunchArguments += "-Unattended" }
         & powershell.exe @RelaunchArguments
         exit $LASTEXITCODE
     }
@@ -509,6 +518,9 @@ if ($env:DG_SVC_PASSWORD) {
     $ServicePassword = $env:DG_SVC_PASSWORD
     $SetServiceCredentials = $true
 } elseif ($ResetServiceCredentials -or $NeedsServiceCredential) {
+    if ($Unattended) {
+        throw "Unattended setup cannot request a Windows password. Run setup.ps1 once manually to register the services and update task."
+    }
     $cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Enter your Windows ACCOUNT password (not a Windows Hello PIN) for Metronome services"
     $ServicePassword = $cred.GetNetworkCredential().Password
     $SetServiceCredentials = $true
@@ -571,9 +583,9 @@ Register-ScheduledTask -TaskName $HeadedFlowTaskName -Action $HeadedTaskAction `
     -Principal $HeadedTaskPrincipal -Settings $HeadedTaskSettings -Force | Out-Null
 Write-Host "  Headed Flows worker registered for on-demand interactive runs." -ForegroundColor Green
 
-# Register one fixed, non-interactive update task while setup already has the
-# service account credential. The web app only writes an exact-SHA request and
-# starts this task; later updates never recreate services or ask for a password.
+# Register one fixed, non-interactive bridge while setup already has the
+# service account credential. The web app writes an exact-SHA request and
+# starts this task; the bridge runs this same setup.ps1 with -Unattended.
 $AutoUpdateScript = Join-Path $CodeDir "tools\apply_update.ps1"
 $AutoUpdateRoot = Join-Path $ProjectDir "updates"
 $AutoUpdateRequest = Join-Path $AutoUpdateRoot "pending_update.json"
@@ -589,7 +601,7 @@ $AutoUpdateSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -MultipleInstances IgnoreNew
 if ($ServicePassword) {
     Register-ScheduledTask -TaskName $AutoUpdateTaskName -Action $AutoUpdateAction `
-        -Settings $AutoUpdateSettings -Description "Apply a pinned Metronome update with backup, health check, and rollback" `
+        -Settings $AutoUpdateSettings -Description "Run setup.ps1 for the exact GitHub main commit detected by Metronome" `
         -User "$env:USERDOMAIN\$env:USERNAME" -Password $ServicePassword -RunLevel Highest -Force | Out-Null
     Write-Host "  Unattended auto-update task registered." -ForegroundColor Green
 } elseif ($ExistingAutoUpdateTask) {
@@ -811,11 +823,14 @@ if ($MetronomeHealthy -and $svc -and $svc.Status -eq "Running") {
     Write-Host "Done. MX Analytics running at http://localhost:$Port" -ForegroundColor Green
     Write-Host "Deployed version: $ver" -ForegroundColor Cyan
     Write-Host "  Also shown in the web UI top bar and at http://localhost:$Port/api/version" -ForegroundColor DarkGray
-    Start-Process "http://localhost:$Port"
+    if (-not $Unattended) { Start-Process "http://localhost:$Port" }
     Write-Host ""
 } else {
     Write-Host ""
     Write-Host "WARNING: Service not running. Check $LogDir\" -ForegroundColor Red
     Write-Host ""
+    if ($Unattended) {
+        throw "Metronome failed its localhost health check after unattended setup. Check $LogDir\"
+    }
 }
-pause
+if (-not $Unattended) { pause }

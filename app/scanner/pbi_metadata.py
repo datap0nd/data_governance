@@ -182,12 +182,16 @@ def _read_with_tom(report: dict, workspace: dict) -> DiscoveredReport:
     helper_path = Path(helper)
     if not helper_path.is_file():
         raise PowerBiMetadataError(f"XMLA/TOM helper is unavailable at {helper_path}.")
-    token = get_access_token()["access_token"]
+    token_record = get_access_token()
+    token = token_record["access_token"]
     request = {
         "workspace": workspace["name"],
         "datasetId": report["dataset_id"],
         "datasetName": report.get("dataset_name") or report["name"],
         "accessToken": token,
+        "accessTokenExpiresAt": int(
+            token_record.get("access_token_expires_at") or (time.time() + 300)
+        ),
     }
     try:
         completed = subprocess.run(

@@ -200,26 +200,34 @@ def test_up_to_date_check_does_not_reserve_or_launch(update_env, monkeypatch):
     assert _attempt_rows() == []
 
 
-def test_busy_check_reports_work_and_does_not_reserve(update_env, monkeypatch):
+def test_new_commit_launches_setup_bridge_even_while_work_is_active(
+    update_env, monkeypatch
+):
     with database.get_db() as db:
         db.execute(
             """INSERT INTO scanner_jobs(job_type, trigger_source, status)
                VALUES ('full_scan', 'manual', 'running')"""
         )
     monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
+    calls = []
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("busy updater launched"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "attempt-while-busy",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
 
     result = main._scheduled_auto_update(force=True)
 
-    assert result["status"] == "waiting_for_idle"
-    assert "scanner_jobs=1" in result["last_error"]
-    assert result["draining"] is True
-    assert main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-    assert _attempt_rows() == []
+    assert result["status"] == "update_launched"
+    assert calls == [(TARGET, "automatic")]
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
 
 
 def test_nonterminal_pipeline_stage_is_busy(update_env):
@@ -283,73 +291,76 @@ def test_idle_check_reserves_exact_latest_commit(update_env, monkeypatch):
     assert calls == [(TARGET, "automatic")]
     assert result["status"] == "update_launched"
     assert result["last_attempt_commit"] == TARGET
-    assert result["draining"] is True
-    assert main._AUTO_UPDATE_DRAIN_EVENT.is_set()
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
 
 
-@pytest.mark.parametrize(
-    ("gate_state", "expected_status"),
-    [
-        ("pending", "waiting_for_tests"),
-        ("failed", "tests_failed"),
-        ("unavailable", "tests_check_failed"),
-    ],
-)
-def test_scheduled_update_fails_closed_on_tests_before_drain(
-    update_env, monkeypatch, gate_state, expected_status
-):
+def test_scheduled_update_does_not_wait_for_a_tests_gate(update_env, monkeypatch):
     latest_calls = []
 
     def latest(*, force=False):
         latest_calls.append(force)
         return TARGET, None
 
-    gate = _passed_tests_gate(TARGET)
-    gate.update(
-        {
-            "state": gate_state,
-            "status": "completed" if gate_state == "failed" else "queued",
-            "conclusion": "failure" if gate_state == "failed" else None,
-            "message": f"Tests gate is {gate_state}.",
-            "error": "GitHub unavailable" if gate_state == "unavailable" else None,
-        }
-    )
     monkeypatch.setattr(main, "_latest_commit", latest)
-    monkeypatch.setattr(main, "_tests_gate", lambda *_args, **_kwargs: dict(gate))
+    monkeypatch.setattr(
+        main,
+        "_tests_gate",
+        lambda *_args, **_kwargs: pytest.fail("automatic setup launch checked CI"),
+    )
+    calls = []
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("CI-blocked update reserved a restart"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "direct-setup",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
     main._AUTO_UPDATE_DRAIN_EVENT.set()
 
     result = main._scheduled_auto_update(force=True)
 
-    assert result["status"] == expected_status
+    assert result["status"] == "update_launched"
     assert result["draining"] is False
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
     assert latest_calls == [True]
-    assert _attempt_rows() == []
+    assert calls == [(TARGET, "automatic")]
 
 
-def test_scheduled_update_rechecks_main_after_tests_before_reservation(
+def test_scheduled_update_launches_the_single_detected_exact_commit(
     update_env, monkeypatch
 ):
-    latest_values = iter([(TARGET, None), (OTHER_TARGET, None)])
-    monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: next(latest_values))
+    calls = []
+    latest_calls = []
+    monkeypatch.setattr(
+        main,
+        "_latest_commit",
+        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
+    )
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("stale tested commit was reserved"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "single-detection",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
 
     result = main._scheduled_auto_update(force=True)
 
-    assert result["status"] == "main_changed_during_tests_check"
-    assert result["latest_commit"] == OTHER_TARGET
+    assert result["status"] == "update_launched"
+    assert result["latest_commit"] == TARGET
     assert result["draining"] is False
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-    assert _attempt_rows() == []
+    assert latest_calls == [True]
+    assert calls == [(TARGET, "automatic")]
 
 
 def test_scheduled_launch_failure_releases_drain(update_env, monkeypatch):
@@ -488,12 +499,13 @@ def test_active_attempt_precedes_github_and_up_to_date_branch(
 
     assert result["status"] == "waiting_for_update_restart"
     assert result["last_attempt_commit"] == TARGET
-    assert result["draining"] is True
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
     active, _latest = main._latest_update_attempts()
     assert active["attempt_id"] == attempt["attempt_id"]
 
 
-def test_disabling_does_not_release_drain_for_an_already_launched_attempt(
+def test_disabling_keeps_an_already_launched_attempt_without_a_drain(
     update_env, monkeypatch
 ):
     monkeypatch.setattr(main, "_launch_registered_auto_update_task", lambda: None)
@@ -510,7 +522,8 @@ def test_disabling_does_not_release_drain_for_an_already_launched_attempt(
 
     assert result["enabled"] is False
     assert result["status"] == "waiting_for_update_restart"
-    assert result["draining"] is True
+    assert result["draining"] is False
+    assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
     assert result["last_attempt_commit"] == TARGET
     active, _latest = main._latest_update_attempts()
     assert active["attempt_id"] == attempt["attempt_id"]
@@ -1096,7 +1109,7 @@ def test_system_updates_get_exposes_readiness_and_apply_gate(
     assert payload["auto_update"]["enabled"] is True
 
 
-def test_system_updates_can_apply_requires_tests_for_the_latest_sha(
+def test_system_updates_tests_are_informational_for_the_latest_sha(
     update_env, monkeypatch
 ):
     monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
@@ -1117,7 +1130,7 @@ def test_system_updates_can_apply_requires_tests_for_the_latest_sha(
 
     assert response.status_code == 200
     assert response.json()["tests_gate"]["state"] == "pending"
-    assert response.json()["can_apply"] is False
+    assert response.json()["can_apply"] is True
 
 
 def test_system_updates_cannot_apply_a_cached_sha_when_main_check_failed(
@@ -1193,7 +1206,9 @@ def test_check_api_forces_refresh_without_applying(update_env, monkeypatch):
 
     assert response.status_code == 200
     assert force_values[0] is True
-    assert gate_force_values[0] == (TARGET, True)
+    # The response still reports CI as informational status, but the update
+    # check itself no longer waits on or force-refreshes that gate.
+    assert gate_force_values[0] == (TARGET, False)
     assert response.json()["auto_update"]["status"] == "update_available"
     assert response.json()["can_apply"] is True
 
@@ -1232,61 +1247,75 @@ def test_apply_apis_launch_the_server_selected_exact_sha(
     assert calls == [(TARGET, "manual")]
 
 
-@pytest.mark.parametrize(
-    ("gate_state", "expected_code"),
-    [("pending", 409), ("failed", 409), ("unavailable", 503)],
-)
-def test_apply_api_requires_tests_success_before_drain(
-    update_env, monkeypatch, gate_state, expected_code
-):
-    gate = _passed_tests_gate(TARGET)
-    gate.update(
-        state=gate_state,
-        status="completed" if gate_state == "failed" else "queued",
-        conclusion="failure" if gate_state == "failed" else None,
-        message=f"Tests gate is {gate_state}.",
-        error="GitHub unavailable" if gate_state == "unavailable" else None,
-    )
+def test_apply_api_launches_setup_without_waiting_for_tests(update_env, monkeypatch):
     monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: (TARGET, None))
-    monkeypatch.setattr(main, "_tests_gate", lambda *_args, **_kwargs: gate)
+    monkeypatch.setattr(
+        main,
+        "_tests_gate",
+        lambda *_args, **_kwargs: pytest.fail("manual setup launch checked CI"),
+    )
+    monkeypatch.setattr(
+        main, "_registered_auto_update_task_ready", lambda: (True, None)
+    )
+    calls = []
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("CI-blocked manual update launched"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "manual-direct-setup",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
     main._AUTO_UPDATE_DRAIN_EVENT.set()
     client = TestClient(main.app)
 
     response = client.post("/api/system/updates/apply")
 
-    assert response.status_code == expected_code
-    assert response.json()["detail"]["tests_gate"]["state"] == gate_state
+    assert response.status_code == 202
+    assert response.json()["status"] == "launched"
+    assert calls == [(TARGET, "manual")]
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-    assert _attempt_rows() == []
 
 
-def test_apply_api_does_not_reserve_a_sha_superseded_after_tests(
+def test_apply_api_launches_the_single_detected_exact_sha(
     update_env, monkeypatch
 ):
-    latest_values = iter([(TARGET, None), (OTHER_TARGET, None)])
-    monkeypatch.setattr(main, "_latest_commit", lambda **_kwargs: next(latest_values))
+    calls = []
+    latest_calls = []
+    monkeypatch.setattr(
+        main,
+        "_latest_commit",
+        lambda **_kwargs: latest_calls.append(True) or (TARGET, None),
+    )
+    monkeypatch.setattr(
+        main, "_registered_auto_update_task_ready", lambda: (True, None)
+    )
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("superseded commit was reserved"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "single-manual-detection",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
     client = TestClient(main.app)
 
     response = client.post("/api/system/updates/apply")
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["previous_commit"] == TARGET
-    assert response.json()["detail"]["latest_commit"] == OTHER_TARGET
+    assert response.status_code == 202
+    assert response.json()["latest_commit"] == TARGET
+    assert latest_calls == [True]
+    assert calls == [(TARGET, "manual")]
     assert not main._AUTO_UPDATE_DRAIN_EVENT.is_set()
-    assert _attempt_rows() == []
 
 
-def test_apply_api_refuses_to_launch_while_work_is_active(
+def test_apply_api_launches_setup_while_work_is_active(
     update_env, monkeypatch
 ):
     with database.get_db() as db:
@@ -1298,17 +1327,24 @@ def test_apply_api_refuses_to_launch_while_work_is_active(
     monkeypatch.setattr(
         main, "_registered_auto_update_task_ready", lambda: (True, None)
     )
+    calls = []
     monkeypatch.setattr(
         main,
         "_reserve_and_launch_update",
-        lambda *_args, **_kwargs: pytest.fail("busy apply API launched"),
+        lambda target, source: calls.append((target, source))
+        or {
+            "attempt_id": "busy-manual",
+            "target_commit": target,
+            "status": "launched",
+            "active": True,
+        },
     )
     client = TestClient(main.app)
 
     response = client.post("/api/system/updates/apply")
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["active_work"] == {"scanner_jobs": 1}
+    assert response.status_code == 202
+    assert calls == [(TARGET, "manual")]
 
 
 def test_apply_api_returns_existing_active_attempt_without_second_launch(
@@ -1348,7 +1384,7 @@ def test_update_drain_middleware_blocks_new_work_but_not_worker_progress(
     assert progress.status_code != 503
 
 
-def test_auto_update_waits_for_a_production_request_that_started_before_drain(
+def test_auto_update_launches_setup_while_a_production_request_is_running(
     update_env, monkeypatch
 ):
     from app.routers import data_quality
@@ -1381,14 +1417,9 @@ def test_auto_update_waits_for_a_production_request_that_started_before_drain(
         request_future = executor.submit(client.post, "/api/data-quality/run")
         assert started.wait(10), "production request never reached its endpoint"
 
-        waiting = main._scheduled_auto_update(force=True)
+        launched = main._scheduled_auto_update(force=True)
 
-        assert waiting["status"] == "waiting_for_idle"
-        assert "in_flight_operations=1" in waiting["last_error"]
-        assert launches == []
+        assert launched["status"] == "update_launched"
+        assert launches == [(TARGET, "automatic")]
         release.set()
         assert request_future.result(timeout=10).status_code == 200
-
-    launched = main._scheduled_auto_update(force=True)
-    assert launched["status"] == "update_launched"
-    assert launches == [(TARGET, "automatic")]

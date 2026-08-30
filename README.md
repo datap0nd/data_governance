@@ -43,17 +43,12 @@ All registered users have the same application access, including remote PCs on t
 ### Automatic main updates
 
 Production installs watch the GitHub `main` branch every five minutes by
-default. When a new commit appears, Metronome first waits for that exact
-commit's GitHub Actions **Tests** workflow to pass. It then pauses new work
-starts, lets active scans, Flows, Pipelines, AI runs, Power BI work, and Outlook
-hand-offs finish, and asks one pre-registered elevated Windows task to install
-that exact 40-character commit. The updater stages and compiles the release, proves
-its dependencies can install offline, takes a WAL-aware SQLite backup and a
-code snapshot, restarts the existing services without changing their service
-identity, and verifies `/api/version`. A failed health check restores the prior
-code and database snapshot. The updater retains the current and two prior
-attempt snapshots; a host power loss or forced process kill during replacement
-can still require manual recovery from those artifacts.
+default. When a new commit appears, Metronome immediately starts one
+pre-registered elevated Windows task. That task passes the detected exact
+40-character commit to `setup.ps1 -Unattended`; `setup.ps1` remains the only
+installer and performs the same download, service restart, dependency install,
+and localhost health check as a manual run. Active-work and GitHub Tests status
+remain visible for information but do not delay the requested update.
 
 Run `setup.ps1` interactively once after deploying this version so it can
 register the fixed `Metronome_Auto_Update` task using the existing service
@@ -115,8 +110,10 @@ tested Windows helper included in each release, without contacting NuGet; a
 local .NET build is only a fallback. The helper targets the Windows .NET
 Framework already included with supported Windows 10/11 installations, so it
 does not require the separate x64 .NET 8 runtime. Set `DG_PBI_TOM_HELPER` only
-to use a different published helper path. The optional Fabric fallback requires the
-saved account to have read-write access to the semantic model and delegated
+to use a different published helper path. The helper assigns the saved user
+bearer token through the Analysis Services `AccessToken` API; it is not passed
+as a password. The optional Fabric fallback requires the saved account to have
+read-write access to the semantic model and delegated
 `SemanticModel.ReadWrite.All` (or `Item.ReadWrite.All`) consent. Its timeout can
 be changed with `DG_PBI_METADATA_TIMEOUT_SECONDS`.
 

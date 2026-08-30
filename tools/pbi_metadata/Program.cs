@@ -10,6 +10,7 @@ sealed class Request
     public string datasetId { get; set; } = string.Empty;
     public string? datasetName { get; set; }
     public string accessToken { get; set; } = string.Empty;
+    public long accessTokenExpiresAt { get; set; }
 }
 
 sealed class PartitionDto
@@ -88,10 +89,17 @@ static class Program
 
             var workspace = Uri.EscapeDataString(request.workspace.Trim());
             var connectionString =
-                $"DataSource=powerbi://api.powerbi.com/v1.0/myorg/{workspace};" +
-                $"Password={request.accessToken};";
+                $"DataSource=powerbi://api.powerbi.com/v1.0/myorg/{workspace};";
             using (var server = new Server())
             {
+                var expiresAt = request.accessTokenExpiresAt > 0
+                    ? DateTimeOffset.FromUnixTimeSeconds(request.accessTokenExpiresAt)
+                    : DateTimeOffset.UtcNow.AddMinutes(5);
+                server.AccessToken = new Microsoft.AnalysisServices.AccessToken(
+                    request.accessToken,
+                    expiresAt,
+                    null
+                );
                 server.Connect(connectionString);
                 var database = server.Databases.Cast<Database>().FirstOrDefault(item =>
                         string.Equals(item.ID, request.datasetId, StringComparison.OrdinalIgnoreCase))

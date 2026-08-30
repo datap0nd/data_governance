@@ -9743,8 +9743,7 @@ async function renderUpdates() {
     const status = _normalizeUpdateStatus(raw);
     window._updatesStatus = status;
     const active = _updatesAttemptActive(status.activeAttempt) || _UPDATE_ACTIVE_STATES.has(status.status);
-    const testsPassed = status.testsGate.state === "passed";
-    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !testsPassed || !status.readiness.ready || status.blockers.length > 0 || active;
+    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !status.readiness.ready || active;
     const installReason = active
         ? "An update attempt is already active."
         : status.upToDate === true
@@ -9753,22 +9752,13 @@ async function renderUpdates() {
                 ? "Resolve the latest GitHub check failure before installing."
             : !status.updateAvailable
                 ? "Check GitHub main before installing."
-                : !testsPassed
-                    ? status.testsGate.error || status.testsGate.message
             : !status.readiness.ready
                 ? status.readiness.reason
-                : status.blockers.length
-                    ? "Wait for active production work to finish."
-                    : "Install the latest exact main-branch commit.";
+                : "Run setup.ps1 for the latest exact main-branch commit.";
     const lastAttempt = status.activeAttempt || status.latestAttempt;
     const latestLabel = status.latestCommit ? _updatesShortCommit(status.latestCommit) : "Check required";
-    const testsReleaseStatus = {
-        pending: "waiting_for_tests",
-        failed: "tests_failed",
-        unavailable: "tests_check_failed",
-    }[status.testsGate.state];
     const releaseStatus = status.updateAvailable
-        ? testsPassed ? "update_available" : (testsReleaseStatus || status.status)
+        ? status.status === "up_to_date" ? "update_available" : status.status
         : status.upToDate === true ? "up_to_date" : status.status;
     const overallLabel = _updatesHumanize(releaseStatus);
     const fallbackAttempt = status.lastAttemptAt || status.lastAttemptCommit
@@ -9784,7 +9774,7 @@ async function renderUpdates() {
         <div class="page-header updates-header">
             <div>
                 <h1>Updates</h1>
-                <span class="subtitle">Watch GitHub main and apply one exact, idle-safe release</span>
+                <span class="subtitle">Watch GitHub main and run the existing setup.ps1 when it changes</span>
             </div>
             <span class="badge ${_updatesStatusBadge(releaseStatus)}">${esc(overallLabel)}</span>
         </div>
@@ -9816,19 +9806,18 @@ async function renderUpdates() {
                         <small>${esc(status.taskName)}</small>
                     </article>
                     <article>
-                        <span>Main tests</span>
+                        <span>Main tests (information)</span>
                         <strong>${esc(_updatesHumanize(status.testsGate.state))}</strong>
                         <small>${esc(status.testsGate.workflow)}${status.testsGate.checkedAt ? ` · ${_updatesWhen(status.testsGate.checkedAt)}` : ""}</small>
                     </article>
                 </div>
                 ${status.checkError ? `<div class="updates-warning"><strong>Latest check failed:</strong> ${esc(status.checkError)}</div>` : ""}
                 ${!status.readiness.ready ? `<div class="updates-warning"><strong>Automatic install unavailable:</strong> ${esc(status.readiness.reason)}</div>` : ""}
-                ${status.updateAvailable && !testsPassed ? `<div class="${status.testsGate.state === "failed" || status.testsGate.state === "unavailable" ? "updates-error" : "updates-warning"}"><strong>Tests gate:</strong> ${esc(status.testsGate.error || status.testsGate.message)}</div>` : ""}
             </section>
 
             <section class="settings-panel updates-control" aria-labelledby="updates-control-heading">
                 <div class="section-header">
-                    <div><h2 id="updates-control-heading">Automatic main updates</h2><p>When enabled, a fresh update is installed only after Metronome confirms production work is idle.</p></div>
+                    <div><h2 id="updates-control-heading">Automatic main updates</h2><p>When enabled, finding a newer GitHub main commit immediately launches setup.ps1 for that exact commit.</p></div>
                 </div>
                 <form id="updates-settings-form">
                     <label class="updates-toggle">
@@ -9844,7 +9833,7 @@ async function renderUpdates() {
 
             <section class="settings-panel updates-blockers" aria-labelledby="updates-blockers-heading">
                 <div class="section-header">
-                    <div><h2 id="updates-blockers-heading">Production readiness</h2><p>Automatic and manual installs fail closed while active work could be interrupted.</p></div>
+                    <div><h2 id="updates-blockers-heading">Current work</h2><p>Shown for awareness only. Updates now behave like running setup.ps1 manually and do not wait here.</p></div>
                 </div>
                 ${status.blockers.length
                     ? `<ul>${status.blockers.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`
@@ -9860,7 +9849,7 @@ async function renderUpdates() {
 
             <section class="settings-panel updates-actions" aria-labelledby="updates-actions-heading">
                 <div class="section-header">
-                    <div><h2 id="updates-actions-heading">Manual actions</h2><p>Check now refreshes GitHub state. Install now reserves the latest exact commit and restarts the service.</p></div>
+                    <div><h2 id="updates-actions-heading">Manual actions</h2><p>Check now refreshes GitHub state. Install now launches setup.ps1 for the latest exact commit.</p></div>
                 </div>
                 <div class="updates-action-row">
                     <button type="button" class="btn-outline" id="btn-check-updates" ${active ? "disabled" : ""}>Check now</button>
@@ -9957,7 +9946,7 @@ async function _runUpdateAction(kind) {
         button.disabled = true;
         button.textContent = kind === "check" ? "Checking..." : "Launching...";
     }
-    if (live) live.textContent = kind === "check" ? "Checking GitHub main..." : "Reserving the latest commit...";
+    if (live) live.textContent = kind === "check" ? "Checking GitHub main..." : "Launching setup.ps1...";
     try {
         const endpoint = kind === "check" ? "/api/system/updates/check" : "/api/system/updates/apply";
         const result = await apiPost(endpoint);
@@ -10014,7 +10003,7 @@ function bindUpdatesPage() {
     document.getElementById("btn-install-update")?.addEventListener("click", () => {
         const status = window._updatesStatus || {};
         const target = _updatesShortCommit(status.latestCommit);
-        if (!confirm(`Install GitHub main commit ${target} now? Metronome will restart after confirming production work is idle.`)) return;
+        if (!confirm(`Run setup.ps1 for GitHub main commit ${target} now? Metronome will restart during setup.`)) return;
         _runUpdateAction("apply");
     });
     if (_updatesAttemptActive(window._updatesStatus?.activeAttempt) && !window._updateReconnectTimer) {

@@ -288,6 +288,62 @@ def test_bundled_tom_helper_starts_on_windows_x64():
     )
 
 
+def test_tom_helper_uses_the_access_token_api_not_a_password_field():
+    source = (
+        Path(__file__).resolve().parents[1] / "tools" / "pbi_metadata" / "Program.cs"
+    ).read_text(encoding="utf-8")
+
+    assert "server.AccessToken = new Microsoft.AnalysisServices.AccessToken" in source
+    assert "server.Connect(connectionString)" in source
+    assert "Password=" not in source
+
+
+def test_tom_request_includes_the_saved_token_expiry(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="metronome-pbi-token-expiry-") as folder:
+        helper = Path(folder) / "metadata.exe"
+        helper.write_bytes(b"placeholder")
+        captured = {}
+        monkeypatch.setattr(pbi_metadata, "PBI_TOM_HELPER", str(helper))
+        monkeypatch.setattr(
+            pbi_metadata,
+            "get_access_token",
+            lambda: {
+                "access_token": "power-bi-token",
+                "access_token_expires_at": 2_000_000_000,
+            },
+        )
+
+        def run(*_args, **kwargs):
+            captured.update(json.loads(kwargs["input"]))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "tables": [
+                            {
+                                "name": "Facts",
+                                "columns": ["id"],
+                                "measures": [],
+                                "partitions": [],
+                            }
+                        ],
+                        "expressions": {},
+                    }
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(pbi_metadata.subprocess, "run", run)
+
+        result = pbi_metadata._read_with_tom(
+            _report("one", "model-1"), WORKSPACE
+        )
+
+        assert result.metadata_provider == "xmla_tom"
+        assert captured["accessToken"] == "power-bi-token"
+        assert captured["accessTokenExpiresAt"] == 2_000_000_000
+
+
 def test_fabric_long_running_operation_fetches_result_after_success(monkeypatch):
     definition = {"definition": {"parts": []}}
 

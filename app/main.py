@@ -1728,7 +1728,7 @@ def _scheduled_auto_update(*, force: bool = False) -> dict:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         active_attempt, _ = _latest_update_attempts()
         if active_attempt:
-            _request_update_drain()
+            _release_update_drain()
             _set_auto_update_state(
                 status="waiting_for_update_restart",
                 last_checked_at=now,
@@ -1792,80 +1792,10 @@ def _scheduled_auto_update(*, force: bool = False) -> dict:
             )
             return _auto_update_payload(latest_commit=latest)
 
-        tests_gate = _tests_gate(latest, force=force)
-        if tests_gate["state"] != "passed":
-            # Waiting for or failing CI must not pause ordinary production
-            # work.  No durable update attempt exists until the exact SHA has
-            # passed the repository's Tests workflow.
-            _release_update_drain()
-            _set_auto_update_state(
-                status=_tests_gate_auto_status(tests_gate),
-                last_checked_at=now,
-                last_error=tests_gate.get("error") or tests_gate.get("message"),
-            )
-            return _auto_update_payload(latest_commit=latest)
-
-        # CI may take long enough for another merge to reach main. Confirm the
-        # branch still points at the tested SHA before draining work or
-        # reserving a restart, otherwise the next watcher pass evaluates the
-        # newer commit and avoids back-to-back deployments.
-        confirmed_latest, confirm_error = _latest_commit(force=True)
-        if confirm_error or not confirmed_latest:
-            _release_update_drain()
-            _set_auto_update_state(
-                status="check_failed",
-                last_checked_at=now,
-                last_error=_safe_update_error(
-                    confirm_error or "GitHub returned no main commit"
-                ),
-            )
-            return _auto_update_payload(
-                latest_commit=confirmed_latest or latest,
-                check_error=confirm_error,
-            )
-        if confirmed_latest != latest:
-            _release_update_drain()
-            _set_auto_update_state(
-                status="main_changed_during_tests_check",
-                last_checked_at=now,
-                last_error=(
-                    "GitHub main changed while Tests were being verified; "
-                    "the newer commit will be checked next."
-                ),
-            )
-            return _auto_update_payload(latest_commit=confirmed_latest)
-        latest = confirmed_latest
-
-        # Stop scheduler jobs from creating fresh work, then re-check the
-        # durable queues before handing control to the external updater.
-        _request_update_drain()
-        with get_db() as db:
-            active_work = _active_update_work(db)
-        if active_work:
-            summary = ", ".join(
-                f"{name}={count}" for name, count in sorted(active_work.items())
-            )
-            _set_auto_update_state(
-                status="waiting_for_idle",
-                last_checked_at=now,
-                last_error=f"Waiting for active work to finish ({summary})",
-            )
-            return _auto_update_payload(latest_commit=latest)
-
-        with _AUTO_UPDATE_STATE_LOCK:
-            attempted_commit = _AUTO_UPDATE_STATE.get("last_attempt_commit")
-            attempted_at = float(_AUTO_UPDATE_STATE.get("last_attempt_monotonic") or 0.0)
-        if (
-            attempted_commit == latest
-            and time.monotonic() - attempted_at < _AUTO_UPDATE_RETRY_SECONDS
-        ):
-            _release_update_drain()
-            _set_auto_update_state(
-                status="retry_cooldown",
-                last_checked_at=now,
-            )
-            return _auto_update_payload(latest_commit=latest)
-
+        # The watcher has one job: when GitHub main differs from the installed
+        # commit, launch the existing elevated task.  That task invokes the
+        # same setup.ps1 operators already use manually.
+        _release_update_drain()
         try:
             attempt = _reserve_and_launch_update(latest, "automatic")
         except Exception as exc:
@@ -1972,9 +1902,7 @@ def _system_update_status(*, force_check: bool = False) -> dict:
             and latest
             and not error
             and not up_to_date
-            and not active_work
             and not active_attempt
-            and tests_gate["state"] == "passed"
         ),
     }
 
@@ -2221,10 +2149,7 @@ def set_system_updates(payload: AutoUpdateSettingsRequest, request: Request):
     require_app_access(request)
     set_setting(_AUTO_UPDATE_SETTING_KEY, "1" if payload.enabled else "0")
     active_attempt, _ = _latest_update_attempts()
-    if active_attempt:
-        _request_update_drain()
-    elif not payload.enabled:
-        _release_update_drain()
+    _release_update_drain()
     _set_auto_update_state(
         status=(
             "waiting_for_update_restart"
@@ -2262,19 +2187,10 @@ def check_system_updates(request: Request):
             last_error=None,
         )
     else:
-        tests_gate = _tests_gate(latest, force=True)
         _set_auto_update_state(
-            status=(
-                "update_available"
-                if tests_gate["state"] == "passed"
-                else _tests_gate_auto_status(tests_gate)
-            ),
+            status="update_available",
             last_checked_at=now,
-            last_error=(
-                None
-                if tests_gate["state"] == "passed"
-                else tests_gate.get("error") or tests_gate.get("message")
-            ),
+            last_error=None,
         )
     return _system_update_status()
 
@@ -2310,66 +2226,7 @@ def _apply_latest_update() -> dict:
             },
         )
 
-    tests_gate = _tests_gate(latest, force=True)
-    if tests_gate["state"] != "passed":
-        _release_update_drain()
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        _set_auto_update_state(
-            status=_tests_gate_auto_status(tests_gate),
-            last_checked_at=now,
-            last_error=tests_gate.get("error") or tests_gate.get("message"),
-        )
-        raise HTTPException(
-            status_code=503 if tests_gate["state"] == "unavailable" else 409,
-            detail={
-                "message": "The exact main commit must pass Tests before installation.",
-                "tests_gate": tests_gate,
-            },
-        )
-
-    confirmed_latest, confirm_error = _latest_commit(force=True)
-    if confirm_error or not confirmed_latest:
-        _release_update_drain()
-        raise HTTPException(
-            status_code=502,
-            detail=_safe_update_error(
-                confirm_error or "GitHub returned no main commit"
-            ),
-        )
-    if confirmed_latest != latest:
-        _release_update_drain()
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        _set_auto_update_state(
-            status="main_changed_during_tests_check",
-            last_checked_at=now,
-            last_error=(
-                "GitHub main changed while Tests were being verified; "
-                "check the newer commit before installing."
-            ),
-        )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "GitHub main changed while Tests were being verified.",
-                "previous_commit": latest,
-                "latest_commit": confirmed_latest,
-            },
-        )
-    latest = confirmed_latest
-
-    _request_update_drain()
-    with get_db() as db:
-        active_work = _active_update_work(db)
-    if active_work:
-        if not _auto_update_enabled():
-            _release_update_drain()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Metronome will update after active work finishes.",
-                "active_work": active_work,
-            },
-        )
+    _release_update_drain()
     updater_ready, updater_error = _registered_auto_update_task_ready()
     if not updater_ready:
         _release_update_drain()
@@ -2399,7 +2256,7 @@ def _apply_latest_update() -> dict:
 
 @app.post("/api/system/updates/apply", status_code=202)
 def apply_system_update(request: Request):
-    """Launch the fixed exact-commit updater after confirming the app is idle."""
+    """Launch setup.ps1 for the latest exact main commit."""
     require_app_access(request)
     return _apply_latest_update()
 

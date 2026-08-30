@@ -471,14 +471,22 @@ def get_access_token(*, scope: str = PBI_SCOPE) -> dict:
             and cached_scope == scope
             and expires_at - time.time() > REFRESH_SKEW_SECONDS
         ):
-            return {"access_token": record["access_token"], "account": record.get("account") or ""}
+            return {
+                "access_token": record["access_token"],
+                "access_token_expires_at": expires_at,
+                "account": record.get("account") or "",
+            }
         try:
             updated = _refresh_tokens(record, scope=scope)
         except PbiAuthError:
             raise
         except Exception as exc:
             raise PbiAuthError(f"Could not reach the Microsoft sign-in service: {exc}") from exc
-        return {"access_token": updated["access_token"], "account": updated.get("account") or ""}
+        return {
+            "access_token": updated["access_token"],
+            "access_token_expires_at": float(updated.get("access_token_expires_at") or 0),
+            "account": updated.get("account") or "",
+        }
 
 
 # --- Device code flow --------------------------------------------------------

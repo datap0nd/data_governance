@@ -132,12 +132,10 @@ def test_error_log_page_and_scanner_link_are_available():
 def test_service_console_noise_and_rotation_are_bounded():
     main = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     setup = (ROOT / "setup.ps1").read_text(encoding="utf-8")
-    updater = (ROOT / "tools" / "apply_update.ps1").read_text(encoding="utf-8")
 
     assert 'logging.getLogger("apscheduler").setLevel(logging.WARNING)' in main
     assert "stream=sys.stdout" in main
     assert "install_operator_error_handler()" in main
     assert "AppRotateOnline 1" in setup
-    assert "function Set-BoundedServiceLogPolicy" in updater
-    assert "AppRotateBytes = 10485760" in updater
-    assert "Set-BoundedServiceLogPolicy -Name $ServiceName" in updater
+    assert "$NssmExe set $ServiceName AppRotateBytes 10485760" in setup
+    assert "$NssmExe set $FlowServiceName AppRotateBytes 10485760" in setup
