@@ -171,6 +171,28 @@ def test_portal_html_named_xls_does_not_opt_into_outlook_table_extraction(tmp_pa
         flow_worker._store_completed_download(source, tmp_path / "report.xls")
 
 
+def test_explicit_asap_excel_type_accepts_validated_html_based_xls(tmp_path):
+    payload = (
+        "<html><body><table>"
+        "<tr><th>Code</th><th>Units</th></tr>"
+        "<tr><td>A</td><td>7</td></tr>"
+        "</table></body></html>"
+    ).encode("utf-8")
+    source = tmp_path / "asap-export.xls"
+    source.write_bytes(payload)
+
+    metadata = flow_worker._store_completed_download(
+        source, tmp_path / "formatted.xlsx", file_format="xlsx",
+        asap_download_type="excel_with_formatting",
+    )
+
+    assert metadata["detected_format"] == "xls"
+    assert Path(metadata["original_file_path"]).read_bytes() == payload
+    assert Path(metadata["file_path"]).read_text(encoding="utf-8-sig").splitlines() == [
+        "Code,Units", "A,7",
+    ]
+
+
 def test_gscm_frame_workbook_normalizes_only_with_the_configured_trim(tmp_path):
     # The GSCM frame: a non-data first row, and a first column whose
     # header-row cell duplicates a real column label while its data cells are

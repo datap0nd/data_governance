@@ -1293,6 +1293,48 @@ def test_an_html_page_is_refused_instead_of_being_loaded_as_data(tmp_path):
     assert "HTML page" in str(excinfo.value)
 
 
+def test_intentional_asap_html_requires_a_usable_report_table(tmp_path):
+    valid = tmp_path / "valid.html"
+    valid.write_text(
+        "<html><body><h1>Weekly report</h1><table>"
+        "<tr><th>Week</th><th>Units</th></tr>"
+        "<tr><td>2026-W30</td><td>7</td></tr>"
+        "</table></body></html>", encoding="utf-8",
+    )
+    metadata = flow_worker._store_completed_download(
+        valid, tmp_path / "report.html", file_format="html", asap_download_type="html",
+    )
+    assert metadata["detected_format"] == "html"
+    assert metadata["row_count"] == 1
+    assert Path(metadata["file_path"]).read_bytes() == valid.read_bytes()
+
+    invalid = tmp_path / "login.html"
+    invalid.write_text("<html><body>Single Sign On</body></html>", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="sign-in"):
+        flow_worker._store_completed_download(
+            invalid, tmp_path / "login-export.html", file_format="html",
+            asap_download_type="html",
+        )
+
+
+def test_intentional_asap_plain_text_accepts_tables_and_rejects_portal_messages(tmp_path):
+    valid = tmp_path / "valid.txt"
+    valid.write_text("Week  Region  Units\n2026-W30  MENA  7\n", encoding="utf-8")
+    metadata = flow_worker._store_completed_download(
+        valid, tmp_path / "report.txt", file_format="txt", asap_download_type="plain_text",
+    )
+    assert metadata["detected_format"] == "txt"
+    assert metadata["row_count"] == 1
+
+    invalid = tmp_path / "message.txt"
+    invalid.write_text("An unexpected error occurred\nPlease try again\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="sign-in|expired-session"):
+        flow_worker._store_completed_download(
+            invalid, tmp_path / "message-export.txt", file_format="txt",
+            asap_download_type="plain_text",
+        )
+
+
 def test_a_damaged_legacy_xls_is_rejected_with_its_real_type(tmp_path):
     source = tmp_path / "download.csv"
     source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)

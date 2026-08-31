@@ -21,6 +21,10 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db
 from app.flow_credentials import asap_credential_status, save_asap_credentials
+from app.flow_asap_exports import (
+    public_asap_download_types,
+    resolve_asap_download_type,
+)
 from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
 from app.flow_retention import tombstone_name as retention_tombstone_name
 from app.flow_local_runner import (
@@ -45,7 +49,7 @@ router = APIRouter(prefix="/api/flows", tags=["flows"])
 CONTROL_TYPES = {"select", "multi_select", "text", "week"}
 DOWNLOAD_MODES = {"single", "one_per_period", "one_per_week"}
 PERIOD_STRATEGIES = {"none", "latest", "fixed", "rolling"}
-FILE_FORMATS = {"csv", "xlsx"}
+FILE_FORMATS = {"csv", "xlsx", "html", "txt"}
 # Recorded pre-processing applied while normalizing a downloaded Excel
 # workbook to CSV, before header detection. GSCM's toolbar export frames
 # every workbook with a blank first column and a title first row.
@@ -407,13 +411,16 @@ def _validate_http_url(value: str, label: str) -> str:
     return value
 
 
-def _clean_filename_template(value: str, file_format: str) -> str:
+def _clean_filename_template(
+    value: str, file_format: str, compatible_suffixes: tuple[str, ...] | None = None,
+) -> str:
     value = value.strip()
     if not value:
         raise ValueError("Enter a filename template.")
     sample = FILENAME_TOKEN_RE.sub("sample", value)
-    expected = f".{file_format}"
-    if not sample.casefold().endswith(expected):
+    suffixes = compatible_suffixes or (f".{file_format}",)
+    if not any(sample.casefold().endswith(suffix) for suffix in suffixes):
+        expected = " or ".join(suffixes)
         raise ValueError(f"The filename template must end in {expected}.")
     if not SAFE_NAME_RE.fullmatch(sample):
         raise ValueError("The filename template contains Windows filename characters that are not allowed.")
@@ -651,6 +658,13 @@ class FlowWrite(BaseModel):
     period_strategy: str = "latest"
     window_weeks: int | None = Field(default=None, ge=1, le=105)
     file_format: str = "csv"
+    asap_download_type: str | None = None
+    # NULL means inherit whatever the portal currently presents.  Creation
+    # applies the checked defaults after the source adapter is known; keeping
+    # the model defaults nullable prevents an old client from changing an
+    # existing Flow merely by omitting these newly introduced fields.
+    export_report_title: bool | None = None
+    export_filter_details: bool | None = None
     excel_trim: str = "none"
     browser_mode: str = "headless"
     start_week: str | None = None
@@ -700,6 +714,9 @@ class FlowWrite(BaseModel):
             self.period_strategy = "none"
             self.window_weeks = None
             self.file_format = "auto"
+            self.asap_download_type = None
+            self.export_report_title = None
+            self.export_filter_details = None
             self.excel_trim = "none"
             self.browser_mode = "headless"
             self.start_week = None
@@ -713,10 +730,23 @@ class FlowWrite(BaseModel):
             if self.site_id is None or self.report_id is None:
                 raise ValueError("Choose a website and report.")
             self.file_format = self.file_format.strip().casefold()
+            compatible_suffixes = None
+            if self.asap_download_type is not None:
+                download_type = resolve_asap_download_type(
+                    self.asap_download_type, legacy_file_format=self.file_format,
+                )
+                self.asap_download_type = download_type.key
+                self.file_format = download_type.file_format
+                compatible_suffixes = download_type.compatible_suffixes
+            elif self.file_format == "xlsx":
+                # Old API clients do not yet send the semantic ASAP type.
+                # Accept both Excel suffixes here; adapter validation later
+                # decides whether this is an ASAP/GSCM/generic portal Flow.
+                compatible_suffixes = (".xls", ".xlsx")
             if self.file_format not in FILE_FORMATS:
-                raise ValueError("Download type must be CSV or Excel XLSX.")
+                raise ValueError("Unsupported download file format.")
             self.filename_template = _clean_filename_template(
-                self.filename_template or "", self.file_format,
+                self.filename_template or "", self.file_format, compatible_suffixes,
             )
             self.excel_trim = (self.excel_trim or "none").strip().casefold()
             if self.excel_trim not in EXCEL_TRIMS:
@@ -791,6 +821,10 @@ class FlowWrite(BaseModel):
                 raise ValueError("Transformation script must be a .py, .ps1, or .exe file.")
         else:
             self.transform_script_path = None
+        if self.asap_download_type in {"html", "plain_text"} and (
+            self.transform_enabled or self.sql_handoff_enabled
+        ):
+            raise ValueError("HTML and Plain text ASAP exports are download-only.")
         if self.sql_handoff_enabled:
             self.sql_mode = (self.sql_mode or "").strip().casefold()
             if self.sql_mode not in SQL_MODES:
@@ -1004,6 +1038,8 @@ def _flow_out(db, flow_id: int) -> dict:
     result["sql_handoff_enabled"] = bool(result["sql_handoff_enabled"])
     result["sql_uppercase"] = bool(result.get("sql_uppercase"))
     result["transform_enabled"] = bool(result.get("transform_enabled"))
+    for key in ("export_report_title", "export_filter_details"):
+        result[key] = None if result.get(key) is None else bool(result[key])
     result["selections"] = _loads(result.pop("selections_json"), {})
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
@@ -1183,7 +1219,7 @@ def _resolve_sql_target_source(
     return match_ids[0] if len(match_ids) == 1 else None
 
 
-def _validate_flow_selections(db, body: FlowWrite):
+def _validate_flow_selections(db, body: FlowWrite, *, new_flow: bool = False):
     if body.source_type == "outlook":
         expected_site, expected_report = _outlook_source_ids(db)
         if body.site_id != expected_site or body.report_id != expected_report:
@@ -1197,7 +1233,29 @@ def _validate_flow_selections(db, body: FlowWrite):
     ).fetchone()
     if not report or report["site_id"] != body.site_id:
         raise HTTPException(400, "Choose an enabled report from the selected website.")
-    if report["adapter"] == GSCM_PORTAL_ADAPTER and body.file_format != "xlsx":
+    adapter = report["adapter"]
+    if adapter == ASAP_PORTAL_ADAPTER:
+        try:
+            download_type = resolve_asap_download_type(
+                body.asap_download_type, legacy_file_format=body.file_format,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        body.asap_download_type = download_type.key
+        body.file_format = download_type.file_format
+        if download_type.download_only and (
+            body.transform_enabled or body.sql_handoff_enabled
+        ):
+            raise HTTPException(
+                400, f"{download_type.label} is download-only; disable transformation and SQL handoff.",
+            )
+    else:
+        body.asap_download_type = None
+        body.export_report_title = None
+        body.export_filter_details = None
+        if body.file_format not in {"csv", "xlsx"}:
+            raise HTTPException(400, "This website supports only CSV or Excel downloads.")
+    if adapter == GSCM_PORTAL_ADAPTER and body.file_format != "xlsx":
         # GSCM's Nexacro toolbar only emits a workbook. Treating that file as a
         # CSV would hand SQL a binary blob renamed .csv.
         raise HTTPException(400, "GSCM exports an Excel workbook. Choose the Excel download type.")
@@ -1223,6 +1281,49 @@ def _validate_flow_selections(db, body: FlowWrite):
     invalid_views = [view for view in body.export_views if view not in available_views]
     if available_views and invalid_views:
         raise HTTPException(400, f"Export view was not found in the latest scan: {invalid_views[0]}")
+    if adapter == ASAP_PORTAL_ADAPTER:
+        capabilities = automation.get("asap_export_capabilities") or {}
+        by_view = capabilities.get("views") or {}
+        requested_views = body.export_views or ["__default__"]
+        records = [by_view.get(view) for view in requested_views]
+        known = bool(records) and all(
+            isinstance(item, dict) and item.get("status") == "detected"
+            for item in records
+        )
+        if known:
+            available_types = set(records[0].get("download_types") or [])
+            for record in records[1:]:
+                available_types &= set(record.get("download_types") or [])
+            if body.asap_download_type not in available_types:
+                raise HTTPException(
+                    400,
+                    "The selected ASAP download type is unavailable in one or more selected export views.",
+                )
+            for option_key in ("export_report_title", "export_filter_details"):
+                option_available = all(
+                    bool(
+                        ((record.get("options_by_type") or {}).get(
+                            body.asap_download_type, {}
+                        ).get(option_key) or {}).get("available")
+                    )
+                    for record in records
+                )
+                if new_flow and getattr(body, option_key) is None and option_available:
+                    setattr(body, option_key, True)
+                if getattr(body, option_key) is None:
+                    continue
+                if not option_available:
+                    raise HTTPException(
+                        400, f"{option_key.replace('_', ' ').title()} is unavailable in one or more selected export views.",
+                    )
+        elif new_flow:
+            # A new Flow starts with both boxes checked. If discovery has not
+            # verified the controls yet, the runner will still verify them
+            # live and fail clearly if the portal does not expose one.
+            if body.export_report_title is None:
+                body.export_report_title = True
+            if body.export_filter_details is None:
+                body.export_filter_details = True
     definitions = {row["filter_key"]: row for row in rows}
     has_week_filter = any(row["control_type"] == "week" for row in rows)
     if has_week_filter and body.period_strategy == "none":
@@ -1305,6 +1406,17 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
             "period_size": flow.get("window_weeks") or len(weeks),
             "file_format": flow.get("file_format") or "csv",
             "excel_trim": flow.get("excel_trim") or "none",
+            **(
+                {
+                    "asap_download_type": flow.get("asap_download_type")
+                    or resolve_asap_download_type(
+                        None, legacy_file_format=flow.get("file_format"),
+                    ).key,
+                    "export_report_title": flow.get("export_report_title"),
+                    "export_filter_details": flow.get("export_filter_details"),
+                }
+                if report["adapter"] == ASAP_PORTAL_ADAPTER else {}
+            ),
             "period_start_week": weeks[0] if weeks else None,
             "period_end_week": weeks[-1] if weeks else None,
             "next_start_week": _week_window(weeks[-1], 2)[1] if weeks else None,
@@ -1478,7 +1590,12 @@ def catalog():
         report["stale"] = bool(report.get("stale"))
         report["automation"] = _loads(report.pop("automation_json", None), {})
         report["filters"] = by_report.get(report["id"], [])
-    return {"sites": sites, "reports": reports, "control_types": sorted(CONTROL_TYPES)}
+    return {
+        "sites": sites,
+        "reports": reports,
+        "control_types": sorted(CONTROL_TYPES),
+        "asap_download_types": public_asap_download_types(),
+    }
 
 
 @router.post("/sites/{site_id}/credentials")
@@ -2222,21 +2339,23 @@ def create_flow(body: FlowWrite, request: Request):
     try:
         with get_db() as db:
             _resolve_flow_source(db, body)
-            _validate_flow_selections(db, body)
+            _validate_flow_selections(db, body, new_flow=True)
             _validate_sql_target(db, body)
             _validate_owner(db, body)
             sql_target_source_id = _resolve_sql_target_source(db, body)
             cursor = db.execute(
                 """INSERT INTO flows
                    (name, source_type, site_id, report_id, outlook_subject_contains,
-                    export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, excel_trim, start_week, end_week,
+                    export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, asap_download_type, export_report_title, export_filter_details, excel_trim, start_week, end_week,
                     browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
                     transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_uppercase, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.source_type, body.site_id, body.report_id,
                  body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
-                 body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+                 body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
+                 body.asap_download_type, body.export_report_title, body.export_filter_details,
+                 body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
                  body.filename_template, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
@@ -2327,13 +2446,15 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         cursor = db.execute(
             """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
                export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
-               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
+               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, asap_download_type=?, export_report_title=?, export_filter_details=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_uppercase=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
             (body.name, body.source_type, body.site_id, body.report_id,
              body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
-             body.download_mode, body.period_strategy, body.window_weeks, body.file_format, body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
+             body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
+             body.asap_download_type, body.export_report_title, body.export_filter_details,
+             body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
              body.filename_template, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
@@ -2568,6 +2689,61 @@ def _scan_browser_mode(db, site) -> str:
         (site["id"],),
     ).fetchone()
     return "headed" if headed else "headless"
+
+
+def _resolve_inherited_asap_export_settings(
+    db, report_id: int, automation: dict, observed_at: str,
+) -> None:
+    """Pin legacy NULL checkbox choices only after a consistent live observation."""
+    capabilities = automation.get("asap_export_capabilities") or {}
+    by_view = capabilities.get("views") or {}
+    if not by_view:
+        return
+    for row in db.execute(
+        """SELECT id, export_views_json, file_format, asap_download_type,
+                  export_report_title, export_filter_details
+             FROM flows WHERE report_id=?
+               AND (export_report_title IS NULL OR export_filter_details IS NULL)""",
+        (report_id,),
+    ).fetchall():
+        download_type = resolve_asap_download_type(
+            row["asap_download_type"], legacy_file_format=row["file_format"],
+        ).key
+        views = _loads(row["export_views_json"], [])
+        if not views:
+            views = [
+                str(item.get("label") if isinstance(item, dict) else item).strip()
+                for item in automation.get("export_views", [])
+                if str(item.get("label") if isinstance(item, dict) else item).strip()
+            ]
+        if not views:
+            views = [str(automation.get("report_tab") or "").strip() or "__default__"]
+        records = [by_view.get(view) for view in views]
+        if not records or not all(
+            isinstance(record, dict) and record.get("status") == "detected"
+            for record in records
+        ):
+            continue
+        resolved = {}
+        for option_key in ("export_report_title", "export_filter_details"):
+            if row[option_key] is not None:
+                continue
+            observations = [
+                ((record.get("options_by_type") or {}).get(download_type, {}).get(option_key) or {})
+                for record in records
+            ]
+            if not all(item.get("available") and isinstance(item.get("checked"), bool)
+                       for item in observations):
+                continue
+            values = {item["checked"] for item in observations}
+            if len(values) == 1:
+                resolved[option_key] = int(values.pop())
+        if resolved:
+            assignments = ", ".join(f"{key}=?" for key in resolved)
+            db.execute(
+                f"UPDATE flows SET {assignments}, updated_at=? WHERE id=?",
+                (*resolved.values(), observed_at, row["id"]),
+            )
 
 
 def _queue_scan(db, site, trigger_type: str, requested_by: str | None, report=None,
@@ -3582,6 +3758,10 @@ def _apply_discovery(
         # of retiring every filter a full scan discovered.
         if item.automation.get("scan_mode") == "partial":
             continue
+        if site and site["adapter"] == ASAP_PORTAL_ADAPTER:
+            _resolve_inherited_asap_export_settings(
+                db, report_id, automation, seen_at,
+            )
         # A targeted refresh is authoritative for the report it inspected,
         # even though it is intentionally not authoritative for the rest of
         # the site catalog. Mark prior discovered definitions stale before

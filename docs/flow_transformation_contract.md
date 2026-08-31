@@ -1,7 +1,10 @@
 # Flow Transformation Script Contract
 
 Metronome can run one optional transformation script after Flow downloads and
-before SQL insertion. The script runs once for each downloaded CSV.
+before SQL insertion. The script runs once for each normalized CSV. ASAP HTML
+and Plain text exports are download-only and cannot enable transformation or
+SQL handoff. ASAP CSV supplies its normalized primary file, while its byte-exact
+`_raw.csv` sibling remains an original artifact and is never passed to a script.
 
 ## Invocation
 

@@ -42,13 +42,25 @@ if str(_CODE_DIR) not in sys.path:
 
 try:
     from app import flow_gscm, flow_outlook, flow_replay, flow_retention
+    from app.flow_asap_exports import (
+        ASAP_DOWNLOAD_TYPES,
+        ASAP_EXPORT_CHECKBOXES,
+        resolve_asap_download_type,
+    )
     from app.flow_credentials import load_asap_credentials
+    from app.flow_download_security import looks_like_sign_in
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
     import flow_outlook
     import flow_replay
     import flow_retention
+    from flow_asap_exports import (
+        ASAP_DOWNLOAD_TYPES,
+        ASAP_EXPORT_CHECKBOXES,
+        resolve_asap_download_type,
+    )
     from flow_credentials import load_asap_credentials
+    from flow_download_security import looks_like_sign_in
 
 
 ASAP_FRAME_SELECTOR = "iframe#content-frame"
@@ -273,9 +285,18 @@ def _render_filename(
     for key, value in values.items():
         name = name.replace("{" + key + "}", str(value))
     name = re.sub(r"[<>:\"/\\|?*\x00-\x1f\s]+", "_", name).strip(" ._")
-    expected = f".{job['downloads'].get('file_format') or 'csv'}"
-    if not name.casefold().endswith(expected):
-        name += expected
+    downloads = job.get("downloads") or {}
+    semantic_type = downloads.get("asap_download_type")
+    if semantic_type:
+        spec = resolve_asap_download_type(
+            semantic_type, legacy_file_format=downloads.get("file_format"),
+        )
+        if not name.casefold().endswith(spec.compatible_suffixes):
+            name += spec.preferred_suffix
+    else:
+        expected = f".{downloads.get('file_format') or 'csv'}"
+        if not name.casefold().endswith(expected):
+            name += expected
     return name
 
 
@@ -1711,21 +1732,218 @@ def _asap_export_action(root: Page | Frame):
     return None
 
 
-def _asap_export_format_names(file_format: str) -> tuple[str, re.Pattern]:
-    """Return the preferred raw export label and compatible MicroStrategy variants."""
-    if file_format == "xlsx":
-        return (
-            "Excel with plain text",
-            re.compile(
-                r"^(?:Microsoft )?Excel(?: workbook| file format| with plain text)?"
-                r"(?: \(.*\.xlsx.*\))?$",
-                re.I,
-            ),
-        )
-    return (
-        "CSV file format",
-        re.compile(r"^(?:CSV|Comma separated values)(?: file format)?$", re.I),
+def _asap_export_format_names(download_type: str) -> tuple[str, re.Pattern]:
+    """Return one canonical Export Wizard label and an exact matcher."""
+    spec = resolve_asap_download_type(
+        download_type if download_type in {item.key for item in ASAP_DOWNLOAD_TYPES} else None,
+        legacy_file_format=download_type,
     )
+    return spec.label, re.compile(rf"^{re.escape(spec.label)}$", re.I)
+
+
+def _asap_visible_labeled_control(root: Page | Frame, label: str):
+    pattern = re.compile(rf"^{re.escape(label)}$", re.I)
+    for locator in (
+        root.get_by_label(label, exact=True),
+        root.get_by_role("radio", name=pattern),
+        root.get_by_role("checkbox", name=pattern),
+        root.get_by_text(pattern),
+    ):
+        try:
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def _asap_control_checked(control) -> bool | None:
+    if control is None:
+        return None
+    candidates = [control]
+    try:
+        candidates.extend([
+            control.locator("input[type=radio],input[type=checkbox]").first,
+            control.locator("xpath=preceding::input[@type='radio' or @type='checkbox'][1]").first,
+        ])
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            if candidate.count() and candidate.is_checked():
+                return True
+            if candidate.count():
+                candidate.is_checked()
+                return False
+        except Exception:
+            continue
+    return None
+
+
+def _asap_set_checked(control, desired: bool, label: str) -> None:
+    if control is None:
+        raise RuntimeError(f"ASAP Export Wizard did not expose {label!r}.")
+    current = _asap_control_checked(control)
+    if current is desired:
+        return
+    try:
+        (control.check if desired else control.uncheck)()
+    except Exception:
+        control.click()
+    verified = _asap_control_checked(control)
+    if verified is not desired:
+        raise RuntimeError(
+            f"ASAP Export Wizard did not retain {label!r} as "
+            f"{'checked' if desired else 'unchecked'}."
+        )
+
+
+def _asap_resolve_export_wizard(page: Page, timeout_ms: int = 10_000) -> dict | None:
+    """Resolve one wizard root and all recognized controls without exporting."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        for candidate in reversed(page.context.pages):
+            for root in [candidate, *reversed(candidate.frames)]:
+                action = _asap_export_action(root)
+                if action is None:
+                    continue
+                formats = {
+                    item.key: control
+                    for item in ASAP_DOWNLOAD_TYPES
+                    if (control := _asap_visible_labeled_control(root, item.label)) is not None
+                }
+                if not formats:
+                    continue
+                options = {
+                    key: _asap_visible_labeled_control(root, label)
+                    for key, label in ASAP_EXPORT_CHECKBOXES.items()
+                }
+                return {
+                    "root": root, "action": action,
+                    "formats": formats, "options": options,
+                    "page": root if isinstance(root, Page) else root.page,
+                }
+        page.wait_for_timeout(100)
+    return None
+
+
+def _asap_toolbar_export_control(page: Page):
+    """Find the ordinary Export Options control beside RUN."""
+    for root in reversed(page.frames):
+        try:
+            run = _asap_run_control(root)
+            if run is None:
+                continue
+            control = run.locator(
+                "xpath=following::*[self::button or self::a or self::input or @role='button'][1]"
+            )
+            if not control.count() or not control.first.is_visible():
+                control = run.locator(
+                    "xpath=following::*[contains(@class,'btn') or contains(@class,'button')][1]"
+                )
+            if control.count() and control.first.is_visible():
+                return control.first
+            images = run.locator("xpath=following::img")
+            for index in range(min(images.count(), 6)):
+                if images.nth(index).is_visible():
+                    return images.nth(index)
+        except Exception:
+            continue
+    return None
+
+
+def _asap_close_probe_wizard(page: Page, wizard: dict | None, pages_before: tuple) -> None:
+    if wizard is not None:
+        root = wizard["root"]
+        for label in ("Cancel", "Close"):
+            for locator in (
+                root.get_by_role("button", name=label, exact=True),
+                root.get_by_text(label, exact=True),
+            ):
+                try:
+                    if locator.count() and locator.first.is_visible():
+                        locator.first.click()
+                        page.wait_for_timeout(100)
+                        break
+                except Exception:
+                    continue
+    for candidate in list(page.context.pages):
+        if candidate in pages_before or candidate is page:
+            continue
+        try:
+            candidate.close()
+        except Exception:
+            pass
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+
+def _asap_probe_export_capabilities(page: Page, timeout_ms: int = 8_000) -> dict:
+    """Inventory one Export Wizard without triggering a download."""
+    control = _asap_toolbar_export_control(page)
+    if control is None:
+        raise RuntimeError("ASAP Export Options control was not found for capability discovery.")
+    pages_before = tuple(page.context.pages)
+    wizard = None
+    try:
+        control.click()
+        wizard = _asap_resolve_export_wizard(page, timeout_ms=timeout_ms)
+        if wizard is None:
+            raise RuntimeError("ASAP Export Wizard did not expose recognized format controls.")
+        original_type = next(
+            (
+                key for key, item in wizard["formats"].items()
+                if _asap_control_checked(item) is True
+            ),
+            None,
+        )
+        if original_type is None:
+            raise RuntimeError(
+                "ASAP Export Wizard formats were visible, but its original selected type "
+                "could not be determined safely."
+            )
+        original_options = {
+            key: _asap_control_checked(item)
+            for key, item in wizard["options"].items()
+        }
+        by_type = {}
+        for spec in ASAP_DOWNLOAD_TYPES:
+            if spec.key not in wizard["formats"]:
+                continue
+            _asap_set_checked(wizard["formats"][spec.key], True, spec.label)
+            page.wait_for_timeout(50)
+            refreshed = _asap_resolve_export_wizard(page, timeout_ms=1_000) or wizard
+            wizard = refreshed
+            by_type[spec.key] = {
+                key: {
+                    "available": item is not None,
+                    "checked": _asap_control_checked(item),
+                }
+                for key, item in wizard["options"].items()
+            }
+        if original_type and original_type in wizard["formats"]:
+            _asap_set_checked(
+                wizard["formats"][original_type], True,
+                resolve_asap_download_type(original_type).label,
+            )
+            wizard = _asap_resolve_export_wizard(page, timeout_ms=1_000) or wizard
+            for key, checked in original_options.items():
+                if checked is not None and wizard["options"].get(key) is not None:
+                    _asap_set_checked(
+                        wizard["options"][key], checked, ASAP_EXPORT_CHECKBOXES[key],
+                    )
+        return {
+            "status": "detected",
+            "download_types": [
+                item.key for item in ASAP_DOWNLOAD_TYPES if item.key in wizard["formats"]
+            ],
+            "options_by_type": by_type,
+            "original_type": original_type,
+        }
+    finally:
+        _asap_close_probe_wizard(page, wizard, pages_before)
 
 
 def _asap_raw_table_information_control(root: Page | Frame, canvas):
@@ -1760,10 +1978,13 @@ def _asap_raw_table_information_control(root: Page | Frame, canvas):
 
 
 def _asap_wait_for_raw_menu_download_action(
-    page: Page, file_format: str, timeout_ms: int = 10_000,
+    page: Page, download_type: str, timeout_ms: int = 10_000,
 ):
     """Return a raw-table menu item that starts the requested download directly."""
-    if file_format != "xlsx":
+    if resolve_asap_download_type(
+        download_type if download_type in {item.key for item in ASAP_DOWNLOAD_TYPES} else None,
+        legacy_file_format=download_type,
+    ).key != "excel_plain_text":
         return None
     excel_pattern = re.compile(r"^(?:Microsoft )?Excel$", re.I)
     deadline = time.monotonic() + timeout_ms / 1000
@@ -1784,11 +2005,14 @@ def _asap_wait_for_raw_menu_download_action(
 
 
 def _asap_wait_for_raw_menu_export_or_wizard(
-    page: Page, pages_before: set, timeout_ms: int = 10_000,
+    page: Page, pages_before: tuple, timeout_ms: int = 10_000,
 ):
     """Return the intermediate menu action, or report that Export Options opened directly."""
     deadline = time.monotonic() + timeout_ms / 1000
-    wizard_pattern = re.compile(r"^(?:Excel|CSV) file format$", re.I)
+    wizard_pattern = re.compile(
+        "^(?:" + "|".join(re.escape(item.label) for item in ASAP_DOWNLOAD_TYPES) + ")$",
+        re.I,
+    )
     while time.monotonic() < deadline:
         current_pages = page.context.pages
         if any(candidate not in pages_before for candidate in current_pages):
@@ -1816,10 +2040,13 @@ def _asap_wait_for_raw_menu_export_or_wizard(
 
 
 def _asap_wait_for_raw_export_confirmation(
-    page: Page, file_format: str, timeout_ms: int = 10_000,
+    page: Page, download_type: str, timeout_ms: int = 10_000,
 ):
     """Find the final Export button in ASAP's compact raw-table dialog."""
-    if file_format != "xlsx":
+    if resolve_asap_download_type(
+        download_type if download_type in {item.key for item in ASAP_DOWNLOAD_TYPES} else None,
+        legacy_file_format=download_type,
+    ).key != "excel_plain_text":
         return None
     title_pattern = re.compile(r"^Export to (?:Microsoft )?Excel$", re.I)
     deadline = time.monotonic() + timeout_ms / 1000
@@ -1839,10 +2066,28 @@ def _asap_wait_for_raw_export_confirmation(
     return None
 
 
+def _asap_direct_excel_allowed(download_type: str, checkbox_values: dict[str, Any]) -> bool:
+    """The compact shortcut cannot enforce Export Wizard checkbox choices."""
+    return (
+        resolve_asap_download_type(download_type).key == "excel_plain_text"
+        and all(checkbox_values.get(key) is None for key in ASAP_EXPORT_CHECKBOXES)
+    )
+
+
 def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
     export_control = None
     opens_export_menu = False
-    file_format = str(job.get("downloads", {}).get("file_format") or "csv").casefold()
+    downloads_config = job.get("downloads", {})
+    file_format = str(downloads_config.get("file_format") or "csv").casefold()
+    download_type = resolve_asap_download_type(
+        downloads_config.get("asap_download_type"), legacy_file_format=file_format,
+    )
+    checkbox_values = {
+        key: downloads_config.get(key) for key in ASAP_EXPORT_CHECKBOXES
+    }
+    direct_export_allowed = _asap_direct_excel_allowed(
+        download_type.key, checkbox_values,
+    )
     # The current MicroStrategy report has two compact controls beside RUN.
     # The first is Export Options and the second is subtotal. Their icon-only
     # markup has no stable accessible label, so resolve the first visible
@@ -1921,7 +2166,7 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             "Could not find either the ASAP Export Options control beside RUN "
             "or the raw-table information control."
         )
-    pages_before = set(page.context.pages)
+    pages_before = tuple(page.context.pages)
     export_control.click()
     direct_download_action = None
     if opens_export_menu:
@@ -1932,51 +2177,61 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
             raise RuntimeError("ASAP raw-table information menu opened, but its Export action was not visible.")
         if menu_export is not None:
             menu_export.click()
-            direct_download_action = _asap_wait_for_raw_menu_download_action(page, file_format)
+            if direct_export_allowed:
+                direct_download_action = _asap_wait_for_raw_menu_download_action(
+                    page, download_type.key,
+                )
     # ASAP sometimes opens the wizard as a page and sometimes as a modal/frame
     # in the existing page. Search both shapes instead of requiring a popup.
-    format_option = None
-    export_action = None
     wizard_pages = set()
-    deadline = time.monotonic() + 60
-    format_names = _asap_export_format_names(file_format)
-    while (
-        direct_download_action is None
-        and time.monotonic() < deadline
-        and (format_option is None or export_action is None)
-    ):
-        current_pages = page.context.pages
-        popup = next((candidate for candidate in current_pages if candidate not in pages_before), None)
-        roots = [root for candidate in reversed(current_pages) for root in [candidate, *reversed(candidate.frames)]]
-        for root in roots:
-            for locator in (
-                root.get_by_label(format_names[0], exact=True),
-                root.get_by_text(format_names[1]),
-            ):
-                try:
-                    if locator.count() and locator.first.is_visible():
-                        format_option = locator.first
-                        wizard_pages.add(root if isinstance(root, Page) else root.page)
-                        break
-                except Exception:
-                    continue
-            action = _asap_export_action(root)
-            if action is not None:
-                export_action = action
-                wizard_pages.add(root if isinstance(root, Page) else root.page)
-        if format_option is None or export_action is None:
-            page.wait_for_timeout(250)
-    if direct_download_action is None and (format_option is None or export_action is None):
+    wizard = None if direct_download_action is not None else _asap_resolve_export_wizard(
+        page, timeout_ms=60_000,
+    )
+    if direct_download_action is None and wizard is None:
         raise RuntimeError(
-            f"ASAP Export Wizard opened, but its {file_format.upper()} option or Export action "
-            f"was not recognized. Format option found: {format_option is not None}. "
-            f"Export action found: {export_action is not None}."
+            f"ASAP Export Wizard opened, but {download_type.label!r} and its Export action "
+            "were not recognized in the same dialog."
+        )
+    format_option = None if wizard is None else wizard["formats"].get(download_type.key)
+    export_action = None if wizard is None else wizard["action"]
+    if wizard is not None:
+        wizard_pages.add(wizard["page"])
+    if direct_download_action is None and format_option is None:
+        available = ", ".join(
+            item.label for item in ASAP_DOWNLOAD_TYPES
+            if wizard is not None and item.key in wizard["formats"]
+        ) or "none"
+        raise RuntimeError(
+            f"ASAP Export Wizard does not offer {download_type.label!r}. Detected: {available}."
         )
     if direct_download_action is None:
-        try:
-            format_option.check()
-        except Exception:
-            format_option.click()
+        _asap_set_checked(format_option, True, download_type.label)
+        wizard = _asap_resolve_export_wizard(page, timeout_ms=2_000) or wizard
+        export_action = wizard["action"]
+        wizard_pages.add(wizard["page"])
+        missing_options = [
+            ASAP_EXPORT_CHECKBOXES[key]
+            for key, desired in checkbox_values.items()
+            if desired is not None and wizard["options"].get(key) is None
+        ]
+        if missing_options:
+            detected_options = [
+                label for key, label in ASAP_EXPORT_CHECKBOXES.items()
+                if wizard["options"].get(key) is not None
+            ]
+            raise RuntimeError(
+                "ASAP Export Wizard is missing requested control(s): "
+                + ", ".join(missing_options)
+                + ". Detected checkbox controls: "
+                + (", ".join(detected_options) or "none")
+                + "."
+            )
+        for key, desired in checkbox_values.items():
+            if desired is None:
+                continue
+            _asap_set_checked(
+                wizard["options"].get(key), bool(desired), ASAP_EXPORT_CHECKBOXES[key],
+            )
     # The export wizard may render in one popup while Edge attributes the
     # resulting download to another ASAP page. Listening only on the guessed
     # popup can therefore leave a visibly completed browser download waiting
@@ -1994,7 +2249,9 @@ def _asap_download(page: Page, frame: Frame, job: dict, staging_dir: Path):
         try:
             (direct_download_action or export_action).click()
             if direct_download_action is not None:
-                confirmation = _asap_wait_for_raw_export_confirmation(page, file_format)
+                confirmation = _asap_wait_for_raw_export_confirmation(
+                    page, download_type.key,
+                )
                 if confirmation is None:
                     raise RuntimeError(
                         "ASAP raw-table Excel dialog opened, but its final Export action was not visible."
@@ -2305,8 +2562,7 @@ def _asap_download_with_retry(
     controls to Playwright. Reopening that same export once is safe because no
     download has started at the point where this specific error is raised.
     """
-    retryable_prefix = "ASAP Export Wizard opened, but its "
-    retryable_suffix = "option or Export action was not recognized."
+    retryable_prefix = "ASAP Export Wizard opened, but "
     for attempt in range(2):
         try:
             return _asap_download(page, frame, job, staging_dir)
@@ -2323,7 +2579,10 @@ def _asap_download_with_retry(
             if (
                 attempt == 1
                 or not message.startswith(retryable_prefix)
-                or retryable_suffix not in message
+                or not (
+                    "option or Export action was not recognized." in message
+                    or "were not recognized in the same dialog." in message
+                )
             ):
                 raise
             page.wait_for_timeout(1_500)
@@ -3502,6 +3761,7 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
             filters = []
             export_views = []
             view_diagnostics = {}
+            export_capability_views: dict[str, dict] = {}
             download_links: list[dict] = []
             ready_text = export_view_labels[0] if export_view_labels else None
             report_title = path[-1]
@@ -3551,6 +3811,29 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                         export_views.append({
                             "label": selected_label, "filter_keys": view_filter_keys,
                         })
+                    capability_key = selected_label or export_view_label or "__default__"
+                    remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                    try:
+                        if remaining_ms < 1_000:
+                            raise RuntimeError("Catalog scan budget was exhausted before Export Wizard inspection.")
+                        export_capability_views[capability_key] = _asap_probe_export_capabilities(
+                            page, timeout_ms=min(8_000, remaining_ms),
+                        )
+                    except Exception as capability_exc:
+                        message = str(capability_exc)[:1_000]
+                        export_capability_views[capability_key] = {
+                            "status": "unknown", "error": message,
+                        }
+                        diagnostics["export_capabilities_error"] = message
+                        report_progress("running", {
+                            "stage": "export_capability_warning",
+                            "message": (
+                                f"{path[-1]}"
+                                + (f" ({capability_key})" if capability_key != "__default__" else "")
+                                + f": Export Wizard options could not be inventoried; keeping the report. {message}"
+                            ),
+                            "report_index": index, "report_count": len(paths),
+                        })
                     if view_index == 0:
                         report_title = active_frame.locator("title").text_content() or path[-1]
             if len(filters) > ASAP_MAX_REPORT_FILTERS:
@@ -3564,6 +3847,15 @@ def discover_asap_catalog(page: Page, job: dict, report_progress, profile_dir: P
                 "category_path": path, "report_tab": ready_text,
                 "report_title": report_title, "export_text": ready_text,
                 "export_views": export_views,
+                "asap_export_capabilities": {
+                    "status": (
+                        "detected" if export_capability_views and all(
+                            item.get("status") == "detected"
+                            for item in export_capability_views.values()
+                        ) else "partial"
+                    ),
+                    "views": export_capability_views,
+                },
                 "discovery_diagnostics": view_diagnostics,
             }
             if download_links:
@@ -3687,8 +3979,60 @@ def _parse_strict_delimited_rows(decoded: str) -> tuple[list[list[str]], str] | 
     return rows, delimiter
 
 
+def _asap_csv_header_index(rows: list[list[str]]) -> int:
+    """Choose the last rectangular section after ASAP title/filter details.
+
+    ASAP separates report title, filter details, and the real table with blank
+    rows. A filter block can be longer than a small report, so globally choosing
+    the largest rectangle would sometimes promote ``Filter,Value`` to the data
+    header. Prefer the last usable section, then the strongest header candidate
+    inside that section.
+    """
+    sections: list[tuple[int, int]] = []
+    start = None
+    for index, row in enumerate(rows):
+        populated = any(str(value).strip() for value in row)
+        if populated and start is None:
+            start = index
+        elif not populated and start is not None:
+            sections.append((start, index))
+            start = None
+    if start is not None:
+        sections.append((start, len(rows)))
+
+    section_candidates = []
+    for section_number, (section_start, section_end) in enumerate(sections):
+        candidates = []
+        for index in range(section_start, min(section_end, 200)):
+            header = [str(value).strip() for value in rows[index]]
+            populated = [value for value in header if value]
+            if (
+                len(populated) < 2
+                or len({value.casefold() for value in populated}) != len(populated)
+            ):
+                continue
+            width = len(header)
+            data_rows = rows[index + 1:section_end]
+            if not data_rows or any(
+                any(str(value).strip() for value in row[width:]) for row in data_rows
+            ):
+                continue
+            exact = sum(len(row) == width for row in data_rows)
+            if exact * 2 < len(data_rows):
+                continue
+            nonempty = sum(
+                sum(bool(str(value).strip()) for value in row[:width])
+                for row in data_rows
+            )
+            candidates.append((len(data_rows), exact, nonempty, -index, index))
+        if candidates:
+            section_candidates.append((section_number, max(candidates)[-1]))
+    return max(section_candidates)[-1] if section_candidates else 0
+
+
 def _normalize_csv(
-    path: Path, *, preamble: str = "asap", strict_headers: bool = False,
+    path: Path, *, output: Path | None = None,
+    preamble: str = "asap", strict_headers: bool = False,
 ) -> dict:
     """Normalize a delimited file with source-specific header resolution."""
     if preamble not in {"asap", "none"}:
@@ -3718,13 +4062,7 @@ def _normalize_csv(
         raise RuntimeError("The downloaded CSV is empty.")
     header_index = 0
     if preamble == "asap":
-        if len(rows) >= 3 and len(rows[0]) == 1 and not any(str(value).strip() for value in rows[1]):
-            header_index = 2
-        elif len(rows[0]) < 2:
-            header_index = next(
-                (index for index, row in enumerate(rows[:20]) if len(row) >= 2 and sum(bool(str(value).strip()) for value in row) >= 2),
-                0,
-            )
+        header_index = _asap_csv_header_index(rows)
     header = [str(value).strip() for value in rows[header_index]]
     if strict_headers:
         _validate_strict_headers(header, source_label="Downloaded CSV")
@@ -3744,7 +4082,9 @@ def _normalize_csv(
                 )
     elif len(header) < 2:
         raise RuntimeError("Downloaded CSV did not contain a usable delimited header.")
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+    destination = Path(output) if output is not None else path
+    mode = "x" if output is not None else "w"
+    with destination.open(mode, encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerows(rows[header_index:])
     return {
@@ -3954,6 +4294,83 @@ def _normalize_html_excel(source: Path, output: Path) -> dict:
         "source_sheets": [f"HTML table {table_number}"],
         "source_container": "html_xls",
         "columns": header,
+    }
+
+
+def _validate_asap_html_export(source: Path) -> dict:
+    raw = source.read_bytes()
+    decoded, encoding_used = _decode_downloaded_text(
+        raw, source_label=f"ASAP HTML export {source.name}",
+    )
+    if looks_like_sign_in(decoded):
+        raise RuntimeError("The HTML download contains a sign-in or expired-session page.")
+    parser = _ExcelHtmlTableParser()
+    parser.feed(decoded.lstrip("\ufeff"))
+    parser.close()
+    usable = []
+    for raw_rows in parser.tables:
+        rows = _expand_html_table(raw_rows)
+        if len(rows) < 2:
+            continue
+        width = max((len(row) for row in rows), default=0)
+        if width >= 2 and any(
+            sum(bool(str(value).strip()) for value in row) >= 2 for row in rows[1:]
+        ):
+            usable.append(rows)
+    if not usable:
+        raise RuntimeError(
+            "The HTML download did not contain a usable multi-row report table. "
+            "Refusing to accept a portal message or error page as an export."
+        )
+    largest = max(usable, key=lambda rows: (len(rows), max(map(len, rows))))
+    return {
+        "source_encoding": encoding_used,
+        "source_sheets": [],
+        "columns": [str(value).strip() for value in largest[0]],
+        "row_count": max(0, len(largest) - 1),
+        "html_table_count": len(usable),
+    }
+
+
+def _validate_asap_plain_text_export(source: Path) -> dict:
+    raw = source.read_bytes()
+    decoded, encoding_used = _decode_downloaded_text(
+        raw, source_label=f"ASAP Plain text export {source.name}",
+    )
+    if looks_like_sign_in(decoded):
+        raise RuntimeError("The Plain text download contains a sign-in or expired-session message.")
+    control_count = sum(
+        1 for character in decoded
+        if ord(character) < 32 and character not in "\t\r\n\f"
+    )
+    if control_count > max(2, len(decoded) // 200):
+        raise RuntimeError("The Plain text download contains binary control data.")
+    stripped = decoded.lstrip("\ufeff \t\r\n")
+    if not stripped or re.search(r"<(?:html|table|body|form)\b|<!doctype", stripped, re.I):
+        raise RuntimeError("The Plain text download is empty or contains portal markup.")
+    parsed = _parse_strict_delimited_rows(decoded)
+    if parsed is not None:
+        rows, delimiter = parsed
+        if len([row for row in rows if any(str(value).strip() for value in row)]) >= 2:
+            return {
+                "source_encoding": encoding_used,
+                "source_delimiter": "tab" if delimiter == "\t" else delimiter,
+                "row_count": max(0, len(rows) - 1),
+                "columns": [str(value).strip() for value in rows[0]],
+            }
+    lines = [line.strip() for line in decoded.splitlines() if line.strip()]
+    whitespace_rows = [re.split(r"\s{2,}", line) for line in lines]
+    widths = [len(row) for row in whitespace_rows if len(row) >= 2]
+    if len(lines) < 2 or len(widths) < 2 or len(set(widths[-min(20, len(widths)):])) != 1:
+        raise RuntimeError(
+            "The Plain text download did not contain a plausible multi-row table. "
+            "Refusing to accept an arbitrary portal message as an export."
+        )
+    return {
+        "source_encoding": encoding_used,
+        "source_delimiter": "whitespace",
+        "row_count": len(lines) - 1,
+        "columns": whitespace_rows[0],
     }
 
 
@@ -4914,6 +5331,7 @@ def _excel_output_suffix(local_path: Path, output: Path, workbook_format: str) -
 
 def _store_completed_download(
     local_path: Path, output: Path, *, file_format: str = "csv",
+    asap_download_type: str | None = None,
     requested_period: Any = None,
     allow_raw_xlsx_fallback: bool = False,
     require_normalized_csv: bool = True,
@@ -4932,6 +5350,10 @@ def _store_completed_download(
     """
     local_path = Path(local_path)
     file_format = str(file_format or "csv").casefold()
+    asap_type = (
+        resolve_asap_download_type(asap_download_type, legacy_file_format=file_format)
+        if asap_download_type is not None else None
+    )
     # Settle the staged download before reading anything out of it: format
     # detection, normalization, and the target copy must all see the same
     # final bytes, not a mid-flush view of a share-backed staging folder.
@@ -4940,12 +5362,18 @@ def _store_completed_download(
     declared_suffixes = {local_path.suffix.casefold(), output.suffix.casefold()}
     html_excel = (
         detected == "html"
-        and bool(declared_suffixes & LEGACY_EXCEL_EXTENSIONS)
-        # Only Outlook's strict, physical-first-row flat-file contract opts
-        # into HTML-as-XLS. A portal login/error page must remain a failure.
+        and (
+            bool(declared_suffixes & LEGACY_EXCEL_EXTENSIONS)
+            or (asap_type is not None and asap_type.content_family == "excel")
+        )
+        # Outlook's strict flat-file contract and an explicitly selected ASAP
+        # Excel type may opt into validated HTML/XML-as-XLS handling. A portal
+        # login/error page remains a failure.
         and require_normalized_csv
-        and strict_headers
-        and csv_preamble == "none"
+        and (
+            (strict_headers and csv_preamble == "none")
+            or (asap_type is not None and asap_type.content_family == "excel")
+        )
     )
     if detected == "xls" and declared_suffixes & (
         OOXML_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
@@ -4961,6 +5389,64 @@ def _store_completed_download(
             f"looks like {detected}. Check what this report's download link "
             "actually produces."
         )
+    if asap_type is not None and asap_type.content_family == "html":
+        if detected != "html":
+            raise RuntimeError(
+                f"ASAP was asked for {asap_type.label}, but the download looks like {detected}."
+            )
+        validation = _validate_asap_html_export(local_path)
+        if output.suffix.casefold() not in asap_type.compatible_suffixes:
+            output = _safe_output_path(output.parent, f"{output.stem}{asap_type.preferred_suffix}")
+        copied = _copy_with_checksum(local_path, output)
+        if (
+            copied["file_size"] != snapshot["file_size"]
+            or copied["checksum"] != snapshot["checksum"]
+        ):
+            raise RuntimeError("The staged ASAP HTML export changed while it was being copied.")
+        _verify_copied_file(
+            output, snapshot["file_size"], snapshot["checksum"], label="Downloaded ASAP HTML export",
+        )
+        return {
+            **validation,
+            "file_size": copied["file_size"], "checksum": copied["checksum"],
+            "file_path": str(output), "filename": output.name,
+            "original_file_path": str(output), "original_filename": output.name,
+            "original_file_size": copied["file_size"], "detected_format": "html",
+        }
+    if asap_type is not None and asap_type.content_family == "text":
+        if detected != "csv":
+            raise RuntimeError(
+                f"ASAP was asked for {asap_type.label}, but the download looks like {detected}."
+            )
+        validation = _validate_asap_plain_text_export(local_path)
+        if output.suffix.casefold() not in asap_type.compatible_suffixes:
+            output = _safe_output_path(output.parent, f"{output.stem}{asap_type.preferred_suffix}")
+        copied = _copy_with_checksum(local_path, output)
+        if (
+            copied["file_size"] != snapshot["file_size"]
+            or copied["checksum"] != snapshot["checksum"]
+        ):
+            raise RuntimeError("The staged ASAP Plain text export changed while it was being copied.")
+        _verify_copied_file(
+            output, snapshot["file_size"], snapshot["checksum"], label="Downloaded ASAP Plain text export",
+        )
+        return {
+            **validation,
+            "file_size": copied["file_size"], "checksum": copied["checksum"],
+            "file_path": str(output), "filename": output.name,
+            "original_file_path": str(output), "original_filename": output.name,
+            "original_file_size": copied["file_size"], "detected_format": "txt",
+        }
+    if asap_type is not None and asap_type.content_family == "csv" and detected != "csv":
+        raise RuntimeError(
+            f"ASAP was asked for {asap_type.label}, but the download looks like {detected}."
+        )
+    if asap_type is not None and asap_type.content_family == "excel" and (
+        detected not in EXCEL_DOWNLOAD_FORMATS and not html_excel
+    ):
+        raise RuntimeError(
+            f"ASAP was asked for {asap_type.label}, but the download looks like {detected}."
+        )
     if detected == "html" and not html_excel:
         raise RuntimeError(
             f"The download is an HTML page, not data: {local_path.name}. The "
@@ -4968,6 +5454,12 @@ def _store_completed_download(
             "the export."
         )
     if html_excel:
+        with local_path.open("rb") as handle:
+            html_head = handle.read(128 * 1024)
+        if looks_like_sign_in(html_head):
+            raise RuntimeError(
+                "The HTML/XML-based Excel download contains a sign-in, authorization, or portal error page."
+            )
         expected_suffix = _excel_output_suffix(local_path, output, "xls")
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
@@ -5014,7 +5506,7 @@ def _store_completed_download(
         expected_suffix = _excel_output_suffix(local_path, output, detected)
         if output.suffix.casefold() != expected_suffix:
             output = _safe_output_path(output.parent, f"{output.stem}{expected_suffix}")
-    elif detected != file_format:
+    elif asap_type is None and detected != file_format:
         file_format = detected
         expected_suffix = f".{detected}"
         if output.suffix.casefold() != expected_suffix:
@@ -5096,6 +5588,32 @@ def _store_completed_download(
         }
     if file_format != "csv":
         raise RuntimeError(f"Unsupported downloaded file format: {file_format}")
+    if asap_type is not None:
+        raw_output = _safe_output_path(
+            output.parent, f"{output.stem}_raw{output.suffix or '.csv'}",
+        )
+        raw_copy = _copy_with_checksum(local_path, raw_output)
+        if (
+            raw_copy["file_size"] != snapshot["file_size"]
+            or raw_copy["checksum"] != snapshot["checksum"]
+        ):
+            raise RuntimeError("The staged raw ASAP CSV changed while it was being copied.")
+        _verify_copied_file(
+            raw_output, snapshot["file_size"], snapshot["checksum"],
+            label="Raw ASAP CSV export",
+        )
+        normalization = _normalize_csv(
+            local_path, output=output, preamble=csv_preamble,
+            strict_headers=strict_headers,
+        )
+        metadata = {**_csv_metadata(output), **normalization}
+        return {
+            **metadata, "file_path": str(output), "filename": output.name,
+            "original_file_path": str(raw_output),
+            "original_filename": raw_output.name,
+            "original_file_size": raw_copy["file_size"],
+            "detected_format": "csv",
+        }
     normalization = _normalize_csv(
         local_path, preamble=csv_preamble, strict_headers=strict_headers,
     )
@@ -5442,6 +5960,15 @@ def execute_job(
         job.get("transformation", {}).get("enabled")
         or job.get("sql_handoff", {}).get("enabled")
     )
+    if is_asap:
+        asap_type = resolve_asap_download_type(
+            job.get("downloads", {}).get("asap_download_type"),
+            legacy_file_format=job.get("downloads", {}).get("file_format"),
+        )
+        if asap_type.download_only and downstream_requires_csv:
+            raise RuntimeError(
+                f"{asap_type.label} is download-only; transformation and SQL handoff are unsupported."
+            )
     require_normalized_csv = not (
         is_html_dashboard and not downstream_requires_csv
     )
@@ -5689,6 +6216,7 @@ def execute_job(
                     metadata = _store_completed_download(
                         staged_file, output,
                         file_format=job["downloads"].get("file_format") or "csv",
+                        asap_download_type=job["downloads"].get("asap_download_type") if is_asap else None,
                         excel_trim=job["downloads"].get("excel_trim") or "none",
                         requested_period=period,
                         allow_raw_xlsx_fallback=(
@@ -5828,6 +6356,7 @@ def execute_job(
                 metadata = _store_completed_download(
                     staged_file, output,
                     file_format=job["downloads"].get("file_format") or "csv",
+                    asap_download_type=job["downloads"].get("asap_download_type") if is_asap else None,
                     excel_trim=job["downloads"].get("excel_trim") or "none",
                     requested_period=period,
                     allow_raw_xlsx_fallback=(is_gscm and not downstream_requires_csv),

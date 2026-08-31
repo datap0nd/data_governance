@@ -1179,6 +1179,222 @@ def test_excel_format_is_supported_and_keeps_xlsx_extension():
     assert body.filename_template == "report.xlsx"
 
 
+def _seed_asap_flow_catalog():
+    site = flows.create_site(_asap_site(), _request())
+    report = flows.create_report(_asap_report(site["id"]), _request())
+    _mark_discovered(report["id"])
+    return site, report
+
+
+def _asap_flow_body(site_id, report_id, **overrides):
+    settings = {
+        "selections": {"data_configuration": "MENA - Global - Global"},
+        "asap_download_type": "csv_file_format",
+        "file_format": "csv",
+        "filename_template": "asap_{week}.csv",
+    }
+    settings.update(overrides)
+    return _flow(site_id, report_id, **settings)
+
+
+def test_asap_catalog_exposes_five_semantic_download_types_verbatim(flow_db):
+    labels = [item["label"] for item in flows.catalog()["asap_download_types"]]
+    assert labels == [
+        "Excel with plain text", "CSV file format", "Excel with formatting",
+        "HTML", "Plain text",
+    ]
+
+
+def test_new_asap_flow_defaults_export_options_checked_and_jobs_keep_semantics(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    saved = flows.create_flow(_asap_flow_body(site["id"], report["id"]), _request())
+
+    assert saved["asap_download_type"] == "csv_file_format"
+    assert saved["export_report_title"] is True
+    assert saved["export_filter_details"] is True
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"] | {
+        "asap_download_type": "csv_file_format",
+        "export_report_title": True,
+        "export_filter_details": True,
+    } == queued["job"]["downloads"]
+
+
+def test_existing_asap_null_export_options_remain_inherited_in_jobs(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    saved = flows.create_flow(_asap_flow_body(site["id"], report["id"]), _request())
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flows SET export_report_title=NULL, export_filter_details=NULL WHERE id=?",
+            (saved["id"],),
+        )
+
+    queued = flows.queue_run(saved["id"], _request())
+    assert queued["job"]["downloads"]["export_report_title"] is None
+    assert queued["job"]["downloads"]["export_filter_details"] is None
+
+
+def test_asap_migration_backfills_semantic_type_but_not_checkbox_assumptions(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    saved = flows.create_flow(_asap_flow_body(site["id"], report["id"]), _request())
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flows SET asap_download_type=NULL,
+                      export_report_title=NULL, export_filter_details=NULL
+                 WHERE id=?""",
+            (saved["id"],),
+        )
+
+    database.init_db()
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT asap_download_type, export_report_title, export_filter_details FROM flows WHERE id=?",
+            (saved["id"],),
+        ).fetchone()
+    assert dict(row) == {
+        "asap_download_type": "csv_file_format",
+        "export_report_title": None,
+        "export_filter_details": None,
+    }
+
+
+def test_scan_resolves_only_consistent_inherited_asap_export_options(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    saved = flows.create_flow(_asap_flow_body(site["id"], report["id"]), _request())
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flows SET export_report_title=NULL, export_filter_details=NULL WHERE id=?",
+            (saved["id"],),
+        )
+        automation = {
+            "report_tab": "Export Wizard (Detail)",
+            "asap_export_capabilities": {"views": {
+                "Export Wizard (Detail)": {
+                    "status": "detected", "download_types": ["csv_file_format"],
+                    "options_by_type": {"csv_file_format": {
+                        "export_report_title": {"available": True, "checked": False},
+                        "export_filter_details": {"available": True, "checked": True},
+                    }},
+                },
+            }},
+        }
+        flows._resolve_inherited_asap_export_settings(
+            db, report["id"], automation, "2026-08-31T10:00:00",
+        )
+        row = db.execute(
+            "SELECT export_report_title, export_filter_details FROM flows WHERE id=?",
+            (saved["id"],),
+        ).fetchone()
+
+    assert row["export_report_title"] == 0
+    assert row["export_filter_details"] == 1
+
+
+def test_asap_capability_validation_uses_selected_view_intersection(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    views = ["Global", "Countries"]
+    options = {
+        "export_report_title": {"available": True, "checked": True},
+        "export_filter_details": {"available": True, "checked": True},
+    }
+    automation = {
+        "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+        "export_views": [{"label": view, "filter_keys": ["data_configuration", "week"]} for view in views],
+        "asap_export_capabilities": {"views": {
+            "Global": {
+                "status": "detected", "download_types": ["csv_file_format"],
+                "options_by_type": {"csv_file_format": options},
+            },
+            "Countries": {
+                "status": "detected", "download_types": ["excel_plain_text"],
+                "options_by_type": {"excel_plain_text": options},
+            },
+        }},
+    }
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_reports SET automation_json=? WHERE id=?",
+            (json.dumps(automation), report["id"]),
+        )
+
+    body = _asap_flow_body(
+        site["id"], report["id"], export_views=views,
+        filename_template="asap_{export}_{week}.csv",
+    )
+    with database.get_db() as db, pytest.raises(HTTPException, match="unavailable"):
+        flows._validate_flow_selections(db, body, new_flow=True)
+
+
+def test_unknown_asap_capability_is_left_for_live_runner_verification(flow_db):
+    site, report = _seed_asap_flow_catalog()
+    automation = {
+        "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
+        "report_tab": "Export Wizard (Detail)",
+        "asap_export_capabilities": {"status": "partial", "views": {
+            "Export Wizard (Detail)": {"status": "unknown", "error": "timed out"},
+        }},
+    }
+    with database.get_db() as db:
+        db.execute(
+            "UPDATE flow_reports SET automation_json=? WHERE id=?",
+            (json.dumps(automation), report["id"]),
+        )
+        body = _asap_flow_body(site["id"], report["id"])
+        flows._validate_flow_selections(db, body, new_flow=True)
+    assert body.asap_download_type == "csv_file_format"
+    assert body.export_report_title is True
+    assert body.export_filter_details is True
+
+
+@pytest.mark.parametrize("download_type,suffix", [("html", ".html"), ("plain_text", ".txt")])
+def test_asap_html_and_plain_text_are_download_only(download_type, suffix):
+    with pytest.raises(ValueError, match="download-only"):
+        flows.FlowWrite(
+            name="Download", site_id=1, report_id=1, selections={},
+            period_strategy="none", download_mode="single",
+            asap_download_type=download_type,
+            filename_template=f"report{suffix}", target_folder=r"C:\Reports",
+            transform_enabled=True, transform_script_path=r"C:\Scripts\clean.py",
+        )
+
+
+def test_asap_filename_rendering_accepts_both_excel_suffixes_and_html_htm():
+    base = {
+        "flow": {"name": "Export"}, "report": {"name": "Report"},
+        "downloads": {"periods": [None], "file_format": "xlsx"},
+    }
+    excel = {**base, "downloads": {**base["downloads"], "asap_download_type": "excel_with_formatting"}}
+    html = {**base, "downloads": {**base["downloads"], "file_format": "html", "asap_download_type": "html"}}
+    assert flow_worker._render_filename("formatted.xls", excel, None, 1) == "formatted.xls"
+    assert flow_worker._render_filename("formatted", excel, None, 1) == "formatted.xlsx"
+    assert flow_worker._render_filename("report.htm", html, None, 1) == "report.htm"
+
+
+def test_non_asap_and_outlook_payloads_clear_asap_only_fields(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    portal = _flow(
+        site["id"], report["id"], file_format="xlsx",
+        asap_download_type="excel_plain_text", filename_template="weekly_{week}.xlsx",
+        export_report_title=True, export_filter_details=False,
+    )
+    with database.get_db() as db:
+        flows._validate_flow_selections(db, portal)
+    assert portal.asap_download_type is None
+    assert portal.export_report_title is None
+    assert portal.export_filter_details is None
+
+    outlook = flows.FlowWrite(
+        name="Mail", source_type="outlook", outlook_subject_contains="Report",
+        target_folder=r"C:\Reports", filename_template=None,
+        asap_download_type="csv_file_format",
+        export_report_title=True, export_filter_details=True,
+    )
+    assert outlook.asap_download_type is None
+    assert outlook.export_report_title is None
+    assert outlook.export_filter_details is None
+
+
 def test_rolling_window_advances_only_after_success(flow_db):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
@@ -3041,7 +3257,9 @@ def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
     log_source = Path(__file__).parents[1].joinpath("app", "static", "flow_run_log.js").read_text()
     assert "flow-enabled-switch" in source
     assert "Enable scheduled execution" not in source
-    assert 'file_format: $("#flow-file-format").value' in source
+    assert "asap_download_type: isAsap ? downloadValue : null" in source
+    assert "export_report_title: isAsap" in source
+    assert "export_filter_details: isAsap" in source
     assert 'id="flow-file-format"' in source
     assert 'data-flow-export-view' in source
     assert 'id="flow-schedule-day"' in source
@@ -4461,6 +4679,15 @@ def _full_scan_mena_report():
             "category_path": ["Mobile", "Installed Base", "Installed Base (MENA)"],
             "report_tab": "Export Wizard (Detail)",
             "export_views": [{"label": "Export Wizard (Detail)", "filter_keys": ["region"]}],
+            "asap_export_capabilities": {"status": "detected", "views": {
+                "Export Wizard (Detail)": {
+                    "status": "detected", "download_types": ["csv_file_format"],
+                    "options_by_type": {"csv_file_format": {
+                        "export_report_title": {"available": True, "checked": True},
+                        "export_filter_details": {"available": True, "checked": False},
+                    }},
+                },
+            }},
         },
         filters=[flows.DiscoveredFilter(
             filter_key="region", label="Region", control_label="Region",
@@ -4494,6 +4721,9 @@ def test_partial_scan_keeps_filters_discovered_by_a_full_scan(flow_db):
     assert region["options"] == ["Global"]
     # Export views and ready text only a full scan can see must survive.
     assert report["automation"]["export_views"][0]["label"] == "Export Wizard (Detail)"
+    assert report["automation"]["asap_export_capabilities"]["views"][
+        "Export Wizard (Detail)"
+    ]["download_types"] == ["csv_file_format"]
     assert report["ready_text"] == "Export Wizard (Detail)"
 
 

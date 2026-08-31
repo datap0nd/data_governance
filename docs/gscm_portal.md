@@ -198,6 +198,11 @@ the SQL handoff inserts. That is the same contract ASAP's XLSX exports use, so
 `sql_mode`, `sql_database/schema/table`, and the transformation script hook all
 behave identically for GSCM.
 
+GSCM has no ASAP Export Wizard. Its Flow payloads omit the ASAP semantic type,
+Export Report Title, and Export filter details fields; the API clears those
+fields if an older or copied client submits them. GSCM remains forced to its
+single native Excel export.
+
 ## Scoped rendered-grid inventory and fallback
 
 The per-tab dataset read supplies authoritative identity while the grid sweep

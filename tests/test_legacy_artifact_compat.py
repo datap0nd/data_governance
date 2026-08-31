@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import database
+from app import flow_worker
 from app.asset_visibility import get_active_source_ids
 from app.models import (
     ActionUpdate,
@@ -37,6 +38,48 @@ def legacy_db(tmp_path):
 
 def _request(actor="Test User"):
     return SimpleNamespace(state=SimpleNamespace(actor=actor))
+
+
+def test_existing_asap_csv_keeps_normalized_primary_and_byte_exact_raw_sibling(tmp_path):
+    raw = (
+        b"Weekly Sales Report\r\n\r\n"
+        b"Filter,Value\r\nRegion,MENA\r\n\r\n"
+        b"Week,Region,Units\r\n2026-W30,MENA,7\r\n2026-W31,MENA,9\r\n"
+    )
+    staged = tmp_path / "portal.csv"
+    staged.write_bytes(raw)
+
+    metadata = flow_worker._store_completed_download(
+        staged, tmp_path / "weekly.csv", file_format="csv",
+        asap_download_type="csv_file_format",
+    )
+
+    primary = tmp_path / "weekly.csv"
+    sibling = tmp_path / "weekly_raw.csv"
+    assert metadata["file_path"] == str(primary)
+    assert metadata["original_file_path"] == str(sibling)
+    assert sibling.read_bytes() == raw
+    assert primary.read_text(encoding="utf-8-sig").splitlines() == [
+        "Week,Region,Units", "2026-W30,MENA,7", "2026-W31,MENA,9",
+    ]
+
+
+def test_asap_csv_never_promotes_a_long_two_column_filter_block_to_header(tmp_path):
+    staged = tmp_path / "portal.csv"
+    staged.write_text(
+        "Report title\n\n"
+        "Filter,Value\nRegion,MENA\nProduct,Mobile\nChannel,Retail\nCurrency,USD\n\n"
+        "Week,Units\n2026-W30,7\n",
+        encoding="utf-8",
+    )
+    metadata = flow_worker._store_completed_download(
+        staged, tmp_path / "weekly.csv", file_format="csv",
+        asap_download_type="csv_file_format",
+    )
+    assert metadata["columns"] == ["Week", "Units"]
+    assert (tmp_path / "weekly.csv").read_text(encoding="utf-8-sig").splitlines() == [
+        "Week,Units", "2026-W30,7",
+    ]
 
 
 def _seed_legacy_rows(db):

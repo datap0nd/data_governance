@@ -537,6 +537,9 @@ CREATE TABLE IF NOT EXISTS flows (
     period_strategy     TEXT NOT NULL DEFAULT 'fixed',
     window_weeks        INTEGER,
     file_format         TEXT NOT NULL DEFAULT 'csv',
+    asap_download_type  TEXT,
+    export_report_title INTEGER,
+    export_filter_details INTEGER,
     excel_trim          TEXT NOT NULL DEFAULT 'none',
     browser_mode        TEXT NOT NULL DEFAULT 'headless',
     start_week          TEXT,
@@ -1148,6 +1151,17 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN period_strategy TEXT NOT NULL DEFAULT 'fixed'",
     "ALTER TABLE flows ADD COLUMN window_weeks INTEGER",
     "ALTER TABLE flows ADD COLUMN file_format TEXT NOT NULL DEFAULT 'csv'",
+    "ALTER TABLE flows ADD COLUMN asap_download_type TEXT",
+    "ALTER TABLE flows ADD COLUMN export_report_title INTEGER",
+    "ALTER TABLE flows ADD COLUMN export_filter_details INTEGER",
+    """UPDATE flows
+          SET asap_download_type = CASE file_format
+              WHEN 'xlsx' THEN 'excel_plain_text'
+              WHEN 'xls' THEN 'excel_plain_text'
+              WHEN 'csv' THEN 'csv_file_format'
+              ELSE asap_download_type END
+        WHERE asap_download_type IS NULL
+          AND site_id IN (SELECT id FROM flow_sites WHERE adapter='asap_portal')""",
     "ALTER TABLE flows ADD COLUMN excel_trim TEXT NOT NULL DEFAULT 'none'",
     "ALTER TABLE flows ADD COLUMN sql_mode TEXT",
     "ALTER TABLE flows ADD COLUMN sql_database TEXT",

@@ -49,9 +49,11 @@ including when it re-pokes an existing queued scheduled run.
 After a new attachment is acquired locally, the worker creates the normal
 `#<run_id>_<dd-mm-yyyy>` folder, registers it, applies the keep-newest-three
 protocol, and uses the shared verified storage path. The original safe filename
-is retained with collision suffixes. CSV is normalized in place; every Excel
-format keeps the verified original and adds a `_normalized.csv` sibling used by
-transformations and SQL.
+is retained with collision suffixes. Outlook CSV is normalized in place; every
+Excel format keeps the verified original and adds a `_normalized.csv` sibling
+used by transformations and SQL. This is source-specific: ASAP CSV keeps its
+normalized configured filename as the primary artifact and also records a
+byte-exact `_raw.csv` sibling.
 
 ## Flat-file validation
 

@@ -283,6 +283,29 @@ def test_per_flow_opt_out(monkeypatch):
     assert not flow_replay.enabled(job)
 
 
+def test_asap_type_and_export_options_separate_replay_identity():
+    base = {
+        **JOB,
+        "site": {"id": 7, "name": "ASAP", "adapter": "asap_portal"},
+        "downloads": {
+            "file_format": "csv", "asap_download_type": "csv_file_format",
+            "export_report_title": None, "export_filter_details": None,
+        },
+    }
+    inherited = flow_replay.recipe_key(base, TASK_KEY)
+    titled = flow_replay.recipe_key(
+        {**base, "downloads": {**base["downloads"], "export_report_title": True}},
+        TASK_KEY,
+    )
+    plain_text = flow_replay.recipe_key(
+        {**base, "downloads": {
+            **base["downloads"], "file_format": "txt", "asap_download_type": "plain_text",
+        }},
+        TASK_KEY,
+    )
+    assert len({inherited, titled, plain_text}) == 3
+
+
 # ── Replay ──
 
 
@@ -341,6 +364,28 @@ def test_replay_accepts_a_csv_for_a_text_recipe(tmp_path):
     recipe = _recipe(expected_kind="text", post_b64=None, method="GET")
     staged = flow_replay.try_replay(context, recipe, tmp_path)
     assert staged is not None and staged.suffix == ".csv"
+
+
+def test_replay_preserves_plain_text_and_html_staging_suffixes(tmp_path):
+    text_body = ("week  region  qty\n" + "2026-W30  MENA  5\n" * 100).encode()
+    text_context = _FakeContext(request=_FakeFetcher(_FakeAPIResponse(body=text_body)))
+    text_recipe = _recipe(
+        expected_kind="text", expected_suffix=".txt", post_b64=None, method="GET",
+    )
+    text_path = flow_replay.try_replay(text_context, text_recipe, tmp_path / "text")
+    assert text_path is not None and text_path.suffix == ".txt"
+
+    html_body = (
+        "<html><body><table><tr><th>Week</th><th>Qty</th></tr>"
+        + "<tr><td>2026-W30</td><td>5</td></tr>" * 100
+        + "</table></body></html>"
+    ).encode()
+    html_context = _FakeContext(request=_FakeFetcher(_FakeAPIResponse(body=html_body)))
+    html_recipe = _recipe(
+        expected_kind="html", expected_suffix=".html", post_b64=None, method="GET",
+    )
+    html_path = flow_replay.try_replay(html_context, html_recipe, tmp_path / "html")
+    assert html_path is not None and html_path.suffix == ".html"
 
 
 def test_replay_rejects_error_status(tmp_path):

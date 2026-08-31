@@ -10277,7 +10277,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
                         <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
-                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${String(flow.file_format || "csv").toUpperCase()} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${String(flow.file_format || "csv").toUpperCase()} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}</td>
+                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}</td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
@@ -10422,6 +10422,26 @@ function _flowSyncExportSections(report, selected = {}) {
     if (downloadSection) downloadSection.hidden = !dashboard;
 }
 
+function _flowAsapCapabilityState(report, selectedViews, downloadType) {
+    const views = report?.automation?.asap_export_capabilities?.views || {};
+    const keys = selectedViews?.length ? selectedViews : ["__default__"];
+    const records = keys.map(key => views[key]);
+    const known = records.length > 0 && records.every(item => item?.status === "detected");
+    if (!known) return { known: false, availableTypes: null, options: {} };
+    const availableTypes = records
+        .map(item => new Set(item.download_types || []))
+        .reduce((common, current) => new Set([...common].filter(value => current.has(value))));
+    const options = {};
+    for (const key of ["export_report_title", "export_filter_details"]) {
+        const observations = records.map(item => item.options_by_type?.[downloadType]?.[key] || {});
+        const available = observations.every(item => item.available === true);
+        const checked = available && observations.every(item => item.checked === observations[0].checked)
+            ? observations[0].checked : null;
+        options[key] = { available, checked };
+    }
+    return { known: true, availableTypes, options };
+}
+
 function _flowHasWeekFilter(report) {
     return Boolean((report?.filters || []).find(filter => filter.control_type === "week" && filter.enabled && !filter.stale));
 }
@@ -10451,6 +10471,10 @@ const FLOW_GSCM_ADAPTER = "gscm_portal";
 function _flowSiteIsGscm(catalog, siteId) {
     const site = catalog.sites.find(item => String(item.id) === String(siteId));
     return site?.adapter === FLOW_GSCM_ADAPTER;
+}
+
+function _flowSiteIsAsap(catalog, siteId) {
+    return catalog.sites.find(site => String(site.id) === String(siteId))?.adapter === "asap_portal";
 }
 
 function _flowSqlLinkHtml(existing) {
@@ -10548,10 +10572,30 @@ function _flowBuilderHtml(catalog, existing = null) {
     const selectedSchema = existing?.sql_schema || sqlSchemas[0] || "";
     const sqlTables = sqlCatalog.targets.filter(item => item.database === selectedDatabase && item.schema === selectedSchema).map(item => item.table);
     const isGscm = _flowSiteIsGscm(catalog, siteId);
+    const isAsap = _flowSiteIsAsap(catalog, siteId);
     const hasWeekFilter = !isGscm && _flowHasWeekFilter(report);
     const periodStrategy = hasWeekFilter ? (existing?.period_strategy || "latest") : "none";
     // GSCM exports through its Nexacro toolbar, which only emits .xlsx.
-    const fileFormat = isGscm ? "xlsx" : (existing?.file_format || "xlsx");
+    const asapTypes = catalog.asap_download_types || [];
+    const asapDownloadType = existing?.asap_download_type
+        || (existing?.file_format === "csv" ? "csv_file_format" : "excel_plain_text");
+    const asapType = asapTypes.find(item => item.key === asapDownloadType) || asapTypes[0];
+    const fileFormat = isGscm
+        ? "xlsx"
+        : (isAsap ? (asapType?.file_format || "xlsx") : (existing?.file_format || "xlsx"));
+    const selectedExportViews = existing?.export_views?.length
+        ? existing.export_views : _flowExportViewLabels(report);
+    const asapCapability = _flowAsapCapabilityState(
+        report, selectedExportViews, asapDownloadType,
+    );
+    const titleInherited = Boolean(existing?.id) && existing?.export_report_title == null;
+    const filtersInherited = Boolean(existing?.id) && existing?.export_filter_details == null;
+    const titleChecked = titleInherited
+        ? (asapCapability.options.export_report_title?.checked ?? true)
+        : (existing?.export_report_title ?? true);
+    const filtersChecked = filtersInherited
+        ? (asapCapability.options.export_filter_details?.checked ?? true)
+        : (existing?.export_filter_details ?? true);
     // Recorded pre-processing for the workbook-to-CSV step. GSCM's toolbar
     // export frames every workbook with a blank first column and a non-data
     // first row, so new GSCM flows preselect the trim - still a visible,
@@ -10562,11 +10606,13 @@ function _flowBuilderHtml(catalog, existing = null) {
     const exportViewCount = _flowExportViewLabels(report).length;
     const downloadLinkCount = _flowDownloadLinkLabels(report).length;
     const isDashboard = downloadLinkCount > 0 && exportViewCount === 0;
+    const preferredSuffix = isAsap
+        ? (asapType?.preferred_suffix || ".xlsx").slice(1) : fileFormat;
     const defaultFilename = isGscm
         ? `{flow}_{date}.${fileFormat}`
         : (exportViewCount > 1 || downloadLinkCount > 1 || !hasWeekFilter
-            ? `{flow}_{export}.${fileFormat}`
-            : `{flow}_{start_period}_{end_period}.${fileFormat}`);
+            ? `{flow}_{export}.${preferredSuffix}`
+            : `{flow}_{start_period}_{end_period}.${preferredSuffix}`);
     return `
         <div class="flow-builder-shell">
             <div class="flow-builder-main">
@@ -10603,7 +10649,13 @@ function _flowBuilderHtml(catalog, existing = null) {
                         <div class="flow-form-grid">
                             <label ${isGscm ? "hidden" : ""}><span>Period</span><select id="flow-period-strategy"><option value="none" ${periodStrategy === "none" ? "selected" : ""}>No period selection</option><option value="latest" ${periodStrategy === "latest" ? "selected" : ""}>Start to latest available</option><option value="fixed" ${periodStrategy === "fixed" ? "selected" : ""}>Fixed start + end</option><option value="rolling" ${periodStrategy === "rolling" ? "selected" : ""}>Rolling X-week window</option></select><small id="flow-period-help">${hasWeekFilter ? "Latest available comes from ASAP discovery." : "This report has no Sell-out Week prompt."}</small></label>
                             <label ${isGscm ? "hidden" : ""}><span>File grouping</span><select id="flow-download-mode"><option value="single" ${!["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file for the full range</option><option value="one_per_period" ${["one_per_period", "one_per_week"].includes(existing?.download_mode) ? "selected" : ""}>One file every X weeks</option></select></label>
-                            <label><span>Download type</span><select id="flow-file-format" ${isGscm ? "disabled" : ""}><option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option>${isGscm ? "" : `<option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV (.csv)</option>`}</select><small>${isGscm ? "GSCM's toolbar export only emits Excel. The original workbook is kept and normalized to CSV for SQL." : "Excel originals are preserved and normalized to CSV for SQL."}</small></label>
+                            <label><span>Download type</span><select id="flow-file-format" ${isGscm ? "disabled" : ""}>${isGscm
+                                ? `<option value="xlsx" selected>Excel workbook (.xlsx)</option>`
+                                : isAsap
+                                    ? asapTypes.map(item => `<option value="${esc(item.key)}" ${item.key === asapDownloadType ? "selected" : ""} ${asapCapability.known && !asapCapability.availableTypes.has(item.key) ? "disabled" : ""}>${esc(item.label)}</option>`).join("")
+                                    : `<option value="xlsx" ${fileFormat === "xlsx" ? "selected" : ""}>Excel workbook (.xlsx)</option><option value="csv" ${fileFormat === "csv" ? "selected" : ""}>CSV (.csv)</option>`}</select><small id="flow-download-type-help">${isGscm ? "GSCM's toolbar export only emits Excel. The original workbook is kept and normalized to CSV for SQL." : isAsap && !asapCapability.known ? "Export Wizard availability is unverified; scan the report or the runner will verify it live." : "Unsupported types are disabled from the latest scan."}</small></label>
+                            <label id="flow-export-report-title-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-report-title" type="checkbox" data-inherit="${titleInherited}" ${titleChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_report_title?.available ? "disabled" : ""}><span>Export Report Title</span><small>${titleInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
+                            <label id="flow-export-filter-details-row" class="flow-check flow-span-2" ${isAsap ? "" : "hidden"}><input id="flow-export-filter-details" type="checkbox" data-inherit="${filtersInherited}" ${filtersChecked ? "checked" : ""} ${asapCapability.known && !asapCapability.options.export_filter_details?.available ? "disabled" : ""}><span>Export filter details</span><small>${filtersInherited ? "Inherited from ASAP until a scan observes a consistent state." : "The runner enforces this saved Export Wizard choice."}</small></label>
                             <label><span>Excel pre-processing</span><select id="flow-excel-trim"><option value="none" ${excelTrim === "none" ? "selected" : ""}>None</option><option value="first_row_and_column" ${excelTrim === "first_row_and_column" ? "selected" : ""}>Drop first row and first column (GSCM report frame)</option></select><small>Applied while normalizing the downloaded workbook to CSV, before headers are detected and before any transformation or SQL handoff. Recorded on every run.</small></label>
                             <label><span>Browser mode</span><select id="flow-browser-mode"><option value="headless" ${existing?.browser_mode !== "headed" ? "selected" : ""}>Headless · background</option><option value="headed" ${existing?.browser_mode === "headed" ? "selected" : ""}>Headed · visible debugging</option></select><small id="flow-browser-mode-help">Headless is best for routine runs.</small></label>
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
@@ -10951,6 +11003,7 @@ function _flowCollectBuilder() {
             site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
             download_mode: "single", period_strategy: "none", window_weeks: null,
             file_format: "auto", browser_mode: "headless", start_week: null, end_week: null,
+            asap_download_type: null, export_report_title: null, export_filter_details: null,
             filename_template: null,
         };
     }
@@ -10960,6 +11013,13 @@ function _flowCollectBuilder() {
     });
     const periodStrategy = $("#flow-period-strategy").value;
     const downloadMode = $("#flow-download-mode").value;
+    const selectedSiteId = Number($("#flow-site").value);
+    const isAsap = _flowSiteIsAsap(window._flowsState.catalog, selectedSiteId);
+    const downloadValue = $("#flow-file-format").value;
+    const downloadSpec = (window._flowsState.catalog.asap_download_types || [])
+        .find(item => item.key === downloadValue);
+    const titleControl = $("#flow-export-report-title");
+    const filterDetailsControl = $("#flow-export-filter-details");
     return {
         ...shared, source_type: "portal", outlook_subject_contains: null,
         site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
@@ -10967,7 +11027,13 @@ function _flowCollectBuilder() {
         download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value),
         selections, download_mode: downloadMode, period_strategy: periodStrategy,
         window_weeks: periodStrategy !== "none" && (periodStrategy === "rolling" || downloadMode === "one_per_period") ? Number($("#flow-window-weeks").value) : null,
-        file_format: $("#flow-file-format").value, browser_mode: $("#flow-browser-mode").value,
+        file_format: isAsap ? (downloadSpec?.file_format || "xlsx") : downloadValue,
+        asap_download_type: isAsap ? downloadValue : null,
+        export_report_title: isAsap
+            ? (titleControl?.disabled || titleControl?.dataset.inherit === "true" ? null : Boolean(titleControl?.checked)) : null,
+        export_filter_details: isAsap
+            ? (filterDetailsControl?.disabled || filterDetailsControl?.dataset.inherit === "true" ? null : Boolean(filterDetailsControl?.checked)) : null,
+        browser_mode: $("#flow-browser-mode").value,
         excel_trim: $("#flow-excel-trim")?.value || "none",
         start_week: periodStrategy === "none" ? null : ($("#flow-start-week").value || null),
         end_week: periodStrategy === "fixed" ? ($("#flow-end-week").value || null) : null,
@@ -11258,7 +11324,9 @@ function _bindFlowWorkspace() {
         const form = $("#flow-builder-form");
         const previous = _flowSiteIsGscm(state.catalog, form?.dataset.siteId || "");
         const next = _flowSiteIsGscm(state.catalog, event.target.value);
-        if (previous !== next) {
+        const previousAsap = _flowSiteIsAsap(state.catalog, form?.dataset.siteId || "");
+        const nextAsap = _flowSiteIsAsap(state.catalog, event.target.value);
+        if (previous !== next || previousAsap !== nextAsap) {
             const draft = _flowCollectBuilder();
             _flowShowView("builder", {
                 ...draft,
@@ -11293,8 +11361,81 @@ function _bindFlowWorkspace() {
     });
     $("#flow-file-format")?.addEventListener("change", event => {
         const filename = $("#flow-filename");
-        if (filename) filename.value = filename.value.replace(/\.(?:csv|xlsx)$/i, `.${event.target.value}`);
+        const spec = (state.catalog.asap_download_types || []).find(
+            item => item.key === event.target.value,
+        );
+        const suffix = spec?.preferred_suffix || `.${event.target.value}`;
+        if (filename) filename.value = filename.value.replace(
+            /\.(?:csv|xls|xlsx|html?|txt)$/i, suffix,
+        );
     });
+    const syncAsapDownloadControls = () => {
+        const siteId = Number($("#flow-site")?.value);
+        if (!_flowSiteIsAsap(state.catalog, siteId)) return;
+        const report = state.catalog.reports.find(
+            item => String(item.id) === String($("#flow-report")?.value),
+        );
+        const selectedViews = [...document.querySelectorAll("[data-flow-export-view]:checked")]
+            .map(input => input.value);
+        const select = $("#flow-file-format");
+        const current = select?.value;
+        let capability = _flowAsapCapabilityState(report, selectedViews, current);
+        if (select && capability.known) {
+            for (const option of select.options) {
+                option.disabled = !capability.availableTypes.has(option.value);
+            }
+            if (select.selectedOptions[0]?.disabled) {
+                const fallback = [...select.options].find(option => !option.disabled);
+                if (fallback) {
+                    select.value = fallback.value;
+                    capability = _flowAsapCapabilityState(report, selectedViews, fallback.value);
+                    select.dispatchEvent(new Event("change"));
+                    return;
+                }
+            }
+        }
+        const spec = (state.catalog.asap_download_types || []).find(
+            item => item.key === select?.value,
+        );
+        const downloadOnly = Boolean(spec?.download_only);
+        for (const control of [$("#flow-transform-enabled"), $("#flow-sql-enabled")]) {
+            if (!control) continue;
+            if (downloadOnly) {
+                control.checked = false;
+                control.dispatchEvent(new Event("change"));
+            }
+            control.disabled = downloadOnly || (
+                control.id === "flow-sql-enabled" && !state.sqlCatalog?.configured
+            );
+        }
+        for (const [key, control, row] of [
+            ["export_report_title", $("#flow-export-report-title"), $("#flow-export-report-title-row")],
+            ["export_filter_details", $("#flow-export-filter-details"), $("#flow-export-filter-details-row")],
+        ]) {
+            if (!control) continue;
+            const option = capability.options[key] || {};
+            control.disabled = capability.known && !option.available;
+            if (control.disabled) control.checked = false;
+            else if (control.dataset.inherit === "true" && option.checked != null) {
+                control.checked = Boolean(option.checked);
+            }
+            const detail = row?.querySelector("small");
+            if (detail && control.disabled) {
+                detail.textContent = "This control is unavailable for one or more selected export views.";
+            }
+        }
+        const help = $("#flow-download-type-help");
+        if (help && downloadOnly) {
+            help.textContent = `${spec.label} is download-only; transformation and SQL are disabled.`;
+        }
+    };
+    $("#flow-file-format")?.addEventListener("change", syncAsapDownloadControls);
+    $("#flow-export-views")?.addEventListener("change", syncAsapDownloadControls);
+    $("#flow-report")?.addEventListener("change", () => setTimeout(syncAsapDownloadControls, 0));
+    for (const control of [$("#flow-export-report-title"), $("#flow-export-filter-details")]) {
+        control?.addEventListener("change", () => { control.dataset.inherit = "false"; });
+    }
+    syncAsapDownloadControls();
     $("#flow-period-strategy")?.addEventListener("change", event => {
         const none = event.target.value === "none";
         const rolling = event.target.value === "rolling";

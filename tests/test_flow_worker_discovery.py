@@ -2,6 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1132,13 +1133,176 @@ def test_asap_export_action_accepts_input_value_rendering():
     assert flow_worker._asap_export_action(Root()) is input_export
 
 
-def test_asap_xlsx_format_prefers_flat_excel_export_and_accepts_legacy_label():
+def test_asap_export_format_matching_uses_the_five_exact_wizard_labels():
     preferred, pattern = flow_worker._asap_export_format_names("xlsx")
 
     assert preferred == "Excel with plain text"
     assert pattern.fullmatch("Excel with plain text")
-    assert pattern.fullmatch("Excel file format")
+    assert not pattern.fullmatch("Excel file format")
     assert not pattern.fullmatch("Excel with formatting")
+    assert [
+        flow_worker._asap_export_format_names(key)[0]
+        for key in (
+            "excel_plain_text", "csv_file_format", "excel_with_formatting",
+            "html", "plain_text",
+        )
+    ] == [
+        "Excel with plain text", "CSV file format", "Excel with formatting",
+        "HTML", "Plain text",
+    ]
+
+
+def test_asap_capability_probe_records_each_type_and_restores_without_export(monkeypatch):
+    state = {
+        "type": "excel_plain_text",
+        "options": {
+            "excel_plain_text": {"export_report_title": True, "export_filter_details": False},
+            "csv_file_format": {"export_report_title": True, "export_filter_details": None},
+            "excel_with_formatting": {"export_report_title": False, "export_filter_details": True},
+            "html": {"export_report_title": None, "export_filter_details": None},
+            "plain_text": {"export_report_title": False, "export_filter_details": None},
+        },
+    }
+
+    class FormatControl:
+        def __init__(self, key):
+            self.key = key
+
+        def count(self):
+            return 1
+
+        def is_checked(self):
+            return state["type"] == self.key
+
+        def check(self):
+            state["type"] = self.key
+
+        click = check
+
+    class OptionControl:
+        def __init__(self, key):
+            self.key = key
+
+        def count(self):
+            return int(state["options"][state["type"]][self.key] is not None)
+
+        def is_checked(self):
+            return bool(state["options"][state["type"]][self.key])
+
+        def check(self):
+            state["options"][state["type"]][self.key] = True
+
+        def uncheck(self):
+            state["options"][state["type"]][self.key] = False
+
+        def click(self):
+            self.check() if not self.is_checked() else self.uncheck()
+
+    clicked = []
+    toolbar = SimpleNamespace(click=lambda: clicked.append("toolbar"))
+    formats = {
+        key: FormatControl(key) for key in (
+            "excel_plain_text", "csv_file_format", "excel_with_formatting", "html", "plain_text",
+        )
+    }
+    options = {
+        "export_report_title": OptionControl("export_report_title"),
+        "export_filter_details": OptionControl("export_filter_details"),
+    }
+    page = SimpleNamespace(
+        context=SimpleNamespace(pages=[]),
+        wait_for_timeout=lambda _milliseconds: None,
+    )
+    page.context.pages = [page]
+    def current_wizard(*_args, **_kwargs):
+        return {
+            "root": object(), "action": SimpleNamespace(click=lambda: clicked.append("export")),
+            "formats": formats,
+            "options": {
+                key: control if state["options"][state["type"]][key] is not None else None
+                for key, control in options.items()
+            },
+            "page": page,
+        }
+    cleanup = []
+    monkeypatch.setattr(flow_worker, "_asap_toolbar_export_control", lambda _page: toolbar)
+    monkeypatch.setattr(flow_worker, "_asap_resolve_export_wizard", current_wizard)
+    monkeypatch.setattr(
+        flow_worker, "_asap_close_probe_wizard",
+        lambda *_args, **_kwargs: cleanup.append(True),
+    )
+
+    capability = flow_worker._asap_probe_export_capabilities(page)
+
+    assert capability["download_types"] == list(formats)
+    assert capability["options_by_type"]["csv_file_format"]["export_filter_details"] == {
+        "available": False, "checked": None,
+    }
+    assert state["type"] == "excel_plain_text"
+    assert state["options"]["excel_plain_text"] == {
+        "export_report_title": True, "export_filter_details": False,
+    }
+    assert clicked == ["toolbar"]
+    assert cleanup == [True]
+
+
+@pytest.mark.parametrize("shape", ["popup", "modal", "frame"])
+def test_asap_wizard_resolver_keeps_controls_and_export_action_in_one_root(monkeypatch, shape):
+    wizard_root = SimpleNamespace(frames=[], controls=True, action=True)
+    host = SimpleNamespace(frames=[], controls=False, action=False)
+    if shape == "popup":
+        pages = [host, wizard_root]
+    elif shape == "frame":
+        host.frames = [wizard_root]
+        pages = [host]
+    else:
+        host.controls = host.action = True
+        pages = [host]
+        wizard_root = host
+    host.context = SimpleNamespace(pages=pages)
+    for candidate in pages:
+        candidate.context = host.context
+        candidate.page = candidate
+    wizard_root.page = host if shape == "frame" else wizard_root
+    host.wait_for_timeout = lambda _milliseconds: None
+    action = object()
+    monkeypatch.setattr(
+        flow_worker, "_asap_export_action",
+        lambda root: action if getattr(root, "action", False) else None,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_visible_labeled_control",
+        lambda root, label: (root, label) if getattr(root, "controls", False) else None,
+    )
+
+    resolved = flow_worker._asap_resolve_export_wizard(host, timeout_ms=5)
+
+    assert resolved["root"] is wizard_root
+    assert resolved["action"] is action
+    assert set(resolved["formats"]) == {
+        "excel_plain_text", "csv_file_format", "excel_with_formatting", "html", "plain_text",
+    }
+
+
+def test_asap_wizard_resolver_rejects_controls_and_export_split_across_roots(monkeypatch):
+    controls_root = SimpleNamespace(frames=[], controls=True, action=False)
+    action_root = SimpleNamespace(frames=[], controls=False, action=True)
+    page = SimpleNamespace(
+        frames=[], context=SimpleNamespace(pages=[controls_root, action_root]),
+        wait_for_timeout=lambda _milliseconds: None,
+    )
+    for root in (controls_root, action_root):
+        root.page = root
+    monkeypatch.setattr(
+        flow_worker, "_asap_export_action",
+        lambda root: object() if getattr(root, "action", False) else None,
+    )
+    monkeypatch.setattr(
+        flow_worker, "_asap_visible_labeled_control",
+        lambda root, label: (root, label) if getattr(root, "controls", False) else None,
+    )
+
+    assert flow_worker._asap_resolve_export_wizard(page, timeout_ms=2) is None
 
 
 def test_asap_download_retries_one_wizard_recognition_failure(monkeypatch, tmp_path):
@@ -1302,6 +1466,18 @@ def test_raw_table_excel_menu_item_is_a_direct_download_action():
 
     assert action.is_visible()
     assert flow_worker._asap_wait_for_raw_menu_download_action(Page(), "csv") is None
+
+
+def test_raw_table_excel_shortcut_is_blocked_by_every_explicit_checkbox_choice():
+    inherited = {"export_report_title": None, "export_filter_details": None}
+    assert flow_worker._asap_direct_excel_allowed("excel_plain_text", inherited)
+    assert not flow_worker._asap_direct_excel_allowed(
+        "excel_plain_text", {**inherited, "export_report_title": True},
+    )
+    assert not flow_worker._asap_direct_excel_allowed(
+        "excel_plain_text", {**inherited, "export_filter_details": False},
+    )
+    assert not flow_worker._asap_direct_excel_allowed("excel_with_formatting", inherited)
 
 
 def test_raw_table_export_control_accepts_direct_export_options_popup():

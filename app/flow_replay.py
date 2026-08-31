@@ -53,8 +53,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.flow_download_security import looks_like_sign_in
+
 RECIPES_FILENAME = ".export_replay.json"
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
 RECIPE_MAX_AGE_DAYS = 14
 #: Requests observed while one export runs. The window also contains the
 #: portal's own chatter (telemetry, keepalives), so keep enough history that
@@ -83,15 +85,8 @@ EXPORT_CONTENT_TYPES = (
     "application/vnd.ms-excel", "application/x-msexcel", "application/excel",
     "application/octet-stream", "application/zip",
     "text/csv", "application/csv",
+    "text/html", "application/xhtml+xml", "text/plain",
 )
-
-#: Samsung SSO markers, mirrored from the GSCM adapter: a text response that
-#: reads like the sign-in page is a session failure, not report data.
-SIGN_IN_TEXT_MARKERS = (
-    "single sign on", "please enter your password", "verification code",
-    "<html", "<!doctype",
-)
-
 
 def enabled(job: dict) -> bool:
     """Whether capture and replay apply to this job at all.
@@ -112,9 +107,10 @@ def _sniff_kind(head: bytes) -> str:
     """Classify file bytes into the families replay validation compares.
 
     ``excel`` covers every container the store pipeline accepts (OOXML and
-    XLSB are ZIP packages, legacy XLS is OLE); ``text`` covers CSV. The full
-    format nuance stays in the worker's ``_detect_download_format`` - this
-    only has to keep a login page from being saved as data.
+    XLSB are ZIP packages, legacy XLS is OLE); ``text`` covers CSV and Plain
+    text; ``html`` is accepted only for an explicitly configured HTML export.
+    The full structural validation stays in the worker - replay only preserves
+    the expected family and keeps a login/error response from being staged.
     """
     if not head:
         return "empty"
@@ -134,8 +130,7 @@ def _sniff_kind(head: bytes) -> str:
 
 
 def _looks_like_sign_in(head: bytes) -> bool:
-    decoded = head.decode("latin-1", errors="replace").casefold()
-    return any(marker in decoded for marker in SIGN_IN_TEXT_MARKERS)
+    return looks_like_sign_in(head)
 
 
 def _looks_like_export_response(headers: dict[str, str]) -> bool:
@@ -290,6 +285,9 @@ def recipe_key(job: dict, task_key: str) -> str:
         "site": site.get("id") or site.get("name"),
         "report": report.get("id") or report.get("name"),
         "task": task_key,
+        "asap_download_type": (job.get("downloads") or {}).get("asap_download_type"),
+        "export_report_title": (job.get("downloads") or {}).get("export_report_title"),
+        "export_filter_details": (job.get("downloads") or {}).get("export_filter_details"),
     }, sort_keys=True)
 
 
@@ -354,7 +352,12 @@ def store_capture(
     except OSError:
         return False
     kind = _sniff_kind(head)
-    if kind not in {"excel", "text"}:
+    configured_format = str((job.get("downloads") or {}).get("file_format") or "csv")
+    if kind not in {"excel", "text", "html"}:
+        return False
+    if kind == "html" and configured_format != "html":
+        return False
+    if kind in {"text", "html"} and looks_like_sign_in(head):
         return False
     headers = {
         key: value for key, value in (request.get("headers") or {}).items()
@@ -368,6 +371,10 @@ def store_capture(
         "post_b64": request.get("post_b64"),
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "expected_kind": kind,
+        "expected_suffix": {
+            "html": ".html", "txt": ".txt", "csv": ".csv",
+            "xlsx": ".xlsx",
+        }.get(configured_format),
         "baseline_bytes": size,
     }
     data = _load_all(profile_dir)
@@ -379,10 +386,12 @@ def store_capture(
 # ── Replay ──
 
 
-def _replay_suffix(head: bytes, expected_kind: str) -> str:
+def _replay_suffix(head: bytes, expected_kind: str, expected_suffix: str | None = None) -> str:
     if expected_kind == "excel":
         return ".xls" if head.startswith(b"\xd0\xcf\x11\xe0") else ".xlsx"
-    return ".csv"
+    if expected_kind == "html":
+        return ".html"
+    return expected_suffix if expected_suffix in {".csv", ".txt"} else ".csv"
 
 
 def _staging_target(staging_dir: Path, suffix: str) -> Path:
@@ -440,9 +449,12 @@ def try_replay(
     expected_kind = str(recipe.get("expected_kind") or "excel")
     if _sniff_kind(head) != expected_kind:
         return None
-    if expected_kind == "text" and _looks_like_sign_in(head):
+    if expected_kind in {"text", "html"} and _looks_like_sign_in(head):
         return None
-    target = _staging_target(Path(staging_dir), _replay_suffix(head, expected_kind))
+    target = _staging_target(
+        Path(staging_dir),
+        _replay_suffix(head, expected_kind, recipe.get("expected_suffix")),
+    )
     try:
         target.write_bytes(body)
     except OSError:

@@ -34,15 +34,17 @@ captures that request once and replays it directly on later runs.
 
 ## Safety model
 
-- **Recipes never cross configurations.** A recipe is keyed by site, report,
-  export view, and requested period. A request recorded for one week or one
-  export view is never replayed for another; it simply isn't found, and the
-  browser flow runs as before.
+- **Recipes never cross configurations.** Recipe version 2 is keyed by site,
+  report, export view, requested period, ASAP semantic download type, Export
+  Report Title, and Export filter details. A request recorded for one week,
+  view, type, or checkbox combination is never replayed for another; it simply
+  is not found, and the browser flow runs as before.
 - **Replayed files are validated like downloads.** The response is checked by
-  content, not filename: an HTML sign-in or error page, an empty or truncated
-  body, or the wrong file family (text where a workbook is expected, and vice
-  versa) rejects the replay. A file that passes still goes through the exact
-  same container validation and normalization as a browser download.
+  content, not filename: a sign-in or error response, an empty or truncated
+  body, or the wrong file family rejects the replay. Intentional HTML and Plain
+  text preserve `.html` and `.txt` staging suffixes. A file that passes replay
+  still goes through the same structural validation, storage, and normalization
+  as a browser download.
 - **No credentials are stored.** `Cookie` and `Authorization` headers are
   stripped before a recipe is saved; authentication always comes live from
   the browser profile at replay time. If the profile's session has expired,
