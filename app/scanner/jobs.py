@@ -301,14 +301,22 @@ def heartbeat(
                       progress_current=COALESCE(?, progress_current),
                       progress_total=COALESCE(?, progress_total)
                 WHERE id=? AND status IN ('queued', 'running')"""
+    module_statement = """UPDATE scanner_module_runs
+                              SET heartbeat_at=?
+                            WHERE scanner_job_id=?
+                              AND status IN ('queued','running')"""
     if db is not None:
         cursor = db.execute(statement, values)
+        if cursor.rowcount:
+            db.execute(module_statement, (now, int(job_id)))
         return bool(cursor.rowcount)
     with get_db() as connection:
         cursor = connection.execute(
             statement,
             values,
         )
+        if cursor.rowcount:
+            connection.execute(module_statement, (now, int(job_id)))
         return bool(cursor.rowcount)
 
 

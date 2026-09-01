@@ -103,6 +103,7 @@ def request_stop_existing_work(
         "generation": None,
         "scan_runs_stopped": 0,
         "scanner_jobs_stopped": 0,
+        "module_runs_stopped": 0,
         "probe_runs_stopped": 0,
         "pbi_runs_stopped": 0,
         "pbi_callbacks_fenced": False,
@@ -161,6 +162,22 @@ def request_stop_existing_work(
                 (now, log_note, log_note),
             )
             result["probe_runs_stopped"] = probe_cursor.rowcount if probe_cursor.rowcount != -1 else 0
+
+            exclusion = " AND scanner_job_id != ?" if exclude_scanner_job_id is not None else ""
+            module_cursor = db.execute(
+                f"""UPDATE scanner_module_runs
+                       SET finished_at=?, heartbeat_at=?, status='stopped',
+                           summary=COALESCE(summary, ?)
+                     WHERE status IN ('queued','running'){exclusion}""",
+                (
+                    (now, now, log_note, int(exclude_scanner_job_id))
+                    if exclude_scanner_job_id is not None
+                    else (now, now, log_note)
+                ),
+            )
+            result["module_runs_stopped"] = (
+                module_cursor.rowcount if module_cursor.rowcount != -1 else 0
+            )
 
     except Exception:
         logger.exception("Could not mark existing scanner work as stopped")

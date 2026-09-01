@@ -1,9 +1,9 @@
 """
 Folder walker for report discovery.
 
-Supports two modes:
-1. PBIX mode (primary): Find .pbix files in the reports folder and parse them with PBIXRay
-2. TMDL mode (fallback): Walk TMDL export folder structure
+Discovers both providers in one bounded pass:
+1. PBIX files parsed with PBIXRay
+2. TMDL semantic-model exports parsed from their folder structure
 
 Expected folder structure for PBIX mode:
   {REPORTS_ROOT}/*.pbix
@@ -34,12 +34,136 @@ class DiscoveredReport:
     business_owner: str | None = None
     report_owner: str | None = None
     layout: object = None  # ReportLayout from layout_parser (PBIX mode only)
+    discovery: dict = field(default_factory=dict)
+
+
+MAX_DISCOVERY_DEPTH = 4
+
+
+def _bounded_directories(root: Path, max_depth: int = MAX_DISCOVERY_DEPTH):
+    """Yield directories without recursively walking an unbounded network share."""
+    pending = [(root, 0)]
+    while pending:
+        folder, depth = pending.pop(0)
+        yield folder, depth
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted(
+                (item for item in folder.iterdir() if item.is_dir()),
+                key=lambda item: item.name.casefold(),
+            )
+        except (OSError, PermissionError):
+            continue
+        pending.extend((child, depth + 1) for child in children)
+
+
+def _discover_pbix_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for folder, _depth in _bounded_directories(root):
+        try:
+            found.extend(
+                item for item in folder.iterdir()
+                if item.is_file() and item.suffix.casefold() == ".pbix"
+            )
+        except (OSError, PermissionError):
+            continue
+    return sorted(set(found), key=lambda item: str(item).casefold())
+
+
+def _discover_tmdl_report_dirs(root: Path) -> list[Path]:
+    parents: dict[str, Path] = {}
+    for folder, _depth in _bounded_directories(root):
+        if not folder.name.casefold().endswith(".semanticmodel"):
+            continue
+        definition = folder / "Definition"
+        if not definition.is_dir():
+            definition = folder / "definition"
+        tables = definition / "Tables"
+        if not tables.is_dir():
+            tables = definition / "tables"
+        if not tables.is_dir():
+            continue
+        parent = folder.parent
+        parents[str(parent.resolve()).casefold()] = parent
+    return sorted(parents.values(), key=lambda item: str(item).casefold())
+
+
+def _snapshot_mtime(report: DiscoveredReport) -> float:
+    path = Path(report.tmdl_path)
+    try:
+        if path.is_file():
+            return path.stat().st_mtime
+        mtimes = [
+            item.stat().st_mtime
+            for item in path.rglob("*.tmdl")
+            if item.is_file()
+        ]
+        return max(mtimes) if mtimes else path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _merge_report_discovery(
+    pbix_reports: list[DiscoveredReport],
+    tmdl_reports: list[DiscoveredReport],
+) -> list[DiscoveredReport]:
+    """Merge provider snapshots deterministically without unioning model tables."""
+    grouped: dict[str, dict[str, DiscoveredReport]] = {}
+    for provider, reports in (("pbix", pbix_reports), ("tmdl", tmdl_reports)):
+        for report in reports:
+            key = report.name.strip().casefold()
+            current = grouped.setdefault(key, {}).get(provider)
+            if current is None or _snapshot_mtime(report) >= _snapshot_mtime(current):
+                grouped[key][provider] = report
+
+    merged: list[DiscoveredReport] = []
+    for key in sorted(grouped):
+        providers = grouped[key]
+        pbix = providers.get("pbix")
+        tmdl = providers.get("tmdl")
+        if pbix is None or tmdl is None:
+            report = pbix or tmdl
+            provider = "pbix" if pbix is not None else "tmdl"
+            report.discovery = {
+                "model_provider": provider,
+                "providers_found": [provider],
+                "model_modified_at": _snapshot_mtime(report),
+            }
+            merged.append(report)
+            continue
+
+        pbix_mtime = _snapshot_mtime(pbix)
+        tmdl_mtime = _snapshot_mtime(tmdl)
+        # TMDL wins exact ties because its text model is inspectable and is
+        # normally the intentional source-control export.
+        chosen = tmdl if tmdl_mtime >= pbix_mtime else pbix
+        chosen_provider = "tmdl" if chosen is tmdl else "pbix"
+        if getattr(pbix, "layout", None) is not None:
+            chosen.layout = pbix.layout
+            chosen.layout_diagnostic = getattr(pbix, "layout_diagnostic", None)
+        pbix_tables = {table.table_name.casefold() for table in pbix.tables}
+        tmdl_tables = {table.table_name.casefold() for table in tmdl.tables}
+        chosen.discovery = {
+            "model_provider": chosen_provider,
+            "providers_found": ["pbix", "tmdl"],
+            "pbix_path": pbix.tmdl_path,
+            "tmdl_path": tmdl.tmdl_path,
+            "pbix_modified_at": pbix_mtime,
+            "tmdl_modified_at": tmdl_mtime,
+            "table_sets_disagree": pbix_tables != tmdl_tables,
+            "pbix_only_tables": sorted(pbix_tables - tmdl_tables),
+            "tmdl_only_tables": sorted(tmdl_tables - pbix_tables),
+        }
+        merged.append(chosen)
+    return merged
 
 
 def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
     """Walk the reports root folder and discover all reports.
 
-    First looks for .pbix files, then falls back to TMDL folder structure.
+    PBIX and TMDL candidates are parsed together and matching report snapshots
+    are resolved deterministically.
     """
     root = Path(root_path).resolve()
     logger.info("walk_reports_root: root_path=%s resolved=%s exists=%s", root_path, root, root.exists())
@@ -47,19 +171,15 @@ def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
         logger.error("Reports root not found: %s", root)
         return []
 
-    # Look for .pbix files
-    pbix_files = list(root.glob("*.pbix"))
-    if not pbix_files:
-        # Also check one level of subfolders
-        pbix_files = list(root.glob("*/*.pbix"))
-
-    if pbix_files:
-        logger.info("Found %d .pbix files, using PBIX mode", len(pbix_files))
-        return _walk_pbix(pbix_files)
-
-    # Fall back to TMDL folder structure
-    logger.info("No .pbix files found, trying TMDL mode")
-    return _walk_tmdl(root)
+    pbix_files = _discover_pbix_files(root)
+    tmdl_dirs = _discover_tmdl_report_dirs(root)
+    logger.info(
+        "Discovery candidates: %d PBIX file(s), %d TMDL report folder(s)",
+        len(pbix_files), len(tmdl_dirs),
+    )
+    pbix_reports = _walk_pbix(pbix_files) if pbix_files else []
+    tmdl_reports = _walk_tmdl(root, report_dirs=tmdl_dirs) if tmdl_dirs else []
+    return _merge_report_discovery(pbix_reports, tmdl_reports)
 
 
 def diagnose_reports_root(root_path: str | Path) -> dict:
@@ -125,7 +245,7 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
         "files": [str(f.relative_to(root)) for f in pbix_sub],
     })
 
-    all_pbix = pbix_root + pbix_sub
+    all_pbix = _discover_pbix_files(root)
     if all_pbix:
         result["mode"] = "pbix"
         result["pbix_files"] = [str(f.relative_to(root)) for f in all_pbix]
@@ -169,14 +289,12 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
                     "result": f"ERROR: {type(e).__name__}: {e}",
                 })
                 result["errors"].append(f"{pbix_path.name}: {type(e).__name__}: {e}")
-        return result
-
-    # TMDL mode
-    result["mode"] = "tmdl"
-    result["steps"].append({
-        "action": "No .pbix files found, falling back to TMDL mode",
-        "found": 0,
-    })
+    if not all_pbix:
+        result["mode"] = "tmdl"
+        result["steps"].append({
+            "action": "No .pbix files found; scanning TMDL exports",
+            "found": 0,
+        })
 
     # Check for reports/ subdirectory
     reports_dir = root / "reports"
@@ -193,8 +311,10 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
             "found": 0,
         })
 
-    # Walk each subdirectory
-    for entry in sorted(scan_dir.iterdir()):
+    # Walk bounded TMDL candidates, including nested project exports.
+    diagnostic_dirs = _discover_tmdl_report_dirs(root)
+    entries = diagnostic_dirs or [entry for entry in sorted(scan_dir.iterdir()) if entry.is_dir()]
+    for entry in entries:
         if not entry.is_dir():
             continue
 
@@ -263,6 +383,8 @@ def diagnose_reports_root(root_path: str | Path) -> dict:
 
         result["tmdl_folders"].append(folder_diag)
 
+    if all_pbix and any(not item.get("skip_reason") for item in result["tmdl_folders"]):
+        result["mode"] = "mixed"
     return result
 
 
@@ -292,8 +414,12 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
     return discovered
 
 
-def _walk_tmdl(root: Path) -> list[DiscoveredReport]:
-    """Walk TMDL folder structure (fallback mode)."""
+def _walk_tmdl(
+    root: Path,
+    *,
+    report_dirs: list[Path] | None = None,
+) -> list[DiscoveredReport]:
+    """Walk the TMDL folder candidates found during mixed discovery."""
     reports_dir = root / "reports"
     if not reports_dir.exists():
         logger.info("_walk_tmdl: %s not found, using root directly", reports_dir)
@@ -302,7 +428,12 @@ def _walk_tmdl(root: Path) -> list[DiscoveredReport]:
         logger.info("_walk_tmdl: scanning reports_dir=%s", reports_dir)
 
     discovered = []
-    for report_dir in sorted(reports_dir.iterdir()):
+    candidates = report_dirs
+    if candidates is None:
+        candidates = _discover_tmdl_report_dirs(root)
+    if not candidates and reports_dir.is_dir():
+        candidates = [item for item in sorted(reports_dir.iterdir()) if item.is_dir()]
+    for report_dir in candidates:
         if not report_dir.is_dir():
             continue
         logger.info("_walk_tmdl: checking dir=%s", report_dir.name)

@@ -3807,6 +3807,132 @@ async function renderScanner() {
     `;
 }
 
+function _scannerModuleState(run) {
+    const status = String(run?.display_status || run?.status || "never").toLowerCase();
+    const label = status === "completed_with_warnings" ? "warning" : status.replaceAll("_", " ");
+    const icon = ["completed"].includes(status) ? "&#10003;"
+        : ["failed", "stalled"].includes(status) ? "!"
+        : ["running", "queued"].includes(status) ? "&#8635;"
+        : ["completed_with_warnings", "skipped", "stopped"].includes(status) ? "&#9651;" : "&#8212;";
+    return `<span class="scanner-state scanner-state-${esc(status)}"><span aria-hidden="true">${icon}</span>${esc(label)}</span>`;
+}
+
+function _scannerRunDuration(run) {
+    if (!run?.started_at) return "—";
+    const end = run.finished_at ? new Date(run.finished_at) : new Date();
+    const seconds = Math.max(0, Math.round((end - new Date(run.started_at)) / 1000));
+    if (!Number.isFinite(seconds)) return "—";
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function _scannerCounts(details) {
+    const labels = {
+        reports_scanned: "reports", sources_found: "sources", new_sources: "new sources",
+        changed_queries: "query changes", broken_refs: "broken refs", sources_probed: "probed",
+        fresh: "healthy", stale: "stale", mvs_found: "materialized views",
+        deps_created: "dependencies", schedules_found: "schedules", imported: "imported",
+    };
+    const values = [];
+    Object.entries(labels).forEach(([key, label]) => {
+        if (details && Number.isFinite(Number(details[key]))) values.push(`${Number(details[key])} ${label}`);
+    });
+    return values.slice(0, 4).join(" · ") || "No counts reported";
+}
+
+function _scannerPbiControls(pbiStatus) {
+    const auth = pbiStatus?.auth || {};
+    const mode = pbiStatus?.auth_mode === "service_principal" ? "Service principal"
+        : pbiStatus?.auth_mode === "cached_account" ? "Saved Microsoft account" : "Interactive fallback";
+    if (!pbiStatus) return '<div class="scanner-module-note">Connection status unavailable.</div>';
+    return `<div class="scanner-module-connection">
+        <span>Connection: <strong>${esc(mode)}</strong></span>
+        ${auth.connected ? `<span>${esc(auth.account || "Connected account")}</span>` : '<span>Not connected for headless runs</span>'}
+        ${pbiStatus.auth_mode !== "service_principal" && (!auth.connected || auth.reconnect_required) ? '<button id="btn-pbi-connect" class="btn-sm btn-outline">Connect Power BI</button>' : ""}
+        ${pbiStatus.auth_mode !== "service_principal" && auth.connected ? '<button id="btn-pbi-disconnect" class="btn-sm btn-outline">Disconnect</button>' : ""}
+        <span id="pbi-connect-box">${_pbiDeviceFlowHtml(auth.device_flow)}</span>
+    </div>`;
+}
+
+function _scannerModuleCard(module, laneBusy, pbiStatus) {
+    const run = module.current_run || module.last_run;
+    const details = run?.details || {};
+    const failure = ["failed", "stalled"].includes(String(run?.display_status || run?.status || ""));
+    const infoId = `scanner-info-${module.key}`;
+    return `<article class="scanner-module-card scanner-module-${esc(run?.display_status || run?.status || "never")}">
+        <div class="scanner-module-heading">
+            <div><h2>${esc(module.label)}</h2>${_scannerModuleState(run)}</div>
+            <span class="scanner-info-wrap">
+                <button type="button" class="scanner-info-button" aria-label="About ${esc(module.label)}" aria-describedby="${infoId}">i</button>
+                <span class="scanner-info-popover" role="tooltip" id="${infoId}"><strong>What it scans</strong>${esc(module.scans)}<strong>How it works</strong>${esc(module.description)}<strong>Prerequisites</strong>${esc(module.prerequisites)}</span>
+            </span>
+        </div>
+        ${module.current_run ? `<div class="scanner-module-active">Running now · ${esc(module.current_run.trigger_source || "system")}</div>` : ""}
+        <dl class="scanner-module-facts">
+            <div><dt>Last completed</dt><dd>${run?.finished_at ? `<span title="${esc(formatDate(run.finished_at))}">${timeAgo(run.finished_at)}</span>` : "Never"}</dd></div>
+            <div><dt>Duration</dt><dd>${_scannerRunDuration(run)}</dd></div>
+            <div><dt>Trigger</dt><dd>${esc(run?.trigger_source || "—")}</dd></div>
+        </dl>
+        <div class="scanner-module-counts">${esc(_scannerCounts(details))}</div>
+        ${failure ? `<div class="scanner-module-failure" role="alert">${esc(run.summary || "The module failed. Expand the log for details.")}</div>` : ""}
+        ${module.key === "power_bi_metadata" ? _scannerPbiControls(pbiStatus) : ""}
+        ${run?.log ? `<details class="scanner-module-log"><summary>Detailed log</summary><pre class="scan-log">${esc(run.log)}</pre></details>` : ""}
+        <div class="scanner-module-actions"><button type="button" class="btn-outline btn-run-module" data-module-key="${esc(module.key)}" ${laneBusy ? "disabled" : ""}>${module.current_run ? "Running…" : "Run module"}</button></div>
+    </article>`;
+}
+
+function _scannerAccordion(id, label, content) {
+    return `<section class="scanner-accordion section">
+        <h2><button type="button" class="scanner-accordion-button" aria-expanded="false" aria-controls="${id}" id="${id}-button"><span>${esc(label)}</span><span aria-hidden="true" class="scanner-accordion-arrow">&#9662;</span></button></h2>
+        <div id="${id}" role="region" aria-labelledby="${id}-button" hidden>${content}</div>
+    </section>`;
+}
+
+async function renderScannerAdmin() {
+    const [modulePayload, runs, probeRuns, pbiStatus, scannerJobs, schedule, notifications] = await Promise.all([
+        api("/api/scanner/modules"), api("/api/scanner/runs"), api("/api/scanner/probe/runs"),
+        api("/api/scanner/pbi-sync/status").catch(() => null), api("/api/scanner/jobs").catch(() => []),
+        api("/api/system/refresh-schedule"), api("/api/scanner/notification-settings"),
+    ]);
+    const modules = modulePayload.modules || [];
+    const activeJobs = scannerJobs.filter(job => job.active);
+    const laneBusy = activeJobs.length > 0 || modules.some(module => module.current_run?.active);
+    const terminalRuns = modules.map(module => module.last_run).filter(Boolean);
+    const states = terminalRuns.map(run => String(run.display_status || run.status));
+    const overall = states.some(value => ["failed", "stalled"].includes(value)) ? "failed"
+        : states.some(value => !["completed"].includes(value)) || terminalRuns.length < modules.length ? "completed_with_warnings" : "completed";
+    const lastRun = runs[0] || null;
+    const scanHistory = runs.length ? dataTable("dt-scans", [
+        { key: "started_at", label: "When", width: COL_W.md, render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>` },
+        { key: "status", label: "Status", width: COL_W.sm, render: r => _scanRunStatusHtml(r) },
+        { key: "reports_scanned", label: "Reports", width: COL_W.sm },
+        { key: "sources_found", label: "Sources", width: COL_W.sm },
+        { key: "changed_queries", label: "Changes", width: COL_W.sm },
+    ], runs) : '<div class="empty-state">No full scans have been recorded.</div>';
+    const probeHistory = probeRuns.length ? dataTable("dt-probes", [
+        { key: "started_at", label: "When", width: COL_W.md, render: r => `<span title="${formatDate(r.started_at)}">${timeAgo(r.started_at)}</span>` },
+        { key: "status", label: "Status", width: COL_W.sm, render: r => statusBadge(r.status) },
+        { key: "sources_probed", label: "Probed", width: COL_W.sm },
+        { key: "fresh", label: "Healthy", width: COL_W.sm },
+        { key: "stale", label: "Stale", width: COL_W.sm },
+        { key: "unknown", label: "Unknown", width: COL_W.sm },
+    ], probeRuns) : '<div class="empty-state">No source probes have been recorded.</div>';
+    return `<div class="page-header"><h1>Scanner</h1><span class="subtitle">Run and monitor each metadata and governance module</span></div>
+        <section class="scanner-admin-summary section">
+            <div class="scanner-health"><span>Overall health</span>${_scannerModuleState({ status: overall })}</div>
+            <div><span>Last full refresh</span><strong>${lastRun ? timeAgo(lastRun.started_at) : "Never"}</strong></div>
+            <div><span>Next scheduled run</span><strong>${schedule.next_run_at ? esc(formatDate(schedule.next_run_at)) : "Pending scheduler"}</strong><small>${esc(schedule.timezone || "Host timezone")}</small></div>
+            <label><span>Daily refresh time</span><input type="time" id="overall-refresh-time" value="${esc(schedule.refresh_time || "08:15")}" step="60"></label>
+            <div class="scanner-summary-actions"><button id="btn-save-refresh-schedule" class="btn-outline">Save schedule</button><button id="btn-scan" ${laneBusy ? "disabled" : ""}>Run full refresh</button></div>
+        </section>
+        <section class="scanner-notifications section"><div><h2>Failure notifications</h2><p>Send one consolidated email when a full refresh fails, or one email when a standalone module fails or stalls.</p></div><label><span>Recipient email addresses</span><textarea id="scanner-notification-recipients" rows="2" placeholder="name@example.com">${esc((notifications.recipients || []).join("\n"))}</textarea></label><div><button id="btn-save-scanner-notifications" class="btn-outline">Save recipients</button><button id="btn-test-scanner-notifications" class="btn-outline" ${(notifications.recipients || []).length ? "" : "disabled"}>Send test email</button></div></section>
+        ${laneBusy ? `<section class="scanner-active-banner" aria-live="polite"><div><strong>Scanner work is active</strong><div id="scanner-work-status" data-active-count="${activeJobs.length}">${_scannerJobsHtml(scannerJobs)}</div></div><button id="btn-stop-pbi-sync" class="btn-outline btn-danger-outline">Stop refresh work</button></section>` : ""}
+        <div class="scanner-module-grid">${modules.map(module => _scannerModuleCard(module, laneBusy, pbiStatus)).join("")}</div>
+        ${_scannerAccordion("scanner-scan-history", "Scan history", scanHistory)}
+        ${_scannerAccordion("scanner-probe-history", "Probe history", probeHistory)}`;
+}
+
 async function renderAlerts() {
     const [alerts, allPeople] = await Promise.all([
         api("/api/alerts?active_only=false"),
@@ -9896,9 +10022,19 @@ async function renderUpdates() {
     const status = _normalizeUpdateStatus(raw);
     window._updatesStatus = status;
     const active = _updatesAttemptActive(status.activeAttempt) || _UPDATE_ACTIVE_STATES.has(status.status);
-    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !status.readiness.ready || active;
+    const hasWorkBlockers = status.blockers.length > 0;
+    const waitingForTests = ["pending", "queued", "in_progress", "waiting"].includes(status.testsGate.state);
+    const testsFailed = ["failed", "error", "cancelled", "timed_out"].includes(status.testsGate.state);
+    const testsBlocked = waitingForTests || testsFailed;
+    const installDisabled = Boolean(status.checkError) || !status.updateAvailable || !status.readiness.ready || active || hasWorkBlockers || testsBlocked;
     const installReason = active
         ? "An update attempt is already active."
+        : hasWorkBlockers
+            ? "Wait for current production work to finish before installing."
+        : waitingForTests
+            ? status.testsGate.message
+        : testsFailed
+            ? status.testsGate.message || "The exact-commit Tests workflow did not pass."
         : status.upToDate === true
             ? "This installation already matches GitHub main."
             : status.checkError
@@ -9910,7 +10046,7 @@ async function renderUpdates() {
                 : "Run setup.ps1 for the latest exact main-branch commit.";
     const lastAttempt = status.activeAttempt || status.latestAttempt;
     const latestLabel = status.latestCommit ? _updatesShortCommit(status.latestCommit) : "Check required";
-    const releaseStatus = status.updateAvailable
+    const releaseStatus = waitingForTests ? "waiting_for_tests" : status.updateAvailable
         ? status.status === "up_to_date" ? "update_available" : status.status
         : status.upToDate === true ? "up_to_date" : status.status;
     const overallLabel = _updatesHumanize(releaseStatus);
@@ -9965,6 +10101,7 @@ async function renderUpdates() {
                     </article>
                 </div>
                 ${status.checkError ? `<div class="updates-warning"><strong>Latest check failed:</strong> ${esc(status.checkError)}</div>` : ""}
+                ${testsBlocked ? `<div class="updates-warning"><strong>${waitingForTests ? "Waiting for Tests" : "Tests did not pass"}:</strong> ${esc(status.testsGate.message)}</div>` : ""}
                 ${!status.readiness.ready ? `<div class="updates-warning"><strong>Automatic install unavailable:</strong> ${esc(status.readiness.reason)}</div>` : ""}
             </section>
 
@@ -9986,7 +10123,7 @@ async function renderUpdates() {
 
             <section class="settings-panel updates-blockers" aria-labelledby="updates-blockers-heading">
                 <div class="section-header">
-                    <div><h2 id="updates-blockers-heading">Current work</h2><p>Shown for awareness only. Updates now behave like running setup.ps1 manually and do not wait here.</p></div>
+                    <div><h2 id="updates-blockers-heading">Current work</h2><p>Finish active production work before installing so scanner and pipeline writes are not interrupted.</p></div>
                 </div>
                 ${status.blockers.length
                     ? `<ul>${status.blockers.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`
@@ -11726,7 +11863,7 @@ const pages = {
     sources: renderSources,
     reports: renderReports,
     lineage: renderLineageDiagram,
-    scanner: renderScanner,
+    scanner: renderScannerAdmin,
     changelog: renderChangelog,
     create: renderCreate,
     bestpractices: renderBestPractices,
@@ -11739,12 +11876,12 @@ const pages = {
     faq: renderFaq,
     ai: renderAISettings,
     updates: renderUpdates,
-    refreshschedule: renderRefreshSchedule,
+    refreshschedule: renderScannerAdmin,
     premiumviewers: renderPremiumViewers,
 };
 
 // Map old hash routes to new pages for backwards compat
-const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard", scripts: "flows", scheduledtasks: "flows", powerautomate: "flows", dataimport: "flows" };
+const pageAliases = { alerts: "dashboard", issues: "dashboard", actions: "dashboard", overview: "dashboard", tasks: "dashboard", scripts: "flows", scheduledtasks: "flows", powerautomate: "flows", dataimport: "flows", refreshschedule: "scanner" };
 
 let currentPage = "dashboard";
 let navigationRequestId = 0;
@@ -11862,7 +11999,7 @@ async function navigate(page) {
             // Draw health trend chart
             drawHealthTrendChart();
         }
-        if (page === "scanner") bindScannerButtons();
+        if (page === "scanner") bindScannerAdmin();
         if (page === "sources") bindSourcesPage();
         if (page === "reports") bindReportsPage();
         if (page === "flows") bindFlowsPage();
@@ -11877,7 +12014,6 @@ async function navigate(page) {
         if (page === "eventlog") bindEventLogPage();
         if (page === "ai") bindAISettingsPage();
         if (page === "updates") bindUpdatesPage();
-        if (page === "refreshschedule") bindRefreshSchedulePage();
         if (page === "premiumviewers") bindPremiumViewersPage();
         if (page === "lineage") bindLineageDiagramPage();
     } catch (err) {
@@ -11908,6 +12044,82 @@ function _pollScannerWorkStatus() {
         window._scannerWorkPoll = setTimeout(poll, stillActive ? 3000 : 8000);
     };
     window._scannerWorkPoll = setTimeout(poll, 1000);
+}
+
+function bindScannerAdmin() {
+    document.querySelectorAll(".scanner-accordion-button").forEach(button => {
+        button.addEventListener("click", () => {
+            const panel = document.getElementById(button.getAttribute("aria-controls"));
+            const expanded = button.getAttribute("aria-expanded") === "true";
+            button.setAttribute("aria-expanded", String(!expanded));
+            if (panel) panel.hidden = expanded;
+        });
+    });
+    document.querySelectorAll(".scanner-info-button").forEach(button => {
+        const wrapper = button.closest(".scanner-info-wrap");
+        button.addEventListener("focus", () => wrapper?.classList.remove("scanner-info-dismissed"));
+        wrapper?.addEventListener("mouseleave", () => wrapper.classList.remove("scanner-info-dismissed"));
+        button.addEventListener("keydown", event => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                wrapper?.classList.add("scanner-info-dismissed");
+                button.blur();
+            }
+        });
+    });
+    document.querySelectorAll(".btn-run-module").forEach(button => {
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            button.textContent = "Starting…";
+            try {
+                const result = await apiPost(`/api/scanner/modules/${encodeURIComponent(button.dataset.moduleKey)}/runs`);
+                toast(result.message || "Module run started.");
+                await navigate("scanner");
+            } catch (err) {
+                toast("Module was not started: " + err.message);
+                button.disabled = false;
+                button.textContent = "Run module";
+            }
+        });
+    });
+    const scheduleInput = document.getElementById("overall-refresh-time");
+    const scheduleButton = document.getElementById("btn-save-refresh-schedule");
+    scheduleButton?.addEventListener("click", async () => {
+        scheduleButton.disabled = true;
+        try {
+            const result = await apiPut("/api/system/refresh-schedule", { refresh_time: scheduleInput.value });
+            toast(result.reschedule_error ? "Time saved; scheduler will apply it after restart." : `Daily refresh set to ${result.refresh_time}.`);
+            await navigate("scanner");
+        } catch (err) {
+            toast("Schedule was not saved: " + err.message);
+            scheduleButton.disabled = false;
+        }
+    });
+    const recipients = document.getElementById("scanner-notification-recipients");
+    const saveRecipients = document.getElementById("btn-save-scanner-notifications");
+    saveRecipients?.addEventListener("click", async () => {
+        const values = recipients.value.split(/[\n,;]+/).map(value => value.trim()).filter(Boolean);
+        saveRecipients.disabled = true;
+        try {
+            const result = await apiPut("/api/scanner/notification-settings", { recipients: values });
+            toast(`${result.recipients.length} failure recipient(s) saved.`);
+            await navigate("scanner");
+        } catch (err) {
+            toast("Recipients were not saved: " + err.message);
+            saveRecipients.disabled = false;
+        }
+    });
+    const testRecipients = document.getElementById("btn-test-scanner-notifications");
+    testRecipients?.addEventListener("click", async () => {
+        testRecipients.disabled = true;
+        try {
+            const result = await apiPost("/api/scanner/notification-settings/test");
+            toast(result.message || "Test email queued to Outlook.");
+        } catch (err) {
+            toast("Test email was not queued: " + err.message);
+        } finally { testRecipients.disabled = false; }
+    });
+    bindScannerButtons();
 }
 
 function bindScannerButtons() {
@@ -13347,7 +13559,10 @@ document.addEventListener("DOMContentLoaded", () => {
     window.addEventListener("hashchange", () => {
         if (window._skipHash) { window._skipHash = false; return; }
         let page = location.hash.length > 1 ? location.hash.substring(1) : "dashboard";
-        if (pageAliases[page]) page = pageAliases[page];
+        if (pageAliases[page]) {
+            page = pageAliases[page];
+            history.replaceState(null, "", page === "dashboard" ? location.pathname : `${location.pathname}#${page}`);
+        }
         if (pages[page] && page !== currentPage) navigate(page);
     });
 

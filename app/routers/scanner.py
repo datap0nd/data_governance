@@ -35,6 +35,9 @@ from app.scanner.pbi_sync import (
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 from app.scanner.lifecycle import parse_components, redact_component_payload
+from app.scanner.lifecycle import component_result, normalize_scan_status
+from app.scanner import modules as scanner_modules
+from app.scanner import notifications as scanner_notifications
 from app.usage import sync_usage_from_csv
 
 logger = logging.getLogger(__name__)
@@ -138,61 +141,90 @@ def _execute_full_scan_job(
     pbi_source: str = "manual_scanner_refresh",
     launch_usage_sync: bool = False,
 ) -> dict:
+    pbi_module_run_id = scanner_modules.create_module_run(
+        "power_bi_metadata", scanner_job_id=job_id
+    )
     scanner_jobs.mark_running(
         job_id,
         current_step="Syncing Power BI metadata",
         message="Refreshing report metadata before local report discovery.",
     )
     try:
-        pbi_result = trigger_pbi_sync_and_wait(
-            pbi_source,
-            cancel_existing=False,
-            cancel_generation=generation,
-            operation_id=job_id,
-        )
+        try:
+            pbi_result = trigger_pbi_sync_and_wait(
+                pbi_source,
+                cancel_existing=False,
+                cancel_generation=generation,
+                operation_id=job_id,
+            )
+        except ScannerWorkCancelled:
+            raise
+        except Exception as exc:
+            logger.exception("Power BI metadata sync failed before local discovery")
+            pbi_result = {
+                "status": "failed",
+                "message": "Power BI metadata sync failed; local discovery continued.",
+                "error": str(exc),
+            }
         pbi_status = (pbi_result.get("status") or "").lower()
-        if pbi_status not in {"completed", "skipped"}:
-            terminal_status = "stopped" if pbi_status in {"stopped", "cancelled", "canceled"} else "failed"
+        normalized_pbi_status = normalize_scan_status(pbi_status)
+        pbi_requested = normalized_pbi_status not in {"skipped", "not_requested"}
+        pbi_component = component_result(
+            pbi_result,
+            requested=pbi_requested,
+        )
+        scanner_modules.finish_module_run(
+            pbi_module_run_id,
+            status=pbi_component.get("status") or "completed",
+            summary=pbi_result.get("message") or "Power BI metadata sync finished.",
+            details=pbi_component,
+            log=pbi_result.get("message"),
+        )
+        if normalized_pbi_status == "stopped":
             scanner_jobs.finish_job(
                 job_id,
-                status=terminal_status,
+                status="stopped",
                 result={
-                    "status": "pbi_sync_not_completed",
+                    "status": "stopped",
                     "pbi_sync": pbi_result,
                     "stop": stop_result,
                 },
-                message=(
-                    "Full scan stopped before report discovery because the "
-                    f"Power BI sync was {pbi_result.get('status') or 'not completed'}."
-                ),
+                message="Full refresh stopped during Power BI metadata sync.",
             )
             return scanner_jobs.get_job(job_id) or {
-                "status": terminal_status,
+                "status": "stopped",
                 "pbi_sync": pbi_result,
             }
         scanner_jobs.heartbeat(
             job_id,
             current_step="Starting local report scan",
-            message="Power BI metadata sync finished; starting PBIX/TMDL discovery.",
+            message=(
+                "Starting PBIX/TMDL discovery with Power BI metadata available."
+                if normalized_pbi_status in {"completed", "skipped", "not_requested"}
+                else "Power BI metadata failed; continuing with local PBIX/TMDL discovery."
+            ),
         )
         scan_result = run_scan(
             cancel_generation=generation,
             run_followup_probe=True,
             operation_id=job_id,
+            initial_components={"power_bi_metadata": pbi_component},
         )
-        if launch_usage_sync and (scan_result.get("status") or "").lower() in {
-            "completed",
-            "completed_with_warnings",
-        }:
-            try:
-                trigger_pbi_usage_sync(
-                    cancel_existing=False,
-                    cancel_generation=generation,
-                )
-            except Exception:
-                logger.exception("Scheduled Power BI usage sync failed to start")
+        if scan_result.get("scan_id"):
+            scanner_modules.attach_scan_run(
+                pbi_module_run_id, int(scan_result["scan_id"])
+            )
+        scanner_notifications.notify_full_refresh_failures(job_id)
         return scan_result
     except ScannerWorkCancelled as exc:
+        current_module = scanner_modules.get_module_run(pbi_module_run_id)
+        if current_module and current_module.get("active"):
+            scanner_modules.finish_module_run(
+                pbi_module_run_id,
+                status="stopped",
+                summary=str(exc),
+                details={"status": "stopped", "message": str(exc)},
+            )
         scanner_jobs.finish_job(
             job_id,
             status="stopped",
@@ -202,16 +234,28 @@ def _execute_full_scan_job(
         return {"status": "stopped", "message": str(exc)}
     except Exception as exc:
         logger.exception("Background full scan failed")
+        current_module = scanner_modules.get_module_run(pbi_module_run_id)
+        if current_module and current_module.get("active"):
+            scanner_modules.finish_module_run(
+                pbi_module_run_id,
+                status="failed",
+                summary="Power BI metadata sync failed unexpectedly.",
+                details={"status": "failed", "error": str(exc)},
+            )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
             result={"status": "failed", "error": str(exc)},
             message="Full scan failed; review server logs.",
         )
+        scanner_notifications.notify_full_refresh_failures(job_id)
         return redact_component_payload({"status": "failed", "error": str(exc)})
 
 
 def _execute_probe_job(job_id: int, generation: int | None) -> None:
+    module_run_id = scanner_modules.create_module_run(
+        "source_freshness", scanner_job_id=job_id
+    )
     scanner_jobs.mark_running(
         job_id,
         current_step="Probing source freshness",
@@ -221,8 +265,20 @@ def _execute_probe_job(job_id: int, generation: int | None) -> None:
         result = redact_component_payload(
             run_probe(cancel_generation=generation, operation_id=job_id)
         )
+        scanner_modules.finish_module_run(
+            module_run_id,
+            status=result.get("status") or "completed",
+            summary=result.get("message") or "Source freshness checked.",
+            details=result,
+            log=result.get("log"),
+        )
         scanner_jobs.finish_job(job_id, status=result.get("status") or "completed", result=result)
+        scanner_notifications.notify_standalone_failure(module_run_id)
     except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="stopped",
@@ -231,12 +287,17 @@ def _execute_probe_job(job_id: int, generation: int | None) -> None:
         )
     except Exception as exc:
         logger.exception("Background source probe failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="Source freshness probe failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
             result={"status": "failed", "error": str(exc)},
             message="Source probe failed; review server logs.",
         )
+        scanner_notifications.notify_standalone_failure(module_run_id)
 
 
 def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
@@ -252,6 +313,7 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
             run_followup_probe=True,
             operation_id=job_id,
         )
+        scanner_notifications.notify_full_refresh_failures(job_id)
     except ScannerWorkCancelled as exc:
         scanner_jobs.finish_job(
             job_id,
@@ -267,11 +329,15 @@ def _execute_scan_only_job(job_id: int, generation: int | None) -> None:
             result={"status": "failed", "error": str(exc)},
             message="Report scan failed; review server logs.",
         )
+        scanner_notifications.notify_full_refresh_failures(job_id)
 
 
 def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
     from app.scanner.pg_cron import scan_pg_cron
 
+    module_run_id = scanner_modules.create_module_run(
+        "postgres_schedules", scanner_job_id=job_id
+    )
     scanner_jobs.mark_running(
         job_id,
         current_step="Reading PostgreSQL schedules",
@@ -281,12 +347,24 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
         assert_not_cancelled(generation, "PostgreSQL schedule scan")
         result = redact_component_payload(scan_pg_cron())
         assert_not_cancelled(generation, "PostgreSQL schedule scan")
+        scanner_modules.finish_module_run(
+            module_run_id,
+            status=result.get("status") or "completed",
+            summary=result.get("message") or "PostgreSQL schedules checked.",
+            details=result,
+            log=result.get("log"),
+        )
         scanner_jobs.finish_job(
             job_id,
             status=result.get("status") or "completed",
             result=result,
         )
+        scanner_notifications.notify_standalone_failure(module_run_id)
     except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="stopped",
@@ -295,12 +373,17 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
         )
     except Exception as exc:
         logger.exception("Background PostgreSQL schedule scan failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="PostgreSQL schedule scan failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
         scanner_jobs.finish_job(
             job_id,
             status="failed",
             result={"status": "failed", "error": str(exc)},
             message="PostgreSQL schedule scan failed; review server logs.",
         )
+        scanner_notifications.notify_standalone_failure(module_run_id)
 
 
 def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
@@ -313,6 +396,10 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
         report_id = int(report_id) if report_id is not None else None
     except (TypeError, ValueError):
         report_id = None
+    module_run_id = scanner_modules.create_module_run(
+        "postgres_lineage", scanner_job_id=job_id,
+        details={"report_id": report_id} if report_id is not None else None,
+    )
     scanner_jobs.mark_running(
         job_id,
         current_step="Preparing PostgreSQL lineage recheck",
@@ -330,24 +417,277 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
                 cancel_generation=generation,
             )
         )
+        scanner_modules.finish_module_run(
+            module_run_id,
+            status=result.get("status") or "completed",
+            summary=result.get("message") or "PostgreSQL lineage refreshed.",
+            details=result,
+            log=result.get("log") or result.get("query_change_log"),
+        )
         scanner_jobs.finish_job(job_id, status=result.get("status") or "completed", result=result)
+        scanner_notifications.notify_standalone_failure(module_run_id)
     except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
         scanner_jobs.finish_job(
-            job_id,
-            status="stopped",
-            result={"status": "stopped", "message": str(exc)},
-            message=str(exc),
+            job_id, status="stopped",
+            result={"status": "stopped", "message": str(exc)}, message=str(exc),
         )
     except Exception as exc:
         logger.exception("Background PostgreSQL lineage recheck failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="PostgreSQL lineage scan failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
+        scanner_jobs.finish_job(
+            job_id, status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message="PostgreSQL lineage recheck failed; review server logs.",
+        )
+        scanner_notifications.notify_standalone_failure(module_run_id)
+
+
+def _execute_report_catalog_job(job_id: int, generation: int | None) -> None:
+    """Run only local PBIX/TMDL discovery through the existing runner core."""
+    try:
+        run_scan(
+            cancel_generation=generation,
+            run_followup_probe=False,
+            run_followups=False,
+            operation_id=job_id,
+        )
+        failed = [
+            row for row in scanner_modules.runs_for_job(job_id)
+            if row["module_key"] == "report_catalog" and row["status"] == "failed"
+        ]
+        if failed:
+            scanner_notifications.notify_standalone_failure(int(failed[-1]["id"]))
+    except ScannerWorkCancelled:
+        raise
+    except Exception as exc:
+        logger.exception("Background report catalog scan failed")
         scanner_jobs.finish_job(
             job_id,
             status="failed",
             result={"status": "failed", "error": str(exc)},
-            message="PostgreSQL lineage recheck failed; review server logs.",
+            message="PBIX/TMDL catalog scan failed; review Scanner details.",
         )
+        scanner_notifications.notify_full_refresh_failures(job_id)
 
 
+def _execute_power_bi_metadata_job(job_id: int, generation: int | None) -> None:
+    module_run_id = scanner_modules.create_module_run(
+        "power_bi_metadata", scanner_job_id=job_id
+    )
+    scanner_jobs.mark_running(
+        job_id,
+        current_step="Syncing Power BI metadata",
+        message="Waiting for the Power BI metadata import to finish.",
+    )
+    try:
+        result = trigger_pbi_sync_and_wait(
+            "manual_scanner_module",
+            cancel_existing=False,
+            cancel_generation=generation,
+            operation_id=job_id,
+        )
+        status = normalize_scan_status(result.get("status"))
+        if status in {"not_requested", "skipped"}:
+            terminal = "skipped"
+        elif status == "stopped":
+            terminal = "stopped"
+        elif status == "completed":
+            terminal = "completed"
+        else:
+            terminal = "failed"
+        scanner_modules.finish_module_run(
+            module_run_id,
+            status=terminal,
+            summary=result.get("message") or "Power BI metadata sync finished.",
+            details=result,
+            log=result.get("message"),
+        )
+        scanner_jobs.finish_job(job_id, status=terminal, result=result)
+        scanner_notifications.notify_standalone_failure(module_run_id)
+    except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
+        scanner_jobs.finish_job(
+            job_id, status="stopped", result={"status": "stopped", "message": str(exc)}
+        )
+    except Exception as exc:
+        logger.exception("Power BI metadata module failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="Power BI metadata sync failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
+        scanner_jobs.finish_job(
+            job_id, status="failed", result={"status": "failed", "error": str(exc)}
+        )
+        scanner_notifications.notify_standalone_failure(module_run_id)
+
+
+def _run_governance_subscans() -> dict:
+    results = {}
+    try:
+        from app.routers.best_practices import run_best_practice_scan
+        results["best_practices"] = run_best_practice_scan(persist=False)
+    except Exception as exc:
+        results["best_practices"] = {"status": "failed", "error": str(exc)}
+    try:
+        from app.routers.schedules import run_schedule_discrepancy_scan
+        results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
+    except Exception as exc:
+        results["schedule_discrepancies"] = {"status": "failed", "error": str(exc)}
+    try:
+        from app.routers.documentation import sync_documentation_completeness_actions
+        results["documentation"] = sync_documentation_completeness_actions()
+    except Exception as exc:
+        results["documentation"] = {"status": "failed", "error": str(exc)}
+    normalized = {
+        name: component_result(value if isinstance(value, dict) else {"status": "completed", "result": value})
+        for name, value in results.items()
+    }
+    failed = [
+        name for name, value in normalized.items()
+        if normalize_scan_status(value.get("status")) == "failed"
+    ]
+    return {
+        "status": "failed" if failed else "completed",
+        "failed_subscans": failed,
+        **normalized,
+    }
+
+
+def _execute_governance_job(job_id: int, generation: int | None) -> None:
+    module_run_id = scanner_modules.create_module_run(
+        "governance", scanner_job_id=job_id
+    )
+    scanner_jobs.mark_running(
+        job_id, current_step="Evaluating governance checks",
+        message="Running best-practice, schedule, and documentation checks.",
+    )
+    try:
+        assert_not_cancelled(generation, "Governance checks")
+        result = redact_component_payload(_run_governance_subscans())
+        assert_not_cancelled(generation, "Governance checks")
+        failed = result.get("failed_subscans") or []
+        summary = (
+            "Failed sub-checks: " + ", ".join(failed)
+            if failed else "Governance checks completed."
+        )
+        scanner_modules.finish_module_run(
+            module_run_id, status=result["status"], summary=summary,
+            details=result,
+            log="\n".join(
+                f"{name}: {result.get(name, {}).get('status', 'unknown')}"
+                for name in ("best_practices", "schedule_discrepancies", "documentation")
+            ),
+        )
+        scanner_jobs.finish_job(job_id, status=result["status"], result=result, message=summary)
+        scanner_notifications.notify_standalone_failure(module_run_id)
+    except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
+        scanner_jobs.finish_job(job_id, status="stopped", result={"status": "stopped", "message": str(exc)})
+    except Exception as exc:
+        logger.exception("Governance module failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="Governance checks failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
+        scanner_jobs.finish_job(job_id, status="failed", result={"status": "failed", "error": str(exc)})
+        scanner_notifications.notify_standalone_failure(module_run_id)
+
+
+def _execute_usage_metadata_job(job_id: int, generation: int | None) -> None:
+    from app.scanner.pbi_sync import (
+        cached_account_available,
+        service_principal_configured,
+        trigger_pbi_usage_sync_and_wait,
+    )
+    from app.usage import sync_usage_from_csv_if_configured
+
+    module_run_id = scanner_modules.create_module_run(
+        "usage_metadata", scanner_job_id=job_id
+    )
+    scanner_jobs.mark_running(
+        job_id, current_step="Syncing usage metadata",
+        message="Importing configured files and Power BI activity.",
+    )
+    try:
+        try:
+            with get_db() as db:
+                csv_result = sync_usage_from_csv_if_configured(db)
+        except Exception as exc:
+            logger.exception("Configured usage import failed")
+            csv_result = {"status": "failed", "error": str(exc)}
+        assert_not_cancelled(generation, "Usage metadata sync")
+        try:
+            if service_principal_configured() or cached_account_available():
+                pbi_result = trigger_pbi_usage_sync_and_wait(
+                    cancel_existing=False,
+                    cancel_generation=generation,
+                    operation_id=job_id,
+                )
+            else:
+                pbi_result = {
+                    "status": "skipped",
+                    "reason": "Power BI headless authentication is not configured.",
+                }
+        except ScannerWorkCancelled:
+            raise
+        except Exception as exc:
+            logger.exception("Power BI usage metadata sync failed")
+            pbi_result = {"status": "failed", "error": str(exc)}
+        csv_result = csv_result if isinstance(csv_result, dict) else {
+            "status": "completed", "result": csv_result
+        }
+        pbi_result = pbi_result if isinstance(pbi_result, dict) else {
+            "status": "completed", "result": pbi_result
+        }
+        subscans = {
+            "csv_import": component_result(
+                csv_result, requested=normalize_scan_status(csv_result.get("status")) != "skipped"
+            ),
+            "power_bi_usage": component_result(
+                pbi_result, requested=normalize_scan_status(pbi_result.get("status")) != "skipped"
+            ),
+        }
+        failed = [
+            name for name, value in subscans.items()
+            if normalize_scan_status(value.get("status")) == "failed"
+        ]
+        requested = any(value.get("requested") for value in subscans.values())
+        status = "failed" if failed else "completed" if requested else "skipped"
+        result = redact_component_payload({"status": status, "failed_subscans": failed, **subscans})
+        summary = "Failed sub-steps: " + ", ".join(failed) if failed else "Usage metadata synchronized."
+        scanner_modules.finish_module_run(
+            module_run_id, status=status, summary=summary, details=result,
+            log="\n".join(f"{name}: {value.get('status')}" for name, value in subscans.items()),
+        )
+        scanner_jobs.finish_job(job_id, status=status, result=result, message=summary)
+        scanner_notifications.notify_standalone_failure(module_run_id)
+    except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
+        scanner_jobs.finish_job(job_id, status="stopped", result={"status": "stopped", "message": str(exc)})
+    except Exception as exc:
+        logger.exception("Usage metadata module failed")
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed", summary="Usage metadata sync failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
+        scanner_jobs.finish_job(job_id, status="failed", result={"status": "failed", "error": str(exc)})
+        scanner_notifications.notify_standalone_failure(module_run_id)
 def _require_scan_access(request: Request):
     """Compatibility hook for scan actions that used to require elevated access."""
     require_app_access(request)
@@ -388,6 +728,171 @@ def get_scanner_job(job_id: int):
     if job is None:
         raise HTTPException(status_code=404, detail="Scanner job not found")
     return job
+
+
+def _legacy_module_run(module_key: str) -> dict | None:
+    definition = scanner_modules.MODULES_BY_KEY[module_key]
+    component_key = definition.get("legacy_component")
+    if module_key == "power_bi_metadata":
+        row = latest_pbi_sync("refresh")
+        if not row:
+            return None
+        return {
+            "id": f"legacy-pbi-{row.get('id')}",
+            "module_key": module_key,
+            "status": normalize_scan_status(row.get("status")),
+            "display_status": normalize_scan_status(row.get("status")),
+            "summary": row.get("message"),
+            "details": row,
+            "log": row.get("message"),
+            "trigger_source": "legacy",
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "active": False,
+            "legacy": True,
+        }
+    if not component_key:
+        return None
+    with get_db() as db:
+        rows = db.execute(
+            """SELECT * FROM scan_runs
+                WHERE components_json IS NOT NULL
+                ORDER BY id DESC LIMIT 30"""
+        ).fetchall()
+    for row in rows:
+        components = parse_components(row["components_json"]) or {}
+        component = components.get(component_key)
+        if not isinstance(component, dict):
+            continue
+        return {
+            "id": f"legacy-scan-{row['id']}-{module_key}",
+            "module_key": module_key,
+            "status": normalize_scan_status(component.get("status")),
+            "display_status": normalize_scan_status(component.get("status")),
+            "summary": component.get("message"),
+            "details": component,
+            "log": row["log"],
+            "trigger_source": "legacy",
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "active": False,
+            "legacy": True,
+        }
+    return None
+
+
+@router.get("/modules")
+def list_scanner_modules():
+    result = scanner_modules.module_definitions_with_runs()
+    for item in result:
+        if item.get("last_run") is None:
+            item["last_run"] = _legacy_module_run(item["key"])
+    active = next((job for job in scanner_jobs.list_jobs(limit=10) if job.get("active")), None)
+    return {"modules": result, "active_job": active}
+
+
+@router.get("/modules/{module_key}/runs")
+def list_scanner_module_runs(module_key: str, limit: int = 20):
+    if module_key not in scanner_modules.MODULES_BY_KEY:
+        raise HTTPException(status_code=404, detail="Scanner module not found")
+    return scanner_modules.list_module_runs(module_key, limit=limit)
+
+
+@router.get("/module-runs/{module_run_id}")
+def get_scanner_module_run(module_run_id: int):
+    result = scanner_modules.get_module_run(module_run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Scanner module run not found")
+    return result
+
+
+_MODULE_WORKERS = {
+    "power_bi_metadata": _execute_power_bi_metadata_job,
+    "report_catalog": _execute_report_catalog_job,
+    "postgres_lineage": _execute_postgres_lineage_job,
+    "postgres_schedules": _execute_postgres_cron_job,
+    "source_freshness": _execute_probe_job,
+    "governance": _execute_governance_job,
+    "usage_metadata": _execute_usage_metadata_job,
+}
+
+
+@router.post("/modules/{module_key}/runs")
+def start_scanner_module_run(module_key: str, request: Request):
+    _require_scan_access(request)
+    worker = _MODULE_WORKERS.get(module_key)
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Scanner module not found")
+    definition = scanner_modules.MODULES_BY_KEY[module_key]
+    job, created = scanner_jobs.reserve_job(
+        module_key,
+        trigger_source="manual",
+        current_step="Queued",
+        message=f"{definition['label']} accepted and waiting for its worker.",
+        context={"module_key": module_key},
+    )
+    if not created:
+        return _job_start_response(
+            job,
+            accepted=False,
+            reused=job.get("job_type") == module_key,
+            message="Another scanner module is active; wait for it or stop it first.",
+        )
+    job_id = int(job["id"])
+    stop_result = stop_pbi_sync_processes(
+        f"New {definition['label']} run started.",
+        exclude_scanner_job_id=job_id,
+    )
+    _cancel_queued_jobs()
+    generation = (stop_result.get("scanner") or {}).get("generation")
+    _submit_job(job_id, worker, generation)
+    return _job_start_response(
+        scanner_jobs.get_job(job_id),
+        accepted=True,
+        reused=False,
+        message=f"{definition['label']} started. Progress is available on the Scanner page.",
+    )
+
+
+class ScannerNotificationSettingsRequest(BaseModel):
+    recipients: list[str]
+
+
+@router.get("/notification-settings")
+def get_scanner_notification_settings():
+    return scanner_notifications.get_notification_settings()
+
+
+@router.put("/notification-settings")
+def update_scanner_notification_settings(
+    body: ScannerNotificationSettingsRequest,
+    request: Request,
+):
+    _require_scan_access(request)
+    try:
+        result = scanner_notifications.save_notification_settings(body.recipients)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        from app.routers.eventlog import log_event
+        with get_db() as db:
+            log_event(
+                db, "app_settings", None, "Scanner failure recipients", "updated",
+                f"{len(result['recipients'])} recipient(s)",
+                getattr(request.state, "actor", None),
+            )
+    except Exception:
+        logger.exception("Could not audit scanner notification settings")
+    return result
+
+
+@router.post("/notification-settings/test")
+def test_scanner_notification_settings(request: Request):
+    _require_scan_access(request)
+    try:
+        return scanner_notifications.queue_test_notification()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/jobs/full-scan")

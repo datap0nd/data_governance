@@ -1147,6 +1147,28 @@ def reconcile_outlook_dispatches() -> dict:
                     candidate.unlink(missing_ok=True)
             except OSError:
                 continue
+    # Scanner notifications are asynchronous too. Mirror the authoritative
+    # Outlook receipt instead of claiming that a queued handoff was sent.
+    try:
+        from app.scanner.modules import reconcile_notification_dispatch
+
+        with get_db() as db:
+            scanner_dispatches = db.execute(
+                """SELECT DISTINCT od.id, od.status, od.error
+                     FROM outlook_dispatches od
+                     JOIN scanner_module_runs smr
+                       ON smr.notification_dispatch_id=od.id
+                    WHERE COALESCE(smr.notification_status, '') != od.status
+                       OR COALESCE(smr.notification_error, '') != COALESCE(od.error, '')"""
+            ).fetchall()
+        for dispatch in scanner_dispatches:
+            reconcile_notification_dispatch(
+                int(dispatch["id"]), dispatch["status"], dispatch["error"]
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not reconcile scanner notification dispatches"
+        )
     return {"processed": processed, "unknown": unknown}
 
 
