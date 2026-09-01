@@ -7,6 +7,7 @@ import copy
 import html
 import json
 import logging
+import ntpath
 import os
 import re
 import sqlite3
@@ -26,7 +27,8 @@ from app.flow_asap_exports import (
     resolve_asap_download_type,
 )
 from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
-from app.flow_retention import tombstone_name as retention_tombstone_name
+from app.flow_publish import normalize_target_path
+from app.flow_retention import RUN_FOLDER_KEEP, tombstone_name as retention_tombstone_name
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
 )
@@ -59,6 +61,7 @@ SQL_MODES = {"append", "replace"}
 SCHEDULE_TYPES = {"manual", "daily", "weekly", "monthly"}
 SCAN_MODES = {"full", "partial"}
 BROWSER_MODES = {"headless", "headed"}
+OUTPUT_MODES = {"run_folders", "direct_replace"}
 TRANSFORM_SCRIPT_SUFFIXES = {".py", ".ps1", ".exe"}
 RUN_STALE_TIMEOUT_SECONDS = 600
 WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
@@ -671,6 +674,7 @@ class FlowWrite(BaseModel):
     end_week: str | None = None
     target_folder: str = Field(min_length=1, max_length=2000)
     filename_template: str | None = Field(default=None, max_length=500)
+    output_mode: str = "run_folders"
     schedule_type: str = "manual"
     schedule_time: str | None = None
     schedule_days: list[str] = Field(default_factory=list)
@@ -693,6 +697,9 @@ class FlowWrite(BaseModel):
         if self.source_type not in SOURCE_TYPES:
             raise ValueError("Flow source type must be a website report or Outlook attachment.")
         self.target_folder = self.target_folder.strip()
+        self.output_mode = (self.output_mode or "run_folders").strip().casefold()
+        if self.output_mode not in OUTPUT_MODES:
+            raise ValueError("Output storage must be run folders or direct replacement.")
         self.export_views = list(dict.fromkeys(
             str(value).strip() for value in self.export_views if str(value).strip()
         ))
@@ -1422,9 +1429,13 @@ def _build_job(db, flow_id: int, *, force_reprocess: bool = False) -> dict:
             "next_start_week": _week_window(weeks[-1], 2)[1] if weeks else None,
             "target_folder": flow["target_folder"],
             "filename_template": flow["filename_template"],
-            "collision_policy": "number_suffix",
+            "output_mode": flow.get("output_mode") or "run_folders",
+            "collision_policy": (
+                "replace_exact" if flow.get("output_mode") == "direct_replace"
+                else "number_suffix"
+            ),
             "delete_existing": False,
-            "overwrite_existing": False,
+            "overwrite_existing": flow.get("output_mode") == "direct_replace",
         },
         "transformation": {
             "enabled": bool(flow.get("transform_enabled")),
@@ -1455,6 +1466,11 @@ def queue_flow_run_service(
     """Create one durable Flow run for manual, scheduled, or pipeline callers."""
     if trigger_type not in {"manual", "scheduled", "pipeline", "resume", "sql_retry"}:
         raise ValueError("Unsupported Flow trigger type.")
+    # The folder-wide direct-publish availability check and the queued row are
+    # one reservation. Pipeline callers that already wrote on this connection
+    # already hold SQLite's write slot; otherwise acquire it here.
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
     if not db.execute("SELECT 1 FROM flows WHERE id=?", (flow_id,)).fetchone():
         raise HTTPException(404, "Flow not found.")
     active = db.execute(
@@ -1466,10 +1482,12 @@ def queue_flow_run_service(
         raise HTTPException(409, "This flow already has an active run.")
     job = _build_job(db, flow_id)
     from app.routers.pipelines import (
+        assert_no_active_flow_publish_run,
         assert_no_active_flow_target_run,
         flow_target_resource_key_from_job,
     )
     assert_no_active_flow_target_run(db, flow_target_resource_key_from_job(job))
+    assert_no_active_flow_publish_run(db, job)
     cursor = db.execute(
         """INSERT INTO flow_runs
                (flow_id, trigger_type, status, requested_by, job_json, created_at)
@@ -1482,6 +1500,7 @@ def queue_flow_run_service(
 def queue_due_flows() -> dict:
     """Queue due scheduled flows without executing browser work in the API process."""
     from app.routers.pipelines import (
+        assert_no_active_flow_publish_run,
         assert_flow_target_available,
         assert_resource_unlocked,
         flow_target_resource_key_from_job,
@@ -1530,6 +1549,7 @@ def queue_due_flows() -> dict:
                 assert_flow_target_available(
                     db, flow_target_resource_key_from_job(job)
                 )
+                assert_no_active_flow_publish_run(db, job)
             except HTTPException as exc:
                 if exc.status_code != 409:
                     raise
@@ -1817,7 +1837,9 @@ def get_run(run_id: int):
             (run_id,),
         ).fetchall()
         files = db.execute(
-            """SELECT period_key, file_path, filename, file_size, checksum, row_count, status, created_at
+            """SELECT period_key, file_path, filename, storage_scope, artifact_store_id,
+                      file_size, checksum, row_count, published_file_path,
+                      published_filename, publish_status, status, created_at
                FROM flow_run_files WHERE run_id=? ORDER BY id""",
             (run_id,),
         ).fetchall()
@@ -1907,7 +1929,8 @@ def inspect_sql_retry_eligibility(
             key: item.get(key)
             for key in (
                 "file_path", "filename", "period_key", "file_size", "checksum",
-                "row_count", "status", "source_receipt",
+                "row_count", "status", "source_receipt", "storage_scope",
+                "artifact_store_id",
             )
             if item.get(key) is not None
         }
@@ -1918,13 +1941,30 @@ def inspect_sql_retry_eligibility(
             "not_applicable", "no_sql_artifacts", "The source run has no saved SQL-ready CSV artifacts.",
             _source=source,
         )
+    incomplete_private = [
+        item["filename"] for item in artifacts
+        if item.get("storage_scope") == "worker_private"
+        and (
+            not item.get("artifact_store_id")
+            or item.get("file_size") is None
+            or not item.get("checksum")
+        )
+    ]
+    if incomplete_private:
+        return _recovery_result(
+            "blocked", "private_artifact_identity_missing",
+            "Saved private SQL artifacts do not have a complete worker-store, size, and checksum identity: "
+            + ", ".join(incomplete_private[:10]),
+            _source=source,
+        )
     if verify_artifact_files:
         if not verify_remote_artifacts:
             from app.path_safety import is_remote_file_path
 
             remote = [
                 item["filename"] for item in artifacts
-                if is_remote_file_path(item["file_path"])
+                if item.get("storage_scope") != "worker_private"
+                and is_remote_file_path(item["file_path"])
             ]
             if remote:
                 return _recovery_result(
@@ -1934,7 +1974,8 @@ def inspect_sql_retry_eligibility(
                 )
         missing = [
             item["filename"] for item in artifacts
-            if not Path(item["file_path"]).is_file()
+            if item.get("storage_scope") != "worker_private"
+            and not Path(item["file_path"]).is_file()
         ]
         if missing:
             return _recovery_result(
@@ -1971,6 +2012,20 @@ def inspect_sql_retry_eligibility(
         "source_was_transformed": transformed,
     }
     job["sql_retry"] = {"source_run_id": run_id, "artifacts": artifacts}
+    private_store_ids = {
+        str(item.get("artifact_store_id")) for item in artifacts
+        if item.get("storage_scope") == "worker_private" and item.get("artifact_store_id")
+    }
+    if len(private_store_ids) > 1:
+        return _recovery_result(
+            "blocked", "artifact_store_mismatch",
+            "Saved SQL artifacts belong to more than one private worker store.",
+            _source=source,
+        )
+    if private_store_ids:
+        required_store_id = next(iter(private_store_ids))
+        job["execution"]["required_artifact_store_id"] = required_store_id
+        job["sql_retry"]["required_artifact_store_id"] = required_store_id
     source_receipt = next(
         (item.get("source_receipt") for item in artifacts if item.get("source_receipt")),
         None,
@@ -2004,6 +2059,7 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             "not_applicable", "run_not_found", "Source flow run not found.", http_status=404
         )
     from app.routers.pipelines import (
+        assert_no_active_flow_publish_run,
         assert_flow_target_available,
         assert_resource_unlocked,
         flow_target_resource_key_from_job,
@@ -2037,30 +2093,53 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             _source=source, active_run_id=int(active["id"]),
         )
     source_job = _loads(source["job_json"], {})
+    try:
+        job = _build_job(db, source["flow_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return _recovery_result(
+            "blocked", "flow_configuration_invalid",
+            f"The current Flow configuration cannot be queued: {exc}",
+            http_status=409, _source=source,
+        )
+    source_output_mode = (source_job.get("downloads") or {}).get("output_mode", "run_folders")
+    current_output_mode = (job.get("downloads") or {}).get("output_mode", "run_folders")
+    if source_output_mode != current_output_mode:
+        return _recovery_result(
+            "blocked", "output_mode_changed",
+            "The Flow output storage mode changed after this run. Start a fresh Run instead of mixing storage layouts.",
+            _source=source,
+        )
     carried = (source_job.get("resume") or {}).get("completed") or []
     saved = [
-        {
-            "export_view": item.get("export_view"), "period_key": item.get("period_key"),
-            "file_path": item.get("file_path"), "source_run_id": run_id,
-        }
+        {**item, "source_run_id": run_id}
         for item in _loads(source["artifact_json"], [])
         if item.get("status") == "saved" and item.get("file_path")
     ]
     completed, seen = [], set()
     had_saved = False
     for item in [*carried, *saved]:
-        entry = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
-        key = _json(entry)
+        identity = {"export_view": item.get("export_view"), "period_key": item.get("period_key")}
+        key = _json(identity)
         if key in seen:
             continue
         seen.add(key)
         had_saved = True
-        source_run = item.get("source_run_id")
+        entry = (
+            {**item, **identity}
+            if current_output_mode == "direct_replace"
+            else {
+                **identity,
+                **({"file_path": item.get("file_path")} if item.get("file_path") else {}),
+                **(
+                    {"source_run_id": item.get("source_run_id")}
+                    if isinstance(item.get("source_run_id"), int) else {}
+                ),
+            }
+        )
+        source_run = entry.get("source_run_id")
         if item.get("file_path"):
             if isinstance(source_run, int) and _source_folder_unavailable(db, source_run):
                 continue
-            entry["file_path"] = item.get("file_path")
-            entry["source_run_id"] = source_run
         completed.append(entry)
     if not had_saved:
         return _recovery_result(
@@ -2069,9 +2148,9 @@ def inspect_resume_eligibility(db, run_id: int) -> dict:
             _source=source,
         )
     try:
-        job = _build_job(db, source["flow_id"])
         job["resume"] = {"from_run_id": run_id, "completed": completed}
         assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+        assert_no_active_flow_publish_run(db, job)
     except HTTPException as exc:
         return _recovery_result(
             "blocked", "target_busy", str(exc.detail), http_status=exc.status_code,
@@ -2098,6 +2177,7 @@ def inspect_fresh_run_eligibility(db, flow_id: int) -> dict:
             "not_applicable", "flow_not_found", "Flow not found.", http_status=404
         )
     from app.routers.pipelines import (
+        assert_no_active_flow_publish_run,
         assert_flow_target_available,
         assert_resource_unlocked,
         flow_target_resource_key_from_job,
@@ -2116,6 +2196,7 @@ def inspect_fresh_run_eligibility(db, flow_id: int) -> dict:
             )
         job = _build_job(db, flow_id)
         assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+        assert_no_active_flow_publish_run(db, job)
     except HTTPException as exc:
         return _recovery_result(
             "blocked", "resource_busy", str(exc.detail), http_status=exc.status_code
@@ -2347,16 +2428,16 @@ def create_flow(body: FlowWrite, request: Request):
                 """INSERT INTO flows
                    (name, source_type, site_id, report_id, outlook_subject_contains,
                     export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, asap_download_type, export_report_title, export_filter_details, excel_trim, start_week, end_week,
-                    browser_mode, target_folder, filename_template, schedule_type, schedule_time, schedule_days, next_run_at,
+                    browser_mode, target_folder, filename_template, output_mode, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
                     transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_uppercase, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.source_type, body.site_id, body.report_id,
                  body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
                  body.asap_download_type, body.export_report_title, body.export_filter_details,
                  body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
-                 body.filename_template, body.schedule_type, body.schedule_time,
+                 body.filename_template, body.output_mode, body.schedule_type, body.schedule_time,
                  _json(body.schedule_days), next_run, body.schedule_day,
                  body.transform_enabled, body.transform_script_path,
                  body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
@@ -2446,7 +2527,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
         cursor = db.execute(
             """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
                export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
-               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, asap_download_type=?, export_report_title=?, export_filter_details=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?,
+               download_mode=?, period_strategy=?, window_weeks=?, file_format=?, asap_download_type=?, export_report_title=?, export_filter_details=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?, output_mode=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
                sql_handoff_enabled=?, sql_mode=?, sql_uppercase=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
@@ -2455,7 +2536,7 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
              body.asap_download_type, body.export_report_title, body.export_filter_details,
              body.excel_trim, body.start_week, body.end_week, body.browser_mode, body.target_folder,
-             body.filename_template, body.schedule_type, body.schedule_time,
+             body.filename_template, body.output_mode, body.schedule_type, body.schedule_time,
              _json(body.schedule_days), body.schedule_day, next_run,
              body.transform_enabled, body.transform_script_path,
              body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
@@ -2507,6 +2588,7 @@ def queue_run(flow_id: int, request: Request):
         if not flow:
             raise HTTPException(404, "Flow not found.")
         from app.routers.pipelines import (
+            assert_no_active_flow_publish_run,
             assert_flow_target_available,
             assert_resource_unlocked,
             flow_target_resource_key_from_job,
@@ -2536,6 +2618,7 @@ def queue_run(flow_id: int, request: Request):
                 flow_target_resource_key_from_job(job),
                 exclude_run_id=int(run_id),
             )
+            assert_no_active_flow_publish_run(db, job, exclude_run_id=int(run_id))
             resumed = True
             log_event(
                 db, "flow", flow_id, flow["name"], "worker_restart_requested",
@@ -2547,6 +2630,7 @@ def queue_run(flow_id: int, request: Request):
                 force_reprocess=(flow["source_type"] or "portal") == "outlook",
             )
             assert_flow_target_available(db, flow_target_resource_key_from_job(job))
+            assert_no_active_flow_publish_run(db, job)
             cursor = db.execute(
                 """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
                    VALUES (?, 'manual', 'queued', ?, ?, ?)""",
@@ -3981,10 +4065,63 @@ def claim_run(worker_id: str):
         queued_runs = db.execute(
             "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
         ).fetchall()
-        row = next((candidate for candidate in queued_runs if (
-            _loads(candidate["job_json"], {}).get("execution", {}).get("browser_mode", "headless")
-            == worker_mode
-        )), None)
+        store_failure = False
+        for candidate in queued_runs:
+            candidate_job = _loads(candidate["job_json"], {})
+            execution = candidate_job.get("execution", {})
+            required_store = execution.get("required_artifact_store_id")
+            if (
+                required_store
+                and execution.get("worker_id") == worker_id
+                and required_store != capabilities.get("artifact_store_id")
+            ):
+                message = (
+                    "SQL Retry cannot use its private artifacts because this worker's "
+                    "profile store identity changed. Run the Flow again to download fresh files."
+                )
+                db.execute(
+                    """UPDATE flow_runs SET status='failed', error=?, progress_json=?,
+                       finished_at=?, heartbeat_at=? WHERE id=? AND status='queued'""",
+                    (
+                        message,
+                        _json({"stage": "artifact_store_unavailable", "message": message}),
+                        now, now, candidate["id"],
+                    ),
+                )
+                db.execute(
+                    """INSERT INTO flow_run_events
+                       (run_id, status, stage, message, details_json, error, created_at)
+                       VALUES (?, 'failed', 'artifact_store_unavailable', ?, ?, ?, ?)""",
+                    (
+                        candidate["id"], message,
+                        _json({"required_artifact_store_id": required_store}), message, now,
+                    ),
+                )
+                db.execute(
+                    """UPDATE flows SET last_run_at=?, last_status='failed', last_error=?, updated_at=?
+                       WHERE id=?""",
+                    (now, message, now, candidate["flow_id"]),
+                )
+                store_failure = True
+        if store_failure:
+            _sync_flow_failure_actions(db, now)
+            queued_runs = db.execute(
+                "SELECT * FROM flow_runs WHERE status='queued' ORDER BY created_at, id"
+            ).fetchall()
+
+        def worker_can_claim(candidate) -> bool:
+            job = _loads(candidate["job_json"], {})
+            execution = job.get("execution", {})
+            required_store = execution.get("required_artifact_store_id")
+            return (
+                execution.get("browser_mode", "headless") == worker_mode
+                and (
+                    not required_store
+                    or required_store == capabilities.get("artifact_store_id")
+                )
+            )
+
+        row = next((candidate for candidate in queued_runs if worker_can_claim(candidate)), None)
         if not row:
             # A scan runs on the worker whose mode its job names, exactly like
             # a run: a GSCM scan must walk the portal in the same browser,
@@ -4119,13 +4256,23 @@ def update_scan(worker_id: str, scan_id: int, body: ScanProgress):
     return {"scan_id": scan_id, "status": body.status, "result": result}
 
 
-RETENTION_KEEP = 3
 RETENTION_OP_PENDING = ("issued", "quarantined")
 
 
 def _folder_key(run_folder: str) -> str:
-    """Case-normalized parent path, so Windows/UNC spellings group together."""
-    return os.path.normcase(os.path.normpath(str(Path(run_folder).parent)))
+    """Host-independent normalized parent identity for Windows/UNC or POSIX paths."""
+    raw = str(run_folder)
+    if "\\" in raw or re.match(r"^[A-Za-z]:[/\\]", raw):
+        return normalize_target_path(ntpath.dirname(raw))
+    return os.path.normcase(os.path.normpath(str(Path(raw).parent)))
+
+
+def _retention_sibling(run_folder: str, name: str) -> str:
+    """Build a sibling without interpreting a worker's path on the server host."""
+    raw = str(run_folder)
+    if "\\" in raw or re.match(r"^[A-Za-z]:[/\\]", raw):
+        return ntpath.join(ntpath.dirname(raw), name)
+    return str(Path(raw).parent / name)
 
 
 def _source_has_live_consumer(db, source_run_id: int) -> bool:
@@ -4162,7 +4309,7 @@ def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[di
     """Pick the run folders this run should clean up, transactionally.
 
     Runs inside the registration transaction, with the registering run's own
-    folder already counted: the newest RETENTION_KEEP recorded folders under
+    folder already counted: the newest RUN_FOLDER_KEEP recorded folders under
     this target keep their place, non-terminal runs and pinned sources are
     never candidates, and every deletion is pre-recorded as an operation with
     its tombstone path before the worker hears about it.
@@ -4181,7 +4328,7 @@ def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[di
         (folder_key,),
     ).fetchall()
     ops: list[dict] = []
-    for row in recorded[RETENTION_KEEP:]:
+    for row in recorded[RUN_FOLDER_KEEP:]:
         if row["status"] not in RUN_TERMINAL:
             continue
         if _source_has_live_consumer(db, row["id"]):
@@ -4201,8 +4348,10 @@ def _assign_retention_ops(db, run_id: int, folder_key: str, now: str) -> list[di
             (row["id"], row["run_folder"], run_id, now, now),
         )
         op_id = cursor.lastrowid
-        original = Path(row["run_folder"])
-        tombstone = str(original.parent / retention_tombstone_name(original.name, op_id))
+        original_name = ntpath.basename(str(row["run_folder"]).replace("/", "\\"))
+        tombstone = _retention_sibling(
+            row["run_folder"], retention_tombstone_name(original_name, op_id),
+        )
         db.execute(
             "UPDATE flow_retention_ops SET tombstone_path=? WHERE id=?", (tombstone, op_id),
         )
@@ -4268,12 +4417,59 @@ def _apply_retention_results(db, run_id: int, results: list[dict], now: str):
             )
 
 
+def _record_publish_name_drift(db, row, artifacts: list[dict], now: str) -> None:
+    """Warn when one logical direct-output task changes its public basename."""
+    previous_rows = db.execute(
+        """SELECT artifact_json FROM flow_runs
+           WHERE flow_id=? AND id<? AND artifact_json IS NOT NULL
+             AND artifact_json LIKE '%"published_filename":%'
+           ORDER BY id DESC LIMIT 1""",
+        (row["flow_id"], row["id"]),
+    ).fetchall()
+    previous = {}
+    for previous_row in previous_rows:
+        for item in _loads(previous_row["artifact_json"], []):
+            name = item.get("published_filename")
+            if not name:
+                continue
+            key = _json({
+                "export_view": item.get("export_view"),
+                "period_key": item.get("period_key"),
+            })
+            previous.setdefault(key, str(name))
+    for item in artifacts:
+        current_name = item.get("published_filename")
+        if not current_name:
+            continue
+        key = _json({
+            "export_view": item.get("export_view"),
+            "period_key": item.get("period_key"),
+        })
+        prior_name = previous.get(key)
+        if not prior_name or os.path.normcase(prior_name) == os.path.normcase(str(current_name)):
+            continue
+        message = (
+            f"The published filename changed from {prior_name} to {current_name}. "
+            "The older stable file was intentionally left in place."
+        )
+        db.execute(
+            """INSERT INTO flow_run_events
+               (run_id, status, stage, message, details_json, created_at)
+               VALUES (?, 'running', 'publish_name_changed', ?, ?, ?)""",
+            (
+                row["id"], message,
+                _json({"previous_filename": prior_name, "published_filename": current_name}),
+                now,
+            ),
+        )
+
+
 @router.post("/worker/{worker_id}/runs/{run_id}/register_folder")
 def register_run_folder(worker_id: str, run_id: int, body: FolderRegister):
     """Record the folder a run created, and assign its retention work.
 
     Registration and assignment share one transaction so the just-created
-    folder is always counted in the keep window - the newest RETENTION_KEEP
+    folder is always counted in the keep window - the newest RUN_FOLDER_KEEP
     folders per target survive, and the worker receives only pre-recorded
     operations against paths this server stored itself.
     """
@@ -4357,6 +4553,8 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 _json(body.progress), body.error, body.traceback, now,
             ),
         )
+        if body.progress.get("stage") == "publish_complete":
+            _record_publish_name_drift(db, row, stored_artifacts, now)
         db.execute(
             """UPDATE flows
                SET last_run_at=?,
@@ -4418,12 +4616,17 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
             )
             db.executemany(
                 """INSERT INTO flow_run_files
-                   (run_id, period_key, file_path, filename, file_size, checksum, row_count, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, period_key, file_path, filename, storage_scope, artifact_store_id,
+                    file_size, checksum, row_count, published_file_path, published_filename,
+                    publish_status, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (run_id, _period_key_text(item.get("period_key")), str(item.get("file_path") or ""),
-                     str(item.get("filename") or ""), item.get("file_size"), item.get("checksum"),
-                     item.get("row_count"), str(item.get("status") or "saved"), now)
+                     str(item.get("filename") or ""), item.get("storage_scope"),
+                     item.get("artifact_store_id"), item.get("file_size"), item.get("checksum"),
+                     item.get("row_count"), item.get("published_file_path"),
+                     item.get("published_filename"), item.get("publish_status"),
+                     str(item.get("status") or "saved"), now)
                     for item in stored_artifacts if item.get("file_path") and item.get("filename")
                 ],
             )

@@ -639,13 +639,23 @@ def test_transformations_run_once_per_file_and_use_script_results(tmp_path):
         encoding="utf-8",
     )
     output = flow_worker._run_transformations(
-        [{"file_path": str(source), "filename": source.name, "period_key": ["2026-W01"], "status": "saved"}],
+        [{
+            "file_path": str(source), "filename": source.name,
+            "period_key": ["2026-W01"], "status": "saved",
+            "storage_scope": "worker_private", "artifact_store_id": "store-a",
+            "publish_status": "published", "published_filename": "stable.csv",
+            "published_file_path": r"C:\Stable\stable.csv",
+        }],
         {"enabled": True, "script_path": str(script)},
     )
     assert len(output) == 1
     assert Path(output[0]["file_path"]).parent.name == "script_results"
     assert output[0]["status"] == "transformed"
     assert output[0]["row_count"] == 1
+    assert output[0]["storage_scope"] == "worker_private"
+    assert output[0]["artifact_store_id"] == "store-a"
+    assert output[0]["publish_status"] == "not_applicable"
+    assert output[0]["published_file_path"] is None
 
 
 def test_transformation_requires_reserved_output_file(tmp_path):

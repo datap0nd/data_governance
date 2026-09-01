@@ -1,16 +1,18 @@
 """Per-run download folders and the retention operations that clean them up.
 
-Every flow run saves its files into its own subfolder of the flow's target
-folder, named ``#<run_id>_<dd-mm-yyyy>``. The Metronome server keeps only the
-newest 3 run folders per target: it records each folder when the worker
-registers it, decides transactionally which recorded folders are old enough to
-remove, and hands the worker pre-recorded retention operations to execute.
+Every producing flow run saves its immutable files into an owned subfolder,
+named ``#<run_id>_<dd-mm-yyyy>``. The parent is either the configured target
+(``run_folders``) or the target's hashed worker-private store
+(``direct_replace``). The Metronome server keeps only the newest three run
+folders per parent: it records each folder when the worker registers it,
+decides transactionally which recorded folders are old enough to remove, and
+hands the worker pre-recorded retention operations to execute.
 
 This module is the only place in the worker that deletes anything, and it
 deletes only what an operation from the server names: a path the server itself
 recorded when that run registered its folder, double-checked here against the
 on-disk ownership marker before anything is touched. User files and folders in
-the target folder are never candidates.
+the configured target folder are never retention candidates.
 
 Deletion is a two-step, crash-safe protocol. The folder is first renamed to
 the operation's server-chosen tombstone name (atomic on the same volume: it

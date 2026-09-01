@@ -45,6 +45,7 @@ from app.source_identity import (
     postgres_server_identity,
     reconcile_flow_target,
 )
+from app.flow_publish import normalize_target_path
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +396,49 @@ def flow_target_resource_key_from_job(job_or_json) -> str | None:
         "target_folder": downloads.get("target_folder"),
         "filename_template": downloads.get("filename_template"),
     })
+
+
+def flow_publish_resource_key_from_job(job_or_json) -> str | None:
+    """Folder-wide lock for direct publishers, independent of SQL targets."""
+    job = _loads(job_or_json, {}) if isinstance(job_or_json, str) else (job_or_json or {})
+    if job.get("job_type") == "sql_retry":
+        return None
+    downloads = job.get("downloads") or {}
+    if downloads.get("output_mode", "run_folders") != "direct_replace":
+        return None
+    folder = normalize_target_path(downloads.get("target_folder") or "")
+    return f"file-folder|{folder}" if folder else None
+
+
+def active_flow_publish_run(
+    db, publish_resource_key: str | None, *, exclude_run_id: int | None = None,
+):
+    if not publish_resource_key:
+        return None
+    rows = db.execute(
+        """SELECT fr.id, fr.flow_id, fr.job_json, f.name AS flow_name
+           FROM flow_runs fr JOIN flows f ON f.id=fr.flow_id
+           WHERE fr.status IN ('queued','claimed','running') ORDER BY fr.id"""
+    ).fetchall()
+    for row in rows:
+        if exclude_run_id is not None and int(row["id"]) == int(exclude_run_id):
+            continue
+        if flow_publish_resource_key_from_job(row["job_json"]) == publish_resource_key:
+            return row
+    return None
+
+
+def assert_no_active_flow_publish_run(
+    db, job_or_json, *, exclude_run_id: int | None = None,
+) -> None:
+    key = flow_publish_resource_key_from_job(job_or_json)
+    active = active_flow_publish_run(db, key, exclude_run_id=exclude_run_id)
+    if active:
+        raise HTTPException(
+            409,
+            "Direct Flow output folder is already reserved by "
+            f"Flow '{active['flow_name']}' run #{active['id']}.",
+        )
 
 
 def active_flow_target_run(

@@ -160,7 +160,13 @@ Outlook attachment flows search the signed-in user's default, top-level Inbox fo
 
 Automatic execution is controlled from the Flows list with an Active/Inactive switch. The builder stores a daily, weekly, or monthly day-of-month schedule but does not activate it. Months that do not contain the configured day are skipped. Run history provides an Expanded logs link for each run. New runs retain every progress event, phase timing, source export view, downloaded artifact, SQL target and mode, final error, and complete worker traceback in the local SQLite database.
 
-Flows can optionally run one local transformation script per downloaded CSV before SQL insertion. The script is selected through the flow builder and copied into the BI desktop's local, gitignored `flow_scripts` folder. Metronome calls it with `--input` and `--output`, requires one non-empty CSV result under the run folder's `script_results` subfolder, and passes only those transformed results to SQL. Original downloads are never overwritten; they stay in their run folder and are removed only when that whole run folder ages out of the keep-newest-3 cleanup. See [the transformation script contract](docs/flow_transformation_contract.md).
+Each Flow chooses an **Output storage** mode. The default, **Run folders**, keeps the existing `#<run>_<dd-mm-yyyy>` folders visible under the configured target and retains the newest three unpinned runs. **Direct files** keeps those same immutable run artifacts in `<browser-profile>/run_artifacts/<target-hash>` and publishes only the validated configured deliverables into the target folder. An identical resolved filename is replaced; filename tokens such as `{date}` and `{week}` deliberately create additional stable files, and a changed extension leaves the older basename untouched with a warning in the run log. Outlook v1 retains the attachment's original basename, so dated attachment names accumulate. Changing mode, target, or template never deletes prior stable files or visible run folders.
+
+Direct publication is serialized per normalized target folder. Metronome verifies the complete bundle, copies it into dot-prefixed same-directory staging files, journals backups, and atomically installs each filename. A normal failure restores the previous bundle. If Excel or another process locks restoration, the owned backup and journal remain for the next serialized run to reconcile; unrelated user files are never scanned or deleted. Publication happens before transformation and SQL, matching the existing rule that a later downstream failure does not erase successfully downloaded deliverables.
+
+Direct mode's private run folders preserve Resume, SQL Retry, diagnostics, normalized CSVs, and transformation outputs without exposing those working files in the target folder. The worker advertises an opaque identity for that machine/profile store: Resume revalidates files and downloads missing work again, while SQL Retry can be claimed only by the matching store and verifies size/checksum before SQL. Moving or reinstalling the profile therefore makes those cached artifacts unavailable rather than silently selecting another run. Budget local profile disk for three full unpinned runs per configured target; active Resume/SQL Retry pins can temporarily retain more.
+
+Flows can optionally run one local transformation script per downloaded CSV before SQL insertion. The script is selected through the flow builder and copied into the BI desktop's local, gitignored `flow_scripts` folder. Metronome calls it with `--input` and `--output`, requires one non-empty CSV result under the immutable run folder's `script_results` subfolder, and passes only those transformed results to SQL. Original downloads are never overwritten inside artifact storage; the whole owned run folder is removed only after it ages out of the keep-newest-three cleanup and has no recovery pin. See [the transformation script contract](docs/flow_transformation_contract.md).
 
 Every scan and download records total duration and phase timings. Scan phases include portal navigation, report discovery, report navigation, and filter inspection. Download phases include navigation, configuration, report execution, CSV export, file transfer, optional transformation, and optional SQL insertion. The UI estimates the next scan and download from the median of up to ten comparable successful operations; before history exists, it clearly labels a conservative fallback.
 
@@ -180,7 +186,7 @@ The setup script installs both worker modes. Rerun it after updating Metronome s
 
 Do not copy browser tokens or credentials between Windows accounts. Enterprise policy may still require the local worker to remain headed.
 
-The worker never overwrites existing files - name collisions create a numbered filename. Each run downloads into its own `#<run>_<dd-mm-yyyy>` subfolder of the target folder, and only the newest 3 run folders are kept: the server assigns the cleanup of older run folders it recorded itself, and nothing else in the target folder is ever touched. Optional SQL handoff can append to an existing target or perform the managed snapshot refresh described above.
+Within immutable artifact storage the worker never overwrites an existing file: name collisions receive a numbered suffix. Run-folder mode keeps the newest three visible run folders. Direct mode replaces only exact public destination filenames through its ownership journal while retaining the newest three private run folders. In both modes, the server assigns cleanup only for run folders it recorded itself; normal user files are never retention candidates. Optional SQL handoff can append to an existing target or perform the managed snapshot refresh described above.
 
 ### Power BI email recurrences
 
@@ -208,10 +214,11 @@ Pipeline Flow lineage is report-scoped. An exact Flow SQL target is matched by
 server, database, schema, and table through the report's full recursive source
 dependency graph, so an upstream table such as `asap_import` remains visible
 when it feeds an intermediate materialized view. Static Excel/CSV output names
-can appear as dashed **Possible file link** evidence, but they are not run
-automatically: current Flow artifacts live in versioned run folders, so a
-filename alone does not prove that the Flow updates the exact file Power BI
-consumes.
+can appear as dashed **Possible file link** evidence, including a static
+direct-file output, but they are deliberately not run automatically.
+Executable Pipeline identity and governance for file-output Flows is a
+separate feature; this release does not change `included_flow_ids` or legacy
+source matching.
 
 ### 5. Run the scanner
 

@@ -42,7 +42,11 @@ equivalent named parameters `-InputPath` and `-OutputPath`.
 Metronome reserves a collision-safe output under the download folder's
 `script_results` subfolder. It validates and normalizes that CSV, records the
 script duration, stdout, stderr, and resulting artifact, and passes only the
-transformed artifacts to SQL when SQL handoff is enabled.
+transformed artifacts to SQL when SQL handoff is enabled. With Direct-file
+output, the download folder is in the worker-private artifact store and script
+results are never published into the configured target; publication contains
+only the validated configured download deliverables and happens before the
+script runs.
 
 ## Minimal Python Example
 

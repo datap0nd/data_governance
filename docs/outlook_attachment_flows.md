@@ -46,14 +46,20 @@ invoke SQL, or advance `last_success_at`. Pending retention work waits until the
 next producing run. Clicking **Run** is an explicit force-reprocess operation,
 including when it re-pokes an existing queued scheduled run.
 
-After a new attachment is acquired locally, the worker creates the normal
-`#<run_id>_<dd-mm-yyyy>` folder, registers it, applies the keep-newest-three
-protocol, and uses the shared verified storage path. The original safe filename
-is retained with collision suffixes. Outlook CSV is normalized in place; every
-Excel format keeps the verified original and adds a `_normalized.csv` sibling
-used by transformations and SQL. This is source-specific: ASAP CSV keeps its
-normalized configured filename as the primary artifact and also records a
-byte-exact `_raw.csv` sibling.
+After a new attachment is acquired locally, the worker creates and registers
+an owned `#<run_id>_<dd-mm-yyyy>` folder and applies the keep-newest-three
+protocol. In **Run folders** mode that folder is visible under the configured
+target. In **Direct files** mode it lives in the worker profile's hashed private
+artifact store; after the single attachment validates, the original workbook
+or primary CSV is journal-published into the configured target. Outlook keeps
+the attachment's original safe basename in v1, so only an identical basename
+is replaced and dated attachment names accumulate. A no-op publishes nothing.
+
+Outlook CSV is normalized in artifact storage; every Excel format keeps the
+verified original and adds a `_normalized.csv` sibling used by transformations
+and SQL. Normalized and transformed files remain private in Direct mode. This
+is source-specific: ASAP CSV keeps its normalized configured filename as the
+primary artifact and also records a byte-exact `_raw.csv` sibling.
 
 ## Flat-file validation
 
