@@ -69,6 +69,7 @@ ASAP_FRAME_SELECTOR = "iframe#content-frame"
 ASAP_PORTAL_ADAPTER = "asap_portal"
 GSCM_PORTAL_ADAPTER = flow_gscm.GSCM_PORTAL_ADAPTER
 OUTLOOK_ATTACHMENT_ADAPTER = flow_outlook.OUTLOOK_ATTACHMENT_ADAPTER
+LOCAL_FILE_ADAPTER = "local_file"
 AUTH_MARKER = ".asap_authenticated"
 GSCM_AUTH_MARKER = ".gscm_authenticated"
 ASAP_LOADING_OVERLAY_SELECTOR = (
@@ -126,6 +127,12 @@ EXCEL_EXTENSIONS_BY_FORMAT = {
     "xlsb": XLSB_EXCEL_EXTENSIONS,
 }
 EXCEL_DOWNLOAD_FORMATS = frozenset(EXCEL_EXTENSIONS_BY_FORMAT)
+LOCAL_FILE_FORMAT_BY_EXTENSION = {
+    ".csv": "csv",
+    **{suffix: "xls" for suffix in LEGACY_EXCEL_EXTENSIONS},
+    **{suffix: "xlsb" for suffix in XLSB_EXCEL_EXTENSIONS},
+    **{suffix: "xlsx" for suffix in OOXML_EXCEL_EXTENSIONS},
+}
 
 
 class _CompletedDownloadProcessingError(RuntimeError):
@@ -4892,6 +4899,7 @@ def _normalize_xlsx(
     source: Path, output: Path, *, requested_weeks: list[str],
     header_mode: str = "auto", strict_headers: bool = False,
     workbook_format: str | None = None, excel_trim: str = "none",
+    worksheet_name: str | None = None,
 ) -> dict:
     """Convert populated Excel-family sheets into one normalized UTF-8 CSV.
 
@@ -4910,6 +4918,17 @@ def _normalize_xlsx(
         header_mode = "first_row"
     workbook_format = str(workbook_format or _detect_download_format(source)).casefold()
     workbook = _open_excel_workbook(source, workbook_format)
+    worksheets = list(workbook.worksheets)
+    if worksheet_name is not None:
+        matches = [sheet for sheet in worksheets if sheet.title == worksheet_name]
+        if len(matches) != 1:
+            available = ", ".join(repr(sheet.title) for sheet in worksheets[:20]) or "none"
+            workbook.close()
+            raise RuntimeError(
+                f"Excel worksheet {worksheet_name!r} was not found exactly once. "
+                f"Available worksheets: {available}."
+            )
+        worksheets = matches
     common_header: list[str] | None = None
     common_normalized: list[str] | None = None
     source_sheets = []
@@ -4926,7 +4945,7 @@ def _normalize_xlsx(
     try:
         writer = csv.writer(handle, lineterminator="\n")
         skipped_sheets: list[str] = []
-        for worksheet in workbook.worksheets:
+        for worksheet in worksheets:
             worksheet = _trim_worksheet(worksheet, excel_trim)
             plan = _xlsx_sheet_plan(
                 worksheet, requested_weeks,
@@ -5681,7 +5700,9 @@ def _export_task_key(export_view, period) -> str:
 
 def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> dict:
     """Freeze the private deliverable needed by direct publish and Resume."""
-    direct = job.get("downloads", {}).get("output_mode", "run_folders") == "direct_replace"
+    output_mode = job.get("downloads", {}).get("output_mode", "run_folders")
+    direct = output_mode == "direct_replace"
+    private = output_mode in {"direct_replace", "private_snapshot"}
     original = artifact.get("original_file_path")
     original_metadata = None
     if original:
@@ -5695,9 +5716,11 @@ def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> 
     excel_original = bool(original) and original_suffix in (
         OOXML_EXCEL_EXTENSIONS | LEGACY_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
     )
-    deliverable = Path(str(original if excel_original else artifact.get("file_path") or ""))
+    deliverable = Path(str(
+        original if direct and excel_original else artifact.get("file_path") or ""
+    ))
     if not deliverable.is_file():
-        if direct:
+        if private:
             raise RuntimeError(f"Saved Flow deliverable is missing: {deliverable}")
         artifact.update({
             "storage_scope": "target_run_folder",
@@ -5707,8 +5730,8 @@ def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> 
         return artifact
     observed = flow_publish.read_size_checksum(deliverable)
     artifact.update({
-        "storage_scope": "worker_private" if direct else "target_run_folder",
-        "artifact_store_id": flow_publish.artifact_store_id(profile_dir) if direct else None,
+        "storage_scope": "worker_private" if private else "target_run_folder",
+        "artifact_store_id": flow_publish.artifact_store_id(profile_dir) if private else None,
         "deliverable_file_path": str(deliverable),
         "deliverable_filename": deliverable.name,
         "deliverable_file_size": observed["file_size"],
@@ -5881,13 +5904,18 @@ def _prepare_run_folder(
     job: dict, profile_dir: Path, *, run_id: int, register_folder, report_progress,
 ) -> Path:
     """Create/register a producing run folder and execute assigned retention."""
+    output_mode = job.get("downloads", {}).get("output_mode", "run_folders")
+    direct = output_mode == "direct_replace"
+    private_snapshot = output_mode == "private_snapshot"
     target = Path(job["downloads"]["target_folder"])
-    if not target.is_dir():
-        raise RuntimeError(f"Target folder does not exist: {target}")
-    direct = job.get("downloads", {}).get("output_mode", "run_folders") == "direct_replace"
-    storage_root = (
-        flow_publish.private_target_root(profile_dir, target) if direct else target
-    )
+    if private_snapshot:
+        storage_root = flow_publish.private_local_file_root(
+            profile_dir, (job.get("local_file") or {}).get("private_store_key") or "",
+        )
+    else:
+        if not target.is_dir():
+            raise RuntimeError(f"Target folder does not exist: {target}")
+        storage_root = flow_publish.private_target_root(profile_dir, target) if direct else target
     run_folder = flow_retention.create_run_folder(
         storage_root, run_id, job.get("flow", {}).get("id"),
     )
@@ -5900,6 +5928,8 @@ def _prepare_run_folder(
     report_progress("running", {
         "stage": "run_folder",
         "message": (
+            "Saving this file Flow's immutable source snapshot and normalized CSV in the private worker store."
+            if private_snapshot else
             f"Saving immutable artifacts for this run in the private worker store "
             f"before publishing direct files to {target}."
             if direct else
@@ -5998,6 +6028,145 @@ def execute_outlook_job(
     }, job, profile_dir)
     return [artifact], timings.finish(item_count=1), {
         "no_op": False, "source_receipt": receipt,
+    }
+
+
+def execute_local_file_job(
+    job: dict, report_progress, profile_dir: Path, *, run_id: int, register_folder,
+) -> tuple[list[dict], list[dict], dict]:
+    """Snapshot one configured file without ever modifying the source path."""
+    source = job.get("local_file") or {}
+    source_path = Path(str(source.get("path") or ""))
+    if not source_path.is_file():
+        raise RuntimeError(f"Configured source file does not exist or is not readable: {source_path}")
+    suffix = source_path.suffix.casefold()
+    expected_format = LOCAL_FILE_FORMAT_BY_EXTENSION.get(suffix)
+    if not expected_format:
+        raise RuntimeError(f"Configured source file has an unsupported extension: {source_path.name}")
+    worksheet = source.get("worksheet")
+    if expected_format == "csv" and worksheet is not None:
+        raise RuntimeError("CSV file jobs must not specify an Excel worksheet.")
+    if expected_format != "csv" and (worksheet is None or not str(worksheet).strip()):
+        raise RuntimeError("Excel file jobs must specify the exact worksheet name.")
+    normalized_path = flow_publish.normalize_target_path(source_path)
+    if normalized_path != source.get("normalized_path"):
+        raise RuntimeError("The local-file job path identity is malformed or incomplete.")
+
+    timings = _Timings()
+    report_progress("running", {
+        "stage": "local_file_snapshot",
+        "message": f"Reading and checksumming configured source file {source_path.name}.",
+    })
+    with timings.measure("local_file_snapshot", report_id=job.get("report", {}).get("id")):
+        snapshot = _stable_source_snapshot(source_path)
+    identity_payload = json.dumps(
+        {
+            "checksum": snapshot["checksum"],
+            "path": normalized_path,
+            "worksheet": worksheet,
+        },
+        ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    identity = hashlib.sha256(identity_payload).hexdigest()
+    previous_identity = source.get("previous_identity")
+    if identity == previous_identity and not source.get("force_reprocess"):
+        message = f"Source file {source_path.name} is unchanged; transformation and SQL were skipped."
+        report_progress("running", {
+            "stage": "local_file_no_op", "message": message, "no_op": True,
+        })
+        return [], timings.finish(item_count=0), {
+            "no_op": True, "reason": "already_processed", "message": message,
+        }
+
+    run_folder = _prepare_run_folder(
+        job, profile_dir, run_id=run_id, register_folder=register_folder,
+        report_progress=report_progress,
+    )
+    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
+    job["_runtime_bundle_count"] = 1
+    source_folder = run_folder / "source"
+    source_folder.mkdir()
+    if source_folder.is_symlink() or not source_folder.is_dir():
+        raise RuntimeError(f"Private source snapshot folder is not a regular directory: {source_folder}")
+    raw_output = _safe_output_path(source_folder, source_path.name)
+    report_progress("running", {
+        "stage": "local_file_copy",
+        "message": f"Copying verified source bytes for {source_path.name} into the private run store.",
+    })
+    with timings.measure("file_transfer", report_id=job.get("report", {}).get("id")):
+        copied = _copy_with_checksum(source_path, raw_output)
+        if copied != snapshot:
+            raise RuntimeError(
+                f"Configured source file changed while being copied: {source_path}. Try the run again."
+            )
+        _verify_copied_file(
+            raw_output, snapshot["file_size"], snapshot["checksum"],
+            label="Configured source file",
+        )
+    detected = _detect_download_format(raw_output)
+    if detected != expected_format:
+        raise RuntimeError(
+            f"Configured source {source_path.name} declares {expected_format} but its content looks like {detected}."
+        )
+    normalized_output = _safe_output_path(
+        run_folder, f"{source_path.stem}_normalized.csv",
+    )
+    report_progress("running", {
+        "stage": "file_normalization",
+        "message": f"Normalizing {source_path.name} into an immutable CSV artifact.",
+    })
+    with timings.measure("file_normalization", report_id=job.get("report", {}).get("id")):
+        if expected_format == "csv":
+            normalization = _normalize_csv(
+                raw_output, output=normalized_output,
+                preamble="none", strict_headers=True,
+            )
+        else:
+            normalization = _normalize_xlsx(
+                raw_output, normalized_output, requested_weeks=[],
+                header_mode="first_row", strict_headers=True,
+                workbook_format=expected_format, excel_trim="none",
+                worksheet_name=str(worksheet),
+            )
+    metadata = {**_csv_metadata(normalized_output), **normalization}
+    try:
+        modified_at_ns = source_path.stat().st_mtime_ns
+    except OSError:
+        modified_at_ns = None
+    receipt = {
+        "kind": "local_file",
+        "identity": identity,
+        "previous_identity": previous_identity,
+        "raw_checksum": snapshot["checksum"],
+        "normalized_path": normalized_path,
+        "worksheet": worksheet,
+        "config_revision": int(source.get("config_revision") or 0),
+        "file_size": snapshot["file_size"],
+        "modified_at_ns": modified_at_ns,
+    }
+    raw_artifact = _decorate_artifact_storage({
+        "period_key": None, "export_view": None,
+        "bundle_index": 1, "bundle_count": 1,
+        "status": "source_snapshot", "source_receipt": receipt,
+        "file_path": str(raw_output), "filename": raw_output.name,
+        "file_size": snapshot["file_size"], "checksum": snapshot["checksum"],
+        "row_count": None, "detected_format": detected,
+    }, job, profile_dir)
+    normalized_artifact = _decorate_artifact_storage({
+        "period_key": None, "export_view": None,
+        "bundle_index": 1, "bundle_count": 1,
+        "status": "saved", "source_receipt": receipt,
+        "original_file_path": str(raw_output),
+        "original_filename": raw_output.name,
+        "original_file_size": snapshot["file_size"],
+        "detected_format": detected,
+        "file_path": str(normalized_output), "filename": normalized_output.name,
+        **metadata,
+    }, job, profile_dir)
+    return [raw_artifact, normalized_artifact], timings.finish(item_count=1), {
+        "no_op": False,
+        "source_receipt": receipt,
+        "sql_artifacts": [normalized_artifact],
     }
 
 
@@ -6697,7 +6866,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER, LOCAL_FILE_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
         }
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
@@ -6802,6 +6971,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                 sql_result = None
                 source_receipt = None
                 no_op = False
+                source_outcome = {}
 
                 def progress(status: str, detail: dict, artifacts: list | None = None,
                              timings: list | None = None, error: str | None = None,
@@ -6869,7 +7039,10 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                                 + ", ".join(invalid[:10])
                             )
                         artifacts = sql_artifacts
-                        source_receipt = run["job"].get("outlook_source_receipt")
+                        source_receipt = (
+                            run["job"].get("source_receipt")
+                            or run["job"].get("outlook_source_receipt")
+                        )
                         timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
                         progress(
                             "running",
@@ -6883,6 +7056,23 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             },
                             artifacts, timings,
                         )
+                    elif (
+                        (run["job"].get("flow", {}).get("source_type") or "portal") == "file"
+                        or bool((run["job"].get("local_file") or {}).get("enabled"))
+                    ):
+                        if (
+                            (run["job"].get("flow", {}).get("source_type") or "portal") != "file"
+                            or run["job"].get("schema_version") != 3
+                            or not (run["job"].get("local_file") or {}).get("enabled")
+                        ):
+                            raise RuntimeError("Local-file job payload is malformed or uses an unsupported schema version.")
+                        artifacts, timings, source_outcome = execute_local_file_job(
+                            run["job"], progress, profile_dir,
+                            run_id=run_id, register_folder=register_folder,
+                        )
+                        no_op = bool(source_outcome.get("no_op"))
+                        source_receipt = source_outcome.get("source_receipt")
+                        sql_artifacts = source_outcome.get("sql_artifacts") or []
                     elif (run["job"].get("outlook_source") or {}).get("enabled"):
                         artifacts, timings, outlook_outcome = execute_outlook_job(
                             run["job"], progress, profile_dir,
@@ -6890,8 +7080,11 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         )
                         no_op = bool(outlook_outcome.get("no_op"))
                         source_receipt = outlook_outcome.get("source_receipt")
+                        source_outcome = outlook_outcome
                         sql_artifacts = artifacts
                     else:
+                        if (run["job"].get("flow", {}).get("source_type") or "portal") != "portal":
+                            raise RuntimeError("Flow job names an unsupported source type.")
                         # Share the artifact list so a mid-bundle failure still
                         # reports every file saved before the error - the final
                         # failed progress post below sends this same list.
@@ -6907,18 +7100,19 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             run["job"], artifacts, run_id=run_id,
                             report_progress=progress,
                         )
-                        sql_artifacts = artifacts
+                        if (run["job"].get("flow", {}).get("source_type") or "portal") != "file":
+                            sql_artifacts = artifacts
                     if (
                         not sql_only and not no_op
                         and run["job"].get("transformation", {}).get("enabled")
                     ):
                         progress(
                             "running",
-                            {"stage": "transformation", "message": f"Transforming {len(artifacts)} downloaded file(s)."},
+                            {"stage": "transformation", "message": f"Transforming {len(sql_artifacts)} normalized file(s)."},
                             artifacts, timings,
                         )
                         transformation_started = time.perf_counter()
-                        sql_artifacts = _run_transformations(artifacts, run["job"]["transformation"])
+                        sql_artifacts = _run_transformations(sql_artifacts, run["job"]["transformation"])
                         timings.insert(max(0, len(timings) - 1), {
                             "phase": "transformation",
                             "duration_ms": round((time.perf_counter() - transformation_started) * 1000),
@@ -6978,7 +7172,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             "stage": "complete",
                             "no_op": no_op,
                             "message": (
-                                outlook_outcome.get("message", "No new qualifying Outlook attachment was found.")
+                                source_outcome.get("message", "The configured source is unchanged.")
                                 if no_op
                                 else f"SQL-only retry committed {sql_result['rows_written']} row(s) from {sql_result['files_loaded']} saved file(s)."
                                 if sql_only

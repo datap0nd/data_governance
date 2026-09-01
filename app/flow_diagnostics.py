@@ -386,7 +386,7 @@ def build_flow_diagnostics(
         report_sources = list(report_sources)
 
     flow_rows = db.execute(
-        """SELECT id, name, browser_mode, enabled, target_folder, output_mode,
+        """SELECT id, name, source_type, browser_mode, enabled, target_folder, output_mode,
                   filename_template, sql_handoff_enabled,
                   sql_database, sql_schema, sql_table, sql_target_source_id,
                   updated_at, last_run_at, last_success_at, last_status, last_error
@@ -399,10 +399,17 @@ def build_flow_diagnostics(
     for row in flow_rows:
         flow = dict(row)
         sql_target = bool(flow.get("sql_handoff_enabled"))
-        target_kind = "postgresql" if sql_target else "file"
+        private_snapshot = not sql_target and flow.get("output_mode") == "private_snapshot"
+        target_kind = "postgresql" if sql_target else "private_snapshot" if private_snapshot else "file"
         if sql_target:
             target = _target(flow, server)
             inspection = inspect_flow_target(db, flow, server=server)
+        elif private_snapshot:
+            target = {"storage_scope": "worker_private"}
+            inspection = {
+                "status": "not_applicable", "reason_code": "private_snapshot",
+                "matches": [], "persisted_source_id": None, "effective_source_id": None,
+            }
         else:
             inspection = inspect_file_flow_target(
                 db,
@@ -428,7 +435,11 @@ def build_flow_diagnostics(
         executable = included
         candidate_ids = list(exact_ids)
 
-        if not sql_target and confirmed_in_report:
+        if private_snapshot:
+            reason_code = "private_snapshot"
+            severity = "none"
+            scope_status = "not_applicable"
+        elif not sql_target and confirmed_in_report:
             reason_code = "file_output_candidate"
             severity = "warning"
             scope_status = "candidate_in_report"

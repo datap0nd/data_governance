@@ -575,7 +575,7 @@ h2 {
 .flow-weekdays label { color: var(--text-muted); font-size: 0.75rem; font-weight: 500; }
 
 .flow-builder-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-xl); }
-.flow-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); }
+.flow-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-md); }
 .flow-source-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: 132px; padding: 22px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
 .flow-source-card:hover:not(:disabled), .flow-source-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
 .flow-source-card strong { font-size: 1.05rem; }

@@ -14,11 +14,13 @@ import json
 import ntpath
 import os
 import socket
+import uuid
 from pathlib import Path
 from typing import Iterable
 
 
 TARGET_MARKER = ".metronome_target.json"
+LOCAL_FILE_STORAGE_PREFIX = "metronome-private://local-file/"
 PUBLISH_PREFIX = ".metronome-publish-"
 JOURNAL_SUFFIX = ".json"
 
@@ -77,6 +79,26 @@ def private_target_root(profile_dir: Path, target: Path) -> Path:
         with marker.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(expected, sort_keys=True))
     return root
+
+
+def new_local_file_storage_key() -> str:
+    """Return one opaque, non-filesystem key for a file Flow's private store."""
+    return f"{LOCAL_FILE_STORAGE_PREFIX}{uuid.uuid4()}"
+
+
+def private_local_file_root(profile_dir: Path, storage_key: str) -> Path:
+    """Validate a file Flow's opaque key and reuse the owned target store."""
+    raw = str(storage_key or "")
+    if not raw.startswith(LOCAL_FILE_STORAGE_PREFIX):
+        raise RuntimeError("The local-file Flow private storage key is invalid.")
+    value = raw[len(LOCAL_FILE_STORAGE_PREFIX):]
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as exc:
+        raise RuntimeError("The local-file Flow private storage key is invalid.") from exc
+    if value != str(parsed) or parsed.version != 4:
+        raise RuntimeError("The local-file Flow private storage key is invalid.")
+    return private_target_root(profile_dir, Path(raw))
 
 
 def read_size_checksum(path: Path) -> dict:

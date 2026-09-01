@@ -361,7 +361,7 @@ def _flow_job_server_identity(target: dict) -> str:
 def _flow_target_key_for_id(db, flow_id: int | str) -> str | None:
     row = db.execute(
         """SELECT sql_handoff_enabled, sql_database, sql_schema, sql_table,
-                  target_folder, filename_template
+                   target_folder, filename_template, output_mode
            FROM flows WHERE id=?""",
         (flow_id,),
     ).fetchone()
@@ -371,6 +371,8 @@ def _flow_target_key_for_id(db, flow_id: int | str) -> str | None:
         return _flow_target_resource_key(
             database=row["sql_database"], schema=row["sql_schema"], relation=row["sql_table"]
         )
+    if row["output_mode"] == "private_snapshot":
+        return None
     return _file_flow_target_resource_key(row)
 
 
@@ -392,6 +394,8 @@ def flow_target_resource_key_from_job(job_or_json) -> str | None:
             relation=target.get("table"),
         )
     downloads = job.get("downloads") or {}
+    if downloads.get("output_mode") == "private_snapshot":
+        return None
     return _file_flow_target_resource_key({
         "target_folder": downloads.get("target_folder"),
         "filename_template": downloads.get("filename_template"),
