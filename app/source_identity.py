@@ -602,6 +602,11 @@ def reconcile_flow_target(db, flow_id: int, *, server: str) -> dict:
                    WHERE id=? AND (sql_target_source_id IS NULL OR sql_target_source_id<>?)""",
                 (effective_source_id, int(flow_id), effective_source_id),
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(sources)").fetchall()}
+            if "freshness_mode" in columns:
+                from app.freshness_inheritance import reconcile_source
+                for source_id in {inspected["persisted_source_id"], effective_source_id} - {None}:
+                    reconcile_source(db, int(source_id))
         return {
             "status": "confirmed",
             "source_id": int(effective_source_id),
@@ -638,6 +643,10 @@ def reconcile_all_flow_targets(db, *, server: str) -> dict:
             counts["changed"] += 1
         status = result["status"]
         counts[status] = counts.get(status, 0) + 1
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(sources)").fetchall()}
+    if "freshness_mode" in columns:
+        from app.freshness_inheritance import reconcile_all_sources
+        reconcile_all_sources(db)
     return counts
 
 

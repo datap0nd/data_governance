@@ -1,11 +1,21 @@
 import os
 from pathlib import Path
 
+try:
+    from tzlocal import get_localzone_name
+except ImportError:  # pragma: no cover - dependency is declared for installs
+    get_localzone_name = lambda: "UTC"
+
 # Base directory of the app
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SQLite database file (the app's own database, not production)
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
+
+# Flow schedules are wall-clock values in one named timezone.  Persisted
+# monitoring timestamps are UTC, so changing this setting does not reinterpret
+# new evidence; it only changes future schedule occurrences.
+FLOW_TIMEZONE = os.environ.get("DG_FLOW_TIMEZONE", "").strip() or get_localzone_name()
 
 # Folder where .pbix reports live (or TMDL exports as fallback)
 _report_root_env = (

@@ -6,6 +6,7 @@ from app.flow_diagnostics import (
     included_flow_ids,
     legacy_flow_suggestions as build_legacy_flow_suggestions,
 )
+from app.freshness_inheritance import source_freshness_payload
 from app.models import LineageEdge
 from app.source_identity import postgres_server_identity
 
@@ -160,6 +161,11 @@ def get_lineage_diagram(report_id: int):
                 SELECT s.id, s.name, s.type, s.owner, s.upstream_id, s.connection_info,
                        s.refresh_schedule, s.custom_fresh_days,
                        s.freshness_rule_type, s.freshness_schedule_days,
+                       s.freshness_mode, s.freshness_schedule_time,
+                       s.freshness_schedule_day, s.freshness_timezone,
+                       s.freshness_rule_origin, s.freshness_rule_status,
+                       s.freshness_producer_flow_ids, s.freshness_conflicts_json,
+                       s.freshness_warnings_json, s.freshness_effective_from_at,
                        spi.server_name, spi.database_name, spi.schema_name,
                        spi.relation_name, spi.relation_kind, spi.verified_at,
                        sp.status, CAST(sp.last_data_at AS TEXT) AS last_data_at,
@@ -189,6 +195,7 @@ def get_lineage_diagram(report_id: int):
                     "custom_fresh_days": r["custom_fresh_days"],
                     "freshness_rule_type": r["freshness_rule_type"],
                     "freshness_schedule_days": r["freshness_schedule_days"],
+                    "freshness": source_freshness_payload(r),
                     "postgres_identity": (
                         {
                             "server": r["server_name"], "database": r["database_name"],
@@ -226,6 +233,9 @@ def get_lineage_diagram(report_id: int):
                        s.custom_fresh_days AS depends_on_custom_fresh_days,
                        s.freshness_rule_type AS depends_on_freshness_rule_type,
                        s.freshness_schedule_days AS depends_on_freshness_schedule_days,
+                       s.freshness_mode AS depends_on_freshness_mode,
+                       s.freshness_rule_origin AS depends_on_freshness_origin,
+                       s.freshness_rule_status AS depends_on_freshness_status,
                        sp.status AS depends_on_status,
                        CAST(sp.last_data_at AS TEXT) AS depends_on_last_data_at,
                        sp.row_count AS depends_on_row_count
@@ -248,6 +258,9 @@ def get_lineage_diagram(report_id: int):
                     "depends_on_custom_fresh_days": r["depends_on_custom_fresh_days"],
                     "depends_on_freshness_rule_type": r["depends_on_freshness_rule_type"],
                     "depends_on_freshness_schedule_days": r["depends_on_freshness_schedule_days"],
+                    "depends_on_freshness_mode": r["depends_on_freshness_mode"],
+                    "depends_on_freshness_origin": r["depends_on_freshness_origin"],
+                    "depends_on_freshness_status": r["depends_on_freshness_status"],
                     "depends_on_status": r["depends_on_status"] or "unknown",
                     "depends_on_last_data_at": r["depends_on_last_data_at"],
                     "depends_on_row_count": r["depends_on_row_count"],

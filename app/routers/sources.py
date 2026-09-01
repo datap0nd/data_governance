@@ -6,6 +6,13 @@ from app.routers.eventlog import log_event, get_actor
 from app.models import SourceOut, SourceUpdate, FreshnessRuleRequest
 from app.usage import get_source_usage_map, sync_usage_from_csv_if_configured
 from app.asset_visibility import get_active_source_ids
+from app.config import FLOW_TIMEZONE
+from app.freshness_inheritance import (
+    reconcile_all_sources,
+    reconcile_source,
+    source_freshness_payload,
+    upsert_schedule_evidence,
+)
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -57,6 +64,11 @@ def _source_out_from_row(r, usage: dict | None = None) -> SourceOut:
         custom_fresh_days=custom_days,
         freshness_rule_type=rule_type,
         freshness_schedule_days=_row_value(r, "freshness_schedule_days"),
+        freshness_mode=_row_value(r, "freshness_mode") or "inherit",
+        freshness_schedule_time=_row_value(r, "freshness_schedule_time"),
+        freshness_schedule_day=_row_value(r, "freshness_schedule_day"),
+        freshness_timezone=_row_value(r, "freshness_timezone") or FLOW_TIMEZONE,
+        freshness=source_freshness_payload(r),
         upstream_id=_row_value(r, "upstream_id"),
         upstream_name=_row_value(r, "upstream_name"),
         upstream_refresh_day=_row_value(r, "upstream_refresh_day"),
@@ -113,11 +125,7 @@ def _recalculate_latest_probe_status(db, source_id: int) -> str | None:
     """Apply a changed rule to existing probe evidence immediately."""
     from app.scanner.prober import _compute_status_for_rule, _rule_for_source
 
-    source = db.execute(
-        """SELECT custom_fresh_days, freshness_rule_type, freshness_schedule_days
-           FROM sources WHERE id = ?""",
-        (source_id,),
-    ).fetchone()
+    source = db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
     probe = db.execute(
         """SELECT id, CAST(last_data_at AS TEXT) AS last_data_at
            FROM source_probes WHERE source_id = ?
@@ -353,60 +361,22 @@ def auto_assign_source_owners(request: Request):
 
 @router.post("/auto-set-freshness-rules")
 def auto_set_source_freshness_rules(request: Request):
-    """Fill only missing freshness rules from explicit source schedules."""
+    """Compatibility alias for managed freshness reconciliation.
+
+    This endpoint deliberately never changes ownership mode.  In particular,
+    it cannot convert inherited rules into manual rules.
+    """
     actor = get_actor(request)
     with get_db() as db:
         active_source_ids = get_active_source_ids(db)
-        candidates = db.execute(
-            """SELECT id, name, refresh_schedule
-               FROM sources
-               WHERE COALESCE(archived, 0) = 0
-                 AND COALESCE(trim(freshness_rule_type), '') = ''
-                 AND COALESCE(custom_fresh_days, 0) = 0
-                 AND COALESCE(trim(freshness_schedule_days), '') = ''
-               ORDER BY id"""
-        ).fetchall()
-        candidates = [source for source in candidates if source["id"] in active_source_ids]
-        configured = []
-        skipped = 0
-        for source in candidates:
-            rule = _freshness_rule_from_schedule(source["refresh_schedule"])
-            if not rule:
-                skipped += 1
-                continue
-            schedule_days = ",".join(rule["refresh_days"]) or None
-            cursor = db.execute(
-                """UPDATE sources
-                   SET freshness_rule_type = ?,
-                       custom_fresh_days = ?,
-                       freshness_schedule_days = ?,
-                       updated_at = CURRENT_TIMESTAMP
-                   WHERE id = ?
-                     AND COALESCE(trim(freshness_rule_type), '') = ''
-                     AND COALESCE(custom_fresh_days, 0) = 0
-                     AND COALESCE(trim(freshness_schedule_days), '') = ''""",
-                (rule["rule_type"], rule["fresh_days"], schedule_days, source["id"]),
-            )
-            if not cursor.rowcount:
-                continue
-            recalculated_status = _recalculate_latest_probe_status(db, source["id"])
-            rule_label = "daily" if rule["rule_type"] == "daily" else schedule_days
-            detail = f"set {rule_label} from source refresh schedule: {source['refresh_schedule']}; requested_by={actor}"
-            log_event(db, "source", source["id"], source["name"], "freshness_rule_auto_set", detail, "System")
-            configured.append({
-                "source_id": source["id"],
-                "source_name": source["name"],
-                "rule_type": rule["rule_type"],
-                "refresh_days": rule["refresh_days"],
-                "source_schedule": source["refresh_schedule"],
-                "status": recalculated_status,
-            })
-
-    return {
-        "configured": len(configured),
-        "skipped_unsupported_schedule": skipped,
-        "rules": configured,
-    }
+        counts = reconcile_all_sources(
+            db, source_ids=sorted(active_source_ids), recalculate_probes=True,
+        )
+        log_event(
+            db, "source_freshness", None, "Source freshness", "reconciled",
+            f"{counts}; requested_by={actor}", "System",
+        )
+    return {**counts, "configured": counts["changed"], "rules": []}
 
 
 @router.get("/{source_id}", response_model=SourceOut)
@@ -447,7 +417,7 @@ def get_source(source_id: int):
 @router.patch("/{source_id}", response_model=SourceOut)
 def update_source(source_id: int, update: SourceUpdate, request: Request):
     with get_db() as db:
-        existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
+        existing = db.execute("SELECT id, refresh_schedule FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Source not found")
 
@@ -465,6 +435,21 @@ def update_source(source_id: int, update: SourceUpdate, request: Request):
             )
             changed = ", ".join(k for k in update.model_dump(exclude_unset=True))
             log_event(db, "source", source_id, None, "updated", changed, get_actor(request))
+            if "refresh_schedule" in update.model_dump(exclude_unset=True):
+                refresh = str(update.refresh_schedule or "").strip()
+                if refresh:
+                    upsert_schedule_evidence(
+                        db, source_id=source_id, origin="legacy_unknown", external_id="legacy",
+                        expression=refresh, timezone_name=FLOW_TIMEZONE, active=True,
+                        authoritative=False,
+                    )
+                else:
+                    db.execute(
+                        """UPDATE source_schedule_evidence SET active=0
+                           WHERE source_id=? AND origin='legacy_unknown'""",
+                        (source_id,),
+                    )
+                reconcile_source(db, source_id, recalculate_probe=True)
 
     return get_source(source_id)
 
@@ -500,9 +485,35 @@ def get_source_probes(source_id: int):
 @router.put("/{source_id}/freshness-rule")
 def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Request):
     """Set a freshness rule for a source."""
+    requested_mode = str(body.mode or "manual").strip().casefold()
+    if requested_mode in {"none", "disabled"}:
+        requested_mode = "disabled"
+    if requested_mode not in {"manual", "inherit", "disabled"}:
+        raise HTTPException(status_code=400, detail="mode must be manual, inherit, or none")
+
+    if requested_mode in {"inherit", "disabled"}:
+        with get_db() as db:
+            existing = db.execute("SELECT id FROM sources WHERE id=?", (source_id,)).fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Source not found")
+            db.execute(
+                """UPDATE sources SET freshness_mode=?, freshness_rule_type=NULL,
+                   custom_fresh_days=NULL, freshness_schedule_days=NULL,
+                   freshness_schedule_time=NULL, freshness_schedule_day=NULL,
+                   freshness_timezone=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                (requested_mode, source_id),
+            )
+            result = reconcile_source(db, source_id, recalculate_probe=True)
+            log_event(
+                db, "source", source_id, None,
+                "freshness_rule_inherit" if requested_mode == "inherit" else "freshness_rule_reset",
+                f"mode={requested_mode}", get_actor(request),
+            )
+        return {"status": "ok", "mode": requested_mode, "freshness_status": result["status"]}
+
     rule_type = (body.rule_type or ("custom" if body.fresh_days is not None else "")).strip().lower()
-    if rule_type not in {"custom", "daily", "fixed"}:
-        raise HTTPException(status_code=400, detail="rule_type must be custom, daily, or fixed")
+    if rule_type not in {"custom", "daily", "fixed", "monthly"}:
+        raise HTTPException(status_code=400, detail="rule_type must be custom, daily, fixed, or monthly")
 
     fresh_days = None
     schedule_days = None
@@ -524,6 +535,13 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Requ
         if not days:
             raise HTTPException(status_code=400, detail="Choose at least one refresh day")
         schedule_days = ",".join(days)
+    elif rule_type == "monthly":
+        if body.month_day is None or not 1 <= body.month_day <= 31:
+            raise HTTPException(status_code=400, detail="month_day must be from 1 to 31")
+
+    refresh_time = str(body.refresh_time or "").strip() or None
+    if refresh_time and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", refresh_time):
+        raise HTTPException(status_code=400, detail="refresh_time must use HH:MM")
 
     with get_db() as db:
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
@@ -531,12 +549,22 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Requ
             raise HTTPException(status_code=404, detail="Source not found")
         db.execute(
             """UPDATE sources
-               SET freshness_rule_type = ?,
+               SET freshness_mode='manual', freshness_rule_type = ?,
                    custom_fresh_days = ?,
                    freshness_schedule_days = ?,
+                   freshness_schedule_time = ?,
+                   freshness_schedule_day = ?,
+                   freshness_timezone = ?,
+                   freshness_rule_origin='manual', freshness_rule_status='manual',
+                   freshness_producer_flow_ids='[]', freshness_conflicts_json='[]',
+                   freshness_warnings_json='[]', freshness_effective_from_at=NULL,
                    updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
-            (rule_type, fresh_days, schedule_days, source_id),
+            (
+                rule_type, fresh_days, schedule_days, refresh_time,
+                body.month_day if rule_type == "monthly" else None,
+                body.timezone or FLOW_TIMEZONE, source_id,
+            ),
         )
         recalculated_status = _recalculate_latest_probe_status(db, source_id)
         detail = f"type={rule_type}"
@@ -545,26 +573,36 @@ def set_freshness_rule(source_id: int, body: FreshnessRuleRequest, request: Requ
         if schedule_days:
             detail += f", refresh_days={schedule_days}"
         log_event(db, "source", source_id, None, "freshness_rule_set", detail, get_actor(request))
-    return {"status": "ok", "rule_type": rule_type, "fresh_days": fresh_days, "refresh_days": schedule_days, "source_status": recalculated_status}
+    return {
+        "status": "ok", "mode": "manual", "rule_type": rule_type,
+        "fresh_days": fresh_days, "refresh_days": schedule_days,
+        "refresh_time": refresh_time,
+        "month_day": body.month_day if rule_type == "monthly" else None,
+        "source_status": recalculated_status,
+    }
 
 
 @router.delete("/{source_id}/freshness-rule")
 def delete_freshness_rule(source_id: int, request: Request):
-    """Reset freshness thresholds to global defaults."""
+    """Explicitly disable freshness monitoring for this Source."""
     with get_db() as db:
         existing = db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Source not found")
         cols = {r["name"] for r in db.execute("PRAGMA table_info(sources)").fetchall()}
-        fields = ["custom_fresh_days = NULL", "updated_at = CURRENT_TIMESTAMP"]
+        fields = ["custom_fresh_days = NULL", "freshness_mode = 'disabled'", "updated_at = CURRENT_TIMESTAMP"]
         if "freshness_rule_type" in cols:
             fields.append("freshness_rule_type = NULL")
         if "freshness_schedule_days" in cols:
             fields.append("freshness_schedule_days = NULL")
+        for column in ("freshness_schedule_time", "freshness_schedule_day", "freshness_timezone"):
+            if column in cols:
+                fields.append(f"{column} = NULL")
         db.execute(
             f"UPDATE sources SET {', '.join(fields)} WHERE id = ?",
             (source_id,),
         )
-        recalculated_status = _recalculate_latest_probe_status(db, source_id)
+        result = reconcile_source(db, source_id, recalculate_probe=True)
+        recalculated_status = "no_rule" if result["status"] == "disabled" else _recalculate_latest_probe_status(db, source_id)
         log_event(db, "source", source_id, None, "freshness_rule_reset", None, get_actor(request))
-    return {"status": "ok", "fresh_days": None, "source_status": recalculated_status}
+    return {"status": "ok", "mode": "disabled", "fresh_days": None, "source_status": recalculated_status}

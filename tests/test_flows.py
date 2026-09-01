@@ -1888,6 +1888,8 @@ def test_inactive_scheduled_flow_has_no_next_run(flow_db):
     saved = flows.create_flow(_flow(site["id"], report["id"], enabled=False), _request())
     assert saved["schedule_type"] == "weekly"
     assert saved["next_run_at"] is None
+    assert saved["freshness_rule"]["type"] == "weekly"
+    assert saved["freshness_health"]["status"] == "paused"
 
 
 def test_manual_flow_cannot_be_activated(flow_db):
@@ -1900,6 +1902,8 @@ def test_manual_flow_cannot_be_activated(flow_db):
         ),
         _request(),
     )
+    assert saved["freshness_rule"] is None
+    assert saved["freshness_health"]["status"] == "not_monitored"
     with pytest.raises(HTTPException, match="daily, weekly, or monthly"):
         flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=True), _request())
 
@@ -3753,6 +3757,21 @@ def test_terminal_run_can_retry_sql_without_browser_or_download(flow_db, tmp_pat
     with database.get_db() as db:
         row = db.execute("SELECT trigger_type, status FROM flow_runs WHERE id=?", (retried["id"],)).fetchone()
     assert dict(row) == {"trigger_type": "sql_retry", "status": "queued"}
+
+    worker = flows.WorkerRegister(
+        worker_id="sql-retry-worker", display_name="SQL retry worker", capabilities={},
+    )
+    flows.register_worker(worker)
+    claimed = flows.claim_run(worker.worker_id)
+    assert claimed["run"]["id"] == retried["id"]
+    flows.update_run(
+        worker.worker_id, retried["id"], flows.WorkerProgress(status="succeeded"),
+    )
+    with database.get_db() as db:
+        execution_success = db.execute(
+            "SELECT last_execution_success_at FROM flows WHERE id=?", (saved["id"],),
+        ).fetchone()["last_execution_success_at"]
+    assert execution_success is None
 
 
 def test_sql_retry_uses_saved_target_for_cross_flow_collision(

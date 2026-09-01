@@ -21,6 +21,11 @@ class SourceOut(BaseModel):
     custom_fresh_days: int | None = None
     freshness_rule_type: str | None = None
     freshness_schedule_days: str | None = None
+    freshness_mode: str = "inherit"
+    freshness_schedule_time: str | None = None
+    freshness_schedule_day: int | None = None
+    freshness_timezone: str | None = None
+    freshness: dict | None = None
     upstream_id: int | None = None
     upstream_name: str | None = None
     upstream_refresh_day: str | None = None
@@ -33,9 +38,13 @@ class SourceOut(BaseModel):
 
 
 class FreshnessRuleRequest(BaseModel):
+    mode: str | None = None
     rule_type: str | None = None
     fresh_days: int | None = None
     refresh_days: list[str] | None = None
+    refresh_time: str | None = None
+    month_day: int | None = None
+    timezone: str | None = None
 
 
 class SourceUpdate(BaseModel):

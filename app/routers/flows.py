@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import calendar
 import copy
 import html
 import json
@@ -11,7 +10,7 @@ import ntpath
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -28,6 +27,16 @@ from app.flow_asap_exports import (
 )
 from app.flow_outlook import SUPPORTED_ATTACHMENT_EXTENSIONS
 from app.flow_publish import normalize_target_path
+from app.freshness import (
+    flow_freshness,
+    host_timezone,
+    iso_utc,
+    localize_wall_time,
+    next_occurrence,
+    rule_key,
+    schedule_rule,
+    utc_now,
+)
 from app.flow_retention import RUN_FOLDER_KEEP, tombstone_name as retention_tombstone_name
 from app.flow_local_runner import (
     HEADED_WORKER_ID, WORKER_ID as LOCAL_WORKER_ID, launch_local_worker, stop_local_worker,
@@ -491,44 +500,12 @@ def _schedule_next(
     schedule_type: str, schedule_time: str | None, schedule_days: list[str],
     schedule_day: int | None = None,
 ) -> datetime | None:
-    if schedule_type == "manual":
+    rule = schedule_rule(schedule_type, schedule_time, schedule_days, schedule_day)
+    if rule is None:
         return None
-    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time or ""):
-        raise ValueError("Scheduled flows need a valid HH:MM time.")
-    hour, minute = (int(part) for part in schedule_time.split(":"))
-    now = _now()
-    if schedule_type == "daily":
-        candidate = now.replace(hour=hour, minute=minute, second=0)
-        return candidate if candidate > now else candidate + timedelta(days=1)
-    if schedule_type == "monthly":
-        if not isinstance(schedule_day, int) or not 1 <= schedule_day <= 31:
-            raise ValueError("Monthly flows need a day of month from 1 to 31.")
-        year, month = now.year, now.month
-        for _ in range(24):
-            if schedule_day <= calendar.monthrange(year, month)[1]:
-                candidate = datetime(year, month, schedule_day, hour, minute)
-                if candidate > now:
-                    return candidate
-            month += 1
-            if month == 13:
-                month = 1
-                year += 1
-        raise ValueError("Could not calculate the next monthly run.")
-    day_numbers = {
-        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-        "friday": 4, "saturday": 5, "sunday": 6,
-    }
-    selected = {day_numbers[day] for day in schedule_days if day in day_numbers}
-    if not selected:
-        raise ValueError("Weekly flows need at least one weekday.")
-    for offset in range(8):
-        date = now.date() + timedelta(days=offset)
-        if date.weekday() not in selected:
-            continue
-        candidate = datetime.combine(date, datetime.min.time()).replace(hour=hour, minute=minute)
-        if candidate > now:
-            return candidate
-    raise ValueError("Could not calculate the next run.")
+    zone = host_timezone()
+    after = localize_wall_time(_now(), zone).astimezone(timezone.utc)
+    return next_occurrence(rule, after=after).astimezone(zone).replace(tzinfo=None)
 
 
 def _next_weekly_scan(weekday: str, time_value: str, now: datetime | None = None) -> datetime:
@@ -1051,6 +1028,9 @@ def _flow_out(db, flow_id: int) -> dict:
     result["export_views"] = _loads(result.pop("export_views_json", None), [])
     result["download_links"] = _loads(result.pop("download_links_json", None), [])
     result["schedule_days"] = _loads(result.pop("schedule_days"), [])
+    freshness_rule, freshness_health = flow_freshness(row)
+    result["freshness_rule"] = freshness_rule
+    result["freshness_health"] = freshness_health
     link = flow_link_status(db, row, server=_flow_server_identity())
     # Keep persisted diagnostic evidence separate from the exact target a
     # preview or run may safely use.
@@ -2430,8 +2410,9 @@ def create_flow(body: FlowWrite, request: Request):
                     export_views_json, download_links_json, enabled, selections_json, download_mode, period_strategy, window_weeks, file_format, asap_download_type, export_report_title, export_filter_details, excel_trim, start_week, end_week,
                     browser_mode, target_folder, filename_template, output_mode, schedule_type, schedule_time, schedule_days, next_run_at,
                     schedule_day,
-                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_uppercase, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    transform_enabled, transform_script_path, sql_handoff_enabled, sql_mode, sql_uppercase, sql_database, sql_schema, sql_table, sql_target_source_id, owner_person_id, created_by, created_at, updated_at,
+                    freshness_effective_from_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.name, body.source_type, body.site_id, body.report_id,
                  body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
                  body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
@@ -2442,9 +2423,14 @@ def create_flow(body: FlowWrite, request: Request):
                  body.transform_enabled, body.transform_script_path,
                  body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
                  body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
-                 body.owner_person_id, get_actor(request), now, now),
+                 body.owner_person_id, get_actor(request), now, now,
+                 iso_utc(utc_now()) if body.enabled and body.schedule_type != "manual" else None),
             )
             flow_id = cursor.lastrowid
+            from app.freshness_inheritance import reconcile_file_binding, reconcile_source
+            reconcile_file_binding(db, flow_id, reconcile_sources=False)
+            if sql_target_source_id is not None:
+                reconcile_source(db, int(sql_target_source_id))
             log_event(db, "flow", flow_id, body.name, "created", f"sql_handoff={body.sql_handoff_enabled}", get_actor(request))
             return _flow_out(db, flow_id)
     except sqlite3.IntegrityError as exc:
@@ -2491,8 +2477,9 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
     )) if body.enabled else None
     with get_db() as db:
         existing = db.execute(
-            """SELECT source_type, sql_database, sql_schema, sql_table,
-                      sql_target_source_id
+            """SELECT source_type, enabled, schedule_type, schedule_time, schedule_days,
+                      schedule_day, freshness_effective_from_at,
+                      sql_database, sql_schema, sql_table, sql_target_source_id
                FROM flows WHERE id=?""",
             (flow_id,),
         ).fetchone()
@@ -2524,13 +2511,27 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
             body,
             preserve_invalid_source_id=preserve_invalid_source_id,
         )
+        old_rule = schedule_rule(
+            existing["schedule_type"], existing["schedule_time"],
+            _loads(existing["schedule_days"], []), existing["schedule_day"],
+        )
+        new_rule = schedule_rule(
+            body.schedule_type, body.schedule_time, body.schedule_days, body.schedule_day,
+        )
+        freshness_baseline = existing["freshness_effective_from_at"]
+        if body.enabled and (
+            not existing["enabled"]
+            or rule_key(old_rule) != rule_key(new_rule)
+            or not freshness_baseline
+        ):
+            freshness_baseline = iso_utc(utc_now())
         cursor = db.execute(
             """UPDATE flows SET name=?, source_type=?, site_id=?, report_id=?, outlook_subject_contains=?,
                export_views_json=?, download_links_json=?, enabled=?, selections_json=?,
                download_mode=?, period_strategy=?, window_weeks=?, file_format=?, asap_download_type=?, export_report_title=?, export_filter_details=?, excel_trim=?, start_week=?, end_week=?, browser_mode=?, target_folder=?, filename_template=?, output_mode=?,
                schedule_type=?, schedule_time=?, schedule_days=?, schedule_day=?, next_run_at=?,
                transform_enabled=?, transform_script_path=?,
-               sql_handoff_enabled=?, sql_mode=?, sql_uppercase=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=? WHERE id=?""",
+               sql_handoff_enabled=?, sql_mode=?, sql_uppercase=?, sql_database=?, sql_schema=?, sql_table=?, sql_target_source_id=?, owner_person_id=?, updated_at=?, freshness_effective_from_at=? WHERE id=?""",
             (body.name, body.source_type, body.site_id, body.report_id,
              body.outlook_subject_contains, _json(body.export_views), _json(body.download_links), body.enabled, _json(body.selections),
              body.download_mode, body.period_strategy, body.window_weeks, body.file_format,
@@ -2541,10 +2542,14 @@ def update_flow(flow_id: int, body: FlowWrite, request: Request):
              body.transform_enabled, body.transform_script_path,
              body.sql_handoff_enabled, body.sql_mode, body.sql_uppercase,
              body.sql_database, body.sql_schema, body.sql_table, sql_target_source_id,
-             body.owner_person_id, now, flow_id),
+             body.owner_person_id, now, freshness_baseline, flow_id),
         )
         if not cursor.rowcount:
             raise HTTPException(404, "Flow not found.")
+        from app.freshness_inheritance import reconcile_file_binding, reconcile_source
+        reconcile_file_binding(db, flow_id)
+        for source_id in {existing["sql_target_source_id"], sql_target_source_id} - {None}:
+            reconcile_source(db, int(source_id))
         log_event(db, "flow", flow_id, body.name, "updated", actor=get_actor(request))
         return _flow_out(db, flow_id)
 
@@ -2567,10 +2572,24 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             ))
             if body.enabled else None
         )
+        baseline = iso_utc(utc_now()) if body.enabled else flow["freshness_effective_from_at"]
         db.execute(
-            "UPDATE flows SET enabled=?, next_run_at=?, updated_at=? WHERE id=?",
-            (body.enabled, next_run, now, flow_id),
+            """UPDATE flows SET enabled=?, next_run_at=?,
+               freshness_effective_from_at=?, updated_at=? WHERE id=?""",
+            (body.enabled, next_run, baseline, now, flow_id),
         )
+        from app.freshness_inheritance import reconcile_source
+        linked_source_ids = {
+            int(row["source_id"])
+            for row in db.execute(
+                "SELECT source_id FROM flow_file_source_bindings WHERE flow_id=? AND active=1",
+                (flow_id,),
+            ).fetchall()
+        }
+        if flow["sql_target_source_id"] is not None:
+            linked_source_ids.add(int(flow["sql_target_source_id"]))
+        for source_id in linked_source_ids:
+            reconcile_source(db, source_id)
         log_event(
             db, "flow", flow_id, flow["name"],
             "activated" if body.enabled else "deactivated", actor=get_actor(request),
@@ -4555,10 +4574,16 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
         )
         if body.progress.get("stage") == "publish_complete":
             _record_publish_name_drift(db, row, stored_artifacts, now)
+        execution_success_at = (
+            iso_utc(utc_now())
+            if body.status == "succeeded" and row["trigger_type"] != "sql_retry"
+            else None
+        )
         db.execute(
             """UPDATE flows
                SET last_run_at=?,
                    last_success_at=CASE WHEN ?='succeeded' AND ?=0 THEN ? ELSE last_success_at END,
+                   last_execution_success_at=CASE WHEN ? IS NOT NULL THEN ? ELSE last_execution_success_at END,
                    last_status=?, last_error=?, updated_at=?
                WHERE id=?""",
             (
@@ -4566,6 +4591,8 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                 body.status,
                 int(no_op),
                 finished,
+                execution_success_at,
+                execution_success_at,
                 body.status,
                 body.error,
                 now,
@@ -4630,6 +4657,16 @@ def update_run(worker_id: str, run_id: int, body: WorkerProgress):
                     for item in stored_artifacts if item.get("file_path") and item.get("filename")
                 ],
             )
+            if body.status == "succeeded" and not no_op:
+                published_paths = sorted({
+                    str(item.get("published_file_path"))
+                    for item in stored_artifacts if item.get("published_file_path")
+                })
+                if len(published_paths) == 1:
+                    from app.freshness_inheritance import reconcile_file_binding
+                    reconcile_file_binding(
+                        db, int(row["flow_id"]), published_path=published_paths[0],
+                    )
             _sync_flow_failure_actions(db, now)
         else:
             db.execute(
