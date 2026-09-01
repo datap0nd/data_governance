@@ -10281,10 +10281,10 @@ function _flowEmptyState(catalog) {
         ? '<button class="btn-secondary" id="flow-add-site-empty">Add website</button>'
         : !hasReports ? '<button class="btn-secondary" id="flow-scan-empty">Scan the catalog</button>' : ''}`;
     const copy = !hasSites
-        ? "Start from Outlook now, or add a website for authenticated report downloads."
+        ? "Start from Outlook or an existing CSV/Excel file now, or add a website for authenticated report downloads."
         : !hasReports
-            ? "Outlook is ready now. Scan the website catalog before creating a website-report flow."
-            : "Choose Outlook or a discovered website report, then configure storage and scheduling.";
+            ? "Outlook and file sources are ready now. Scan the website catalog before creating a website-report flow."
+            : "Choose Outlook, an existing file, or a discovered website report, then configure scheduling and SQL.";
     return `
         <div class="flow-empty">
             <h2>Build the first data flow</h2>
@@ -10303,6 +10303,9 @@ function _flowSourcePickerHtml(catalog) {
                 <button type="button" class="flow-source-card" id="flow-source-outlook">
                     <strong>Outlook</strong><span>Find the newest matching Inbox email and process its single CSV or Excel workbook attachment.</span>
                 </button>
+                <button type="button" class="flow-source-card" id="flow-source-file">
+                    <strong>From file</strong><span>Read one exact CSV or Excel path on the worker, keep private snapshots, and process it on a schedule.</span>
+                </button>
                 <button type="button" class="flow-source-card" id="flow-source-portal" ${portalReady ? "" : "disabled"}>
                     <strong>Website report</strong><span>${portalReady ? "Download a discovered ASAP report or GSCM bookmark." : "Add and scan a website before creating this category."}</span>
                 </button>
@@ -10318,7 +10321,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         <div class="flow-status-strip">
             <span><strong>${flows.length}</strong> configured flow${flows.length === 1 ? "" : "s"}</span>
             <span><strong>${online}</strong> online worker${online === 1 ? "" : "s"}</span>
-            <span>Run-folder flows keep the newest 3 visible runs. Direct flows publish stable exact-name files and keep 3 private recovery runs.</span>
+            <span>Run-folder flows keep 3 visible runs. Direct and file-source flows keep 3 private recovery snapshots.</span>
         </div>
         <div class="flow-table-wrap">
             <table class="flow-table">
@@ -10327,8 +10330,8 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                     <tr>
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
-                        <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
-                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
+                        <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : flow.source_type === "file" ? `From file<small>${esc(flow.local_file_path)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
+                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowFreshnessHtml(flow)}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
@@ -10562,6 +10565,7 @@ function _flowSqlLinkHtml(existing) {
 }
 
 function _flowOutlookBuilderHtml(existing = null) {
+    const isFile = existing?.source_type === "file" || existing?._source_type === "file";
     const scheduleDays = new Set(existing?.schedule_days || []);
     const sqlCatalog = window._flowsState?.sqlCatalog || { configured: false, targets: [], scan: {} };
     const targets = sqlCatalog.targets || [];
@@ -10574,20 +10578,28 @@ function _flowOutlookBuilderHtml(existing = null) {
     const owner = people.find(person => person.id === existing?.owner_person_id);
     return `
         <div class="flow-builder-shell"><div class="flow-builder-main">
-            <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="outlook">
+            <form id="flow-builder-form" data-id="${existing?.id || ""}" data-source-type="${isFile ? "file" : "outlook"}">
                 <div class="flow-form-section">
+                    ${isFile ? `
+                    <div class="flow-section-head"><h2>From file</h2><p>Metronome reads one exact path using the background worker's Windows account. The configured source is never modified.</p></div>
+                    <div class="flow-form-grid">
+                        <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily file ETL"></label>
+                        <label class="flow-span-2"><span>Source file</span><input id="flow-local-file-path" required maxlength="2000" value="${esc(existing?.local_file_path || "")}" placeholder="\\\\server\\share\\folder\\data.xlsx"><small>Enter one absolute local or UNC path ending in .csv, .xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm. Access is determined by the worker service account.</small></label>
+                        <label class="flow-span-2" id="flow-local-file-worksheet-field"><span>Excel worksheet</span><input id="flow-local-file-worksheet" maxlength="500" value="${esc(existing?.local_file_worksheet || "")}" placeholder="Data"><small>The title must match exactly, including case and spaces. CSV files do not use this field.</small></label>
+                        <div class="flow-span-2 flow-dialog-help">Producing runs keep the original bytes and normalized CSV in the private worker store. Only the newest 3 snapshots are retained; unchanged scheduled checks create no snapshot.</div>
+                    </div>` : `
                     <div class="flow-section-head"><h2>Outlook source</h2><p>Metronome searches the signed-in user's default, top-level Inbox and selects the newest email whose subject contains this text.</p></div>
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily emailed data"></label>
                         <label><span>Subject contains</span><input id="flow-outlook-subject" required maxlength="500" value="${esc(existing?.outlook_subject_contains || "")}" placeholder="Customer data code"></label>
                         <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced." : "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."}</small></label>
                         <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The newest matching message must have exactly one .csv or supported Excel attachment (.xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm). No match or an already-processed attachment succeeds without creating or publishing files.</small></label>
-                    </div>
+                    </div>`}
                 </div>
                 <div class="flow-form-section">
                     <div class="flow-section-head"><h2>Transformation</h2><p>Optionally run one local script against the normalized CSV before SQL insertion.</p></div>
                     <div class="flow-form-grid">
-                        <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform the attachment before SQL insertion</span></label>
+                        <label class="flow-check flow-span-2"><input id="flow-transform-enabled" type="checkbox" ${existing?.transform_enabled ? "checked" : ""}><span>Transform the normalized CSV before SQL insertion</span></label>
                         <div id="flow-transform-fields" class="flow-form-grid flow-span-2">
                             <label class="flow-span-2"><span>Transformation script</span><div class="flow-file-control"><input id="flow-transform-script" required value="${esc(existing?.transform_script_path || "")}" placeholder="Absolute worker path to a .py, .ps1, or .exe script"><button type="button" class="btn-secondary" id="flow-transform-browse">Browse...</button><input id="flow-transform-file" type="file" accept=".py,.ps1,.exe" hidden></div><small>The script must create one CSV in script_results. That output becomes the SQL input.</small></label>
                         </div>
@@ -10598,7 +10610,7 @@ function _flowOutlookBuilderHtml(existing = null) {
                     <div class="flow-form-grid"><label class="flow-span-2"><span>Flow owner</span><select id="flow-owner">${_flowOwnerOptions(people, existing?.owner_person_id)}</select><small id="flow-owner-help">${_flowOwnerHelp(owner)}</small></label></div>
                 </div>
                 <div class="flow-form-section">
-                    <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>The background worker launches a per-run interactive Outlook task for acquisition, then uses the same transformation and SQL contract as website flows.</p></div>
+                    <div class="flow-section-head"><h2>Schedule and SQL handoff</h2><p>${isFile ? "The background worker checks the path on schedule. Unchanged content skips transformation and SQL; Manual Run always reprocesses it." : "The background worker launches a per-run interactive Outlook task for acquisition, then uses the same transformation and SQL contract as website flows."}</p></div>
                     <div class="flow-form-grid">
                         <label><span>Schedule</span><select id="flow-schedule-type"><option value="manual" ${existing?.schedule_type === "manual" || !existing ? "selected" : ""}>Manual</option><option value="daily" ${existing?.schedule_type === "daily" ? "selected" : ""}>Daily</option><option value="weekly" ${existing?.schedule_type === "weekly" ? "selected" : ""}>Weekly</option><option value="monthly" ${existing?.schedule_type === "monthly" ? "selected" : ""}>Monthly</option></select></label>
                         <label><span>Run time</span><input id="flow-schedule-time" type="time" value="${esc(existing?.schedule_time || "08:00")}"></label>
@@ -10622,7 +10634,7 @@ function _flowOutlookBuilderHtml(existing = null) {
 }
 
 function _flowBuilderHtml(catalog, existing = null) {
-    if (existing?.source_type === "outlook" || existing?._source_type === "outlook") {
+    if (["outlook", "file"].includes(existing?.source_type || existing?._source_type)) {
         return _flowOutlookBuilderHtml(existing);
     }
     const sites = catalog.sites.filter(site => site.enabled);
@@ -10691,7 +10703,7 @@ function _flowBuilderHtml(catalog, existing = null) {
                     ${existing?.id ? "" : `<div class="flow-form-section" id="flow-replicate-section">
                         <div class="flow-section-head"><h2>Start from an existing flow</h2><p>Copy every setting from a flow you already built, then change only what differs. Nothing is copied until you choose one.</p></div>
                         <div class="flow-form-grid">
-                            <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).filter(item => item.source_type !== "outlook").map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
+                            <label class="flow-span-2"><span>Replicate flow</span><div class="flow-file-control"><select id="flow-replicate-source"><option value="">Start from scratch</option>${(window._flowsState?.flows || []).filter(item => item.source_type === "portal").map(item => `<option value="${item.id}" ${String(item.id) === String(existing?._replicated_from || "") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button type="button" class="btn-secondary" id="flow-replicate-apply">Copy settings</button></div><small id="flow-replicate-status">The copy keeps the source flow untouched. Give the new flow its own name and SQL table.</small></label>
                         </div>
                     </div>`}
                     <div class="flow-form-section">
@@ -10911,7 +10923,27 @@ function _flowCatalogHtml(catalog, scans, estimates, workers = []) {
 }
 
 function _flowRunsHtml(runs) {
-    return runs.length ? `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${runs.map(run => { const total = run.timings?.find(item => item.phase === "total"); const duration = total?.duration_ms ?? (run.started_at && run.finished_at ? new Date(run.finished_at) - new Date(run.started_at) : null); const browserMode = run.job?.execution?.browser_mode === "headed" ? "Headed browser" : "Headless browser"; const totalFiles = (run.job?.downloads?.periods?.length || 1) * ((run.job?.report?.export_views?.length || 0) || 1); const doneFiles = (run.job?.resume?.completed?.length || 0) + (run.artifacts || []).filter(item => item.status === "saved" && item.file_path).length; const resumable = run.job?.flow?.source_type !== "outlook" && ["failed", "cancelled"].includes(run.status) && doneFiles > 0 && doneFiles < totalFiles; return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${browserMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="flow-inline-empty">No runs yet.</div>';
+    if (!runs.length) return '<div class="flow-inline-empty">No runs yet.</div>';
+    const rows = runs.map(run => {
+        const total = run.timings?.find(item => item.phase === "total");
+        const duration = total?.duration_ms
+            ?? (run.started_at && run.finished_at
+                ? new Date(run.finished_at) - new Date(run.started_at) : null);
+        const sourceType = run.job?.flow?.source_type || "portal";
+        const workerMode = sourceType === "file"
+            ? "Local file"
+            : run.job?.execution?.browser_mode === "headed"
+                ? "Headed browser" : "Headless browser";
+        const totalFiles = (run.job?.downloads?.periods?.length || 1)
+            * ((run.job?.report?.export_views?.length || 0) || 1);
+        const doneFiles = (run.job?.resume?.completed?.length || 0)
+            + (run.artifacts || []).filter(item => item.status === "saved" && item.file_path).length;
+        const resumable = sourceType === "portal"
+            && ["failed", "cancelled"].includes(run.status)
+            && doneFiles > 0 && doneFiles < totalFiles;
+        return `<tr><td>#${run.id}<small>${esc(timeAgo(run.created_at))}</small></td><td>${esc(run.flow_name)}</td><td>${_flowStatusBadge(run.status)}</td><td>${esc(run.requested_by || run.trigger_type)}</td><td>${esc(run.worker_id || "Waiting")}<small>${workerMode}</small></td><td>${duration === null ? "Pending" : _flowDuration(duration)}<small>${_flowTimingSummary(run.timings)}</small></td><td>${run.error ? `<span class="flow-error">${esc(run.error)}</span>` : esc(run.progress?.message || `${run.artifacts?.length || 0} file(s)`)}</td><td class="flow-row-actions">${resumable ? `<button class="btn-sm flow-resume" data-id="${run.id}" title="Queue a run that skips the ${doneFiles} file(s) already saved">Resume · ${doneFiles} of ${totalFiles} saved</button>` : ""}<a class="btn-sm btn-outline" href="/flow-runs/${run.id}" target="_blank" rel="noopener">Expanded logs</a></td></tr>`;
+    }).join("");
+    return `<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Run</th><th>Flow</th><th>Status</th><th>Requested</th><th>Worker</th><th>Duration</th><th>Result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 async function renderFlows() {
@@ -10928,7 +10960,7 @@ async function renderFlows() {
         openCatalogTopics: window._flowsState?.openCatalogTopics || new Set(), view: "list",
     };
     return `
-        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from Outlook or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
+        <div class="page-header flow-page-header"><div><h1>Flows</h1><p class="subtitle">Acquire data from files, Outlook, or website reports on the authenticated BI desktop.</p></div><button class="btn-primary" id="flow-create">Create flow</button></div>
         <div class="flow-tabs" role="tablist" aria-label="Flow views"><button id="flow-tab-list" class="active" role="tab" aria-selected="true" aria-controls="flow-workspace" data-flow-view="list">Flows</button><button id="flow-tab-catalog" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="catalog">Catalog</button><button id="flow-tab-runs" role="tab" aria-selected="false" aria-controls="flow-workspace" data-flow-view="runs">Run history</button></div>
         <div id="flow-workspace" role="tabpanel" aria-labelledby="flow-tab-list">${_flowListHtml(flows, workers, catalog, runs)}</div>`;
 }
@@ -11048,7 +11080,7 @@ function _flowCollectBuilder() {
         && existing.sql_table === ($("#flow-sql-table")?.value || null);
     const shared = {
         name: $("#flow-name").value.trim(), enabled: flowEnabled,
-        target_folder: $("#flow-target-folder").value.trim(),
+        target_folder: $("#flow-target-folder")?.value.trim() || null,
         output_mode: $("#flow-output-mode")?.value || "run_folders",
         schedule_type: scheduleType,
         schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value,
@@ -11069,10 +11101,27 @@ function _flowCollectBuilder() {
             : null,
         owner_person_id: Number($("#flow-owner")?.value) || null,
     };
+    if (form?.dataset.sourceType === "file") {
+        const path = $("#flow-local-file-path").value.trim();
+        const csv = path.toLowerCase().endsWith(".csv");
+        return {
+            ...shared, source_type: "file",
+            local_file_path: path,
+            local_file_worksheet: csv ? null : $("#flow-local-file-worksheet").value,
+            target_folder: null, output_mode: "private_snapshot",
+            outlook_subject_contains: null,
+            site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
+            download_mode: "single", period_strategy: "none", window_weeks: null,
+            file_format: "auto", browser_mode: "headless", start_week: null, end_week: null,
+            asap_download_type: null, export_report_title: null, export_filter_details: null,
+            filename_template: null,
+        };
+    }
     if (form?.dataset.sourceType === "outlook") {
         return {
             ...shared, source_type: "outlook",
             outlook_subject_contains: $("#flow-outlook-subject").value.trim(),
+            local_file_path: null, local_file_worksheet: null,
             site_id: null, report_id: null, export_views: [], download_links: [], selections: {},
             download_mode: "single", period_strategy: "none", window_weeks: null,
             file_format: "auto", browser_mode: "headless", start_week: null, end_week: null,
@@ -11095,6 +11144,7 @@ function _flowCollectBuilder() {
     const filterDetailsControl = $("#flow-export-filter-details");
     return {
         ...shared, source_type: "portal", outlook_subject_contains: null,
+        local_file_path: null, local_file_worksheet: null,
         site_id: Number($("#flow-site").value), report_id: Number($("#flow-report").value),
         export_views: [...document.querySelectorAll("[data-flow-export-view]:checked")].map(input => input.value),
         download_links: [...document.querySelectorAll("[data-flow-download-link]:checked")].map(input => input.value),
@@ -11228,6 +11278,7 @@ function _bindFlowWorkspace() {
     $("#flow-scan-empty")?.addEventListener("click", async () => { const site = state.catalog.sites.find(item => item.enabled); if (!site) return; try { await apiPost(`/api/flows/sites/${site.id}/scan`); toast("Catalog discovery queued"); await navigate("flows"); } catch (err) { toast("Scan not queued: " + err.message); } });
     $("#flow-create-empty")?.addEventListener("click", () => _flowShowView("source-picker"));
     $("#flow-source-outlook")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "outlook" }));
+    $("#flow-source-file")?.addEventListener("click", () => _flowShowView("builder", { _source_type: "file" }));
     $("#flow-source-portal")?.addEventListener("click", () => _flowShowView("builder"));
     $("#flow-source-cancel")?.addEventListener("click", () => _flowShowView("list"));
     $("#flow-add-site")?.addEventListener("click", () => _flowSiteDialog());
@@ -11288,7 +11339,7 @@ function _bindFlowWorkspace() {
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); _flowShowView("list"); toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
-    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
+    document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-resume").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/runs/${button.dataset.id}/resume`); toast(`Resume queued - skipping ${result.skipped_files} saved file(s)`); await navigate("flows"); } catch (err) { toast("Resume not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll('.flow-row-actions a[href^="/flow-runs/"]').forEach(link => {
@@ -11452,6 +11503,19 @@ function _bindFlowWorkspace() {
             : "Keep the newest 3 visible run folders";
     });
     $("#flow-output-mode")?.dispatchEvent(new Event("change"));
+    const syncLocalFileWorksheet = () => {
+        const path = $("#flow-local-file-path")?.value || "";
+        const csv = path.trim().toLowerCase().endsWith(".csv");
+        const field = $("#flow-local-file-worksheet-field");
+        const input = $("#flow-local-file-worksheet");
+        if (field) field.hidden = csv;
+        if (input) {
+            input.required = !csv;
+            input.disabled = csv;
+        }
+    };
+    $("#flow-local-file-path")?.addEventListener("input", syncLocalFileWorksheet);
+    syncLocalFileWorksheet();
     $("#flow-file-format")?.addEventListener("change", event => {
         const filename = $("#flow-filename");
         const spec = (state.catalog.asap_download_types || []).find(

@@ -529,6 +529,10 @@ CREATE TABLE IF NOT EXISTS flows (
     outlook_last_received_at DATETIME,
     outlook_last_attachment_name TEXT,
     outlook_last_subject TEXT,
+    local_file_path     TEXT,
+    local_file_worksheet TEXT,
+    local_file_last_identity TEXT,
+    local_file_config_revision INTEGER NOT NULL DEFAULT 1,
     export_views_json   TEXT NOT NULL DEFAULT '[]',
     download_links_json TEXT NOT NULL DEFAULT '[]',
     enabled             INTEGER DEFAULT 0,
@@ -1741,6 +1745,24 @@ MIGRATIONS = [
     )""",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_file_binding_active ON flow_file_source_bindings(flow_id) WHERE active=1",
     "CREATE INDEX IF NOT EXISTS idx_flow_file_binding_source ON flow_file_source_bindings(source_id, active)",
+    # Filesystem-backed Flows use a separate internal adapter and receipt
+    # namespace from output-to-catalog ``flow_file_source_bindings``. As with
+    # Outlook, a hidden site/report pair preserves the existing non-null Flow
+    # lineage shape without exposing a synthetic website in the catalog.
+    "ALTER TABLE flows ADD COLUMN local_file_path TEXT",
+    "ALTER TABLE flows ADD COLUMN local_file_worksheet TEXT",
+    "ALTER TABLE flows ADD COLUMN local_file_last_identity TEXT",
+    "ALTER TABLE flows ADD COLUMN local_file_config_revision INTEGER NOT NULL DEFAULT 1",
+    """INSERT INTO flow_sites
+           (name, adapter, base_url, auth_url, discovery_enabled, discovery_scope_json,
+            enabled, created_at, updated_at)
+       SELECT 'From file', 'local_file', NULL, NULL, 0, '[]',
+              1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+       WHERE NOT EXISTS (SELECT 1 FROM flow_sites WHERE adapter='local_file')""",
+    """DELETE FROM flow_reports
+       WHERE source_kind='system'
+         AND site_id IN (SELECT id FROM flow_sites WHERE adapter='local_file')
+         AND NOT EXISTS (SELECT 1 FROM flows WHERE source_type='file')""",
 ]
 
 
