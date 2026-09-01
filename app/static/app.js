@@ -10267,7 +10267,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         <div class="flow-status-strip">
             <span><strong>${flows.length}</strong> configured flow${flows.length === 1 ? "" : "s"}</span>
             <span><strong>${online}</strong> online worker${online === 1 ? "" : "s"}</span>
-            <span>Each run saves into its own #run_date folder; only the newest 3 run folders are kept, and files outside run folders are never touched</span>
+            <span>Run-folder flows keep the newest 3 visible runs. Direct flows publish stable exact-name files and keep 3 private recovery runs.</span>
         </div>
         <div class="flow-table-wrap">
             <table class="flow-table">
@@ -10277,7 +10277,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
                         <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
-                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}</td>
+                        <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
@@ -10510,7 +10510,8 @@ function _flowOutlookBuilderHtml(existing = null) {
                     <div class="flow-form-grid">
                         <label><span>Flow name</span><input id="flow-name" required maxlength="200" value="${esc(existing?.name || "")}" placeholder="Daily emailed data"></label>
                         <label><span>Subject contains</span><input id="flow-outlook-subject" required maxlength="500" value="${esc(existing?.outlook_subject_contains || "")}" placeholder="Customer data code"></label>
-                        <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The newest matching message must have exactly one .csv or supported Excel attachment (.xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm). A producing run keeps the attachment's filename inside its own #id_dd-mm-yyyy folder; only the newest 3 run folders are kept. No match or an already-processed attachment succeeds without creating a folder.</small></label>
+                        <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced." : "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."}</small></label>
+                        <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The newest matching message must have exactly one .csv or supported Excel attachment (.xls, .xlt, .xlsb, .xlsx, .xlsm, .xltx, or .xltm). No match or an already-processed attachment succeeds without creating or publishing files.</small></label>
                     </div>
                 </div>
                 <div class="flow-form-section">
@@ -10661,7 +10662,8 @@ function _flowBuilderHtml(catalog, existing = null) {
                             <label class="flow-week-field"><span>Sell-out Week - start</span><select id="flow-start-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.start_week || "")}</select></label>
                             <label class="flow-week-field"><span>Sell-out Week - end</span><select id="flow-end-week" required><option value="">Choose a discovered week...</option>${_flowDiscoveredWeeks(report, existing?.end_week || "")}</select></label>
                             <label id="flow-window-weeks-field"><span>Weeks per download</span><input id="flow-window-weeks" type="number" min="1" max="105" value="${esc(existing?.window_weeks || 1)}"><small>Each file covers this many consecutive weeks.</small></label>
-                            <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine. Each run downloads into its own #id_dd-mm-yyyy subfolder here; only the newest 3 run folders are kept.</small></label>
+                            <label><span>Output storage</span><select id="flow-output-mode"><option value="run_folders" ${existing?.output_mode !== "direct_replace" ? "selected" : ""}>Run folders · keep newest 3</option><option value="direct_replace" ${existing?.output_mode === "direct_replace" ? "selected" : ""}>Direct files · replace same name</option></select><small id="flow-output-mode-help">${existing?.output_mode === "direct_replace" ? "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files." : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept."}</small></label>
+                            <label class="flow-span-2"><span>Target folder</span><input id="flow-target-folder" required value="${esc(existing?.target_folder || "")}" placeholder="C:\\Reports\\Downloads"><small>The folder must already exist on the authenticated worker machine. Direct mode keeps three private immutable run copies under the worker profile for Resume and SQL Retry.</small></label>
                             <label class="flow-span-2"><span>Filename template</span><input id="flow-filename" required value="${esc(existing?.filename_template || defaultFilename)}"><small>${isGscm ? "One bookmark saves one file per run." : "Use {export} when downloading multiple views."} Tokens: {flow}, {report}, {export}, {week}, {start_period}, {end_period}, {year}, {week_number}, {index}, {date}.</small></label>
                         </div>
                     </div>
@@ -10704,7 +10706,7 @@ function _flowBuilderHtml(catalog, existing = null) {
             </div>
             <aside class="flow-summary">
                 <h2>Execution contract</h2>
-                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd>Keep and add a number suffix</dd></div><div><dt>File deletion</dt><dd>Keeps the newest 3 run folders</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Replace all rows" : "Append rows") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
+                <dl><div><dt>Estimated download</dt><dd id="flow-download-estimate">${_flowDuration(downloadEstimate?.estimated_ms)}</dd></div><div><dt>Estimate source</dt><dd id="flow-download-estimate-source">${esc(downloadEstimate?.source || "No history")}</dd></div><div><dt>Execution host</dt><dd>BI desktop</dd></div><div><dt>Browser</dt><dd id="flow-browser-summary">${existing?.browser_mode === "headed" ? "Headed · visible" : "Headless · background"}</dd></div><div><dt>Transformation</dt><dd id="flow-transform-summary">${existing?.transform_enabled ? "Enabled · script_results" : "Disabled"}</dd></div><div><dt>Existing files</dt><dd id="flow-existing-files-summary">${existing?.output_mode === "direct_replace" ? "Replace an identical resolved filename" : "Keep and add a number suffix"}</dd></div><div><dt>File retention</dt><dd id="flow-file-retention-summary">${existing?.output_mode === "direct_replace" ? "Keep 3 private recovery runs; preserve old stable names" : "Keep the newest 3 visible run folders"}</dd></div><div><dt>SQL write</dt><dd id="flow-sql-summary">${existing?.sql_handoff_enabled ? esc(existing.sql_mode === "replace" ? "Replace all rows" : "Append rows") : "Disabled"}</dd></div><div><dt>Failure alerts</dt><dd id="flow-owner-summary">${_flowOwnerSummary(owner)}</dd></div><div><dt>Authentication</dt><dd>Shared local credential</dd></div></dl>
             </aside>
         </div>`;
 }
@@ -10977,6 +10979,7 @@ function _flowCollectBuilder() {
     const shared = {
         name: $("#flow-name").value.trim(), enabled: flowEnabled,
         target_folder: $("#flow-target-folder").value.trim(),
+        output_mode: $("#flow-output-mode")?.value || "run_folders",
         schedule_type: scheduleType,
         schedule_time: scheduleType === "manual" ? null : $("#flow-schedule-time").value,
         schedule_days: scheduleType === "weekly" ? [...document.querySelectorAll(".flow-weekdays input:checked")].map(input => input.value) : [],
@@ -11359,6 +11362,26 @@ function _bindFlowWorkspace() {
         if (help) help.innerHTML = _flowOwnerHelp(owner);
         if (summary) summary.innerHTML = _flowOwnerSummary(owner);
     });
+    $("#flow-output-mode")?.addEventListener("change", event => {
+        const help = $("#flow-output-mode-help");
+        const outlook = $("#flow-builder-form")?.dataset.sourceType === "outlook";
+        const direct = event.target.value === "direct_replace";
+        if (help) help.textContent = direct
+                ? outlook
+                    ? "The attachment is published directly after validation. Outlook keeps the original attachment name, so dated names accumulate and only an identical name is replaced."
+                    : "The full validated bundle is published directly. Only an identical resolved filename is replaced; date and week tokens intentionally create additional files."
+                : outlook
+                    ? "Each producing run keeps the attachment inside its own #id_dd-mm-yyyy folder; only the newest 3 are kept."
+                    : "Each run downloads into its own #id_dd-mm-yyyy subfolder; only the newest 3 are kept.";
+        const existingFiles = $("#flow-existing-files-summary");
+        const retention = $("#flow-file-retention-summary");
+        if (existingFiles) existingFiles.textContent = direct
+            ? "Replace an identical resolved filename" : "Keep and add a number suffix";
+        if (retention) retention.textContent = direct
+            ? "Keep 3 private recovery runs; preserve old stable names"
+            : "Keep the newest 3 visible run folders";
+    });
+    $("#flow-output-mode")?.dispatchEvent(new Event("change"));
     $("#flow-file-format")?.addEventListener("change", event => {
         const filename = $("#flow-filename");
         const spec = (state.catalog.asap_download_types || []).find(

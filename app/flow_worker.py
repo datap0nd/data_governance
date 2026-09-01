@@ -1,10 +1,11 @@
 """Authenticated browser worker for Metronome Flows.
 
 Run this under the Windows user that is authorized for the configured website.
-The worker polls Metronome for jobs and never overwrites files. Each run saves
-into its own run folder inside the flow's target folder; the only thing the
-worker ever removes is an old run folder the Metronome server explicitly
-assigned for cleanup (keeping the newest 3 per target folder).
+Every run first saves immutable artifacts into an owned run folder. Flows may
+either keep those folders visible in the configured target or publish a
+validated deliverable bundle directly into that target with exact-name
+replacement. The only recursive deletion is a server-assigned retention
+operation against an owned run folder (keeping the newest three per store).
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 try:
-    from app import flow_gscm, flow_outlook, flow_replay, flow_retention
+    from app import flow_gscm, flow_outlook, flow_publish, flow_replay, flow_retention
     from app.flow_asap_exports import (
         ASAP_DOWNLOAD_TYPES,
         ASAP_EXPORT_CHECKBOXES,
@@ -52,6 +53,7 @@ try:
 except ModuleNotFoundError:  # setup.ps1 also invokes this file directly
     import flow_gscm
     import flow_outlook
+    import flow_publish
     import flow_replay
     import flow_retention
     from flow_asap_exports import (
@@ -5066,6 +5068,11 @@ def _run_transformations(artifacts: list[dict], config: dict) -> list[dict]:
             **artifact,
             "file_path": str(output_path), "filename": output_path.name,
             "status": "transformed", "source_file_path": str(input_path),
+            "publish_status": "not_applicable",
+            "published_file_path": None,
+            "published_filename": None,
+            "published_file_size": None,
+            "published_checksum": None,
             "script_path": str(script_path), "script_index": index,
             "script_stdout": stdout[-4000:], "script_stderr": stderr[-4000:],
             **metadata,
@@ -5672,6 +5679,72 @@ def _export_task_key(export_view, period) -> str:
     return json.dumps({"export_view": export_view, "period_key": period}, sort_keys=True)
 
 
+def _decorate_artifact_storage(artifact: dict, job: dict, profile_dir: Path) -> dict:
+    """Freeze the private deliverable needed by direct publish and Resume."""
+    direct = job.get("downloads", {}).get("output_mode", "run_folders") == "direct_replace"
+    original = artifact.get("original_file_path")
+    original_metadata = None
+    if original:
+        original_path = Path(str(original))
+        if not original_path.is_file():
+            if direct:
+                raise RuntimeError(f"Saved original Flow deliverable is missing: {original_path}")
+        else:
+            original_metadata = flow_publish.read_size_checksum(original_path)
+    original_suffix = Path(str(original or "")).suffix.casefold()
+    excel_original = bool(original) and original_suffix in (
+        OOXML_EXCEL_EXTENSIONS | LEGACY_EXCEL_EXTENSIONS | XLSB_EXCEL_EXTENSIONS
+    )
+    deliverable = Path(str(original if excel_original else artifact.get("file_path") or ""))
+    if not deliverable.is_file():
+        if direct:
+            raise RuntimeError(f"Saved Flow deliverable is missing: {deliverable}")
+        artifact.update({
+            "storage_scope": "target_run_folder",
+            "artifact_store_id": None,
+            "publish_status": "not_applicable",
+        })
+        return artifact
+    observed = flow_publish.read_size_checksum(deliverable)
+    artifact.update({
+        "storage_scope": "worker_private" if direct else "target_run_folder",
+        "artifact_store_id": flow_publish.artifact_store_id(profile_dir) if direct else None,
+        "deliverable_file_path": str(deliverable),
+        "deliverable_filename": deliverable.name,
+        "deliverable_file_size": observed["file_size"],
+        "deliverable_checksum": observed["checksum"],
+        "publish_status": "pending" if direct else "not_applicable",
+    })
+    if original_metadata is not None:
+        artifact.update({
+            "original_file_size": original_metadata["file_size"],
+            "original_checksum": original_metadata["checksum"],
+        })
+    return artifact
+
+
+def _validated_resume_artifacts(job: dict) -> dict[str, dict]:
+    """Carried artifacts this worker can safely skip and later publish."""
+    direct = job.get("downloads", {}).get("output_mode", "run_folders") == "direct_replace"
+    valid = {}
+    for item in (job.get("resume") or {}).get("completed") or []:
+        if not isinstance(item, dict):
+            continue
+        if direct:
+            available = (
+                item.get("storage_scope") == "worker_private"
+                and bool(job.get("_runtime_artifact_store_id"))
+                and item.get("artifact_store_id") == job.get("_runtime_artifact_store_id")
+                and flow_publish.artifact_file_valid(item, require_deliverable=True)
+            )
+        else:
+            raw_path = item.get("file_path")
+            available = not raw_path or Path(str(raw_path)).is_file()
+        if available:
+            valid[_export_task_key(item.get("export_view"), item.get("period_key"))] = item
+    return valid
+
+
 def _resume_completed_keys(job: dict) -> set[str]:
     """Files a resumed run must skip because a prior run already saved them.
 
@@ -5680,13 +5753,7 @@ def _resume_completed_keys(job: dict) -> set[str]:
     Entries without a path (queued before paths were carried) keep the old
     always-skip behavior.
     """
-    completed = (job.get("resume") or {}).get("completed") or []
-    return {
-        _export_task_key(item.get("export_view"), item.get("period_key"))
-        for item in completed
-        if isinstance(item, dict)
-        and (not item.get("file_path") or Path(str(item["file_path"])).is_file())
-    }
+    return set(_validated_resume_artifacts(job))
 
 
 def _export_task_with_retry(
@@ -5811,15 +5878,20 @@ def _failure_screenshot(page, profile_dir: Path, label: str) -> str | None:
 
 
 def _prepare_run_folder(
-    job: dict, *, run_id: int, register_folder, report_progress,
+    job: dict, profile_dir: Path, *, run_id: int, register_folder, report_progress,
 ) -> Path:
     """Create/register a producing run folder and execute assigned retention."""
     target = Path(job["downloads"]["target_folder"])
     if not target.is_dir():
         raise RuntimeError(f"Target folder does not exist: {target}")
-    run_folder = flow_retention.create_run_folder(
-        target, run_id, job.get("flow", {}).get("id"),
+    direct = job.get("downloads", {}).get("output_mode", "run_folders") == "direct_replace"
+    storage_root = (
+        flow_publish.private_target_root(profile_dir, target) if direct else target
     )
+    run_folder = flow_retention.create_run_folder(
+        storage_root, run_id, job.get("flow", {}).get("id"),
+    )
+    job["_runtime_run_folder"] = str(run_folder)
     # Registration is idempotent and intentionally precedes all writes into
     # the new folder. Outlook calls this only after it has acquired a new
     # attachment, so a no-match/dedup no-op creates no folder and receives no
@@ -5827,10 +5899,15 @@ def _prepare_run_folder(
     assigned = (register_folder(str(run_folder)) or {}).get("ops") or []
     report_progress("running", {
         "stage": "run_folder",
-        "message": f"Saving this run's files into {run_folder.name} inside {target}.",
+        "message": (
+            f"Saving immutable artifacts for this run in the private worker store "
+            f"before publishing direct files to {target}."
+            if direct else
+            f"Saving this run's files into {run_folder.name} inside {target}."
+        ),
     })
     if assigned:
-        results = flow_retention.execute_ops(target, assigned)
+        results = flow_retention.execute_ops(storage_root, assigned)
         outcomes = "; ".join(
             f"{Path(str(op.get('original_path') or '')).name or 'unknown'}: {result['outcome']}"
             + (f" ({result['detail']})" if result.get("detail") else "")
@@ -5883,9 +5960,11 @@ def execute_outlook_job(
         }
 
     run_folder = _prepare_run_folder(
-        job, run_id=run_id, register_folder=register_folder,
+        job, profile_dir, run_id=run_id, register_folder=register_folder,
         report_progress=report_progress,
     )
+    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
+    job["_runtime_bundle_count"] = 1
     output = _safe_output_path(run_folder, acquisition["filename"])
     report_progress("running", {
         "stage": "outlook_attachment_transfer",
@@ -5908,7 +5987,7 @@ def execute_outlook_job(
             processing_progress=processing_progress,
         )
     receipt = acquisition["receipt"]
-    artifact = {
+    artifact = _decorate_artifact_storage({
         "period_key": None,
         "export_view": None,
         "bundle_index": 1,
@@ -5916,7 +5995,7 @@ def execute_outlook_job(
         "status": "saved",
         "source_receipt": receipt,
         **metadata,
-    }
+    }, job, profile_dir)
     return [artifact], timings.finish(item_count=1), {
         "no_op": False, "source_receipt": receipt,
     }
@@ -5932,6 +6011,7 @@ def execute_job(
     # everything saved before a mid-bundle failure stays visible to the
     # caller's failure report - the record Resume later relies on.
     timings = _Timings()
+    job["_runtime_artifact_store_id"] = flow_publish.artifact_store_id(profile_dir)
     report_progress("running", {"stage": "opening_report", "message": "Opening the configured report."})
     is_asap = job["site"].get("adapter") == ASAP_PORTAL_ADAPTER
     is_gscm = job["site"].get("adapter") == GSCM_PORTAL_ADAPTER
@@ -5939,7 +6019,7 @@ def execute_job(
     open_export = job["report"].get("open_export_text")
 
     target = _prepare_run_folder(
-        job, run_id=run_id, register_folder=register_folder,
+        job, profile_dir, run_id=run_id, register_folder=register_folder,
         report_progress=report_progress,
     )
 
@@ -5983,6 +6063,7 @@ def execute_job(
             {"period": period, "export_view": export_view, "download_link": None}
             for export_view in export_views for period in periods
         ]
+    job["_runtime_bundle_count"] = len(tasks)
     if artifacts is None:
         artifacts = []
 
@@ -6414,7 +6495,7 @@ def execute_job(
 
         replayed = _replay_task(index, task)
         if replayed is not None:
-            artifacts.append(replayed)
+            artifacts.append(_decorate_artifact_storage(replayed, job, profile_dir))
             continue
 
         task_attempts = GSCM_EXPORT_TASK_ATTEMPTS if is_gscm else EXPORT_TASK_ATTEMPTS
@@ -6461,7 +6542,138 @@ def execute_job(
             _task_retry,
             max_attempts=task_attempts,
         ))
+        _decorate_artifact_storage(artifacts[-1], job, profile_dir)
     return artifacts, timings.finish(item_count=len(artifacts))
+
+
+def _copy_carried_artifact(artifact: dict, run_folder: Path) -> dict:
+    """Give a resumed direct run its own immutable copy of a carried task."""
+    clone = dict(artifact)
+    copied_paths: dict[str, tuple[Path, dict]] = {}
+
+    def copy_field(path_key: str, size_key: str, checksum_key: str) -> None:
+        raw = clone.get(path_key)
+        if not raw:
+            return
+        source = Path(str(raw))
+        source_key = os.path.normcase(os.path.abspath(str(source)))
+        if source_key in copied_paths:
+            output, metadata = copied_paths[source_key]
+        else:
+            output = _safe_output_path(run_folder, source.name)
+            metadata = _copy_with_checksum(source, output)
+            _verify_copied_file(
+                output, metadata["file_size"], metadata["checksum"],
+                label="Carried Flow artifact",
+            )
+            copied_paths[source_key] = (output, metadata)
+        clone[path_key] = str(output)
+        clone[size_key] = metadata["file_size"]
+        clone[checksum_key] = metadata["checksum"]
+
+    copy_field("file_path", "file_size", "checksum")
+    copy_field(
+        "deliverable_file_path", "deliverable_file_size", "deliverable_checksum",
+    )
+    copy_field("original_file_path", "original_file_size", "original_checksum")
+    clone.update({
+        "storage_scope": "worker_private",
+        "publish_status": "pending",
+        "published_file_path": None,
+        "published_filename": None,
+        "published_file_size": None,
+        "published_checksum": None,
+        "status": "saved",
+    })
+    return clone
+
+
+def _publish_direct_artifacts(
+    job: dict, artifacts: list[dict], *, run_id: int, report_progress,
+) -> list[dict]:
+    """Publish a complete validated bundle, including Resume-carried tasks."""
+    if job.get("downloads", {}).get("output_mode", "run_folders") != "direct_replace":
+        return artifacts
+    run_folder = Path(str(job.get("_runtime_run_folder") or ""))
+    if not run_folder.is_dir():
+        raise RuntimeError("Direct publication has no registered private run folder.")
+    by_task = {
+        _export_task_key(item.get("export_view"), item.get("period_key")): item
+        for item in artifacts if item.get("status") == "saved"
+    }
+    for task_key, carried in _validated_resume_artifacts(job).items():
+        if task_key not in by_task:
+            by_task[task_key] = _copy_carried_artifact(carried, run_folder)
+    bundle = sorted(
+        by_task.values(),
+        key=lambda item: (
+            int(item.get("bundle_index") or 0),
+            _export_task_key(item.get("export_view"), item.get("period_key")),
+        ),
+    )
+    expected = int(job.get("_runtime_bundle_count") or 0) or max(
+        [int(item.get("bundle_count") or 0) for item in bundle] or [len(bundle)]
+    )
+    if not bundle or len(bundle) != expected:
+        raise RuntimeError(
+            f"Direct publication requires the complete bundle ({len(bundle)} of {expected} validated)."
+        )
+    # Keep the caller's list as the authoritative union even if publication
+    # raises. The worker's final failed progress post must not overwrite the
+    # earlier publish event with only the newly downloaded subset.
+    artifacts[:] = bundle
+    report_progress("running", {
+        "stage": "direct_publish",
+        "message": (
+            f"Publishing {len(bundle)} validated deliverable(s) directly to "
+            f"{job['downloads']['target_folder']}."
+        ),
+        "item_count": len(bundle),
+    }, bundle)
+    try:
+        published = flow_publish.publish_bundle(
+            Path(job["downloads"]["target_folder"]), run_id, bundle,
+        )
+    except Exception as exc:
+        for artifact in bundle:
+            artifact["publish_status"] = "failed"
+            artifact["publish_error"] = str(exc)
+        report_progress("running", {
+            "stage": "publish_failed",
+            "message": str(exc),
+            "item_count": len(bundle),
+            "bundle": [
+                {
+                    "export_view": item.get("export_view"),
+                    "period_key": item.get("period_key"),
+                    "filename": item.get("deliverable_filename"),
+                    "checksum": item.get("deliverable_checksum"),
+                    "status": "failed",
+                }
+                for item in bundle
+            ],
+        }, bundle)
+        raise
+    for artifact, result in zip(bundle, published):
+        artifact.update(result)
+    report_progress("running", {
+        "stage": "publish_complete",
+        "message": f"Published {len(bundle)} stable direct output file(s).",
+        "item_count": len(bundle),
+        "published": [
+            {
+                "export_view": item.get("export_view"),
+                "period_key": item.get("period_key"),
+                "filename": item["published_filename"],
+                "file_path": item["published_file_path"],
+                "file_size": item["published_file_size"],
+                "checksum": item["published_checksum"],
+                "status": item["publish_status"],
+            }
+            for item in bundle
+        ],
+    }, bundle)
+    return bundle
 
 
 def _code_version() -> str:
@@ -6485,7 +6697,7 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
         registration = {
             "worker_id": worker_id,
             "display_name": display_name,
-            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": False, "code_version": code_version},
+            "capabilities": {"adapters": ["web_export", ASAP_PORTAL_ADAPTER, GSCM_PORTAL_ADAPTER, OUTLOOK_ATTACHMENT_ADAPTER], "headed": headed, "process_id": os.getpid(), "delete_existing": False, "overwrite_existing": True, "artifact_store_id": flow_publish.artifact_store_id(profile_dir), "code_version": code_version},
         }
         # Metronome can take several minutes to boot after an update (service
         # reinstall, migrations, first-request warmup), and this worker now
@@ -6638,6 +6850,24 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                         sql_artifacts = run["job"].get("sql_retry", {}).get("artifacts") or []
                         if not sql_artifacts:
                             raise RuntimeError("SQL-only retry has no saved CSV artifacts.")
+                        required_store = run["job"].get("sql_retry", {}).get(
+                            "required_artifact_store_id"
+                        )
+                        current_store = flow_publish.artifact_store_id(profile_dir)
+                        if required_store and required_store != current_store:
+                            raise RuntimeError(
+                                "SQL Retry was claimed by a worker that cannot access its private artifact store."
+                            )
+                        invalid = [
+                            item.get("filename") or str(item.get("file_path") or "artifact")
+                            for item in sql_artifacts
+                            if not flow_publish.artifact_file_valid(item)
+                        ]
+                        if invalid:
+                            raise RuntimeError(
+                                "Saved SQL artifact is missing or changed in the private worker store: "
+                                + ", ".join(invalid[:10])
+                            )
                         artifacts = sql_artifacts
                         source_receipt = run["job"].get("outlook_source_receipt")
                         timings = [{"phase": "total", "duration_ms": 0, "status": "running"}]
@@ -6670,6 +6900,12 @@ def run_worker(server: str, worker_id: str, display_name: str, profile_dir: Path
                             artifacts=artifacts,
                             run_id=run_id, register_folder=register_folder,
                             headed=headed,
+                        )
+                        sql_artifacts = artifacts
+                    if not sql_only and not no_op:
+                        artifacts = _publish_direct_artifacts(
+                            run["job"], artifacts, run_id=run_id,
+                            report_progress=progress,
                         )
                         sql_artifacts = artifacts
                     if (

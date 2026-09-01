@@ -981,6 +981,257 @@ def test_catalog_and_flow_configuration_persist_locally(flow_db):
     assert catalog["reports"][0]["filters"][0]["options"] == ["Global", "North"]
 
 
+def test_direct_output_mode_persists_and_freezes_into_the_worker_job(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], output_mode="direct_replace"), _request(),
+    )
+    queued = flows.queue_run(saved["id"], _request())
+
+    assert saved["output_mode"] == "direct_replace"
+    assert queued["job"]["downloads"]["output_mode"] == "direct_replace"
+    assert queued["job"]["downloads"]["collision_policy"] == "replace_exact"
+    assert queued["job"]["downloads"]["overwrite_existing"] is True
+
+
+def test_output_mode_defaults_and_rejects_unknown_values(flow_db):
+    site, report = _seed_catalog()
+    body = _flow(site["id"], report["id"])
+    assert body.output_mode == "run_folders"
+    with pytest.raises(ValueError, match="Output storage"):
+        _flow(site["id"], report["id"], output_mode="keep_everything")
+
+
+def test_direct_flows_share_a_folder_lock_even_with_different_sql_targets(
+    flow_db, monkeypatch,
+):
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode},
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.executemany(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', ?, CURRENT_TIMESTAMP, 0)""",
+            [("target_a",), ("target_b",)],
+        )
+    shared = {
+        "output_mode": "direct_replace",
+        "target_folder": r"C:\Stable\Exports",
+        "sql_handoff_enabled": True,
+        "sql_mode": "append",
+        "sql_database": "warehouse",
+        "sql_schema": "reporting",
+    }
+    first = flows.create_flow(
+        _flow(
+            site["id"], report["id"], name="Direct A",
+            filename_template="daily_{date}_{index}.csv", sql_table="target_a", **shared,
+        ),
+        _request(),
+    )
+    second = flows.create_flow(
+        _flow(
+            site["id"], report["id"], name="Direct B",
+            filename_template="weekly_{week}.csv", sql_table="target_b", **shared,
+        ),
+        _request(),
+    )
+
+    first_run = flows.queue_run(first["id"], _request())
+    with pytest.raises(HTTPException, match="Direct Flow output folder"):
+        flows.queue_run(second["id"], _request())
+
+    with database.get_db() as db:
+        active = db.execute(
+            "SELECT flow_id FROM flow_runs WHERE status='queued' ORDER BY id"
+        ).fetchall()
+    assert [row["flow_id"] for row in active] == [first_run["flow_id"]]
+
+
+def test_resume_is_blocked_when_output_storage_mode_changed(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], output_mode="direct_replace"), _request(),
+    )
+    source = flows.queue_run(saved["id"], _request())
+    artifact = {
+        "period_key": ["2026-W30"],
+        "export_view": None,
+        "status": "saved",
+        "file_path": r"C:\worker\private\week30.csv",
+        "filename": "week30.csv",
+        "storage_scope": "worker_private",
+        "artifact_store_id": "store-a",
+    }
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flow_runs SET status='failed', artifact_json=?, finished_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (json.dumps([artifact]), source["id"]),
+        )
+        db.execute(
+            "UPDATE flows SET output_mode='run_folders' WHERE id=?", (saved["id"],),
+        )
+        result = flows.inspect_resume_eligibility(db, source["id"])
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "output_mode_changed"
+
+
+def test_private_sql_retry_is_deferred_to_and_claimed_by_matching_artifact_store(
+    flow_db, monkeypatch,
+):
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode},
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_sql_catalog
+               (database_name, schema_name, table_name, last_seen_at, stale)
+               VALUES ('warehouse', 'reporting', 'private_target', CURRENT_TIMESTAMP, 0)"""
+        )
+    saved = flows.create_flow(
+        _flow(
+            site["id"], report["id"], output_mode="direct_replace",
+            sql_handoff_enabled=True, sql_mode="append", sql_database="warehouse",
+            sql_schema="reporting", sql_table="private_target",
+        ),
+        _request(),
+    )
+    source = flows.queue_run(saved["id"], _request())
+    private = {
+        "file_path": r"C:\moved-profile\run_artifacts\missing.csv",
+        "filename": "missing.csv",
+        "file_size": 123,
+        "checksum": "a" * 64,
+        "row_count": 1,
+        "status": "saved",
+        "storage_scope": "worker_private",
+        "artifact_store_id": "store-a",
+    }
+    with database.get_db() as db:
+        db.execute(
+            """UPDATE flow_runs SET status='failed', artifact_json=?, finished_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (json.dumps([private]), source["id"]),
+        )
+
+    retry = flows.retry_run_sql(source["id"], _request())
+    assert retry["job"]["execution"]["required_artifact_store_id"] == "store-a"
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="wrong-store", display_name="Wrong store",
+        capabilities={"artifact_store_id": "store-b"},
+    ))
+    assert flows.claim_run("wrong-store")["run"] is None
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="right-store", display_name="Right store",
+        capabilities={"artifact_store_id": "store-a"},
+    ))
+    assert flows.claim_run("right-store")["run"]["id"] == retry["id"]
+
+    with database.get_db() as db:
+        moved_retry = db.execute(
+            """INSERT INTO flow_runs
+               (flow_id, trigger_type, status, requested_by, job_json, created_at)
+               VALUES (?, 'sql_retry', 'queued', 'Analyst', ?, CURRENT_TIMESTAMP)""",
+            (saved["id"], json.dumps(retry["job"])),
+        ).lastrowid
+    flows.register_worker(flows.WorkerRegister(
+        worker_id=flows.LOCAL_WORKER_ID, display_name="Moved profile",
+        capabilities={"artifact_store_id": "new-store"},
+    ))
+    assert flows.claim_run(flows.LOCAL_WORKER_ID)["run"] is None
+    with database.get_db() as db:
+        failed = db.execute(
+            "SELECT status, error FROM flow_runs WHERE id=?", (moved_retry,),
+        ).fetchone()
+    assert failed["status"] == "failed"
+    assert "profile store identity changed" in failed["error"]
+
+
+def test_published_metadata_persists_and_extension_drift_records_warning(
+    flow_db, monkeypatch,
+):
+    monkeypatch.setattr(
+        flows, "launch_local_worker", lambda mode: {"status": "launched", "mode": mode},
+    )
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], output_mode="direct_replace"), _request(),
+    )
+    flows.register_worker(flows.WorkerRegister(
+        worker_id="publish-worker", display_name="Publish worker", capabilities={},
+    ))
+
+    first = flows.queue_run(saved["id"], _request())
+    assert flows.claim_run("publish-worker")["run"]["id"] == first["id"]
+    old_artifact = {
+        "period_key": ["2026-W30"], "export_view": None, "status": "saved",
+        "file_path": r"C:\private\weekly.csv", "filename": "weekly.csv",
+        "storage_scope": "worker_private", "artifact_store_id": "store-a",
+        "file_size": 10, "checksum": "1" * 64,
+        "published_file_path": r"C:\Stable\weekly.xls",
+        "published_filename": "weekly.xls", "publish_status": "published",
+    }
+    flows.update_run(
+        "publish-worker", first["id"],
+        flows.WorkerProgress(status="succeeded", artifacts=[old_artifact]),
+    )
+
+    second = flows.queue_run(saved["id"], _request())
+    assert flows.claim_run("publish-worker")["run"]["id"] == second["id"]
+    new_artifact = {
+        **old_artifact,
+        "published_file_path": r"C:\Stable\weekly.xlsx",
+        "published_filename": "weekly.xlsx",
+    }
+    flows.update_run(
+        "publish-worker", second["id"],
+        flows.WorkerProgress(
+            status="running",
+            progress={"stage": "publish_complete", "message": "Published."},
+            artifacts=[new_artifact],
+        ),
+    )
+
+    with database.get_db() as db:
+        recorded = db.execute(
+            """SELECT storage_scope, artifact_store_id, published_filename, publish_status
+               FROM flow_run_files WHERE run_id=?""",
+            (first["id"],),
+        ).fetchone()
+        warning = db.execute(
+            """SELECT message FROM flow_run_events
+               WHERE run_id=? AND stage='publish_name_changed'""",
+            (second["id"],),
+        ).fetchone()
+    assert dict(recorded) == {
+        "storage_scope": "worker_private",
+        "artifact_store_id": "store-a",
+        "published_filename": "weekly.xls",
+        "publish_status": "published",
+    }
+    assert "intentionally left in place" in warning["message"]
+
+
+def test_flow_builder_exposes_and_replicates_output_storage_setting():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text(
+        encoding="utf-8",
+    )
+    assert source.count('id="flow-output-mode"') == 2
+    assert 'output_mode: $("#flow-output-mode")?.value || "run_folders"' in source
+    assert "...source" in source and "_flowShowView(\"builder\", copy)" in source
+    assert "Outlook keeps the original attachment name" in source
+
+
 def test_report_filter_update_keeps_historical_definition_for_saved_runs(flow_db):
     site, report = _seed_catalog()
     updated = _report(site["id"])
@@ -3060,8 +3311,49 @@ def test_every_export_file_is_retried_individually_before_the_run_fails():
 def test_database_schema_has_no_flow_delete_policy(flow_db):
     with database.get_db() as db:
         job_columns = {row[1] for row in db.execute("PRAGMA table_info(flows)").fetchall()}
+        artifact_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(flow_run_files)").fetchall()
+        }
     assert "delete_existing" not in job_columns
     assert "cleanup_policy" not in job_columns
+    assert "output_mode" in job_columns
+    assert {
+        "storage_scope", "artifact_store_id", "published_file_path",
+        "published_filename", "publish_status",
+    } <= artifact_columns
+
+
+def test_output_mode_migration_defaults_existing_flows_to_run_folders(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy-output-mode.db"
+    legacy_schema = database.SCHEMA.replace(
+        "    output_mode         TEXT NOT NULL DEFAULT 'run_folders',\n", "",
+    )
+    with sqlite3.connect(db_path) as db:
+        db.executescript(legacy_schema)
+        site_id = db.execute(
+            "INSERT INTO flow_sites(name, adapter) VALUES ('Legacy site', 'web_export')"
+        ).lastrowid
+        report_id = db.execute(
+            """INSERT INTO flow_reports(site_id, name, report_url)
+               VALUES (?, 'Legacy report', 'https://example.test/report')""",
+            (site_id,),
+        ).lastrowid
+        db.execute(
+            """INSERT INTO flows(name, site_id, report_id, target_folder, filename_template)
+               VALUES ('Legacy Flow', ?, ?, 'C:\\Exports', 'stable.xlsx')""",
+            (site_id, report_id),
+        )
+    monkeypatch.setattr(database, "DB_PATH", str(db_path))
+
+    database.init_db()
+
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(
+            "SELECT output_mode FROM flows WHERE name='Legacy Flow'"
+        ).fetchone()
+    assert row[0] == "run_folders"
 
 
 def test_database_migrates_existing_flow_catalog_before_discovery_index(tmp_path, monkeypatch):
@@ -4884,6 +5176,15 @@ def test_folder_key_groups_path_spellings(flow_db):
     )
     assert flows._folder_key("/reports/other/#5_25-08-2026") != flows._folder_key(
         "/reports/downloads/#5_25-08-2026"
+    )
+    assert flows._folder_key(r"C:\Reports\Downloads\#5_25-08-2026") == flows._folder_key(
+        r"c:/reports/downloads/#9_26-08-2026"
+    )
+    assert flows._folder_key(r"\\Server\Share\Exports\#5_25-08-2026") == flows._folder_key(
+        r"\\server\share\exports\#9_26-08-2026"
+    )
+    assert flows._folder_key(r"\\?\UNC\Server\Share\Exports\#5_25-08-2026") == flows._folder_key(
+        r"\\server\share\exports\#9_26-08-2026"
     )
 
 

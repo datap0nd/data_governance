@@ -23,7 +23,11 @@ _SENSITIVE_CONTEXT_KEY = re.compile(
 )
 
 
-def _artifact_availability(value: Any) -> tuple[bool | None, str]:
+def _artifact_availability(
+    value: Any, *, storage_scope: str | None = None
+) -> tuple[bool | None, str]:
+    if storage_scope == "worker_private":
+        return None, "worker_validation_required"
     if is_remote_file_path(value):
         return None, "not_probed_remote"
     try:
@@ -407,7 +411,9 @@ def _get_flow_run_artifacts(args: FlowRunArtifactsArgs) -> ToolEnvelope:
             raise LookupError("Flow run not found.")
         files = db.execute(
             """SELECT id, period_key, file_path, filename, file_size, checksum,
-                      row_count, status, created_at
+                      row_count, storage_scope, artifact_store_id,
+                      published_file_path, published_filename, publish_status,
+                      status, created_at
                FROM flow_run_files WHERE run_id=? ORDER BY id LIMIT ?""",
             (args.run_id, args.limit),
         ).fetchall()
@@ -423,11 +429,17 @@ def _get_flow_run_artifacts(args: FlowRunArtifactsArgs) -> ToolEnvelope:
     )]
     for row in files:
         ref = f"flow_run_file:{row['id']}"
-        file_still_exists, availability = _artifact_availability(row["file_path"])
+        file_still_exists, availability = _artifact_availability(
+            row["file_path"], storage_scope=row["storage_scope"]
+        )
         artifacts.append({
             "id": int(row["id"]), "period_key": row["period_key"],
             "filename": _safe_text(row["filename"], 300), "file_size": row["file_size"],
             "checksum": row["checksum"], "row_count": row["row_count"],
+            "storage_scope": row["storage_scope"],
+            "artifact_store_id": row["artifact_store_id"],
+            "published_filename": _safe_text(row["published_filename"], 300),
+            "publish_status": row["publish_status"],
             "status": row["status"], "file_still_exists": file_still_exists,
             "availability": availability,
             "created_at": row["created_at"], "evidence_ref": ref,

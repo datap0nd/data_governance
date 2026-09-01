@@ -134,9 +134,10 @@ def inspect_file_flow_target(
     and often point through per-run folders, so a literal filename may be used
     only when that basename identifies exactly one active file source in the
     entire registry. Even an exact result is presentation evidence, not
-    permission to execute the Flow in a Pipeline: current workers publish to
-    per-run versioned folders. Partial, fuzzy, and dynamic-template matches
-    are rejected entirely.
+    permission to execute the Flow in a Pipeline: file-output orchestration is
+    deliberately outside the executable Pipeline contract, including for a
+    direct-output Flow. Partial, fuzzy, and dynamic-template matches are
+    rejected entirely.
     """
     target = file_flow_target(flow)
     closure = {

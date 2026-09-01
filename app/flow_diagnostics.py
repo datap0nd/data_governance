@@ -1,9 +1,9 @@
 """Report-scoped Flow target diagnostics shared by lineage and pipelines.
 
 Structured PostgreSQL coordinates are the execution authority. Conservative
-file-output matches are visible lineage candidates only: Flow workers retain
-each run in a versioned subfolder, so a filename match does not prove that a
-new run updates the exact file consumed by Power BI.
+file-output matches are visible lineage candidates only. Even direct-file
+outputs do not yet carry the governed identity and execution contract required
+for Pipelines, so a filename match is never executable authority.
 """
 
 from __future__ import annotations
@@ -366,8 +366,9 @@ def build_flow_diagnostics(
 
     Only a SQL resolver result with ``status == 'confirmed'`` and an effective
     source inside the report closure is executable. File path/basename matches
-    remain presentation-only until Flows have a stable published-output
-    identity. Legacy display matches are presentation warnings only.
+    remain presentation-only even when direct output gives them a stable path;
+    executable file-output orchestration is deliberately deferred. Legacy
+    display matches are presentation warnings only.
     """
     closure = {int(source_id) for source_id in report_source_ids if source_id is not None}
     if report_sources is None:
@@ -385,7 +386,7 @@ def build_flow_diagnostics(
         report_sources = list(report_sources)
 
     flow_rows = db.execute(
-        """SELECT id, name, browser_mode, enabled, target_folder,
+        """SELECT id, name, browser_mode, enabled, target_folder, output_mode,
                   filename_template, sql_handoff_enabled,
                   sql_database, sql_schema, sql_table, sql_target_source_id,
                   updated_at, last_run_at, last_success_at, last_status, last_error

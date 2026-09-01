@@ -546,6 +546,7 @@ CREATE TABLE IF NOT EXISTS flows (
     end_week            TEXT,
     target_folder       TEXT NOT NULL,
     filename_template   TEXT NOT NULL,
+    output_mode         TEXT NOT NULL DEFAULT 'run_folders',
     schedule_type       TEXT NOT NULL DEFAULT 'manual',
     schedule_time       TEXT,
     schedule_days       TEXT,
@@ -593,9 +594,14 @@ CREATE TABLE IF NOT EXISTS flow_run_files (
     period_key      TEXT,
     file_path       TEXT NOT NULL,
     filename        TEXT NOT NULL,
+    storage_scope   TEXT,
+    artifact_store_id TEXT,
     file_size       INTEGER,
     checksum        TEXT,
     row_count       INTEGER,
+    published_file_path TEXT,
+    published_filename TEXT,
+    publish_status  TEXT,
     status          TEXT NOT NULL,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -1308,6 +1314,15 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_source ON flow_run_source_refs(source_run_id)",
     "CREATE INDEX IF NOT EXISTS idx_flow_run_source_refs_consumer ON flow_run_source_refs(consumer_run_id)",
+    # Per-flow artifact layout. Existing clients and databases retain the
+    # versioned run-folder behavior until a user explicitly opts into stable
+    # direct-file publication.
+    "ALTER TABLE flows ADD COLUMN output_mode TEXT NOT NULL DEFAULT 'run_folders'",
+    "ALTER TABLE flow_run_files ADD COLUMN storage_scope TEXT",
+    "ALTER TABLE flow_run_files ADD COLUMN artifact_store_id TEXT",
+    "ALTER TABLE flow_run_files ADD COLUMN published_file_path TEXT",
+    "ALTER TABLE flow_run_files ADD COLUMN published_filename TEXT",
+    "ALTER TABLE flow_run_files ADD COLUMN publish_status TEXT",
     # Explicit PostgreSQL relation identity.  Display names remain presentation
     # only; executable lineage is resolved through these exact coordinates.
     """CREATE TABLE IF NOT EXISTS source_postgres_identities (
