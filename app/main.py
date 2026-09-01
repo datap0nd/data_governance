@@ -451,6 +451,26 @@ def _scheduled_email_dispatch():
         log.exception("Email schedule dispatch failed: %s", e)
 
 
+@_tracked_scheduled_start("scanner notification watchdog")
+def _scheduled_scanner_notification_watchdog():
+    """Notify once for stalled scanner modules and reconcile Outlook receipts."""
+    from app.routers.email import reconcile_outlook_dispatches
+    from app.scanner.notifications import notify_stalled_module_runs
+
+    log = logging.getLogger("scheduler")
+    try:
+        reconciled = reconcile_outlook_dispatches()
+        stalled = notify_stalled_module_runs()
+        if reconciled.get("processed") or reconciled.get("unknown") or stalled.get("stalled"):
+            log.info(
+                "Scanner notification watchdog: reconciled=%s stalled=%s",
+                reconciled,
+                stalled,
+            )
+    except Exception as exc:
+        log.exception("Scanner notification watchdog failed: %s", exc)
+
+
 @_tracked_scheduled_start("Power BI recurrence")
 def _scheduled_recurrence_dispatch():
     """Export due Power BI visuals and launch subgroup emails."""
@@ -517,6 +537,15 @@ def _configure_scheduler_jobs() -> dict:
         "interval",
         minutes=1,
         id="email_schedule_dispatch",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _scheduled_scanner_notification_watchdog,
+        "interval",
+        minutes=1,
+        id="scanner_notification_watchdog",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -690,6 +719,16 @@ async def lifespan(app):
     if interrupted_jobs:
         logging.getLogger(__name__).warning(
             "Recovered %d scanner job(s) interrupted by restart", interrupted_jobs
+        )
+    from app.scanner.modules import recover_interrupted_module_runs
+
+    interrupted_modules = _run_optional_startup_step(
+        "scanner-module recovery", recover_interrupted_module_runs, default=0
+    )
+    if interrupted_modules:
+        logging.getLogger(__name__).warning(
+            "Recovered %d scanner module run(s) interrupted by restart",
+            interrupted_modules,
         )
     interrupted_pbi_syncs = _run_optional_startup_step(
         "Power BI sync recovery", _recover_startup_pbi_syncs, default=0
@@ -1917,6 +1956,7 @@ def _refresh_schedule_payload() -> dict:
         "minute": refresh_time["minute"],
         "next_run_at": next_run.isoformat() if next_run else None,
         "scheduler_running": bool(getattr(_scheduler, "running", False)),
+        "timezone": str(host_timezone()),
     }
 
 

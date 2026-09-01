@@ -111,6 +111,30 @@ CREATE INDEX IF NOT EXISTS idx_scanner_jobs_status
 CREATE INDEX IF NOT EXISTS idx_scanner_jobs_created
     ON scanner_jobs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS scanner_module_runs (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanner_job_id           INTEGER REFERENCES scanner_jobs(id) ON DELETE SET NULL,
+    scan_run_id              INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+    module_key               TEXT NOT NULL,
+    trigger_source           TEXT NOT NULL DEFAULT 'manual',
+    status                   TEXT NOT NULL DEFAULT 'queued',
+    summary                  TEXT,
+    details_json             TEXT NOT NULL DEFAULT '{}',
+    log                      TEXT,
+    started_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    heartbeat_at             DATETIME,
+    finished_at              DATETIME,
+    stalled_notified_at      DATETIME,
+    notification_dispatch_id INTEGER REFERENCES outlook_dispatches(id) ON DELETE SET NULL,
+    notification_status      TEXT,
+    notification_error       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_module_runs_module
+    ON scanner_module_runs(module_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scanner_module_runs_job
+    ON scanner_module_runs(scanner_job_id, id);
+
 CREATE TABLE IF NOT EXISTS probe_runs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1481,6 +1505,26 @@ MIGRATIONS = [
     "ALTER TABLE flows ADD COLUMN sql_uppercase INTEGER NOT NULL DEFAULT 0",
     # Per-component scan lifecycle details (NULL for legacy scan rows).
     "ALTER TABLE scan_runs ADD COLUMN components_json TEXT",
+    """CREATE TABLE IF NOT EXISTS scanner_module_runs (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        scanner_job_id           INTEGER REFERENCES scanner_jobs(id) ON DELETE SET NULL,
+        scan_run_id              INTEGER REFERENCES scan_runs(id) ON DELETE SET NULL,
+        module_key               TEXT NOT NULL,
+        trigger_source           TEXT NOT NULL DEFAULT 'manual',
+        status                   TEXT NOT NULL DEFAULT 'queued',
+        summary                  TEXT,
+        details_json             TEXT NOT NULL DEFAULT '{}',
+        log                      TEXT,
+        started_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        heartbeat_at             DATETIME,
+        finished_at              DATETIME,
+        stalled_notified_at      DATETIME,
+        notification_dispatch_id INTEGER REFERENCES outlook_dispatches(id) ON DELETE SET NULL,
+        notification_status      TEXT,
+        notification_error       TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scanner_module_runs_module ON scanner_module_runs(module_key, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_scanner_module_runs_job ON scanner_module_runs(scanner_job_id, id)",
     # Canonical alert evidence. ``actions`` remains the user-facing incident
     # lifecycle while immutable occurrences retain the exact run that caused a
     # Flow/Pipeline failure. Legacy ``alerts`` rows stay readable.

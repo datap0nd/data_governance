@@ -549,7 +549,7 @@ def recover_interrupted_pbi_syncs() -> int:
                               WHEN message IS NULL OR TRIM(message)='' THEN ?
                               ELSE message || char(10) || ?
                           END
-                    WHERE sync_type='refresh'
+                    WHERE sync_type IN ('refresh', 'usage')
                       AND LOWER(COALESCE(status, '')) IN ('launched', 'pending')""",
                 (now, message, message),
             )
@@ -1440,11 +1440,13 @@ def trigger_pbi_sync_or_defer(
 def wait_for_pbi_sync_completion(
     launch_result: dict,
     *,
+    sync_type: str = "refresh",
     timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
     cancel_generation: int | None = None,
     operation_id: int | None = None,
 ) -> dict:
     """Wait for this launch only, while keeping its scanner operation live."""
+    sync_type = "usage" if str(sync_type).casefold() == "usage" else "refresh"
     status = (launch_result.get("status") or "").lower()
     if status != "launched":
         return launch_result
@@ -1460,7 +1462,7 @@ def wait_for_pbi_sync_completion(
         }
     if attempt_id is None:
         with get_db() as db:
-            if _correlated_attempts_exist(db, "refresh"):
+            if _correlated_attempts_exist(db, sync_type):
                 return {
                     "status": "failed",
                     "message": "Power BI launch is missing attempt correlation and cannot be waited safely.",
@@ -1469,30 +1471,33 @@ def wait_for_pbi_sync_completion(
 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        assert_not_cancelled(cancel_generation, "Power BI sync wait")
+        assert_not_cancelled(cancel_generation, f"Power BI {sync_type} sync wait")
         scanner_jobs.heartbeat(
             operation_id,
-            current_step="Syncing Power BI metadata",
-            message="Waiting for the launched Power BI metadata attempt to finish.",
+            current_step=(
+                "Syncing Power BI usage" if sync_type == "usage"
+                else "Syncing Power BI metadata"
+            ),
+            message=f"Waiting for the launched Power BI {sync_type} attempt to finish.",
         )
         latest = (
-            pbi_sync_attempt("refresh", attempt_id)
+            pbi_sync_attempt(sync_type, attempt_id)
             if attempt_id
-            else latest_pbi_sync_after("refresh", launch_id)
+            else latest_pbi_sync_after(sync_type, launch_id)
         )
         latest_status = (latest or {}).get("status", "").lower()
         if latest and latest_status in PBI_SYNC_TERMINAL_STATUSES:
             return {
                 "status": latest_status,
-                "message": latest.get("message") or f"Power BI sync {latest_status}.",
+                "message": latest.get("message") or f"Power BI {sync_type} sync {latest_status}.",
                 "run": latest,
                 "launch": launch_result,
             }
         time.sleep(PBI_SYNC_WAIT_POLL_SECONDS)
 
-    message = f"Timed out waiting {timeout_seconds} seconds for Power BI sync import to complete."
+    message = f"Timed out waiting {timeout_seconds} seconds for Power BI {sync_type} sync import to complete."
     _record_sync_run(
-        "refresh",
+        sync_type,
         "failed",
         message,
         {"launch": launch_result},
@@ -1517,6 +1522,28 @@ def trigger_pbi_sync_and_wait(
     )
     return wait_for_pbi_sync_completion(
         result,
+        sync_type="refresh",
+        timeout_seconds=timeout_seconds,
+        cancel_generation=cancel_generation,
+        operation_id=operation_id,
+    )
+
+
+def trigger_pbi_usage_sync_and_wait(
+    *,
+    cancel_existing: bool = False,
+    cancel_generation: int | None = None,
+    timeout_seconds: int = PBI_SYNC_WAIT_TIMEOUT_SECONDS,
+    operation_id: int | None = None,
+) -> dict:
+    """Launch usage metadata sync and wait for its exact terminal import result."""
+    result = trigger_pbi_usage_sync(
+        cancel_existing=cancel_existing,
+        cancel_generation=cancel_generation,
+    )
+    return wait_for_pbi_sync_completion(
+        result,
+        sync_type="usage",
         timeout_seconds=timeout_seconds,
         cancel_generation=cancel_generation,
         operation_id=operation_id,

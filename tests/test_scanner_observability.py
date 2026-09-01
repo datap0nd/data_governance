@@ -375,15 +375,32 @@ def test_full_scan_job_covers_pre_scan_power_bi_failure(monkeypatch):
             observed.append(jobs.get_job(job_id))
             return {"status": "failed", "message": "refresh unavailable"}
 
+        def local_scan(**kwargs):
+            observed.append(kwargs["initial_components"])
+            jobs.finish_job(
+                job_id,
+                status="completed_with_warnings",
+                result={"status": "completed_with_warnings"},
+                message="Local catalog completed after Power BI failed.",
+            )
+            return {"status": "completed_with_warnings"}
+
         monkeypatch.setattr(scanner, "trigger_pbi_sync_and_wait", pbi_sync)
-        scanner._execute_full_scan_job(job_id, 7, {"status": "stopped"})
+        monkeypatch.setattr(scanner, "run_scan", local_scan)
+        monkeypatch.setattr(
+            scanner.scanner_notifications,
+            "notify_full_refresh_failures",
+            lambda _job_id: {},
+        )
+        scanner._execute_full_scan_job(job_id, None, {})
 
         assert observed[0]["status"] == "running"
         assert observed[0]["current_step"] == "Syncing Power BI metadata"
+        assert observed[1]["power_bi_metadata"]["status"] == "failed"
         final = jobs.get_job(job_id)
-        assert final["status"] == "failed"
-        assert final["result"]["status"] == "pbi_sync_not_completed"
-        assert "before report discovery" in final["message"]
+        assert final["status"] == "completed_with_warnings"
+        assert final["result"]["status"] == "completed_with_warnings"
+        assert "after Power BI failed" in final["message"]
     finally:
         temp_dir.cleanup()
 

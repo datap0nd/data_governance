@@ -38,7 +38,7 @@ from app.scanner.tmdl_parser import (
     is_folder_like_file_source,
     path_has_file_extension,
 )
-from app.scanner.walker import walk_reports_root
+from app.scanner.walker import walk_reports_root, diagnose_reports_root
 from app.scanner.source_matcher import deduplicate_sources
 from app.scanner.findings import sync_managed_actions
 from app.scanner import jobs as scanner_jobs
@@ -58,6 +58,36 @@ from app.source_identity import (
 )
 
 logger = logging.getLogger(__name__)
+_DEFAULT_WALK_REPORTS_ROOT = walk_reports_root
+
+
+class ReportDiscoveryError(RuntimeError):
+    """Raised before reconciliation when the configured report snapshot is invalid."""
+
+
+def _validate_report_discovery(root: str | Path, reports: list) -> None:
+    path = Path(root)
+    if not path.exists():
+        raise ReportDiscoveryError(f"Configured report root does not exist: {path}")
+    if not path.is_dir():
+        raise ReportDiscoveryError(f"Configured report root is not a directory: {path}")
+    if reports:
+        return
+    diagnostic = diagnose_reports_root(path)
+    errors = diagnostic.get("errors") or []
+    if errors:
+        reason = "; ".join(str(item) for item in errors[:3])
+    else:
+        pbix_count = len(diagnostic.get("pbix_files") or [])
+        tmdl_count = sum(
+            1 for item in diagnostic.get("tmdl_folders") or []
+            if not item.get("skip_reason")
+        )
+        reason = (
+            "no valid report definitions were parsed "
+            f"({pbix_count} PBIX candidate(s), {tmdl_count} valid TMDL folder(s))"
+        )
+    raise ReportDiscoveryError(f"Report discovery produced no usable reports: {reason}")
 
 _FILE_SOURCE_DB_TYPES = {"csv", "excel", "folder", "file"}
 
@@ -214,7 +244,9 @@ def run_scan(
     *,
     cancel_generation: int | None = None,
     run_followup_probe: bool = True,
+    run_followups: bool = True,
     operation_id: int | None = None,
+    initial_components: dict | None = None,
 ) -> dict:
     """Run a full scan and store results.
 
@@ -230,6 +262,13 @@ def run_scan(
             current_step="Preparing full scan",
             message="Creating a database backup before discovery.",
         )
+    from app.scanner import modules as scanner_modules
+
+    report_module_run_id = scanner_modules.create_module_run(
+        "report_catalog",
+        scanner_job_id=operation_id,
+        details={"phase": "backup"},
+    )
     scanner_jobs.mark_running(
         operation_id,
         current_step="Preparing full scan",
@@ -239,6 +278,13 @@ def run_scan(
     try:
         _backup_db()
     except Exception as exc:
+        scanner_modules.finish_module_run(
+            report_module_run_id,
+            status="failed",
+            summary="The pre-scan database backup failed.",
+            details={"status": "failed", "error": str(exc)},
+            log="Database backup failed before report discovery.",
+        )
         scanner_jobs.finish_job(
             operation_id,
             status="failed",
@@ -257,6 +303,7 @@ def run_scan(
         )
         scan_id = cursor.lastrowid
     scanner_jobs.attach_scan_run(operation_id, int(scan_id))
+    scanner_modules.attach_scan_run(report_module_run_id, int(scan_id))
 
     active_report_count = 0
     active_source_count = 0
@@ -265,12 +312,11 @@ def run_scan(
     broken_refs = 0
     log_text = "Scan did not complete core discovery."
     postgres_required = False
-    components = {
-        "core": {
-            "status": "running",
-            "requested": True,
-            "required": True,
-        }
+    components = dict(initial_components or {})
+    components["core"] = {
+        "status": "running",
+        "requested": True,
+        "required": True,
     }
 
     def _mapping_result(value):
@@ -286,12 +332,33 @@ def run_scan(
             message="Reading PBIX/TMDL report definitions and source expressions.",
         )
         reports = walk_reports_root(root)
+        # Filesystem validation belongs to the built-in discovery provider.
+        # Tests and embedding callers may replace it with an in-memory source.
+        if walk_reports_root is _DEFAULT_WALK_REPORTS_ROOT:
+            _validate_report_discovery(root, reports)
         assert_not_cancelled(generation, "Report scan")
         all_sources = deduplicate_sources(reports)
         assert_not_cancelled(generation, "Report scan")
 
         broken_by_report: dict[int, dict] = {}
         log_lines = []
+
+        provider_counts: dict[str, int] = {}
+        for report in reports:
+            discovery = getattr(report, "discovery", {}) or {}
+            provider = str(discovery.get("model_provider") or "legacy")
+            provider_counts[provider] = provider_counts.get(provider, 0) + 1
+            if discovery.get("table_sets_disagree"):
+                log_lines.append(
+                    f"DISCOVERY WARNING: {report.name} PBIX/TMDL table sets differ; "
+                    f"used {provider.upper()} model snapshot"
+                )
+        if provider_counts:
+            log_lines.append(
+                "DISCOVERY: " + ", ".join(
+                    f"{name}={count}" for name, count in sorted(provider_counts.items())
+                )
+            )
 
         # Per-report parsing summary (visible in scan log)
         for report in reports:
@@ -953,6 +1020,16 @@ def run_scan(
             },
             required=True,
         )
+        scanner_modules.finish_module_run(
+            report_module_run_id,
+            status="completed",
+            summary=(
+                f"Discovered {active_report_count} report(s) and "
+                f"{active_source_count} active source(s)."
+            ),
+            details=components["core"],
+            log=log_text,
+        )
         scanner_jobs.heartbeat(
             operation_id,
             current_step="Refreshing PostgreSQL lineage",
@@ -962,20 +1039,27 @@ def run_scan(
         )
 
         # Scan PostgreSQL MV dependencies
+        dep_module_run_id = None
         assert_not_cancelled(generation, "Report scan")
-        try:
-            from app.scanner.pg_deps import scan_pg_dependencies
-
-            dep_result = scan_pg_dependencies(
-                scan_run_id=scan_id,
-                operation_id=operation_id,
-                cancel_generation=generation,
+        if run_followups:
+            dep_module_run_id = scanner_modules.create_module_run(
+                "postgres_lineage", scanner_job_id=operation_id, scan_run_id=scan_id
             )
-            dep_result = _mapping_result(dep_result)
-            logger.info("PG dependency scan completed: %s", dep_result.get("status"))
-        except Exception as e:
-            dep_result = {"status": "failed", "error": str(e)}
-            logger.exception("PG dependency scan failed: %s", e)
+            try:
+                from app.scanner.pg_deps import scan_pg_dependencies
+
+                dep_result = scan_pg_dependencies(
+                    scan_run_id=scan_id,
+                    operation_id=operation_id,
+                    cancel_generation=generation,
+                )
+                dep_result = _mapping_result(dep_result)
+                logger.info("PG dependency scan completed: %s", dep_result.get("status"))
+            except Exception as e:
+                dep_result = {"status": "failed", "error": str(e)}
+                logger.exception("PG dependency scan failed: %s", e)
+        else:
+            dep_result = {"status": "not_requested"}
         dep_status = normalize_scan_status(dep_result.get("status"))
         # Deferred report relinks can make the core-stage snapshot stale, while
         # an unidentified active PostgreSQL source can still require attention
@@ -983,15 +1067,30 @@ def run_scan(
         # instead of trusting either snapshot or status in isolation.
         with get_db() as db:
             postgres_required = _postgres_work_is_required(db)
-        dep_requested = not (
-            not postgres_required and dep_status in {"skipped", "not_requested"}
-        )
+        if run_followups:
+            dep_requested = not (
+                not postgres_required and dep_status in {"skipped", "not_requested"}
+            )
+        else:
+            postgres_required = False
+            dep_requested = False
         dep_component = component_result(
             dep_result,
             requested=dep_requested,
             required=postgres_required,
         )
         components["postgres_dependencies"] = dep_component
+        if dep_module_run_id is not None:
+            scanner_modules.finish_module_run(
+                dep_module_run_id,
+                status=dep_component.get("status") or "completed",
+                summary=(
+                    f"Found {int(dep_component.get('mvs_found') or 0)} materialized view(s) "
+                    f"and {int(dep_component.get('deps_created') or 0)} dependency edge(s)."
+                ),
+                details=dep_component,
+                log=dep_component.get("log") or dep_component.get("query_change_log"),
+            )
 
         # Scan pg_cron for MV refresh schedules
         scanner_jobs.heartbeat(
@@ -999,18 +1098,25 @@ def run_scan(
             current_step="Reading PostgreSQL schedules",
             message="Checking pg_cron materialized-view refresh schedules.",
         )
+        cron_module_run_id = None
         assert_not_cancelled(generation, "Report scan")
-        try:
-            from app.scanner.pg_cron import scan_pg_cron
+        if run_followups:
+            cron_module_run_id = scanner_modules.create_module_run(
+                "postgres_schedules", scanner_job_id=operation_id, scan_run_id=scan_id
+            )
+            try:
+                from app.scanner.pg_cron import scan_pg_cron
 
-            cron_result = scan_pg_cron()
-            cron_result = _mapping_result(cron_result)
-            logger.info("pg_cron scan completed: %s", cron_result.get("status"))
-        except Exception as e:
-            cron_result = {"status": "failed", "error": str(e)}
-            logger.exception("pg_cron scan failed: %s", e)
+                cron_result = scan_pg_cron()
+                cron_result = _mapping_result(cron_result)
+                logger.info("pg_cron scan completed: %s", cron_result.get("status"))
+            except Exception as e:
+                cron_result = {"status": "failed", "error": str(e)}
+                logger.exception("pg_cron scan failed: %s", e)
+        else:
+            cron_result = {"status": "not_requested"}
         cron_status = normalize_scan_status(cron_result.get("status"))
-        cron_requested = not (
+        cron_requested = run_followups and not (
             not postgres_required and cron_status in {"skipped", "not_requested"}
         )
         cron_component = component_result(
@@ -1019,6 +1125,14 @@ def run_scan(
             required=postgres_required,
         )
         components["postgres_schedules"] = cron_component
+        if cron_module_run_id is not None:
+            scanner_modules.finish_module_run(
+                cron_module_run_id,
+                status=cron_component.get("status") or "completed",
+                summary=(cron_component.get("message") or "PostgreSQL schedules checked."),
+                details=cron_component,
+                log=cron_component.get("log"),
+            )
 
         # Import configured usage CSVs as part of the scan instead of waiting
         # for a user to open a report or action page.
@@ -1027,23 +1141,106 @@ def run_scan(
             current_step="Syncing usage metadata",
             message="Reading configured Power BI usage exports.",
         )
-        try:
-            from app.usage import sync_usage_from_csv_if_configured
+        usage_module_run_id = None
+        if run_followups:
+            usage_module_run_id = scanner_modules.create_module_run(
+                "usage_metadata", scanner_job_id=operation_id, scan_run_id=scan_id
+            )
+            try:
+                from app.usage import sync_usage_from_csv_if_configured
 
-            with get_db() as db:
-                usage_result = sync_usage_from_csv_if_configured(db)
-            usage_result = _mapping_result(usage_result)
-            logger.info("Usage sync completed: %s", usage_result.get("status"))
-        except Exception as e:
-            usage_result = {"status": "failed", "error": str(e)}
-            logger.exception("Usage sync failed: %s", e)
-        usage_component = component_result(usage_result)
+                with get_db() as db:
+                    usage_result = sync_usage_from_csv_if_configured(db)
+                usage_result = _mapping_result(usage_result)
+                logger.info("Usage sync completed: %s", usage_result.get("status"))
+            except Exception as e:
+                usage_result = {"status": "failed", "error": str(e)}
+                logger.exception("Usage sync failed: %s", e)
+            try:
+                from app.scanner.pbi_sync import (
+                    cached_account_available,
+                    service_principal_configured,
+                    trigger_pbi_usage_sync_and_wait,
+                )
+
+                if service_principal_configured() or cached_account_available():
+                    pbi_usage_result = trigger_pbi_usage_sync_and_wait(
+                        cancel_existing=False,
+                        cancel_generation=generation,
+                        operation_id=operation_id,
+                    )
+                    pbi_usage_result = _mapping_result(pbi_usage_result)
+                else:
+                    pbi_usage_result = {
+                        "status": "skipped",
+                        "reason": "Power BI headless authentication is not configured.",
+                    }
+            except ScannerWorkCancelled:
+                raise
+            except Exception as e:
+                pbi_usage_result = {"status": "failed", "error": str(e)}
+                logger.exception("Power BI usage sync failed: %s", e)
+        else:
+            usage_result = {"status": "not_requested"}
+            pbi_usage_result = {"status": "not_requested"}
+        csv_component = component_result(
+            usage_result,
+            requested=run_followups and normalize_scan_status(usage_result.get("status")) != "skipped",
+        )
+        pbi_usage_component = component_result(
+            pbi_usage_result,
+            requested=run_followups and normalize_scan_status(pbi_usage_result.get("status")) != "skipped",
+        )
+        usage_failures = [
+            name for name, item in (
+                ("csv_import", csv_component),
+                ("power_bi_usage", pbi_usage_component),
+            )
+            if normalize_scan_status(item.get("status")) == "failed"
+        ]
+        usage_requested = any(
+            bool(item.get("requested")) for item in (csv_component, pbi_usage_component)
+        )
+        usage_status = (
+            "failed" if usage_failures else
+            "completed" if usage_requested else
+            "not_requested"
+        )
+        usage_component = component_result(
+            {
+                "status": usage_status,
+                "csv_import": csv_component,
+                "power_bi_usage": pbi_usage_component,
+                "failed_subscans": usage_failures,
+            },
+            requested=run_followups,
+        )
         components["usage"] = usage_component
+        if usage_module_run_id is not None:
+            scanner_modules.finish_module_run(
+                usage_module_run_id,
+                status=usage_status,
+                summary=(
+                    "Failed sub-steps: " + ", ".join(usage_failures)
+                    if usage_failures else "Usage metadata synchronized."
+                ),
+                details=usage_component,
+                log="\n".join(
+                    (
+                        f"Configured CSV import: {csv_component.get('status', 'unknown')}",
+                        f"Power BI usage sync: {pbi_usage_component.get('status', 'unknown')}",
+                    )
+                ),
+            )
 
         # Probe after dependency and cron discovery so all freshness and
         # data-quality decisions use the current graph.
         probe_result = None
-        if run_followup_probe:
+        probe_module_run_id = None
+        if run_followups and run_followup_probe:
+            probe_module_run_id = scanner_modules.create_module_run(
+                "source_freshness", scanner_job_id=operation_id, scan_run_id=scan_id
+            )
             scanner_jobs.heartbeat(
                 operation_id,
                 current_step="Probing source freshness",
@@ -1067,6 +1264,14 @@ def run_scan(
         else:
             probe_component = component_result(requested=False)
         components["probe"] = probe_component
+        if probe_module_run_id is not None:
+            scanner_modules.finish_module_run(
+                probe_module_run_id,
+                status=probe_component.get("status") or "completed",
+                summary=(probe_component.get("message") or "Source freshness checked."),
+                details=probe_component,
+                log=probe_component.get("log"),
+            )
 
         # Persist governance findings as owned actions with automatic closure
         # when the next scan proves the condition has cleared.
@@ -1076,43 +1281,68 @@ def run_scan(
             message="Checking best practices, schedules, and documentation coverage.",
         )
         governance_results = {}
-        try:
-            from app.routers.best_practices import run_best_practice_scan
+        governance_module_run_id = None
+        if run_followups:
+            governance_module_run_id = scanner_modules.create_module_run(
+                "governance", scanner_job_id=operation_id, scan_run_id=scan_id
+            )
+            try:
+                from app.routers.best_practices import run_best_practice_scan
 
-            governance_results["best_practices"] = run_best_practice_scan(persist=False)
-        except Exception as e:
-            governance_results["best_practices"] = {"status": "failed", "error": str(e)}
-            logger.exception("Best-practice scan failed: %s", e)
-        try:
-            from app.routers.schedules import run_schedule_discrepancy_scan
+                governance_results["best_practices"] = run_best_practice_scan(persist=False)
+            except Exception as e:
+                governance_results["best_practices"] = {"status": "failed", "error": str(e)}
+                logger.exception("Best-practice scan failed: %s", e)
+            try:
+                from app.routers.schedules import run_schedule_discrepancy_scan
 
-            governance_results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
-        except Exception as e:
-            governance_results["schedule_discrepancies"] = {"status": "failed", "error": str(e)}
-            logger.exception("Schedule discrepancy scan failed: %s", e)
-        try:
-            from app.routers.documentation import sync_documentation_completeness_actions
+                governance_results["schedule_discrepancies"] = run_schedule_discrepancy_scan(persist=True)
+            except Exception as e:
+                governance_results["schedule_discrepancies"] = {"status": "failed", "error": str(e)}
+                logger.exception("Schedule discrepancy scan failed: %s", e)
+            try:
+                from app.routers.documentation import sync_documentation_completeness_actions
 
-            governance_results["documentation"] = sync_documentation_completeness_actions()
-        except Exception as e:
-            governance_results["documentation"] = {"status": "failed", "error": str(e)}
-            logger.exception("Documentation completeness scan failed: %s", e)
+                governance_results["documentation"] = sync_documentation_completeness_actions()
+            except Exception as e:
+                governance_results["documentation"] = {"status": "failed", "error": str(e)}
+                logger.exception("Documentation completeness scan failed: %s", e)
 
         governance_components = {}
         for name, result in governance_results.items():
             governance_components[name] = component_result(_mapping_result(result))
+        failed_governance = [
+            name for name, item in governance_components.items()
+            if normalize_scan_status(item.get("status")) == "failed"
+        ]
         governance_status = (
+            "failed" if failed_governance else
             "completed_with_warnings"
             if any(component_has_warning(item) for item in governance_components.values())
             else "completed"
-        )
+        ) if run_followups else "not_requested"
         governance_component = component_result(
             {
                 "status": governance_status,
                 **governance_components,
-            }
+            },
+            requested=run_followups,
         )
         components["governance"] = governance_component
+        if governance_module_run_id is not None:
+            scanner_modules.finish_module_run(
+                governance_module_run_id,
+                status=governance_status,
+                summary=(
+                    "Failed sub-checks: " + ", ".join(failed_governance)
+                    if failed_governance else "Governance checks completed."
+                ),
+                details=governance_component,
+                log="\n".join(
+                    f"{name}: {item.get('status', 'unknown')}"
+                    for name, item in governance_components.items()
+                ),
+            )
 
         mv_changed_queries = int(dep_component.get("changed_queries") or 0)
         changed_queries += mv_changed_queries
@@ -1182,6 +1412,12 @@ def run_scan(
 
     except ScannerWorkCancelled as e:
         logger.info("Scan stopped: %s", e)
+        scanner_modules.finish_active_runs_for_scan(
+            scan_id,
+            status="stopped",
+            summary=str(e),
+            details={"status": "stopped", "message": str(e)},
+        )
         if normalize_scan_status(components.get("core", {}).get("status")) == "running":
             components["core"] = component_result(
                 {"status": "stopped", "message": str(e)}, required=True
@@ -1219,6 +1455,21 @@ def run_scan(
 
     except Exception as e:
         logger.exception("Scan failed")
+        current_report_run = scanner_modules.get_module_run(report_module_run_id)
+        if current_report_run and current_report_run.get("active"):
+            scanner_modules.finish_module_run(
+                report_module_run_id,
+                status="failed",
+                summary=str(e),
+                details={"status": "failed", "error": str(e)},
+                log="Report catalog discovery failed before reconciliation.",
+            )
+        scanner_modules.finish_active_runs_for_scan(
+            scan_id,
+            status="failed",
+            summary="Module interrupted by scanner orchestration failure.",
+            details={"status": "failed", "error": str(e)},
+        )
         core_status = normalize_scan_status(components.get("core", {}).get("status"))
         if core_status == "running":
             components["core"] = component_result(
