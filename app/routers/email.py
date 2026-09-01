@@ -298,6 +298,8 @@ def _fixed_schedule_max_gap_days(schedule_days: str | None) -> int | None:
 def _source_max_age_days(source: dict | None) -> str:
     if not source:
         return "-"
+    if source.get("freshness_mode") == "disabled" or source.get("freshness_rule_status") in {"conflict", "unmapped", "suspended"}:
+        return "-"
     custom = source.get("custom_fresh_days")
     if custom:
         return str(custom)
@@ -850,6 +852,9 @@ def _load_alert_summaries(
             for s in db.execute("""
                 SELECT s.id, s.name, s.type, s.connection_info, s.source_query,
                        s.custom_fresh_days, s.freshness_rule_type, s.freshness_schedule_days,
+                       s.freshness_mode, s.freshness_rule_status,
+                       s.freshness_schedule_time, s.freshness_schedule_day,
+                       s.freshness_timezone, s.freshness_rule_origin,
                        sp.status AS latest_status,
                        CAST(sp.last_data_at AS TEXT) AS last_data_at
                 FROM sources s

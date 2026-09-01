@@ -123,22 +123,41 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return dt
 
 
+def _src_value(src, key: str, default=None):
+    return src[key] if key in src.keys() else default
+
+
 def _rule_for_source(src) -> dict:
     """Normalize legacy and current source freshness rule fields."""
-    custom_days = src["custom_fresh_days"] or None
-    rule_type = src["freshness_rule_type"] or ("custom" if custom_days else None)
+    mode = str(_src_value(src, "freshness_mode") or "manual").casefold()
+    managed_status = _src_value(src, "freshness_rule_status")
+    if mode == "disabled" or (mode == "inherit" and managed_status not in {None, "mapped"}):
+        return {"type": None, "description": None, "mode": mode, "managed_status": managed_status}
+    custom_days = _src_value(src, "custom_fresh_days") or None
+    rule_type = _src_value(src, "freshness_rule_type") or ("custom" if custom_days else None)
+    schedule_time = _src_value(src, "freshness_schedule_time")
+    common = {
+        "time": schedule_time,
+        "timezone": _src_value(src, "freshness_timezone"),
+        "baseline_at": _src_value(src, "freshness_effective_from_at"),
+        "mode": mode,
+        "managed_status": managed_status,
+    }
     if rule_type == "daily":
-        return {"type": "daily", "fresh_days": 1, "description": "daily"}
+        return {"type": "daily", "fresh_days": 1, "days": [], "day": None, "description": "daily", **common}
     if rule_type == "custom" and custom_days:
-        return {"type": "custom", "fresh_days": custom_days, "description": f"{custom_days} days"}
+        return {"type": "custom", "fresh_days": custom_days, "description": f"{custom_days} days", **common}
     if rule_type == "fixed":
         days = []
-        for raw in (src["freshness_schedule_days"] or "").split(","):
+        for raw in (_src_value(src, "freshness_schedule_days") or "").split(","):
             day = raw.strip()
             if day in WEEKDAY_ORDER and day not in days:
                 days.append(day)
         if days:
-            return {"type": "fixed", "days": days, "description": "fixed schedule: " + ", ".join(days)}
+            return {"type": "fixed", "days": days, "day": None, "description": "fixed schedule: " + ", ".join(days), **common}
+    if rule_type == "monthly" and _src_value(src, "freshness_schedule_day"):
+        day = int(_src_value(src, "freshness_schedule_day"))
+        return {"type": "monthly", "days": [], "day": day, "description": f"monthly on day {day}", **common}
     return {"type": None, "description": None}
 
 
@@ -153,7 +172,9 @@ def _compute_fixed_schedule_status(last_activity_str: str | None, schedule_days:
 
     # No refresh time is captured, so today's scheduled refresh gets until
     # tomorrow before it is considered missed.
-    today = datetime.now(timezone.utc).date()
+    from app.freshness import host_timezone
+    zone = host_timezone()
+    today = datetime.now(timezone.utc).astimezone(zone).date()
     cursor = today - timedelta(days=1) if today.weekday() in scheduled_dows else today
     expected_date = None
     for offset in range(8):
@@ -164,14 +185,55 @@ def _compute_fixed_schedule_status(last_activity_str: str | None, schedule_days:
 
     if expected_date is None:
         return "unknown"
-    return "fresh" if last_dt.date() >= expected_date else "outdated"
+    return "fresh" if last_dt.astimezone(zone).date() >= expected_date else "outdated"
+
+
+def _compute_monthly_schedule_status(last_activity_str: str | None, schedule_day: int) -> str:
+    import calendar
+    from app.freshness import host_timezone
+
+    last_dt = _parse_datetime(last_activity_str)
+    if last_dt is None or not 1 <= int(schedule_day or 0) <= 31:
+        return "unknown"
+    zone = host_timezone()
+    today = datetime.now(timezone.utc).astimezone(zone).date()
+    cursor = today - timedelta(days=1) if today.day == schedule_day else today
+    year, month = cursor.year, cursor.month
+    for _ in range(24):
+        if schedule_day <= calendar.monthrange(year, month)[1]:
+            candidate = datetime(year, month, schedule_day).date()
+            if candidate <= cursor:
+                return "fresh" if last_dt.astimezone(zone).date() >= candidate else "outdated"
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    return "unknown"
 
 
 def _compute_status_for_rule(last_activity_str: str | None, rule: dict) -> str:
     if not rule.get("type"):
         return "no_rule"
+    if rule.get("time") and rule["type"] in {"daily", "fixed", "monthly"}:
+        from app.config import FLOW_TIMEZONE
+        from app.freshness import evaluate_timed_rule, parse_monitoring_timestamp, parse_source_timestamp
+        timed_rule = {
+            "type": "weekly" if rule["type"] == "fixed" else rule["type"],
+            "time": rule["time"],
+            "days": [str(day).casefold() for day in rule.get("days", [])],
+            "day": rule.get("day"),
+            "timezone": rule.get("timezone") or FLOW_TIMEZONE,
+        }
+        result = evaluate_timed_rule(
+            timed_rule,
+            evidence_at=parse_source_timestamp(last_activity_str),
+            baseline_at=parse_monitoring_timestamp(rule.get("baseline_at")),
+        )
+        return "outdated" if result["status"] == "overdue" else "fresh"
     if rule["type"] == "fixed":
         return _compute_fixed_schedule_status(last_activity_str, rule.get("days", []))
+    if rule["type"] == "monthly":
+        return _compute_monthly_schedule_status(last_activity_str, int(rule.get("day") or 0))
     return _compute_status(last_activity_str, rule.get("fresh_days"))
 
 
@@ -1332,7 +1394,9 @@ def run_probe(
         # 1. Probe file-based sources
         file_sources = db.execute(
             """SELECT id, name, type, connection_info, custom_fresh_days,
-                      freshness_rule_type, freshness_schedule_days
+                      freshness_rule_type, freshness_schedule_days,
+                      freshness_mode, freshness_rule_status, freshness_schedule_time,
+                      freshness_schedule_day, freshness_timezone, freshness_effective_from_at
                FROM sources WHERE type IN ('csv', 'excel', 'folder')
                  AND COALESCE(archived, 0) = 0"""
         ).fetchall()
@@ -1376,7 +1440,10 @@ def run_probe(
         pg_sources = db.execute(
             """SELECT s.id, s.name, s.type, s.connection_info,
                       s.custom_fresh_days, s.freshness_rule_type,
-                      s.freshness_schedule_days,
+                      s.freshness_schedule_days, s.freshness_mode,
+                      s.freshness_rule_status, s.freshness_schedule_time,
+                      s.freshness_schedule_day, s.freshness_timezone,
+                      s.freshness_effective_from_at,
                       spi.server_name, spi.database_name, spi.schema_name,
                       spi.relation_name, spi.relation_kind
                  FROM sources s

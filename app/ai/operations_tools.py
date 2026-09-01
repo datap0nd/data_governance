@@ -857,10 +857,16 @@ def _source_freshness_profile(
     ]
     return {
         "configured_rule": {
+            "mode": source["freshness_mode"],
             "type": rule_type,
             "fresh_days": threshold,
             "stale_days": source["custom_stale_days"],
             "schedule_days": _safe_text(source["freshness_schedule_days"], 200),
+            "schedule_time": source["freshness_schedule_time"],
+            "schedule_day": source["freshness_schedule_day"],
+            "timezone": source["freshness_timezone"],
+            "origin": source["freshness_rule_origin"],
+            "mapping_status": source["freshness_rule_status"],
             "declared_refresh_schedule": _safe_text(source["refresh_schedule"], 300),
         },
         "current_age_days": current_age,
@@ -951,6 +957,11 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
                 """SELECT id, name, type, owner, refresh_schedule,
                           custom_fresh_days, custom_stale_days,
                           freshness_rule_type, freshness_schedule_days,
+                          freshness_mode, freshness_schedule_time,
+                          freshness_schedule_day, freshness_timezone,
+                          freshness_rule_origin, freshness_rule_status,
+                          freshness_producer_flow_ids, freshness_conflicts_json,
+                          freshness_warnings_json, freshness_effective_from_at,
                           archived, updated_at
                      FROM sources WHERE id=?""",
                 (action["source_id"],),
@@ -970,7 +981,8 @@ def _get_alert_context(args: AlertContextArgs) -> ToolEnvelope:
             linked_flows = db.execute(
                 """SELECT id, name, enabled, source_type, schedule_type,
                           schedule_time, schedule_days, schedule_day,
-                          last_run_at, last_success_at, last_status, last_error
+                          last_run_at, last_success_at, last_execution_success_at,
+                          freshness_effective_from_at, last_status, last_error
                      FROM flows
                     WHERE sql_target_source_id=?
                     ORDER BY enabled DESC, name LIMIT 10""",

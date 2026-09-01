@@ -1110,6 +1110,8 @@ function sourceFreshnessRuleType(source) {
 }
 
 function sourceHasFreshnessRule(source) {
+    if (source.freshness_mode === "disabled") return false;
+    if (source.freshness_mode === "inherit") return source.freshness?.status === "mapped" && !!sourceFreshnessRuleType(source);
     return !!sourceFreshnessRuleType(source);
 }
 
@@ -1119,19 +1121,29 @@ function sourceFreshnessDays(source) {
 }
 
 function freshnessRuleLabel(source) {
+    const meta = source.freshness || {};
+    if (source.freshness_mode === "disabled") return "Disabled";
+    if (source.freshness_mode === "inherit" && meta.status !== "mapped") {
+        return ({ conflict: "Inheritance conflict", suspended: "Inherited · paused", unmapped: "Unmapped" })[meta.status] || "Awaiting inheritance";
+    }
     const type = sourceFreshnessRuleType(source);
-    if (type === "daily") return "Daily";
+    const time = source.freshness_schedule_time ? ` at ${source.freshness_schedule_time}` : "";
+    const prefix = source.freshness_mode === "inherit" ? "Inherited · " : "";
+    if (type === "daily") return `${prefix}Daily${time}`;
     if (type === "fixed") {
         const days = sourceFreshnessDays(source).map(d => d.slice(0, 3)).join(", ");
-        return days ? `Fixed: ${days}` : "Fixed";
+        return `${prefix}${days ? `Fixed: ${days}` : "Fixed"}${time}`;
     }
-    if (type === "custom" && source.custom_fresh_days) return `Custom: ${source.custom_fresh_days}d`;
+    if (type === "monthly") return `${prefix}Monthly: day ${source.freshness_schedule_day}${time}`;
+    if (type === "custom" && source.custom_fresh_days) return `${prefix}Custom: ${source.custom_fresh_days}d`;
     return "-";
 }
 
 function _freshnessRuleFormHtml(source, opts = {}) {
     const prefix = opts.prefix || "freshness";
     const freshnessType = sourceFreshnessRuleType(source);
+    const selectedMode = source.freshness_mode === "inherit"
+        ? "inherit" : source.freshness_mode === "disabled" ? "disabled" : (freshnessType || "manual_invalid");
     const hasFreshnessRule = sourceHasFreshnessRule(source);
     const freshVal = source.custom_fresh_days != null && source.custom_fresh_days > 0 ? source.custom_fresh_days : "";
     const selectedFreshDays = new Set(sourceFreshnessDays(source));
@@ -1147,10 +1159,13 @@ function _freshnessRuleFormHtml(source, opts = {}) {
         <div class="freshness-rule-form${wideClass}" data-freshness-prefix="${esc(prefix)}">
             <label class="freshness-label">Rule
                 <select id="${esc(prefix)}-rule-type" class="freshness-select">
-                    <option value="" ${!freshnessType ? "selected" : ""}>No rule</option>
-                    <option value="daily" ${freshnessType === "daily" ? "selected" : ""}>Daily</option>
-                    <option value="custom" ${freshnessType === "custom" ? "selected" : ""}>Custom days</option>
-                    <option value="fixed" ${freshnessType === "fixed" ? "selected" : ""}>Fixed schedule</option>
+                    <option value="inherit" ${selectedMode === "inherit" ? "selected" : ""}>Inherit producer schedule</option>
+                    <option value="disabled" ${selectedMode === "disabled" ? "selected" : ""}>No rule (disabled)</option>
+                    ${selectedMode === "manual_invalid" ? '<option value="manual_invalid" selected disabled>Manual rule needs repair</option>' : ""}
+                    <option value="daily" ${selectedMode === "daily" ? "selected" : ""}>Manual · daily</option>
+                    <option value="custom" ${selectedMode === "custom" ? "selected" : ""}>Manual · custom days</option>
+                    <option value="fixed" ${selectedMode === "fixed" ? "selected" : ""}>Manual · fixed schedule</option>
+                    <option value="monthly" ${selectedMode === "monthly" ? "selected" : ""}>Manual · monthly</option>
                 </select>
             </label>
             <label class="freshness-label freshness-custom-options">Healthy up to
@@ -1162,11 +1177,19 @@ function _freshnessRuleFormHtml(source, opts = {}) {
                 <div class="freshness-day-list">${dayBoxes}</div>
                 <span class="freshness-help">Choose the expected refresh days</span>
             </div>
+            <label class="freshness-label freshness-monthly-options">Day of month
+                <input type="number" id="${esc(prefix)}-month-day" value="${source.freshness_schedule_day || 1}" min="1" max="31" class="input-sm">
+            </label>
+            <label class="freshness-label freshness-timed-options">Expected time
+                <input type="time" id="${esc(prefix)}-refresh-time" value="${esc(source.freshness_schedule_time || "")}">
+            </label>
             <button class="btn-sm btn-blue" id="${esc(prefix)}-save-freshness">Save</button>
             ${hasFreshnessRule ? `<button class="btn-sm btn-outline" id="${esc(prefix)}-reset-freshness">Clear rule</button>` : ""}
             ${hasFreshnessRule
                 ? `<span class="badge badge-blue" style="font-size:0.72rem">${esc(freshnessRuleLabel(source))}</span>`
-                : '<span style="color:var(--text-dim);font-size:0.75rem">No rule set - freshness not monitored for this source</span>'}
+                : `<span style="color:var(--text-dim);font-size:0.75rem">${esc(freshnessRuleLabel(source))}</span>`}
+            ${(source.freshness?.warnings || []).length ? `<span style="color:var(--yellow);font-size:0.75rem">Schedule warning</span>` : ""}
+            ${(source.freshness?.conflicts || []).length ? `<span style="color:var(--red);font-size:0.75rem">Resolve schedule conflict</span>` : ""}
         </div>
     `;
 }
@@ -1183,6 +1206,12 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
         panel.querySelectorAll(".freshness-fixed-options").forEach(el => {
             el.style.display = type === "fixed" ? "flex" : "none";
         });
+        panel.querySelectorAll(".freshness-monthly-options").forEach(el => {
+            el.style.display = type === "monthly" ? "flex" : "none";
+        });
+        panel.querySelectorAll(".freshness-timed-options").forEach(el => {
+            el.style.display = ["daily", "fixed", "monthly"].includes(type) ? "flex" : "none";
+        });
     };
     if (ruleTypeSelect) {
         ruleTypeSelect.addEventListener("change", syncFreshnessOptions);
@@ -1192,17 +1221,27 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
     if (saveFreshBtn) {
         saveFreshBtn.addEventListener("click", async () => {
             const ruleType = ruleTypeSelect ? ruleTypeSelect.value : "";
-            if (!ruleType) {
+            if (ruleType === "disabled") {
                 try {
                     await apiDelete(`/api/sources/${source.id}/freshness-rule`);
-                    toast("Rule cleared - source not monitored");
+                    toast("Freshness monitoring disabled");
                     if (afterChange) await afterChange();
                 } catch (err) {
                     toast("Failed: " + err.message);
                 }
                 return;
             }
-            const payload = { rule_type: ruleType };
+            if (ruleType === "inherit") {
+                try {
+                    await apiPut(`/api/sources/${source.id}/freshness-rule`, { mode: "inherit" });
+                    toast("Freshness now inherits its producer schedule");
+                    if (afterChange) await afterChange();
+                } catch (err) {
+                    toast("Failed: " + err.message);
+                }
+                return;
+            }
+            const payload = { mode: "manual", rule_type: ruleType };
             if (ruleType === "custom") {
                 const raw = panel.querySelector(`#${prefix}-fresh-days-input`).value.trim();
                 const fd = parseInt(raw, 10);
@@ -1219,6 +1258,17 @@ function _bindFreshnessRuleForm(panel, source, opts = {}) {
                     return;
                 }
                 payload.refresh_days = days;
+            }
+            if (ruleType === "monthly") {
+                const monthDay = parseInt(panel.querySelector(`#${prefix}-month-day`).value, 10);
+                if (isNaN(monthDay) || monthDay < 1 || monthDay > 31) {
+                    toast("Choose a day from 1 to 31");
+                    return;
+                }
+                payload.month_day = monthDay;
+            }
+            if (["daily", "fixed", "monthly"].includes(ruleType)) {
+                payload.refresh_time = panel.querySelector(`#${prefix}-refresh-time`)?.value || null;
             }
             try {
                 await apiPut(`/api/sources/${source.id}/freshness-rule`, payload);
@@ -3072,7 +3122,8 @@ async function renderSources() {
         { key: "row_count", label: "Rows", width: COL_W.sm, render: s => rowCountHtml(s.row_count), sortVal: s => s.row_count == null ? Number.MAX_SAFE_INTEGER : s.row_count, filterVal: s => s.row_count == null ? "unknown" : String(s.row_count) },
         { key: "freshness_rule_type", label: "Freshness", width: COL_W.md, render: s => {
             if (!sourceHasFreshnessRule(s)) {
-                return '<span style="color:var(--yellow)" title="No freshness rule set">no rule</span>';
+                const conflict = s.freshness?.status === "conflict";
+                return `<span style="color:${conflict ? 'var(--red)' : 'var(--yellow)'}" title="${esc(s.freshness?.origin || "No effective freshness rule")}">${esc(freshnessRuleLabel(s))}</span>`;
             }
             const unusual = Number(s.custom_fresh_days || 0) > 90;
             return `<span style="color:${unusual ? 'var(--yellow)' : 'var(--text-muted)'}"${unusual ? ' title="Unusually long threshold. Review whether this source is still active."' : ''}>${esc(freshnessRuleLabel(s))}${unusual ? ' - review' : ''}</span>`;
@@ -3111,7 +3162,7 @@ async function renderSources() {
     const pgCount = sources.filter(s => !s.archived && s.type === "postgresql").length;
     const unhealthyCount = degradedCount;
     const missingOwnerCount = active.filter(s => !String(s.owner || "").trim()).length;
-    const missingRuleCount = active.filter(s => !sourceHasFreshnessRule(s)).length;
+    const inheritedRuleCount = active.filter(s => s.freshness_mode === "inherit").length;
     const unusualRuleCount = active.filter(s => Number(s.custom_fresh_days || 0) > 90).length;
     const ownershipRows = ownerSuggestions.map(item => {
         const evidence = item.candidates.length
@@ -3143,7 +3194,7 @@ async function renderSources() {
                 <div class="source-bulk-actions" aria-label="Fill missing source information">
                     <button class="btn-sm btn-outline" id="btn-auto-source-owners" ${missingOwnerCount ? "" : "disabled"} title="Assign each unowned source to the most common owner among its linked reports. Ties are skipped.">Fill missing owners (${missingOwnerCount})</button>
                     <button class="btn-sm btn-outline" id="btn-review-source-owners" ${ownerSuggestions.length ? "" : "disabled"}>Review owner evidence (${ownerSuggestions.length})</button>
-                    <button class="btn-sm btn-outline" id="btn-auto-source-freshness" ${missingRuleCount ? "" : "disabled"} title="Create rules only for sources with no rule, using their saved source refresh schedule.">Set missing freshness rules (${missingRuleCount})</button>
+                    <button class="btn-sm btn-outline" id="btn-auto-source-freshness" ${inheritedRuleCount ? "" : "disabled"} title="Repair managed freshness mappings without changing manual or disabled sources.">Reconcile inherited freshness (${inheritedRuleCount})</button>
                 </div>
             </div>
             <section class="source-owner-review" id="source-owner-review" hidden>
@@ -3253,15 +3304,15 @@ function bindSourcesPage() {
         autoFreshnessBtn.addEventListener("click", async () => {
             const original = autoFreshnessBtn.textContent;
             autoFreshnessBtn.disabled = true;
-            autoFreshnessBtn.textContent = "Setting rules...";
+            autoFreshnessBtn.textContent = "Reconciling...";
             try {
                 const result = await apiPost("/api/sources/auto-set-freshness-rules");
-                toast(`Set ${result.configured} freshness rule${result.configured === 1 ? "" : "s"}${result.skipped_unsupported_schedule ? `; skipped ${result.skipped_unsupported_schedule}` : ""}`);
+                toast(`Reconciled ${result.reconciled} sources; changed ${result.changed}; conflicts ${result.conflicted}`);
                 await navigate("sources");
             } catch (err) {
                 autoFreshnessBtn.disabled = false;
                 autoFreshnessBtn.textContent = original;
-                toast("Freshness rules were not set: " + err.message);
+                toast("Freshness rules were not reconciled: " + err.message);
             }
         });
     }
@@ -10271,7 +10322,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         </div>
         <div class="flow-table-wrap">
             <table class="flow-table">
-                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
+                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Freshness</th><th>Last run</th><th></th></tr></thead>
                 <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
                     <tr>
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
@@ -10279,6 +10330,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                         <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
                         <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
+                        <td>${_flowFreshnessHtml(flow)}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
                             <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}>${activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run"}</button>
@@ -10288,6 +10340,24 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                     </tr>`; }).join("")}</tbody>
             </table>
         </div>`;
+}
+
+function _flowFreshnessHtml(flow) {
+    const health = flow.freshness_health || { status: "not_monitored" };
+    const labels = {
+        healthy: "Healthy", overdue: "Overdue", pending: "Pending",
+        paused: "Paused", not_monitored: "Not monitored",
+    };
+    const colors = {
+        healthy: "var(--green)", overdue: "var(--red)", pending: "var(--yellow)",
+        paused: "var(--text-dim)", not_monitored: "var(--text-dim)",
+    };
+    const rule = flow.freshness_rule;
+    const detail = rule
+        ? `${rule.type}${rule.day ? ` day ${rule.day}` : ""}${rule.time ? ` at ${rule.time}` : ""} · ${rule.timezone}`
+        : "No schedule-derived rule";
+    const due = health.latest_due_at ? `Latest due ${formatDate(health.latest_due_at)}` : detail;
+    return `<strong style="color:${colors[health.status] || 'var(--text-muted)'}">${esc(labels[health.status] || health.status)}</strong><small title="${esc(detail)}">${esc(due)}</small>`;
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.

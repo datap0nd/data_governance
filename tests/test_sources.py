@@ -157,8 +157,8 @@ def test_auto_set_freshness_rules_uses_explicit_source_schedules_only(source_db)
 
     result = sources.auto_set_source_freshness_rules(_request())
 
-    assert result["configured"] == 3
-    assert result["skipped_unsupported_schedule"] == 2
+    assert result["reconciled"] == 6
+    assert result["skipped"] == 1
     with database.get_db() as db:
         rows = {
             row["id"]: dict(row)

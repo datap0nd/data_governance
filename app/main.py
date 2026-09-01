@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from app.freshness import host_timezone
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -272,7 +273,7 @@ class UpdateDrainMiddleware(BaseHTTPMiddleware):
             _finish_update_sensitive_work()
 
 
-_scheduler = BackgroundScheduler()
+_scheduler = BackgroundScheduler(timezone=host_timezone())
 _OVERALL_REFRESH_RETRY_JOB_ID = "daily_overall_refresh_retry"
 _OVERALL_REFRESH_RETRY_MINUTES = 5
 

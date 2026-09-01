@@ -130,6 +130,8 @@ def test_outlook_success_receipt_advances_dedup_but_no_op_does_not(outlook_db):
         state = db.execute(
             "SELECT outlook_last_identity, last_success_at FROM flows WHERE id=?", (saved["id"],),
         ).fetchone()
+        # Isolate the no-op contract from the preceding materializing success.
+        db.execute("UPDATE flows SET last_execution_success_at=NULL WHERE id=?", (saved["id"],))
         job = flows._build_job(db, saved["id"])
         cursor = db.execute(
             """INSERT INTO flow_runs
@@ -150,10 +152,13 @@ def test_outlook_success_receipt_advances_dedup_but_no_op_does_not(outlook_db):
     )
     with database.get_db() as db:
         state = db.execute(
-            "SELECT outlook_last_identity, last_success_at FROM flows WHERE id=?", (saved["id"],),
+            """SELECT outlook_last_identity, last_success_at,
+                      last_execution_success_at FROM flows WHERE id=?""",
+            (saved["id"],),
         ).fetchone()
     assert state["outlook_last_identity"] == "a" * 64
     assert state["last_success_at"] == first_success
+    assert state["last_execution_success_at"] is not None
 
 
 def test_outlook_csv_first_row_allows_one_column_and_rejects_blank_or_duplicate_headers(tmp_path):

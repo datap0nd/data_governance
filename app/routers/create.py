@@ -14,6 +14,8 @@ from app.models import (
     CreateUpstreamRequest,
     CustomEntryOut,
 )
+from app.config import FLOW_TIMEZONE
+from app.freshness_inheritance import reconcile_source, upsert_schedule_evidence
 
 router = APIRouter(prefix="/api/create", tags=["create"])
 
@@ -69,6 +71,13 @@ def create_source(req: CreateSourceRequest, request: Request):
                  req.owner, req.refresh_schedule, req.tags, req.upstream_id, now, now),
             )
             source_id = cursor.lastrowid
+            if str(req.refresh_schedule or "").strip():
+                upsert_schedule_evidence(
+                    db, source_id=source_id, origin="legacy_unknown", external_id="legacy",
+                    expression=req.refresh_schedule, timezone_name=FLOW_TIMEZONE,
+                    active=True, authoritative=False, observed_at=now,
+                )
+            reconcile_source(db, int(source_id))
 
             # Link source to selected reports via report_tables
             if req.report_ids:

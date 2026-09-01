@@ -9,10 +9,16 @@ READ-ONLY: Only SELECT queries are used against PostgreSQL.
 
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 
-from app.config import PGHOST, PGPORT
+from app.config import FLOW_TIMEZONE, PGHOST, PGPORT
 from app.database import get_db
+from app.freshness_inheritance import (
+    expire_schedule_evidence_generation,
+    reconcile_all_sources,
+    upsert_schedule_evidence,
+)
 from app.scanner.prober import _get_pg_connection
 from app.scanner.tmdl_parser import _mask_sql_noncode
 from app.source_identity import postgres_server_identity
@@ -101,6 +107,7 @@ def scan_pg_cron() -> dict:
 
     try:
         pg_cur = pg_conn.cursor()
+        generation = uuid.uuid4().hex
 
         # Check if pg_cron is installed
         try:
@@ -118,7 +125,14 @@ def scan_pg_cron() -> dict:
         )
         jobs = pg_cur.fetchall()
 
+        pg_cur.execute("SELECT current_setting('cron.timezone', true), current_setting('TimeZone', true)")
+        timezone_row = pg_cur.fetchone() or (None, None)
+        cron_timezone = str(timezone_row[0] or timezone_row[1] or FLOW_TIMEZONE)
+
         if not jobs:
+            with get_db() as db:
+                expire_schedule_evidence_generation(db, origin="pg_cron", generation=generation)
+                reconcile_all_sources(db)
             return {"status": "completed", "jobs_found": 0, "matched": 0}
 
         # READ-ONLY: SELECT from cron.job_run_details (last run per job)
@@ -186,6 +200,18 @@ def scan_pg_cron() -> dict:
                     "UPDATE sources SET refresh_schedule = ?, updated_at = ? WHERE id = ?",
                     (schedule_info, now, source["id"]),
                 )
+                upsert_schedule_evidence(
+                    db,
+                    source_id=int(source["id"]),
+                    origin="pg_cron",
+                    external_id=str(jobid),
+                    expression=str(schedule),
+                    timezone_name=cron_timezone,
+                    active=bool(active),
+                    authoritative=True,
+                    generation=generation,
+                    observed_at=now,
+                )
 
                 # Store last run info in probe message if available
                 run = run_details.get(jobid)
@@ -205,6 +231,13 @@ def scan_pg_cron() -> dict:
                         f"CRON: {server}/{database_name}/{full_name} -> "
                         f"schedule={schedule}, no run history"
                     )
+
+            # Expire only after the complete remote result has been processed;
+            # a failed/partial scan leaves the last trusted evidence active.
+            expire_schedule_evidence_generation(
+                db, origin="pg_cron", generation=generation,
+            )
+            reconcile_all_sources(db)
 
         summary = {
             "status": "completed",

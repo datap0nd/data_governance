@@ -18,6 +18,17 @@ def get_active_source_ids(db) -> set[int]:
 
             UNION
 
+            SELECT DISTINCT s.id
+            FROM sources s
+            LEFT JOIN flows f
+              ON f.sql_handoff_enabled=1 AND f.sql_target_source_id=s.id
+            LEFT JOIN flow_file_source_bindings b
+              ON b.source_id=s.id AND b.active=1
+            WHERE COALESCE(s.archived, 0)=0
+              AND (f.id IS NOT NULL OR b.id IS NOT NULL)
+
+            UNION
+
             SELECT DISTINCT rt.source_id
             FROM report_tables rt
             JOIN reports r ON r.id = rt.report_id

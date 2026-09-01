@@ -30,6 +30,15 @@ To change it, set the environment variable before running:
 set DG_TMDL_ROOT=C:\Users\YourName\documents\projects\data_governance
 ```
 
+Flow schedules use the host's named local timezone. To pin that wall-clock
+contract explicitly (recommended for production), set an IANA timezone such as:
+
+```bash
+set DG_FLOW_TIMEZONE=Europe/Lisbon
+```
+
+Freshness evidence and monitoring baselines are stored as UTC instants.
+
 ### 4. Run the app
 
 ```bash

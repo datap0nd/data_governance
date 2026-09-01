@@ -1693,6 +1693,54 @@ MIGRATIONS = [
                 )
           WHERE action_id=NEW.id AND superseded_at IS NULL;
        END""",
+    # Flow-schedule freshness. Existing operational timestamps retain their
+    # legacy conventions; these monitoring timestamps are RFC 3339 UTC.
+    "ALTER TABLE flows ADD COLUMN last_execution_success_at TEXT",
+    "ALTER TABLE flows ADD COLUMN freshness_effective_from_at TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_mode TEXT NOT NULL DEFAULT 'inherit'",
+    "ALTER TABLE sources ADD COLUMN freshness_schedule_time TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_schedule_day INTEGER",
+    "ALTER TABLE sources ADD COLUMN freshness_timezone TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_rule_origin TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_rule_status TEXT",
+    "ALTER TABLE sources ADD COLUMN freshness_producer_flow_ids TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE sources ADD COLUMN freshness_conflicts_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE sources ADD COLUMN freshness_warnings_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE sources ADD COLUMN freshness_effective_from_at TEXT",
+    """CREATE TABLE IF NOT EXISTS source_schedule_evidence (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id           INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        origin              TEXT NOT NULL,
+        external_id         TEXT NOT NULL,
+        raw_expression      TEXT NOT NULL,
+        rule_type           TEXT,
+        schedule_time       TEXT,
+        schedule_days       TEXT,
+        schedule_day        INTEGER,
+        timezone            TEXT,
+        supported           INTEGER NOT NULL DEFAULT 0,
+        authoritative       INTEGER NOT NULL DEFAULT 0,
+        active              INTEGER NOT NULL DEFAULT 1,
+        scan_generation     TEXT,
+        observed_at         TEXT NOT NULL,
+        UNIQUE(source_id, origin, external_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_source_schedule_evidence_source ON source_schedule_evidence(source_id, active, authoritative)",
+    """CREATE TABLE IF NOT EXISTS flow_file_source_bindings (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        flow_id             INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+        source_id           INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        target_path         TEXT NOT NULL,
+        normalized_path     TEXT NOT NULL,
+        origin              TEXT NOT NULL DEFAULT 'configured',
+        active              INTEGER NOT NULL DEFAULT 1,
+        confirmed_at        TEXT,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        UNIQUE(flow_id, source_id, normalized_path)
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_flow_file_binding_active ON flow_file_source_bindings(flow_id) WHERE active=1",
+    "CREATE INDEX IF NOT EXISTS idx_flow_file_binding_source ON flow_file_source_bindings(source_id, active)",
 ]
 
 
@@ -1718,6 +1766,7 @@ def _scheduled_tasks_has_host_unique_key(conn):
 def init_db():
     """Create all tables if they don't exist, then run migrations."""
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -1733,6 +1782,11 @@ def init_db():
                 pass  # column already exists
             else:
                 raise
+    # The classification is data-dependent and therefore cannot be expressed
+    # safely as a replayed ALTER/UPDATE migration. Its own app_settings marker
+    # makes it atomic and idempotent across startup retries.
+    from app.freshness_inheritance import initialize_freshness_data
+    initialize_freshness_data(conn)
     # Old query-change actions were attached only to a deduplicated source and
     # cannot be mapped reliably to the report table whose M expression changed.
     # Any v2 action has at least one query_versions row, so this cleanup is safe
