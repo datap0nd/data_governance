@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from app.database import get_db
 from app.scanner.lifecycle import normalize_scan_status, redact_component_payload
+from app.scanner.diagnostics import with_diagnostic
 
 
 MODULE_DEFINITIONS = (
@@ -50,7 +51,10 @@ MODULE_DEFINITIONS = (
         "label": "PostgreSQL schedules",
         "description": "Reads pg_cron jobs and associates refresh schedules with materialized views.",
         "scans": "Read-only pg_cron schedule metadata for governed PostgreSQL sources.",
-        "prerequisites": "Read-only PostgreSQL credentials and pg_cron visibility.",
+        "prerequisites": (
+            "PGHOST, PGUSER, and PGPASSWORD; pg_cron installed; USAGE on schema cron "
+            "and SELECT on cron.job. SELECT on cron.job_run_details adds run history."
+        ),
         "legacy_component": "postgres_schedules",
     },
     {
@@ -94,6 +98,8 @@ TERMINAL_STATUSES = frozenset(
     {"completed", "completed_with_warnings", "failed", "stopped", "skipped", "not_requested"}
 )
 STALE_AFTER_SECONDS = 600
+MAX_DETAILS_CHARS = 24000
+MAX_LOG_CHARS = 24000
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -111,13 +117,28 @@ def _loads(value: Any) -> dict:
 
 
 def _dumps(value: Mapping[str, Any] | None) -> str:
-    return json.dumps(
-        redact_component_payload(dict(value or {})),
+    safe = redact_component_payload(dict(value or {}))
+    encoded = json.dumps(
+        safe,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
     )
+    if len(encoded) <= MAX_DETAILS_CHARS:
+        return encoded
+    compact = {
+        "status": safe.get("status") if isinstance(safe, Mapping) else None,
+        "diagnostic": safe.get("diagnostic") if isinstance(safe, Mapping) else None,
+        "details_truncated": True,
+    }
+    if isinstance(safe, Mapping):
+        for key, item in safe.items():
+            if key in compact or not isinstance(item, (type(None), bool, int, float)):
+                continue
+            compact[key] = item
+    encoded = json.dumps(compact, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return encoded[:MAX_DETAILS_CHARS]
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -220,9 +241,22 @@ def finish_module_run(
     normalized = normalize_scan_status(status)
     if normalized not in TERMINAL_STATUSES:
         normalized = "failed"
-    safe_summary = redact_component_payload(summary) if summary else None
-    safe_log = redact_component_payload(log) if log else None
     with get_db() as db:
+        module_row = db.execute(
+            "SELECT module_key FROM scanner_module_runs WHERE id=?", (int(module_run_id),)
+        ).fetchone()
+        module_key = module_row["module_key"] if module_row is not None else "scanner_module"
+        prepared_details = with_diagnostic(
+            module_key,
+            normalized,
+            details,
+            fallback_summary=summary,
+        )
+        diagnostic_summary = prepared_details["diagnostic"]["operator_summary"]
+        safe_summary = redact_component_payload(
+            diagnostic_summary if normalized != "completed" else (summary or diagnostic_summary)
+        )
+        safe_log = redact_component_payload(log)[:MAX_LOG_CHARS] if log else None
         db.execute(
             """UPDATE scanner_module_runs
                   SET status=?, summary=?, details_json=?, log=?,
@@ -231,7 +265,7 @@ def finish_module_run(
             (
                 normalized,
                 safe_summary,
-                _dumps(details),
+                _dumps(prepared_details),
                 safe_log,
                 _iso(),
                 _iso(),
@@ -277,17 +311,27 @@ def runs_for_job(scanner_job_id: int) -> list[dict]:
 
 def recover_interrupted_module_runs(*, finished_at: str | None = None) -> int:
     """Terminalize module rows orphaned by a service restart."""
-    finished = finished_at or _iso()
     note = "STOPPED: interrupted by restart"
     with get_db() as db:
-        cursor = db.execute(
-            """UPDATE scanner_module_runs
-                  SET status='stopped', summary=COALESCE(summary, ?),
-                      heartbeat_at=?, finished_at=?
-                WHERE status IN ('queued','running')""",
-            (note, finished, finished),
+        rows = db.execute(
+            "SELECT id FROM scanner_module_runs WHERE status IN ('queued','running')"
+        ).fetchall()
+    for row in rows:
+        finish_module_run(
+            int(row["id"]),
+            status="stopped",
+            summary=note,
+            details={"status": "stopped", "reason_code": "interrupted_by_restart"},
         )
-    return cursor.rowcount if cursor.rowcount != -1 else 0
+    if finished_at and rows:
+        placeholders = ",".join("?" for _ in rows)
+        with get_db() as db:
+            db.execute(
+                f"""UPDATE scanner_module_runs SET heartbeat_at=?, finished_at=?
+                     WHERE id IN ({placeholders})""",
+                (finished_at, finished_at, *(int(row["id"]) for row in rows)),
+            )
+    return len(rows)
 
 
 def finish_active_runs_for_scan(

@@ -194,6 +194,23 @@ def test_lineage_job_message_reports_repaired_report_sources():
     )
 
 
+def test_lineage_job_explains_zero_eligible_targets():
+    message = jobs._result_message(
+        "postgres_lineage",
+        "completed",
+        {
+            "status": "not_requested",
+            "required_databases": [],
+            "databases": {},
+            "mvs_found": 0,
+        },
+    )
+
+    assert message == (
+        "No eligible PostgreSQL sources or Flow SQL targets required lineage discovery."
+    )
+
+
 def test_lineage_job_warning_message_names_unconfigured_report_endpoint():
     message = jobs._result_message(
         "postgres_lineage",
