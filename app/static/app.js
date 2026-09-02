@@ -10462,7 +10462,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
         </div>
         <div class="flow-table-wrap">
             <table class="flow-table">
-                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Freshness</th><th>Last run</th><th></th></tr></thead>
+                <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
                 <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
                     <tr>
                         <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
@@ -10470,7 +10470,6 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                         <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : flow.source_type === "file" ? `From file<small>${esc(flow.local_file_path)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
                         <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
                         <td>${esc(flow.schedule_type)}${flow.schedule_type === "monthly" ? `<small>Day ${esc(flow.schedule_day)}</small>` : ""}${flow.next_run_at ? `<small>Next ${esc(formatDate(flow.next_run_at))}</small>` : ""}</td>
-                        <td>${_flowFreshnessHtml(flow)}</td>
                         <td>${_flowStatusBadge(flow.last_status)}${flow.last_run_at ? `<small>${esc(timeAgo(flow.last_run_at))}</small>` : '<small>Not run yet</small>'}</td>
                         <td class="flow-row-actions">
                             <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}>${activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run"}</button>
@@ -10480,24 +10479,6 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                     </tr>`; }).join("")}</tbody>
             </table>
         </div>`;
-}
-
-function _flowFreshnessHtml(flow) {
-    const health = flow.freshness_health || { status: "not_monitored" };
-    const labels = {
-        healthy: "Healthy", overdue: "Overdue", pending: "Pending",
-        paused: "Paused", not_monitored: "Not monitored",
-    };
-    const colors = {
-        healthy: "var(--green)", overdue: "var(--red)", pending: "var(--yellow)",
-        paused: "var(--text-dim)", not_monitored: "var(--text-dim)",
-    };
-    const rule = flow.freshness_rule;
-    const detail = rule
-        ? `${rule.type}${rule.day ? ` day ${rule.day}` : ""}${rule.time ? ` at ${rule.time}` : ""} · ${rule.timezone}`
-        : "No schedule-derived rule";
-    const due = health.latest_due_at ? `Latest due ${formatDate(health.latest_due_at)}` : detail;
-    return `<strong style="color:${colors[health.status] || 'var(--text-muted)'}">${esc(labels[health.status] || health.status)}</strong><small title="${esc(detail)}">${esc(due)}</small>`;
 }
 
 /** The folder a report sits in, and its own name, from the discovery path.
