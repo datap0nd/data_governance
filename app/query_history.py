@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 
 REPORT_M_KIND = "report_m"
 MATERIALIZED_VIEW_KIND = "materialized_view"
+POSTGRES_VIEW_KIND = "postgres_view"
 
 
 def normalize_query_text(value: str | None) -> str:
@@ -28,6 +29,10 @@ def report_artifact_key(report_id: int, table_name: str) -> str:
 
 def mv_artifact_key(source_id: int) -> str:
     return f"materialized-view:{int(source_id)}"
+
+
+def postgres_view_artifact_key(source_id: int) -> str:
+    return f"postgres-view:{int(source_id)}"
 
 
 @dataclass(frozen=True)

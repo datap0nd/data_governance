@@ -449,6 +449,157 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
         scanner_notifications.notify_standalone_failure(module_run_id)
 
 
+def _execute_pipeline_insights_module_job(
+    job_id: int, generation: int | None, module_key: str
+) -> dict:
+    from app.scanner.pipeline_insights import (
+        run_pipeline_explanations,
+        run_relation_samples,
+    )
+
+    runners = {
+        "relation_samples": run_relation_samples,
+        "pipeline_explanations": run_pipeline_explanations,
+    }
+    runner = runners[module_key]
+    module_run_id = scanner_modules.create_module_run(
+        module_key, scanner_job_id=job_id
+    )
+    definition = scanner_modules.MODULES_BY_KEY[module_key]
+    scanner_jobs.mark_running(
+        job_id,
+        current_step=f"Running {definition['label']}",
+        message=definition["description"],
+    )
+    try:
+        result = runner(operation_id=job_id, cancel_generation=generation)
+        scanner_modules.finish_module_run(
+            module_run_id,
+            status=result.get("status") or "failed",
+            summary=result.get("message") or f"{definition['label']} finished.",
+            details=result,
+        )
+        scanner_jobs.finish_job(
+            job_id,
+            status=result.get("status") or "failed",
+            result=result,
+            message=result.get("message"),
+        )
+        if result.get("status") not in {"completed", "not_requested", "skipped"}:
+            scanner_notifications.notify_standalone_failure(module_run_id)
+        return result
+    except ScannerWorkCancelled as exc:
+        scanner_modules.finish_module_run(
+            module_run_id, status="stopped", summary=str(exc),
+            details={"status": "stopped", "message": str(exc)},
+        )
+        scanner_jobs.finish_job(
+            job_id, status="stopped",
+            result={"status": "stopped", "message": str(exc)}, message=str(exc),
+        )
+        return {"status": "stopped", "message": str(exc)}
+    except Exception as exc:
+        logger.exception("%s module failed", definition["label"])
+        scanner_modules.finish_module_run(
+            module_run_id, status="failed",
+            summary=f"{definition['label']} failed.",
+            details={"status": "failed", "error": str(exc)},
+        )
+        scanner_jobs.finish_job(
+            job_id, status="failed",
+            result={"status": "failed", "error": str(exc)},
+            message=f"{definition['label']} failed; review server logs.",
+        )
+        scanner_notifications.notify_standalone_failure(module_run_id)
+        return {"status": "failed", "error": str(exc)}
+
+
+def _execute_relation_samples_job(job_id: int, generation: int | None) -> dict:
+    return _execute_pipeline_insights_module_job(
+        job_id, generation, "relation_samples"
+    )
+
+
+def _execute_pipeline_explanations_job(job_id: int, generation: int | None) -> dict:
+    return _execute_pipeline_insights_module_job(
+        job_id, generation, "pipeline_explanations"
+    )
+
+
+def _execute_weekly_pipeline_insights_job(
+    job_id: int, generation: int | None, module_keys: tuple[str, ...]
+) -> dict:
+    from app.scanner.pipeline_insights import (
+        run_pipeline_explanations,
+        run_relation_samples,
+    )
+
+    runners = {
+        "relation_samples": run_relation_samples,
+        "pipeline_explanations": run_pipeline_explanations,
+    }
+    results = {}
+    try:
+        scanner_jobs.mark_running(
+            job_id,
+            current_step="Starting weekly Pipeline Insights",
+            message="Running scheduled relation samples before Pipeline explanations.",
+        )
+        for module_key in module_keys:
+            assert_not_cancelled(generation, "Weekly Pipeline Insights")
+            definition = scanner_modules.MODULES_BY_KEY[module_key]
+            module_run_id = scanner_modules.create_module_run(
+                module_key, scanner_job_id=job_id, trigger_source="scheduled"
+            )
+            scanner_jobs.heartbeat(
+                job_id,
+                current_step=f"Running {definition['label']}",
+                message=definition["description"],
+            )
+            try:
+                result = runners[module_key](
+                    operation_id=job_id, cancel_generation=generation
+                )
+            except ScannerWorkCancelled:
+                scanner_modules.finish_module_run(
+                    module_run_id, status="stopped",
+                    summary="Weekly Pipeline Insights was stopped.",
+                    details={"status": "stopped"},
+                )
+                raise
+            except Exception as exc:
+                logger.exception("Scheduled %s failed", definition["label"])
+                result = {"status": "failed", "error": str(exc),
+                          "message": f"{definition['label']} failed."}
+            scanner_modules.finish_module_run(
+                module_run_id,
+                status=result.get("status") or "failed",
+                summary=result.get("message") or f"{definition['label']} finished.",
+                details=result,
+            )
+            results[module_key] = result
+            if result.get("status") not in {"completed", "not_requested", "skipped"}:
+                scanner_notifications.notify_standalone_failure(module_run_id)
+
+        statuses = {str(item.get("status")) for item in results.values()}
+        if "failed" in statuses:
+            status = "failed" if all(value == "failed" for value in statuses) else "completed_with_warnings"
+        elif "completed_with_warnings" in statuses:
+            status = "completed_with_warnings"
+        else:
+            status = "completed"
+        result = {"status": status, "modules": results,
+                  "message": "Weekly Pipeline Insights finished."}
+        scanner_jobs.finish_job(job_id, status=status, result=result)
+        return result
+    except ScannerWorkCancelled as exc:
+        scanner_jobs.finish_job(
+            job_id, status="stopped",
+            result={"status": "stopped", "message": str(exc)}, message=str(exc),
+        )
+        return {"status": "stopped", "message": str(exc)}
+
+
 def _execute_report_catalog_job(job_id: int, generation: int | None) -> None:
     """Run only local PBIX/TMDL discovery through the existing runner core."""
     try:
@@ -843,6 +994,8 @@ _MODULE_WORKERS = {
     "source_freshness": _execute_probe_job,
     "governance": _execute_governance_job,
     "usage_metadata": _execute_usage_metadata_job,
+    "relation_samples": _execute_relation_samples_job,
+    "pipeline_explanations": _execute_pipeline_explanations_job,
 }
 
 
@@ -1000,6 +1153,31 @@ def start_scheduled_full_scan_job() -> dict:
         accepted=True,
         reused=False,
         message="Scheduled full scan started; live progress is on the Scanner page.",
+    )
+
+
+def start_scheduled_pipeline_insights_job(module_keys: tuple[str, ...]) -> dict:
+    """Submit the complete weekly sample/explanation sequence to the scanner lane."""
+    job, created = scanner_jobs.reserve_job(
+        "pipeline_insights_weekly",
+        trigger_source="scheduled",
+        current_step="Queued",
+        message="Weekly Pipeline Insights is waiting for its worker.",
+        context={"module_keys": list(module_keys)},
+    )
+    if not created:
+        return _job_start_response(
+            job, accepted=False, reused=False,
+            message="Weekly Pipeline Insights is waiting because scanner work is active.",
+        )
+    job_id = int(job["id"])
+    _submit_job(
+        job_id, _execute_weekly_pipeline_insights_job,
+        current_cancel_generation(), tuple(module_keys),
+    )
+    return _job_start_response(
+        scanner_jobs.get_job(job_id), accepted=True, reused=False,
+        message="Weekly Pipeline Insights started.",
     )
 
 

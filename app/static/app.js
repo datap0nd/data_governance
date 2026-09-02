@@ -8272,7 +8272,12 @@ function _renderLineageDiagram(data) {
 
     // Tables, sources, flows, upstreams
     const tableMap = new Map();
-    for (const t of data.tables) tableMap.set(t.table_name, { name: t.table_name, source_id: t.source_id });
+    for (const t of data.tables) tableMap.set(t.table_name, {
+        id: t.id,
+        name: t.table_name,
+        source_id: t.source_id,
+        edge_insight: t.edge_insight || null,
+    });
     const upstreamMap = new Map();
     for (const u of data.upstreams) upstreamMap.set(u.id, u);
 
@@ -8409,7 +8414,10 @@ function _renderLineageDiagram(data) {
         const refresh = hasDeps && s.postgres_ref
             ? `<button class="lin-refresh-action" type="button" data-lin-refresh-mv="${s.id}" aria-label="Refresh materialized view ${esc(s.name)}">Refresh</button>`
             : "";
-        return `<div class="lin-card lin-src${upstreamClass} ${stCls(s)}" data-lin-id="source-${s.id}" title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}${refresh}</div>${sourceFacts(s)}</div>`;
+        const sampleAttrs = s.postgres_identity
+            ? ` data-lin-sample-source="${s.id}" tabindex="0" aria-label="${esc(s.name)}. Focus or hover to preview cached rows."`
+            : "";
+        return `<div class="lin-card lin-src${upstreamClass} ${stCls(s)}" data-lin-id="source-${s.id}"${sampleAttrs} title="${esc(s.name)}"><div class="lin-card-hdr">${stDot(s)}<span class="lin-card-lbl">${esc(s.name)}</span>${isMV}${staleUp}${refresh}</div>${sourceFacts(s)}</div>`;
     };
 
     colHtml.sources = sourceNodes.map(s => sourceCardHtml(s)).join("");
@@ -8491,6 +8499,8 @@ function _renderLineageDiagram(data) {
             <div class="lin-grid" id="lin-grid" style="grid-template-columns:${gridCols}">${gridH}</div>
             <svg class="lin-svg" id="lin-svg"></svg>
         </div>
+        <div class="lin-edge-tooltip" id="lin-edge-tooltip" role="tooltip" hidden></div>
+        <div class="lin-sample-popover" id="lin-sample-popover" role="dialog" aria-label="Cached PostgreSQL relation preview" hidden></div>
         <div class="lin-hint-bar">Click any node to trace its lineage. Scroll horizontally for deeper levels. Click empty space to reset.</div>
     `;
 
@@ -8574,10 +8584,20 @@ async function _showLineageSourceDetail(sourceId) {
 
 function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNodes, upstreamNodes) {
     const fwd = new Map(), bwd = new Map(), svgEdges = [];
-    function add(a, b, svg, tentative = false) {
+    const sourceById = new Map((data.sources || []).map(item => [Number(item.id), item]));
+    const upstreamById = new Map((data.upstreams || []).map(item => [Number(item.id), item]));
+    const edgeMeta = (a, b, insight, fallback) => ({
+        key: insight?.key || `${a}->${b}`,
+        text: insight?.text || fallback || `${a} supplies data to ${b}.`,
+        origin: insight?.origin || "fallback",
+        confidence: insight?.confidence || null,
+        generated_at: insight?.generated_at || null,
+        stale: Boolean(insight?.stale),
+    });
+    function add(a, b, svg, tentative = false, insight = null, fallback = "") {
         if (!fwd.has(a)) fwd.set(a, new Set()); fwd.get(a).add(b);
         if (!bwd.has(b)) bwd.set(b, new Set()); bwd.get(b).add(a);
-        if (svg) svgEdges.push({ from: a, to: b, tentative });
+        if (svg) svgEdges.push({ from: a, to: b, tentative, ...edgeMeta(a, b, insight, fallback) });
     }
     // Field -> Visual (detail)
     for (const v of visualNodes) for (const fk of v.fields) add(`field-${fk}`, v.id, false);
@@ -8586,24 +8606,49 @@ function _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, sourceNode
     for (const v of visualNodes) for (const fk of v.fields) {
         const tbl = fk.split(".")[0];
         const k = `page-${v.page}|table-${tbl}`;
-        if (!ptDone.has(k)) { ptDone.add(k); add(`table-${tbl}`, `page-${v.page}`, true); }
+        if (!ptDone.has(k)) {
+            ptDone.add(k);
+            add(`table-${tbl}`, `page-${v.page}`, true, false, null,
+                `${tbl} provides fields used on the ${v.page} report page.`);
+        }
     }
     // Table -> Field (detail)
     for (const [tbl, fields] of fieldsByTable) for (const f of fields) add(`table-${tbl}`, f.id, false);
     // Source -> Table (SVG)
-    for (const t of tableNodes) if (t.source_id) add(`source-${t.source_id}`, `table-${t.name}`, true);
+    for (const t of tableNodes) if (t.source_id) {
+        const source = sourceById.get(Number(t.source_id));
+        add(`source-${t.source_id}`, `table-${t.name}`, true, false, t.edge_insight,
+            `${source?.name || `Source ${t.source_id}`} supplies data to the ${t.name} Power BI table.`);
+    }
     // Upstream dependency -> target source (upstream table -> MV) (SVG)
     for (const d of (data.source_deps || [])) {
-        add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true);
+        const from = sourceById.get(Number(d.depends_on_id));
+        const to = sourceById.get(Number(d.source_id));
+        add(`source-${d.depends_on_id}`, `source-${d.source_id}`, true, false, d.edge_insight,
+            `${from?.name || d.depends_on_name || `Source ${d.depends_on_id}`} supplies data used to build ${to?.name || `source ${d.source_id}`}.`);
     }
     // Flow -> target source (SVG)
     for (const flow of (data.flows || [])) {
         for (const sourceId of (flow.target_source_ids || [])) {
+            const target = sourceById.get(Number(sourceId));
             add(`flow-${flow.id}`, `source-${sourceId}`, true, flow.executable === false);
+            Object.assign(
+                svgEdges[svgEdges.length - 1],
+                edgeMeta(
+                    `flow-${flow.id}`,
+                    `source-${sourceId}`,
+                    null,
+                    `${flow.name || `Flow ${flow.id}`} loads data into ${target?.name || `source ${sourceId}`}.`,
+                ),
+            );
         }
     }
     // Upstream system -> source (SVG)
-    for (const s of sourceNodes) if (s.upstream_id) add(`upstream-${s.upstream_id}`, `source-${s.id}`, true);
+    for (const s of sourceNodes) if (s.upstream_id) {
+        const upstream = upstreamById.get(Number(s.upstream_id));
+        add(`upstream-${s.upstream_id}`, `source-${s.id}`, true, false, null,
+            `${upstream?.name || `Upstream system ${s.upstream_id}`} provides data to ${s.name || `source ${s.id}`}.`);
+    }
 
     window._linFwd = fwd;
     window._linBwd = bwd;
@@ -8815,6 +8860,7 @@ function _drawLinEdges() {
     const svg = document.getElementById("lin-svg");
     const wrap = document.getElementById("lin-wrap");
     if (!svg || !wrap) return;
+    _linHideEdgeTooltip();
     const wr = wrap.getBoundingClientRect();
     const ox = wrap.scrollLeft - wr.left, oy = wrap.scrollTop - wr.top;
     svg.innerHTML = LIN_EDGE_ARROW;
@@ -8848,6 +8894,8 @@ function _drawLinEdges() {
         const toBand = _linAnchorBand(toEl, tr);
         edges.push({
             from: e.from, to: e.to, hl: !!highlighted, tentative: !!e.tentative,
+            key: e.key, text: e.text, origin: e.origin,
+            confidence: e.confidence, generated_at: e.generated_at, stale: e.stale,
             x1: fr.right + ox, y1: fromBand.y + oy,
             x2: (ci === cj ? tr.right : tr.left) + ox, y2: toBand.y + oy,
             y1min: fromBand.top + oy, y1max: fromBand.bottom + oy,
@@ -8870,12 +8918,180 @@ function _drawLinEdges() {
         if (e.hl) path.setAttribute("marker-end", "url(#lin-arrow)");
         path.dataset.from = e.from; path.dataset.to = e.to;
         svg.appendChild(path);
+
+        // The visible stroke remains visually light.  A separate transparent
+        // path supplies a forgiving pointer and keyboard target.
+        const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        hit.setAttribute("d", _linEdgePath(e));
+        hit.setAttribute("class", "lin-edge-hit");
+        hit.setAttribute("tabindex", "0");
+        hit.setAttribute("aria-label", e.text);
+        hit.dataset.edgeKey = e.key;
+        hit.dataset.edgeText = e.text;
+        hit.dataset.edgeOrigin = e.origin || "fallback";
+        if (e.confidence) hit.dataset.edgeConfidence = e.confidence;
+        if (e.generated_at) hit.dataset.edgeGeneratedAt = e.generated_at;
+        hit.dataset.edgeStale = e.stale ? "true" : "false";
+        svg.appendChild(hit);
     }
+}
+
+function _linHideEdgeTooltip() {
+    const tooltip = document.getElementById("lin-edge-tooltip");
+    if (!tooltip) return;
+    tooltip.hidden = true;
+    tooltip.removeAttribute("data-edge-key");
+}
+
+function _linPositionFloating(element, rect, pointer = null) {
+    if (!element || !rect) return;
+    const margin = 10;
+    const desiredLeft = pointer ? pointer.clientX + 14 : rect.left + rect.width / 2;
+    const desiredTop = pointer ? pointer.clientY + 16 : rect.bottom + 8;
+    element.style.left = `${Math.max(margin, Math.min(desiredLeft, window.innerWidth - element.offsetWidth - margin))}px`;
+    element.style.top = `${Math.max(margin, Math.min(desiredTop, window.innerHeight - element.offsetHeight - margin))}px`;
+}
+
+function _linShowEdgeTooltip(hit, event = null) {
+    const tooltip = document.getElementById("lin-edge-tooltip");
+    if (!tooltip || !hit?.dataset.edgeText) return;
+    tooltip.textContent = hit.dataset.edgeText;
+    tooltip.dataset.edgeKey = hit.dataset.edgeKey || "";
+    tooltip.hidden = false;
+    _linPositionFloating(tooltip, hit.getBoundingClientRect(), event);
+}
+
+function _linSampleCell(value) {
+    if (value === null) return '<span class="lin-sample-null">NULL</span>';
+    if (typeof value === "object") {
+        try { return esc(JSON.stringify(value)); } catch (_) { return esc(String(value)); }
+    }
+    return esc(String(value));
+}
+
+function _linSampleHtml(sample) {
+    const columns = Array.isArray(sample.columns) ? sample.columns : [];
+    const rows = Array.isArray(sample.rows) ? sample.rows : [];
+    const identity = [sample.server_name, sample.database_name, sample.schema_name, sample.relation_name]
+        .filter(Boolean).join(" / ");
+    const statusBits = [
+        sample.unordered ? "Unordered sample" : "",
+        sample.sampled_at ? `Captured ${formatDate(sample.sampled_at)}` : "No successful capture",
+        sample.stale ? "Stale: latest attempt failed" : "",
+        sample.truncated ? "Payload truncated" : "",
+        sample.error_message || "",
+    ].filter(Boolean);
+    let body = '<div class="lin-sample-empty">No cached rows were returned.</div>';
+    if (columns.length) {
+        const header = columns.map(column => `<th title="${esc(column.type || "unknown")}">${esc(column.name || "")}`
+            + `<span>${esc(column.type || "unknown")}</span></th>`).join("");
+        const dataRows = rows.map(row => `<tr>${columns.map((_, index) => `<td>${_linSampleCell(row?.[index])}</td>`).join("")}</tr>`).join("");
+        body = `<div class="lin-sample-scroll"><table><thead><tr>${header}</tr></thead><tbody>${dataRows}</tbody></table></div>`;
+    }
+    return `<div class="lin-sample-head"><strong>${esc(sample.schema_name || "")}.${esc(sample.relation_name || "")}</strong>`
+        + '<button type="button" class="lin-sample-close" aria-label="Close preview">&times;</button></div>'
+        + `<div class="lin-sample-identity">${esc(identity)}</div>`
+        + `<div class="lin-sample-status">${statusBits.map(bit => `<span>${esc(bit)}</span>`).join("")}</div>${body}`;
+}
+
+function _linPositionSample(popover, card) {
+    if (!popover || !card) return;
+    const rect = card.getBoundingClientRect();
+    popover.hidden = false;
+    const margin = 12;
+    let left = rect.right + 10;
+    if (left + popover.offsetWidth > window.innerWidth - margin) left = rect.left - popover.offsetWidth - 10;
+    popover.style.left = `${Math.max(margin, left)}px`;
+    popover.style.top = `${Math.max(margin, Math.min(rect.top, window.innerHeight - popover.offsetHeight - margin))}px`;
+}
+
+function _bindLinInsightInteractions(wrap) {
+    const tooltip = document.getElementById("lin-edge-tooltip");
+    const popover = document.getElementById("lin-sample-popover");
+    if (!tooltip || !popover) return;
+    if (!(window._linSampleCache instanceof Map)) window._linSampleCache = new Map();
+    let sampleTimer = null;
+    let closeTimer = null;
+
+    const hideSample = () => {
+        if (sampleTimer !== null) clearTimeout(sampleTimer);
+        sampleTimer = null;
+        popover.hidden = true;
+        delete popover.dataset.sourceId;
+    };
+    const deferHideSample = () => {
+        if (closeTimer !== null) clearTimeout(closeTimer);
+        closeTimer = setTimeout(hideSample, 180);
+    };
+    const cancelHideSample = () => {
+        if (closeTimer !== null) clearTimeout(closeTimer);
+        closeTimer = null;
+    };
+    const requestSample = card => {
+        if (!card) return;
+        if (sampleTimer !== null) clearTimeout(sampleTimer);
+        sampleTimer = setTimeout(async () => {
+            const sourceId = card.dataset.linSampleSource;
+            popover.dataset.sourceId = sourceId;
+            popover.innerHTML = '<div class="lin-sample-loading">Loading cached preview...</div>';
+            _linPositionSample(popover, card);
+            try {
+                let sample = window._linSampleCache.get(sourceId);
+                if (!sample) {
+                    sample = await api(`/api/pipeline-insights/sources/${encodeURIComponent(sourceId)}/sample`);
+                    window._linSampleCache.set(sourceId, sample);
+                }
+                if (popover.dataset.sourceId !== sourceId) return;
+                popover.innerHTML = _linSampleHtml(sample);
+            } catch (err) {
+                if (popover.dataset.sourceId !== sourceId) return;
+                popover.innerHTML = '<div class="lin-sample-head"><strong>Cached preview unavailable</strong>'
+                    + '<button type="button" class="lin-sample-close" aria-label="Close preview">&times;</button></div>'
+                    + `<div class="lin-sample-empty">${esc(err.message)}</div>`;
+            }
+            _linPositionSample(popover, card);
+        }, 240);
+    };
+
+    wrap.addEventListener("pointerover", event => {
+        const hit = event.target.closest?.(".lin-edge-hit");
+        if (hit) _linShowEdgeTooltip(hit, event);
+        const card = event.target.closest?.("[data-lin-sample-source]");
+        if (card && !card.contains(event.relatedTarget)) {
+            cancelHideSample();
+            requestSample(card);
+        }
+    });
+    wrap.addEventListener("pointermove", event => {
+        const hit = event.target.closest?.(".lin-edge-hit");
+        if (hit && tooltip.dataset.edgeKey === hit.dataset.edgeKey) _linShowEdgeTooltip(hit, event);
+    });
+    wrap.addEventListener("pointerout", event => {
+        if (event.target.closest?.(".lin-edge-hit")) _linHideEdgeTooltip();
+        const card = event.target.closest?.("[data-lin-sample-source]");
+        if (card && !card.contains(event.relatedTarget)) deferHideSample();
+    });
+    wrap.addEventListener("focusin", event => {
+        const hit = event.target.closest?.(".lin-edge-hit");
+        if (hit) _linShowEdgeTooltip(hit);
+        const card = event.target.closest?.("[data-lin-sample-source]");
+        if (card) { cancelHideSample(); requestSample(card); }
+    });
+    wrap.addEventListener("focusout", event => {
+        if (event.target.closest?.(".lin-edge-hit")) _linHideEdgeTooltip();
+        if (event.target.closest?.("[data-lin-sample-source]")) deferHideSample();
+    });
+    popover.addEventListener("pointerenter", cancelHideSample);
+    popover.addEventListener("pointerleave", deferHideSample);
+    popover.addEventListener("click", event => {
+        if (event.target.closest(".lin-sample-close")) hideSample();
+    });
 }
 
 function _bindLinInteractions() {
     const wrap = document.getElementById("lin-wrap");
     if (!wrap) return;
+    _bindLinInsightInteractions(wrap);
     wrap.querySelectorAll("[data-lin-refresh-flow]").forEach(button => {
         button.addEventListener("click", async event => {
             event.preventDefault();
@@ -9599,6 +9815,7 @@ function _aiSettingsPayload() {
         automatic_alert_review_enabled: Boolean(document.getElementById("ai-feature-alert-review")?.checked),
         alert_email_analysis_enabled: Boolean(document.getElementById("ai-feature-alert-email")?.checked),
         documentation_suggestions_enabled: Boolean(document.getElementById("ai-feature-documentation")?.checked),
+        pipeline_explanations_enabled: Boolean(document.getElementById("ai-feature-pipeline-explanations")?.checked),
         clear_api_key: Boolean(document.getElementById("ai-clear-api-key")?.checked),
     };
     const apiKey = document.getElementById("ai-api-key")?.value || "";
@@ -9643,6 +9860,7 @@ async function renderAISettings() {
         settings.automatic_alert_review_enabled,
         settings.alert_email_analysis_enabled,
         settings.documentation_suggestions_enabled,
+        settings.pipeline_explanations_enabled,
     ];
     const enabledCount = features.filter(Boolean).length;
     const source = settings.configuration_source || "defaults";
@@ -9669,7 +9887,7 @@ async function renderAISettings() {
                     <div><span>Mode</span><strong>${esc(_AI_MODE_LABELS[mode] || mode)}</strong></div>
                     <div><span>Model</span><strong>${esc(settings.model || "Not set")}</strong></div>
                     <div><span>API key</span><strong>${esc(keySource)}</strong></div>
-                    <div><span>Features</span><strong>${enabledCount} of 4 enabled</strong></div>
+                    <div><span>Features</span><strong>${enabledCount} of 5 enabled</strong></div>
                 </div>
                 <p class="ai-settings-source">Configuration source: ${esc(source)}. New work uses the latest saved settings; an analysis already running keeps the settings snapshot it started with.</p>
             </section>
@@ -9759,6 +9977,10 @@ async function renderAISettings() {
                         <label class="ai-feature-row">
                             <input id="ai-feature-documentation" type="checkbox" ${checked(settings.documentation_suggestions_enabled)}>
                             <span><strong>Documentation suggestions</strong><small>Let the local model propose missing documentation; preview placeholders are never saved as suggestions.</small></span>
+                        </label>
+                        <label class="ai-feature-row">
+                            <input id="ai-feature-pipeline-explanations" type="checkbox" ${checked(settings.pipeline_explanations_enabled)}>
+                            <span><strong>Pipeline connection explanations</strong><small>Explain PostgreSQL dependency and semantic-model edges during the complete Pipeline explanations scanner module.</small></span>
                         </label>
                     </div>
                 </section>
@@ -10345,10 +10567,12 @@ function bindUpdatesPage() {
 }
 
 async function renderRefreshSchedule() {
-    const [schedule, pipelineSettings] = await Promise.all([
+    const [schedule, pipelineSettings, insightSettings] = await Promise.all([
         api("/api/system/refresh-schedule"),
         api("/api/pipelines/settings"),
+        api("/api/pipeline-insights/settings"),
     ]);
+    const insightWeekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
     return `
         <div class="page-header">
             <h1>Refresh Schedule</h1>
@@ -10377,6 +10601,18 @@ async function renderRefreshSchedule() {
             <label class="refresh-schedule-field" style="margin-top:0.75rem"><span>Canary allowlist</span><textarea id="pipeline-refresh-allowlist" rows="5" placeholder="One report ID or exact report name per line">${esc((pipelineSettings.report_allowlist || []).join("\n"))}</textarea><small>Allowlisted reports can use the button while general enablement remains off.</small></label>
             <div class="refresh-schedule-actions"><button id="btn-save-pipeline-settings">Save full-pipeline settings</button></div>
         </div>
+        <div class="section refresh-schedule-section">
+            <div class="section-header"><div><h2>Pipeline Insights</h2><p>Runs cached relation samples first, then complete local-AI connection explanations. Both remain independently runnable from Scanner.</p></div></div>
+            <div class="refresh-schedule-grid">
+                <label class="flow-check"><input type="checkbox" id="pipeline-insights-samples" ${insightSettings.samples_scheduled ? "checked" : ""}><span>Schedule 15-row relation samples</span></label>
+                <label class="flow-check"><input type="checkbox" id="pipeline-insights-explanations" ${insightSettings.explanations_scheduled ? "checked" : ""}><span>Schedule Pipeline explanations</span></label>
+                <label class="refresh-schedule-field"><span>Weekday</span><select id="pipeline-insights-weekday">${insightWeekdays.map(day => `<option value="${day}" ${day === insightSettings.weekday ? "selected" : ""}>${day[0].toUpperCase() + day.slice(1)}</option>`).join("")}</select></label>
+                <label class="refresh-schedule-field"><span>Local time</span><input type="time" id="pipeline-insights-time" value="${esc(insightSettings.time || "10:00")}" step="60"></label>
+                <div class="refresh-schedule-status"><span>Next run</span><strong>${insightSettings.next_run_at ? timeAgo(insightSettings.next_run_at) : "not scheduled"}</strong><small>${esc(insightSettings.timezone || "host timezone")}</small></div>
+            </div>
+            <label class="refresh-schedule-field" style="margin-top:0.75rem"><span>Exact PostgreSQL relation exclusions</span><textarea id="pipeline-insights-exclusions" rows="5" placeholder="server:port/database/schema.relation">${esc((insightSettings.exclusions || []).join("\n"))}</textarea><small>One exact normalized server/database/schema.relation identity per line.</small></label>
+            <div class="refresh-schedule-actions"><button id="btn-save-pipeline-insights-settings">Save Pipeline Insights schedule</button></div>
+        </div>
     `;
 }
 
@@ -10385,6 +10621,7 @@ function bindRefreshSchedulePage() {
     const saveBtn = document.getElementById("btn-save-refresh-schedule");
     const runBtn = document.getElementById("btn-run-overall-refresh");
     const pipelineSave = document.getElementById("btn-save-pipeline-settings");
+    const insightsSave = document.getElementById("btn-save-pipeline-insights-settings");
 
     if (saveBtn && input) {
         saveBtn.addEventListener("click", async () => {
@@ -10436,6 +10673,29 @@ function bindRefreshSchedulePage() {
             toast("Full-pipeline settings were not saved: " + err.message);
             pipelineSave.disabled = false;
             pipelineSave.textContent = "Save full-pipeline settings";
+        }
+    });
+    insightsSave?.addEventListener("click", async () => {
+        const exclusions = document.getElementById("pipeline-insights-exclusions").value
+            .split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+        insightsSave.disabled = true;
+        insightsSave.textContent = "Saving...";
+        try {
+            const updated = await apiPut("/api/pipeline-insights/settings", {
+                samples_scheduled: document.getElementById("pipeline-insights-samples").checked,
+                explanations_scheduled: document.getElementById("pipeline-insights-explanations").checked,
+                weekday: document.getElementById("pipeline-insights-weekday").value,
+                time: document.getElementById("pipeline-insights-time").value,
+                exclusions,
+            });
+            toast(updated.reschedule_error
+                ? "Pipeline Insights settings saved; scheduler reschedule needs restart."
+                : "Pipeline Insights schedule saved.");
+            await navigate("refreshschedule");
+        } catch (err) {
+            toast("Pipeline Insights schedule was not saved: " + err.message);
+            insightsSave.disabled = false;
+            insightsSave.textContent = "Save Pipeline Insights schedule";
         }
     });
 }

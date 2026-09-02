@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .pytest_tmp*/
 governance.db
+pipeline_insights.db
+pipeline_insights.db-wal
+pipeline_insights.db-shm
 *.db.bak
 node_modules/
 pbi_token.json

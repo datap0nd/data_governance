@@ -106,6 +106,7 @@ class AISettingsUpdate(BaseModel):
     automatic_alert_review_enabled: bool | None = None
     alert_email_analysis_enabled: bool | None = None
     documentation_suggestions_enabled: bool | None = None
+    pipeline_explanations_enabled: bool | None = None
     # Parse this manually so FastAPI can never reflect a malformed candidate
     # key inside its automatic validation-error response.
     api_key: Any = Field(default=None, exclude=True)
@@ -148,6 +149,7 @@ class _StoredAISettings(BaseModel):
     automatic_alert_review_enabled: bool
     alert_email_analysis_enabled: bool
     documentation_suggestions_enabled: bool
+    pipeline_explanations_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,7 @@ class AIRuntimeSettings:
     automatic_alert_review_enabled: bool
     alert_email_analysis_enabled: bool
     documentation_suggestions_enabled: bool
+    pipeline_explanations_enabled: bool = True
     api_key: str = ""
     api_key_source: str = "none"
     api_key_updated_at: str | None = None
@@ -234,6 +237,7 @@ class AIRuntimeSettings:
             "automatic_alert_review": self.automatic_alert_review_enabled,
             "alert_email_analysis": self.alert_email_analysis_enabled,
             "documentation_suggestions": self.documentation_suggestions_enabled,
+            "pipeline_explanations": self.pipeline_explanations_enabled,
         }
         return bool(flags.get(name, False))
 
@@ -259,6 +263,7 @@ class AIRuntimeSettings:
             "automatic_alert_review_enabled": self.automatic_alert_review_enabled,
             "alert_email_analysis_enabled": self.alert_email_analysis_enabled,
             "documentation_suggestions_enabled": self.documentation_suggestions_enabled,
+            "pipeline_explanations_enabled": self.pipeline_explanations_enabled,
             "api_key_configured": bool(self.api_key),
             "api_key_source": self.api_key_source,
             "api_key_updated_at": self.api_key_updated_at,
@@ -287,6 +292,7 @@ class AIRuntimeSettings:
             "automatic_alert_review_enabled": self.automatic_alert_review_enabled,
             "alert_email_analysis_enabled": self.alert_email_analysis_enabled,
             "documentation_suggestions_enabled": self.documentation_suggestions_enabled,
+            "pipeline_explanations_enabled": self.pipeline_explanations_enabled,
         }
 
 
@@ -338,6 +344,9 @@ def environment_settings() -> AIRuntimeSettings:
         documentation_suggestions_enabled=_bool_env(
             "DG_AI_DOCUMENTATION_SUGGESTIONS_ENABLED", True
         ),
+        pipeline_explanations_enabled=_bool_env(
+            "DG_AI_PIPELINE_EXPLANATIONS_ENABLED", True
+        ),
         api_key=str(config.AI_API_KEY or ""),
         api_key_source="environment" if config.AI_API_KEY else "none",
         configuration_source="environment",
@@ -350,7 +359,15 @@ def _settings_from_rows(settings_row, key_row) -> AIRuntimeSettings:
         stored_settings = None
     else:
         try:
-            stored_settings = _StoredAISettings.model_validate_json(settings_row["value"])
+            stored_payload = json.loads(settings_row["value"])
+            if isinstance(stored_payload, dict):
+                # Version-1 rows created before Pipeline Insights inherit the
+                # environment-controlled default without invalidating the row.
+                stored_payload.setdefault(
+                    "pipeline_explanations_enabled",
+                    fallback.pipeline_explanations_enabled,
+                )
+            stored_settings = _StoredAISettings.model_validate(stored_payload)
         except Exception:
             logger.exception("Stored AI settings are invalid; using environment defaults")
             stored_settings = None

@@ -58,6 +58,28 @@ MODULE_DEFINITIONS = (
         "legacy_component": "postgres_schedules",
     },
     {
+        "key": "relation_samples",
+        "label": "Relation samples",
+        "description": (
+            "Caches bounded, unordered row previews for PostgreSQL relations "
+            "reachable from active report and Flow pipelines."
+        ),
+        "scans": "Pipeline-reachable PostgreSQL tables, views, foreign tables, and materialized views.",
+        "prerequisites": "Exact PostgreSQL identities and a matching read-only catalog connection.",
+        "legacy_component": None,
+    },
+    {
+        "key": "pipeline_explanations",
+        "label": "Pipeline explanations",
+        "description": (
+            "Uses the configured local Qwen model to write one-sentence explanations "
+            "for PostgreSQL and Power BI lineage connections."
+        ),
+        "scans": "Pipeline dependency edges, SQL/TMDL definitions, schemas, and bounded row evidence.",
+        "prerequisites": "Local AI mode, the Pipeline explanations feature, and read-only PostgreSQL access.",
+        "legacy_component": None,
+    },
+    {
         "key": "source_freshness",
         "label": "Source freshness",
         "description": (

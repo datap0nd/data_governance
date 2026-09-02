@@ -11,6 +11,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SQLite database file (the app's own database, not production)
 DB_PATH = os.environ.get("DG_DB_PATH", str(BASE_DIR / "governance.db"))
+PIPELINE_INSIGHTS_DB_PATH = os.environ.get(
+    "DG_PIPELINE_INSIGHTS_DB_PATH",
+    str(Path(DB_PATH).with_name("pipeline_insights.db")),
+)
 
 # Flow schedules are wall-clock values in one named timezone.  Persisted
 # monitoring timestamps are UTC, so changing this setting does not reinterpret

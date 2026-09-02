@@ -19,9 +19,11 @@ from app.database import get_db
 from app.asset_visibility import get_active_source_ids
 from app.query_history import (
     MATERIALIZED_VIEW_KIND,
+    POSTGRES_VIEW_KIND,
     link_versions_to_action,
     mv_artifact_key,
     observe_query,
+    postgres_view_artifact_key,
 )
 from app.scanner.prober import _get_pg_connection
 from app.scanner.control import assert_not_cancelled
@@ -334,6 +336,7 @@ _DEPENDENCY_SQL = """
       AND d.refclassid = 'pg_class'::regclass
       AND c_dep.relkind IN ('r', 'p', 'm', 'v', 'f')
       AND c_dep.oid != c_mv.oid
+      AND ns_mv.nspname NOT IN ('pg_catalog', 'information_schema')
       AND ns_dep.nspname NOT IN ('pg_catalog', 'information_schema')
     ORDER BY ns_mv.nspname, c_mv.relname, ns_dep.nspname, c_dep.relname
 """
@@ -343,6 +346,14 @@ _DEFINITION_SQL = """
     SELECT schemaname, matviewname, definition
     FROM pg_matviews
     ORDER BY schemaname, matviewname
+"""
+
+_VIEW_DEFINITION_SQL = """
+    SELECT pg_catalog.pg_get_viewdef(c.oid, true)
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+     WHERE c.relkind='v' AND n.nspname=%s AND c.relname=%s
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
 """
 
 
@@ -563,6 +574,30 @@ def _fetch_database_catalog(
                 database,
                 definition_error,
             )
+
+        # Ordinary views are captured only when they already appear as
+        # dependency-graph parents. Never enumerate pg_views wholesale and
+        # never let optional view evidence downgrade otherwise valid MV
+        # discovery. Lightweight legacy adapters may not support parameters.
+        for schema, name in sorted(
+            identity for identity, kind in parent_kinds.items() if kind == "v"
+        ):
+            try:
+                pg_cur.execute(_VIEW_DEFINITION_SQL, (schema, name))
+                row = pg_cur.fetchone()
+            except TypeError:
+                logger.debug(
+                    "PostgreSQL adapter cannot capture ordinary-view definitions"
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "View definition capture skipped for %s.%s in %s: %s",
+                    schema, name, database, _redact_error(exc),
+                )
+                continue
+            if row is not None:
+                definitions[(schema, name)] = row[0] or ""
 
         return _DatabaseCatalog(
             dependency_rows=tuple(dependency_rows),
@@ -1606,7 +1641,8 @@ def _apply_database_catalog(
     # pg_matviews is still authoritative that those parents exist, so seed
     # every captured definition even when it has zero table dependencies.
     for mv_identity in catalog.definitions:
-        mv_dependencies.setdefault(mv_identity, [])
+        if catalog.parent_kinds.get(mv_identity, "m") == "m":
+            mv_dependencies.setdefault(mv_identity, [])
 
     mvs_found = 0
     deps_created = 0
@@ -1715,10 +1751,14 @@ def _apply_database_catalog(
                     f"PostgreSQL identity references missing source {source_id}"
                 )
             full_mv_name = f"{mv_schema}.{mv_name}"
+            is_plain_view = catalog.parent_kinds.get((mv_schema, mv_name), "m") == "v"
             observation = observe_query(
                 db,
-                artifact_kind=MATERIALIZED_VIEW_KIND,
-                artifact_key=mv_artifact_key(source_id),
+                artifact_kind=POSTGRES_VIEW_KIND if is_plain_view else MATERIALIZED_VIEW_KIND,
+                artifact_key=(
+                    postgres_view_artifact_key(source_id)
+                    if is_plain_view else mv_artifact_key(source_id)
+                ),
                 report_id=None,
                 source_id=source_id,
                 artifact_name=full_mv_name,
@@ -1727,6 +1767,10 @@ def _apply_database_catalog(
                 scan_run_id=scan_run_id,
                 detected_at=now,
             )
+            # View definitions are evidence for Pipeline explanations, not a
+            # new operational changed-query alert surface.
+            if is_plain_view:
+                continue
             if not observation.changed:
                 continue
 

@@ -27,7 +27,7 @@ from starlette.requests import Request as StarletteRequest
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
 from app.local_access import is_server_machine, require_app_access
-from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines
+from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
     get_overall_refresh_time,
     get_setting,
@@ -275,6 +275,7 @@ class UpdateDrainMiddleware(BaseHTTPMiddleware):
 
 _scheduler = BackgroundScheduler(timezone=host_timezone())
 _OVERALL_REFRESH_RETRY_JOB_ID = "daily_overall_refresh_retry"
+_PIPELINE_INSIGHTS_RETRY_JOB_ID = "weekly_pipeline_insights_retry"
 _OVERALL_REFRESH_RETRY_MINUTES = 5
 
 
@@ -438,6 +439,42 @@ def _scheduled_overall_refresh():
     return result
 
 
+@_tracked_scheduled_start("weekly Pipeline Insights")
+def _scheduled_pipeline_insights(attempt: int = 0):
+    from app.pipeline_insights_settings import get_pipeline_insights_settings
+    from app.routers.scanner import start_scheduled_pipeline_insights_job
+
+    settings = get_pipeline_insights_settings()
+    module_keys = tuple(
+        key for key, enabled in (
+            ("relation_samples", settings.samples_scheduled),
+            ("pipeline_explanations", settings.explanations_scheduled),
+        ) if enabled
+    )
+    if not module_keys:
+        return {"status": "disabled", "accepted": False}
+    result = start_scheduled_pipeline_insights_job(module_keys)
+    if not result.get("accepted") and attempt < 12:
+        retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        _scheduler.add_job(
+            _scheduled_pipeline_insights,
+            "date",
+            run_date=retry_at,
+            args=[attempt + 1],
+            id=_PIPELINE_INSIGHTS_RETRY_JOB_ID,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        result = dict(result)
+        result["retry_scheduled_for"] = retry_at.isoformat(timespec="seconds")
+    elif result.get("accepted"):
+        retry = _scheduler.get_job(_PIPELINE_INSIGHTS_RETRY_JOB_ID)
+        if retry is not None:
+            _scheduler.remove_job(_PIPELINE_INSIGHTS_RETRY_JOB_ID)
+    return result
+
+
 @_tracked_scheduled_start("scheduled email")
 def _scheduled_email_dispatch():
     """Check configured email schedules and send anything due."""
@@ -529,9 +566,48 @@ def _configure_overall_refresh_job() -> dict:
     return refresh_time
 
 
+def configure_pipeline_insights_job() -> dict:
+    from app.pipeline_insights_settings import get_pipeline_insights_settings
+
+    settings = get_pipeline_insights_settings()
+    if not settings.samples_scheduled and not settings.explanations_scheduled:
+        for job_id in ("weekly_pipeline_insights", _PIPELINE_INSIGHTS_RETRY_JOB_ID):
+            if _scheduler.get_job(job_id) is not None:
+                _scheduler.remove_job(job_id)
+        return settings.public_dict()
+    hour, minute = (int(part) for part in settings.time.split(":"))
+    _scheduler.add_job(
+        _scheduled_pipeline_insights,
+        "cron",
+        day_of_week=settings.weekday[:3],
+        hour=hour,
+        minute=minute,
+        id="weekly_pipeline_insights",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    return settings.public_dict()
+
+
+def pipeline_insights_schedule_payload() -> dict:
+    from app.pipeline_insights_settings import get_pipeline_insights_settings
+
+    settings = get_pipeline_insights_settings()
+    job = _scheduler.get_job("weekly_pipeline_insights")
+    next_run = getattr(job, "next_run_time", None) if job else None
+    return {
+        "next_run_at": next_run.isoformat() if next_run else None,
+        "scheduler_running": bool(getattr(_scheduler, "running", False)),
+        "timezone": str(host_timezone()),
+        **settings.public_dict(),
+    }
+
+
 def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
     refresh_time = _configure_overall_refresh_job()
+    configure_pipeline_insights_job()
     _scheduler.add_job(
         _scheduled_email_dispatch,
         "interval",
@@ -682,6 +758,8 @@ def _run_optional_startup_step(name: str, function, *, default=None):
 async def lifespan(app):
     logging.getLogger(__name__).info("Database path: %s", DB_PATH)
     init_db()
+    from app.pipeline_insights_db import init_pipeline_insights_db
+    init_pipeline_insights_db()
     startup_update_attempt = _run_optional_startup_step(
         "update-attempt reconciliation",
         _reconcile_update_attempts,
@@ -702,13 +780,15 @@ async def lifespan(app):
 
     ai_settings = initialize_runtime_settings()
     logging.getLogger(__name__).info(
-        "AI runtime: mode=%s model=%s operations=%s alert_auto=%s email=%s docs=%s",
+        "AI runtime: mode=%s model=%s operations=%s alert_auto=%s email=%s docs=%s pipeline_explanations=%s",
         ai_settings.mode,
         ai_settings.model,
         ai_settings.feature_enabled("operations_investigator"),
         ai_settings.feature_enabled("automatic_alert_review"),
         ai_settings.feature_enabled("alert_email_analysis"),
         ai_settings.feature_enabled("documentation_suggestions")
+        and ai_settings.qwen_enabled,
+        ai_settings.feature_enabled("pipeline_explanations")
         and ai_settings.qwen_enabled,
     )
     from app.scanner.jobs import recover_interrupted_jobs
@@ -852,6 +932,7 @@ app.include_router(materialized_views.router)
 app.include_router(recurrences.router)
 app.include_router(flows.router)
 app.include_router(pipelines.router)
+app.include_router(pipeline_insights.router)
 
 # Serve static files (the web panel)
 static_dir = Path(__file__).parent / "static"

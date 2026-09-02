@@ -87,11 +87,19 @@ DG_AI_API_URL=http://QWEN_HOST:8000/v1
 DG_AI_MODEL=Qwen/Qwen3.8-27B
 DG_AI_PROVIDER_PROFILE=qwen_vllm
 DG_AI_REASONING_EFFORT=medium
+DG_AI_PIPELINE_EXPLANATIONS_ENABLED=true
 ```
 
 The server must expose native OpenAI-compatible `tool_calls` with the Qwen reasoning and tool-call parsers enabled. Raw `<think>` or `<tool_call>` text is rejected rather than executed. Optional bounded tuning variables are `DG_AI_AGENT_MAX_TOOL_CALLS`, `DG_AI_AGENT_MAX_MODEL_TURNS`, `DG_AI_AGENT_MAX_SECONDS`, `DG_AI_AGENT_HTTP_TIMEOUT_SECONDS`, and `DG_AI_AGENT_MAX_OUTPUT_TOKENS`.
 
 See [the AI agent plan](docs/ai_agent_plan.md) for the implemented boundary and later evaluation-gated modes.
+
+Pipeline Insights stores rebuildable 15-row PostgreSQL previews and validated
+connection explanations in `pipeline_insights.db` beside `governance.db`. Use
+`DG_PIPELINE_INSIGHTS_DB_PATH` to place that non-backed-up sidecar elsewhere.
+The default weekly run is Sunday at 10:00 host time and is configurable under
+**System > Refresh Schedule**; both complete modules are also independently
+runnable from **Scanner**. Pipeline hover requests read only this local cache.
 
 ### Unattended Power BI sync
 

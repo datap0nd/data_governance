@@ -117,14 +117,14 @@ def get_lineage_diagram(report_id: int):
 
         # 3. Tables with source linkage
         table_rows = db.execute("""
-            SELECT rt.table_name, rt.source_id, rt.source_expression
+            SELECT rt.id, rt.table_name, rt.source_id, rt.source_expression
             FROM report_tables rt
             WHERE rt.report_id = ?
             ORDER BY rt.table_name
         """, (report_id,)).fetchall()
 
         tables = [
-            {"table_name": r["table_name"], "source_id": r["source_id"], "source_expression": r["source_expression"]}
+            {"id": r["id"], "table_name": r["table_name"], "source_id": r["source_id"], "source_expression": r["source_expression"]}
             for r in table_rows
         ]
 
@@ -351,6 +351,42 @@ def get_lineage_diagram(report_id: int):
                     "executable": bool(diagnostic.get("executable")),
                 })
         legacy_flow_suggestions = build_legacy_flow_suggestions(flow_diagnostics)
+
+        # Sidecar reads are local and bounded. If the rebuildable cache is
+        # unavailable, deterministic UI descriptions remain sufficient.
+        try:
+            from app.scanner.pipeline_insights import current_edge_insights
+            insights = current_edge_insights()
+        except Exception:
+            insights = {}
+        by_report_table = {
+            item.get("report_table_id"): item for item in insights.values()
+            if item.get("report_table_id") is not None
+        }
+        by_dependency = {
+            (item.get("source_id"), item.get("depends_on_id")): item
+            for item in insights.values()
+            if item.get("source_id") is not None and item.get("depends_on_id") is not None
+        }
+        def compact_insight(item):
+            if not item:
+                return None
+            return {
+                key: item.get(key)
+                for key in (
+                    "key", "text", "origin", "confidence", "generated_at", "stale"
+                )
+            }
+        for table in tables:
+            table["edge_insight"] = compact_insight(
+                by_report_table.get(table["id"])
+            )
+        for dependency in source_deps:
+            dependency["edge_insight"] = compact_insight(
+                by_dependency.get(
+                    (dependency["source_id"], dependency["depends_on_id"])
+                )
+            )
 
     return {
         "report": {
