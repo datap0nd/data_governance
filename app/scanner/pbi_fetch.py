@@ -30,9 +30,16 @@ MAX_ACTIVITY_PAGES_PER_DAY = 200
 class PbiFetchError(RuntimeError):
     """Raised when the Power BI REST API rejects or fails a request."""
 
-    def __init__(self, message: str, *, permission: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        permission: bool = False,
+        status_code: int | None = None,
+    ):
         super().__init__(message)
         self.permission = permission
+        self.status_code = status_code
 
 
 def _uuid_text(value: str, label: str) -> str:
@@ -49,6 +56,7 @@ def _get_json(client: httpx.Client, token: str, url: str, params: dict | None = 
             f"Power BI API returned {response.status_code} for {url.split('?')[0]}. "
             "The signed-in account may lack access or the token may be stale.",
             permission=True,
+            status_code=response.status_code,
         )
     if response.status_code >= 400:
         raise PbiFetchError(
@@ -485,9 +493,13 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
 
     entries: list[dict] = []
     days_synced: list[str] = []
+    failed_days = 0
+    skipped_days = 0
+    zero_activity_days = 0
+    authorization_denied = False
 
     with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS, proxy=resolve_proxy(PBI_API_BASE)) as client:
-        for day in days_to_fetch:
+        for index, day in enumerate(days_to_fetch):
             assert_not_cancelled(cancel_generation, "Power BI usage sync")
             url = f"{PBI_API_BASE}/admin/activityevents"
             params = {
@@ -514,12 +526,21 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                     url = body.get("continuationUri")
             except PbiFetchError as exc:
                 if exc.permission:
-                    raise PbiFetchError(
-                        "Power BI activity events permission error: the signed-in account needs "
-                        "the Power BI/Fabric administrator role for usage sync.",
-                        permission=True,
-                    ) from exc
+                    authorization_denied = True
+                    failed_days += 1
+                    skipped_days = len(days_to_fetch) - index - 1
+                    logger.warning(
+                        "Power BI Activity Events authorization failed for %s (HTTP %s)",
+                        day,
+                        exc.status_code or "401/403",
+                    )
+                    break
+                failed_days += 1
                 logger.warning("Usage fetch failed for %s: %s", day, exc)
+                continue
+            except Exception:
+                failed_days += 1
+                logger.exception("Unexpected Power BI usage fetch failure for %s", day)
                 continue
 
             for name, count in view_counts.items():
@@ -532,8 +553,82 @@ def fetch_usage_payload(days_back: int = 30, cancel_generation: int | None = Non
                     }
                 )
             days_synced.append(day)
+            if not view_counts:
+                zero_activity_days += 1
 
-    return {"entries": entries, "days_synced": days_synced}
+    requested_days = len(days_to_fetch)
+    successful_days = len(days_synced)
+    if authorization_denied:
+        status = "completed_with_warnings" if successful_days else "failed"
+        reason_code = "power_bi_usage_authorization_denied"
+        operator_summary = (
+            f"Power BI fetched {successful_days} usage day(s) before Activity Events access was rejected "
+            "(HTTP 401/403); the remaining days will be retried."
+            if successful_days else
+            "Power BI rejected Activity Events access (HTTP 401/403); no usage data was imported."
+        )
+        remediation = [
+            "Assign the identity the Fabric administrator or Power BI service administrator role.",
+            "For a service principal, enable the tenant setting for service principals to use read-only admin APIs and include it in the allowed security group.",
+        ]
+    elif requested_days and not successful_days:
+        status = "failed"
+        reason_code = "power_bi_usage_all_days_failed"
+        operator_summary = f"Power BI could not fetch any of the {requested_days} requested usage day(s)."
+        remediation = [
+            "Review the Metronome server log for the classified Activity Events failures, then rerun usage metadata.",
+        ]
+    elif failed_days:
+        status = "completed_with_warnings"
+        reason_code = "power_bi_usage_partial_failure"
+        operator_summary = (
+            f"Power BI fetched {successful_days} of {requested_days} requested usage day(s); "
+            f"{failed_days} day(s) will be retried."
+        )
+        remediation = ["Correct the Activity Events request failures and rerun usage metadata."]
+    elif requested_days == 0:
+        status = "completed"
+        reason_code = "power_bi_usage_already_current"
+        operator_summary = "Power BI usage metadata is already current; no days were due."
+        remediation = []
+    else:
+        status = "completed"
+        reason_code = "power_bi_usage_completed"
+        operator_summary = (
+            f"Power BI fetched all {successful_days} requested usage day(s)"
+            + (
+                f"; {zero_activity_days} day(s) contained no report views."
+                if zero_activity_days else "."
+            )
+        )
+        remediation = []
+
+    facts = {
+        "requested_days": requested_days,
+        "successful_days": successful_days,
+        "failed_days": failed_days,
+        "skipped_days": skipped_days,
+        "zero_activity_days": zero_activity_days,
+    }
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "operator_summary": operator_summary,
+        "message": operator_summary,
+        "entries": entries,
+        "days_synced": days_synced,
+        **facts,
+        "diagnostic": {
+            "health_impact": (
+                "error" if status == "failed" else
+                "warning" if status == "completed_with_warnings" else "none"
+            ),
+            "reason_code": reason_code,
+            "operator_summary": operator_summary,
+            "remediation": remediation,
+            "facts": facts,
+        },
+    }
 
 
 def run_usage_sync(days_back: int = 30, cancel_generation: int | None = None) -> dict:

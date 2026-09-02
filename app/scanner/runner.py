@@ -31,6 +31,7 @@ from app.scanner.lifecycle import (
     component_result,
     finish_scan_run,
     normalize_scan_status,
+    rollup_requested_component_status,
     terminal_status_for_components,
 )
 from app.scanner.tmdl_parser import (
@@ -1310,20 +1311,47 @@ def run_scan(
             )
             if normalize_scan_status(item.get("status")) == "failed"
         ]
-        usage_requested = any(
-            bool(item.get("requested")) for item in (csv_component, pbi_usage_component)
+        usage_warnings = [
+            name for name, item in (
+                ("csv_import", csv_component),
+                ("power_bi_usage", pbi_usage_component),
+            )
+            if normalize_scan_status(item.get("status")) == "completed_with_warnings"
+        ]
+        usage_status = rollup_requested_component_status(
+            {"csv_import": csv_component, "power_bi_usage": pbi_usage_component},
+            empty_status="not_requested",
         )
-        usage_status = (
-            "failed" if usage_failures else
-            "completed" if usage_requested else
-            "not_requested"
+        usage_issue_names = usage_failures or usage_warnings
+        usage_parts = {"csv_import": csv_component, "power_bi_usage": pbi_usage_component}
+        usage_diagnostic = (
+            usage_parts[usage_issue_names[0]].get("diagnostic")
+            if len(usage_issue_names) == 1
+            and isinstance(usage_parts[usage_issue_names[0]].get("diagnostic"), dict)
+            else None
+        )
+        usage_summary = (
+            str(usage_diagnostic.get("operator_summary")) if usage_diagnostic else
+            "Failed sub-steps: " + ", ".join(usage_failures) if usage_failures else
+            "Completed with warnings: " + ", ".join(usage_warnings) if usage_warnings else
+            "Usage metadata was not requested." if usage_status == "not_requested" else
+            "Usage metadata synchronized."
         )
         usage_component = component_result(
             {
                 "status": usage_status,
+                "reason_code": (
+                    "usage_metadata_substep_failed" if usage_failures else
+                    "usage_metadata_partial" if usage_warnings else
+                    "usage_metadata_not_requested" if usage_status == "not_requested" else
+                    "usage_metadata_completed"
+                ),
+                "operator_summary": usage_summary,
                 "csv_import": csv_component,
                 "power_bi_usage": pbi_usage_component,
                 "failed_subscans": usage_failures,
+                "warning_subscans": usage_warnings,
+                **({"diagnostic": usage_diagnostic} if usage_diagnostic else {}),
             },
             requested=run_followups,
         )
@@ -1332,10 +1360,7 @@ def run_scan(
             scanner_modules.finish_module_run(
                 usage_module_run_id,
                 status=usage_status,
-                summary=(
-                    "Failed sub-steps: " + ", ".join(usage_failures)
-                    if usage_failures else "Usage metadata synchronized."
-                ),
+                summary=usage_summary,
                 details=usage_component,
                 log="\n".join(
                     (

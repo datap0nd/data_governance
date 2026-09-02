@@ -59,7 +59,9 @@ PENDING_REFRESH_SETTING = "pbi_sync_pending_refresh"
 PBI_IMPORT_LOCK_RETRY_SECONDS = 900
 PBI_SYNC_WAIT_TIMEOUT_SECONDS = 1200
 PBI_SYNC_WAIT_POLL_SECONDS = 5
-PBI_SYNC_TERMINAL_STATUSES = {"completed", "failed", "skipped", "stopped"}
+PBI_SYNC_TERMINAL_STATUSES = {
+    "completed", "completed_with_warnings", "failed", "skipped", "stopped",
+}
 
 
 def _now_iso() -> str:
@@ -254,7 +256,9 @@ def _record_sync_run(
     """Persist sync status so scheduled emails can require fresh PBI data."""
     now = _now_iso()
     started = started_at or now
-    finished = finished_at if finished_at is not None else (now if status in {"completed", "failed", "skipped", "stopped"} else None)
+    finished = finished_at if finished_at is not None else (
+        now if status in PBI_SYNC_TERMINAL_STATUSES else None
+    )
     raw_attempt_id = attempt_id
     if raw_attempt_id is None and isinstance(details, dict):
         raw_attempt_id = details.get("attempt_id")
@@ -488,7 +492,8 @@ def latest_successful_pbi_sync(sync_type: str = "refresh") -> dict | None:
             _ensure_pbi_sync_runs_schema(db)
             row = db.execute(
                 """SELECT * FROM pbi_sync_runs
-                   WHERE sync_type = ? AND status = 'completed'
+                   WHERE sync_type = ?
+                     AND status IN ('completed', 'completed_with_warnings')
                    ORDER BY finished_at DESC, id DESC
                    LIMIT 1""",
                 (sync_type,),
@@ -1487,7 +1492,15 @@ def wait_for_pbi_sync_completion(
         )
         latest_status = (latest or {}).get("status", "").lower()
         if latest and latest_status in PBI_SYNC_TERMINAL_STATUSES:
+            details = latest.get("details")
+            if isinstance(details, str):
+                try:
+                    details = json.loads(details)
+                except (TypeError, ValueError):
+                    details = {}
+            details = details if isinstance(details, dict) else {}
             return {
+                **details,
                 "status": latest_status,
                 "message": latest.get("message") or f"Power BI {sync_type} sync {latest_status}.",
                 "run": latest,
@@ -1503,7 +1516,25 @@ def wait_for_pbi_sync_completion(
         {"launch": launch_result},
         attempt_id=attempt_id,
     )
-    return {"status": "timeout", "message": message, "launch": launch_result}
+    operator_summary = (
+        f"Power BI {sync_type} did not report completion within {timeout_seconds} seconds."
+    )
+    return {
+        "status": "failed",
+        "reason_code": "power_bi_usage_timeout" if sync_type == "usage" else "power_bi_sync_timeout",
+        "message": operator_summary,
+        "operator_summary": operator_summary,
+        "diagnostic": {
+            "health_impact": "error",
+            "reason_code": "power_bi_usage_timeout" if sync_type == "usage" else "power_bi_sync_timeout",
+            "operator_summary": operator_summary,
+            "remediation": [
+                "Check the Power BI sync process and network path, then rerun the sync."
+            ],
+            "facts": {},
+        },
+        "launch": launch_result,
+    }
 
 
 def trigger_pbi_sync_and_wait(
@@ -1844,6 +1875,74 @@ def _import_pbi_usage_data_once(data: dict) -> dict:
     entries = data.get("entries") or []
     days_synced = data.get("days_synced") or []
 
+    def _count(name: str, default: int = 0) -> int:
+        try:
+            return max(0, int(data.get(name, default)))
+        except (TypeError, ValueError):
+            return max(0, int(default))
+
+    successful_days = _count("successful_days", len(days_synced))
+    requested_days = _count("requested_days", successful_days)
+    failed_days = _count("failed_days")
+    skipped_days = _count("skipped_days")
+    zero_activity_days = _count("zero_activity_days")
+    raw_status = str(data.get("status") or "").strip().lower()
+    if requested_days > 0 and successful_days == 0:
+        status = "failed"
+    elif raw_status == "completed_with_warnings" or failed_days:
+        status = "completed_with_warnings"
+    else:
+        status = "completed"
+    reason_code = str(data.get("reason_code") or (
+        "power_bi_usage_all_days_failed" if status == "failed" else
+        "power_bi_usage_partial_failure" if status == "completed_with_warnings" else
+        "power_bi_usage_already_current" if requested_days == 0 else
+        "power_bi_usage_completed"
+    ))
+    operator_summary = str(data.get("operator_summary") or data.get("message") or (
+        f"Power BI could not fetch any of the {requested_days} requested usage day(s)."
+        if status == "failed" else
+        f"Power BI fetched {successful_days} of {requested_days} requested usage day(s)."
+        if status == "completed_with_warnings" else
+        "Power BI usage metadata is already current; no days were due."
+        if requested_days == 0 else
+        f"Power BI usage sync completed: {successful_days} day(s)."
+    ))
+    facts = {
+        "requested_days": requested_days,
+        "successful_days": successful_days,
+        "failed_days": failed_days,
+        "skipped_days": skipped_days,
+        "zero_activity_days": zero_activity_days,
+    }
+    diagnostic = data.get("diagnostic") if isinstance(data.get("diagnostic"), dict) else {
+        "health_impact": (
+            "error" if status == "failed" else
+            "warning" if status == "completed_with_warnings" else "none"
+        ),
+        "reason_code": reason_code,
+        "operator_summary": operator_summary,
+        "remediation": [],
+        "facts": facts,
+    }
+
+    # An attempted fetch with no successful day is not an import. In particular,
+    # never let an empty payload conceal an all-days API failure.
+    if status == "failed":
+        result = {
+            "status": status,
+            "reason_code": reason_code,
+            "operator_summary": operator_summary,
+            "message": operator_summary,
+            "matched": 0,
+            "total_entries": 0,
+            "days_synced": 0,
+            **facts,
+            "diagnostic": diagnostic,
+        }
+        _record_sync_run("usage", status, operator_summary, result)
+        return result
+
     matched = 0
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1882,11 +1981,21 @@ def _import_pbi_usage_data_once(data: dict) -> dict:
         # authenticated Power BI sync recovered first.
         _resolve_reconnect_alerts(db, now)
 
-    result = {"status": "completed", "matched": matched, "total_entries": len(entries), "days_synced": len(days_synced)}
+    result = {
+        "status": status,
+        "reason_code": reason_code,
+        "operator_summary": operator_summary,
+        "message": operator_summary,
+        "matched": matched,
+        "total_entries": len(entries),
+        "days_synced": len(days_synced),
+        **facts,
+        "diagnostic": diagnostic,
+    }
     _record_sync_run(
         "usage",
-        "completed",
-        f"Power BI usage sync completed: {len(days_synced)} day(s), {matched} matched.",
+        status,
+        operator_summary,
         result,
     )
     return result
