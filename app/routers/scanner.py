@@ -262,9 +262,7 @@ def _execute_probe_job(job_id: int, generation: int | None) -> None:
         message="Checking file and PostgreSQL sources.",
     )
     try:
-        result = redact_component_payload(
-            run_probe(cancel_generation=generation, operation_id=job_id)
-        )
+        result = run_probe(cancel_generation=generation, operation_id=job_id)
         scanner_modules.finish_module_run(
             module_run_id,
             status=result.get("status") or "completed",
@@ -345,7 +343,7 @@ def _execute_postgres_cron_job(job_id: int, generation: int | None) -> None:
     )
     try:
         assert_not_cancelled(generation, "PostgreSQL schedule scan")
-        result = redact_component_payload(scan_pg_cron())
+        result = scan_pg_cron()
         assert_not_cancelled(generation, "PostgreSQL schedule scan")
         scanner_modules.finish_module_run(
             module_run_id,
@@ -410,12 +408,10 @@ def _execute_postgres_lineage_job(job_id: int, generation: int | None) -> None:
         ),
     )
     try:
-        result = redact_component_payload(
-            scan_pg_dependencies(
-                report_id=report_id,
-                operation_id=job_id,
-                cancel_generation=generation,
-            )
+        result = scan_pg_dependencies(
+            report_id=report_id,
+            operation_id=job_id,
+            cancel_generation=generation,
         )
         scanner_modules.finish_module_run(
             module_run_id,
@@ -573,7 +569,7 @@ def _execute_governance_job(job_id: int, generation: int | None) -> None:
     )
     try:
         assert_not_cancelled(generation, "Governance checks")
-        result = redact_component_payload(_run_governance_subscans())
+        result = _run_governance_subscans()
         assert_not_cancelled(generation, "Governance checks")
         failed = result.get("failed_subscans") or []
         summary = (
@@ -666,7 +662,7 @@ def _execute_usage_metadata_job(job_id: int, generation: int | None) -> None:
         ]
         requested = any(value.get("requested") for value in subscans.values())
         status = "failed" if failed else "completed" if requested else "skipped"
-        result = redact_component_payload({"status": status, "failed_subscans": failed, **subscans})
+        result = {"status": status, "failed_subscans": failed, **subscans}
         summary = "Failed sub-steps: " + ", ".join(failed) if failed else "Usage metadata synchronized."
         scanner_modules.finish_module_run(
             module_run_id, status=status, summary=summary, details=result,

@@ -3814,14 +3814,19 @@ function _scannerModuleState(run) {
         : ["failed", "stalled"].includes(status) ? "!"
         : ["running", "queued"].includes(status) ? "&#8635;"
         : ["completed_with_warnings", "skipped", "stopped"].includes(status) ? "&#9651;" : "&#8212;";
-    return `<span class="scanner-state scanner-state-${esc(status)}"><span aria-hidden="true">${icon}</span>${esc(label)}</span>`;
+    const diagnostic = run?.details?.diagnostic || {};
+    const tooltip = diagnostic.operator_summary || run?.summary || "";
+    return `<span class="scanner-state scanner-state-${esc(status)}"${tooltip ? ` title="${esc(tooltip)}"` : ""}><span aria-hidden="true">${icon}</span>${esc(label)}</span>`;
 }
 
 function _scannerRunDuration(run) {
     if (!run?.started_at) return "—";
     const end = run.finished_at ? new Date(run.finished_at) : new Date();
-    const seconds = Math.max(0, Math.round((end - new Date(run.started_at)) / 1000));
-    if (!Number.isFinite(seconds)) return "—";
+    const milliseconds = Math.max(0, end - new Date(run.started_at));
+    if (!Number.isFinite(milliseconds)) return "—";
+    const seconds = Math.round(milliseconds / 1000);
+    if (run.finished_at && milliseconds < 1000) return "<1s";
+    if (run.finished_at && milliseconds === 1000) return "~1s";
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
@@ -3841,6 +3846,41 @@ function _scannerCounts(details) {
     return values.slice(0, 4).join(" · ") || "No counts reported";
 }
 
+function _scannerRunDiagnostic(run) {
+    const status = String(run?.display_status || run?.status || "");
+    if (status === "stalled") return {
+        health_impact: "error",
+        reason_code: "module_stalled",
+        operator_summary: "This module stopped reporting progress. Review the detailed run information or stop and rerun it.",
+        remediation: [], facts: {},
+    };
+    const diagnostic = run?.details?.diagnostic;
+    if (diagnostic && typeof diagnostic === "object") return diagnostic;
+    return null;
+}
+
+function _scannerDiagnosticDetailsHtml(run) {
+    const diagnostic = _scannerRunDiagnostic(run);
+    if (!diagnostic && !run?.log) return "";
+    const remediation = Array.isArray(diagnostic?.remediation) ? diagnostic.remediation.filter(Boolean) : [];
+    const facts = diagnostic?.facts && typeof diagnostic.facts === "object"
+        ? Object.entries(diagnostic.facts).filter(([, value]) => value !== null && value !== undefined) : [];
+    return `<details class="scanner-module-log"><summary>Detailed run information</summary>
+        ${diagnostic ? `<div class="scanner-diagnostic-detail"><strong>${esc(diagnostic.reason_code || "module_result")}</strong><p>${esc(diagnostic.operator_summary || "")}</p>
+            ${remediation.length ? `<ul>${remediation.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+            ${facts.length ? `<dl>${facts.map(([key, value]) => `<div><dt>${esc(key.replaceAll("_", " "))}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : ""}</div>` : ""}
+        ${run?.log ? `<pre class="scan-log">${esc(run.log)}</pre>` : ""}</details>`;
+}
+
+function _scannerModuleHistoryHtml(runs) {
+    if (!runs?.length) return '<div class="scanner-module-note">No module runs recorded.</div>';
+    return runs.map(run => `<div class="scanner-module-history-row">
+        <div>${_scannerModuleState(run)}<span title="${esc(formatDate(run.started_at))}">${esc(timeAgo(run.started_at))}</span><span>${esc(_scannerRunDuration(run))}</span></div>
+        <p>${esc(_scannerRunDiagnostic(run)?.operator_summary || run.summary || "No summary reported.")}</p>
+        ${_scannerDiagnosticDetailsHtml(run)}
+    </div>`).join("");
+}
+
 function _scannerPbiControls(pbiStatus) {
     const auth = pbiStatus?.auth || {};
     const mode = pbiStatus?.auth_mode === "service_principal" ? "Service principal"
@@ -3858,7 +3898,9 @@ function _scannerPbiControls(pbiStatus) {
 function _scannerModuleCard(module, laneBusy, pbiStatus) {
     const run = module.current_run || module.last_run;
     const details = run?.details || {};
-    const failure = ["failed", "stalled"].includes(String(run?.display_status || run?.status || ""));
+    const status = String(run?.display_status || run?.status || "");
+    const diagnostic = _scannerRunDiagnostic(run);
+    const showSummary = !!run && !["completed", "running", "queued"].includes(status);
     const infoId = `scanner-info-${module.key}`;
     return `<article class="scanner-module-card scanner-module-${esc(run?.display_status || run?.status || "never")}">
         <div class="scanner-module-heading">
@@ -3875,9 +3917,10 @@ function _scannerModuleCard(module, laneBusy, pbiStatus) {
             <div><dt>Trigger</dt><dd>${esc(run?.trigger_source || "—")}</dd></div>
         </dl>
         <div class="scanner-module-counts">${esc(_scannerCounts(details))}</div>
-        ${failure ? `<div class="scanner-module-failure" role="alert">${esc(run.summary || "The module failed. Expand the log for details.")}</div>` : ""}
+        ${showSummary ? `<div class="scanner-module-diagnostic scanner-module-impact-${esc(diagnostic?.health_impact || "none")}" role="status">${esc(diagnostic?.operator_summary || run.summary || "No result explanation was recorded.")}</div>` : ""}
         ${module.key === "power_bi_metadata" ? _scannerPbiControls(pbiStatus) : ""}
-        ${run?.log ? `<details class="scanner-module-log"><summary>Detailed log</summary><pre class="scan-log">${esc(run.log)}</pre></details>` : ""}
+        ${_scannerDiagnosticDetailsHtml(run)}
+        <details class="scanner-module-history" data-module-key="${esc(module.key)}"><summary>Recent runs</summary><div class="scanner-module-history-body">Open to load recent runs.</div></details>
         <div class="scanner-module-actions"><button type="button" class="btn-outline btn-run-module" data-module-key="${esc(module.key)}" ${laneBusy ? "disabled" : ""}>${module.current_run ? "Running…" : "Run module"}</button></div>
     </article>`;
 }
@@ -12045,6 +12088,21 @@ function bindScannerAdmin() {
                 event.preventDefault();
                 wrapper?.classList.add("scanner-info-dismissed");
                 button.blur();
+            }
+        });
+    });
+    document.querySelectorAll(".scanner-module-history").forEach(history => {
+        history.addEventListener("toggle", async () => {
+            if (!history.open || history.dataset.loaded === "true") return;
+            const body = history.querySelector(".scanner-module-history-body");
+            history.dataset.loaded = "true";
+            if (body) body.textContent = "Loading recent runs…";
+            try {
+                const runs = await api(`/api/scanner/modules/${encodeURIComponent(history.dataset.moduleKey)}/runs?limit=5`);
+                if (body) body.innerHTML = _scannerModuleHistoryHtml(runs);
+            } catch (err) {
+                history.dataset.loaded = "false";
+                if (body) body.textContent = `Recent runs could not be loaded: ${err.message}`;
             }
         });
     });

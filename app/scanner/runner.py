@@ -1575,11 +1575,21 @@ def run_scan(
         logger.exception("Scan failed")
         current_report_run = scanner_modules.get_module_run(report_module_run_id)
         if current_report_run and current_report_run.get("active"):
+            discovery_failure = isinstance(e, ReportDiscoveryError)
             scanner_modules.finish_module_run(
                 report_module_run_id,
                 status="failed",
-                summary=str(e),
-                details={"status": "failed", "error": str(e)},
+                summary=(
+                    "Configured report root does not exist or produced no usable report definitions."
+                    if discovery_failure else "PBIX / TMDL catalog discovery failed."
+                ),
+                details={
+                    "status": "failed",
+                    "reason_code": (
+                        "report_discovery_failed" if discovery_failure else "module_execution_failed"
+                    ),
+                    "error": str(e),
+                },
                 log="Report catalog discovery failed before reconciliation.",
             )
         scanner_modules.finish_active_runs_for_scan(

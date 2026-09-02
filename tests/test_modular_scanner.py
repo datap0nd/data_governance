@@ -211,10 +211,79 @@ def test_module_runs_are_redacted_and_recovered(monkeypatch):
         stored = modules.get_module_run(run_id)
         assert "topsecret" not in str(stored)
         assert stored["status"] == "failed"
+        assert stored["details"]["diagnostic"] == {
+            "facts": {},
+            "health_impact": "error",
+            "operator_summary": (
+                "Governance failed; review the Metronome server log for this run."
+            ),
+            "reason_code": "module_execution_failed",
+            "remediation": [
+                "Review the Metronome server log for the module run and rerun after correcting the underlying issue."
+            ],
+        }
+        assert "topsecret" not in stored["summary"]
 
         interrupted = modules.create_module_run("source_freshness", scanner_job_id=job_id)
         assert modules.recover_interrupted_module_runs() == 1
         assert modules.get_module_run(interrupted)["status"] == "stopped"
+    finally:
+        temp_dir.cleanup()
+
+
+def test_module_details_are_bounded_without_losing_diagnostic(monkeypatch):
+    temp_dir = _fresh_database(monkeypatch)
+    try:
+        job_id = jobs.create_job("governance")
+        run_id = modules.create_module_run("governance", scanner_job_id=job_id)
+        modules.finish_module_run(
+            run_id,
+            status="completed_with_warnings",
+            summary="Lineage needs attention.",
+            details={"status": "completed_with_warnings", "log": "detail\n" * 10000},
+            log="line\n" * 10000,
+        )
+        stored = modules.get_module_run(run_id)
+        with database.get_db() as db:
+            raw = db.execute(
+                "SELECT details_json, log FROM scanner_module_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        assert len(raw["details_json"]) <= modules.MAX_DETAILS_CHARS
+        assert len(raw["log"]) <= modules.MAX_LOG_CHARS
+        assert stored["details"]["diagnostic"]["operator_summary"] == (
+            "Lineage needs attention."
+        )
+    finally:
+        temp_dir.cleanup()
+
+
+def test_classified_diagnostic_survives_failed_payload_redaction(monkeypatch):
+    temp_dir = _fresh_database(monkeypatch)
+    try:
+        job_id = jobs.create_job("postgres_schedules")
+        run_id = modules.create_module_run("postgres_schedules", scanner_job_id=job_id)
+        modules.finish_module_run(
+            run_id,
+            status="failed",
+            summary="raw driver failure",
+            details={
+                "status": "failed",
+                "error": "password=topsecret",
+                "diagnostic": {
+                    "health_impact": "error",
+                    "reason_code": "pg_cron_permission_denied",
+                    "operator_summary": "The scanner account cannot read cron.job.",
+                    "remediation": ["Grant SELECT on cron.job."],
+                    "facts": {"governed_mvs": 2, "unsafe": "discard me"},
+                },
+            },
+        )
+        stored = modules.get_module_run(run_id)
+        assert stored["summary"] == "The scanner account cannot read cron.job."
+        assert stored["details"]["error"] == "Redacted; review server logs."
+        assert stored["details"]["diagnostic"]["reason_code"] == "pg_cron_permission_denied"
+        assert stored["details"]["diagnostic"]["facts"] == {"governed_mvs": 2}
+        assert "topsecret" not in str(stored)
     finally:
         temp_dir.cleanup()
 

@@ -6124,10 +6124,24 @@ tr.row-archived td:last-child {
 .scanner-module-facts dd { margin: 0.2rem 0 0; color: var(--text); font-size: 0.77rem; overflow-wrap: anywhere; }
 .scanner-module-counts, .scanner-module-note, .scanner-module-connection { color: var(--text-muted); font-size: 0.74rem; }
 .scanner-module-active { color: var(--accent); font-size: 0.75rem; font-weight: 700; }
-.scanner-module-failure { padding: 0.55rem 0.65rem; border-radius: 5px; background: rgba(239,68,68,0.08); color: var(--red); font-size: 0.76rem; overflow-wrap: anywhere; }
+.scanner-module-diagnostic { padding: 0.55rem 0.65rem; border-radius: 5px; font-size: 0.76rem; overflow-wrap: anywhere; background: rgba(148,163,184,0.08); color: var(--text-muted); }
+.scanner-module-impact-warning { background: rgba(245,158,11,0.09); color: var(--yellow); }
+.scanner-module-impact-error { background: rgba(239,68,68,0.08); color: var(--red); }
 .scanner-module-connection { display: flex; gap: 0.45rem 0.7rem; align-items: center; flex-wrap: wrap; }
 .scanner-module-log summary { cursor: pointer; color: var(--text-muted); font-size: 0.75rem; font-weight: 700; }
 .scanner-module-log .scan-log { margin-top: 0.5rem; max-height: 250px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.scanner-diagnostic-detail { margin-top: 0.5rem; color: var(--text-muted); font-size: 0.75rem; }
+.scanner-diagnostic-detail p { margin: 0.25rem 0; }
+.scanner-diagnostic-detail ul { margin: 0.35rem 0 0.35rem 1.1rem; }
+.scanner-diagnostic-detail dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.25rem 0.75rem; }
+.scanner-diagnostic-detail dl div { display: flex; justify-content: space-between; gap: 0.5rem; }
+.scanner-diagnostic-detail dt { text-transform: capitalize; }
+.scanner-module-history { margin-top: 0.25rem; }
+.scanner-module-history > summary { cursor: pointer; color: var(--text-muted); font-size: 0.75rem; font-weight: 700; }
+.scanner-module-history-body { margin-top: 0.45rem; }
+.scanner-module-history-row { padding: 0.5rem 0; border-top: 1px solid var(--border); font-size: 0.74rem; }
+.scanner-module-history-row > div { display: flex; align-items: center; gap: 0.5rem; }
+.scanner-module-history-row p { margin: 0.3rem 0; color: var(--text-muted); }
 .scanner-module-actions { margin-top: auto; display: flex; justify-content: flex-end; }
 .scanner-accordion { padding: 0; overflow: hidden; }
 .scanner-accordion h2 { margin: 0; }

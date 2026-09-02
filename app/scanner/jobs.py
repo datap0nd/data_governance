@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from app.database import get_db
 from app.scanner.lifecycle import normalize_scan_status, redact_component_payload
+from app.scanner.diagnostics import result_message as shared_result_message
 
 
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
@@ -331,7 +332,7 @@ def attach_scan_run(job_id: int | None, scan_run_id: int) -> None:
         )
 
 
-def _result_message(job_type: str, status: str, result: Mapping[str, Any]) -> str:
+def _legacy_result_message(job_type: str, status: str, result: Mapping[str, Any]) -> str:
     if job_type == "postgres_lineage":
         databases = result.get("databases")
         if isinstance(databases, Mapping):
@@ -456,6 +457,11 @@ def _result_message(job_type: str, status: str, result: Mapping[str, Any]) -> st
         "stopped": "Stopped.",
     }
     return labels.get(status, status.replace("_", " ").capitalize() + ".")
+
+
+def _result_message(job_type: str, status: str, result: Mapping[str, Any]) -> str:
+    """Compatibility wrapper for the shared job/module formatter."""
+    return shared_result_message(job_type, status, result)
 
 
 def finish_job(
