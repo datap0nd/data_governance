@@ -154,6 +154,33 @@ def test_pbix_table_fallback_is_not_authoritative(monkeypatch, tmp_path):
     assert report.parse_issues == ["PBIX model table enumeration failed"]
 
 
+def test_pbixray_array_table_names_are_authoritative(monkeypatch, tmp_path):
+    pbix_path = tmp_path / "Sales.pbix"
+    pbix_path.write_bytes(b"pbix")
+
+    class _ArrayLike:
+        def __bool__(self):
+            raise ValueError("The truth value of an array with more than one element is ambiguous")
+
+        def __iter__(self):
+            return iter(("Orders", "Customers"))
+
+    class _Model:
+        power_query = None
+        schema = None
+        dax_measures = None
+        tables = _ArrayLike()
+
+    monkeypatch.setitem(sys.modules, "pbixray", types.SimpleNamespace(PBIXRay=lambda _path: _Model()))
+
+    report = pbix_parser.parse_pbix_file(pbix_path)
+
+    assert report is not None
+    assert report.snapshot_complete is True
+    assert report.parse_issues == []
+    assert [table.table_name for table in report.tables] == ["Orders", "Customers"]
+
+
 def test_unreadable_snapshot_metadata_is_incomplete(tmp_path):
     missing_path = tmp_path / "Missing.pbix"
     report = _report("Missing", missing_path, ["Partial"])
