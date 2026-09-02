@@ -136,7 +136,10 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     snapshot_complete = True
     parse_issues: list[str] = []
     try:
-        table_names = model.tables or []
+        raw_table_names = model.tables
+        # PBIXRay 0.5 exposes this as a NumPy array. Never use boolean
+        # coercion here: multi-item arrays raise "truth value is ambiguous".
+        table_names = list(raw_table_names) if raw_table_names is not None else []
         if not table_names:
             snapshot_complete = False
             parse_issues.append("PBIX model table enumeration returned no tables")
