@@ -52,6 +52,45 @@ function Report-SyncStatus {
     }
 }
 
+function New-UsageDiagnostic {
+    param(
+        [string]$Status,
+        [string]$ReasonCode,
+        [string]$Summary,
+        [int]$RequestedDays,
+        [int]$SuccessfulDays,
+        [int]$FailedDays,
+        [int]$SkippedDays,
+        [int]$ZeroActivityDays,
+        [string[]]$Remediation = @()
+    )
+    $impact = if ($Status -eq "failed") { "error" } elseif ($Status -eq "completed_with_warnings") { "warning" } else { "none" }
+    $facts = @{
+        requested_days     = $RequestedDays
+        successful_days    = $SuccessfulDays
+        failed_days        = $FailedDays
+        skipped_days       = $SkippedDays
+        zero_activity_days = $ZeroActivityDays
+    }
+    return @{
+        status             = $Status
+        reason_code        = $ReasonCode
+        operator_summary   = $Summary
+        requested_days     = $RequestedDays
+        successful_days    = $SuccessfulDays
+        failed_days        = $FailedDays
+        skipped_days       = $SkippedDays
+        zero_activity_days = $ZeroActivityDays
+        diagnostic         = @{
+            health_impact   = $impact
+            reason_code     = $ReasonCode
+            operator_summary = $Summary
+            remediation     = $Remediation
+            facts           = $facts
+        }
+    }
+}
+
 if (-not (Get-Module -ListAvailable -Name MicrosoftPowerBIMgmt)) {
     Write-Error "MicrosoftPowerBIMgmt module not installed. Run: Install-Module -Name MicrosoftPowerBIMgmt -Scope CurrentUser"
     Report-SyncStatus -Status "failed" -Message "MicrosoftPowerBIMgmt module is not installed."
@@ -167,7 +206,10 @@ for ($i = 1; $i -le $DaysBack; $i++) {
 }
 
 if ($daysToFetch.Count -eq 0) {
-    Write-Host "All days already synced. Nothing to do." -ForegroundColor Green
+    $summary = "Power BI usage metadata is already current; no days were due."
+    $details = New-UsageDiagnostic -Status "completed" -ReasonCode "power_bi_usage_already_current" -Summary $summary -RequestedDays 0 -SuccessfulDays 0 -FailedDays 0 -SkippedDays 0 -ZeroActivityDays 0
+    Write-Host $summary -ForegroundColor Green
+    Report-SyncStatus -Status "completed" -Message $summary -Details $details
     Pause-IfNeeded "Press Enter to close"
     exit 0
 }
@@ -176,6 +218,10 @@ Write-Host "Fetching $($daysToFetch.Count) unsynced day(s)..." -ForegroundColor 
 
 $allEntries = @()
 $syncedDaysList = @()
+$failedDays = 0
+$skippedDays = 0
+$zeroActivityDays = 0
+$authorizationDenied = $false
 
 foreach ($day in $daysToFetch) {
     $dayStr = $day.ToString("yyyy-MM-dd")
@@ -217,13 +263,18 @@ foreach ($day in $daysToFetch) {
 
         $syncedDaysList += $dayStr
         $viewCount = ($viewEvents | Measure-Object).Count
+        if ($viewCount -eq 0) {
+            $zeroActivityDays++
+        }
         Write-Host " $viewCount views" -ForegroundColor $(if ($viewCount -gt 0) { "Green" } else { "Gray" })
     } catch {
         $errMsg = $_.ToString()
+        $failedDays++
         Write-Host " FAILED: $errMsg" -ForegroundColor Red
 
         # Abort immediately on auth/permission errors - no point trying remaining days
         if ($errMsg -match "Unauthorized|Forbidden|403|401") {
+            $authorizationDenied = $true
             Write-Host ""
             Write-Host "PERMISSION ERROR: Your account lacks the required role." -ForegroundColor Red
             Write-Host "Get-PowerBIActivityEvent requires one of:" -ForegroundColor Yellow
@@ -232,21 +283,66 @@ foreach ($day in $daysToFetch) {
             Write-Host "  - Global Administrator" -ForegroundColor Yellow
             Write-Host "Workspace Admin alone is NOT sufficient." -ForegroundColor Yellow
             Write-Host ""
-            Report-SyncStatus -Status "failed" -Message "Power BI activity event permission error."
-            Pause-IfNeeded "Press Enter to close"
-            exit 1
+            $skippedDays = $daysToFetch.Count - $syncedDaysList.Count - $failedDays
+            if ($syncedDaysList.Count -eq 0) {
+                $summary = "Power BI rejected Activity Events access (HTTP 401/403); no usage data was imported."
+                $details = New-UsageDiagnostic -Status "failed" -ReasonCode "power_bi_usage_authorization_denied" -Summary $summary -RequestedDays $daysToFetch.Count -SuccessfulDays 0 -FailedDays $failedDays -SkippedDays $skippedDays -ZeroActivityDays $zeroActivityDays -Remediation @(
+                    "Assign the identity the Fabric administrator or Power BI service administrator role.",
+                    "For a service principal, enable the tenant setting for service principals to use read-only admin APIs and include it in the allowed security group."
+                )
+                Report-SyncStatus -Status "failed" -Message $summary -Details $details
+                Pause-IfNeeded "Press Enter to close"
+                exit 1
+            }
+            break
         }
     }
+}
+
+if ($syncedDaysList.Count -eq 0 -and $failedDays -gt 0) {
+    $summary = "Power BI could not fetch any of the $($daysToFetch.Count) requested usage day(s)."
+    $details = New-UsageDiagnostic -Status "failed" -ReasonCode "power_bi_usage_all_days_failed" -Summary $summary -RequestedDays $daysToFetch.Count -SuccessfulDays 0 -FailedDays $failedDays -SkippedDays $skippedDays -ZeroActivityDays $zeroActivityDays -Remediation @(
+        "Review the Metronome server log for the classified Activity Events failures, then rerun usage metadata."
+    )
+    Report-SyncStatus -Status "failed" -Message $summary -Details $details
+    Pause-IfNeeded "Press Enter to close"
+    exit 1
 }
 
 if ($allEntries.Count -eq 0 -and $syncedDaysList.Count -gt 0) {
     Write-Host "No view events found, but marking days as synced." -ForegroundColor Yellow
 }
 
+$resultStatus = if ($failedDays -gt 0) { "completed_with_warnings" } else { "completed" }
+$reasonCode = if ($authorizationDenied) { "power_bi_usage_authorization_denied" } elseif ($failedDays -gt 0) { "power_bi_usage_partial_failure" } else { "power_bi_usage_completed" }
+$summary = if ($authorizationDenied) {
+    "Power BI fetched $($syncedDaysList.Count) usage day(s) before Activity Events access was rejected (HTTP 401/403); the remaining days will be retried."
+} elseif ($failedDays -gt 0) {
+    "Power BI fetched $($syncedDaysList.Count) of $($daysToFetch.Count) requested usage day(s); $failedDays day(s) will be retried."
+} else {
+    "Power BI fetched all $($syncedDaysList.Count) requested usage day(s)."
+}
+$remediation = if ($authorizationDenied) {
+    @(
+        "Assign the identity the Fabric administrator or Power BI service administrator role.",
+        "For a service principal, enable the tenant setting for service principals to use read-only admin APIs and include it in the allowed security group."
+    )
+} elseif ($failedDays -gt 0) { @("Correct the Activity Events request failures and rerun usage metadata.") } else { @() }
+$details = New-UsageDiagnostic -Status $resultStatus -ReasonCode $reasonCode -Summary $summary -RequestedDays $daysToFetch.Count -SuccessfulDays $syncedDaysList.Count -FailedDays $failedDays -SkippedDays $skippedDays -ZeroActivityDays $zeroActivityDays -Remediation $remediation
+
 # POST to governance API
 $output = @{
-    entries     = $allEntries
-    days_synced = $syncedDaysList
+    entries             = $allEntries
+    days_synced         = $syncedDaysList
+    status              = $details.status
+    reason_code         = $details.reason_code
+    operator_summary    = $details.operator_summary
+    requested_days      = $details.requested_days
+    successful_days     = $details.successful_days
+    failed_days         = $details.failed_days
+    skipped_days        = $details.skipped_days
+    zero_activity_days  = $details.zero_activity_days
+    diagnostic          = $details.diagnostic
 }
 
 $json = $output | ConvertTo-Json -Depth 5
@@ -259,7 +355,11 @@ try {
     Write-Host "  Matched to DB: $($response.matched)" -ForegroundColor Green
 } catch {
     Write-Error "Failed to POST to governance API: $_"
-    Report-SyncStatus -Status "failed" -Message "Failed to POST Power BI usage data to governance API: $_"
+    $summary = "Power BI usage data was fetched but could not be imported into Metronome."
+    $details = New-UsageDiagnostic -Status "failed" -ReasonCode "power_bi_usage_import_failed" -Summary $summary -RequestedDays $daysToFetch.Count -SuccessfulDays $syncedDaysList.Count -FailedDays $failedDays -SkippedDays $skippedDays -ZeroActivityDays $zeroActivityDays -Remediation @("Review the Metronome server log and API availability, then rerun usage metadata.")
+    Report-SyncStatus -Status "failed" -Message $summary -Details $details
+    Pause-IfNeeded "Press Enter to close"
+    exit 1
 }
 
 Pause-IfNeeded "Press Enter to close"

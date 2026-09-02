@@ -29,6 +29,7 @@ _STATUS_ALIASES = {
     "warnings": "completed_with_warnings",
     "partial": "completed_with_warnings",
     "error": "failed",
+    "timeout": "failed",
     "cancelled": "stopped",
     "canceled": "stopped",
 }
@@ -171,6 +172,25 @@ def component_has_warning(component: Mapping[str, Any]) -> bool:
     if not requested and not required:
         return False
     return True
+
+
+def rollup_requested_component_status(
+    components: Mapping[str, Mapping[str, Any]],
+    *,
+    empty_status: str = "not_requested",
+) -> str:
+    """Derive parent health from every requested child component."""
+    requested = [item for item in components.values() if bool(item.get("requested"))]
+    if not requested:
+        return normalize_scan_status(empty_status)
+    statuses = {normalize_scan_status(item.get("status")) for item in requested}
+    if "stopped" in statuses:
+        return "stopped"
+    if "failed" in statuses:
+        return "failed"
+    if "completed_with_warnings" in statuses:
+        return "completed_with_warnings"
+    return "completed"
 
 
 def terminal_status_for_components(components: Mapping[str, Mapping[str, Any]]) -> str:

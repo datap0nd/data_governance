@@ -27,6 +27,7 @@ _SAFE_FACT_KEYS = frozenset({
     "schedule_evidence_needed",
     "sources_found",
     "successful_days",
+    "skipped_days",
     "zero_activity_days",
 })
 _REMEDIATION = {
@@ -59,6 +60,19 @@ _REMEDIATION = {
     ],
     "module_execution_failed": [
         "Review the Metronome server log for the module run and rerun after correcting the underlying issue.",
+    ],
+    "power_bi_usage_authorization_denied": [
+        "Assign the identity the Fabric administrator or Power BI service administrator role.",
+        "For a service principal, enable the tenant setting for service principals to use read-only admin APIs and include it in the allowed security group.",
+    ],
+    "power_bi_usage_timeout": [
+        "Check the Power BI sync process and network path, then rerun usage metadata.",
+    ],
+    "power_bi_usage_all_days_failed": [
+        "Review the Power BI usage diagnostic and server log, correct the API failure, and rerun the module.",
+    ],
+    "power_bi_usage_partial_failure": [
+        "Rerun usage metadata after correcting the failed Power BI Activity Events requests.",
     ],
 }
 _CREDENTIAL_ASSIGNMENT = re.compile(

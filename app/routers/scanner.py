@@ -35,7 +35,11 @@ from app.scanner.pbi_sync import (
 from app.scanner.walker import diagnose_reports_root
 from app.models import ScanRunOut
 from app.scanner.lifecycle import parse_components, redact_component_payload
-from app.scanner.lifecycle import component_result, normalize_scan_status
+from app.scanner.lifecycle import (
+    component_result,
+    normalize_scan_status,
+    rollup_requested_component_status,
+)
 from app.scanner import modules as scanner_modules
 from app.scanner import notifications as scanner_notifications
 from app.usage import sync_usage_from_csv
@@ -660,10 +664,39 @@ def _execute_usage_metadata_job(job_id: int, generation: int | None) -> None:
             name for name, value in subscans.items()
             if normalize_scan_status(value.get("status")) == "failed"
         ]
-        requested = any(value.get("requested") for value in subscans.values())
-        status = "failed" if failed else "completed" if requested else "skipped"
-        result = {"status": status, "failed_subscans": failed, **subscans}
-        summary = "Failed sub-steps: " + ", ".join(failed) if failed else "Usage metadata synchronized."
+        warned = [
+            name for name, value in subscans.items()
+            if normalize_scan_status(value.get("status")) == "completed_with_warnings"
+        ]
+        status = rollup_requested_component_status(subscans, empty_status="skipped")
+        issue_names = failed or warned
+        issue_diagnostic = (
+            subscans[issue_names[0]].get("diagnostic")
+            if len(issue_names) == 1 and isinstance(subscans[issue_names[0]].get("diagnostic"), dict)
+            else None
+        )
+        summary = (
+            str(issue_diagnostic.get("operator_summary")) if issue_diagnostic else
+            "Failed sub-steps: " + ", ".join(failed) if failed else
+            "Completed with warnings: " + ", ".join(warned) if warned else
+            "No configured usage metadata inputs were requested." if status == "skipped" else
+            "Usage metadata synchronized."
+        )
+        result = {
+            "status": status,
+            "reason_code": (
+                "usage_metadata_substep_failed" if failed else
+                "usage_metadata_partial" if warned else
+                "usage_metadata_not_configured" if status == "skipped" else
+                "usage_metadata_completed"
+            ),
+            "operator_summary": summary,
+            "failed_subscans": failed,
+            "warning_subscans": warned,
+            **subscans,
+        }
+        if issue_diagnostic:
+            result["diagnostic"] = issue_diagnostic
         scanner_modules.finish_module_run(
             module_run_id, status=status, summary=summary, details=result,
             log="\n".join(f"{name}: {value.get('status')}" for name, value in subscans.items()),
@@ -1272,7 +1305,9 @@ def record_pbi_sync_run_status(body: PbiSyncRunStatus, request: Request):
     if sync_type not in {"refresh", "usage"}:
         raise HTTPException(status_code=400, detail="sync_type must be refresh or usage")
     status = (body.status or "").strip().lower()
-    if status not in {"launched", "completed", "failed", "skipped", "stopped"}:
+    if status not in {
+        "launched", "completed", "completed_with_warnings", "failed", "skipped", "stopped",
+    }:
         raise HTTPException(status_code=400, detail="status is not valid")
     _record_sync_run(sync_type, status, body.message, body.details)
     return {"status": "recorded"}
