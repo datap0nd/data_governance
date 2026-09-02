@@ -63,6 +63,8 @@ class PbixReport:
     business_owner: str | None = None
     report_owner: str | None = None
     layout: object = None  # ReportLayout from layout_parser, if available
+    snapshot_complete: bool = True
+    parse_issues: list[str] = field(default_factory=list)
 
 
 def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
@@ -127,13 +129,23 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
     except Exception as e:
         logger.warning("Could not read schema from %s: %s", file_path.name, e)
 
-    # Get table names
+    # Get table names. Power Query is useful as a degraded diagnostic, but it
+    # is not an authoritative model-table snapshot: calculated and imported
+    # tables may be absent from it.
     table_names = []
+    snapshot_complete = True
+    parse_issues: list[str] = []
     try:
         table_names = model.tables or []
+        if not table_names:
+            snapshot_complete = False
+            parse_issues.append("PBIX model table enumeration returned no tables")
     except Exception as e:
         logger.warning("Could not read tables from %s: %s", file_path.name, e)
-        # Fall back to tables we found in power_query
+        snapshot_complete = False
+        parse_issues.append("PBIX model table enumeration failed")
+        # Retain the Power Query names for diagnostics only. Callers must not
+        # reconcile removals from this incomplete fallback.
         table_names = list(m_expressions.keys())
 
     # Process each table
@@ -228,6 +240,8 @@ def parse_pbix_file(file_path: str | Path) -> PbixReport | None:
         business_owner=business_owner,
         report_owner=report_owner,
         layout=layout,
+        snapshot_complete=snapshot_complete,
+        parse_issues=parse_issues,
     )
     report.layout_diagnostic = layout_diagnostic
     return report

@@ -10,6 +10,7 @@ from app.query_history import (
     observe_query,
     report_artifact_key,
 )
+from app.asset_visibility import get_active_source_ids
 from app.routers.actions import list_actions
 from app.routers.query_history import compare_query_versions, report_query_history
 from app.scanner import pg_deps, runner
@@ -247,6 +248,90 @@ def test_m_query_removal_restoration_and_rerun_are_ordered_and_idempotent(query_
             "SELECT status FROM actions WHERE type='changed_query' ORDER BY id"
         ).fetchall()
     assert [row["status"] for row in actions] == ["resolved", "open"]
+
+
+def test_missing_table_in_complete_snapshot_is_unlinked_and_audited(query_db, monkeypatch):
+    reports = [_report("Catalog Report", "Owner", {
+        "Current": "let Source = 1 in Source",
+        "Removed": "let Source = 2 in Source",
+    })]
+    monkeypatch.setattr(runner, "walk_reports_root", lambda root: reports)
+    _stub_scan_side_effects(monkeypatch)
+    baseline = runner.run_scan(str(query_db), run_followup_probe=False)
+    assert baseline["reports_scanned"] == 1
+
+    reports[0] = _report(
+        "Catalog Report", "Owner", {"Current": "let Source = 1 in Source"}
+    )
+    changed = runner.run_scan(str(query_db), run_followup_probe=False)
+
+    assert changed["changed_queries"] == 1
+    assert changed["retired_report_tables"] == 1
+    with database.get_db() as db:
+        removed = db.execute(
+            """SELECT source_id, source_expression FROM report_tables
+               WHERE report_id=1 AND table_name='Removed'"""
+        ).fetchone()
+        active_source_ids = get_active_source_ids(db)
+        action = db.execute(
+            """SELECT notes FROM actions
+               WHERE report_id=1 AND type='changed_query' AND status='open'"""
+        ).fetchone()
+        removed_versions = db.execute(
+            """SELECT query_text, is_baseline FROM query_versions
+               WHERE artifact_key=? ORDER BY id""",
+            (report_artifact_key(1, "Removed"),),
+        ).fetchall()
+    assert dict(removed) == {"source_id": None, "source_expression": None}
+    assert len(active_source_ids) == 1
+    assert "Removed from the authoritative model: Removed" in action["notes"]
+    assert [row["query_text"] for row in removed_versions] == [
+        "let Source = 2 in Source", "",
+    ]
+    assert runner.run_scan(str(query_db), run_followup_probe=False)["changed_queries"] == 0
+
+    reports[0] = _report("Catalog Report", "Owner", {
+        "Current": "let Source = 1 in Source",
+        "Removed": "let Source = 2 in Source",
+    })
+    restored = runner.run_scan(str(query_db), run_followup_probe=False)
+    assert restored["changed_queries"] == 1
+    with database.get_db() as db:
+        assert db.execute(
+            "SELECT source_id FROM report_tables WHERE report_id=1 AND table_name='Removed'"
+        ).fetchone()["source_id"] is not None
+
+
+def test_incomplete_snapshot_preserves_last_trusted_table_links(query_db, monkeypatch):
+    reports = [_report(
+        "Preserved Report", "Owner", {"Sales": "let Source = 1 in Source"}
+    )]
+    monkeypatch.setattr(runner, "walk_reports_root", lambda root: reports)
+    _stub_scan_side_effects(monkeypatch)
+    runner.run_scan(str(query_db), run_followup_probe=False)
+
+    reports[0] = DiscoveredReport(
+        name="Preserved Report",
+        tmdl_path="C:/Preserved Report",
+        tables=[],
+        discovery={
+            "snapshot_complete": False,
+            "issues": ["PBIX model table enumeration failed"],
+        },
+    )
+    preserved = runner.run_scan(str(query_db), run_followup_probe=False)
+
+    assert preserved["status"] == "completed_with_warnings"
+    assert preserved["reports_scanned"] == 0
+    assert preserved["reports_discovered"] == 1
+    assert preserved["catalog_reports_active"] == 1
+    assert preserved["reports_preserved_incomplete"] == 1
+    with database.get_db() as db:
+        row = db.execute(
+            "SELECT source_id, source_expression FROM report_tables WHERE report_id=1"
+        ).fetchone()
+    assert row["source_id"] is not None
+    assert row["source_expression"] == "let Source = 1 in Source"
 
 
 def test_mv_changes_are_included_in_overall_scan_count_and_log(query_db, monkeypatch):

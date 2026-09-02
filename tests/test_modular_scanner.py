@@ -1,11 +1,13 @@
 import os
+import sys
 import tempfile
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app import database
 from app.routers import scanner
-from app.scanner import jobs, modules, notifications, runner, walker
+from app.scanner import jobs, modules, notifications, pbix_parser, runner, walker
 from app.scanner.tmdl_parser import ParsedTable
 
 
@@ -69,6 +71,97 @@ def test_mixed_discovery_tie_prefers_tmdl(monkeypatch, tmp_path):
 
     assert merged == [tmdl]
     assert merged[0].discovery["model_provider"] == "tmdl"
+
+
+def test_mixed_discovery_prefers_complete_provider_over_newer_incomplete(tmp_path):
+    pbix_path = tmp_path / "Sales.pbix"
+    pbix_path.write_bytes(b"pbix")
+    tmdl_path = tmp_path / "Sales"
+    tmdl_path.mkdir()
+    os.utime(tmdl_path, (100, 100))
+    os.utime(pbix_path, (200, 200))
+    pbix = _report("Sales", pbix_path, ["Partial"])
+    pbix.discovery = {
+        "snapshot_complete": False,
+        "issues": ["PBIX model table enumeration failed"],
+    }
+    tmdl = _report("Sales", tmdl_path, ["Trusted"])
+
+    merged = walker._merge_report_discovery([pbix], [tmdl], root=tmp_path)
+
+    assert merged == [tmdl]
+    assert merged[0].discovery["snapshot_complete"] is True
+    assert merged[0].discovery["model_provider"] == "tmdl"
+    assert merged[0].discovery["provider_warnings"][0]["provider"] == "pbix"
+
+
+def test_same_named_reports_at_different_paths_are_ambiguous(tmp_path):
+    north_path = tmp_path / "North" / "Sales.pbix"
+    south_path = tmp_path / "South" / "Sales.pbix"
+    north_path.parent.mkdir()
+    south_path.parent.mkdir()
+    north_path.write_bytes(b"north")
+    south_path.write_bytes(b"south")
+
+    merged = walker._merge_report_discovery(
+        [
+            _report("Sales", north_path, ["North"]),
+            _report("Sales", south_path, ["South"]),
+        ],
+        [],
+        root=tmp_path,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].discovery["snapshot_complete"] is False
+    assert merged[0].discovery["ambiguous_provider"] is True
+    assert merged[0].discovery["candidate_count"] == 2
+    assert merged[0].tables == []
+
+
+def test_malformed_tmdl_table_marks_snapshot_incomplete(tmp_path):
+    report_path = tmp_path / "Sales"
+    table_path = report_path / "Sales.SemanticModel" / "Definition" / "Tables"
+    table_path.mkdir(parents=True)
+    (table_path / "Broken.tmdl").write_text("not a table", encoding="utf-8")
+
+    report = walker._scan_tmdl_report_folder(report_path)
+
+    assert report is not None
+    assert report.discovery["snapshot_complete"] is False
+    assert "Could not parse table file Broken.tmdl" in report.discovery["issues"]
+
+
+def test_pbix_table_fallback_is_not_authoritative(monkeypatch, tmp_path):
+    pbix_path = tmp_path / "Sales.pbix"
+    pbix_path.write_bytes(b"pbix")
+
+    class _Model:
+        power_query = None
+        schema = None
+        dax_measures = None
+
+        @property
+        def tables(self):
+            raise RuntimeError("model metadata unavailable")
+
+    monkeypatch.setitem(sys.modules, "pbixray", types.SimpleNamespace(PBIXRay=lambda _path: _Model()))
+
+    report = pbix_parser.parse_pbix_file(pbix_path)
+
+    assert report is not None
+    assert report.snapshot_complete is False
+    assert report.parse_issues == ["PBIX model table enumeration failed"]
+
+
+def test_unreadable_snapshot_metadata_is_incomplete(tmp_path):
+    missing_path = tmp_path / "Missing.pbix"
+    report = _report("Missing", missing_path, ["Partial"])
+
+    merged = walker._merge_report_discovery([report], [], root=tmp_path)
+
+    assert merged[0].discovery["snapshot_complete"] is False
+    assert merged[0].discovery["model_modified_at"] is None
 
 
 def test_discovery_depth_is_bounded(tmp_path):

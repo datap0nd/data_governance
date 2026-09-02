@@ -89,7 +89,7 @@ def _discover_tmdl_report_dirs(root: Path) -> list[Path]:
     return sorted(parents.values(), key=lambda item: str(item).casefold())
 
 
-def _snapshot_mtime(report: DiscoveredReport) -> float:
+def _snapshot_mtime(report: DiscoveredReport) -> float | None:
     path = Path(report.tmdl_path)
     try:
         if path.is_file():
@@ -100,21 +100,52 @@ def _snapshot_mtime(report: DiscoveredReport) -> float:
             if item.is_file()
         ]
         return max(mtimes) if mtimes else path.stat().st_mtime
-    except OSError:
-        return 0.0
+    except OSError as exc:
+        logger.warning("Could not read snapshot metadata for %s: %s", report.tmdl_path, exc)
+        return None
+
+
+def _logical_report_key(report: DiscoveredReport, root: Path | None = None) -> str:
+    """Return a path-qualified provider key for one logical report."""
+    path = Path(report.tmdl_path)
+    try:
+        resolved = path.resolve()
+        relative = resolved.relative_to(root.resolve()) if root is not None else None
+    except (OSError, ValueError):
+        relative = None
+    if relative is None:
+        return report.name.strip().casefold()
+    if relative.suffix.casefold() == ".pbix":
+        relative = relative.with_suffix("")
+    return "/".join(part.casefold() for part in relative.parts)
+
+
+def _provider_snapshot_complete(report: DiscoveredReport) -> bool:
+    discovery = getattr(report, "discovery", {}) or {}
+    return bool(discovery.get("snapshot_complete", True)) and _snapshot_mtime(report) is not None
 
 
 def _merge_report_discovery(
     pbix_reports: list[DiscoveredReport],
     tmdl_reports: list[DiscoveredReport],
+    *,
+    root: Path | None = None,
 ) -> list[DiscoveredReport]:
     """Merge provider snapshots deterministically without unioning model tables."""
     grouped: dict[str, dict[str, DiscoveredReport]] = {}
     for provider, reports in (("pbix", pbix_reports), ("tmdl", tmdl_reports)):
         for report in reports:
-            key = report.name.strip().casefold()
+            key = _logical_report_key(report, root)
             current = grouped.setdefault(key, {}).get(provider)
-            if current is None or _snapshot_mtime(report) >= _snapshot_mtime(current):
+            report_rank = (
+                _provider_snapshot_complete(report),
+                _snapshot_mtime(report) or float("-inf"),
+            )
+            current_rank = (
+                _provider_snapshot_complete(current),
+                _snapshot_mtime(current) or float("-inf"),
+            ) if current is not None else None
+            if current is None or report_rank >= current_rank:
                 grouped[key][provider] = report
 
     merged: list[DiscoveredReport] = []
@@ -125,26 +156,51 @@ def _merge_report_discovery(
         if pbix is None or tmdl is None:
             report = pbix or tmdl
             provider = "pbix" if pbix is not None else "tmdl"
+            prior = getattr(report, "discovery", {}) or {}
+            modified_at = _snapshot_mtime(report)
             report.discovery = {
+                **prior,
                 "model_provider": provider,
                 "providers_found": [provider],
-                "model_modified_at": _snapshot_mtime(report),
+                "model_modified_at": modified_at,
+                "snapshot_complete": bool(prior.get("snapshot_complete", True)) and modified_at is not None,
             }
             merged.append(report)
             continue
 
         pbix_mtime = _snapshot_mtime(pbix)
         tmdl_mtime = _snapshot_mtime(tmdl)
+        complete_candidates = [
+            report for report in (pbix, tmdl) if _provider_snapshot_complete(report)
+        ]
+        candidates = complete_candidates or [pbix, tmdl]
         # TMDL wins exact ties because its text model is inspectable and is
         # normally the intentional source-control export.
-        chosen = tmdl if tmdl_mtime >= pbix_mtime else pbix
+        chosen = max(
+            candidates,
+            key=lambda report: (
+                _snapshot_mtime(report) or float("-inf"),
+                1 if report is tmdl else 0,
+            ),
+        )
         chosen_provider = "tmdl" if chosen is tmdl else "pbix"
         if getattr(pbix, "layout", None) is not None:
             chosen.layout = pbix.layout
             chosen.layout_diagnostic = getattr(pbix, "layout_diagnostic", None)
         pbix_tables = {table.table_name.casefold() for table in pbix.tables}
         tmdl_tables = {table.table_name.casefold() for table in tmdl.tables}
+        chosen_prior = getattr(chosen, "discovery", {}) or {}
+        provider_warnings = []
+        for provider_name, candidate in (("pbix", pbix), ("tmdl", tmdl)):
+            if _provider_snapshot_complete(candidate):
+                continue
+            candidate_issues = (getattr(candidate, "discovery", {}) or {}).get("issues") or []
+            provider_warnings.append({
+                "provider": provider_name,
+                "issues": [str(item) for item in candidate_issues[:20]],
+            })
         chosen.discovery = {
+            **chosen_prior,
             "model_provider": chosen_provider,
             "providers_found": ["pbix", "tmdl"],
             "pbix_path": pbix.tmdl_path,
@@ -154,9 +210,41 @@ def _merge_report_discovery(
             "table_sets_disagree": pbix_tables != tmdl_tables,
             "pbix_only_tables": sorted(pbix_tables - tmdl_tables),
             "tmdl_only_tables": sorted(tmdl_tables - pbix_tables),
+            "snapshot_complete": _provider_snapshot_complete(chosen),
+            "provider_warnings": provider_warnings,
         }
         merged.append(chosen)
-    return merged
+
+    # The reports table intentionally remains name-keyed. Do not silently
+    # collapse two different folders onto that single row; surface one
+    # incomplete placeholder so reconciliation preserves the trusted row.
+    by_name: dict[str, list[DiscoveredReport]] = {}
+    for report in merged:
+        by_name.setdefault(report.name.strip().casefold(), []).append(report)
+    result: list[DiscoveredReport] = []
+    for name_key in sorted(by_name):
+        matches = by_name[name_key]
+        if len(matches) == 1:
+            result.append(matches[0])
+            continue
+        placeholder = matches[0]
+        ambiguous_paths = sorted(str(item.tmdl_path) for item in matches)
+        placeholder.tables = []
+        placeholder.measures = []
+        placeholder.discovery = {
+            "model_provider": "ambiguous",
+            "providers_found": sorted({
+                str((getattr(item, "discovery", {}) or {}).get("model_provider") or "unknown")
+                for item in matches
+            }),
+            "snapshot_complete": False,
+            "ambiguous_provider": True,
+            "candidate_count": len(matches),
+            "issues": ["Same-named reports were discovered at different logical paths"],
+            "ambiguous_paths": ambiguous_paths,
+        }
+        result.append(placeholder)
+    return result
 
 
 def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
@@ -179,7 +267,7 @@ def walk_reports_root(root_path: str | Path) -> list[DiscoveredReport]:
     )
     pbix_reports = _walk_pbix(pbix_files) if pbix_files else []
     tmdl_reports = _walk_tmdl(root, report_dirs=tmdl_dirs) if tmdl_dirs else []
-    return _merge_report_discovery(pbix_reports, tmdl_reports)
+    return _merge_report_discovery(pbix_reports, tmdl_reports, root=root)
 
 
 def diagnose_reports_root(root_path: str | Path) -> dict:
@@ -407,9 +495,21 @@ def _walk_pbix(pbix_files: list[Path]) -> list[DiscoveredReport]:
                 layout=report.layout,
             )
             dr.layout_diagnostic = getattr(report, "layout_diagnostic", None)
+            dr.discovery = {
+                "snapshot_complete": bool(getattr(report, "snapshot_complete", True)),
+                "issues": list(getattr(report, "parse_issues", []) or []),
+            }
             discovered.append(dr)
         else:
             logger.warning("Could not parse: %s", pbix_path.name)
+            discovered.append(DiscoveredReport(
+                name=pbix_path.stem,
+                tmdl_path=str(pbix_path),
+                discovery={
+                    "snapshot_complete": False,
+                    "issues": ["PBIX file could not be opened or parsed"],
+                },
+            ))
 
     return discovered
 
@@ -437,7 +537,18 @@ def _walk_tmdl(
         if not report_dir.is_dir():
             continue
         logger.info("_walk_tmdl: checking dir=%s", report_dir.name)
-        report = _scan_tmdl_report_folder(report_dir)
+        try:
+            report = _scan_tmdl_report_folder(report_dir)
+        except OSError as exc:
+            logger.warning("Could not read TMDL report %s: %s", report_dir, exc)
+            report = DiscoveredReport(
+                name=report_dir.name,
+                tmdl_path=str(report_dir),
+                discovery={
+                    "snapshot_complete": False,
+                    "issues": ["TMDL report files could not be read"],
+                },
+            )
         if report:
             logger.info("_walk_tmdl: discovered report '%s' with %d tables", report.name, len(report.tables))
             discovered.append(report)
@@ -494,19 +605,39 @@ def _scan_tmdl_report_folder(report_dir: Path) -> DiscoveredReport | None:
     if not tables_dir.exists():
         return None
 
+    issues: list[str] = []
     expressions = {}
     expr_file = definition_dir / "expressions.tmdl"
     if expr_file.exists():
-        expressions = parse_expressions_file(expr_file)
+        try:
+            expressions = parse_expressions_file(expr_file)
+        except OSError as exc:
+            logger.warning("Could not read %s: %s", expr_file, exc)
+            issues.append("expressions.tmdl could not be read")
 
     tables = []
-    for tmdl_file in sorted(tables_dir.glob("*.tmdl")):
-        parsed = parse_tmdl_file(tmdl_file)
+    try:
+        tmdl_files = sorted(tables_dir.glob("*.tmdl"))
+    except OSError as exc:
+        logger.warning("Could not enumerate TMDL tables in %s: %s", tables_dir, exc)
+        tmdl_files = []
+        issues.append("TMDL table files could not be enumerated")
+    if not tmdl_files:
+        issues.append("TMDL Tables folder contained no table files")
+    for tmdl_file in tmdl_files:
+        try:
+            parsed = parse_tmdl_file(tmdl_file)
+        except (OSError, UnicodeError) as exc:
+            logger.warning("Could not read TMDL table %s: %s", tmdl_file, exc)
+            parsed = None
+            issues.append(f"Could not read table file {tmdl_file.name}")
         if parsed:
             tables.append(parsed)
+        else:
+            logger.warning("Could not parse TMDL table %s", tmdl_file)
+            issues.append(f"Could not parse table file {tmdl_file.name}")
 
-    if not tables:
-        return None
+    snapshot_complete = bool(tables) and not issues
 
     business_owner = None
     report_owner = None
@@ -530,4 +661,8 @@ def _scan_tmdl_report_folder(report_dir: Path) -> DiscoveredReport | None:
         expressions=expressions,
         business_owner=business_owner,
         report_owner=report_owner,
+        discovery={
+            "snapshot_complete": snapshot_complete,
+            "issues": issues,
+        },
     )

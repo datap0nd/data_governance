@@ -306,10 +306,16 @@ def run_scan(
     scanner_modules.attach_scan_run(report_module_run_id, int(scan_id))
 
     active_report_count = 0
+    reports_scanned = 0
+    reports_discovered = 0
+    reports_preserved_incomplete = 0
+    ambiguous_provider_count = 0
+    catalog_warning_count = 0
     active_source_count = 0
     new_sources = 0
     changed_queries = 0
     broken_refs = 0
+    retired_report_tables = 0
     log_text = "Scan did not complete core discovery."
     postgres_required = False
     components = dict(initial_components or {})
@@ -337,7 +343,27 @@ def run_scan(
         if walk_reports_root is _DEFAULT_WALK_REPORTS_ROOT:
             _validate_report_discovery(root, reports)
         assert_not_cancelled(generation, "Report scan")
-        all_sources = deduplicate_sources(reports)
+        reports_discovered = sum(
+            int((getattr(report, "discovery", {}) or {}).get("candidate_count") or 1)
+            for report in reports
+        )
+        reconcilable_reports = [
+            report for report in reports
+            if (getattr(report, "discovery", {}) or {}).get("snapshot_complete", True)
+        ]
+        reports_scanned = len(reconcilable_reports)
+        reports_preserved_incomplete = len(reports) - reports_scanned
+        ambiguous_provider_count = sum(
+            1 for report in reports
+            if (getattr(report, "discovery", {}) or {}).get("ambiguous_provider")
+        )
+        catalog_warning_count = sum(
+            int(not (getattr(report, "discovery", {}) or {}).get("snapshot_complete", True))
+            + len((getattr(report, "discovery", {}) or {}).get("provider_warnings") or [])
+            + int(bool((getattr(report, "discovery", {}) or {}).get("table_sets_disagree")))
+            for report in reports
+        )
+        all_sources = deduplicate_sources(reconcilable_reports)
         assert_not_cancelled(generation, "Report scan")
 
         broken_by_report: dict[int, dict] = {}
@@ -348,6 +374,18 @@ def run_scan(
             discovery = getattr(report, "discovery", {}) or {}
             provider = str(discovery.get("model_provider") or "legacy")
             provider_counts[provider] = provider_counts.get(provider, 0) + 1
+            if not discovery.get("snapshot_complete", True):
+                issues = "; ".join(str(item) for item in (discovery.get("issues") or [])[:5])
+                log_lines.append(
+                    f"DISCOVERY WARNING: {report.name} snapshot was incomplete; "
+                    f"kept the last trusted catalog links{f' ({issues})' if issues else ''}"
+                )
+                continue
+            for warning in discovery.get("provider_warnings") or []:
+                log_lines.append(
+                    f"DISCOVERY WARNING: {report.name} {warning.get('provider', 'alternate')} "
+                    "snapshot was incomplete; used the complete provider"
+                )
             if discovery.get("table_sets_disagree"):
                 log_lines.append(
                     f"DISCOVERY WARNING: {report.name} PBIX/TMDL table sets differ; "
@@ -361,7 +399,7 @@ def run_scan(
             )
 
         # Per-report parsing summary (visible in scan log)
-        for report in reports:
+        for report in reconcilable_reports:
             assert_not_cancelled(generation, "Report scan")
             tables_count = len(report.tables)
             measures_count = len(getattr(report, "measures", []))
@@ -384,9 +422,9 @@ def run_scan(
         scanner_jobs.heartbeat(
             operation_id,
             current_step="Reconciling report catalog",
-            message=f"Writing {len(reports)} report(s) and {len(all_sources)} source identity record(s).",
+            message=f"Writing {reports_scanned} complete report snapshot(s) and {len(all_sources)} source identity record(s).",
             progress_current=0,
-            progress_total=len(reports),
+            progress_total=reports_scanned,
         )
         with get_db() as db:
             assert_not_cancelled(generation, "Report scan")
@@ -714,7 +752,7 @@ def run_scan(
             _archive_local_user_path_sources(db, all_sources, now, log_lines)
 
             # Upsert reports and their tables
-            for report in reports:
+            for report in reconcilable_reports:
                 assert_not_cancelled(generation, "Report scan")
                 existing_report = db.execute(
                     "SELECT id FROM reports WHERE name = ?",
@@ -809,6 +847,7 @@ def run_scan(
                                     "version_id": observation.version_id,
                                     "table_name": table.table_name,
                                     "query_hash": observation.query_hash,
+                                    "change_kind": "updated",
                                 })
                         db.execute(
                             """INSERT INTO report_tables (report_id, table_name, source_id, source_expression, last_scanned)
@@ -827,6 +866,60 @@ def run_scan(
                             ),
                         )
 
+                # A complete provider snapshot is authoritative. Preserve the
+                # catalog row and its history, but unlink tables no longer in
+                # the model so pipelines cannot retain stale transitive edges.
+                current_table_names = {
+                    table.table_name for table in report.tables
+                    if not is_auto_table(table.table_name)
+                }
+                missing_tables = db.execute(
+                    """SELECT id, table_name, source_id, source_expression, last_scanned
+                       FROM report_tables WHERE report_id = ?""",
+                    (report_id,),
+                ).fetchall()
+                for missing in missing_tables:
+                    if missing["table_name"] in current_table_names:
+                        continue
+                    was_active = (
+                        missing["source_id"] is not None
+                        or missing["source_expression"] is not None
+                    )
+                    if was_active:
+                        observation = observe_query(
+                            db,
+                            artifact_kind=REPORT_M_KIND,
+                            artifact_key=report_artifact_key(report_id, missing["table_name"]),
+                            report_id=report_id,
+                            source_id=None,
+                            artifact_name=missing["table_name"],
+                            language="m",
+                            query_text=None,
+                            scan_run_id=scan_id,
+                            detected_at=now,
+                            has_saved_baseline=True,
+                            saved_baseline_text=missing["source_expression"],
+                            saved_baseline_source_id=missing["source_id"],
+                            saved_baseline_at=missing["last_scanned"],
+                        )
+                        if observation.changed:
+                            report_query_changes.append({
+                                "version_id": observation.version_id,
+                                "table_name": missing["table_name"],
+                                "query_hash": observation.query_hash,
+                                "change_kind": "removed",
+                            })
+                        retired_report_tables += 1
+                        log_lines.append(
+                            f"RETIRED: {report.name}/{missing['table_name']} was removed from the authoritative model"
+                        )
+                    db.execute(
+                        """UPDATE report_tables
+                           SET source_id=NULL, source_expression=NULL, last_scanned=?
+                           WHERE id=?""",
+                        (now, missing["id"]),
+                    )
+
                 if report_query_changes:
                     changed_queries += len(report_query_changes)
                     signature = "|".join(
@@ -840,10 +933,20 @@ def run_scan(
                     owner_row = db.execute("SELECT owner FROM reports WHERE id = ?", (report_id,)).fetchone()
                     owner = owner_row["owner"] if owner_row else report.report_owner
                     names = [item["table_name"] for item in report_query_changes]
+                    removed_names = [
+                        item["table_name"] for item in report_query_changes
+                        if item.get("change_kind") == "removed"
+                    ]
                     notes = (
-                        f"{len(names)} Power Query change{'s' if len(names) != 1 else ''} "
+                        f"{len(names)} model query/table change{'s' if len(names) != 1 else ''} "
                         f"detected in {report.name}: {', '.join(names)}."
                     )
+                    if removed_names:
+                        notes += (
+                            " Removed from the authoritative model: "
+                            + ", ".join(removed_names)
+                            + "."
+                        )
                     db.execute(
                         """UPDATE actions
                            SET status='resolved', resolved_at=?, updated_at=?,
@@ -878,9 +981,7 @@ def run_scan(
                         [item["version_id"] for item in report_query_changes],
                         action_id,
                     )
-                    log_lines.append(
-                        f"CHANGED: {report.name} Power Query in {', '.join(names)}"
-                    )
+                    log_lines.append(f"CHANGED: {report.name} model in {', '.join(names)}")
 
                 # Store visual layout (PBIX mode only)
                 layout = getattr(report, "layout", None)
@@ -1009,23 +1110,34 @@ def run_scan(
             postgres_required = _postgres_work_is_required(db)
             log_text = "\n".join(log_lines) if log_lines else "No changes detected."
 
+        core_status = (
+            "completed_with_warnings"
+            if catalog_warning_count
+            else "completed"
+        )
         components["core"] = component_result(
             {
-                "status": "completed",
-                "reports_scanned": active_report_count,
+                "status": core_status,
+                "reports_scanned": reports_scanned,
+                "reports_discovered": reports_discovered,
+                "catalog_reports_active": active_report_count,
+                "reports_preserved_incomplete": reports_preserved_incomplete,
+                "ambiguous_provider_count": ambiguous_provider_count,
+                "catalog_warning_count": catalog_warning_count,
                 "sources_found": active_source_count,
                 "new_sources": new_sources,
                 "changed_queries": changed_queries,
                 "broken_refs": broken_refs,
+                "retired_report_tables": retired_report_tables,
             },
             required=True,
         )
         scanner_modules.finish_module_run(
             report_module_run_id,
-            status="completed",
+            status=core_status,
             summary=(
-                f"Discovered {active_report_count} report(s) and "
-                f"{active_source_count} active source(s)."
+                f"Reconciled {reports_scanned} of {reports_discovered} discovered report snapshot(s); "
+                f"the catalog contains {active_report_count} active report(s)."
             ),
             details=components["core"],
             log=log_text,
@@ -1372,7 +1484,7 @@ def run_scan(
                 db,
                 scan_id,
                 status=overall_status,
-                reports_scanned=active_report_count,
+                reports_scanned=reports_scanned,
                 sources_found=active_source_count,
                 new_sources=new_sources,
                 changed_queries=changed_queries,
@@ -1383,11 +1495,17 @@ def run_scan(
 
         summary = {
             "scan_id": scan_id,
-            "reports_scanned": active_report_count,
+            "reports_scanned": reports_scanned,
+            "reports_discovered": reports_discovered,
+            "catalog_reports_active": active_report_count,
+            "reports_preserved_incomplete": reports_preserved_incomplete,
+            "ambiguous_provider_count": ambiguous_provider_count,
+            "catalog_warning_count": catalog_warning_count,
             "sources_found": active_source_count,
             "new_sources": new_sources,
             "changed_queries": changed_queries,
             "broken_refs": broken_refs,
+            "retired_report_tables": retired_report_tables,
             "components": components,
             "probe": probe_component,
             "postgres_dependencies": dep_component,
@@ -1403,7 +1521,7 @@ def run_scan(
             status=stored_status,
             result=summary,
             message=(
-                f"Scanned {active_report_count} report(s) and found "
+                f"Reconciled {reports_scanned} report snapshot(s) and found "
                 f"{active_source_count} active source(s)."
             ),
         )
@@ -1432,7 +1550,7 @@ def run_scan(
                 db,
                 scan_id,
                 status="stopped",
-                reports_scanned=active_report_count,
+                reports_scanned=reports_scanned,
                 sources_found=active_source_count,
                 new_sources=new_sources,
                 changed_queries=changed_queries,
@@ -1491,7 +1609,7 @@ def run_scan(
                 db,
                 scan_id,
                 status=terminal_status,
-                reports_scanned=active_report_count,
+                reports_scanned=reports_scanned,
                 sources_found=active_source_count,
                 new_sources=new_sources,
                 changed_queries=changed_queries,
