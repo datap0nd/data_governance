@@ -181,6 +181,7 @@ DOWNLOAD_TEXT = "Excel download"
 # authorize exporting a different active report.
 LOADED_TITLE_RETRY_REASONS = {
     "loaded-report-title-unavailable",
+    "loaded-report-title-component-unresolved",
     "nexacro-unavailable",
     "missing-excel-component",
 }
@@ -327,6 +328,72 @@ _COMPONENT_PATH_MATCH_JS = r"""(options) => {
     return false;
 }"""
 
+#: Return exact visible component paths from one DOM root. Nexacro can expose
+#: its rendered DOM and application object in different Playwright roots, so
+#: these read-only paths are passed to whichever root owns the native runtime.
+_VISIBLE_COMPONENT_IDS_JS = r"""(request) => {
+    const suffix = String(request.suffix || '').trim();
+    if (!suffix) return [];
+    const found = new Set();
+    for (const element of document.querySelectorAll('[id]')) {
+        const id = String(element.id || '').split(':', 1)[0];
+        if (!id.endsWith(suffix)) continue;
+        try {
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            const style = window.getComputedStyle(element);
+            if (style.visibility === 'hidden' || style.display === 'none') continue;
+        } catch (error) { continue; }
+        found.add(id);
+    }
+    return Array.from(found).sort();
+}"""
+
+#: Inventory semantic titles only inside a visible report WorkFrame. This is
+#: read-only: the exact chosen path is re-resolved and its native value is
+#: checked atomically with the Excel dispatch below.
+_RENDERED_REPORT_TITLES_JS = r"""() => {
+    const exact = value => String(value ?? '').trim();
+    const visibleRect = element => {
+        try {
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return null;
+            const style = window.getComputedStyle(element);
+            if (style.visibility === 'hidden' || style.display === 'none') return null;
+            return {x: Math.round(rect.left), y: Math.round(rect.top),
+                    w: Math.round(rect.width), h: Math.round(rect.height)};
+        } catch (error) { return null; }
+    };
+    const workFramePattern = /(?:^|\.)(?:work_?frame\d*)(?:\.|$)/i;
+    const forbiddenSurface = /(?:^|\.)(?:topframe|mdiframe|leftframe|bottomframe|setting\d*|waitwindow)(?:\.|$)|(?:^|[._:])favorite(?:$|[._:])/i;
+    const rankTitleId = identifier => {
+        const id = String(identifier || '');
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?bookmark_?(?:name|title)(?:$|[._:])/i.test(id)) return 0;
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?report_?(?:name|title)(?:$|[._:])/i.test(id)) return 1;
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?title(?:$|[._:])/i.test(id)) return 2;
+        return null;
+    };
+    const titles = [];
+    for (const element of document.querySelectorAll('[id]')) {
+        const id = String(element.id || '');
+        if (!workFramePattern.test(id) || forbiddenSurface.test(id)) continue;
+        const rank = rankTitleId(id);
+        if (rank == null) continue;
+        const rect = visibleRect(element);
+        if (!rect) continue;
+        const text = exact(element.textContent);
+        if (!text || text.length > 300) continue;
+        let childHasSameText = false;
+        for (const child of element.children) {
+            if (exact(child.textContent) === text) { childHasSameText = true; break; }
+        }
+        if (childHasSameText) continue;
+        titles.push({id: id.split(':', 1)[0], dom_id: id, text, rank, ...rect});
+    }
+    return titles.sort((left, right) => left.rank - right.rank
+        || left.y - right.y || left.x - right.x || left.id.localeCompare(right.id));
+}"""
+
 #: Select one exact bookmark identity through the dataset actually bound to the
 #: visible Favorite grid.  ``rowposition`` alone is not proof: GSCM's Go handler
 #: consumes the Grid's current/selected row, so both layers must agree.
@@ -371,30 +438,29 @@ _SELECT_BOOKMARK_ROW_JS = r"""(request) => {
         }
         return component;
     };
-    const visibleElement = element => {
-        try {
-            const rect = element.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return false;
-            const style = window.getComputedStyle(element);
-            return style.visibility !== 'hidden' && style.display !== 'none';
-        } catch (error) { return false; }
+    const nativeVisible = component => {
+        let current = component;
+        for (let depth = 0; current && depth < 20; depth++) {
+            try {
+                const visible = typeof current.get_visible === 'function'
+                    ? current.get_visible() : current.visible;
+                if (visible === false) return false;
+            } catch (error) {}
+            try { current = current.parent; } catch (error) { current = null; }
+        }
+        return true;
     };
-    const visibleGridIds = Array.from(document.querySelectorAll('[id]'))
-        .filter(element => String(element.id || '').endsWith(request.grid_suffix)
-            && visibleElement(element))
-        .map(element => String(element.id));
-    if (!visibleGridIds.length) {
-        return {selected: false, reason: 'favorite-grid-not-visible'};
+    const gridId = exact(request.grid_id).split(':', 1)[0];
+    if (!gridId || !gridId.endsWith(request.grid_suffix)) {
+        return {selected: false, reason: 'unsafe-favorite-grid-path', grid_id: gridId};
     }
-    if (visibleGridIds.length !== 1) {
-        return {selected: false, reason: 'ambiguous-favorite-grid',
-                grid_id: visibleGridIds.slice(0, 4).join(' | ')};
-    }
-    const gridId = visibleGridIds[0];
     const grid = resolveComponent(gridId);
     if (!grid) {
         return {selected: false, reason: 'favorite-grid-component-unresolved',
                 grid_id: gridId};
+    }
+    if (!nativeVisible(grid)) {
+        return {selected: false, reason: 'favorite-grid-native-hidden', grid_id: gridId};
     }
 
     const resolveDataset = grid => {
@@ -644,28 +710,29 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
         }
         return component;
     };
-    const visibleElement = element => {
-        try {
-            const rect = element.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return false;
-            const style = window.getComputedStyle(element);
-            return style.visibility !== 'hidden' && style.display !== 'none';
-        } catch (error) { return false; }
+    const nativeVisible = component => {
+        let current = component;
+        for (let depth = 0; current && depth < 20; depth++) {
+            try {
+                const visible = typeof current.get_visible === 'function'
+                    ? current.get_visible() : current.visible;
+                if (visible === false) return false;
+            } catch (error) {}
+            try { current = current.parent; } catch (error) { current = null; }
+        }
+        return true;
     };
-    const gridIds = Array.from(document.querySelectorAll('[id]'))
-        .filter(element => String(element.id || '').endsWith(request.grid_suffix)
-            && visibleElement(element))
-        .map(element => String(element.id));
-    if (gridIds.length !== 1) {
-        return {fired: false, reason: gridIds.length ? 'ambiguous-favorite-grid'
-            : 'favorite-grid-not-visible', grid_count: gridIds.length,
-            grid_id: gridIds.slice(0, 4).join(' | ')};
+    const gridId = exact(request.grid_id).split(':', 1)[0];
+    if (!gridId || !gridId.endsWith(request.grid_suffix)) {
+        return {fired: false, reason: 'unsafe-favorite-grid-path', grid_id: gridId};
     }
-    const gridId = gridIds[0];
     const grid = resolveComponent(gridId);
     if (!grid) {
         return {fired: false, reason: 'favorite-grid-component-unresolved',
                 grid_id: gridId};
+    }
+    if (!nativeVisible(grid)) {
+        return {fired: false, reason: 'favorite-grid-native-hidden', grid_id: gridId};
     }
     let dataset = null;
     let binding = null;
@@ -755,6 +822,10 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
     const component = resolveComponent(componentId);
     if (!component) return {fired: false, reason: 'missing-go-component',
                             component_id: componentId};
+    if (!nativeVisible(component)) {
+        return {fired: false, reason: 'go-component-native-hidden',
+                component_id: componentId};
+    }
     if (!component || typeof component.on_fire_onclick !== 'function') {
         return {fired: false, reason: 'go-onclick-unavailable', component_id: componentId};
     }
@@ -775,16 +846,16 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
     }
 }"""
 
-#: Resolve the rendered title in the active WorkFrame and invoke the one
-#: visible native Excel component in the same JavaScript stack.  Keeping the
-#: proof and dispatch atomic prevents a tab/report change between a successful
-#: title comparison and the export handler.  A title from TopFrame, MdiFrame,
-#: Setting/Favorite, or another chrome surface can never authorize export.
+#: Resolve exact DOM-observed title and Excel paths through the Nexacro root,
+#: then re-read the native title value and dispatch Excel in one JavaScript
+#: stack. The DOM may be in another Playwright root; its text alone never
+#: authorizes export.
 _GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
     const exact = value => String(value ?? '').trim();
     const wantedName = exact(request.bookmark_name);
     const wantedId = exact(request.bookmark_id);
-    const configuredId = exact(request.excel_id).split(':', 1)[0];
+    const titleId = exact(request.title_id).split(':', 1)[0];
+    const excelId = exact(request.excel_id).split(':', 1)[0];
     if (!wantedName || !wantedId) {
         return {fired: false, reason: 'empty-bookmark-identity',
                 expected_id: wantedId, expected_name: wantedName};
@@ -794,66 +865,6 @@ _GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
         return {fired: false, reason: 'nexacro-unavailable',
                 expected_id: wantedId, expected_name: wantedName};
     }
-
-    const visibleElement = element => {
-        try {
-            const rect = element.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return null;
-            const style = window.getComputedStyle(element);
-            if (style.visibility === 'hidden' || style.display === 'none') return null;
-            return {x: Math.round(rect.left), y: Math.round(rect.top),
-                    w: Math.round(rect.width), h: Math.round(rect.height)};
-        } catch (error) { return null; }
-    };
-    const workFramePattern = /(?:^|\.)(?:work_?frame\d*)(?:\.|$)/i;
-    const forbiddenSurface = /(?:^|\.)(?:topframe|mdiframe|leftframe|bottomframe|setting\d*|waitwindow)(?:\.|$)|(?:^|[._:])favorite(?:$|[._:])/i;
-    const rankTitleId = identifier => {
-        const id = String(identifier || '');
-        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?bookmark_?(?:name|title)(?:$|[._:])/i.test(id)) return 0;
-        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?report_?(?:name|title)(?:$|[._:])/i.test(id)) return 1;
-        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?title(?:$|[._:])/i.test(id)) return 2;
-        return null;
-    };
-
-    const titles = [];
-    for (const element of document.querySelectorAll('[id]')) {
-        const id = String(element.id || '');
-        if (!workFramePattern.test(id) || forbiddenSurface.test(id)) continue;
-        const rank = rankTitleId(id);
-        if (rank == null) continue;
-        const rect = visibleElement(element);
-        if (!rect) continue;
-        const text = exact(element.textContent);
-        if (!text || text.length > 300) continue;
-        let childHasSameText = false;
-        for (const child of element.children) {
-            if (exact(child.textContent) === text) { childHasSameText = true; break; }
-        }
-        if (childHasSameText) continue;
-        titles.push({id, text, rank, ...rect});
-    }
-    titles.sort((left, right) => left.rank - right.rank
-        || left.y - right.y || left.x - right.x || left.id.localeCompare(right.id));
-    if (!titles.length) {
-        return {fired: false, reason: 'loaded-report-title-unavailable',
-                expected_id: wantedId, expected_name: wantedName, titles: []};
-    }
-    const bestRank = titles[0].rank;
-    const best = titles.filter(item => item.rank === bestRank);
-    const observedNames = Array.from(new Set(best.map(item => item.text)));
-    if (observedNames.length !== 1) {
-        return {fired: false, reason: 'ambiguous-loaded-report-title',
-                expected_id: wantedId, expected_name: wantedName,
-                observed_names: observedNames.slice(0, 10),
-                titles: best.slice(0, 10)};
-    }
-    const observedName = observedNames[0];
-    if (observedName !== wantedName) {
-        return {fired: false, reason: 'loaded-report-title-mismatch',
-                expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, titles: best.slice(0, 10)};
-    }
-
     const app = nexacro.getApplication();
     const fromCollection = (collection, key) => {
         if (!collection) return null;
@@ -885,34 +896,63 @@ _GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
         }
         return component;
     };
-    const candidateIds = Array.from(document.querySelectorAll('[id]'))
-        .filter(element => {
-            const id = String(element.id || '').split(':', 1)[0];
-            return /(?:^|\.)mdiframe(?:\.|$)/i.test(id)
-                && /(?:^|\.)btn_exceldown$/i.test(id)
-                && Boolean(visibleElement(element));
-        })
-        .map(element => String(element.id || '').split(':', 1)[0]);
-    const uniqueIds = Array.from(new Set(candidateIds));
-    let chosenIds = configuredId && uniqueIds.includes(configuredId)
-        ? [configuredId] : uniqueIds;
-    if (!chosenIds.length) {
-        return {fired: false, reason: 'missing-excel-component',
-                expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName};
+    const nativeVisible = component => {
+        let current = component;
+        for (let depth = 0; current && depth < 20; depth++) {
+            try {
+                const visible = typeof current.get_visible === 'function'
+                    ? current.get_visible() : current.visible;
+                if (visible === false) return false;
+            } catch (error) {}
+            try { current = current.parent; } catch (error) { current = null; }
+        }
+        return true;
+    };
+    if (!titleId || !/(?:^|\.)(?:work_?frame\d*)(?:\.|$)/i.test(titleId)) {
+        return {fired: false, reason: 'unsafe-loaded-report-title-path',
+                expected_id: wantedId, expected_name: wantedName, title_id: titleId};
     }
-    if (chosenIds.length !== 1) {
-        return {fired: false, reason: 'ambiguous-excel-component',
+    if (!excelId || !/(?:^|\.)mdiframe(?:\.|$)/i.test(excelId)
+            || !/(?:^|\.)btn_exceldown$/i.test(excelId)) {
+        return {fired: false, reason: 'unsafe-excel-component',
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName,
-                component_ids: chosenIds.slice(0, 10)};
+                component_id: excelId};
     }
-    const targetId = chosenIds[0];
-    const target = resolveComponent(targetId);
+    const title = resolveComponent(titleId);
+    if (!title) {
+        return {fired: false, reason: 'loaded-report-title-component-unresolved',
+                expected_id: wantedId, expected_name: wantedName, title_id: titleId};
+    }
+    if (!nativeVisible(title)) {
+        return {fired: false, reason: 'loaded-report-title-native-hidden',
+                expected_id: wantedId, expected_name: wantedName, title_id: titleId};
+    }
+    let observedName = '';
+    try { if (typeof title.get_text === 'function') observedName = exact(title.get_text()); }
+    catch (error) {}
+    try { if (!observedName && typeof title.get_value === 'function') observedName = exact(title.get_value()); }
+    catch (error) {}
+    try { if (!observedName) observedName = exact(title.text); } catch (error) {}
+    try { if (!observedName) observedName = exact(title.value); } catch (error) {}
+    if (!observedName) {
+        return {fired: false, reason: 'loaded-report-title-unavailable',
+                expected_id: wantedId, expected_name: wantedName, title_id: titleId};
+    }
+    if (observedName !== wantedName) {
+        return {fired: false, reason: 'loaded-report-title-mismatch',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, title_id: titleId};
+    }
+    const target = resolveComponent(excelId);
     if (!target || typeof target.on_fire_onclick !== 'function') {
         return {fired: false, reason: 'excel-onclick-unavailable',
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, component_id: targetId};
+                observed_name: observedName, component_id: excelId};
+    }
+    if (!nativeVisible(target)) {
+        return {fired: false, reason: 'excel-component-native-hidden',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, component_id: excelId};
     }
     try {
         target.on_fire_onclick(
@@ -923,13 +963,13 @@ _GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
         return {fired: true,
                 strategy: 'rendered-title-exact-guarded-native-export',
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, title_id: best[0].id,
-                component_id: targetId};
+                observed_name: observedName, title_id: titleId,
+                component_id: excelId};
     } catch (error) {
         return {fired: false, reason: 'excel-onclick-error',
                 error: String(error && error.message ? error.message : error),
                 expected_id: wantedId, expected_name: wantedName,
-                observed_name: observedName, component_id: targetId};
+                observed_name: observedName, component_id: excelId};
     }
 }"""
 
@@ -1306,6 +1346,113 @@ def _evaluate_everywhere(page, script, argument=None) -> list[tuple[Any, Any]]:
     return results
 
 
+def _visible_component_ids(page, suffix: str) -> list[str]:
+    """Exact visible component paths, bridged across all rendered roots."""
+    found: set[str] = set()
+    for _root, value in _evaluate_everywhere(
+        page, _VISIBLE_COMPONENT_IDS_JS, {"suffix": str(suffix)},
+    ):
+        if not isinstance(value, list):
+            continue
+        found.update(
+            str(identifier).split(":", 1)[0]
+            for identifier in value if str(identifier).strip()
+        )
+    return sorted(found)
+
+
+def _rendered_report_title_result(
+    page, bookmark_id: str, bookmark_name: str,
+) -> dict:
+    """Choose one exact semantic WorkFrame title from every rendered root."""
+    records: dict[tuple, dict] = {}
+    for _root, value in _evaluate_everywhere(page, _RENDERED_REPORT_TITLES_JS):
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            record = {
+                **item,
+                "id": str(item.get("id") or "").split(":", 1)[0],
+                "text": _exact_bookmark_name(item.get("text")),
+            }
+            key = (
+                record["id"], record["text"], record.get("rank"),
+                record.get("x"), record.get("y"),
+            )
+            records[key] = record
+    titles = sorted(
+        records.values(),
+        key=lambda item: (
+            int(item.get("rank") or 0), int(item.get("y") or 0),
+            int(item.get("x") or 0), item.get("id") or "",
+        ),
+    )
+    expected = {
+        "expected_id": bookmark_id,
+        "expected_name": bookmark_name,
+    }
+    if not titles:
+        return {**expected, "matched": False,
+                "reason": "loaded-report-title-unavailable", "titles": []}
+    best_rank = int(titles[0].get("rank") or 0)
+    best = [item for item in titles if int(item.get("rank") or 0) == best_rank]
+    observed_names = sorted({item["text"] for item in best})
+    if len(observed_names) != 1:
+        return {
+            **expected, "matched": False,
+            "reason": "ambiguous-loaded-report-title",
+            "observed_names": observed_names[:10], "titles": best[:10],
+        }
+    observed_name = observed_names[0]
+    if observed_name != bookmark_name:
+        return {
+            **expected, "matched": False,
+            "reason": "loaded-report-title-mismatch",
+            "observed_name": observed_name, "titles": best[:10],
+        }
+    title_ids = sorted({item["id"] for item in best if item["id"]})
+    if len(title_ids) != 1:
+        return {
+            **expected, "matched": False,
+            "reason": "ambiguous-loaded-report-title",
+            "observed_name": observed_name, "component_ids": title_ids[:10],
+            "titles": best[:10],
+        }
+    return {
+        **expected, "matched": True, "observed_name": observed_name,
+        "title_id": title_ids[0], "titles": best[:10],
+    }
+
+
+def _visible_excel_component_result(
+    page, automation: dict, bookmark_id: str, bookmark_name: str,
+) -> dict:
+    """Choose one exact rendered MDI Excel component path without clicking."""
+    candidates = [
+        identifier for identifier in _visible_component_ids(
+            page, EXCEL_BUTTON_COMPONENT,
+        )
+        if re.search(r"(?:^|\.)mdiframe(?:\.|$)", identifier, re.IGNORECASE)
+        and re.search(r"(?:^|\.)btn_exceldown$", identifier, re.IGNORECASE)
+    ]
+    configured = excel_button_id(automation).split(":", 1)[0]
+    chosen = [configured] if configured in candidates else candidates
+    expected = {
+        "expected_id": bookmark_id,
+        "expected_name": bookmark_name,
+    }
+    if not chosen:
+        return {**expected, "matched": False, "reason": "missing-excel-component"}
+    if len(chosen) != 1:
+        return {
+            **expected, "matched": False, "reason": "ambiguous-excel-component",
+            "component_ids": chosen[:10],
+        }
+    return {**expected, "matched": True, "component_id": chosen[0]}
+
+
 def _component_visible(page, *fragments: str) -> bool:
     """Whether any live root exposes a visible component path fragment."""
     wanted = [str(fragment) for fragment in fragments if str(fragment)]
@@ -1509,9 +1656,18 @@ def _select_bookmark_dataset_row(page, bookmark_id: str, bookmark_name: str) -> 
             "selected": False,
             "reason": "empty-bookmark-id" if not wanted else "empty-bookmark-name",
         }
+    grid_ids = _visible_component_ids(page, FAVORITE_GRID_ID_SUFFIX)
+    if not grid_ids:
+        return {"selected": False, "reason": "favorite-grid-not-visible"}
+    if len(grid_ids) != 1:
+        return {
+            "selected": False, "reason": "ambiguous-favorite-grid",
+            "grid_ids": grid_ids[:10],
+        }
     request = {
         "bookmark_id": wanted,
         "bookmark_name": wanted_name,
+        "grid_id": grid_ids[0],
         "grid_suffix": FAVORITE_GRID_ID_SUFFIX,
     }
     # This script mutates rowposition.  Unlike read-only inventories, do not
@@ -1531,10 +1687,11 @@ def _select_bookmark_dataset_row(page, bookmark_id: str, bookmark_name: str) -> 
             # Once a root found the relevant grid, let ``open_bookmark`` own
             # the retry. Never multiply its two-attempt mutation budget by
             # selecting again in another frame during this same attempt.
-            if result.get("attempted") is True or result.get("grid_id") or result.get("reason") in {
-                "ambiguous-favorite-grid", "duplicate-bookmark-id",
+            if result.get("attempted") is True or result.get("reason") in {
+                "duplicate-bookmark-id",
                 "bookmark-name-mismatch", "unsupported-grid-selecttype",
                 "grid-clear-selection-unavailable", "grid-clear-selection-error",
+                "unsafe-favorite-grid-path",
             }:
                 return result
     # Unsupported iframe roots are common around a top-level Nexacro app. Do
@@ -3262,6 +3419,7 @@ def _selection_result_report(result: dict | None) -> str:
         "observed_scope", "grid_id", "select_type", "row_index",
         "row_position", "current_row", "current_cell", "selected_rows", "bookmark_id",
         "bookmark_name", "observed_id", "observed_name", "component_id",
+        "grid_ids", "visible_grid_ids",
     )
     details = [f"{key}={result[key]!r}" for key in keys if key in result]
     return ", ".join(details)[:MAX_FAVORITE_STATE_CHARS] or "empty browser result"
@@ -3473,7 +3631,9 @@ def open_bookmark(page, job: dict, report_progress=None) -> str:
             f"Selected GSCM bookmark {name!r} by stable id {bookmark_id} "
             f"using {selected.get('strategy')}."
         )
-    go_result = _click_go_button(page, bookmark_id, name)
+    go_result = _click_go_button(
+        page, bookmark_id, name, selected.get("grid_id") or "",
+    )
     if go_result.get("activated") is not True:
         go_failure = {
             "expected_id": bookmark_id,
@@ -3556,9 +3716,21 @@ def _go_button_report(page) -> str:
     return f"Go-shaped candidates on this screen: {listed}."
 
 
-def _click_go_button(page, bookmark_id: str, bookmark_name: str) -> dict:
+def _click_go_button(
+    page, bookmark_id: str, bookmark_name: str, grid_id: str,
+) -> dict:
     """Atomically verify one selected identity and fire one native Go control."""
     clear_screen(page)
+    selected_grid_id = str(grid_id or "").split(":", 1)[0]
+    visible_grid_ids = _visible_component_ids(page, FAVORITE_GRID_ID_SUFFIX)
+    if visible_grid_ids != [selected_grid_id]:
+        return {
+            "activated": False,
+            "fired": False,
+            "reason": "bookmark-selection-drift",
+            "grid_id": selected_grid_id,
+            "visible_grid_ids": visible_grid_ids[:10],
+        }
     tried: set[str] = set()
     failures: list[dict] = []
     for candidate in (
@@ -3569,12 +3741,21 @@ def _click_go_button(page, bookmark_id: str, bookmark_name: str) -> dict:
             continue
         component_id = component_ids[0]
         tried.add(component_id)
+        terminal_name = component_id.rsplit(".", 1)[-1]
+        if component_id not in _visible_component_ids(page, terminal_name):
+            failures.append({
+                "fired": False,
+                "reason": "go-component-not-visible",
+                "component_id": component_id,
+            })
+            continue
         for root in _roots(page):
             try:
                 result = root.evaluate(_GUARDED_GO_CLICK_JS, {
                     "bookmark_id": bookmark_id,
                     "bookmark_name": _exact_bookmark_name(bookmark_name),
                     "go_id": component_id,
+                    "grid_id": selected_grid_id,
                     "grid_suffix": FAVORITE_GRID_ID_SUFFIX,
                 })
             except Exception as exc:
@@ -3669,20 +3850,52 @@ def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
     deadline = time.monotonic() + timeout_ms / 1000
     last_result: dict | None = None
     while time.monotonic() < deadline:
+        title_result = _rendered_report_title_result(
+            page, bookmark_id, bookmark_name,
+        )
+        if title_result.get("matched") is not True:
+            last_result = title_result
+            if title_result.get("reason") not in LOADED_TITLE_RETRY_REASONS:
+                _fail_with_screen(
+                    page,
+                    f"GSCM refused to export bookmark {bookmark_name!r} "
+                    f"({bookmark_id}) because the rendered report title could "
+                    "not prove the same loaded report. Guard result: "
+                    f"{_loaded_title_result_report(title_result)}.",
+                )
+            page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+            continue
+        excel_result = _visible_excel_component_result(
+            page, automation, bookmark_id, bookmark_name,
+        )
+        if excel_result.get("matched") is not True:
+            last_result = {**title_result, **excel_result}
+            if excel_result.get("reason") not in LOADED_TITLE_RETRY_REASONS:
+                _fail_with_screen(
+                    page,
+                    f"GSCM refused to export bookmark {bookmark_name!r} "
+                    f"({bookmark_id}) because the rendered report title/Excel "
+                    "controls were ambiguous. Guard result: "
+                    f"{_loaded_title_result_report(last_result)}.",
+                )
+            page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
+            continue
+        native_results: list[dict] = []
         for root in _roots(page):
             try:
                 result = root.evaluate(_GUARDED_EXCEL_EXPORT_JS, {
                     "bookmark_id": bookmark_id,
                     "bookmark_name": bookmark_name,
-                    "excel_id": excel_button_id(automation),
+                    "title_id": title_result["title_id"],
+                    "excel_id": excel_result["component_id"],
                 })
             except Exception as exc:
-                last_result = {"reason": "evaluation-error", "error": str(exc)}
+                native_results.append({"reason": "evaluation-error", "error": str(exc)})
                 continue
             if not isinstance(result, dict):
-                last_result = {"reason": "guarded-export-returned-no-result"}
+                native_results.append({"reason": "guarded-export-returned-no-result"})
                 continue
-            last_result = result
+            native_results.append(result)
             if result.get("fired") is True:
                 return
             reason = str(result.get("reason") or "")
@@ -3694,6 +3907,11 @@ def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
                     "not prove the same loaded report. Guard result: "
                     f"{_loaded_title_result_report(result)}.",
                 )
+        informative = [
+            result for result in native_results
+            if result.get("reason") != "nexacro-unavailable"
+        ]
+        last_result = (informative or native_results or [title_result])[-1]
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
     _fail_with_screen(
         page,

@@ -399,6 +399,29 @@ class FakeGscmPage:
         if script == getattr(flow_gscm, "_COMPONENT_PATH_MATCH_JS", None):
             pattern = re.compile(str((argument or {}).get("pattern") or ""), re.I)
             return any(pattern.search(item) for item in visible_components)
+        if script == getattr(flow_gscm, "_VISIBLE_COMPONENT_IDS_JS", None):
+            suffix = str((argument or {}).get("suffix") or "")
+            return sorted({
+                str(item).split(":", 1)[0]
+                for item in visible_components
+                if str(item).split(":", 1)[0].endswith(suffix)
+            })
+        if script == getattr(flow_gscm, "_RENDERED_REPORT_TITLES_JS", None):
+            records = []
+            for index, value in enumerate(self.loaded_report_titles or []):
+                identifier = (
+                    LOADED_TITLE_ID if index == 0
+                    else LOADED_TITLE_ID.replace(":text", f"_{index}:text")
+                )
+                records.append({
+                    "id": identifier.split(":", 1)[0],
+                    "dom_id": identifier,
+                    "text": str(value).strip(),
+                    "rank": 0,
+                    "x": 260,
+                    "y": 110 + index * 22,
+                })
+            return records
         if script == getattr(flow_gscm, "_COMPONENT_VISIBLE_JS", None):
             fragments = [str(item).casefold() for item in argument or []]
             return any(
@@ -409,6 +432,7 @@ class FakeGscmPage:
             self.selection_attempts += 1
             wanted = str((argument or {}).get("bookmark_id") or "").strip()
             wanted_name = str((argument or {}).get("bookmark_name") or "").strip()
+            assert (argument or {}).get("grid_id") == FAVORITE_GRID_ID
             mode = self.dataset_selection_mode
             if mode == "first_rejected_then_success" and self.selection_attempts > 1:
                 mode = "success"
@@ -479,6 +503,7 @@ class FakeGscmPage:
             wanted = str(request.get("bookmark_id") or "").strip()
             wanted_name = str(request.get("bookmark_name") or "").strip()
             assert request.get("grid_suffix") == flow_gscm.FAVORITE_GRID_ID_SUFFIX
+            assert request.get("grid_id") == FAVORITE_GRID_ID
             component_id = str(request.get("go_id") or "").split(":", 1)[0]
             matches = [
                 (index, row) for index, row in enumerate(self.dataset_rows or [])
@@ -573,34 +598,33 @@ class FakeGscmPage:
                     "observed_name": observed[0],
                     "title_id": LOADED_TITLE_ID,
                 }
-            configured = str(request.get("excel_id") or "").split(":", 1)[0]
-            candidates = sorted(
-                component for component in visible_components
-                if component.lower().endswith(".btn_exceldown")
-                and ".mdiframe." in component.lower()
-            )
-            chosen = [component for component in candidates if component == configured]
-            if not chosen:
-                chosen = candidates
-            if not chosen:
+            title_id = str(request.get("title_id") or "").split(":", 1)[0]
+            expected_title_ids = {
+                (LOADED_TITLE_ID if index == 0 else LOADED_TITLE_ID.replace(
+                    ":text", f"_{index}:text",
+                )).split(":", 1)[0]
+                for index, _value in enumerate(titles)
+            }
+            if title_id not in expected_title_ids:
                 return {
                     "fired": False,
-                    "reason": "missing-excel-component",
+                    "reason": "loaded-report-title-component-unresolved",
                     "expected_id": wanted_id,
                     "expected_name": wanted_name,
-                    "observed_name": observed[0],
+                    "title_id": title_id,
                 }
-            if len(chosen) != 1:
+            component_id = str(request.get("excel_id") or "").split(":", 1)[0]
+            if component_id not in visible_components:
                 return {
                     "fired": False,
-                    "reason": "ambiguous-excel-component",
+                    "reason": "excel-onclick-unavailable",
                     "expected_id": wanted_id,
                     "expected_name": wanted_name,
                     "observed_name": observed[0],
-                    "component_ids": chosen,
+                    "component_id": component_id,
                 }
             self.guarded_export_fires += 1
-            self.clicks.append(chosen[0])
+            self.clicks.append(component_id)
             return {
                 "fired": True,
                 "strategy": "rendered-title-exact-guarded-native-export",
@@ -608,7 +632,7 @@ class FakeGscmPage:
                 "expected_name": wanted_name,
                 "observed_name": observed[0],
                 "title_id": LOADED_TITLE_ID,
-                "component_id": chosen[0],
+                "component_id": component_id,
             }
         if "app.gds_bookmark" in script:
             if self.dataset_rows is None:
@@ -1500,7 +1524,7 @@ def test_a_stray_public_label_does_not_reject_a_successful_go_click():
 
     assert selected["selected"] is True
     assert flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )["activated"] is True
     assert page.dialog_open is False
 
@@ -2260,6 +2284,8 @@ def test_native_dataset_selection_stops_after_the_first_verified_root():
             self.mutation_trap = mutation_trap
 
         def evaluate(self, script, argument=None):
+            if script == flow_gscm._VISIBLE_COMPONENT_IDS_JS:
+                return [FAVORITE_GRID_ID]
             assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
             assert argument["bookmark_id"] == "RC_MENA"
             self.calls += 1
@@ -2299,6 +2325,8 @@ def test_one_selection_attempt_cannot_mutate_again_in_a_later_root():
             self.calls = 0
 
         def evaluate(self, script, argument=None):
+            if script == flow_gscm._VISIBLE_COMPONENT_IDS_JS:
+                return [FAVORITE_GRID_ID]
             assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
             self.calls += 1
             return dict(self.result)
@@ -2327,16 +2355,15 @@ def test_one_selection_attempt_cannot_mutate_again_in_a_later_root():
 def test_native_selection_script_resolves_the_exact_visible_grid_path():
     script = flow_gscm._SELECT_BOOKMARK_ROW_JS
 
-    assert "document.querySelectorAll('[id]')" in script
+    assert "document.querySelectorAll('[id]')" not in script
     assert "endsWith(request.grid_suffix)" in script
+    assert "request.grid_id" in script
     assert "const grid = resolveComponent(gridId);" in script
     assert "collection.get_item(key)" in script
     assert "['components', 'frames', 'all']" in script
     assert "visit(app.mainframe" not in script
-    assert "if (visibleGridIds.length !== 1)" in script
     assert "verifiedCurrentRow !== rowIndex" in script
     assert "verifiedSelectedRows.length === 1" in script
-    assert "reason: 'ambiguous-favorite-grid'" in script
 
 
 def test_unsupported_frame_cannot_hide_the_portal_roots_selection_failure():
@@ -2346,6 +2373,8 @@ def test_unsupported_frame_cannot_hide_the_portal_roots_selection_failure():
             self.result = result
 
         def evaluate(self, script, argument=None):
+            if script == flow_gscm._VISIBLE_COMPONENT_IDS_JS:
+                return [FAVORITE_GRID_ID]
             assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
             return dict(self.result)
 
@@ -2365,7 +2394,7 @@ def test_unsupported_frame_cannot_hide_the_portal_roots_selection_failure():
     assert result["reason"] == "favorite-grid-component-missing"
 
 
-def test_exact_visible_grid_root_is_authoritative_before_another_frame():
+def test_exact_visible_grid_path_can_be_resolved_in_another_native_root():
     class SelectionRoot:
         def __init__(self, result):
             self.frames = []
@@ -2373,6 +2402,8 @@ def test_exact_visible_grid_root_is_authoritative_before_another_frame():
             self.calls = 0
 
         def evaluate(self, script, argument=None):
+            if script == flow_gscm._VISIBLE_COMPONENT_IDS_JS:
+                return [FAVORITE_GRID_ID]
             assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
             self.calls += 1
             return dict(self.result)
@@ -2384,7 +2415,7 @@ def test_exact_visible_grid_root_is_authoritative_before_another_frame():
     })
     later_frame = SelectionRoot({
         "selected": True,
-        "strategy": "should-never-run",
+        "strategy": "resolved-in-native-root",
     })
     page.frames = [later_frame]
 
@@ -2392,9 +2423,78 @@ def test_exact_visible_grid_root_is_authoritative_before_another_frame():
         page, "RC_MENA", "MENA_Actual_sales",
     )
 
-    assert result["reason"] == "favorite-grid-component-unresolved"
+    assert result["strategy"] == "resolved-in-native-root"
     assert page.calls == 1
-    assert later_frame.calls == 0
+    assert later_frame.calls == 1
+
+
+class SplitDomNativeGscmPage(FakeGscmPage):
+    """Production topology where rendered paths and Nexacro live separately."""
+
+    class NativeRoot:
+        def __init__(self, owner):
+            self.owner = owner
+            self.requests = []
+
+        def evaluate(self, script, argument=None):
+            if script in {
+                flow_gscm._VISIBLE_COMPONENT_IDS_JS,
+                flow_gscm._RENDERED_REPORT_TITLES_JS,
+            }:
+                return []
+            if script in {
+                flow_gscm._SELECT_BOOKMARK_ROW_JS,
+                flow_gscm._GUARDED_GO_CLICK_JS,
+                flow_gscm._GUARDED_EXCEL_EXPORT_JS,
+            }:
+                self.requests.append((script, dict(argument or {})))
+                return FakeGscmPage._evaluate(
+                    self.owner, script, argument,
+                    components=self.owner.components,
+                )
+            return None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.native_root = self.NativeRoot(self)
+        self._frames = [self.native_root]
+
+    def _evaluate(self, script, argument=None, components=None):
+        if script in {
+            flow_gscm._SELECT_BOOKMARK_ROW_JS,
+            flow_gscm._GUARDED_GO_CLICK_JS,
+            flow_gscm._GUARDED_EXCEL_EXPORT_JS,
+        }:
+            return {"selected" if script == flow_gscm._SELECT_BOOKMARK_ROW_JS else "fired": False,
+                    "reason": "nexacro-unavailable"}
+        return super()._evaluate(script, argument, components)
+
+
+def test_exact_paths_bridge_split_dom_and_nexacro_roots_for_go_and_export():
+    page = SplitDomNativeGscmPage(
+        dialog_open=True,
+        dataset_rows=[_dataset_bookmark(
+            "MENA_Actual_sales", "RC_MENA", "PUBLIC",
+        )],
+    )
+    page.components.add(flow_gscm.GO_BUTTON_ID)
+
+    selected = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
+    assert selected["selected"] is True
+    assert flow_gscm._click_go_button(
+        page, "RC_MENA", "MENA_Actual_sales", selected["grid_id"],
+    )["activated"] is True
+    flow_gscm.trigger_excel_export(page, _run_job(), timeout_ms=1_000)
+
+    native_requests = [request for _script, request in page.native_root.requests]
+    assert any(request.get("grid_id") == FAVORITE_GRID_ID for request in native_requests)
+    assert any(request.get("title_id") == LOADED_TITLE_ID.split(":", 1)[0]
+               and request.get("excel_id") == EXCEL_BUTTON
+               for request in native_requests)
+    assert page.guarded_go_fires == 1
+    assert page.guarded_export_fires == 1
 
 
 def test_opening_a_bookmark_prefers_the_native_nexacro_go_button():
@@ -2553,6 +2653,26 @@ def test_excel_export_blocks_ambiguous_loaded_report_titles():
     assert EXCEL_BUTTON not in page.clicks
 
 
+def test_native_title_drift_after_dom_observation_blocks_export():
+    page = SplitDomNativeGscmPage(
+        loaded_report_titles=["MENA_Actual_sales"],
+    )
+    native_evaluate = page.native_root.evaluate
+
+    def drift_before_native_guard(script, argument=None):
+        if script == flow_gscm._GUARDED_EXCEL_EXPORT_JS:
+            page.loaded_report_titles = ["Different_report"]
+        return native_evaluate(script, argument)
+
+    page.native_root.evaluate = drift_before_native_guard
+
+    with pytest.raises(RuntimeError, match="loaded-report-title-mismatch"):
+        flow_gscm.trigger_excel_export(page, _run_job(), timeout_ms=1_000)
+
+    assert page.guarded_export_fires == 0
+    assert EXCEL_BUTTON not in page.clicks
+
+
 def test_excel_export_blocks_when_active_workframe_title_is_unavailable():
     page = FakeGscmPage(loaded_report_titles=[])
 
@@ -2577,13 +2697,14 @@ def test_excel_title_guard_requires_the_stable_bookmark_identity():
 
 def test_excel_title_proof_excludes_inactive_mdi_and_favorite_surfaces():
     source = flow_gscm._GUARDED_EXCEL_EXPORT_JS
+    inventory = flow_gscm._RENDERED_REPORT_TITLES_JS
 
-    assert "workFramePattern" in source
-    assert "mdiframe" in source
-    assert "favorite" in source
-    assert "rankTitleId" in source
-    assert "const target = resolveComponent(targetId);" in source
-    assert "document.querySelectorAll('[id]')" in source
+    assert "workFramePattern" in inventory
+    assert "mdiframe" in inventory
+    assert "favorite" in inventory
+    assert "rankTitleId" in inventory
+    assert "const target = resolveComponent(excelId);" in source
+    assert "document.querySelectorAll('[id]')" not in source
     assert "visit(app.mainframe" not in source
     assert "observedName !== wantedName" in source
     assert source.index("observedName !== wantedName") < source.index(
@@ -3159,7 +3280,7 @@ def test_go_button_uses_only_the_atomic_guarded_native_dispatch():
     )["selected"] is True
 
     result = flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )
 
     assert result["activated"] is True
@@ -3182,7 +3303,7 @@ def test_go_button_failure_is_reported_as_activation_not_visibility():
     )["selected"] is True
 
     assert flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )["activated"] is False
 
     job = {
@@ -3243,7 +3364,7 @@ def test_go_button_is_rediscovered_when_the_hardcoded_id_is_stale():
     )["selected"] is True
 
     assert flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )["activated"] is True
 
     assert page.RELOCATED_GO_ID not in page.clicks
@@ -3259,21 +3380,22 @@ def test_selection_drift_between_go_candidates_blocks_the_next_candidate():
                 and str((argument or {}).get("go_id") or "").split(":", 1)[0]
                 != self.RELOCATED_GO_ID
             ):
-                result = super().evaluate(script, argument)
+                self.guarded_go_attempts += 1
                 self.grid_current_row = 0
-                return result
+                return {"fired": False, "reason": "missing-go-component"}
             return super().evaluate(script, argument)
 
     page = DriftAfterMissingCandidatePage(dataset_rows=[
         _dataset_bookmark("Other", "RC_OTHER", "PUBLIC"),
         _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
     ])
+    page.components.add(flow_gscm.GO_BUTTON_ID)
     assert flow_gscm._select_bookmark_dataset_row(
         page, "RC_MENA", "MENA_Actual_sales",
     )["selected"] is True
 
     result = flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )
 
     assert result["activated"] is False
@@ -3873,7 +3995,7 @@ def test_go_button_still_works_on_the_previous_builds_id():
     )["selected"] is True
 
     assert flow_gscm._click_go_button(
-        page, "RC_MENA", "MENA_Actual_sales",
+        page, "RC_MENA", "MENA_Actual_sales", FAVORITE_GRID_ID,
     )["activated"] is True
     assert old_id not in page.clicks
     assert page.guarded_go_fires == 1
