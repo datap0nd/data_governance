@@ -1882,6 +1882,95 @@ def test_flow_activation_is_separate_from_editor(flow_db):
     assert paused["next_run_at"] is None
 
 
+def test_flow_delete_requires_exact_name_and_paused_state(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
+
+    with pytest.raises(HTTPException, match="exact flow name"):
+        flows.delete_flow(
+            saved["id"], flows.FlowDeleteWrite(confirmation="Weekly report"), _request(),
+        )
+    with pytest.raises(HTTPException, match="Pause the flow"):
+        flows.delete_flow(
+            saved["id"], flows.FlowDeleteWrite(confirmation=saved["name"]), _request(),
+        )
+    flows.set_flow_enabled(saved["id"], flows.FlowEnabledWrite(enabled=False), _request())
+    with database.get_db() as db:
+        db.execute(
+            """INSERT INTO flow_runs
+                   (flow_id, trigger_type, status, requested_by, job_json)
+               VALUES (?, 'manual', 'queued', 'Analyst', '{}')""",
+            (saved["id"],),
+        )
+    with pytest.raises(HTTPException, match="still active"):
+        flows.delete_flow(
+            saved["id"], flows.FlowDeleteWrite(confirmation=saved["name"]), _request(),
+        )
+    assert flows.get_flow(saved["id"])["name"] == saved["name"]
+
+
+def test_flow_delete_removes_database_history_but_keeps_pipeline_history(flow_db):
+    site, report = _seed_catalog()
+    _mark_discovered(report["id"])
+    saved = flows.create_flow(
+        _flow(site["id"], report["id"], enabled=False), _request(),
+    )
+    with database.get_db() as db:
+        run_id = db.execute(
+            """INSERT INTO flow_runs
+                   (flow_id, trigger_type, status, requested_by, job_json)
+               VALUES (?, 'manual', 'succeeded', 'Analyst', '{}')""",
+            (saved["id"],),
+        ).lastrowid
+        db.execute(
+            """INSERT INTO flow_run_files
+                   (run_id, file_path, filename, status)
+               VALUES (?, 'C:\\Reports\\kept.csv', 'kept.csv', 'saved')""",
+            (run_id,),
+        )
+        report_asset_id = db.execute(
+            "INSERT INTO reports(name) VALUES ('Flow deletion history report')",
+        ).lastrowid
+        pipeline_id = db.execute(
+            """INSERT INTO pipeline_runs
+                   (report_id, status, stage, plan_hash, plan_json)
+               VALUES (?, 'succeeded', 'complete', 'hash', '{}')""",
+            (report_asset_id,),
+        ).lastrowid
+        step_id = db.execute(
+            """INSERT INTO pipeline_run_steps
+                   (run_id, step_type, sequence_no, entity_type, entity_id,
+                    entity_name, status, flow_run_id)
+               VALUES (?, 'flow', 1, 'flow', ?, ?, 'succeeded', ?)""",
+            (pipeline_id, str(saved["id"]), saved["name"], run_id),
+        ).lastrowid
+
+    result = flows.delete_flow(
+        saved["id"], flows.FlowDeleteWrite(confirmation=saved["name"]), _request(),
+    )
+
+    assert result == {
+        "id": saved["id"], "name": saved["name"], "deleted": True,
+        "deleted_runs": 1, "preserved_files": 1,
+    }
+    with database.get_db() as db:
+        assert db.execute("SELECT 1 FROM flows WHERE id=?", (saved["id"],)).fetchone() is None
+        assert db.execute("SELECT 1 FROM flow_runs WHERE id=?", (run_id,)).fetchone() is None
+        step = db.execute(
+            "SELECT entity_name, flow_run_id FROM pipeline_run_steps WHERE id=?", (step_id,),
+        ).fetchone()
+        assert step["entity_name"] == saved["name"]
+        assert step["flow_run_id"] is None
+        event = db.execute(
+            """SELECT action, detail FROM event_log
+               WHERE entity_type='flow' AND entity_id=? ORDER BY id DESC LIMIT 1""",
+            (saved["id"],),
+        ).fetchone()
+        assert event["action"] == "deleted"
+        assert "filesystem_files_preserved=true" in event["detail"]
+
+
 def test_inactive_scheduled_flow_has_no_next_run(flow_db):
     site, report = _seed_catalog()
     _mark_discovered(report["id"])
@@ -3568,6 +3657,16 @@ def test_flow_ui_uses_list_activation_bundle_formats_and_expanded_logs():
     assert "/retry-sql" in log_source
     assert "The source will not open" in log_source
     assert "setTimeout(loadRun, 2000)" in log_source
+
+
+def test_flow_ui_requires_typed_confirmation_before_delete():
+    source = Path(__file__).parents[1].joinpath("app", "static", "app.js").read_text()
+    assert 'class="btn-sm btn-outline btn-danger-outline flow-delete"' in source
+    assert "function _flowDeleteDialog(flow)" in source
+    assert "input.value !== flow.name" in source
+    assert "Permanently delete flow" in source
+    assert "Downloaded files and transformation scripts will stay on disk." in source
+    assert "apiDelete(`/api/flows/${flow.id}`, { confirmation: input.value })" in source
 
 
 def test_run_progress_events_and_traceback_are_persisted(flow_db):
