@@ -64,6 +64,10 @@ and every other character remain identity-significant.
 At run time Metronome resolves exactly one ID/name row in `gds_bookmark`,
 selects it through the bound visible Nexacro Grid, and proves that the dataset
 row position, Grid current row, and Grid selection all identify that same row.
+The visible Grid's full component path (for example
+`Setting1.form.div_favorite.form.grd_bookmark`) is resolved directly through
+the Nexacro application object. This avoids relying on enumeration of internal
+component collections, which some live Nexacro builds expose inconsistently.
 The Go handler is invoked only by one browser-side guard that repeats the full
 identity and selection check in the same JavaScript operation. There is no
 bookmark-label DOM click and no tree name/path fallback. Duplicate IDs,
@@ -382,6 +386,7 @@ instead of the API.
 | Run fails with no stable bookmark ID/name | The flow predates exact GSCM execution identity | Rescan the GSCM catalog, then repoint the flow |
 | Run fails with exact-name mismatch | The bookmark was renamed, its case/internal whitespace changed, or the catalog association is stale | Rescan the GSCM catalog, then repoint the flow; matching is intentionally case-sensitive |
 | Run fails with bound dataset/Grid state unavailable or ambiguous | This Nexacro build does not expose one scriptable visible Favorite Grid, or selection could not be proven | Use the failure state report to verify the Grid binding; this build remains non-runnable until support is reviewed—there is no DOM fallback |
+| Run reports `nexacro-unavailable` even though Favorite state lists a Grid and `gds_bookmark` rows | An older runner evaluated an unsupported iframe after failing to enumerate the live top-level component collection | Update Metronome. Current builds resolve the exact visible component path and preserve the portal root's actionable failure instead of replacing it with an iframe result |
 | Run fails with duplicate stable ID or scope drift | Live portal state is internally ambiguous | Leave the dialog open, rescan, and investigate the reported ID/name/scope rows before retrying |
 | Run fails: "GSCM popup blocked control" | A visible portal popup survived its Close/X action and overlaps the next bookmark control | Use the reported container and close-control ids plus `On screen` inventory to update the observed id vocabulary; protected Save/Delete-style controls are never clicked |
 | Run fails with rendered report title mismatch or ambiguity | Go loaded another bookmark, multiple authoritative title controls disagree, or the saved raw name is stale | No download was started. Compare the reported expected/observed titles, then rescan and repoint the flow if the bookmark was renamed |

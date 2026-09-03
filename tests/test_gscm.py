@@ -478,6 +478,7 @@ class FakeGscmPage:
             request = argument or {}
             wanted = str(request.get("bookmark_id") or "").strip()
             wanted_name = str(request.get("bookmark_name") or "").strip()
+            assert request.get("grid_suffix") == flow_gscm.FAVORITE_GRID_ID_SUFFIX
             component_id = str(request.get("go_id") or "").split(":", 1)[0]
             matches = [
                 (index, row) for index, row in enumerate(self.dataset_rows or [])
@@ -2323,21 +2324,77 @@ def test_one_selection_attempt_cannot_mutate_again_in_a_later_root():
     assert later_frame.calls == 0
 
 
-def test_native_selection_script_uses_local_component_trails_and_fails_ambiguity():
+def test_native_selection_script_resolves_the_exact_visible_grid_path():
     script = flow_gscm._SELECT_BOOKMARK_ROW_JS
 
-    assert "const localName = component =>" in script
-    assert "const nextTrail = local ? [...trail, local] : trail;" in script
-    assert "const context = nextTrail.join('.').toLowerCase();" in script
-    assert (
-        "local.toLowerCase() === 'grd_bookmark' "
-        "&& context.includes('div_favorite')"
-    ) in script
-    assert "local.toLowerCase().includes('div_favorite')" not in script
-    assert "if (visible.length !== 1)" in script
+    assert "document.querySelectorAll('[id]')" in script
+    assert "endsWith(request.grid_suffix)" in script
+    assert "const grid = resolveComponent(gridId);" in script
+    assert "collection.get_item(key)" in script
+    assert "['components', 'frames', 'all']" in script
+    assert "visit(app.mainframe" not in script
+    assert "if (visibleGridIds.length !== 1)" in script
     assert "verifiedCurrentRow !== rowIndex" in script
     assert "verifiedSelectedRows.length === 1" in script
     assert "reason: 'ambiguous-favorite-grid'" in script
+
+
+def test_unsupported_frame_cannot_hide_the_portal_roots_selection_failure():
+    class SelectionRoot:
+        def __init__(self, result):
+            self.frames = []
+            self.result = result
+
+        def evaluate(self, script, argument=None):
+            assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
+            return dict(self.result)
+
+    page = SelectionRoot({
+        "selected": False,
+        "reason": "favorite-grid-component-missing",
+    })
+    page.frames = [SelectionRoot({
+        "selected": False,
+        "reason": "nexacro-unavailable",
+    })]
+
+    result = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
+
+    assert result["reason"] == "favorite-grid-component-missing"
+
+
+def test_exact_visible_grid_root_is_authoritative_before_another_frame():
+    class SelectionRoot:
+        def __init__(self, result):
+            self.frames = []
+            self.result = result
+            self.calls = 0
+
+        def evaluate(self, script, argument=None):
+            assert script == flow_gscm._SELECT_BOOKMARK_ROW_JS
+            self.calls += 1
+            return dict(self.result)
+
+    page = SelectionRoot({
+        "selected": False,
+        "reason": "favorite-grid-component-unresolved",
+        "grid_id": FAVORITE_GRID_ID,
+    })
+    later_frame = SelectionRoot({
+        "selected": True,
+        "strategy": "should-never-run",
+    })
+    page.frames = [later_frame]
+
+    result = flow_gscm._select_bookmark_dataset_row(
+        page, "RC_MENA", "MENA_Actual_sales",
+    )
+
+    assert result["reason"] == "favorite-grid-component-unresolved"
+    assert page.calls == 1
+    assert later_frame.calls == 0
 
 
 def test_opening_a_bookmark_prefers_the_native_nexacro_go_button():
@@ -2525,9 +2582,12 @@ def test_excel_title_proof_excludes_inactive_mdi_and_favorite_surfaces():
     assert "mdiframe" in source
     assert "favorite" in source
     assert "rankTitleId" in source
+    assert "const target = resolveComponent(targetId);" in source
+    assert "document.querySelectorAll('[id]')" in source
+    assert "visit(app.mainframe" not in source
     assert "observedName !== wantedName" in source
     assert source.index("observedName !== wantedName") < source.index(
-        "target.component.on_fire_onclick",
+        "target.on_fire_onclick",
     )
 
 
@@ -3085,6 +3145,12 @@ class NativeOnlyGoButtonPage(FakeGscmPage):
 
 
 def test_go_button_uses_only_the_atomic_guarded_native_dispatch():
+    source = flow_gscm._GUARDED_GO_CLICK_JS
+    assert "endsWith(request.grid_suffix)" in source
+    assert "const grid = resolveComponent(gridId);" in source
+    assert "const component = resolveComponent(componentId);" in source
+    assert "visit(app.mainframe" not in source
+
     page = NativeOnlyGoButtonPage(dataset_rows=[
         _dataset_bookmark("MENA_Actual_sales", "RC_MENA", "PUBLIC"),
     ])
