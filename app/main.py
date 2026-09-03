@@ -26,6 +26,7 @@ from starlette.requests import Request as StarletteRequest
 
 from app.config import DB_PATH, UPLOAD_PGHOST, UPLOAD_PGPORT
 from app.database import get_db, init_db
+from app import remote_flow_control
 from app.local_access import is_server_machine, require_app_access
 from app.routers import sources, reports, scanner, lineage, alerts, dashboard, actions, changelog, schedules, create, best_practices, data_quality, tasks, eventlog, people, archive, documentation, email, email_schedules, usage, materialized_views, recurrences, flows, query_history, pipelines, pipeline_insights
 from app.settings import (
@@ -604,6 +605,11 @@ def pipeline_insights_schedule_payload() -> dict:
     }
 
 
+@_tracked_scheduled_start("signed remote Flow test")
+def _scheduled_remote_flow_control():
+    return remote_flow_control.poll_once()
+
+
 def _configure_scheduler_jobs() -> dict:
     _scheduler.add_job(_scheduled_backup, "cron", hour=6, minute=0, id="daily_backup", replace_existing=True)
     refresh_time = _configure_overall_refresh_job()
@@ -662,6 +668,16 @@ def _configure_scheduler_jobs() -> dict:
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+    _scheduler.add_job(
+        _scheduled_remote_flow_control,
+        "interval",
+        seconds=30,
+        id="signed_remote_flow_control",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
     )
     _scheduler.add_job(
         _scheduled_flow_dispatch,
@@ -1993,6 +2009,10 @@ class AutoUpdateSettingsRequest(BaseModel):
     enabled: bool
 
 
+class RemoteFlowControlSettingsRequest(BaseModel):
+    enabled: bool
+
+
 @app.get("/api/me")
 def get_me(request: Request):
     """Return the current user's identity based on IP."""
@@ -2213,6 +2233,41 @@ def get_system_updates(request: Request):
     """Return automatic-main watcher, workload, and updater state."""
     require_app_access(request)
     return _system_update_status()
+
+
+def _require_local_remote_control(request: Request) -> None:
+    """Keep the enable switch and browser hand-off on the server machine."""
+    ip = request.client.host if request.client else ""
+    if not _is_localhost(ip):
+        raise HTTPException(status_code=403, detail="Remote Flow control is local-only.")
+
+
+@app.get("/api/system/remote-flow-control")
+def get_remote_flow_control(request: Request):
+    _require_local_remote_control(request)
+    return remote_flow_control.status_payload()
+
+
+@app.put("/api/system/remote-flow-control")
+def set_remote_flow_control(
+    payload: RemoteFlowControlSettingsRequest, request: Request
+):
+    _require_local_remote_control(request)
+    return remote_flow_control.set_enabled(payload.enabled)
+
+
+@app.get("/api/system/remote-flow-control/navigation")
+def get_remote_flow_navigation(request: Request):
+    _require_local_remote_control(request)
+    return {"intent": remote_flow_control.pending_navigation()}
+
+
+@app.post("/api/system/remote-flow-control/navigation/{command_id}/ack")
+def acknowledge_remote_flow_navigation(command_id: str, request: Request):
+    _require_local_remote_control(request)
+    if not remote_flow_control.acknowledge_navigation(command_id):
+        raise HTTPException(status_code=404, detail="Navigation intent not found.")
+    return {"acknowledged": True}
 
 
 @app.put("/api/system/updates")

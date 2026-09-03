@@ -10287,9 +10287,13 @@ function _updatesSettingsPayload() {
 }
 
 async function renderUpdates() {
-    const raw = await api("/api/system/updates");
+    const [raw, remoteControl] = await Promise.all([
+        api("/api/system/updates"),
+        api("/api/system/remote-flow-control").catch(() => null),
+    ]);
     const status = _normalizeUpdateStatus(raw);
     window._updatesStatus = status;
+    window._remoteFlowControlStatus = remoteControl;
     const active = _updatesAttemptActive(status.activeAttempt) || _UPDATE_ACTIVE_STATES.has(status.status);
     const hasWorkBlockers = status.blockers.length > 0;
     const waitingForTests = ["pending", "queued", "in_progress", "waiting"].includes(status.testsGate.state);
@@ -10389,6 +10393,30 @@ async function renderUpdates() {
                     </div>
                 </form>
             </section>
+
+            ${remoteControl ? `<section class="settings-panel remote-control-panel" aria-labelledby="remote-control-heading">
+                <div class="section-header">
+                    <div><h2 id="remote-control-heading">Signed remote Flow testing</h2><p>Accept only short-lived, signed requests to run one exact active Flow and show its local Expanded logs.</p></div>
+                    <span class="badge ${remoteControl.enabled ? "badge-yellow" : "badge-muted"}">${remoteControl.enabled ? "Enabled" : "Disabled"}</span>
+                </div>
+                <div class="remote-control-warning"><strong>This is not a remote shell.</strong> GitHub carries only opaque IDs and a signature. Metronome never uploads names, logs, screenshots, files, paths, credentials, or report data. Turning this off prevents new commands but does not cancel a Flow already running.</div>
+                <div class="updates-status-grid">
+                    <article><span>Installation target</span><code>${esc(remoteControl.installation_id)}</code><small>Combine this with the Flow ID shown on the Flows page.</small></article>
+                    <article><span>Run allowance</span><strong>${esc(remoteControl.remaining_runs)} of ${esc(remoteControl.rate_limit_per_hour)}</strong><small>Rolling one-hour limit · one remote run at a time</small></article>
+                    <article><span>Last poll</span><strong>${esc(_updatesHumanize(remoteControl.last_poll?.status || "not checked"))}</strong><small>${remoteControl.last_poll?.checked_at ? _updatesWhen(remoteControl.last_poll.checked_at) : "Polling starts only after local enablement"}</small></article>
+                    <article><span>Last command</span><strong>${esc(_updatesHumanize(remoteControl.last_command?.status || "none"))}</strong><small>${remoteControl.last_command ? `Flow #${esc(remoteControl.last_command.flow_id)} · Run #${esc(remoteControl.last_command.run_id || "not queued")}` : "No signed command has been accepted"}</small></article>
+                </div>
+                <form id="remote-control-settings-form">
+                    <label class="updates-toggle">
+                        <input id="remote-control-enabled" type="checkbox" ${remoteControl.enabled ? "checked" : ""}>
+                        <span><strong>Allow signed remote Flow tests</strong><small>Polls the fixed metronome-control branch every ${esc(remoteControl.poll_interval_seconds)} seconds. The setting persists until disabled locally.</small></span>
+                    </label>
+                    <div class="updates-save-row">
+                        <span>${remoteControl.last_poll?.reason_code ? `Last safe refusal: ${esc(_updatesHumanize(remoteControl.last_poll.reason_code))}` : "Only run_flow is accepted."}</span>
+                        <div class="updates-action-row"><button type="submit" id="btn-save-remote-control">Save control setting</button><button type="button" class="btn-danger" id="btn-emergency-off" ${remoteControl.enabled ? "" : "disabled"}>Emergency off</button></div>
+                    </div>
+                </form>
+            </section>` : ""}
 
             <section class="settings-panel updates-blockers" aria-labelledby="updates-blockers-heading">
                 <div class="section-header">
@@ -10568,6 +10596,36 @@ function bindUpdatesPage() {
     if (_updatesAttemptActive(window._updatesStatus?.activeAttempt) && !window._updateReconnectTimer) {
         _startUpdateReconnect(window._updatesStatus.raw);
     }
+    const remoteForm = document.getElementById("remote-control-settings-form");
+    remoteForm?.addEventListener("submit", async event => {
+        event.preventDefault();
+        const enabled = Boolean(document.getElementById("remote-control-enabled")?.checked);
+        if (enabled && !window._remoteFlowControlStatus?.enabled && !confirm("Enable signed remote Flow testing on this PC? Up to three exact active Flows per hour may be started until you turn it off locally.")) return;
+        const button = document.getElementById("btn-save-remote-control");
+        if (button) { button.disabled = true; button.textContent = "Saving..."; }
+        try {
+            await apiPut("/api/system/remote-flow-control", { enabled });
+            await window.refreshRemoteFlowControl?.();
+            toast(enabled ? "Signed remote Flow testing enabled" : "Signed remote Flow testing disabled");
+            await navigate("updates");
+        } catch (error) {
+            toast("Remote control setting was not saved: " + error.message);
+            if (button) { button.disabled = false; button.textContent = "Save control setting"; }
+        }
+    });
+    document.getElementById("btn-emergency-off")?.addEventListener("click", async () => {
+        const button = document.getElementById("btn-emergency-off");
+        button.disabled = true;
+        try {
+            await apiPut("/api/system/remote-flow-control", { enabled: false });
+            await window.refreshRemoteFlowControl?.();
+            toast("Signed remote Flow testing disabled; active work was not cancelled");
+            await navigate("updates");
+        } catch (error) {
+            toast("Emergency off failed: " + error.message);
+            button.disabled = false;
+        }
+    });
 }
 
 async function renderRefreshSchedule() {
@@ -10772,7 +10830,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                 <thead><tr><th>Flow</th><th>Active</th><th>Source</th><th>Download</th><th>Schedule</th><th>Last run</th><th></th></tr></thead>
                 <tbody>${flows.map(flow => { const activeRun = runs.find(run => run.flow_id === flow.id && ["queued", "claimed", "running"].includes(run.status)); return `
                     <tr>
-                        <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}</td>
+                        <td><strong>${esc(flow.name)}</strong>${flow.owner_name ? `<small>Owner: ${esc(flow.owner_name)}${flow.owner_email ? "" : " · no email mapped"}</small>` : "<small>No owner · failure alerts disabled</small>"}${window._remoteFlowControlStatus?.enabled && flow.enabled ? `<small class="remote-control-code">Remote target: ${esc(window._remoteFlowControlStatus.installation_id)}:${esc(flow.id)}</small>` : ""}</td>
                         <td><label class="flow-switch"><input class="flow-enabled-switch" type="checkbox" data-id="${flow.id}" ${flow.enabled ? "checked" : ""} ${flow.schedule_type === "manual" ? "disabled" : ""}><span aria-hidden="true"></span><strong>${flow.enabled ? "Active" : "Inactive"}</strong></label>${flow.schedule_type === "manual" ? '<small>Choose a schedule to activate</small>' : ""}</td>
                         <td>${flow.source_type === "outlook" ? `Outlook<small>Subject contains: ${esc(flow.outlook_subject_contains)}</small>` : flow.source_type === "file" ? `From file<small>${esc(flow.local_file_path)}</small>` : `${esc(flow.site_name)}<small>${esc(flow.report_name)}</small>`}</td>
                         <td>${flow.source_type === "outlook" ? `CSV or Excel attachment<small>Original filename · default Inbox</small>` : flow.source_type === "file" ? `CSV or Excel file<small>${flow.local_file_worksheet ? `Worksheet: ${esc(flow.local_file_worksheet)} · ` : ""}Private snapshots · latest 3</small>` : `${esc(flow.download_mode === "one_per_period" || flow.download_mode === "one_per_week" ? `One ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} every ${flow.window_weeks || 1} week(s)` : `${flow.export_views?.length || 1} ${((window._flowsState?.catalog?.asap_download_types || []).find(item => item.key === flow.asap_download_type)?.label || String(flow.file_format || "csv").toUpperCase())} export(s)`)}<small>${flow.period_strategy === "none" ? "No period prompt" : flow.period_strategy === "latest" ? "Start to latest available" : flow.period_strategy === "rolling" ? "Rolling window" : "Fixed start + end"} · ${flow.browser_mode === "headed" ? "Headed browser" : "Headless browser"}</small>`}<small>${flow.output_mode === "direct_replace" ? "Direct files · exact-name replacement" : "Run folders · newest 3"}</small></td>
@@ -11373,10 +11431,12 @@ function _flowRunsHtml(runs) {
 }
 
 async function renderFlows() {
-    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people] = await Promise.all([
+    const [catalog, flows, runs, workers, scans, estimates, sqlCatalog, people, remoteControl] = await Promise.all([
         api("/api/flows/catalog"), api("/api/flows"), api("/api/flows/runs"), api("/api/flows/workers"),
         api("/api/flows/scans"), api("/api/flows/estimates"), api("/api/flows/sql/catalog"), api("/api/people"),
+        api("/api/system/remote-flow-control").catch(() => null),
     ]);
+    window._remoteFlowControlStatus = remoteControl;
     let scanEvents = [];
     if (scans[0]) {
         try { scanEvents = (await api(`/api/flows/scans/${scans[0].id}/events`)).events || []; } catch (_) {}

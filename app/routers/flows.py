@@ -2926,15 +2926,39 @@ def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
     }
 
 
-@router.post("/{flow_id}/run")
-def queue_run(flow_id: int, request: Request):
+def queue_flow_run(
+    flow_id: int,
+    *,
+    actor: str | None,
+    trigger_type: Literal["manual", "remote_test"] = "manual",
+    allow_queued_resume: bool = True,
+    require_enabled: bool = False,
+    expected_name_sha256: str | None = None,
+) -> dict:
+    """Queue one Flow run through the shared, transaction-safe path.
+
+    Remote callers disable queued-run resume and provide an exact-name digest,
+    making an ID reuse or rename fail in the same transaction that creates the
+    run.  The public HTTP route retains its historical manual behavior.
+    """
+    import hashlib
+
     now = _iso(_now())
     resumed = False
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
-        flow = db.execute("SELECT id, name, source_type FROM flows WHERE id = ?", (flow_id,)).fetchone()
+        flow = db.execute(
+            "SELECT id, name, source_type, enabled FROM flows WHERE id = ?",
+            (flow_id,),
+        ).fetchone()
         if not flow:
             raise HTTPException(404, "Flow not found.")
+        if require_enabled and not bool(flow["enabled"]):
+            raise HTTPException(409, "The exact Flow is disabled.")
+        if expected_name_sha256 is not None:
+            observed_digest = hashlib.sha256(flow["name"].encode("utf-8")).hexdigest()
+            if observed_digest != expected_name_sha256:
+                raise HTTPException(409, "The exact Flow identity changed.")
         from app.routers.pipelines import (
             assert_no_active_flow_publish_run,
             assert_flow_target_available,
@@ -2948,6 +2972,8 @@ def queue_run(flow_id: int, request: Request):
             (flow_id,),
         ).fetchone()
         if active:
+            if not allow_queued_resume:
+                raise HTTPException(409, "This flow already has an active run.")
             if active["status"] != "queued":
                 raise HTTPException(409, "This flow already has an active run.")
             # A queued run may be waiting because Windows could not start its
@@ -2958,9 +2984,9 @@ def queue_run(flow_id: int, request: Request):
                 source_key = "outlook_source" if flow["source_type"] == "outlook" else "local_file"
                 job.setdefault(source_key, {})["force_reprocess"] = True
                 db.execute(
-                    """UPDATE flow_runs SET trigger_type='manual', requested_by=?, job_json=?
+                    """UPDATE flow_runs SET trigger_type=?, requested_by=?, job_json=?
                        WHERE id=?""",
-                    (get_actor(request), _json(job), run_id),
+                    (trigger_type, actor, _json(job), run_id),
                 )
             assert_flow_target_available(
                 db,
@@ -2971,7 +2997,7 @@ def queue_run(flow_id: int, request: Request):
             resumed = True
             log_event(
                 db, "flow", flow_id, flow["name"], "worker_restart_requested",
-                f"run_id={run_id}", get_actor(request),
+                f"run_id={run_id}", actor,
             )
         else:
             job = _build_job(
@@ -2982,11 +3008,14 @@ def queue_run(flow_id: int, request: Request):
             assert_no_active_flow_publish_run(db, job)
             cursor = db.execute(
                 """INSERT INTO flow_runs (flow_id, trigger_type, status, requested_by, job_json, created_at)
-                   VALUES (?, 'manual', 'queued', ?, ?, ?)""",
-                (flow_id, get_actor(request), _json(job), now),
+                   VALUES (?, ?, 'queued', ?, ?, ?)""",
+                (flow_id, trigger_type, actor, _json(job), now),
             )
             run_id = cursor.lastrowid
-            log_event(db, "flow", flow_id, flow["name"], "run_queued", f"run_id={run_id}", get_actor(request))
+            log_event(
+                db, "flow", flow_id, flow["name"], "run_queued",
+                f"run_id={run_id}; trigger_type={trigger_type}", actor,
+            )
     worker = launch_local_worker(job["execution"]["browser_mode"])
     if worker.get("status") == "error":
         with get_db() as db:
@@ -2998,6 +3027,11 @@ def queue_run(flow_id: int, request: Request):
         "id": run_id, "flow_id": flow_id, "status": "queued", "job": _public_flow_job(job),
         "worker": worker, "resumed": resumed,
     }
+
+
+@router.post("/{flow_id}/run")
+def queue_run(flow_id: int, request: Request):
+    return queue_flow_run(flow_id, actor=get_actor(request))
 
 
 @router.post("/{flow_id}/stop")

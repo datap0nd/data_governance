@@ -616,6 +616,28 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     heartbeat_at        DATETIME
 );
 
+-- Signed, non-executable remote test commands.  Deliberately retain only
+-- opaque identifiers and safe reason codes; command bodies and Flow names
+-- must never be persisted or sent back to GitHub.
+CREATE TABLE IF NOT EXISTS remote_flow_commands (
+    command_id           TEXT PRIMARY KEY,
+    action               TEXT NOT NULL,
+    flow_id              INTEGER,
+    run_id               INTEGER,
+    status               TEXT NOT NULL,
+    reason_code          TEXT,
+    issued_at            DATETIME,
+    received_at          DATETIME NOT NULL,
+    completed_at         DATETIME,
+    navigation_expires_at DATETIME,
+    navigation_ack_at    DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_flow_commands_received
+    ON remote_flow_commands(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remote_flow_commands_run
+    ON remote_flow_commands(run_id);
+
 CREATE TABLE IF NOT EXISTS flow_run_files (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          INTEGER NOT NULL REFERENCES flow_runs(id),

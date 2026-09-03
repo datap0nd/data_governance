@@ -7678,3 +7678,37 @@ tr.row-archived td:last-child {
 .rx-arrow { display: inline-block; width: 0.7rem; font-size: 0.7rem; color: var(--text-dim); transition: transform 0.15s; flex-shrink: 0; }
 .rx-count { font-weight: 400; color: var(--text-dim); font-size: 0.75rem; }
 .rx-body { padding-left: 0.25rem; }
+
+/* ── Signed remote Flow testing ── */
+.remote-flow-control-banner {
+    position: fixed;
+    inset: 0 0 auto 0;
+    z-index: 10000;
+    min-height: 32px;
+    padding: 7px 16px;
+    border-bottom: 1px solid #d29922;
+    background: #5b3a00;
+    color: #fff4ce;
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-align: center;
+}
+body.remote-flow-control-enabled { padding-top: 32px; }
+.remote-control-panel { border-color: #d29922; }
+.remote-control-warning {
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    border: 1px solid #d29922;
+    border-radius: 8px;
+    background: color-mix(in srgb, #d29922 12%, var(--surface));
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.45;
+}
+.remote-control-code {
+    display: block;
+    margin-top: 0.25rem;
+    color: #d29922;
+    font-family: ui-monospace, Consolas, monospace;
+    overflow-wrap: anywhere;
+}
