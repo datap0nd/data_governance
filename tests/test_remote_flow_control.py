@@ -86,6 +86,21 @@ def _raw(payload):
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
+def test_control_defaults_enabled_but_local_emergency_off_persists(control_db):
+    with database.get_db() as db:
+        db.execute(
+            "DELETE FROM app_settings WHERE key=?",
+            (remote_flow_control.ENABLED_SETTING,),
+        )
+
+    assert remote_flow_control.is_enabled() is True
+
+    remote_flow_control.set_enabled(False)
+
+    assert remote_flow_control.is_enabled() is False
+    assert settings.get_setting(remote_flow_control.ENABLED_SETTING) == "0"
+
+
 def test_exact_signed_payload_round_trips_without_flow_name(control_db, signer):
     payload = _command(signer, control_db)
     raw = _raw(payload)
