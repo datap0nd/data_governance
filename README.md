@@ -95,7 +95,10 @@ The server must expose native OpenAI-compatible `tool_calls` with the Qwen reaso
 See [the AI agent plan](docs/ai_agent_plan.md) for the implemented boundary and later evaluation-gated modes.
 
 Pipeline Insights stores rebuildable 15-row PostgreSQL previews and validated
-connection explanations in `pipeline_insights.db` beside `governance.db`. Use
+two-paragraph, analyst-oriented connection explanations in `pipeline_insights.db`
+beside `governance.db`. Explanations describe the evidenced business purpose and
+the exact joins, columns, filters, and transformations; missing evidence is stated
+rather than guessed. Use
 `DG_PIPELINE_INSIGHTS_DB_PATH` to place that non-backed-up sidecar elsewhere.
 The default weekly run is Sunday at 10:00 host time and is configurable under
 **System > Refresh Schedule**; both complete modules are also independently

@@ -72,8 +72,9 @@ MODULE_DEFINITIONS = (
         "key": "pipeline_explanations",
         "label": "Pipeline explanations",
         "description": (
-            "Uses the configured local Qwen model to write one-sentence explanations "
-            "for PostgreSQL and Power BI lineage connections."
+            "Uses the configured local Qwen model to explain the business purpose "
+            "and exact joins, columns, filters, and transformations behind PostgreSQL "
+            "and Power BI lineage connections."
         ),
         "scans": "Pipeline dependency edges, SQL/TMDL definitions, schemas, and bounded row evidence.",
         "prerequisites": "Local AI mode, the Pipeline explanations feature, and read-only PostgreSQL access.",

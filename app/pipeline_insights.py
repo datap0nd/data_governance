@@ -22,7 +22,7 @@ AI_ROW_LIMIT = 100
 MAX_CELL_CHARS = 1024
 MAX_AI_CELL_CHARS = 512
 MAX_SAMPLE_BYTES = 128 * 1024
-PROMPT_VERSION = "pipeline-edge-v1"
+PROMPT_VERSION = "pipeline-edge-v2-analyst"
 RELATION_KINDS = frozenset({"table", "view", "materialized_view", "foreign_table"})
 
 

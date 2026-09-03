@@ -41,9 +41,13 @@ assert.match(svgStyle, /z-index:\s*(?:[2-9]|[1-9]\d+)/,
     "the interactive SVG must sit above the lineage grid so its hit paths receive pointer events");
 assert.match(style, /\.lin-sample-scroll\s*\{[^}]*overflow:\s*auto/,
     "wide cached previews need an interactive horizontal scroller");
+assert.match(style, /\.lin-edge-tooltip\s*\{[^}]*white-space:\s*pre-line/,
+    "analyst explanations must preserve their two-paragraph structure");
 
 assert.match(source, /Pipeline connection explanations/,
     "System AI settings must expose the independent feature toggle");
+assert.match(source, /exact joins, columns, filters, and transformations/,
+    "System AI settings must describe the analyst-oriented explanation scope");
 assert.match(source, /Hover or focus a connection to read its explanation/,
     "the lineage view must explain how to reveal cached connection explanations");
 assert.match(source, /Save Pipeline Insights schedule/,

@@ -9984,7 +9984,7 @@ async function renderAISettings() {
                         </label>
                         <label class="ai-feature-row">
                             <input id="ai-feature-pipeline-explanations" type="checkbox" ${checked(settings.pipeline_explanations_enabled)}>
-                            <span><strong>Pipeline connection explanations</strong><small>Explain PostgreSQL dependency and semantic-model edges during the complete Pipeline explanations scanner module.</small></span>
+                            <span><strong>Pipeline connection explanations</strong><small>Explain the business purpose and exact joins, columns, filters, and transformations behind PostgreSQL dependency and semantic-model edges.</small></span>
                         </label>
                     </div>
                 </section>

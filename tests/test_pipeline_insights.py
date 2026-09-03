@@ -312,10 +312,10 @@ class _Provider:
             "call-1", "submit_pipeline_explanations", {
                 "explanations": [{
                     "edge_key": self.edge_key,
-                    "sentence": "public.products supplies product_name to public.product_summary.",
+                    "business_context": "public.products provides product attributes used by public.product_summary for product reporting.",
+                    "technical_logic": "The downstream SQL selects product_name from public.products into public.product_summary. No join or row filter is present in the supplied definition.",
                     "confidence": "high",
-                    "source_columns": ["product_name"],
-                    "target_columns": ["product_name"],
+                    "evidence_columns": ["product_name"],
                 }]
             }
         ),))
@@ -440,16 +440,76 @@ def test_weekly_scheduler_orders_modules_and_retries_busy_lane(insights_store, m
 
 @pytest.mark.parametrize("text", [
     "**Bold** explanation.",
-    "First sentence. Second sentence.",
     "<b>HTML</b> explanation.",
     "Multiline\nexplanation.",
+    "Missing final punctuation",
 ])
-def test_explanation_output_rejects_markdown_html_and_multiple_sentences(text):
+def test_explanation_output_rejects_non_plain_paragraphs(text):
     with pytest.raises(ValueError):
         scanner.ExplanationItem(
             edge_key="a" * 64,
-            sentence=text,
+            business_context=text,
+            technical_logic="No join or row filter is present in the supplied definition.",
             confidence="high",
-            source_columns=[],
-            target_columns=[],
+            evidence_columns=[],
         )
+
+
+def test_explanation_output_renders_two_analyst_paragraphs():
+    item = scanner.ExplanationItem(
+        edge_key="a" * 64,
+        business_context=(
+            "public.products provides product attributes used by "
+            "public.product_summary for product reporting."
+        ),
+        technical_logic=(
+            "The downstream SQL joins public.products.product_id to "
+            "public.sales.product_id with an inner join and filters "
+            "public.products.is_active = true."
+        ),
+        confidence="high",
+        evidence_columns=["product_id", "is_active"],
+    )
+    assert item.text.count("\n\n") == 1
+    assert "product_id" in item.text
+
+
+def test_related_join_columns_are_validated_against_all_input_schemas():
+    candidate = _candidate()
+    candidate["related_relations"] = [{
+        "name": "public.sales",
+        "columns": [{"name": "product_code", "type": "text"}],
+    }]
+    explanation = scanner.ExplanationItem(
+        edge_key=candidate["edge_key"],
+        business_context="The product source appears to support sales reporting.",
+        technical_logic=(
+            "The SQL joins public.products.product_name to "
+            "public.sales.product_code with an inner join."
+        ),
+        confidence="high",
+        evidence_columns=["product_name", "product_code"],
+    )
+    scanner._validate_batch(
+        scanner.ExplanationBatch(explanations=[explanation]), [candidate]
+    )
+    invalid = explanation.model_copy(update={"evidence_columns": ["missing_column"]})
+    with pytest.raises(scanner.AIProtocolError, match="unknown evidence column"):
+        scanner._validate_batch(
+            scanner.ExplanationBatch(explanations=[invalid]), [candidate]
+        )
+
+
+def test_pipeline_explanation_prompt_requires_exact_analyst_logic():
+    assert "business subject or reporting need" in scanner.SYSTEM_PROMPT
+    assert "every evidenced join type" in scanner.SYSTEM_PROMPT
+    assert "exact filter predicates" in scanner.SYSTEM_PROMPT
+    assert "If exact logic is unavailable" in scanner.SYSTEM_PROMPT
+    assert "individual sample-row values" in scanner.SYSTEM_PROMPT
+
+
+def test_deterministic_explanation_is_two_paragraphs_and_discloses_missing_detail():
+    text = scanner.deterministic_text(_candidate())
+    assert text.count("\n\n") == 1
+    assert "PostgreSQL dependency discovery" in text
+    assert "exact join columns" in text
