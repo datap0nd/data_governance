@@ -3666,6 +3666,8 @@ def test_flow_ui_requires_typed_confirmation_before_delete():
     assert "input.value !== flow.name" in source
     assert "Permanently delete flow" in source
     assert "Downloaded files and transformation scripts will stay on disk." in source
+    assert 'id="flow-delete-confirmation" autocomplete="off" spellcheck="false" aria-describedby="flow-delete-match">' in source
+    assert "await apiPatch(`/api/flows/${flow.id}/enabled`, { enabled: false })" in source
     assert "apiDelete(`/api/flows/${flow.id}`, { confirmation: input.value })" in source
 
 
