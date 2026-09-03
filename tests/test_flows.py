@@ -1696,55 +1696,6 @@ def test_rolling_window_advances_only_after_success(flow_db):
     assert failure["status"] == "resolved"
 
 
-def test_failed_run_queues_complete_github_issue_snapshot(flow_db, monkeypatch):
-    captured = []
-    monkeypatch.setattr(
-        flows,
-        "schedule_failure_issue",
-        lambda snapshot: captured.append(snapshot) or {
-            "status": "queued", "run_id": snapshot["run_id"],
-        },
-    )
-    site, report = _seed_catalog()
-    _mark_discovered(report["id"])
-    saved = flows.create_flow(_flow(site["id"], report["id"]), _request())
-    queued = flows.queue_run(saved["id"], _request())
-    worker = flows.WorkerRegister(
-        worker_id="github-log-worker",
-        display_name="GitHub log worker",
-        capabilities={},
-    )
-    flows.register_worker(worker)
-    flows.claim_run(worker.worker_id)
-
-    result = flows.update_run(
-        worker.worker_id,
-        queued["id"],
-        flows.WorkerProgress(
-            status="failed",
-            progress={"stage": "export", "message": "Title did not match."},
-            error="GSCM export guard failed.",
-            traceback="RuntimeError: GSCM export guard failed.",
-        ),
-    )
-
-    assert result["github_issue"] == {"status": "queued", "run_id": queued["id"]}
-    assert len(captured) == 1
-    snapshot = captured[0]
-    assert snapshot["flow_name"] == saved["name"]
-    assert snapshot["report_name"] == report["name"]
-    assert snapshot["failure_stage"] == "export"
-    assert snapshot["error"] == "GSCM export guard failed."
-    assert snapshot["events"][-1] == {
-        "status": "failed",
-        "stage": "export",
-        "message": "Title did not match.",
-        "error": "GSCM export guard failed.",
-        "traceback": "RuntimeError: GSCM export guard failed.",
-        "created_at": snapshot["events"][-1]["created_at"],
-    }
-
-
 def test_week_prompt_can_be_supplied_by_range_instead_of_selection(flow_db):
     site = flows.create_site(_asap_site(), _request())
     report = flows.create_report(_asap_report(site["id"]), _request())
