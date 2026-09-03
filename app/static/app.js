@@ -146,8 +146,12 @@ async function apiPut(path, body) {
     return res.json();
 }
 
-async function apiDelete(path) {
-    const res = await fetch(path, { method: "DELETE", headers: apiHeaders() });
+async function apiDelete(path, body = null) {
+    const res = await fetch(path, {
+        method: "DELETE",
+        headers: apiHeaders(body === null ? {} : { "Content-Type": "application/json" }),
+        ...(body === null ? {} : { body: JSON.stringify(body) }),
+    });
     if (!res.ok) throw await apiError(res);
     return res.json();
 }
@@ -10778,6 +10782,7 @@ function _flowListHtml(flows, workers, catalog, runs = []) {
                             <button class="btn-sm flow-run" data-id="${flow.id}" ${activeRun && activeRun.status !== "queued" ? "disabled" : ""}>${activeRun?.status === "queued" ? "Start now" : activeRun ? "Running" : "Run"}</button>
                             ${activeRun ? `<button class="btn-sm btn-outline btn-danger-outline flow-stop" data-id="${flow.id}">Stop</button>` : ""}
                             <button class="btn-sm flow-edit" data-id="${flow.id}">Edit</button>
+                            <button class="btn-sm btn-outline btn-danger-outline flow-delete" data-id="${flow.id}">Delete</button>
                         </td>
                     </tr>`; }).join("")}</tbody>
             </table>
@@ -11451,6 +11456,57 @@ function _flowBindDialog(overlay, restoreFocus) {
     return close;
 }
 
+function _flowDeleteDialog(flow) {
+    const restoreFocus = document.activeElement;
+    const runs = (window._flowsState?.runs || []).filter(run => Number(run.flow_id) === Number(flow.id));
+    const activeRun = runs.find(run => ["queued", "claimed", "running"].includes(run.status));
+    const blockedReason = flow.enabled
+        ? "Pause this flow from the Flows list before it can be deleted."
+        : activeRun
+            ? `Stop active run #${activeRun.id} before this flow can be deleted.`
+            : "";
+    const overlay = document.createElement("div");
+    overlay.className = "task-modal-overlay";
+    overlay.innerHTML = `<div class="task-modal flow-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-delete-title">
+        <h2 id="flow-delete-title">Delete "${esc(flow.name)}"?</h2>
+        <div class="flow-delete-warning" role="note"><strong>This cannot be undone.</strong><span>The flow configuration and all recorded run history will be permanently deleted. Downloaded files and transformation scripts will stay on disk.</span></div>
+        ${blockedReason ? `<p class="flow-delete-blocked">${esc(blockedReason)}</p>` : ""}
+        <form id="flow-delete-form">
+            <label for="flow-delete-confirmation">Type <strong>${esc(flow.name)}</strong> to confirm</label>
+            <input id="flow-delete-confirmation" autocomplete="off" spellcheck="false" aria-describedby="flow-delete-match" ${blockedReason ? "disabled" : ""}>
+            <small id="flow-delete-match" class="flow-delete-match">The name must match exactly.</small>
+            <div class="flow-form-error" role="alert"></div>
+            <div class="task-modal-actions"><button type="button" class="flow-dialog-cancel">Cancel</button><button type="submit" class="btn-danger" disabled>Permanently delete flow</button></div>
+        </form>
+    </div>`;
+    document.body.appendChild(overlay);
+    const close = _flowBindDialog(overlay, restoreFocus);
+    const form = overlay.querySelector("#flow-delete-form");
+    const input = overlay.querySelector("#flow-delete-confirmation");
+    const submit = form.querySelector('button[type="submit"]');
+    input?.addEventListener("input", () => {
+        submit.disabled = Boolean(blockedReason) || input.value !== flow.name;
+    });
+    form.onsubmit = async event => {
+        event.preventDefault();
+        if (submit.disabled || input.value !== flow.name) return;
+        submit.disabled = true;
+        input.disabled = true;
+        const error = overlay.querySelector(".flow-form-error");
+        error.textContent = "";
+        try {
+            const result = await apiDelete(`/api/flows/${flow.id}`, { confirmation: input.value });
+            close();
+            await navigate("flows");
+            toast(`Flow deleted. ${result.deleted_runs} run${result.deleted_runs === 1 ? "" : "s"} removed; files on disk were kept.`);
+        } catch (err) {
+            error.textContent = "Flow not deleted: " + err.message;
+            input.disabled = Boolean(blockedReason);
+            submit.disabled = Boolean(blockedReason) || input.value !== flow.name;
+        }
+    };
+}
+
 function _flowSiteDialog(site = null) {
     const restoreFocus = document.activeElement;
     const overlay = document.createElement("div");
@@ -11759,6 +11815,10 @@ function _bindFlowWorkspace() {
     }
     document.querySelectorAll(".flow-scan-report").forEach(button => button.onclick = async () => { button.disabled = true; try { await apiPost(`/api/flows/reports/${button.dataset.id}/scan`); toast("Report refresh queued"); await navigate("flows"); } catch (err) { toast("Report refresh not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-edit").forEach(button => button.onclick = () => _flowShowView("builder", state.flows.find(flow => flow.id === Number(button.dataset.id))));
+    document.querySelectorAll(".flow-delete").forEach(button => button.onclick = () => {
+        const flow = state.flows.find(item => item.id === Number(button.dataset.id));
+        if (flow) _flowDeleteDialog(flow);
+    });
     document.querySelectorAll(".flow-enabled-switch").forEach(input => input.onchange = async () => { const enabled = input.checked; input.disabled = true; try { const updated = await apiPatch(`/api/flows/${input.dataset.id}/enabled`, { enabled }); const flow = state.flows.find(item => item.id === updated.id); Object.assign(flow, updated); _flowShowView("list"); toast(enabled ? "Flow activated" : "Flow paused"); } catch (err) { input.checked = !enabled; input.disabled = false; toast("Flow status not changed: " + err.message); } });
     document.querySelectorAll(".flow-run").forEach(button => button.onclick = async () => { button.disabled = true; const flow = state.flows.find(item => item.id === Number(button.dataset.id)); try { await apiPost(`/api/flows/${button.dataset.id}/run`); toast(flow?.source_type === "file" ? "Run queued. The worker will read the configured file and force a new snapshot." : flow?.source_type === "outlook" ? "Run queued. The worker will check the signed-in user's Outlook Inbox." : flow?.browser_mode === "headed" ? "Run queued. Edge is opening in the BI desktop." : "Run queued for the background worker"); await navigate("flows"); } catch (err) { toast("Run not queued: " + err.message); button.disabled = false; } });
     document.querySelectorAll(".flow-stop").forEach(button => button.onclick = async () => { button.disabled = true; try { const result = await apiPost(`/api/flows/${button.dataset.id}/stop`); toast(result.message || "Run stopped"); await navigate("flows"); } catch (err) { toast("Run not stopped: " + err.message); button.disabled = false; } });

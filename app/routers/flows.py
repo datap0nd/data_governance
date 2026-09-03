@@ -945,6 +945,10 @@ class FlowEnabledWrite(BaseModel):
     enabled: bool
 
 
+class FlowDeleteWrite(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=200)
+
+
 MAX_DISCOVERED_OPTIONS = 5000
 
 
@@ -2784,6 +2788,142 @@ def set_flow_enabled(flow_id: int, body: FlowEnabledWrite, request: Request):
             "activated" if body.enabled else "deactivated", actor=get_actor(request),
         )
         return _flow_out(db, flow_id)
+
+
+@router.delete("/{flow_id}")
+def delete_flow(flow_id: int, body: FlowDeleteWrite, request: Request):
+    """Permanently remove one paused Flow and its database-held run history.
+
+    Output files and transformation scripts are deliberately outside this
+    operation: deleting a Flow must never turn into an unbounded filesystem
+    cleanup. The exact-name body guard also protects direct API callers rather
+    than relying on the browser confirmation alone.
+    """
+    now = _iso(_now())
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        flow = db.execute(
+            "SELECT id, name, enabled, sql_target_source_id FROM flows WHERE id=?",
+            (flow_id,),
+        ).fetchone()
+        if not flow:
+            raise HTTPException(404, "Flow not found.")
+        if body.confirmation != flow["name"]:
+            raise HTTPException(400, "Type the exact flow name to confirm deletion.")
+        if flow["enabled"]:
+            raise HTTPException(409, "Pause the flow before deleting it.")
+
+        from app.freshness_inheritance import reconcile_source
+        from app.routers.pipelines import assert_resource_unlocked
+
+        assert_resource_unlocked(db, "flow", str(flow_id))
+        active = db.execute(
+            """SELECT id FROM flow_runs
+               WHERE flow_id=? AND status IN ('queued','claimed','running') LIMIT 1""",
+            (flow_id,),
+        ).fetchone()
+        if active:
+            raise HTTPException(
+                409,
+                f"Flow run #{active['id']} is still active. Stop it before deleting the flow.",
+            )
+
+        linked_source_ids = {
+            int(row["source_id"])
+            for row in db.execute(
+                "SELECT source_id FROM flow_file_source_bindings WHERE flow_id=?",
+                (flow_id,),
+            ).fetchall()
+        }
+        if flow["sql_target_source_id"] is not None:
+            linked_source_ids.add(int(flow["sql_target_source_id"]))
+
+        run_count = int(db.execute(
+            "SELECT COUNT(*) FROM flow_runs WHERE flow_id=?", (flow_id,),
+        ).fetchone()[0])
+        recorded_file_count = int(db.execute(
+            """SELECT COUNT(*) FROM flow_run_files
+               WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+            (flow_id,),
+        ).fetchone()[0])
+        if run_count:
+            # Pipeline history keeps its own immutable step name/details. Only
+            # detach the deleted Flow-run record so the pipeline remains usable.
+            db.execute(
+                """UPDATE pipeline_run_steps SET flow_run_id=NULL
+                   WHERE flow_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute(
+                """UPDATE flow_workers SET current_run_id=NULL
+                   WHERE current_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute(
+                """DELETE FROM flow_run_source_refs
+                   WHERE consumer_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)
+                      OR source_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id, flow_id),
+            )
+            db.execute(
+                """DELETE FROM flow_retention_ops
+                   WHERE source_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)
+                      OR assigned_run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id, flow_id),
+            )
+            db.execute(
+                """DELETE FROM flow_operation_timings
+                   WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute(
+                """DELETE FROM flow_run_events
+                   WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute(
+                """DELETE FROM flow_run_files
+                   WHERE run_id IN (SELECT id FROM flow_runs WHERE flow_id=?)""",
+                (flow_id,),
+            )
+            db.execute("DELETE FROM flow_runs WHERE flow_id=?", (flow_id,))
+
+        # Keep closed incident records as audit evidence without a dangling FK.
+        resolved_actions = db.execute(
+            """UPDATE actions
+               SET flow_id=NULL,
+                   status=CASE WHEN status IN ('open','acknowledged','investigating')
+                               THEN 'resolved' ELSE status END,
+                   resolved_at=CASE WHEN status IN ('open','acknowledged','investigating')
+                                    THEN COALESCE(resolved_at, ?) ELSE resolved_at END,
+                   updated_at=?,
+                   notes=COALESCE(notes, '') || ' [auto-resolved: flow deleted]'
+               WHERE flow_id=?""",
+            (now, now, flow_id),
+        ).rowcount
+        db.execute("DELETE FROM flow_file_source_bindings WHERE flow_id=?", (flow_id,))
+        db.execute("DELETE FROM flows WHERE id=?", (flow_id,))
+        for source_id in linked_source_ids:
+            reconcile_source(db, source_id)
+        log_event(
+            db,
+            "flow",
+            flow_id,
+            flow["name"],
+            "deleted",
+            (
+                f"runs={run_count}; recorded_files={recorded_file_count}; "
+                f"resolved_actions={resolved_actions}; filesystem_files_preserved=true"
+            ),
+            get_actor(request),
+        )
+    return {
+        "id": flow_id,
+        "name": flow["name"],
+        "deleted": True,
+        "deleted_runs": run_count,
+        "preserved_files": recorded_file_count,
+    }
 
 
 @router.post("/{flow_id}/run")
