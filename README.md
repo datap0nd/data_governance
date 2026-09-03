@@ -72,6 +72,27 @@ installs, force a check, install manually, or inspect the latest durable
 attempt. Private-repository installs must expose `DG_GITHUB_TOKEN` to the
 service account.
 
+### Latest Flow failure on GitHub
+
+When `DG_GITHUB_TOKEN` is available, every terminal Flow failure queues a
+best-effort update to one repository issue named **Metronome: latest Flow
+failure**. The issue body is replaced rather than appended, so it always shows
+the newest failed run without creating commits or triggering the automatic
+`main` updater. Worker-reported failures, stale workers, worker restarts, and
+unavailable private artifact stores all use the same publisher.
+
+The token needs repository **Issues: Read and write** permission in addition to
+the read permission used for automatic updates. The default repository is
+`datap0nd/data_governance`; set `DG_GITHUB_REPOSITORY=owner/repository` to
+override it. Publishing is asynchronous and best-effort: GitHub or proxy
+failure is written to the Metronome service log and never changes the recorded
+Flow result.
+
+Only a bounded diagnostic is published: run metadata, the terminal error, and
+the newest 20 run events. Credentials, authorization values, email addresses,
+local filesystem paths, downloaded data, and screenshots are excluded or
+redacted before the request leaves Metronome.
+
 ### Read-only Operations Investigator
 
 **Alerts is the operational inbox.** Every active Alert evidence revision is automatically queued for an overall read-only review. Expanding an Alert shows whether the current evidence confirms, likely supports, contradicts, or is insufficient to judge the Alert, followed by a concise explanation and suggested next step. Flow and Pipeline failures also retain immutable run occurrences and optional exact-run analysis under evidence history.
