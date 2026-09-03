@@ -11460,20 +11460,19 @@ function _flowDeleteDialog(flow) {
     const restoreFocus = document.activeElement;
     const runs = (window._flowsState?.runs || []).filter(run => Number(run.flow_id) === Number(flow.id));
     const activeRun = runs.find(run => ["queued", "claimed", "running"].includes(run.status));
-    const blockedReason = flow.enabled
-        ? "Pause this flow from the Flows list before it can be deleted."
-        : activeRun
-            ? `Stop active run #${activeRun.id} before this flow can be deleted.`
-            : "";
+    const blockedReason = activeRun
+        ? `Stop active run #${activeRun.id} before this flow can be deleted.`
+        : "";
     const overlay = document.createElement("div");
     overlay.className = "task-modal-overlay";
     overlay.innerHTML = `<div class="task-modal flow-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-delete-title">
         <h2 id="flow-delete-title">Delete "${esc(flow.name)}"?</h2>
         <div class="flow-delete-warning" role="note"><strong>This cannot be undone.</strong><span>The flow configuration and all recorded run history will be permanently deleted. Downloaded files and transformation scripts will stay on disk.</span></div>
         ${blockedReason ? `<p class="flow-delete-blocked">${esc(blockedReason)}</p>` : ""}
+        ${flow.enabled && !activeRun ? '<p class="flow-delete-pause-note">This flow is active. Metronome will pause it immediately before deletion.</p>' : ""}
         <form id="flow-delete-form">
             <label for="flow-delete-confirmation">Type <strong>${esc(flow.name)}</strong> to confirm</label>
-            <input id="flow-delete-confirmation" autocomplete="off" spellcheck="false" aria-describedby="flow-delete-match" ${blockedReason ? "disabled" : ""}>
+            <input id="flow-delete-confirmation" autocomplete="off" spellcheck="false" aria-describedby="flow-delete-match">
             <small id="flow-delete-match" class="flow-delete-match">The name must match exactly.</small>
             <div class="flow-form-error" role="alert"></div>
             <div class="task-modal-actions"><button type="button" class="flow-dialog-cancel">Cancel</button><button type="submit" class="btn-danger" disabled>Permanently delete flow</button></div>
@@ -11495,14 +11494,19 @@ function _flowDeleteDialog(flow) {
         const error = overlay.querySelector(".flow-form-error");
         error.textContent = "";
         try {
+            if (flow.enabled) {
+                await apiPatch(`/api/flows/${flow.id}/enabled`, { enabled: false });
+                flow.enabled = false;
+            }
             const result = await apiDelete(`/api/flows/${flow.id}`, { confirmation: input.value });
             close();
             await navigate("flows");
             toast(`Flow deleted. ${result.deleted_runs} run${result.deleted_runs === 1 ? "" : "s"} removed; files on disk were kept.`);
         } catch (err) {
             error.textContent = "Flow not deleted: " + err.message;
-            input.disabled = Boolean(blockedReason);
+            input.disabled = false;
             submit.disabled = Boolean(blockedReason) || input.value !== flow.name;
+            input.focus();
         }
     };
 }
