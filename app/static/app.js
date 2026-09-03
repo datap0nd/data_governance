@@ -8505,7 +8505,7 @@ function _renderLineageDiagram(data) {
         </div>
         <div class="lin-edge-tooltip" id="lin-edge-tooltip" role="tooltip" hidden></div>
         <div class="lin-sample-popover" id="lin-sample-popover" role="dialog" aria-label="Cached PostgreSQL relation preview" hidden></div>
-        <div class="lin-hint-bar">Click any node to trace its lineage. Scroll horizontally for deeper levels. Click empty space to reset.</div>
+        <div class="lin-hint-bar">Hover or focus a connection to read its explanation. Click any node to trace its lineage. Scroll horizontally for deeper levels. Click empty space to reset.</div>
     `;
 
     _buildLinGraph(data, visualNodes, fieldsByTable, tableNodes, allSourceNodes, upstreamNodes);

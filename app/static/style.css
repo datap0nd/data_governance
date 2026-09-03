@@ -4456,6 +4456,7 @@ button.btn-danger-outline:hover {
 /* SVG edges */
 .lin-svg {
     position: absolute; top: 0; left: 0;
+    z-index: 2;
     pointer-events: none; overflow: visible;
 }
 .lin-edge {

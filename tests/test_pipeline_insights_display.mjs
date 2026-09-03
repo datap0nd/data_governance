@@ -36,11 +36,16 @@ const hitStyle = style.match(/\.lin-edge-hit\s*\{([^}]*)\}/)?.[1] || "";
 assert.match(hitStyle, /stroke-width:\s*12/,
     "the transparent edge hit target should be approximately twelve pixels wide");
 assert.match(hitStyle, /pointer-events:\s*stroke/);
+const svgStyle = style.match(/\.lin-svg\s*\{([^}]*)\}/)?.[1] || "";
+assert.match(svgStyle, /z-index:\s*(?:[2-9]|[1-9]\d+)/,
+    "the interactive SVG must sit above the lineage grid so its hit paths receive pointer events");
 assert.match(style, /\.lin-sample-scroll\s*\{[^}]*overflow:\s*auto/,
     "wide cached previews need an interactive horizontal scroller");
 
 assert.match(source, /Pipeline connection explanations/,
     "System AI settings must expose the independent feature toggle");
+assert.match(source, /Hover or focus a connection to read its explanation/,
+    "the lineage view must explain how to reveal cached connection explanations");
 assert.match(source, /Save Pipeline Insights schedule/,
     "Refresh Schedule must expose the independent weekly scanner settings");
 
