@@ -73,6 +73,20 @@ selection all leave the Favorite dialog open and block export.
 Existing ID-less flows, or flows whose saved `favorite_name` was normalized
 instead of preserving the portal's raw name, must be rescanned and repointed.
 
+Export has a second, independent fail-closed gate after Go and report loading.
+Immediately before download, Metronome reads the title rendered inside the
+visible active WorkFrame and compares it with the same raw `favorite_name`.
+The comparison is a case-sensitive whole-string match after trimming outer
+whitespace only. An inactive MDI tab caption, the home Favorite widget, and
+Setting/Favorite content cannot satisfy this check. Missing, conflicting, or
+non-matching titles block the download and include the expected and observed
+title/component state in the failure report.
+
+Title proof and Excel dispatch occur atomically in one browser-side operation,
+using the unique visible native `btn_exceldown` component. There is no gap in
+which the active report can change between title validation and export, and no
+unguarded DOM export click.
+
 The home screen has its own "Favorite" widget, but it lists only the entries a
 user has *pinned* (the pin icon on each row, then Save). It is empty for most
 users, so reading it finds nothing even for someone with hundreds of bookmarks.
@@ -200,8 +214,9 @@ worker claims the scan                  worker claims the run
   (dataset ids/scopes authoritative;
   rendered grid inventoried/reconciled)
   ↓ POST .../scans/{id}/progress          wait for the overlay to settle
-flow_reports rows, one per bookmark       ↓ flow_gscm.trigger_excel_export
-                                          click btn_exceldown
+flow_reports rows, one per bookmark       ↓ exact rendered WorkFrame title check
+                                          ↓ flow_gscm.trigger_excel_export
+                                          atomically fire native btn_exceldown
                                           ↓ Edge native download completion
                                         _store_completed_download (xlsx)
                                           ↓ keeps the workbook, writes a
@@ -369,7 +384,9 @@ instead of the API.
 | Run fails with bound dataset/Grid state unavailable or ambiguous | This Nexacro build does not expose one scriptable visible Favorite Grid, or selection could not be proven | Use the failure state report to verify the Grid binding; this build remains non-runnable until support is reviewed—there is no DOM fallback |
 | Run fails with duplicate stable ID or scope drift | Live portal state is internally ambiguous | Leave the dialog open, rescan, and investigate the reported ID/name/scope rows before retrying |
 | Run fails: "GSCM popup blocked control" | A visible portal popup survived its Close/X action and overlaps the next bookmark control | Use the reported container and close-control ids plus `On screen` inventory to update the observed id vocabulary; protected Save/Delete-style controls are never clicked |
-| Run fails: "Excel export button was not found" | The bookmark opened a screen with no grid export | Open the bookmark by hand and confirm the toolbar offers Excel |
+| Run fails with rendered report title mismatch or ambiguity | Go loaded another bookmark, multiple authoritative title controls disagree, or the saved raw name is stale | No download was started. Compare the reported expected/observed titles, then rescan and repoint the flow if the bookmark was renamed |
+| Run fails because the WorkFrame title is unavailable | The report has not rendered an authoritative title, or this Nexacro build names the title component differently | Confirm the loaded page visibly shows its bookmark title and use the reported title/component inventory to review support; the runner intentionally does not accept an inactive MDI tab or Favorite widget as proof |
+| Run fails with missing/ambiguous Excel component | The loaded screen has no unique visible native grid export control | Open the bookmark by hand and confirm the toolbar offers Excel; no DOM click fallback is used |
 | Run hangs then exports anyway | The wait overlay outlived its query | Expected; the adapter forces the overlay down after its budget |
 
 ## Code map

@@ -6329,7 +6329,10 @@ def execute_job(
                 "running",
                 {
                     "stage": "file_export",
-                    "message": f"Exporting the GSCM bookmark to Excel: {job['report']['name']}.",
+                    "message": (
+                        "Verifying the rendered GSCM bookmark title and exporting "
+                        f"it to Excel: {job['report']['name']}."
+                    ),
                     "item_index": index, "item_count": len(tasks),
                 },
                 artifacts,

@@ -175,6 +175,16 @@ FAVORITE_SCROLL_RESET_PASSES = 40
 
 DOWNLOAD_TEXT = "Excel download"
 
+# A loaded bookmark must identify itself inside the active report work frame
+# before the Excel handler may run.  MDI tab captions are deliberately not
+# accepted: an inactive report's tab remains visible and could otherwise
+# authorize exporting a different active report.
+LOADED_TITLE_RETRY_REASONS = {
+    "loaded-report-title-unavailable",
+    "nexacro-unavailable",
+    "missing-excel-component",
+}
+
 #: Samsung SSO's sign-in page. The automation profile holds one session per
 #: portal, so ASAP can be signed in while GSCM is not - which is exactly what a
 #: bare "the client did not render" message fails to convey.
@@ -793,6 +803,180 @@ _GUARDED_GO_CLICK_JS = r"""(request) => {
     } catch (error) {
         return {fired: false, reason: String(error && error.message ? error.message : error),
                 component_id: componentId};
+    }
+}"""
+
+#: Resolve the rendered title in the active WorkFrame and invoke the one
+#: visible native Excel component in the same JavaScript stack.  Keeping the
+#: proof and dispatch atomic prevents a tab/report change between a successful
+#: title comparison and the export handler.  A title from TopFrame, MdiFrame,
+#: Setting/Favorite, or another chrome surface can never authorize export.
+_GUARDED_EXCEL_EXPORT_JS = r"""(request) => {
+    const exact = value => String(value ?? '').trim();
+    const wantedName = exact(request.bookmark_name);
+    const wantedId = exact(request.bookmark_id);
+    const configuredId = exact(request.excel_id).split(':', 1)[0];
+    if (!wantedName || !wantedId) {
+        return {fired: false, reason: 'empty-bookmark-identity',
+                expected_id: wantedId, expected_name: wantedName};
+    }
+    if (typeof nexacro === 'undefined' || !nexacro
+            || typeof nexacro.getApplication !== 'function') {
+        return {fired: false, reason: 'nexacro-unavailable',
+                expected_id: wantedId, expected_name: wantedName};
+    }
+
+    const visibleElement = element => {
+        try {
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return null;
+            const style = window.getComputedStyle(element);
+            if (style.visibility === 'hidden' || style.display === 'none') return null;
+            return {x: Math.round(rect.left), y: Math.round(rect.top),
+                    w: Math.round(rect.width), h: Math.round(rect.height)};
+        } catch (error) { return null; }
+    };
+    const workFramePattern = /(?:^|\.)(?:work_?frame\d*)(?:\.|$)/i;
+    const forbiddenSurface = /(?:^|\.)(?:topframe|mdiframe|leftframe|bottomframe|setting\d*|waitwindow)(?:\.|$)|(?:^|[._:])favorite(?:$|[._:])/i;
+    const rankTitleId = identifier => {
+        const id = String(identifier || '');
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?bookmark_?(?:name|title)(?:$|[._:])/i.test(id)) return 0;
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?(?:user)?report_?(?:name|title)(?:$|[._:])/i.test(id)) return 1;
+        if (/(?:^|[._:])(?:(?:sta|lbl|txt)_?)?title(?:$|[._:])/i.test(id)) return 2;
+        return null;
+    };
+
+    const titles = [];
+    for (const element of document.querySelectorAll('[id]')) {
+        const id = String(element.id || '');
+        if (!workFramePattern.test(id) || forbiddenSurface.test(id)) continue;
+        const rank = rankTitleId(id);
+        if (rank == null) continue;
+        const rect = visibleElement(element);
+        if (!rect) continue;
+        const text = exact(element.textContent);
+        if (!text || text.length > 300) continue;
+        let childHasSameText = false;
+        for (const child of element.children) {
+            if (exact(child.textContent) === text) { childHasSameText = true; break; }
+        }
+        if (childHasSameText) continue;
+        titles.push({id, text, rank, ...rect});
+    }
+    titles.sort((left, right) => left.rank - right.rank
+        || left.y - right.y || left.x - right.x || left.id.localeCompare(right.id));
+    if (!titles.length) {
+        return {fired: false, reason: 'loaded-report-title-unavailable',
+                expected_id: wantedId, expected_name: wantedName, titles: []};
+    }
+    const bestRank = titles[0].rank;
+    const best = titles.filter(item => item.rank === bestRank);
+    const observedNames = Array.from(new Set(best.map(item => item.text)));
+    if (observedNames.length !== 1) {
+        return {fired: false, reason: 'ambiguous-loaded-report-title',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_names: observedNames.slice(0, 10),
+                titles: best.slice(0, 10)};
+    }
+    const observedName = observedNames[0];
+    if (observedName !== wantedName) {
+        return {fired: false, reason: 'loaded-report-title-mismatch',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, titles: best.slice(0, 10)};
+    }
+
+    const app = nexacro.getApplication();
+    const seen = new Set();
+    const candidates = [];
+    const localName = component => {
+        try { return String(component.name || component.id || '').split('.').pop(); }
+        catch (error) { return ''; }
+    };
+    const diagnosticId = (component, trail) => {
+        try {
+            const handle = component._control_element && component._control_element.handle;
+            if (handle && handle.id) return String(handle.id).split(':', 1)[0];
+        } catch (error) {}
+        try {
+            if (component._unique_id) return String(component._unique_id).split(':', 1)[0];
+        } catch (error) {}
+        return trail.filter(Boolean).join('.');
+    };
+    const componentVisible = (component, id) => {
+        try {
+            if (typeof component.get_visible === 'function' && !component.get_visible()) return false;
+            if (component.visible === false) return false;
+            const handle = component._control_element && component._control_element.handle;
+            const element = handle || document.getElementById(id);
+            return Boolean(element && visibleElement(element));
+        } catch (error) { return false; }
+    };
+    const visit = (component, depth, trail) => {
+        if (!component || typeof component !== 'object' || depth > 18 || seen.has(component)) return;
+        seen.add(component);
+        const local = localName(component);
+        const nextTrail = local ? [...trail, local] : trail;
+        if (local.toLowerCase() === 'btn_exceldown') {
+            const id = diagnosticId(component, nextTrail);
+            if (/(?:^|\.)mdiframe(?:\.|$)/i.test(id) && componentVisible(component, id)) {
+                candidates.push({component, id});
+            }
+        }
+        for (const key of ['components', 'frames']) {
+            let children = null;
+            try { children = component[key]; } catch (error) { continue; }
+            if (!children || typeof children.length !== 'number') continue;
+            for (let index = 0; index < children.length && index < 400; index++) {
+                try { visit(children[index], depth + 1, nextTrail); } catch (error) {}
+            }
+        }
+        try { if (component.form) visit(component.form, depth + 1, nextTrail); } catch (error) {}
+    };
+    try { visit(app.mainframe || app, 0, []); } catch (error) {}
+    const unique = [];
+    const candidateIds = new Set();
+    for (const candidate of candidates) {
+        if (candidateIds.has(candidate.id)) continue;
+        candidateIds.add(candidate.id);
+        unique.push(candidate);
+    }
+    let chosen = configuredId
+        ? unique.filter(candidate => candidate.id === configuredId)
+        : [];
+    if (!chosen.length) chosen = unique;
+    if (!chosen.length) {
+        return {fired: false, reason: 'missing-excel-component',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName};
+    }
+    if (chosen.length !== 1) {
+        return {fired: false, reason: 'ambiguous-excel-component',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName,
+                component_ids: chosen.slice(0, 10).map(item => item.id)};
+    }
+    const target = chosen[0];
+    if (!target.component || typeof target.component.on_fire_onclick !== 'function') {
+        return {fired: false, reason: 'excel-onclick-unavailable',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, component_id: target.id};
+    }
+    try {
+        target.component.on_fire_onclick(
+            'lbutton', false, false, false,
+            0, 0, 0, 0, 0, 0,
+            target.component, target.component,
+        );
+        return {fired: true,
+                strategy: 'rendered-title-exact-guarded-native-export',
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, title_id: best[0].id,
+                component_id: target.id};
+    } catch (error) {
+        return {fired: false, reason: 'excel-onclick-error',
+                error: String(error && error.message ? error.message : error),
+                expected_id: wantedId, expected_name: wantedName,
+                observed_name: observedName, component_id: target.id};
     }
 }"""
 
@@ -3489,33 +3673,71 @@ def excel_button_id(automation: dict | None = None) -> str:
     return configured or FALLBACK_EXCEL_BUTTON_ID
 
 
+def _loaded_title_result_report(result: dict | None) -> str:
+    """Compact diagnostics for the atomic rendered-title/export guard."""
+    if not isinstance(result, dict):
+        return "no browser result"
+    keys = (
+        "reason", "strategy", "expected_id", "expected_name", "observed_name",
+        "observed_names", "title_id", "component_id", "component_ids", "titles",
+        "error",
+    )
+    details = [f"{key}={result[key]!r}" for key in keys if key in result]
+    return ", ".join(details)[:MAX_INVENTORY_CHARS] or "empty browser result"
+
+
 def trigger_excel_export(page, job: dict, *, timeout_ms: int = 60_000) -> None:
-    """Wait for and click the active work frame's Excel toolbar button.
+    """Atomically verify the loaded title and dispatch native Excel export.
 
     Some bookmarks return the home shell to an idle state before the MDI work
     frame has finished mounting. Waiting only for the global busy overlay can
-    therefore race the toolbar and falsely report that the bookmark cannot
-    export.
+    therefore race both the rendered title and toolbar.  No DOM click is used:
+    the exact, case-sensitive, outer-trimmed bookmark name is re-read from the
+    active WorkFrame in the same browser-side operation that fires Excel.
     """
     automation = (job.get("report") or {}).get("automation") or {}
+    bookmark_name = _exact_bookmark_name(automation.get("favorite_name"))
+    bookmark_id = _exact_bookmark_id(automation.get("favorite_bookmark_id"))
+    if not bookmark_name or not bookmark_id:
+        raise RuntimeError(
+            "GSCM cannot verify the loaded report before export because the flow "
+            "has no exact bookmark ID/name identity. Re-scan the GSCM catalog and "
+            "repoint the flow."
+        )
     clear_screen(page)
     deadline = time.monotonic() + timeout_ms / 1000
+    last_result: dict | None = None
     while time.monotonic() < deadline:
         for root in _roots(page):
-            for selector in (
-                f"[id='{_css_escape(excel_button_id(automation))}']",
-                f"[id*='{EXCEL_BUTTON_COMPONENT}']",
-            ):
-                try:
-                    button = root.locator(selector).first
-                    if button.count():
-                        button.click(force=True, timeout=60_000)
-                        return
-                except Exception:
-                    continue
+            try:
+                result = root.evaluate(_GUARDED_EXCEL_EXPORT_JS, {
+                    "bookmark_id": bookmark_id,
+                    "bookmark_name": bookmark_name,
+                    "excel_id": excel_button_id(automation),
+                })
+            except Exception as exc:
+                last_result = {"reason": "evaluation-error", "error": str(exc)}
+                continue
+            if not isinstance(result, dict):
+                last_result = {"reason": "guarded-export-returned-no-result"}
+                continue
+            last_result = result
+            if result.get("fired") is True:
+                return
+            reason = str(result.get("reason") or "")
+            if reason not in LOADED_TITLE_RETRY_REASONS:
+                _fail_with_screen(
+                    page,
+                    f"GSCM refused to export bookmark {bookmark_name!r} "
+                    f"({bookmark_id}) because the rendered report title could "
+                    "not prove the same loaded report. Guard result: "
+                    f"{_loaded_title_result_report(result)}.",
+                )
         page.wait_for_timeout(IDLE_POLL_INTERVAL_MS)
     _fail_with_screen(
         page,
-        "GSCM's Excel export button was not found on the toolbar. The bookmark "
-        "may have opened a screen that cannot export.",
+        f"GSCM did not find one authoritative rendered WorkFrame title and "
+        f"Excel control for bookmark {bookmark_name!r} ({bookmark_id}) before "
+        "the export timeout; no download was started. Last guard result: "
+        f"{_loaded_title_result_report(last_result)}.",
     )
